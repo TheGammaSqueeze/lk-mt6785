@@ -79,6 +79,39 @@ When enabled it raises the LK `DEBUGLEVEL` (`include/debug.h`), turns on
 and compiles in the `AYANEO_ROT:` Root-of-Trust trace. None of this is present
 in a release build.
 
+## Animated boot logo (experiment)
+
+Gated behind `AYANEO_RAINBOW_BOOT` (default `yes` on the animated-boot-logo
+branch): instead of blitting the static eMMC logo, paint a smooth scrolling
+rainbow over the whole panel during LK.
+
+How it works (`platform/mt6785/mt_disp_drv.c`):
+
+- Runs on its own LK thread so boot proceeds in parallel; stopped in
+  `boot_linux_fdt()` just before the kernel display handoff.
+- The rainbow is rendered ONCE into a buffer one 256-row period taller than the
+  screen; each frame just advances the OVL read address by a row offset
+  (`primary_display_config_input`), so there is no per-frame pixel work - it
+  tracks the panel refresh with almost no CPU. The pattern repeats every 256
+  rows so the wrap is seamless.
+- The scroll offset is derived from `current_time()` so the speed is constant
+  regardless of loop rate. The backlight is enabled at the first frame (the boot
+  flow otherwise only enables it after the logo call).
+
+Tunables (defines, overridable at build time):
+
+- `AYANEO_RAINBOW_MS_PER_ROW` (6) - ms per scrolled row; lower is faster.
+- `AYANEO_RAINBOW_LOOP_MS` (14) - loop pacing (~vsync); boot runs during the sleep.
+- `AYANEO_RAINBOW_MIN_MS` (4000) - guaranteed on-screen time; LK reaches the
+  kernel handoff in ~1s, so this holds at the handoff (still scrolling) until it
+  elapses. Bounded, tunable added boot latency; `0` = run for boot's natural length.
+
+Notes: LK is single-core, so the animation shares CPU0 with boot; it runs at
+`HIGH_PRIORITY` with a guaranteed per-frame `thread_sleep()` so it cannot
+spin-starve the boot thread (which would trip the watchdog). It cannot animate
+past the kernel jump - once LK hands off, its final frame simply holds on the
+video-mode panel until the kernel blits.
+
 ## One-step build and sign
 
     ./build_ayaneo_pocket_air_mini.sh
