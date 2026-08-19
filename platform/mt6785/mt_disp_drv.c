@@ -666,23 +666,29 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 #include <kernel/thread.h>
 #include <platform.h>			/* current_time() */
 
-/* Milliseconds the scroll takes to advance one rainbow row. Lower = faster. */
-#ifndef AYANEO_RAINBOW_MS_PER_ROW
-#define AYANEO_RAINBOW_MS_PER_ROW 6
-#endif
-/* Loop pacing target (~vsync); the boot thread runs during this sleep. */
-#ifndef AYANEO_RAINBOW_LOOP_MS
-#define AYANEO_RAINBOW_LOOP_MS 14
+#include <part_interface.h>		/* partition_read() */
+
+/* Playback frame rate. */
+#ifndef AYANEO_ANIM_FPS
+#define AYANEO_ANIM_FPS 30
 #endif
 /*
- * Minimum time (ms) to keep the animation on screen. LK reaches the kernel
- * handoff in ~1s, which is too short; if boot gets there sooner we hold at the
- * handoff (the thread keeps scrolling) until this elapses. Set to 0 to just run
- * for however long boot takes. This is added, bounded boot latency.
+ * Safety cap (ms) for how long boot may wait at the handoff for the animation
+ * to finish playing. The animation is ~5.5s; boot normally reaches the handoff
+ * sooner, so it holds (the player keeps running) until the animation completes
+ * or this cap elapses. This is bounded, added boot latency.
  */
-#ifndef AYANEO_RAINBOW_MIN_MS
-#define AYANEO_RAINBOW_MIN_MS 4000
+#ifndef AYANEO_ANIM_MAX_MS
+#define AYANEO_ANIM_MAX_MS 8000
 #endif
+
+/* Compressed animation blob lives in the "logo" partition (13 MB). */
+#define AYANEO_ANIM_PART      "logo"
+#define AYANEO_ANIM_MAGIC     0x31414247u	/* 'GBA1' little-endian */
+#define AYANEO_ANIM_READ_SZ   (3 * 1024 * 1024)	/* whole blob is ~2.9 MB */
+
+extern int zunzip(unsigned char *src, unsigned long *lenp, void *dst,
+		  int dstlen, int offset);
 
 /*
  * AYANEO experiment: scrolling diagonal rainbow over the whole panel during LK.
@@ -699,48 +705,19 @@ extern void mt65xx_backlight_on(void);
 
 static volatile int s_rainbow_stop;
 static volatile int s_rainbow_exited;
+static volatile int s_anim_complete;
 static volatile unsigned int s_rainbow_start_ms;
 
-/*
- * Precomputed rainbow strip: one period of the gradient (256 px) repeated, sized
- * so any 0..255 horizontal shift still yields a full display-width run. Each row
- * of a frame is then just a memcpy of a shifted slice - pure memory bandwidth,
- * no per-pixel LUT lookup - which is what lets it hit the panel refresh rate.
- * Colour word 0xAARRGGBB stored little-endian is bytes [B,G,R,A], matching the
- * fb's eBGRA8888 format (redoffset_32bit==1), so the hues come out correct.
- */
-#define AYANEO_RB_STRIP 2048	/* >= max width + 256 */
-static unsigned int s_rainbow_strip[AYANEO_RB_STRIP];
-
-static void ayaneo_build_strip(void)
+/* unaligned little-endian reads from the blob (avoid alignment faults) */
+static unsigned int rd16(const unsigned char *p) { return p[0] | (p[1] << 8); }
+static unsigned int rd32(const unsigned char *p)
 {
-	unsigned int i;
-
-	for (i = 0; i < AYANEO_RB_STRIP; i++) {
-		unsigned int idx = i & 0xFF;
-		unsigned int h = idx * 6, seg = h >> 8, fr = h & 0xFF;
-		unsigned int r = 0, g = 0, b = 0;
-
-		switch (seg) {
-		case 0: r = 255;      g = fr;       b = 0;        break;
-		case 1: r = 255 - fr; g = 255;      b = 0;        break;
-		case 2: r = 0;        g = 255;      b = fr;       break;
-		case 3: r = 0;        g = 255 - fr; b = 255;      break;
-		case 4: r = fr;       g = 0;        b = 255;      break;
-		default:r = 255;      g = 0;        b = 255 - fr; break;
-		}
-		s_rainbow_strip[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
-	}
+	return p[0] | (p[1] << 8) | (p[2] << 16) | ((unsigned int)p[3] << 24);
 }
 
-#define AYANEO_RB_PERIOD 256	/* rainbow repeats every 256 rows -> seamless wrap */
-
-/*
- * Present a W x H window of the pre-rendered tall buffer starting at physical
- * address 'pa'. Changing 'pa' every frame (a different row offset into the
- * buffer) both scrolls the image and forces the OVL to re-latch - no per-frame
- * pixel work at all, so this tracks the panel refresh with almost no CPU.
- */
+/* Present display buffer at physical 'pa'. Alternating pa each frame forces the
+ * OVL to re-latch (config_input with an unchanged address is a no-op in video
+ * mode); a bare trigger alone never pushes a new frame. */
 static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 			   unsigned int pitch_w)
 {
@@ -762,78 +739,132 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 	primary_display_trigger(TRUE);
 }
 
+/*
+ * Boot animation player. Reads a compressed frame blob from the "logo"
+ * partition (header: 'GBA1', ver, w, h, nframes, fps; then per-frame
+ * [u32 raw-deflate-len][data] of a w*h RGB565 image), and plays it once at
+ * AYANEO_ANIM_FPS: inflate -> RGB565 -> BGRA8888 nearest-2x upscale ->
+ * letterboxed into the framebuffer -> present. The blob ends with fade-to-black
+ * frames, so when playback finishes the panel is already black; the thread then
+ * holds until boot stops it at the kernel handoff. All buffers live in the
+ * display VRAM (pages 0/1 are the two scan-out buffers, page 2 is scratch), so
+ * no extra reserved memory is taken.
+ */
 static int ayaneo_rainbow_thread(void *arg)
 {
-	unsigned int f, r, W, H, pitch_w, tall;
+	unsigned int W, H, pitch_w;
+	unsigned int disp_pa[2];
+	unsigned int *disp_va[2];
+	unsigned char *blob, *rgb;
+	unsigned int magic, sw, sh, nf, fps, i, off, dw, dh, xoff, yoff, start_ms;
+	int rd;
 
 	W = CFG_DISPLAY_WIDTH;
 	H = CFG_DISPLAY_HEIGHT;
 	pitch_w = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT);
-	tall = H + AYANEO_RB_PERIOD;	/* extra period so the scroll window never runs off the end */
 
-#ifdef AYANEO_DEBUG_LOGGING
-	dprintf(CRITICAL, "AYANEO_RAINBOW: thread start W=%u H=%u tall=%u fb=0x%08x fb_pa=0x%08x redoff=%u vmode=%d\n",
-		W, H, tall, (unsigned int)fb_addr, (unsigned int)fb_addr_pa,
-		(unsigned int)redoffset_32bit, primary_display_is_video_mode());
-#endif
+	disp_va[0] = (unsigned int *)fb_addr;
+	disp_va[1] = (unsigned int *)((unsigned char *)fb_addr + fb_size);
+	disp_pa[0] = (unsigned int)fb_addr_pa;
+	disp_pa[1] = (unsigned int)fb_addr_pa + fb_size;
+	blob = (unsigned char *)fb_addr + 2 * fb_size;	/* VRAM page 2 scratch */
+	rgb  = blob + AYANEO_ANIM_READ_SZ;
 
-	/*
-	 * The tall buffer spills past FB_LAYER's page into the BOOT_MENU_LAYER page,
-	 * and our pixels are opaque (alpha 0xff), so disable that overlay or its top
-	 * rows would composite a static band over the scroll.
-	 */
+	/* only our FB_LAYER should show */
 	{
 		disp_input_config din;
 
 		memset(&din, 0, sizeof(din));
-		din.layer    = BOOT_MENU_LAYER;
+		din.layer = BOOT_MENU_LAYER;
 		din.layer_en = 0;
 		primary_display_config_input(&din);
 	}
 
-	/*
-	 * Render the rainbow ONCE into a tall buffer (H + one period rows). Row r is
-	 * the horizontal rainbow shifted by r, so a vertical scroll of this buffer
-	 * (advancing the read row) reproduces the diagonal-scroll look with no
-	 * per-frame drawing. Because the pattern repeats every 256 rows, row offset
-	 * o and o+256 are identical, so wrapping the offset is seamless.
-	 */
-	ayaneo_build_strip();
-	for (r = 0; r < tall; r++)
-		memcpy((unsigned int *)fb_addr + r * pitch_w,
-		       &s_rainbow_strip[r & 0xFF], W * 4);
-	arch_clean_cache_range((unsigned int)fb_addr, tall * pitch_w * 4);
+	rd = (int)partition_read(AYANEO_ANIM_PART, 0, blob, AYANEO_ANIM_READ_SZ);
+	magic = rd32(blob + 0);
+	sw = rd16(blob + 8);
+	sh = rd16(blob + 10);
+	nf = rd16(blob + 12);
+	fps = rd16(blob + 14);
+	if (rd < 16 || magic != AYANEO_ANIM_MAGIC || sw == 0 || sh == 0 ||
+	    sw * 2 > W || sh * 2 > H || nf == 0) {
+#ifdef AYANEO_DEBUG_LOGGING
+		dprintf(CRITICAL, "AYANEO_ANIM: bad blob rd=%d magic=0x%x %ux%u n=%u\n",
+			rd, magic, sw, sh, nf);
+#endif
+		s_rainbow_exited = 1;
+		return 0;
+	}
+	(void)fps;
 
-	s_rainbow_start_ms = (unsigned int)current_time();
+	dw = sw * 2; dh = sh * 2;
+	xoff = (W - dw) / 2; yoff = (H - dh) / 2;
 
-	for (f = 0; !s_rainbow_stop; f++) {
-		/*
-		 * Drive the scroll offset from real time, not the frame counter: without
-		 * the old per-frame render, config_input() no longer reliably blocks on
-		 * FRAME_DONE, so the loop free-runs and a frame-based offset would race
-		 * (huge per-refresh jumps). Time-based keeps the scroll speed constant no
-		 * matter how fast the loop spins.
-		 */
-		unsigned int off = ((unsigned int)(current_time() / AYANEO_RAINBOW_MS_PER_ROW))
-				   & (AYANEO_RB_PERIOD - 1);
-		unsigned int pa = (unsigned int)fb_addr_pa + off * pitch_w * 4;
+	/* black both buffers once for the letterbox bars */
+	memset(disp_va[0], 0, fb_size);
+	memset(disp_va[1], 0, fb_size);
+	arch_clean_cache_range((unsigned int)disp_va[0], fb_size);
+	arch_clean_cache_range((unsigned int)disp_va[1], fb_size);
 
-		ayaneo_present(pa, W, H, pitch_w);
-		if (f == 0)
+#ifdef AYANEO_DEBUG_LOGGING
+	dprintf(CRITICAL, "AYANEO_ANIM: %ux%u n=%u fps=%u dw=%u dh=%u xoff=%u yoff=%u rd=%d\n",
+		sw, sh, nf, fps, dw, dh, xoff, yoff, rd);
+#endif
+
+	s_rainbow_start_ms = start_ms = (unsigned int)current_time();
+	off = 16;
+
+	for (i = 0; i < nf && !s_rainbow_stop; i++) {
+		unsigned int clen = rd32(blob + off);	/* compressed length (stored) */
+		unsigned long zlen = clen;		/* zunzip in; overwritten with out len */
+		unsigned int *dst = disp_va[i & 1];
+		unsigned int sx, sy, target, now;
+
+		if (off + 4 + clen > AYANEO_ANIM_READ_SZ)
+			break;
+		if (zunzip(blob + off + 4, &zlen, rgb, (int)(sw * sh * 2), 0) != 0)
+			break;
+		off += 4 + clen;
+
+		for (sy = 0; sy < sh; sy++) {
+			unsigned short *srow = (unsigned short *)(rgb + sy * sw * 2);
+			unsigned int *o0 = dst + (yoff + sy * 2) * pitch_w + xoff;
+			unsigned int *o1 = o0 + pitch_w;
+
+			for (sx = 0; sx < sw; sx++) {
+				unsigned int v = srow[sx];
+				unsigned int r = ((v >> 11) & 0x1f) << 3;
+				unsigned int g = ((v >> 5) & 0x3f) << 2;
+				unsigned int b = (v & 0x1f) << 3;
+				unsigned int c = 0xFF000000u | (r << 16) | (g << 8) | b;
+
+				o0[sx * 2] = c; o0[sx * 2 + 1] = c;
+				o1[sx * 2] = c; o1[sx * 2 + 1] = c;
+			}
+		}
+		arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w),
+				       dh * pitch_w * 4);
+
+		ayaneo_present(disp_pa[i & 1], W, H, pitch_w);
+		if (i == 0)
 			mt65xx_backlight_on();
 
-		/* pace to roughly one panel refresh; boot runs during the sleep */
-		thread_sleep(AYANEO_RAINBOW_LOOP_MS);
+		/* pace to the frame's target time; if behind, just continue */
+		target = start_ms + (i + 1) * 1000u / AYANEO_ANIM_FPS;
+		now = (unsigned int)current_time();
+		if (now < target)
+			thread_sleep(target - now);
 	}
 
-	/*
-	 * Do NOT snap back to offset 0 here - that produced a visible jump to a
-	 * different frame at handoff. Leave the last-shown scroll window up; the
-	 * kernel re-inits the display on takeover anyway.
-	 */
+	s_anim_complete = 1;
+
 #ifdef AYANEO_DEBUG_LOGGING
-	dprintf(CRITICAL, "AYANEO_RAINBOW: thread stop after %u frames\n", f);
+	dprintf(CRITICAL, "AYANEO_ANIM: played %u/%u frames, holding\n", i, nf);
 #endif
+	/* animation ends on black (baked fade); hold until boot stops us */
+	while (!s_rainbow_stop)
+		thread_sleep(20);
+
 	s_rainbow_exited = 1;
 	return 0;
 }
@@ -870,14 +901,14 @@ void video_rainbow_boot_stop(void)
 		return;
 
 	/*
-	 * Keep the animation on screen for at least AYANEO_RAINBOW_MIN_MS. The render
-	 * thread is still running here, so it keeps scrolling while we wait - this is
-	 * where the guaranteed animation duration comes from when boot reaches the
-	 * handoff early. Bounded so a stuck timer can never hang boot forever.
+	 * Let the animation play to completion (through the baked fade-to-black)
+	 * before the kernel handoff. The player thread is still running here, so it
+	 * keeps playing while we wait. Bounded by AYANEO_ANIM_MAX_MS so a decode
+	 * stall can never hang boot forever.
 	 */
-	while (!s_rainbow_exited && s_rainbow_start_ms &&
-	       (unsigned int)(current_time() - s_rainbow_start_ms) < AYANEO_RAINBOW_MIN_MS &&
-	       guard++ < 1000)
+	while (!s_rainbow_exited && !s_anim_complete && s_rainbow_start_ms &&
+	       (unsigned int)(current_time() - s_rainbow_start_ms) < AYANEO_ANIM_MAX_MS &&
+	       guard++ < 2000)
 		thread_sleep(20);
 
 	guard = 0;
