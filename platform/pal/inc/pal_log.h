@@ -47,9 +47,17 @@
 #define LOG_LEVEL_INFO       (3)
 #define LOG_LEVEL_DEBUG      (4)
 
+/* AYANEO: LK pal_log is silent for release; the AYANEO_DEBUG_LOGGING build
+ * enables err/warn/info so the bring-up trace reaches the UART. */
+#ifdef AYANEO_DEBUG_LOGGING
+#define BUILD_ERR_LOG        (1)
+#define BUILD_WARN_LOG       (1)
+#define BUILD_INFO_LOG       (1)
+#else
 #define BUILD_ERR_LOG        (0)
 #define BUILD_WARN_LOG       (0)
 #define BUILD_INFO_LOG       (0)
+#endif
 #define BUILD_DEBUG_LOG      (0)
 
 /* macros */

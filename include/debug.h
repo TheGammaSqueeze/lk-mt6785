@@ -33,7 +33,13 @@
 extern "C" {
 #endif
 
+/* AYANEO: silent for release; AYANEO_DEBUG_LOGGING build raises the LK console
+ * verbosity for bring-up debugging. */
+#ifdef AYANEO_DEBUG_LOGGING
+#define DEBUGLEVEL 2
+#else
 #define DEBUGLEVEL 0
+#endif
 
 /* debug levels */
 #define CRITICAL 0

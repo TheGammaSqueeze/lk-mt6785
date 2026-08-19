@@ -25,6 +25,16 @@ the toolchain (`gcc/`), the signing keys and cert blobs, and the stock
 Requirements: a Linux host, Python 3, and the `openssl` CLI. No external
 toolchain or SDK.
 
+Release builds are silent (matching stock GammaOS). All bring-up logging is kept
+behind one build-time toggle, off by default:
+
+```sh
+make k85v1_64 AYANEO_DEBUG_LOGGING=yes -j$(nproc)   # verbose LK + kernel UART
+```
+
+See the debug-logging section of
+[BUILD_AYANEO_POCKET_AIR_MINI.md](BUILD_AYANEO_POCKET_AIR_MINI.md).
+
 ## Flashing
 
 Flash the `lk_a` partition (fastboot or SP Flash Tool):

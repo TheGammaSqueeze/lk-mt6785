@@ -101,33 +101,38 @@ AvbIOResult avb_ab_data_read(AvbABOps* ab_ops, AvbABData* data) {
   }
 
   if (!avb_ab_data_verify_and_byteswap(&serialized, data)) {
-    avb_error(
-        "Error validating A/B metadata from disk. "
-        "Resetting and writing new A/B metadata to disk.\n");
+    /*
+     * AYANEO Pocket Air Mini: this device's misc partition holds MediaTek
+     * boot_ctrl_t A/B metadata (magic 0x19191100), not the AVB AvbABData
+     * format, so the AVB magic check fails here. Do NOT init-and-write AVB
+     * metadata back to misc - that corrupts the preloader's slot metadata.
+     * Instead use in-memory defaults pinned to slot _a (the preloader already
+     * selected and loaded lk_a), so avb_slot_verify runs against vbmeta_a and
+     * produces the vbmeta digest / Root of Trust. vbmeta_b is typically empty
+     * on this device and must not be selected.
+     */
     avb_ab_data_init(data);
-    return avb_ab_data_write(ab_ops, data);
+    data->slots[1].priority = 0;        /* mark slot _b unbootable */
+    data->slots[1].tries_remaining = 0;
+    data->slots[1].successful_boot = 0;
+    return AVB_IO_RESULT_OK;
   }
 
   return AVB_IO_RESULT_OK;
 }
 
 AvbIOResult avb_ab_data_write(AvbABOps* ab_ops, const AvbABData* data) {
-  AvbOps* ops = ab_ops->ops;
-  AvbABData serialized;
-  AvbIOResult io_ret;
-
-  avb_ab_data_update_crc_and_byteswap(data, &serialized);
-  io_ret = ops->write_to_partition(ops,
-                                   "misc",
-                                   AB_METADATA_MISC_PARTITION_OFFSET,
-                                   sizeof(AvbABData),
-                                   &serialized);
-  if (io_ret == AVB_IO_RESULT_ERROR_OOM) {
-    return AVB_IO_RESULT_ERROR_OOM;
-  } else if (io_ret != AVB_IO_RESULT_OK) {
-    avb_error("Error writing A/B metadata.\n");
-    return AVB_IO_RESULT_ERROR_IO;
-  }
+  /*
+   * AYANEO Pocket Air Mini: do NOT write AVB AvbABData into misc. This device
+   * stores MediaTek boot_ctrl_t A/B metadata (magic 0x19191100) in misc, which
+   * the preloader and Android's MediaTek bootcontrol HAL own. Writing AVB
+   * format here corrupts it, so the boot is never marked successful, the retry
+   * count decrements every boot, and the device eventually reboots to recovery
+   * to format. Slot tracking is handled by the preloader/HAL, not by LK's AVB
+   * flow, so returning OK without touching misc is safe.
+   */
+  (void)ab_ops;
+  (void)data;
   return AVB_IO_RESULT_OK;
 }
 

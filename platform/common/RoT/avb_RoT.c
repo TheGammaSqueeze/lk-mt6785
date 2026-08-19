@@ -280,7 +280,20 @@ void send_root_of_trust_info(void)
 	uint8_t public_key_hash[SHA256_LENGTH] = {0};
 	int device_lock_state = 0;
 
+	/*
+	 * AYANEO Pocket Air Mini: send the Root of Trust exactly as the stock LK
+	 * does. Decompilation of the working stock LK confirmed it issues the
+	 * MTK_SIP_LK_ROOT_OF_TRUST (0x82000120) SMC with the REAL public key hash
+	 * and the REAL device lock state - nothing zeroed or forced. Keymaster in
+	 * the TEE derives the FBE key encryption key from this RoT, so it must match
+	 * byte-for-byte what /data was encrypted under. Skipping this SMC (or sending
+	 * a zeroed RoT) makes Keymaster derive a different key, vold sees a different
+	 * encryption policy on the existing /data and reboots the device to format.
+	 */
 	pal_log_info("sending root of trust info...\n");
+#ifdef AYANEO_DEBUG_LOGGING
+	dprintf(CRITICAL, "AYANEO_ROT: send_root_of_trust_info ENTER\n");
+#endif
 
 	/* read public key and generate SHA256(pubk) */
 	if (sec_get_pubk(public_key, PUBK_LEN))
@@ -292,6 +305,31 @@ void send_root_of_trust_info(void)
 	/* query device lock */
 	if (sec_query_device_lock(&device_lock_state))
 		pal_log_err("fail to get device lock state\n");
+
+	/*
+	 * AYANEO Pocket Air Mini: force device_locked = 0 (UNLOCKED) in the Root of
+	 * Trust. The working binary-patched stock LK forces the seccfg lock_state
+	 * getter to return 3 (UNLOCKED) at its source (patch at 0x58EA6: db68 ->
+	 * 0323), which makes sec_query_device_lock map 3 -> device_locked 0. This
+	 * device's real seccfg is still LOCKED (lock_state 1), so our from-source LK
+	 * reads back device_locked = 1, which does NOT match the RoT that /data was
+	 * encrypted under (device_locked = 0). Keymaster binds the FBE key-encryption
+	 * key to device_locked, so we must send 0 to reproduce the same key. This is
+	 * exact parity with the binary-patched LK, not a security downgrade (the
+	 * device is intentionally run unlocked).
+	 */
+	device_lock_state = 0;
+
+#ifdef AYANEO_DEBUG_LOGGING
+	dprintf(CRITICAL, "AYANEO_ROT: lock=%d boot_state=%u osver=%u ospatch=%u vpatch=%u bpatch=%u\n",
+		device_lock_state, g_boot_state, g_vb_version.os_version,
+		g_vb_version.os_patchlevel, g_vb_version.vendor_patchlevel,
+		g_vb_version.boot_patchlevel);
+	dprintf(CRITICAL, "AYANEO_ROT: pubkhash %02x%02x%02x%02x vbmeta %02x%02x%02x%02x\n",
+		public_key_hash[0], public_key_hash[1], public_key_hash[2], public_key_hash[3],
+		g_vbmeta_digest_sha256[0], g_vbmeta_digest_sha256[1],
+		g_vbmeta_digest_sha256[2], g_vbmeta_digest_sha256[3]);
+#endif
 
 	/* send to ARM-TF via SMC call */
 	uint32_t *p_hash = (uint32_t *)public_key_hash;
@@ -311,11 +349,17 @@ void send_root_of_trust_info(void)
 			    *(p_vbmeta_digest + 5), *(p_vbmeta_digest + 6), *(p_vbmeta_digest + 7));
 	smc_ret |= smc_call(MTK_SIP_LK_ROOT_OF_TRUST_AARCH32,
 			    g_vb_version.vendor_patchlevel, g_vb_version.boot_patchlevel, 0, 0);
+#ifdef AYANEO_DEBUG_LOGGING
+	dprintf(CRITICAL, "AYANEO_ROT: 6 smc calls done, accumulated ret=0x%x\n", smc_ret);
+#endif
 	if (smc_ret)
 		pal_log_err("fail to send root of trust info. : 0x%x\n", smc_ret);
 
 	/* to test if SMC call is locked after previous 6 calls */
 	smc_ret = smc_call(MTK_SIP_LK_ROOT_OF_TRUST_AARCH32, 0x0, 0x0, 0x0, 0x0);
+#ifdef AYANEO_DEBUG_LOGGING
+	dprintf(CRITICAL, "AYANEO_ROT: lock-probe smc ret=0x%x (nonzero=locked=good)\n", smc_ret);
+#endif
 	if (!smc_ret)
 		pal_log_err("Warning! root of trust smc call is not locked : 0x%x\n", smc_ret);
 }

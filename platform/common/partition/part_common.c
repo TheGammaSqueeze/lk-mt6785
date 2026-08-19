@@ -370,25 +370,24 @@ static void partition_commandline_bootdevice(void)
 	int ret = 0;
 	int remain = CMDLINE_BUF_SIZE;
 
-	ret = snprintf(cmdline_buf, CMDLINE_BUF_SIZE, "androidboot.boot_devices=bootdevice");
+	/*
+	 * AYANEO Pocket Air Mini: emit the exact androidboot.boot_devices list the
+	 * stock/binary-patched LK produces, so the kernel's "bootdevice" symlink and
+	 * ueventd resolve identically to stock. The generic fork only appended
+	 * ",%08x.mmc" (MSDC0_BASE) -> "bootdevice,11230000.mmc"; stock lists both the
+	 * SoC DTS-node path form and the raw form for the eMMC (MSDC0 @ 0x11230000)
+	 * and the UFS host (@ 0x11270000).
+	 */
+	(void)boot_device;
+	(void)bootdev_buf;
+	(void)remain;
+	ret = snprintf(cmdline_buf, CMDLINE_BUF_SIZE,
+		"androidboot.boot_devices=bootdevice,soc/11230000.mmc,11230000.mmc,soc/11270000.ufshci,11270000.ufshci");
 	if (ret < 0) {
 		pal_log_err(PART_COMMON_TAG"append bootdevice to command line fail\n");
 		return;
 	}
-	remain -= ret;
-#ifdef MSDC0_BASE
-	ret = snprintf(bootdev_buf, BOOT_DEV_BUF_SIZE, ",%08x.mmc", MSDC0_BASE);
-	if (ret < 0) {
-		pal_log_err(PART_COMMON_TAG"append MSDC0_BASE(0x%08x) to command line fail\n", MSDC0_BASE);
-		return;
-	}
-	boot_device = strncat(boot_device, bootdev_buf, remain);
-	if (boot_device == NULL) {
-		pal_log_err(PART_COMMON_TAG"cannot cat bootdevice %s to cmdline buffer\n", bootdev_buf);
-		return;
-	}
-#endif
-	pal_log_err(PART_COMMON_TAG"boot_device str is %s.\n", boot_device);
+	pal_log_err(PART_COMMON_TAG"boot_device str is %s.\n", cmdline_buf);
 	cmdline_append(cmdline_buf);
 }
 

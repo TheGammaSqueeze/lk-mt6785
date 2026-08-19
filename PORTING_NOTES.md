@@ -141,6 +141,33 @@ device. The failure point marched forward with each fix.
 - Fix: set the `.name` field of the LCM driver to `st7703_hd720_lcm_drv`
   (the stock name). The directory/struct name can stay; only `.name` matters.
 
+### 9. Reboot-to-format of encrypted /data (final blocker after full boot)
+
+- Symptom: the OS boots to the animation, then init logs `Failed to set
+  encryption policy of /data/... to d0a46c5f... v2 modes 1/4 flags 0xa: The
+  directory already has a different encryption policy`, and `vold`
+  (`reboot_on_failure`) reboots the device asking to format `/data`.
+- Not the cause (each ruled out with evidence): the Keymaster Root of Trust (the
+  derived FBE key `d0a46c5f` is invariant to the RoT SMC and to `device_locked`),
+  the vbmeta digest (the key is digest-independent; our `eb503bd2` was just the
+  digest of the debug boot.img used for logging, vs stock `9fd8df67`), and the
+  kernel lines `GZ SMC version(0)` / SSMR "failed to allocate" / `tee_reserved_mem`
+  (all present on the stock boot too).
+- Root cause: the fscrypt policy **flags** differed, not the key. Working boot
+  applies `flags 0x2`, ours applied `flags 0xa` (`0x2 | IV_INO_LBLK_64`). The
+  vendor ships two fstab files: `fstab.emmc`
+  (`fileencryption=aes-256-xts:aes-256-cts:v2`, flags `0x2`) and `fstab.mt6785`
+  (`...v2+inlinecrypt_optimized`, flags `0xa`). vold selects by
+  `androidboot.fstab_suffix`; stock lk sets it to `emmc`, our lk never set it, so
+  vold fell back to `fstab.${ro.hardware}` = `fstab.mt6785` and applied `0xa`,
+  which mismatches the existing `/data` (encrypted with `0x2`).
+- Fix: `app/mt_boot/mt_boot.c` appends `androidboot.fstab_suffix=emmc` (plus the
+  stock `ramoops.*` pstore args and, in `part_common.c`, the full stock
+  `androidboot.boot_devices` list) to the kernel command line. `/data` then
+  mounts with its original policy and the OS boots with data intact.
+- See the lessons-learned section of `BUILD_AYANEO_POCKET_AIR_MINI.md` for the
+  full diff-against-a-known-good-log method that isolated the one-token cause.
+
 ## Config changes vs the fork's stock `k85v1_64.mk`
 
 - `MTK_AB_OTA_UPDATER`: no -> yes
@@ -148,8 +175,11 @@ device. The failure point marched forward with each fix.
 - `MTK_TINYSYS_SSPM_SUPPORT`: yes -> no
 - `MTK_VPU_SUPPORT`: yes -> no
 - `MTK_AUDIODSP_SUPPORT`: yes -> no
-- `MTK_ENABLE_GENIEZONE`: (unset) -> yes  (device uses GZ; passes mblock info to
-  GZ via SMC before kernel jump, matches stock)
+- `MTK_ENABLE_GENIEZONE`: left `no` (device uses GZ, but GZ is loaded by ATF not
+  lk; the kernel's `GZ SMC version(0) ... Failed to init smc number table` prints
+  on the stock boot too and is harmless)
+- `AYANEO_DEBUG_LOGGING`: new toggle, default `no` (release is silent; `yes`
+  enables LK + kernel UART logging and the RoT trace)
 - `CUSTOM_LK_LCM`: FHD+ panels -> `st7703_hd720_dsi_vdo`
 - `BOOT_LOGO`: fhdplus -> hd720
 - `MTK_UFS_SUPPORT`: left `yes` (platform.c references `ufs_lk_init`

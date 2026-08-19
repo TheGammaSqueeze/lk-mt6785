@@ -1200,16 +1200,37 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	} else
 		pal_log_err("masp atag not support in this platform\n");
 
-	extern unsigned int *target_atag_tee(unsigned * ptr)__attribute__((weak));
-	if (target_atag_tee) {
-		ptr = (char *)target_atag_tee((unsigned *)buf);
-		ret = fdt_setprop(fdt, offset, "tee_reserved_mem", buf, ptr - buf);
+	/*
+	 * AYANEO Pocket Air Mini: set /chosen/tee_reserved_mem from the boot args.
+	 * The fork's mt6785 has no target_atag_tee, so this was left "not supported"
+	 * - and without it the kernel's GenieZone/trusty driver can't set up its SMC
+	 * shared memory ("GZ SMC version(0) ... Failed to init smc number table"),
+	 * so the TEE keymaster is unavailable and vold reboots to format /data.
+	 * The stock LK sets this property as {start_lo, start_hi, size_lo, size_hi}
+	 * from g_boot_arg->tee_reserved_mem; replicate it exactly.
+	 */
+	{
+		unsigned int tee_mem[4];
+
+		/*
+		 * Write raw native (little-endian) values, NOT cpu_to_fdt32. The
+		 * kernel reads tee_reserved_mem natively, and the stock LK writes it
+		 * raw too - dtc then displays it byte-swapped, e.g. our 0xbfe00000
+		 * shows as <0xe0bf ...> which is exactly what the stock DTB shows.
+		 */
+		tee_mem[0] = (unsigned int)(g_boot_arg->tee_reserved_mem.start);
+		tee_mem[1] = (unsigned int)(g_boot_arg->tee_reserved_mem.start >> 32);
+		tee_mem[2] = (unsigned int)(g_boot_arg->tee_reserved_mem.size);
+		tee_mem[3] = (unsigned int)(g_boot_arg->tee_reserved_mem.size >> 32);
+		ret = fdt_setprop(fdt, offset, "tee_reserved_mem", tee_mem, sizeof(tee_mem));
 		if (ret) {
 			assert(0);
 			return FALSE;
 		}
-	} else
-		pal_log_err("tee_reserved_mem not supported\n");
+		pal_log_err("tee_reserved_mem set (0x%llx, 0x%llx)\n",
+			    (unsigned long long)g_boot_arg->tee_reserved_mem.start,
+			    (unsigned long long)g_boot_arg->tee_reserved_mem.size);
+	}
 
 	extern unsigned int *target_atag_isram(unsigned * ptr)__attribute__((weak));
 	if (target_atag_isram) {
@@ -1222,13 +1243,48 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	} else
 		pal_log_err("non_secure_sram not supported\n");
 
+	/*
+	 * AYANEO Pocket Air Mini: this device boots from eMMC. vold/init pick the
+	 * runtime fstab by androidboot.fstab_suffix. The stock/binary-patched LK sets
+	 * it to "emmc" so /data is mounted via fstab.emmc, whose fileencryption is
+	 * plain "aes-256-xts:aes-256-cts:v2" (fscrypt policy flags 0x2). Without the
+	 * suffix, init falls back to fstab.${ro.hardware} = fstab.mt6785, whose
+	 * fileencryption is "...v2+inlinecrypt_optimized" and adds the fscrypt
+	 * IV_INO_LBLK_64 flag (0x8 -> policy flags 0xa). The existing /data was
+	 * encrypted with flags 0x2, so init rejects the 0xa policy ("directory
+	 * already has a different encryption policy") and vold reboots to format.
+	 * The FBE key itself (d0a46c5f...) is identical either way - only the policy
+	 * flags differ - so setting the suffix here restores parity and preserves the
+	 * encrypted userdata. Confirmed on-device: ro.boot.fstab_suffix=emmc,
+	 * ro.hardware=mt6785.
+	 */
+	cmdline_append("androidboot.fstab_suffix=emmc");
+
+	/*
+	 * AYANEO Pocket Air Mini: match the stock/binary-patched LK's ramoops
+	 * (pstore) cmdline so last_kmsg / pmsg / console-ramoops land in the same
+	 * reserved region the kernel's ramoops node expects. These are the fixed
+	 * pstore carve-out values for this board (the LK reserves 0x4d010000/0xe0000
+	 * as pstore, see the mblock-reserved-memory append), identical to what stock
+	 * puts on the kernel command line.
+	 */
+	cmdline_append("ramoops.mem_address=0x4d010000 ramoops.mem_size=0xe0000 ramoops.pmsg_size=0x10000 ramoops.console_size=0x40000");
+
 	if (!has_set_p2u) {
 		switch (eBuildType) {
 		case BUILD_TYPE_USER:
-			/* AYANEO: kernel UART logging off for release. This kernel honours
-			 * mtk_printk_ctrl.disable_uart; kernel console over UART noticeably
-			 * slows the running device, so disable it. */
+			/*
+			 * AYANEO: kernel UART logging. Release/GammaOS ships silent (stock
+			 * behaviour, and the UART console noticeably slows the device). The
+			 * AYANEO_DEBUG_LOGGING build turns the UART on and adds
+			 * ignore_loglevel, because the base bootargs carry loglevel=0 so only
+			 * panics would otherwise reach the console.
+			 */
+#ifdef AYANEO_DEBUG_LOGGING
+			cmdline_append("printk.disable_uart=0 mtk_printk_ctrl.disable_uart=0 ignore_loglevel");
+#else
 			cmdline_append("printk.disable_uart=1 mtk_printk_ctrl.disable_uart=1");
+#endif
 			break;
 
 		case BUILD_TYPE_USERDEBUG:

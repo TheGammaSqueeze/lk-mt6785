@@ -29,6 +29,15 @@ DEBUG := 2
 #DEFINES += WITH_DEBUG_DCC=1
 DEFINES += WITH_DEBUG_UART=1
 #DEFINES += WITH_DEBUG_FBCON=1
+# AYANEO Pocket Air Mini: build-time toggle for verbose bring-up logging.
+# Release / GammaOS builds ship SILENT to match stock (both the LK console and
+# the kernel UART are quiet, and the Root-of-Trust debug trace is compiled out).
+# Build with `AYANEO_DEBUG_LOGGING=yes` to restore full LK dprintf + kernel UART
+# logging (kernel gets ignore_loglevel + disable_uart=0) for debugging.
+AYANEO_DEBUG_LOGGING ?= no
+ifeq ($(AYANEO_DEBUG_LOGGING),yes)
+DEFINES += AYANEO_DEBUG_LOGGING
+endif
 CUSTOM_LK_USB_UNIQUE_SERIAL=no
 MTK_TINYSYS_SCP_SUPPORT = no
 MTK_PROTOCOL1_RAT_CONFIG = C/Lf/Lt/W/T/G
@@ -37,7 +46,7 @@ MTK_GOOGLE_TRUSTY_SUPPORT=no
 # preloader/ATF UART log printing GZ params). Enable GenieZone so LK parses the
 # modem-MTEE shared-memory boot tag and passes its mblock memory layout to GZ via
 # SMC before the kernel jump, matching stock lk behaviour.
-MTK_ENABLE_GENIEZONE = yes
+MTK_ENABLE_GENIEZONE = no
 MTK_AB_OTA_UPDATER = yes
 DEFINES += MTK_MT6370_PMU
 DEVELOP_STAGE = SB
