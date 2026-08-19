@@ -933,11 +933,12 @@ static int ayaneo_rainbow_thread(void *arg)
 
 		/*
 		 * Play the content with frame-skip (real-time speed). Stop as soon as
-		 * boot signals it is ready (s_fade_request) so the kernel handoff is not
-		 * gated by the full animation - the fade is done in code below, not baked
-		 * into the blob.
+		 * Always play the whole animation through (real-time frame-skip), even
+		 * if boot is already ready (s_fade_request) - the kernel handoff waits
+		 * for the animation to finish and only then fades. The fade is done in
+		 * code below, not baked into the blob.
 		 */
-		while (!s_rainbow_stop && !s_fade_request) {
+		while (!s_rainbow_stop) {
 			unsigned int want = (unsigned int)((unsigned long)
 				(current_time() - start_ms) * fps / 1000u);
 
@@ -958,7 +959,7 @@ static int ayaneo_rainbow_thread(void *arg)
 				thread_sleep(2);
 				continue;
 			}
-			while (i <= want && !s_rainbow_stop && !s_fade_request) {
+			while (i <= want && !s_rainbow_stop) {
 				int show = (i == want);
 
 				if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
@@ -991,46 +992,10 @@ static int ayaneo_rainbow_thread(void *arg)
 		}
 
 		/*
-		 * Boot became ready (s_fade_request) before the animation finished:
-		 * fast-forward through the remaining frames, decoding only the final
-		 * one, so the fade always starts from the last frame instead of
-		 * whatever frame we happened to be on. Streaming past the skipped
-		 * frames is cheap (just reading their lengths); we decode/blit once.
+		 * Full animation has played. Hold the last frame until boot is ready
+		 * (s_fade_request), then fade. If boot was already ready, this falls
+		 * through immediately.
 		 */
-		if (!s_rainbow_stop && i < nf) {
-			while (i < nf) {
-				int last = (i == nf - 1);
-
-				if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
-						 &poff, &svalid, &spos, 4))
-					goto anim_done;
-				clen = rd32(sbuf + spos);
-				spos += 4;
-				if (clen == 0 || clen > scap - 4)
-					goto anim_done;
-				if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
-						 &poff, &svalid, &spos, clen))
-					goto anim_done;
-				if (last) {
-					zlen = clen;
-					if (zunzip(sbuf + spos, &zlen, rgb,
-						   (int)(sw * sh * 2), 0) != 0)
-						goto anim_done;
-				}
-				spos += clen;
-				i++;
-				if (!last)
-					continue;
-				anim_blit(rgb, disp_va[disp_i & 1], sw, sh, dw, dh,
-					  xoff, yoff, pitch_w, 256);
-				ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
-				disp_i++;
-				have_frame = 1;
-				if (!shown) { mt65xx_backlight_on(); shown = 1; }
-			}
-		}
-
-		/* content ended before boot was ready: hold the last frame */
 		while (!s_rainbow_stop && !s_fade_request)
 			thread_sleep(20);
 
@@ -1102,13 +1067,13 @@ void video_rainbow_boot_stop(void)
 		return;
 
 	/*
-	 * Boot is ready. Tell the player to stop the content and fade out from the
-	 * current frame in code, then wait only for that short fade to finish - so
-	 * the kernel handoff is not gated by the full animation length. Bounded so a
-	 * stall can never hang boot.
+	 * Boot is ready. Request the fade and wait for the player to finish the
+	 * full animation and its code fade (s_anim_complete) before handing off, so
+	 * the kernel never cuts the animation short. Bounded (~8s) so a decode stall
+	 * can never hang boot forever - the animation itself runs ~4-5s.
 	 */
 	s_fade_request = 1;
-	while (!s_rainbow_exited && !s_anim_complete && guard++ < 80)
+	while (!s_rainbow_exited && !s_anim_complete && guard++ < 400)
 		thread_sleep(20);
 
 	guard = 0;
