@@ -696,9 +696,9 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 #define AYANEO_ANIM_MAGIC     0x31414247u	/* 'GBA1' little-endian */
 /* max decoded source frame we support (1280x720 RGB565); source is streamed */
 #define AYANEO_ANIM_RGBMAX    (1280 * 720 * 2)
-/* number of trailing frames (the fade) always played sequentially, never
- * frame-skipped, so the fade-to-black always completes on screen */
-#define AYANEO_ANIM_TAIL      30
+/* code-driven fade-out (triggered when boot is ready, not baked into the blob) */
+#define AYANEO_FADE_STEPS     8
+#define AYANEO_FADE_STEP_MS   28
 
 extern int zunzip(unsigned char *src, unsigned long *lenp, void *dst,
 		  int dstlen, int offset);
@@ -720,6 +720,7 @@ extern void mt65xx_backlight_on(void);
 static volatile int s_rainbow_stop;
 static volatile int s_rainbow_exited;
 static volatile int s_anim_complete;
+static volatile int s_fade_request;	/* boot is ready -> fade out and hand off */
 static volatile unsigned int s_rainbow_start_ms;
 
 /* nearest-neighbour source-x lookup so scaling is a table read, not a divide */
@@ -798,10 +799,14 @@ static int anim_ensure(const char *part, unsigned char *sbuf, unsigned int scap,
 	return (*svalid - *spos >= need);
 }
 
-/* RGB565 (sw x sh) -> BGRA8888, nearest-neighbour scale into the letterbox rect */
+/*
+ * RGB565 (sw x sh) -> BGRA8888, nearest-neighbour scale into the letterbox rect.
+ * 'scale' (0..256) dims every channel, used by the code-driven fade-out.
+ */
 static void anim_blit(const unsigned char *rgb, unsigned int *dst,
 		      unsigned int sw, unsigned int sh, unsigned int dw, unsigned int dh,
-		      unsigned int xoff, unsigned int yoff, unsigned int pitch_w)
+		      unsigned int xoff, unsigned int yoff, unsigned int pitch_w,
+		      unsigned int scale)
 {
 	unsigned int ox, oy;
 
@@ -816,6 +821,11 @@ static void anim_blit(const unsigned char *rgb, unsigned int *dst,
 			unsigned int g = ((v >> 5) & 0x3f) << 2;
 			unsigned int b = (v & 0x1f) << 3;
 
+			if (scale < 256) {
+				r = (r * scale) >> 8;
+				g = (g * scale) >> 8;
+				b = (b * scale) >> 8;
+			}
 			orow[ox] = 0xFF000000u | (r << 16) | (g << 8) | b;
 		}
 	}
@@ -915,24 +925,27 @@ static int ayaneo_rainbow_thread(void *arg)
 	 */
 	i = 0;			/* frames consumed from the stream */
 	{
-		unsigned int disp_i = 0, clen, limit;
+		unsigned int disp_i = 0, clen;
 		unsigned long zlen;
-		int shown = 0;
+		int shown = 0, have_frame = 0;
 
-		limit = (nf > AYANEO_ANIM_TAIL) ? nf - AYANEO_ANIM_TAIL : 0;
-
-		/* phase 1: frame-skip the content to hold real-time speed */
-		while (!s_rainbow_stop) {
+		/*
+		 * Play the content with frame-skip (real-time speed). Stop as soon as
+		 * boot signals it is ready (s_fade_request) so the kernel handoff is not
+		 * gated by the full animation - the fade is done in code below, not baked
+		 * into the blob.
+		 */
+		while (!s_rainbow_stop && !s_fade_request) {
 			unsigned int want = (unsigned int)((unsigned long)
 				(current_time() - start_ms) * fps / 1000u);
 
-			if (want >= limit)
+			if (want >= nf)
 				break;
-			if (want < i) {		/* ahead of schedule -> wait */
+			if (want < i) {
 				thread_sleep(2);
 				continue;
 			}
-			while (i <= want && i < limit && !s_rainbow_stop) {
+			while (i <= want && !s_rainbow_stop && !s_fade_request) {
 				int show = (i == want);
 
 				if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
@@ -956,45 +969,35 @@ static int ayaneo_rainbow_thread(void *arg)
 				if (!show)
 					continue;
 				anim_blit(rgb, disp_va[disp_i & 1], sw, sh, dw, dh,
-					  xoff, yoff, pitch_w);
+					  xoff, yoff, pitch_w, 256);
 				ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
 				disp_i++;
+				have_frame = 1;
 				if (!shown) { mt65xx_backlight_on(); shown = 1; }
 			}
 		}
 
+		/* content ended before boot was ready: hold the last frame */
+		while (!s_rainbow_stop && !s_fade_request)
+			thread_sleep(20);
+
 		/*
-		 * phase 2: play the tail (the fade) sequentially, never skipping, so the
-		 * fade-to-black always completes on screen even if phase 1 fell behind.
-		 * Paced to real time but a slow decode only stretches the short tail.
+		 * Code-driven fade-out of the last shown frame to black, then let the
+		 * kernel take over. This runs only once boot is ready, so it adds just
+		 * ~AYANEO_FADE_STEPS*AYANEO_FADE_STEP_MS ms of latency, not a baked-in
+		 * fade the handoff has to wait for.
 		 */
-		for (; i < nf && !s_rainbow_stop; i++) {
-			unsigned int target, now;
+		if (have_frame && !s_rainbow_stop) {
+			unsigned int k;
 
-			if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
-					 &poff, &svalid, &spos, 4))
-				goto anim_done;
-			clen = rd32(sbuf + spos);
-			spos += 4;
-			if (clen == 0 || clen > scap - 4)
-				goto anim_done;
-			if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
-					 &poff, &svalid, &spos, clen))
-				goto anim_done;
-			zlen = clen;
-			if (zunzip(sbuf + spos, &zlen, rgb, (int)(sw * sh * 2), 0) != 0)
-				goto anim_done;
-			spos += clen;
-			anim_blit(rgb, disp_va[disp_i & 1], sw, sh, dw, dh,
-				  xoff, yoff, pitch_w);
-			ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
-			disp_i++;
-			if (!shown) { mt65xx_backlight_on(); shown = 1; }
-
-			target = start_ms + (i + 1) * 1000u / fps;
-			now = (unsigned int)current_time();
-			if (now < target)
-				thread_sleep(target - now);
+			for (k = AYANEO_FADE_STEPS; k > 0 && !s_rainbow_stop; k--) {
+				anim_blit(rgb, disp_va[disp_i & 1], sw, sh, dw, dh,
+					  xoff, yoff, pitch_w,
+					  (k - 1) * 256 / AYANEO_FADE_STEPS);
+				ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
+				disp_i++;
+				thread_sleep(AYANEO_FADE_STEP_MS);
+			}
 		}
 	}
 anim_done:
@@ -1018,6 +1021,8 @@ void video_rainbow_boot_start(void)
 
 	s_rainbow_stop = 0;
 	s_rainbow_exited = 0;
+	s_anim_complete = 0;
+	s_fade_request = 0;
 	/*
 	 * HIGH_PRIORITY so the thread gets its quick per-frame present in promptly
 	 * even during the CPU/bandwidth-heavy boot-image verify (fewer dropped
@@ -1044,19 +1049,17 @@ void video_rainbow_boot_stop(void)
 		return;
 
 	/*
-	 * Let the animation play to completion (through the baked fade-to-black)
-	 * before the kernel handoff. The player thread is still running here, so it
-	 * keeps playing while we wait. Bounded by AYANEO_ANIM_MAX_MS so a decode
-	 * stall can never hang boot forever.
+	 * Boot is ready. Tell the player to stop the content and fade out from the
+	 * current frame in code, then wait only for that short fade to finish - so
+	 * the kernel handoff is not gated by the full animation length. Bounded so a
+	 * stall can never hang boot.
 	 */
-	while (!s_rainbow_exited && !s_anim_complete && s_rainbow_start_ms &&
-	       (unsigned int)(current_time() - s_rainbow_start_ms) < AYANEO_ANIM_MAX_MS &&
-	       guard++ < 2000)
+	s_fade_request = 1;
+	while (!s_rainbow_exited && !s_anim_complete && guard++ < 80)
 		thread_sleep(20);
 
 	guard = 0;
 	s_rainbow_stop = 1;
-	/* let the thread finish its in-flight frame; bounded so we never hang boot */
 	while (!s_rainbow_exited && guard++ < 500)
 		thread_sleep(2);
 }
