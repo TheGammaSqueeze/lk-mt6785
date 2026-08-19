@@ -814,9 +814,11 @@ static int ayaneo_rainbow_thread(void *arg)
 		thread_sleep(AYANEO_RAINBOW_LOOP_MS);
 	}
 
-	/* clean handoff: leave the buffer base (== videolfb) as the shown window */
-	ayaneo_present((unsigned int)fb_addr_pa, W, H, pitch_w);
-
+	/*
+	 * Do NOT snap back to offset 0 here - that produced a visible jump to a
+	 * different frame at handoff. Leave the last-shown scroll window up; the
+	 * kernel re-inits the display on takeover anyway.
+	 */
 #ifdef AYANEO_DEBUG_LOGGING
 	dprintf(CRITICAL, "AYANEO_RAINBOW: thread stop after %u frames\n", f);
 #endif
@@ -831,15 +833,15 @@ void video_rainbow_boot_start(void)
 	s_rainbow_stop = 0;
 	s_rainbow_exited = 0;
 	/*
-	 * Run one step above the boot thread so the renderer wins scheduling ties
-	 * and gets its short per-frame paint in promptly (smoother than equal
-	 * priority), but NOT at HIGH_PRIORITY: that starved the boot thread whenever
-	 * config_input() did not block, so boot could not kick the watchdog and the
-	 * device reset. Combined with the explicit per-frame thread_sleep() in the
-	 * loop, boot always makes forward progress.
+	 * HIGH_PRIORITY so the thread gets its quick per-frame present in promptly
+	 * even during the CPU/bandwidth-heavy boot-image verify (fewer dropped
+	 * frames). This is only safe because the loop now does an unconditional
+	 * thread_sleep() every frame - the earlier HIGH_PRIORITY crash was from a
+	 * render loop that could spin without sleeping and starve the boot thread
+	 * (watchdog reset). With the guaranteed sleep, boot always gets the CPU back.
 	 */
 	t = thread_create("ayaneo_rainbow", &ayaneo_rainbow_thread, NULL,
-			  DEFAULT_PRIORITY + 1, DEFAULT_STACK_SIZE);
+			  HIGH_PRIORITY, DEFAULT_STACK_SIZE);
 	if (t)
 		thread_resume(t);
 #ifdef AYANEO_DEBUG_LOGGING
