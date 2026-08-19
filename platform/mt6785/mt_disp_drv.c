@@ -717,6 +717,10 @@ extern void *memmove(void *dest, const void *src, unsigned int n);
  */
 extern void mt65xx_backlight_on(void);
 extern void thread_set_priority(int priority);
+#ifdef AYANEO_BOOT_AUDIO
+extern void ayaneo_boot_audio_start(void);
+extern void ayaneo_boot_audio_stop(void);
+#endif
 
 static volatile int s_rainbow_stop;
 static volatile int s_rainbow_exited;
@@ -807,13 +811,13 @@ static int anim_ensure(const char *part, unsigned char *sbuf, unsigned int scap,
 static void anim_blit(const unsigned char *rgb, unsigned int *dst,
 		      unsigned int sw, unsigned int sh, unsigned int dw, unsigned int dh,
 		      unsigned int xoff, unsigned int yoff, unsigned int pitch_w,
-		      unsigned int scale)
+		      unsigned int scale, unsigned int crop_y, unsigned int scaled_h)
 {
 	unsigned int ox, oy;
 
 	for (oy = 0; oy < dh; oy++) {
 		const unsigned short *srow = (const unsigned short *)
-			(rgb + (oy * sh / dh) * sw * 2);
+			(rgb + ((oy + crop_y) * sh / scaled_h) * sw * 2);
 		unsigned int *orow = dst + (yoff + oy) * pitch_w + xoff;
 
 		for (ox = 0; ox < dw; ox++) {
@@ -841,6 +845,7 @@ static int ayaneo_rainbow_thread(void *arg)
 	unsigned char *rgb, *sbuf;
 	unsigned int scap, poff, svalid, spos;
 	unsigned int magic, sw, sh, nf, fps, i, dw, dh, xoff, yoff, start_ms, base;
+	unsigned int scaled_w, scaled_h, crop_x, crop_y;
 
 	W = CFG_DISPLAY_WIDTH;
 	H = CFG_DISPLAY_HEIGHT;
@@ -892,16 +897,25 @@ static int ayaneo_rainbow_thread(void *arg)
 		fps = 30;
 	spos = base + 16;		/* consume the header */
 
-	/* scale to fill the panel width, keep aspect, letterbox; clamp to height */
-	dw = W;
-	dh = W * sh / sw;
-	if (dh > H) { dh = H; dw = H * sw / sh; }
-	if (dw > 2048) dw = 2048;
-	xoff = (W - dw) / 2; yoff = (H - dh) / 2;
+	/*
+	 * "Cover" scaling: scale the frame keeping aspect so it fills the whole
+	 * panel, then crop the overflowing dimension (this 16:9 clip on a 4:3
+	 * panel scales to fill the height and crops the left/right sides). The
+	 * output is the full panel; crop_x/crop_y index into the scaled image.
+	 */
+	scaled_w = W;
+	scaled_h = W * sh / sw;
+	if (scaled_h < H) {			/* not tall enough -> scale to height */
+		scaled_h = H;
+		scaled_w = H * sw / sh;
+	}
+	dw = W; dh = H; xoff = 0; yoff = 0;
+	crop_x = (scaled_w - W) / 2;
+	crop_y = (scaled_h - H) / 2;
 	{
 		unsigned int ox;
 		for (ox = 0; ox < dw; ox++)
-			s_sxmap[ox] = (unsigned short)(ox * sw / dw);
+			s_sxmap[ox] = (unsigned short)((ox + crop_x) * sw / scaled_w);
 	}
 
 	/* black both buffers once for the letterbox bars */
@@ -917,6 +931,11 @@ static int ayaneo_rainbow_thread(void *arg)
 
 	s_rainbow_start_ms = start_ms = (unsigned int)current_time();
 
+#ifdef AYANEO_BOOT_AUDIO
+	/* fire the boot sound once, in sync with the first animation frame */
+	ayaneo_boot_audio_start();
+#endif
+
 	/*
 	 * Frame-skip pacing: pick the frame that should be showing for the elapsed
 	 * time and only decode/blit that one, streaming past (no decode) any frames
@@ -928,15 +947,14 @@ static int ayaneo_rainbow_thread(void *arg)
 	{
 		unsigned int disp_i = 0, clen;
 		unsigned long zlen;
-		int shown = 0, have_frame = 0, dropped_prio = 0;
-		unsigned int half = nf / 2;
+		int shown = 0, have_frame = 0;
 
 		/*
-		 * Play the content with frame-skip (real-time speed). Stop as soon as
 		 * Always play the whole animation through (real-time frame-skip), even
 		 * if boot is already ready (s_fade_request) - the kernel handoff waits
 		 * for the animation to finish and only then fades. The fade is done in
-		 * code below, not baked into the blob.
+		 * code below, not baked into the blob. The thread stays at HIGH_PRIORITY
+		 * for the entire animation so every frame presents crisply.
 		 */
 		while (!s_rainbow_stop) {
 			unsigned int want = (unsigned int)((unsigned long)
@@ -944,17 +962,6 @@ static int ayaneo_rainbow_thread(void *arg)
 
 			if (want >= nf)
 				break;
-			/*
-			 * First half of the animation runs at HIGH_PRIORITY so early
-			 * frames present crisply during the heavy boot-image verify.
-			 * Once we cross the midpoint, drop to DEFAULT_PRIORITY so the
-			 * boot thread runs at natural speed for the kernel handoff
-			 * (the animation then fills idle CPU during mmc DMA waits).
-			 */
-			if (!dropped_prio && want >= half) {
-				thread_set_priority(DEFAULT_PRIORITY);
-				dropped_prio = 1;
-			}
 			if (want < i) {
 				thread_sleep(2);
 				continue;
@@ -983,7 +990,7 @@ static int ayaneo_rainbow_thread(void *arg)
 				if (!show)
 					continue;
 				anim_blit(rgb, disp_va[disp_i & 1], sw, sh, dw, dh,
-					  xoff, yoff, pitch_w, 256);
+					  xoff, yoff, pitch_w, 256, crop_y, scaled_h);
 				ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
 				disp_i++;
 				have_frame = 1;
@@ -992,31 +999,12 @@ static int ayaneo_rainbow_thread(void *arg)
 		}
 
 		/*
-		 * Full animation has played. Hold the last frame until boot is ready
-		 * (s_fade_request), then fade. If boot was already ready, this falls
-		 * through immediately.
+		 * The full animation has played, including the fade-out to white or
+		 * black which is baked into the blob's tail frames. The last frame is
+		 * already the solid fade colour, so just hold it until the kernel
+		 * takes over the display.
 		 */
-		while (!s_rainbow_stop && !s_fade_request)
-			thread_sleep(20);
-
-		/*
-		 * Code-driven fade-out of the last shown frame to black, then let the
-		 * kernel take over. This runs only once boot is ready, so it adds just
-		 * ~AYANEO_FADE_STEPS*AYANEO_FADE_STEP_MS ms of latency, not a baked-in
-		 * fade the handoff has to wait for.
-		 */
-		if (have_frame && !s_rainbow_stop) {
-			unsigned int k;
-
-			for (k = AYANEO_FADE_STEPS; k > 0 && !s_rainbow_stop; k--) {
-				anim_blit(rgb, disp_va[disp_i & 1], sw, sh, dw, dh,
-					  xoff, yoff, pitch_w,
-					  (k - 1) * 256 / AYANEO_FADE_STEPS);
-				ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
-				disp_i++;
-				thread_sleep(AYANEO_FADE_STEP_MS);
-			}
-		}
+		(void)have_frame;
 	}
 anim_done:
 
@@ -1080,6 +1068,11 @@ void video_rainbow_boot_stop(void)
 	s_rainbow_stop = 1;
 	while (!s_rainbow_exited && guard++ < 500)
 		thread_sleep(2);
+
+#ifdef AYANEO_BOOT_AUDIO
+	/* make sure the AFE/codec is quiet before the kernel re-inits audio */
+	ayaneo_boot_audio_stop();
+#endif
 }
 #endif /* AYANEO_RAINBOW_BOOT */
 

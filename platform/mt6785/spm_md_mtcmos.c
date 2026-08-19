@@ -111,6 +111,62 @@ int spm_mtcmos_ctrl_md1(int state)
 	return err;
 }
 
+int spm_mtcmos_ctrl_audio(int state)
+{
+	int err = 0;
+	int guard;
+
+	/* TINFO="enable SPM register control" */
+	spm_write(POWERON_CONFIG_EN, (SPM_PROJECT_CODE << 16) | (0x1 << 0));
+
+	if (state == STA_POWER_DOWN) {
+		/* TINFO="Set bus protect - step1 : 0" */
+		spm_write(INFRA_TOPAXI_PROTECTEN_SET, AUDIO_PROT_STEP1_0_MASK);
+		guard = 0;
+		while (((spm_read(INFRA_TOPAXI_PROTECTEN_STA1) & AUDIO_PROT_STEP1_0_ACK_MASK)
+			!= AUDIO_PROT_STEP1_0_ACK_MASK) && guard++ < 100000) {
+		}
+		/* TINFO="Set SRAM_PDN = 1" */
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) | AUDIO_SRAM_PDN);
+		guard = 0;
+		while (((spm_read(AUDIO_PWR_CON) & AUDIO_SRAM_PDN_ACK_BIT0)
+			!= AUDIO_SRAM_PDN_ACK_BIT0) && guard++ < 100000) {
+		}
+		/* TINFO="Set PWR_ISO = 1, PWR_CLK_DIS = 1, PWR_RST_B = 0" */
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) | PWR_ISO);
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) | PWR_CLK_DIS);
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) & ~PWR_RST_B);
+		/* TINFO="Set PWR_ON = 0, PWR_ON_2ND = 0" */
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) & ~PWR_ON);
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) & ~PWR_ON_2ND);
+		guard = 0;
+		while (((spm_read(PWR_STATUS) & AUDIO_PWR_STA_MASK)
+			|| (spm_read(PWR_STATUS_2ND) & AUDIO_PWR_STA_MASK)) && guard++ < 100000) {
+		}
+	} else {    /* STA_POWER_ON */
+		/* TINFO="Set PWR_ON = 1, PWR_ON_2ND = 1" */
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) | PWR_ON);
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) | PWR_ON_2ND);
+		guard = 0;
+		while ((((spm_read(PWR_STATUS) & AUDIO_PWR_STA_MASK) != AUDIO_PWR_STA_MASK)
+			|| ((spm_read(PWR_STATUS_2ND) & AUDIO_PWR_STA_MASK) != AUDIO_PWR_STA_MASK))
+			&& guard++ < 100000) {
+		}
+		/* TINFO="Set PWR_CLK_DIS = 0, PWR_ISO = 0, PWR_RST_B = 1" */
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) & ~PWR_CLK_DIS);
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) & ~PWR_ISO);
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) | PWR_RST_B);
+		/* TINFO="Set SRAM_PDN = 0" */
+		spm_write(AUDIO_PWR_CON, spm_read(AUDIO_PWR_CON) & ~AUDIO_SRAM_PDN);
+		guard = 0;
+		while ((spm_read(AUDIO_PWR_CON) & AUDIO_SRAM_PDN_ACK_BIT0) && guard++ < 100000) {
+		}
+		/* TINFO="Release bus protect - step1 : 0" */
+		spm_write(INFRA_TOPAXI_PROTECTEN_CLR, AUDIO_PROT_STEP1_0_MASK);
+	}
+	return err;
+}
+
 int spm_mtcmos_ctrl_dis(int state)
 {
 	int err = 0;

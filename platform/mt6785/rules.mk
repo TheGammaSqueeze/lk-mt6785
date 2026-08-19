@@ -295,6 +295,7 @@ OBJS += \
 	$(LOCAL_DIR)/bitops.o \
 	$(LOCAL_DIR)/gpio.o \
 	$(LOCAL_DIR)/mt_disp_drv.o \
+	$(LOCAL_DIR)/ayaneo_audio.o \
 	$(LOCAL_DIR)/gpio_init.o \
 	$(LOCAL_DIR)/mt_i2c.o \
 	$(LOCAL_DIR)/mt_latch.o \

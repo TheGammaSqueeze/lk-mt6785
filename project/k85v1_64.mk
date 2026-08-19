@@ -45,6 +45,13 @@ AYANEO_RAINBOW_BOOT ?= yes
 ifeq ($(AYANEO_RAINBOW_BOOT),yes)
 DEFINES += AYANEO_RAINBOW_BOOT
 endif
+# Boot audio experiment: play a short PCM boot sound (stored in boot_b) out the
+# loudspeaker in sync with the animation. Build with `AYANEO_BOOT_AUDIO=no` to
+# disable.
+AYANEO_BOOT_AUDIO ?= yes
+ifeq ($(AYANEO_BOOT_AUDIO),yes)
+DEFINES += AYANEO_BOOT_AUDIO
+endif
 CUSTOM_LK_USB_UNIQUE_SERIAL=no
 MTK_TINYSYS_SCP_SUPPORT = no
 MTK_PROTOCOL1_RAT_CONFIG = C/Lf/Lt/W/T/G

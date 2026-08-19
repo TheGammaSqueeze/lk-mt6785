@@ -52,6 +52,12 @@
 #define PWR_STATUS_2ND		SPM_REG(0x0164)
 #define MD1_PWR_CON		SPM_REG(0x0318)
 #define DIS_PWR_CON		SPM_REG(0x030C)
+#define AUDIO_PWR_CON		SPM_REG(0x031C)
+#define AUDIO_PWR_STA_MASK		(0x1 << 24)
+#define AUDIO_SRAM_PDN			(0x1 << 8)
+#define AUDIO_SRAM_PDN_ACK_BIT0		(0x1 << 12)
+#define AUDIO_PROT_STEP1_0_MASK		(0x1 << 31)
+#define AUDIO_PROT_STEP1_0_ACK_MASK	(0x1 << 31)
 #define MD_EXT_BUCK_ISO_CON	SPM_REG(0x03B0)
 #define EXT_BUCK_ISO		SPM_REG(0x03B4)
 
@@ -179,5 +185,6 @@
 
 extern int spm_mtcmos_ctrl_md1(int state);
 extern int spm_mtcmos_ctrl_dis(int state);
+extern int spm_mtcmos_ctrl_audio(int state);
 
 #endif
