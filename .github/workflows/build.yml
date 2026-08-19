@@ -1,25 +1,33 @@
-name: Build workflow
+name: Build AYANEO Pocket Air Mini LK
 
 on:
   push:
+    branches: [ ayaneo-pocket-air-mini ]
   pull_request:
   workflow_dispatch:
 
 jobs:
-  lk-build:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout sources
-      uses: actions/checkout@v2
-    - name: Install pyhton2
-      run: sudo apt-get install python2
-    - name: Build the bootloader
-      run: |
-        export python=python2
-        make X5
-    - name : Upload bootloader
-      uses: actions/upload-artifact@v2
-      with:
-        name: X5_lk-signed.img
-        path: /home/runner/work/lk/lk/build-X5/lk-sign.img
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          # The bundled toolchain's gcc is a Python wrapper with a
+          # /usr/bin/python shebang; python-is-python3 provides it. openssl is
+          # used by the signer.
+          sudo apt-get install -y make python3 python-is-python3 openssl
+
+      - name: Build and sign
+        run: ./build_ayaneo_pocket_air_mini.sh
+
+      - name: Upload signed LK image
+        uses: actions/upload-artifact@v4
+        with:
+          name: lk_a_signed
+          path: out/lk_a_signed.img
+          if-no-files-found: error
