@@ -717,19 +717,18 @@ static void ayaneo_build_strip(void)
 	}
 }
 
-static void ayaneo_rainbow_paint(unsigned int *fb, unsigned int pa,
-				 unsigned int W, unsigned int H,
-				 unsigned int pitch_w, unsigned int phase)
+#define AYANEO_RB_PERIOD 256	/* rainbow repeats every 256 rows -> seamless wrap */
+
+/*
+ * Present a W x H window of the pre-rendered tall buffer starting at physical
+ * address 'pa'. Changing 'pa' every frame (a different row offset into the
+ * buffer) both scrolls the image and forces the OVL to re-latch - no per-frame
+ * pixel work at all, so this tracks the panel refresh with almost no CPU.
+ */
+static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
+			   unsigned int pitch_w)
 {
-	unsigned int y;
 	disp_input_config input;
-
-	for (y = 0; y < H; y++)
-		memcpy(fb + y * pitch_w,
-		       &s_rainbow_strip[(y + phase) & 0xFF],
-		       W * 4);
-
-	arch_clean_cache_range((unsigned int)fb, pitch_w * H * 4);
 
 	memset(&input, 0, sizeof(input));
 	input.layer     = FB_LAYER;
@@ -749,52 +748,64 @@ static void ayaneo_rainbow_paint(unsigned int *fb, unsigned int pa,
 
 static int ayaneo_rainbow_thread(void *arg)
 {
-	unsigned int f, W, H, pitch_w;
-	unsigned int *buf_va[2];
-	unsigned int buf_pa[2];
+	unsigned int f, r, W, H, pitch_w, tall;
 
 	W = CFG_DISPLAY_WIDTH;
 	H = CFG_DISPLAY_HEIGHT;
 	pitch_w = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT);
-
-	buf_va[0] = (unsigned int *)fb_addr;
-	buf_va[1] = (unsigned int *)((unsigned char *)fb_addr + 2 * fb_size);
-	buf_pa[0] = (unsigned int)fb_addr_pa;
-	buf_pa[1] = (unsigned int)fb_addr_pa + 2 * fb_size;
+	tall = H + AYANEO_RB_PERIOD;	/* extra period so the scroll window never runs off the end */
 
 #ifdef AYANEO_DEBUG_LOGGING
-	dprintf(CRITICAL, "AYANEO_RAINBOW: thread start W=%u H=%u fb_pa0=0x%08x fb_pa1=0x%08x redoff=%u vmode=%d\n",
-		W, H, buf_pa[0], buf_pa[1], (unsigned int)redoffset_32bit,
-		primary_display_is_video_mode());
+	dprintf(CRITICAL, "AYANEO_RAINBOW: thread start W=%u H=%u tall=%u fb=0x%08x fb_pa=0x%08x redoff=%u vmode=%d\n",
+		W, H, tall, (unsigned int)fb_addr, (unsigned int)fb_addr_pa,
+		(unsigned int)redoffset_32bit, primary_display_is_video_mode());
 #endif
 
+	/*
+	 * The tall buffer spills past FB_LAYER's page into the BOOT_MENU_LAYER page,
+	 * and our pixels are opaque (alpha 0xff), so disable that overlay or its top
+	 * rows would composite a static band over the scroll.
+	 */
+	{
+		disp_input_config din;
+
+		memset(&din, 0, sizeof(din));
+		din.layer    = BOOT_MENU_LAYER;
+		din.layer_en = 0;
+		primary_display_config_input(&din);
+	}
+
+	/*
+	 * Render the rainbow ONCE into a tall buffer (H + one period rows). Row r is
+	 * the horizontal rainbow shifted by r, so a vertical scroll of this buffer
+	 * (advancing the read row) reproduces the diagonal-scroll look with no
+	 * per-frame drawing. Because the pattern repeats every 256 rows, row offset
+	 * o and o+256 are identical, so wrapping the offset is seamless.
+	 */
 	ayaneo_build_strip();
+	for (r = 0; r < tall; r++)
+		memcpy((unsigned int *)fb_addr + r * pitch_w,
+		       &s_rainbow_strip[r & 0xFF], W * 4);
+	arch_clean_cache_range((unsigned int)fb_addr, tall * pitch_w * 4);
 
 	for (f = 0; !s_rainbow_stop; f++) {
-		unsigned int b = f & 1;
+		unsigned int off = (f * AYANEO_RAINBOW_SPEED) & (AYANEO_RB_PERIOD - 1);
+		unsigned int pa = (unsigned int)fb_addr_pa + off * pitch_w * 4;
 
-		ayaneo_rainbow_paint(buf_va[b], buf_pa[b], W, H, pitch_w,
-				     f * AYANEO_RAINBOW_SPEED);
+		ayaneo_present(pa, W, H, pitch_w);
 		if (f == 0)
 			mt65xx_backlight_on();
 
 		/*
-		 * Always yield a slice back to the boot thread. config_input() usually
-		 * blocks on FRAME_DONE (~vsync) and yields on its own, but in windows
-		 * where the path is momentarily idle it returns immediately; without an
-		 * explicit sleep the render loop would spin and starve boot (the boot
-		 * thread could not kick the watchdog -> reset). A short sleep guarantees
-		 * forward progress for boot and still leaves us near the panel refresh.
+		 * config_input() normally blocks on FRAME_DONE (~vsync) and yields, but
+		 * a tiny sleep guarantees the boot thread makes progress (and can kick
+		 * the watchdog) even in the rare windows where it returns immediately.
 		 */
-		thread_sleep(3);
+		thread_sleep(1);
 	}
 
-	/*
-	 * Leave buffer 0 (the videolfb base handed to the kernel) showing the last
-	 * frame so the handoff is clean rather than a stale offset-2 buffer.
-	 */
-	ayaneo_rainbow_paint(buf_va[0], buf_pa[0], W, H, pitch_w,
-			     f * AYANEO_RAINBOW_SPEED);
+	/* clean handoff: leave the buffer base (== videolfb) as the shown window */
+	ayaneo_present((unsigned int)fb_addr_pa, W, H, pitch_w);
 
 #ifdef AYANEO_DEBUG_LOGGING
 	dprintf(CRITICAL, "AYANEO_RAINBOW: thread stop after %u frames\n", f);
