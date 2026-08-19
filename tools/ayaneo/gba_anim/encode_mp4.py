@@ -23,6 +23,7 @@ def main():
     ap.add_argument('--fps', type=int, default=60)
     ap.add_argument('--fade', type=int, default=36)   # ~0.6s fade at 60fps
     ap.add_argument('--fade-to', choices=['black', 'white'], default='white')
+    ap.add_argument('--limit', type=int, default=0, help='cap to first N frames')
     args = ap.parse_args()
 
     fadeval = 255.0 if args.fade_to == 'white' else 0.0
@@ -30,6 +31,8 @@ def main():
     files = sorted(glob.glob(args.src))
     if not files:
         raise SystemExit("no frames match %s" % args.src)
+    if args.limit:
+        files = files[:args.limit]
 
     frames = [np.asarray(Image.open(f).convert('RGB'), dtype=np.float32) for f in files]
     n = len(frames)
