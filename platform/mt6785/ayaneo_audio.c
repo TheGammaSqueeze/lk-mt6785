@@ -142,6 +142,13 @@ static inline void pmic_rmw(unsigned int reg, unsigned int mask, unsigned int va
 
 /* delay from boot-audio start to the first sample leaving the speaker */
 #define AYANEO_AUDIO_DELAY_MS	250
+
+/* playback volume, 0-100 percent (0 = silent). Set via the build (see the
+ * project .mk); applied in code by scaling the decoded PCM so the stored asset
+ * stays full-scale and the level is a flexible per-build/per-user knob. */
+#ifndef AYANEO_AUDIO_VOLUME
+#define AYANEO_AUDIO_VOLUME	40
+#endif
 /* software fade applied to the tail of the clip so the stream ends at zero */
 #define AYANEO_AUDIO_FADE_MS	24
 
@@ -381,6 +388,23 @@ static void mt6359_hp_mute_ramp(void)
 }
 
 /*
+ * Scale the decoded PCM by the configured volume (0-100%). Linear, in place,
+ * on the 16-bit stereo buffer. vol>=100 is a no-op (leaves it full-scale).
+ */
+static void apply_volume(unsigned int pcm_bytes, unsigned int vol)
+{
+	short *s = (short *)s_pcm;
+	unsigned int n = pcm_bytes / 2;		/* samples (both channels) */
+	unsigned int i, q;
+
+	if (vol >= 100)
+		return;
+	q = vol * 256u / 100u;			/* 8.8 fixed-point gain */
+	for (i = 0; i < n; i++)
+		s[i] = (short)((s[i] * (int)q) >> 8);
+}
+
+/*
  * Fade the tail of the clip to zero so the waveform ends at silence: this
  * removes the DC step / click that a hard DMA stop on a non-zero sample would
  * make. In-place on the 16-bit stereo buffer.
@@ -483,6 +507,9 @@ static int ayaneo_audio_thread(void *arg)
 	if (zunzip(comp, &zlen, s_pcm, (int)pcm_bytes, 0) != 0)
 		goto done;
 
+	if (AYANEO_AUDIO_VOLUME == 0)		/* silent: skip playback entirely */
+		goto done;
+	apply_volume(pcm_bytes, AYANEO_AUDIO_VOLUME);
 	apply_tail_fade(pcm_bytes, rate);
 	arch_clean_cache_range((addr_t)s_pcm, pcm_bytes);
 

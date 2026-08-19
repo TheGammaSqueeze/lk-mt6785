@@ -52,6 +52,11 @@ AYANEO_BOOT_AUDIO ?= yes
 ifeq ($(AYANEO_BOOT_AUDIO),yes)
 DEFINES += AYANEO_BOOT_AUDIO
 endif
+# Boot sound playback volume, 0-100 percent (0 = silent). Applied in code by
+# scaling the PCM, so the stored asset stays full-scale and the level is a
+# simple, flexible knob for future per-user preferences.
+AYANEO_AUDIO_VOLUME ?= 40
+DEFINES += AYANEO_AUDIO_VOLUME=$(AYANEO_AUDIO_VOLUME)
 CUSTOM_LK_USB_UNIQUE_SERIAL=no
 MTK_TINYSYS_SCP_SUPPORT = no
 MTK_PROTOCOL1_RAT_CONFIG = C/Lf/Lt/W/T/G
