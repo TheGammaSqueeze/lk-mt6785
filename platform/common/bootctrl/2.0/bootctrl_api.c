@@ -169,13 +169,21 @@ const char *get_suffix(void)
 	ret = read_write_partition_info(&metadata, READ_PARTITION);
 	if (ret < 0) {
 		pal_log_err("[LK] read_partition_info failed, ret: 0x%x\n", ret);
-		return NULL;
+		/*
+		 * AYANEO Pocket Air Mini: this device's misc A/B metadata is the
+		 * MediaTek boot_ctrl_t v1 format (magic 0x19191100), not AVB, so the
+		 * AVB parse here fails. The preloader already selected and loaded slot
+		 * _a and LK is running from lk_a, so fall back to _a instead of NULL
+		 * (NULL leaves LK looking for unsuffixed partitions, which do not exist).
+		 */
+		return suffix[0];
 	}
 
 	if (memcmp(metadata.magic, AVB_AB_MAGIC, AVB_AB_MAGIC_LEN) != 0) {
 		pal_log_err("[LK] boot_ctrl magic number is not match %s , AVB_AB_MAGIC = %s\n",
 			    metadata.magic, AVB_AB_MAGIC);
-		return NULL;
+		/* Non-AVB (MediaTek v1) metadata: default to the booted slot _a. */
+		return suffix[0];
 	} else {
 		pal_log_err("[LK] boot_ctrl magic number is match, compare priority\n");
 

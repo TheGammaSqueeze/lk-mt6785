@@ -528,9 +528,15 @@ end:
 	 */
 #ifdef MTK_SECURITY_SW_SUPPORT
 	ret = get_lock_state(&lock_state);
-	if (ret == 0 && lock_state == LKS_UNLOCK)
-		g_boot_state = BOOT_STATE_ORANGE;
 #endif
+	/*
+	 * AYANEO Pocket Air Mini: unlocked / custom firmware. Always boot in the
+	 * orange (unlocked) state so the kernel cmdline gets
+	 * androidboot.verifiedbootstate=orange, matching the device's stock
+	 * unlocked bootloader. Green/locked makes the kernel reject the modified
+	 * images and silently reboot.
+	 */
+	g_boot_state = BOOT_STATE_ORANGE;
 
 	dm_verity_handler((uint32_t)hashtree_error_mode);
 

@@ -1225,15 +1225,10 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	if (!has_set_p2u) {
 		switch (eBuildType) {
 		case BUILD_TYPE_USER:
-			if (((g_boot_mode == META_BOOT) && is_meta_log_disable &&
-#ifdef LOG_STORE_SUPPORT
-			    (is_meta_log_disable() == 0)) || g_boot_arg->log_dynamic_switch)
-#else
-		      (is_meta_log_disable() == 0)))
-#endif
-				cmdline_append("printk.disable_uart=0");
-			else
-				cmdline_append("printk.disable_uart=1");
+			/* AYANEO: kernel UART logging off for release. This kernel honours
+			 * mtk_printk_ctrl.disable_uart; kernel console over UART noticeably
+			 * slows the running device, so disable it. */
+			cmdline_append("printk.disable_uart=1 mtk_printk_ctrl.disable_uart=1");
 			break;
 
 		case BUILD_TYPE_USERDEBUG:

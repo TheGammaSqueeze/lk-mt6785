@@ -323,7 +323,13 @@ void lcm_resume(void)
 }
 
 LCM_DRIVER st7703_hd720_dsi_vdo_lcm_drv = {
-	.name = "st7703_hd720_dsi_vdo",
+	/*
+	 * This name is passed to the kernel (videolfb lcmname) and MUST match the
+	 * LCM driver compiled into the kernel (st7703_hd720_lcm_drv). If it differs,
+	 * the kernel's disp_lcm_probe returns NULL and mtkfb Oopses in
+	 * layering_rule_init. Do not rename to match the directory.
+	 */
+	.name = "st7703_hd720_lcm_drv",
 	.set_util_funcs = lcm_set_util_funcs,
 	.get_params = lcm_get_params,
 	.init = lcm_init_lcm,

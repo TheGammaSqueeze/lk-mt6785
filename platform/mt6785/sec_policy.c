@@ -200,15 +200,16 @@ unsigned int get_hash_binding_policy(unsigned int policy_entry_idx)
 /* bypass auth check: return 0, need auth check: return 1 */
 unsigned int get_vfy_policy(unsigned int policy_entry_idx)
 {
-	unsigned char sec_policy = 0;
-	sec_policy = get_sec_policy(policy_entry_idx);
-
-	if (VFY_BIT_SET(sec_policy))
-		/* need verify */
-		return 1;
-	else
-		/* skip verify */
-		return 0;
+	/*
+	 * AYANEO Pocket Air Mini: unlocked / custom firmware. Never require image
+	 * verification. The device has secure boot fused on (sboot_state=1), so
+	 * with the stock policy LK would try to verify the logo/boot/dtbo images
+	 * through the seclib, which fails (img_read) and panics. Skipping
+	 * verification here is the from-source equivalent of the stock unlock +
+	 * dm-verity bypass, and lets custom/unsigned images boot.
+	 */
+	(void)policy_entry_idx;
+	return 0;
 }
 
 /* bypass dl check: return 0, need dl check: return 1 */

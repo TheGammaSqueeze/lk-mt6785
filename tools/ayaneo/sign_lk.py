@@ -29,6 +29,11 @@ KEY = os.path.join(HERE, "keys", "img_prvk.pem")
 PUBKEY = os.path.join(HERE, "keys", "img_pubk.pem")
 LK_CERT = os.path.join(HERE, "certs", "lk_cert.bin")
 DTB_CERT = os.path.join(HERE, "certs", "dtb_cert.bin")
+# Stock lk_main_dtb partition (header + padded data). The from-source LK builds
+# a generic lk_main_dtb that lacks this device's nodes/symbols (e.g. mt6360_pmu),
+# so the device's dtbo overlay fails. We substitute the stock device tree, which
+# is device data (not code) and is what the dtbo was authored against.
+STOCK_DTB = os.path.join(HERE, "lk_main_dtb.bin")
 
 MAGIC = bytes.fromhex("88168858")
 ALIGN = 16
@@ -155,10 +160,11 @@ def graft(built):
         raise SystemExit("unexpected partitions in build: %s" % names)
     (_, lk_off, lk_sz), (_, dtb_off, dtb_sz) = parts
     lk_end = lk_off + 512 + align_up(lk_sz)
-    dtb_end = dtb_off + 512 + align_up(dtb_sz)
     lk_cert = open(LK_CERT, "rb").read()
     dtb_cert = open(DTB_CERT, "rb").read()
-    return built[:lk_end] + lk_cert + built[lk_end:dtb_end] + dtb_cert
+    # Substitute the stock lk_main_dtb partition for the generic built one.
+    stock_dtb = open(STOCK_DTB, "rb").read()
+    return built[:lk_end] + lk_cert + stock_dtb + dtb_cert
 
 
 def resign(img):

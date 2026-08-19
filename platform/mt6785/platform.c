@@ -545,8 +545,13 @@ void init_storage(void)
 void platform_early_init(void)
 {
 	PROFILING_START("platform_early_init");
+#if 0	/* AYANEO: skip AEE WDT debug registration. It does an SMC and then
+	 * arch_mmu_maps the returned address, which hangs this early on this
+	 * device (watchdog reset before the console is up). Non-essential: it only
+	 * maps an ATF crash-dump region. */
 #ifdef MTK_LK_REGISTER_WDT
 	lk_register_wdt_callback();
+#endif
 #endif
 
 	/* initialize the uart */

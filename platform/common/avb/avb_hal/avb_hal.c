@@ -322,18 +322,16 @@ AvbIOResult avb_hal_read_is_device_unlocked(AvbOps *ops, bool *out_is_unlocked)
 
 #ifdef MTK_SECURITY_SW_SUPPORT
 	ret = get_lock_state(&lock_state);
-	if (ret != 0)
-		return AVB_IO_RESULT_ERROR_IO;
-
-	if ((lock_state == LKS_DEFAULT) || (lock_state == LKS_MP_DEFAULT) ||
-	    lock_state == LKS_LOCK)
-		*out_is_unlocked = FALSE;
-	else
-		*out_is_unlocked = TRUE;
-#else
-	*out_is_unlocked = TRUE;
 #endif
-	pal_log_err("[AVB20] lock_state = 0x%x\n", lock_state);
+	/*
+	 * AYANEO Pocket Air Mini: unlocked / custom firmware. Always report the
+	 * device as unlocked so the kernel command line gets
+	 * androidboot.vbmeta.device_state=unlocked (and, via load_vfy_boot_ab,
+	 * verifiedbootstate=orange). Reporting locked/green makes the kernel
+	 * enforce verified boot on the modified images and silently reboot.
+	 */
+	*out_is_unlocked = TRUE;
+	pal_log_err("[AVB20] lock_state = 0x%x (forced unlocked)\n", lock_state);
 
 	return AVB_IO_RESULT_OK;
 }

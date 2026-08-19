@@ -42,9 +42,10 @@
 #include <libfdt.h>
 #include <debug.h>
 #include <err.h>
+/* mmu.h is needed by the PICACHU mapping code below, independent of SSPM. */
+#include <arch/arm/mmu.h>
 #ifdef MTK_TINYSYS_SSPM_SUPPORT
 #include <platform/mt_sspm.h>
-#include <arch/arm/mmu.h>
 #include <platform/timer.h>
 #endif
 #ifdef MTK_TINYSYS_SCP_SUPPORT
