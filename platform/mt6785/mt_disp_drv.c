@@ -662,6 +662,106 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 	primary_display_trigger(TRUE);
 }
 
+#ifdef AYANEO_RAINBOW_BOOT
+#ifndef AYANEO_RAINBOW_FRAMES
+#define AYANEO_RAINBOW_FRAMES 150
+#endif
+#ifndef AYANEO_RAINBOW_SPEED
+#define AYANEO_RAINBOW_SPEED  2
+#endif
+#ifndef AYANEO_RAINBOW_FRAME_MS
+#define AYANEO_RAINBOW_FRAME_MS 12
+#endif
+
+/*
+ * AYANEO experiment: scrolling diagonal rainbow over the whole panel during LK.
+ * Writes into the FB_LAYER buffer (fb_addr) and, crucially, re-presents each
+ * frame with primary_display_config_input(): in DSI video mode a bare
+ * mt_disp_update()/primary_display_trigger() early-returns while the path is
+ * busy and never pushes new content, so the panel holds the first frame.
+ * config_input() waits for FRAME_DONE and re-latches the OVL layer
+ * (ovl_dirty=1), which is how a running video-mode path actually takes a new
+ * frame (the same path the fastboot menu / AVB warnings use).
+ */
+void video_rainbow_boot(void)
+{
+	unsigned int lut[256];
+	unsigned int i, f, x, y, W, H, pitch_w;
+	unsigned int *fb;
+	disp_input_config input;
+
+	W = CFG_DISPLAY_WIDTH;
+	H = CFG_DISPLAY_HEIGHT;
+	pitch_w = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT);
+	fb = (unsigned int *)mt_get_fb_addr();
+
+	dprintf(CRITICAL, "AYANEO_RAINBOW: enter W=%u H=%u fb=0x%08x fb_pa=0x%08x redoff=%u vmode=%d frames=%d\n",
+		W, H, (unsigned int)fb, (unsigned int)fb_addr_pa,
+		(unsigned int)redoffset_32bit, primary_display_is_video_mode(),
+		AYANEO_RAINBOW_FRAMES);
+	if (!fb) {
+		dprintf(CRITICAL, "AYANEO_RAINBOW: fb NULL, abort\n");
+		return;
+	}
+
+	for (i = 0; i < 256; i++) {
+		unsigned int h = i * 6;
+		unsigned int seg = h >> 8;
+		unsigned int fr = h & 0xFF;
+		unsigned int r = 0, g = 0, b = 0;
+
+		switch (seg) {
+		case 0: r = 255;      g = fr;       b = 0;        break;
+		case 1: r = 255 - fr; g = 255;      b = 0;        break;
+		case 2: r = 0;        g = 255;      b = fr;       break;
+		case 3: r = 0;        g = 255 - fr; b = 255;      break;
+		case 4: r = fr;       g = 0;        b = 255;      break;
+		default:r = 255;      g = 0;        b = 255 - fr; break;
+		}
+		lut[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
+	}
+
+	for (f = 0; f < AYANEO_RAINBOW_FRAMES; f++) {
+		unsigned int phase = f * AYANEO_RAINBOW_SPEED;
+
+		for (y = 0; y < H; y++) {
+			unsigned int *row = fb + y * pitch_w;
+			unsigned int base = y + phase;
+
+			for (x = 0; x < W; x++)
+				row[x] = lut[(x + base) & 0xFF];
+		}
+
+		arch_clean_cache_range((unsigned int)fb_addr, DISP_GetFBRamSize());
+
+		memset(&input, 0, sizeof(input));
+		input.layer     = FB_LAYER;
+		input.layer_en  = 1;
+		input.fmt       = redoffset_32bit ? eBGRA8888 : eRGBA8888;
+		input.addr      = (unsigned int)fb_addr_pa;
+		input.src_x     = 0;
+		input.src_y     = 0;
+		input.src_w     = W;
+		input.src_h     = H;
+		input.src_pitch = pitch_w * 4;
+		input.dst_x     = 0;
+		input.dst_y     = 0;
+		input.dst_w     = W;
+		input.dst_h     = H;
+		input.aen       = 1;
+		input.alpha     = 0xff;
+		primary_display_config_input(&input);
+		primary_display_trigger(TRUE);
+
+		if ((f % 40) == 0)
+			dprintf(CRITICAL, "AYANEO_RAINBOW: frame %u phase=%u\n", f, phase);
+
+		mdelay(AYANEO_RAINBOW_FRAME_MS);
+	}
+	dprintf(CRITICAL, "AYANEO_RAINBOW: done\n");
+}
+#endif /* AYANEO_RAINBOW_BOOT */
+
 #if (MTK_DUAL_DISPLAY_SUPPORT == 2)
 void mt_ext_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 {
