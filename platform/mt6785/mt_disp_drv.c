@@ -685,20 +685,50 @@ extern void mt65xx_backlight_on(void);
 static volatile int s_rainbow_stop;
 static volatile int s_rainbow_exited;
 
-static void ayaneo_rainbow_paint(unsigned int *lut, unsigned int *fb,
-				 unsigned int pa, unsigned int W, unsigned int H,
+/*
+ * Precomputed rainbow strip: one period of the gradient (256 px) repeated, sized
+ * so any 0..255 horizontal shift still yields a full display-width run. Each row
+ * of a frame is then just a memcpy of a shifted slice - pure memory bandwidth,
+ * no per-pixel LUT lookup - which is what lets it hit the panel refresh rate.
+ * Colour word 0xAARRGGBB stored little-endian is bytes [B,G,R,A], matching the
+ * fb's eBGRA8888 format (redoffset_32bit==1), so the hues come out correct.
+ */
+#define AYANEO_RB_STRIP 2048	/* >= max width + 256 */
+static unsigned int s_rainbow_strip[AYANEO_RB_STRIP];
+
+static void ayaneo_build_strip(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < AYANEO_RB_STRIP; i++) {
+		unsigned int idx = i & 0xFF;
+		unsigned int h = idx * 6, seg = h >> 8, fr = h & 0xFF;
+		unsigned int r = 0, g = 0, b = 0;
+
+		switch (seg) {
+		case 0: r = 255;      g = fr;       b = 0;        break;
+		case 1: r = 255 - fr; g = 255;      b = 0;        break;
+		case 2: r = 0;        g = 255;      b = fr;       break;
+		case 3: r = 0;        g = 255 - fr; b = 255;      break;
+		case 4: r = fr;       g = 0;        b = 255;      break;
+		default:r = 255;      g = 0;        b = 255 - fr; break;
+		}
+		s_rainbow_strip[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
+	}
+}
+
+static void ayaneo_rainbow_paint(unsigned int *fb, unsigned int pa,
+				 unsigned int W, unsigned int H,
 				 unsigned int pitch_w, unsigned int phase)
 {
-	unsigned int x, y;
+	unsigned int y;
 	disp_input_config input;
 
-	for (y = 0; y < H; y++) {
-		unsigned int *row = fb + y * pitch_w;
-		unsigned int base = y + phase;
+	for (y = 0; y < H; y++)
+		memcpy(fb + y * pitch_w,
+		       &s_rainbow_strip[(y + phase) & 0xFF],
+		       W * 4);
 
-		for (x = 0; x < W; x++)
-			row[x] = lut[(x + base) & 0xFF];
-	}
 	arch_clean_cache_range((unsigned int)fb, pitch_w * H * 4);
 
 	memset(&input, 0, sizeof(input));
@@ -719,8 +749,7 @@ static void ayaneo_rainbow_paint(unsigned int *lut, unsigned int *fb,
 
 static int ayaneo_rainbow_thread(void *arg)
 {
-	unsigned int lut[256];
-	unsigned int i, f, W, H, pitch_w;
+	unsigned int f, W, H, pitch_w;
 	unsigned int *buf_va[2];
 	unsigned int buf_pa[2];
 
@@ -733,28 +762,18 @@ static int ayaneo_rainbow_thread(void *arg)
 	buf_pa[0] = (unsigned int)fb_addr_pa;
 	buf_pa[1] = (unsigned int)fb_addr_pa + 2 * fb_size;
 
+#ifdef AYANEO_DEBUG_LOGGING
 	dprintf(CRITICAL, "AYANEO_RAINBOW: thread start W=%u H=%u fb_pa0=0x%08x fb_pa1=0x%08x redoff=%u vmode=%d\n",
 		W, H, buf_pa[0], buf_pa[1], (unsigned int)redoffset_32bit,
 		primary_display_is_video_mode());
+#endif
 
-	for (i = 0; i < 256; i++) {
-		unsigned int h = i * 6, seg = h >> 8, fr = h & 0xFF, r = 0, g = 0, b = 0;
-
-		switch (seg) {
-		case 0: r = 255;      g = fr;       b = 0;        break;
-		case 1: r = 255 - fr; g = 255;      b = 0;        break;
-		case 2: r = 0;        g = 255;      b = fr;       break;
-		case 3: r = 0;        g = 255 - fr; b = 255;      break;
-		case 4: r = fr;       g = 0;        b = 255;      break;
-		default:r = 255;      g = 0;        b = 255 - fr; break;
-		}
-		lut[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
-	}
+	ayaneo_build_strip();
 
 	for (f = 0; !s_rainbow_stop; f++) {
 		unsigned int b = f & 1;
 
-		ayaneo_rainbow_paint(lut, buf_va[b], buf_pa[b], W, H, pitch_w,
+		ayaneo_rainbow_paint(buf_va[b], buf_pa[b], W, H, pitch_w,
 				     f * AYANEO_RAINBOW_SPEED);
 		if (f == 0)
 			mt65xx_backlight_on();
@@ -764,10 +783,12 @@ static int ayaneo_rainbow_thread(void *arg)
 	 * Leave buffer 0 (the videolfb base handed to the kernel) showing the last
 	 * frame so the handoff is clean rather than a stale offset-2 buffer.
 	 */
-	ayaneo_rainbow_paint(lut, buf_va[0], buf_pa[0], W, H, pitch_w,
+	ayaneo_rainbow_paint(buf_va[0], buf_pa[0], W, H, pitch_w,
 			     f * AYANEO_RAINBOW_SPEED);
 
+#ifdef AYANEO_DEBUG_LOGGING
 	dprintf(CRITICAL, "AYANEO_RAINBOW: thread stop after %u frames\n", f);
+#endif
 	s_rainbow_exited = 1;
 	return 0;
 }
@@ -782,8 +803,10 @@ void video_rainbow_boot_start(void)
 			  DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
 	if (t)
 		thread_resume(t);
+#ifdef AYANEO_DEBUG_LOGGING
 	else
 		dprintf(CRITICAL, "AYANEO_RAINBOW: thread_create failed\n");
+#endif
 }
 
 void video_rainbow_boot_stop(void)
