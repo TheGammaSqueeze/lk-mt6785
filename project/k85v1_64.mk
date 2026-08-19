@@ -38,6 +38,13 @@ AYANEO_DEBUG_LOGGING ?= no
 ifeq ($(AYANEO_DEBUG_LOGGING),yes)
 DEFINES += AYANEO_DEBUG_LOGGING
 endif
+# AYANEO experiment (animated-boot-logo branch): paint a scrolling rainbow
+# gradient over the whole panel during LK instead of the static eMMC boot logo.
+# Set to no to restore the normal boot logo.
+AYANEO_RAINBOW_BOOT ?= yes
+ifeq ($(AYANEO_RAINBOW_BOOT),yes)
+DEFINES += AYANEO_RAINBOW_BOOT
+endif
 CUSTOM_LK_USB_UNIQUE_SERIAL=no
 MTK_TINYSYS_SCP_SUPPORT = no
 MTK_PROTOCOL1_RAT_CONFIG = C/Lf/Lt/W/T/G

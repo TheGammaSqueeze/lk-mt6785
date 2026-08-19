@@ -126,9 +126,88 @@ void mt_logo_get_custom_if(void)
  * Show first boot logo when phone boot up
  *
  */
+#ifdef AYANEO_RAINBOW_BOOT
+/*
+ * AYANEO experiment: instead of blitting the static eMMC boot logo, paint a
+ * scrolling diagonal rainbow gradient across the whole panel. This runs
+ * synchronously in the LK boot path (it adds ~AYANEO_RAINBOW_FRAMES frames of
+ * boot delay) and stops when it returns, after which LK loads the boot image
+ * and the kernel re-initialises the display. The panel is 32bpp; each pixel is
+ * one 32-bit word, rows are ALIGN_TO(width,32) words wide (see
+ * _mtkfb_draw_block). The colour word is assembled as 0xAARRGGBB; if the
+ * overlay format is actually BGRA/RGBA the hues are permuted but it is still a
+ * moving rainbow.
+ */
+#ifndef AYANEO_RAINBOW_FRAMES
+#define AYANEO_RAINBOW_FRAMES 120
+#endif
+#ifndef AYANEO_RAINBOW_SPEED
+#define AYANEO_RAINBOW_SPEED  3
+#endif
+
+static void ayaneo_build_rainbow_lut(unsigned int *lut)
+{
+	unsigned int i;
+
+	for (i = 0; i < 256; i++) {
+		unsigned int h = i * 6;      /* 0..1535, six 256-wide segments */
+		unsigned int seg = h >> 8;   /* 0..5 */
+		unsigned int f = h & 0xFF;   /* position within the segment */
+		unsigned int r = 0, g = 0, b = 0;
+
+		switch (seg) {
+		case 0: r = 255;     g = f;       b = 0;       break;
+		case 1: r = 255 - f; g = 255;     b = 0;       break;
+		case 2: r = 0;       g = 255;     b = f;       break;
+		case 3: r = 0;       g = 255 - f; b = 255;     break;
+		case 4: r = f;       g = 0;       b = 255;     break;
+		default:r = 255;     g = 0;       b = 255 - f; break;
+		}
+		lut[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
+	}
+}
+
+static void mt_disp_show_rainbow_boot(void)
+{
+	unsigned int lut[256];
+	unsigned int W, H, pitch_w, f, x, y;
+	unsigned int *fb;
+
+	dprintf(INFO, "[lk logo: %s %d] AYANEO rainbow boot\n", __FUNCTION__, __LINE__);
+	init_fb_screen();
+
+	W = CFG_DISPLAY_WIDTH;
+	H = CFG_DISPLAY_HEIGHT;
+	pitch_w = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT); /* words per row */
+	fb = (unsigned int *)mt_get_fb_addr();
+	if (!fb)
+		return;
+
+	ayaneo_build_rainbow_lut(lut);
+
+	for (f = 0; f < AYANEO_RAINBOW_FRAMES; f++) {
+		unsigned int phase = f * AYANEO_RAINBOW_SPEED;
+
+		for (y = 0; y < H; y++) {
+			unsigned int *row = fb + y * pitch_w;
+			unsigned int base = y + phase;
+
+			for (x = 0; x < W; x++)
+				row[x] = lut[(x + base) & 0xFF];
+		}
+		/* flush cache + trigger the DSI panel to scan out this frame */
+		mt_disp_update(0, 0, W, H);
+	}
+}
+#endif /* AYANEO_RAINBOW_BOOT */
+
 void mt_disp_show_boot_logo(void)
 {
 	dprintf(INFO, "[lk logo: %s %d]\n",__FUNCTION__,__LINE__);
+#ifdef AYANEO_RAINBOW_BOOT
+	mt_disp_show_rainbow_boot();
+	return;
+#endif
 	mt_logo_get_custom_if();
 
 	if (logo_cust_if->show_boot_logo) {
