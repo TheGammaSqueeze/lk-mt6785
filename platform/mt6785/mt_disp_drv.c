@@ -879,57 +879,83 @@ static int ayaneo_rainbow_thread(void *arg)
 
 	s_rainbow_start_ms = start_ms = (unsigned int)current_time();
 
-	for (i = 0; i < nf && !s_rainbow_stop; i++) {
-		unsigned int clen;
-		unsigned long zlen;
-		unsigned int *dst = disp_va[i & 1];
-		unsigned int ox, oy, target, now;
+	/*
+	 * Frame-skip pacing: pick the frame that should be showing for the elapsed
+	 * time and only decode/blit that one, streaming past (no decode) any frames
+	 * we are too slow to display. This keeps the animation at correct wall-clock
+	 * speed (60fps timeline) instead of playing every frame in slow motion when
+	 * the single core can't decode fast enough.
+	 */
+	i = 0;			/* frames consumed from the stream */
+	{
+		unsigned int disp_i = 0;
+		int shown = 0;
 
-		if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap, &poff, &svalid, &spos, 4))
-			break;
-		clen = rd32(sbuf + spos);
-		spos += 4;
-		if (clen == 0 || clen > scap - 4)
-			break;
-		if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap, &poff, &svalid, &spos, clen))
-			break;
-		zlen = clen;
-		if (zunzip(sbuf + spos, &zlen, rgb, (int)(sw * sh * 2), 0) != 0)
-			break;
-		spos += clen;
+		while (!s_rainbow_stop) {
+			unsigned int want = (unsigned int)((unsigned long)
+				(current_time() - start_ms) * fps / 1000u);
+			unsigned int *dst = disp_va[disp_i & 1];
 
-		/* RGB565 -> BGRA8888, nearest-neighbour scale into the letterbox region */
-		for (oy = 0; oy < dh; oy++) {
-			unsigned short *srow = (unsigned short *)(rgb + (oy * sh / dh) * sw * 2);
-			unsigned int *orow = dst + (yoff + oy) * pitch_w + xoff;
+			if (want >= nf)
+				break;
+			if (want < i) {		/* ahead of schedule -> wait */
+				thread_sleep(2);
+				continue;
+			}
+			while (i <= want && !s_rainbow_stop) {
+				int show = (i == want);
+				unsigned int clen, ox, oy;
+				unsigned long zlen;
 
-			for (ox = 0; ox < dw; ox++) {
-				unsigned int v = srow[s_sxmap[ox]];
-				unsigned int r = ((v >> 11) & 0x1f) << 3;
-				unsigned int g = ((v >> 5) & 0x3f) << 2;
-				unsigned int b = (v & 0x1f) << 3;
+				if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
+						 &poff, &svalid, &spos, 4))
+					goto anim_done;
+				clen = rd32(sbuf + spos);
+				spos += 4;
+				if (clen == 0 || clen > scap - 4)
+					goto anim_done;
+				if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
+						 &poff, &svalid, &spos, clen))
+					goto anim_done;
+				if (show) {
+					zlen = clen;
+					if (zunzip(sbuf + spos, &zlen, rgb,
+						   (int)(sw * sh * 2), 0) != 0)
+						goto anim_done;
+				}
+				spos += clen;
+				i++;
+				if (!show)
+					continue;
 
-				orow[ox] = 0xFF000000u | (r << 16) | (g << 8) | b;
+				for (oy = 0; oy < dh; oy++) {
+					unsigned short *srow = (unsigned short *)
+						(rgb + (oy * sh / dh) * sw * 2);
+					unsigned int *orow = dst + (yoff + oy) * pitch_w + xoff;
+
+					for (ox = 0; ox < dw; ox++) {
+						unsigned int v = srow[s_sxmap[ox]];
+						unsigned int r = ((v >> 11) & 0x1f) << 3;
+						unsigned int g = ((v >> 5) & 0x3f) << 2;
+						unsigned int b = (v & 0x1f) << 3;
+
+						orow[ox] = 0xFF000000u | (r << 16) | (g << 8) | b;
+					}
+				}
+				arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w),
+						       dh * pitch_w * 4);
+				ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
+				disp_i++;
+				if (!shown) { mt65xx_backlight_on(); shown = 1; }
 			}
 		}
-		arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w),
-				       dh * pitch_w * 4);
-
-		ayaneo_present(disp_pa[i & 1], W, H, pitch_w);
-		if (i == 0)
-			mt65xx_backlight_on();
-
-		/* pace to the frame's target time; if behind, just continue */
-		target = start_ms + (i + 1) * 1000u / fps;
-		now = (unsigned int)current_time();
-		if (now < target)
-			thread_sleep(target - now);
 	}
+anim_done:
 
 	s_anim_complete = 1;
 
 #ifdef AYANEO_DEBUG_LOGGING
-	dprintf(CRITICAL, "AYANEO_ANIM: played %u/%u frames, holding\n", i, nf);
+	dprintf(CRITICAL, "AYANEO_ANIM: consumed %u/%u frames, holding\n", i, nf);
 #endif
 	/* animation ends on black (baked fade); hold until boot stops us */
 	while (!s_rainbow_stop)
