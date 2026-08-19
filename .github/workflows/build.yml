@@ -16,11 +16,14 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          # The bundled toolchain gcc is a Python wrapper with a /usr/bin/python
+          # shebang (python-is-python3 provides it). openssl is used by the
+          # signer. The bundled logo tools (zpipe, bmp_to_raw) are 32-bit x86
+          # binaries, so i386 runtime libs are required.
+          sudo dpkg --add-architecture i386
           sudo apt-get update
-          # The bundled toolchain's gcc is a Python wrapper with a
-          # /usr/bin/python shebang; python-is-python3 provides it. openssl is
-          # used by the signer.
-          sudo apt-get install -y make python3 python-is-python3 openssl
+          sudo apt-get install -y make python3 python-is-python3 openssl \
+            libc6:i386 lib32z1 lib32stdc++6
 
       - name: Build and sign
         run: ./build_ayaneo_pocket_air_mini.sh
