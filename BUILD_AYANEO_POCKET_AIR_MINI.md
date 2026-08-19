@@ -61,3 +61,12 @@ To match the patched stock lk this device ran, the source carries:
 Produces `out/lk_a_signed.img` (2 MB, flashable). Everything needed is in the
 repo: the bundled toolchain, the MTK default test keys and the device cert
 blobs (`tools/ayaneo/`). Flash with `fastboot flash lk_a out/lk_a_signed.img`.
+
+## GenieZone (secure OS) parity
+
+The device's secure OS is GenieZone (GZ), confirmed by the preloader/ATF UART
+log printing GZ params, not Google Trusty. So MTK_GOOGLE_TRUSTY_SUPPORT stays
+`no`, and MTK_ENABLE_GENIEZONE is set to `yes`. That restores two stock lk
+behaviours: parsing the modem-MTEE shared-memory boot tag, and passing lk's
+mblock memory layout to GZ via SMC (MTK_SIP_LK_MEM_INFO_SET) just before the
+kernel jump.

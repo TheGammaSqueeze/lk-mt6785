@@ -33,6 +33,11 @@ CUSTOM_LK_USB_UNIQUE_SERIAL=no
 MTK_TINYSYS_SCP_SUPPORT = yes
 MTK_PROTOCOL1_RAT_CONFIG = C/Lf/Lt/W/T/G
 MTK_GOOGLE_TRUSTY_SUPPORT=no
+# This device's secure OS is GenieZone (GZ), not Google Trusty (confirmed by the
+# preloader/ATF UART log printing GZ params). Enable GenieZone so LK parses the
+# modem-MTEE shared-memory boot tag and passes its mblock memory layout to GZ via
+# SMC before the kernel jump, matching stock lk behaviour.
+MTK_ENABLE_GENIEZONE = yes
 MTK_AB_OTA_UPDATER = no
 DEFINES += MTK_MT6370_PMU
 DEVELOP_STAGE = SB
