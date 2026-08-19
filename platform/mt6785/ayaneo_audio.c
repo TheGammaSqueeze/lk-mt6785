@@ -432,20 +432,28 @@ static void apply_tail_fade(unsigned int pcm_bytes, unsigned int rate)
 static void audio_shutdown(void)
 {
 	/*
-	 * At this point the DAC is outputting silence: the clip tail was faded to
-	 * zero and the ring has wrapped to the silent intro. That is the quietest
-	 * moment to drop a GPIO class-D amp, so cut it FIRST - anything we do to
-	 * the codec afterwards is then inaudible.
+	 * The ring just wrapped, but the codec pipeline (AFE FIFO -> SRC -> MTKAIF
+	 * -> DAC) still holds the last few ms of the clip. If we cut the amp now it
+	 * is mid-transient and pops. So FIRST ramp the HP gain to mute while the
+	 * amp is still on (a smooth, inaudible taper), then let the pipeline fully
+	 * drain to silence so the HP output settles at VCM.
 	 */
-	spk_amp_enable(0);
-	mdelay(8);			/* let the amp fully discharge */
-
-	/* now inaudible: mute the HP gain, stop the DMA/ADDA path, and park the
-	 * DAC off so the codec cannot idle-hiss before the kernel re-inits it. */
 	mt6359_hp_mute_ramp();
+	mdelay(30);			/* drain the codec pipeline to VCM */
+
+	/* HP output is now silent and settled: cut the amp (quietest moment). */
+	spk_amp_enable(0);
+	mdelay(10);			/* let the amp fully discharge */
+
+	/* inaudible now (amp off): stop the DMA/ADDA and park the DAC off so the
+	 * codec cannot idle-hiss before the kernel re-inits it. */
 	afe_dl1_stop();
 	pmic_rmw(MT6359_AUDDEC_ANA_CON9, 0x0001, 0);	/* DAC low-noise off */
 	pmic_rmw(MT6359_AUDDEC_ANA_CON0, 0x000f, 0);	/* disable audio DAC */
+#ifdef AYANEO_DEBUG_LOGGING
+	dprintf(CRITICAL, "AYANEO_AUD: shutdown done t=%u\n",
+		(unsigned int)current_time());
+#endif
 }
 
 /*
