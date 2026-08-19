@@ -990,6 +990,46 @@ static int ayaneo_rainbow_thread(void *arg)
 			}
 		}
 
+		/*
+		 * Boot became ready (s_fade_request) before the animation finished:
+		 * fast-forward through the remaining frames, decoding only the final
+		 * one, so the fade always starts from the last frame instead of
+		 * whatever frame we happened to be on. Streaming past the skipped
+		 * frames is cheap (just reading their lengths); we decode/blit once.
+		 */
+		if (!s_rainbow_stop && i < nf) {
+			while (i < nf) {
+				int last = (i == nf - 1);
+
+				if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
+						 &poff, &svalid, &spos, 4))
+					goto anim_done;
+				clen = rd32(sbuf + spos);
+				spos += 4;
+				if (clen == 0 || clen > scap - 4)
+					goto anim_done;
+				if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
+						 &poff, &svalid, &spos, clen))
+					goto anim_done;
+				if (last) {
+					zlen = clen;
+					if (zunzip(sbuf + spos, &zlen, rgb,
+						   (int)(sw * sh * 2), 0) != 0)
+						goto anim_done;
+				}
+				spos += clen;
+				i++;
+				if (!last)
+					continue;
+				anim_blit(rgb, disp_va[disp_i & 1], sw, sh, dw, dh,
+					  xoff, yoff, pitch_w, 256);
+				ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
+				disp_i++;
+				have_frame = 1;
+				if (!shown) { mt65xx_backlight_on(); shown = 1; }
+			}
+		}
+
 		/* content ended before boot was ready: hold the last frame */
 		while (!s_rainbow_stop && !s_fade_request)
 			thread_sleep(20);

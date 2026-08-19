@@ -2,6 +2,7 @@ import glob, zlib, struct, numpy as np
 from PIL import Image
 RES=(640,360)
 files=sorted(glob.glob('/tmp/gba60/f_*.png'))     # full 5s content, no baked fade
+files=files[:-40]                                 # drop last 40 frames (unneeded tail)
 frames=[np.asarray(Image.open(f).convert('RGB').resize(RES, Image.LANCZOS),dtype=np.uint16) for f in files]
 w,h=RES
 def to565(a):
