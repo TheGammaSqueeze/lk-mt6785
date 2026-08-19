@@ -17,12 +17,23 @@ root has the raw dump).
 - VSA/VBP/VFP = 8 / 8 / 16, HSA/HBP/HFP = 30 / 60 / 60
 - PLL_CLOCK = 266
 
-## Drive voltage tuning
+## Drive voltage mods (over-driven by default)
 
 The panel uses a page-based register scheme (CMD 0xEE selects the page). The
-tunable drive voltages are exposed as `ST7703_VGH`, `ST7703_VGL`, `ST7703_AVDD`
-and `ST7703_AVEE` at the top of the .c file. They default to the stock values.
+drive voltages are exposed as `ST7703_VGH`, `ST7703_VGL`, `ST7703_CPUMP`,
+`ST7703_AVDD` and `ST7703_AVEE` at the top of the .c file.
 
-Tune ONE register at a time and verify on the panel. Over-driving does not fail
-safe. Known-good ceilings: AVEE 0x60, VGH/VGL 0x78, AVDD 0xFF. AVEE has the
-largest visible effect.
+They are set ABOVE stock by default (this panel is over-driven):
+
+| Define        | Default (this build) | Stock  |
+|---------------|----------------------|--------|
+| ST7703_VGH    | 0x78 | 0x58 |
+| ST7703_VGL    | 0x78 | 0x58 |
+| ST7703_CPUMP  | 0x48 | 0x32 |
+| ST7703_AVDD   | 0xFF | 0xE0 |
+| ST7703_AVEE   | 0x60 | 0x20 |
+
+To run stock voltages, reset the defines to the Stock column. Tune ONE register
+at a time and verify on the panel. Over-driving does not fail safe (flicker,
+image inversion, temporary retention/burn-in). Ceilings: AVEE 0x60, VGH/VGL
+0x78, AVDD 0xFF. AVEE has the largest visible effect.

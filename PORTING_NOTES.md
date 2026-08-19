@@ -161,9 +161,13 @@ device. The failure point marched forward with each fix.
   `get_params` by disassembly; init table transcribed from the stock 171-entry
   DSI table (`st7703_hd720_init_dump.txt`).
 - `.name` MUST be `st7703_hd720_lcm_drv` (kernel handshake, see issue 8).
-- Drive voltages exposed as `ST7703_*` defines, set to the device's tuned values
+- Drive voltage mods are APPLIED BY DEFAULT (the panel is over-driven in every
+  image built here). `ST7703_*` defines are set to the device's tuned values
   (VGH/VGL 0x78, charge pump 0x48, AVDD 0xFF, AVEE 0x60; stock 0x58/0x58/0x32/
-  0xE0/0x20). Tune ONE at a time and verify; over-driving does not fail safe.
+  0xE0/0x20). To run stock voltages, reset the defines to the stock column.
+  Tune ONE at a time and verify; over-driving does not fail safe (flicker, image
+  inversion, temporary retention/burn-in). Ceilings: AVEE 0x60, VGH/VGL 0x78,
+  AVDD 0xFF.
 
 ## Untested / known-risk areas
 

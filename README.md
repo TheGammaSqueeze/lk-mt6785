@@ -54,6 +54,8 @@ match this hardware (full detail in PORTING_NOTES.md):
 - AEE watchdog debug registration skipped (hangs this early on this device).
 - The stock `lk_main_dtb` is substituted at sign time (the device's kernel dtbo
   requires its nodes/symbols, e.g. `mt6360_pmu`).
+- The panel is **over-driven by default** (tuned drive voltages above stock).
+  See [Panel voltage mods](#panel-voltage-mods-applied-by-default) below.
 
 ## Signing
 
@@ -63,12 +65,27 @@ stock cert partitions, substitutes the stock `lk_main_dtb`, recomputes the
 salt 32). This device is fused with the MTK test keys, so the preloader accepts
 the resigned image. See `tools/ayaneo/README.md`.
 
-## Panel voltage tuning
+## Panel voltage mods (applied by default)
 
-Drive voltages are exposed as `ST7703_*` defines at the top of
-`dev/lcm/st7703_hd720_dsi_vdo/st7703_hd720_dsi_vdo.c` and default to this
-device's tuned values. Tune ONE register at a time and verify on the panel;
-over-driving does not fail safe. Ceilings: AVEE 0x60, VGH/VGL 0x78, AVDD 0xFF.
+IMPORTANT: this build ships with the ST7703 panel **over-driven** - the drive
+voltages are set above stock, ACTIVE by default in every image produced here.
+This is intentional (it matches the tuned values this device was running), but
+you are driving the panel harder than the manufacturer's settings.
+
+| Register | This build | Stock | Ceiling |
+|----------|-----------|-------|---------|
+| VGH         | `0x78` | `0x58` | `0x78` (higher inverts the image) |
+| VGL         | `0x78` | `0x58` | `0x78` |
+| Charge pump | `0x48` | `0x32` | - |
+| AVDD        | `0xFF` | `0xE0` | `0xFF` |
+| AVEE        | `0x60` | `0x20` | `0x60` (`0x70` flickers) |
+
+The values are the `ST7703_*` defines at the top of
+`dev/lcm/st7703_hd720_dsi_vdo/st7703_hd720_dsi_vdo.c`. To run stock voltages,
+set them back to the stock column and rebuild. To retune, change ONE register
+at a time and verify on the panel - over-driving does NOT fail safe (it can
+cause flicker, image inversion, or temporary retention/burn-in). AVEE has the
+largest visible effect.
 
 ## Layout
 
