@@ -38,3 +38,18 @@ Flash `lk_a` (and optionally `lk_b`) with fastboot or SP Flash Tool.
 WARNING: a source-built LK is unverified on hardware until you flash it. A bad
 LK bricks to a state that needs SP Flash Tool recovery. Validate at your own
 risk.
+
+## Behavioral changes vs stock
+
+To match the patched stock lk this device ran, the source carries:
+
+- Unlock by default: `platform/mt6785/load_image.c` forces
+  `lock_state = DEVICE_STATE_UNLOCKED` after the seccfg query, so custom or
+  unsigned images boot (orange state) without verification blocking.
+- No orange-state message, timeout or wait: `orange_state_warning()` in
+  `platform/common/boot/vboot_state.c` returns immediately.
+- No dm-verity corruption check: `show_dm_verity_error()` in
+  `platform/common/boot/avb20/dm_verity.c` returns immediately, so the device
+  never shows the corruption screen or powers off.
+- Tuned panel drive voltages: VGH/VGL 0x78, charge pump 0x48, AVDD 0xFF,
+  AVEE 0x60 (see the panel driver defines).

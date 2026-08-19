@@ -204,10 +204,13 @@ int verified_boot_flow(char *img_name, uint32_t img_addr, uint32_t img_sz)
 	/* please refer to the following website for verified boot flow */
 	/* http://source.android.com/devices/tech/security/verifiedboot/verified-boot.html */
 	ret = sec_query_device_lock(&lock_state);
-	if (ret) {
-		g_boot_state = BOOT_STATE_RED;
-		goto end;
-	}
+	/*
+	 * AYANEO Pocket Air Mini: unlocked by default. Force the unlocked
+	 * state regardless of seccfg so custom/unsigned images boot without
+	 * verification blocking (boot state falls through to orange).
+	 */
+	lock_state = DEVICE_STATE_UNLOCKED;
+	ret = 0;
 
 	if (DEVICE_STATE_LOCKED == lock_state) {
 		img_vfy_time = get_timer(0);

@@ -26,11 +26,16 @@
 #define FRAME_WIDTH   (1280)
 #define FRAME_HEIGHT  (960)
 
-/* Tunable drive voltages (default = stock). See ceilings in the header. */
-#define ST7703_VGH   0x58
-#define ST7703_VGL   0x58
-#define ST7703_AVDD  0xE0
-#define ST7703_AVEE  0x20
+/*
+ * Tunable drive voltages, set to the tuned AYANEO Pocket Air Mini values
+ * (stock values in comments). Tune ONE register at a time and verify;
+ * over-driving does not fail safe. Ceilings: AVEE 0x60, VGH/VGL 0x78, AVDD 0xFF.
+ */
+#define ST7703_VGH    0x78	/* stock 0x58, ceiling 0x78 */
+#define ST7703_VGL    0x78	/* stock 0x58, ceiling 0x78 */
+#define ST7703_CPUMP  0x48	/* charge pump freq, stock 0x32 */
+#define ST7703_AVDD   0xFF	/* stock 0xE0 */
+#define ST7703_AVEE   0x60	/* stock 0x20, ceiling 0x60 (0x70 flickers) */
 
 #define GPIO_OUT_ONE  1
 #define GPIO_OUT_ZERO 0
@@ -63,7 +68,7 @@ static struct LCM_setting_table lcm_initialization_setting[] = {
 	{0x0A, 1, {0x86} },
 	{0x14, 1, {ST7703_VGH} } /* VGH */,
 	{0x15, 1, {ST7703_VGL} } /* VGL */,
-	{0x17, 1, {0x32} } /* charge pump freq */,
+	{0x17, 1, {ST7703_CPUMP} } /* charge pump freq */,
 	{0x28, 1, {0x1F} },
 	{0x29, 1, {0x29} },
 	{0x2A, 1, {0x63} },

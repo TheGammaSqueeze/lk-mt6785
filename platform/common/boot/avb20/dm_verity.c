@@ -56,6 +56,13 @@ static void show_dm_verity_error(void)
 {
 	unsigned int wait_time = 0;
 
+	/*
+	 * AYANEO Pocket Air Mini: do not check for or warn on dm-verity
+	 * corruption. Return immediately so the device never shows the
+	 * corruption screen or powers off.
+	 */
+	return;
+
 	video_clean_screen();
 	video_set_cursor(video_get_rows() / 2, 0);
 	video_printf("dm-verity corruption\n\n");
