@@ -716,6 +716,7 @@ extern void *memmove(void *dest, const void *src, unsigned int n);
  * yields the CPU to the boot thread.
  */
 extern void mt65xx_backlight_on(void);
+extern void thread_set_priority(int priority);
 
 static volatile int s_rainbow_stop;
 static volatile int s_rainbow_exited;
@@ -927,7 +928,8 @@ static int ayaneo_rainbow_thread(void *arg)
 	{
 		unsigned int disp_i = 0, clen;
 		unsigned long zlen;
-		int shown = 0, have_frame = 0;
+		int shown = 0, have_frame = 0, dropped_prio = 0;
+		unsigned int half = nf / 2;
 
 		/*
 		 * Play the content with frame-skip (real-time speed). Stop as soon as
@@ -941,6 +943,17 @@ static int ayaneo_rainbow_thread(void *arg)
 
 			if (want >= nf)
 				break;
+			/*
+			 * First half of the animation runs at HIGH_PRIORITY so early
+			 * frames present crisply during the heavy boot-image verify.
+			 * Once we cross the midpoint, drop to DEFAULT_PRIORITY so the
+			 * boot thread runs at natural speed for the kernel handoff
+			 * (the animation then fills idle CPU during mmc DMA waits).
+			 */
+			if (!dropped_prio && want >= half) {
+				thread_set_priority(DEFAULT_PRIORITY);
+				dropped_prio = 1;
+			}
 			if (want < i) {
 				thread_sleep(2);
 				continue;
