@@ -694,10 +694,12 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 #define AYANEO_ANIM_PART      "boot_b"
 #define AYANEO_ANIM_HDR       512
 #define AYANEO_ANIM_MAGIC     0x31414247u	/* 'GBA1' little-endian */
-#define AYANEO_ANIM_READ_SZ   (3 * 1024 * 1024)	/* whole blob is ~2.9 MB */
+/* max decoded source frame we support (1280x720 RGB565); source is streamed */
+#define AYANEO_ANIM_RGBMAX    (1280 * 720 * 2)
 
 extern int zunzip(unsigned char *src, unsigned long *lenp, void *dst,
 		  int dstlen, int offset);
+extern void *memmove(void *dest, const void *src, unsigned int n);
 
 /*
  * AYANEO experiment: scrolling diagonal rainbow over the whole panel during LK.
@@ -762,14 +764,45 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
  * display VRAM (pages 0/1 are the two scan-out buffers, page 2 is scratch), so
  * no extra reserved memory is taken.
  */
+/*
+ * Streaming reader over the animation partition. The blob (up to ~20 MB at
+ * 1280x720/60fps) is far larger than the VRAM scratch, so we keep a sliding
+ * window buffer, refilling from the partition when the requested run isn't fully
+ * resident. Returns 1 if at least 'need' bytes are available at sbuf+*spos.
+ */
+static int anim_ensure(const char *part, unsigned char *sbuf, unsigned int scap,
+		       unsigned int *poff, unsigned int *svalid, unsigned int *spos,
+		       unsigned int need)
+{
+	if (*svalid - *spos >= need)
+		return 1;
+	if (*spos) {			/* compact remaining bytes to the front */
+		unsigned int avail = *svalid - *spos;
+
+		memmove(sbuf, sbuf + *spos, avail);
+		*svalid = avail;
+		*spos = 0;
+	}
+	while (*svalid - *spos < need && *svalid < scap) {
+		int got = (int)partition_read(part, *poff, sbuf + *svalid,
+					      scap - *svalid);
+
+		if (got <= 0)
+			break;
+		*poff += (unsigned int)got;
+		*svalid += (unsigned int)got;
+	}
+	return (*svalid - *spos >= need);
+}
+
 static int ayaneo_rainbow_thread(void *arg)
 {
 	unsigned int W, H, pitch_w;
 	unsigned int disp_pa[2];
 	unsigned int *disp_va[2];
-	unsigned char *blob, *rgb;
-	unsigned int magic, sw, sh, nf, fps, i, off, dw, dh, xoff, yoff, start_ms, base;
-	int rd;
+	unsigned char *rgb, *sbuf;
+	unsigned int scap, poff, svalid, spos;
+	unsigned int magic, sw, sh, nf, fps, i, dw, dh, xoff, yoff, start_ms, base;
 
 	W = CFG_DISPLAY_WIDTH;
 	H = CFG_DISPLAY_HEIGHT;
@@ -779,8 +812,10 @@ static int ayaneo_rainbow_thread(void *arg)
 	disp_va[1] = (unsigned int *)((unsigned char *)fb_addr + fb_size);
 	disp_pa[0] = (unsigned int)fb_addr_pa;
 	disp_pa[1] = (unsigned int)fb_addr_pa + fb_size;
-	blob = (unsigned char *)fb_addr + 2 * fb_size;	/* VRAM page 2 scratch */
-	rgb  = blob + AYANEO_ANIM_READ_SZ;
+	/* VRAM page 2: decoded RGB565 frame + the streaming window buffer */
+	rgb  = (unsigned char *)fb_addr + 2 * fb_size;
+	sbuf = rgb + AYANEO_ANIM_RGBMAX;
+	scap = fb_size - AYANEO_ANIM_RGBMAX - 4096;
 
 	/* only our FB_LAYER should show */
 	{
@@ -792,33 +827,32 @@ static int ayaneo_rainbow_thread(void *arg)
 		primary_display_config_input(&din);
 	}
 
-	rd = (int)partition_read(AYANEO_ANIM_PART, 0, blob, AYANEO_ANIM_READ_SZ);
-	/*
-	 * Accept either layout: a raw blob at offset 0 (fastboot flash) or one
-	 * wrapped with the 512-byte MTK image header (SP Flash Tool). Detect by the
-	 * GBA1 magic so the flashing method does not matter.
-	 */
+	/* prime the window and detect raw (offset 0) vs MTK-header-wrapped (512) */
+	poff = 0; svalid = 0; spos = 0;
+	anim_ensure(AYANEO_ANIM_PART, sbuf, scap, &poff, &svalid, &spos,
+		    AYANEO_ANIM_HDR + 16);
 	base = 0;
-	if (rd32(blob + 0) != AYANEO_ANIM_MAGIC &&
-	    rd >= (int)(AYANEO_ANIM_HDR + 16) &&
-	    rd32(blob + AYANEO_ANIM_HDR) == AYANEO_ANIM_MAGIC)
+	if (rd32(sbuf + 0) != AYANEO_ANIM_MAGIC && svalid >= AYANEO_ANIM_HDR + 16 &&
+	    rd32(sbuf + AYANEO_ANIM_HDR) == AYANEO_ANIM_MAGIC)
 		base = AYANEO_ANIM_HDR;
 
-	magic = rd32(blob + base);
-	sw = rd16(blob + base + 8);
-	sh = rd16(blob + base + 10);
-	nf = rd16(blob + base + 12);
-	fps = rd16(blob + base + 14);
-	if (rd < (int)(base + 16) || magic != AYANEO_ANIM_MAGIC || sw == 0 || sh == 0 ||
-	    sw > 2048 || sh > H || nf == 0) {
+	magic = rd32(sbuf + base);
+	sw = rd16(sbuf + base + 8);
+	sh = rd16(sbuf + base + 10);
+	nf = rd16(sbuf + base + 12);
+	fps = rd16(sbuf + base + 14);
+	if (magic != AYANEO_ANIM_MAGIC || sw == 0 || sh == 0 || sw > 1280 ||
+	    sh > H || nf == 0 || sw * sh * 2 > AYANEO_ANIM_RGBMAX) {
 #ifdef AYANEO_DEBUG_LOGGING
-		dprintf(CRITICAL, "AYANEO_ANIM: bad blob rd=%d magic=0x%x %ux%u n=%u\n",
-			rd, magic, sw, sh, nf);
+		dprintf(CRITICAL, "AYANEO_ANIM: bad blob magic=0x%x %ux%u n=%u\n",
+			magic, sw, sh, nf);
 #endif
 		s_rainbow_exited = 1;
 		return 0;
 	}
-	(void)fps;
+	if (fps == 0 || fps > 120)
+		fps = 30;
+	spos = base + 16;		/* consume the header */
 
 	/* scale to fill the panel width, keep aspect, letterbox; clamp to height */
 	dw = W;
@@ -839,24 +873,30 @@ static int ayaneo_rainbow_thread(void *arg)
 	arch_clean_cache_range((unsigned int)disp_va[1], fb_size);
 
 #ifdef AYANEO_DEBUG_LOGGING
-	dprintf(CRITICAL, "AYANEO_ANIM: %ux%u n=%u fps=%u dw=%u dh=%u xoff=%u yoff=%u rd=%d\n",
-		sw, sh, nf, fps, dw, dh, xoff, yoff, rd);
+	dprintf(CRITICAL, "AYANEO_ANIM: %ux%u n=%u fps=%u dw=%u dh=%u scap=%u base=%u\n",
+		sw, sh, nf, fps, dw, dh, scap, base);
 #endif
 
 	s_rainbow_start_ms = start_ms = (unsigned int)current_time();
-	off = 16;
 
 	for (i = 0; i < nf && !s_rainbow_stop; i++) {
-		unsigned int clen = rd32(blob + off);	/* compressed length (stored) */
-		unsigned long zlen = clen;		/* zunzip in; overwritten with out len */
+		unsigned int clen;
+		unsigned long zlen;
 		unsigned int *dst = disp_va[i & 1];
 		unsigned int ox, oy, target, now;
 
-		if (off + 4 + clen > AYANEO_ANIM_READ_SZ)
+		if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap, &poff, &svalid, &spos, 4))
 			break;
-		if (zunzip(blob + off + 4, &zlen, rgb, (int)(sw * sh * 2), 0) != 0)
+		clen = rd32(sbuf + spos);
+		spos += 4;
+		if (clen == 0 || clen > scap - 4)
 			break;
-		off += 4 + clen;
+		if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap, &poff, &svalid, &spos, clen))
+			break;
+		zlen = clen;
+		if (zunzip(sbuf + spos, &zlen, rgb, (int)(sw * sh * 2), 0) != 0)
+			break;
+		spos += clen;
 
 		/* RGB565 -> BGRA8888, nearest-neighbour scale into the letterbox region */
 		for (oy = 0; oy < dh; oy++) {
@@ -880,7 +920,7 @@ static int ayaneo_rainbow_thread(void *arg)
 			mt65xx_backlight_on();
 
 		/* pace to the frame's target time; if behind, just continue */
-		target = start_ms + (i + 1) * 1000u / AYANEO_ANIM_FPS;
+		target = start_ms + (i + 1) * 1000u / fps;
 		now = (unsigned int)current_time();
 		if (now < target)
 			thread_sleep(target - now);
