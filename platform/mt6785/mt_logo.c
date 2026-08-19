@@ -136,14 +136,15 @@ void mt_logo_get_custom_if(void)
  * one the fastboot menu and AVB orange-state warning redraw through. Painting
  * the FB_LAYER buffer (mt_get_fb_addr()) only shows a single latched frame.
  */
-extern void video_rainbow_boot(void);
+extern void video_rainbow_boot_start(void);
 #endif /* AYANEO_RAINBOW_BOOT */
 
 void mt_disp_show_boot_logo(void)
 {
 	dprintf(INFO, "[lk logo: %s %d]\n",__FUNCTION__,__LINE__);
 #ifdef AYANEO_RAINBOW_BOOT
-	video_rainbow_boot();
+	/* non-blocking: spawn the animation thread and let boot continue */
+	video_rainbow_boot_start();
 	return;
 #endif
 	mt_logo_get_custom_if();

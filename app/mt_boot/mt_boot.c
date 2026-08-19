@@ -721,6 +721,16 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	char tmpbuf[TMPBUF_SIZE];
 	dt_dram_info mem_reg_property[128];
 
+#ifdef AYANEO_RAINBOW_BOOT
+	/*
+	 * Stop the boot-logo rainbow animation thread before we start building the
+	 * kernel device tree / videolfb handoff, so the framebuffer it leaves is
+	 * stable when the kernel takes over the display.
+	 */
+	extern void video_rainbow_boot_stop(void);
+	video_rainbow_boot_stop();
+#endif
+
 	int i;
 	void (*entry)(unsigned, unsigned, unsigned *) = kernel;
 	void *kernel_target_addr = kernel;

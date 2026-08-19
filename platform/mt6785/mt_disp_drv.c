@@ -663,63 +663,82 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 }
 
 #ifdef AYANEO_RAINBOW_BOOT
-#ifndef AYANEO_RAINBOW_FRAMES
-#define AYANEO_RAINBOW_FRAMES 90
-#endif
+#include <kernel/thread.h>
+
 #ifndef AYANEO_RAINBOW_SPEED
 #define AYANEO_RAINBOW_SPEED  2
-#endif
-/* config_input() already blocks on FRAME_DONE (~vsync), so no extra delay. */
-#ifndef AYANEO_RAINBOW_FRAME_MS
-#define AYANEO_RAINBOW_FRAME_MS 0
 #endif
 
 /*
  * AYANEO experiment: scrolling diagonal rainbow over the whole panel during LK.
- * Writes into the FB_LAYER buffer (fb_addr) and, crucially, re-presents each
- * frame with primary_display_config_input(): in DSI video mode a bare
- * mt_disp_update()/primary_display_trigger() early-returns while the path is
- * busy and never pushes new content, so the panel holds the first frame.
- * config_input() waits for FRAME_DONE and re-latches the OVL layer
- * (ovl_dirty=1), which is how a running video-mode path actually takes a new
- * frame (the same path the fastboot menu / AVB warnings use).
+ * Runs on its own LK thread so it keeps animating while the main thread carries
+ * on booting; it is stopped just before the kernel handoff. Two scan-out
+ * buffers (fb offset 0 and the unused logo tempfb at offset 2) are alternated
+ * because in DSI video mode a bare trigger early-returns (never pushes a new
+ * frame) and primary_display_config_input() with an unchanged address is a
+ * no-op - handing the OVL a different address each frame forces a re-latch.
+ * config_input() blocks on FRAME_DONE, which paces the animation to vsync and
+ * yields the CPU to the boot thread.
  */
 extern void mt65xx_backlight_on(void);
 
-void video_rainbow_boot(void)
+static volatile int s_rainbow_stop;
+static volatile int s_rainbow_exited;
+
+static void ayaneo_rainbow_paint(unsigned int *lut, unsigned int *fb,
+				 unsigned int pa, unsigned int W, unsigned int H,
+				 unsigned int pitch_w, unsigned int phase)
+{
+	unsigned int x, y;
+	disp_input_config input;
+
+	for (y = 0; y < H; y++) {
+		unsigned int *row = fb + y * pitch_w;
+		unsigned int base = y + phase;
+
+		for (x = 0; x < W; x++)
+			row[x] = lut[(x + base) & 0xFF];
+	}
+	arch_clean_cache_range((unsigned int)fb, pitch_w * H * 4);
+
+	memset(&input, 0, sizeof(input));
+	input.layer     = FB_LAYER;
+	input.layer_en  = 1;
+	input.fmt       = redoffset_32bit ? eBGRA8888 : eRGBA8888;
+	input.addr      = pa;
+	input.src_w     = W;
+	input.src_h     = H;
+	input.src_pitch = pitch_w * 4;
+	input.dst_w     = W;
+	input.dst_h     = H;
+	input.aen       = 1;
+	input.alpha     = 0xff;
+	primary_display_config_input(&input);
+	primary_display_trigger(TRUE);
+}
+
+static int ayaneo_rainbow_thread(void *arg)
 {
 	unsigned int lut[256];
-	unsigned int i, f, x, y, W, H, pitch_w;
+	unsigned int i, f, W, H, pitch_w;
 	unsigned int *buf_va[2];
 	unsigned int buf_pa[2];
-	disp_input_config input;
 
 	W = CFG_DISPLAY_WIDTH;
 	H = CFG_DISPLAY_HEIGHT;
 	pitch_w = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT);
 
-	/*
-	 * Two scan-out buffers. config_input() with the SAME address is treated as
-	 * "no change" by the OVL and never re-fetches, so a single buffer stays
-	 * static. Alternate between buffer 0 (fb_addr, offset 0) and buffer 2
-	 * (the logo tempfb, offset 2, unused because we replace the logo) so every
-	 * frame hands the OVL a genuinely different address and forces a re-latch.
-	 */
 	buf_va[0] = (unsigned int *)fb_addr;
 	buf_va[1] = (unsigned int *)((unsigned char *)fb_addr + 2 * fb_size);
 	buf_pa[0] = (unsigned int)fb_addr_pa;
 	buf_pa[1] = (unsigned int)fb_addr_pa + 2 * fb_size;
 
-	dprintf(CRITICAL, "AYANEO_RAINBOW: enter W=%u H=%u fb_pa0=0x%08x fb_pa1=0x%08x redoff=%u vmode=%d frames=%d\n",
-		W, H, buf_pa[0], buf_pa[1],
-		(unsigned int)redoffset_32bit, primary_display_is_video_mode(),
-		AYANEO_RAINBOW_FRAMES);
+	dprintf(CRITICAL, "AYANEO_RAINBOW: thread start W=%u H=%u fb_pa0=0x%08x fb_pa1=0x%08x redoff=%u vmode=%d\n",
+		W, H, buf_pa[0], buf_pa[1], (unsigned int)redoffset_32bit,
+		primary_display_is_video_mode());
 
 	for (i = 0; i < 256; i++) {
-		unsigned int h = i * 6;
-		unsigned int seg = h >> 8;
-		unsigned int fr = h & 0xFF;
-		unsigned int r = 0, g = 0, b = 0;
+		unsigned int h = i * 6, seg = h >> 8, fr = h & 0xFF, r = 0, g = 0, b = 0;
 
 		switch (seg) {
 		case 0: r = 255;      g = fr;       b = 0;        break;
@@ -732,57 +751,51 @@ void video_rainbow_boot(void)
 		lut[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
 	}
 
-	for (f = 0; f < AYANEO_RAINBOW_FRAMES; f++) {
-		unsigned int phase = f * AYANEO_RAINBOW_SPEED;
+	for (f = 0; !s_rainbow_stop; f++) {
 		unsigned int b = f & 1;
-		unsigned int *fb = buf_va[b];
 
-		for (y = 0; y < H; y++) {
-			unsigned int *row = fb + y * pitch_w;
-			unsigned int base = y + phase;
-
-			for (x = 0; x < W; x++)
-				row[x] = lut[(x + base) & 0xFF];
-		}
-
-		arch_clean_cache_range((unsigned int)fb, pitch_w * H * 4);
-
-		memset(&input, 0, sizeof(input));
-		input.layer     = FB_LAYER;
-		input.layer_en  = 1;
-		input.fmt       = redoffset_32bit ? eBGRA8888 : eRGBA8888;
-		input.addr      = buf_pa[b];
-		input.src_x     = 0;
-		input.src_y     = 0;
-		input.src_w     = W;
-		input.src_h     = H;
-		input.src_pitch = pitch_w * 4;
-		input.dst_x     = 0;
-		input.dst_y     = 0;
-		input.dst_w     = W;
-		input.dst_h     = H;
-		input.aen       = 1;
-		input.alpha     = 0xff;
-		primary_display_config_input(&input);
-		primary_display_trigger(TRUE);
-
-		/*
-		 * The normal boot flow only enables the backlight AFTER
-		 * mt_disp_show_boot_logo() returns, so without this the whole animation
-		 * plays on a dark panel and only the final frame is ever seen. Turn it
-		 * on once the first frame is on screen. platform.c enabling it again
-		 * after we return is harmless.
-		 */
+		ayaneo_rainbow_paint(lut, buf_va[b], buf_pa[b], W, H, pitch_w,
+				     f * AYANEO_RAINBOW_SPEED);
 		if (f == 0)
 			mt65xx_backlight_on();
-
-		if ((f % 40) == 0)
-			dprintf(CRITICAL, "AYANEO_RAINBOW: frame %u phase=%u buf=%u addr=0x%08x\n",
-				f, phase, b, buf_pa[b]);
-
-		mdelay(AYANEO_RAINBOW_FRAME_MS);
 	}
-	dprintf(CRITICAL, "AYANEO_RAINBOW: done\n");
+
+	/*
+	 * Leave buffer 0 (the videolfb base handed to the kernel) showing the last
+	 * frame so the handoff is clean rather than a stale offset-2 buffer.
+	 */
+	ayaneo_rainbow_paint(lut, buf_va[0], buf_pa[0], W, H, pitch_w,
+			     f * AYANEO_RAINBOW_SPEED);
+
+	dprintf(CRITICAL, "AYANEO_RAINBOW: thread stop after %u frames\n", f);
+	s_rainbow_exited = 1;
+	return 0;
+}
+
+void video_rainbow_boot_start(void)
+{
+	thread_t *t;
+
+	s_rainbow_stop = 0;
+	s_rainbow_exited = 0;
+	t = thread_create("ayaneo_rainbow", &ayaneo_rainbow_thread, NULL,
+			  DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
+	if (t)
+		thread_resume(t);
+	else
+		dprintf(CRITICAL, "AYANEO_RAINBOW: thread_create failed\n");
+}
+
+void video_rainbow_boot_stop(void)
+{
+	int guard = 0;
+
+	if (s_rainbow_exited)
+		return;
+	s_rainbow_stop = 1;
+	/* let the thread finish its in-flight frame; bounded so we never hang boot */
+	while (!s_rainbow_exited && guard++ < 500)
+		thread_sleep(2);
 }
 #endif /* AYANEO_RAINBOW_BOOT */
 
