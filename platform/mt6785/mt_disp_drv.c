@@ -777,6 +777,16 @@ static int ayaneo_rainbow_thread(void *arg)
 				     f * AYANEO_RAINBOW_SPEED);
 		if (f == 0)
 			mt65xx_backlight_on();
+
+		/*
+		 * Always yield a slice back to the boot thread. config_input() usually
+		 * blocks on FRAME_DONE (~vsync) and yields on its own, but in windows
+		 * where the path is momentarily idle it returns immediately; without an
+		 * explicit sleep the render loop would spin and starve boot (the boot
+		 * thread could not kick the watchdog -> reset). A short sleep guarantees
+		 * forward progress for boot and still leaves us near the panel refresh.
+		 */
+		thread_sleep(3);
 	}
 
 	/*
@@ -800,15 +810,15 @@ void video_rainbow_boot_start(void)
 	s_rainbow_stop = 0;
 	s_rainbow_exited = 0;
 	/*
-	 * HIGH_PRIORITY so the renderer preempts the boot thread for its short
-	 * per-frame paint (a few ms) and then blocks on config_input()'s FRAME_DONE
-	 * wait, during which the boot thread runs. At equal priority the heavy
-	 * midpoint of boot (loading + SHA-256 verifying the boot image) starved the
-	 * animation and it stuttered. The boot thread touches no display locks until
-	 * after we stop the thread, so there is no priority-inversion risk.
+	 * Run one step above the boot thread so the renderer wins scheduling ties
+	 * and gets its short per-frame paint in promptly (smoother than equal
+	 * priority), but NOT at HIGH_PRIORITY: that starved the boot thread whenever
+	 * config_input() did not block, so boot could not kick the watchdog and the
+	 * device reset. Combined with the explicit per-frame thread_sleep() in the
+	 * loop, boot always makes forward progress.
 	 */
 	t = thread_create("ayaneo_rainbow", &ayaneo_rainbow_thread, NULL,
-			  HIGH_PRIORITY, DEFAULT_STACK_SIZE);
+			  DEFAULT_PRIORITY + 1, DEFAULT_STACK_SIZE);
 	if (t)
 		thread_resume(t);
 #ifdef AYANEO_DEBUG_LOGGING
