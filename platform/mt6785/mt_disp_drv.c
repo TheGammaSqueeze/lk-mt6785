@@ -674,6 +674,15 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 #ifndef AYANEO_RAINBOW_LOOP_MS
 #define AYANEO_RAINBOW_LOOP_MS 14
 #endif
+/*
+ * Minimum time (ms) to keep the animation on screen. LK reaches the kernel
+ * handoff in ~1s, which is too short; if boot gets there sooner we hold at the
+ * handoff (the thread keeps scrolling) until this elapses. Set to 0 to just run
+ * for however long boot takes. This is added, bounded boot latency.
+ */
+#ifndef AYANEO_RAINBOW_MIN_MS
+#define AYANEO_RAINBOW_MIN_MS 4000
+#endif
 
 /*
  * AYANEO experiment: scrolling diagonal rainbow over the whole panel during LK.
@@ -690,6 +699,7 @@ extern void mt65xx_backlight_on(void);
 
 static volatile int s_rainbow_stop;
 static volatile int s_rainbow_exited;
+static volatile unsigned int s_rainbow_start_ms;
 
 /*
  * Precomputed rainbow strip: one period of the gradient (256 px) repeated, sized
@@ -794,6 +804,8 @@ static int ayaneo_rainbow_thread(void *arg)
 		       &s_rainbow_strip[r & 0xFF], W * 4);
 	arch_clean_cache_range((unsigned int)fb_addr, tall * pitch_w * 4);
 
+	s_rainbow_start_ms = (unsigned int)current_time();
+
 	for (f = 0; !s_rainbow_stop; f++) {
 		/*
 		 * Drive the scroll offset from real time, not the frame counter: without
@@ -856,6 +868,19 @@ void video_rainbow_boot_stop(void)
 
 	if (s_rainbow_exited)
 		return;
+
+	/*
+	 * Keep the animation on screen for at least AYANEO_RAINBOW_MIN_MS. The render
+	 * thread is still running here, so it keeps scrolling while we wait - this is
+	 * where the guaranteed animation duration comes from when boot reaches the
+	 * handoff early. Bounded so a stuck timer can never hang boot forever.
+	 */
+	while (!s_rainbow_exited && s_rainbow_start_ms &&
+	       (unsigned int)(current_time() - s_rainbow_start_ms) < AYANEO_RAINBOW_MIN_MS &&
+	       guard++ < 1000)
+		thread_sleep(20);
+
+	guard = 0;
 	s_rainbow_stop = 1;
 	/* let the thread finish its in-flight frame; bounded so we never hang boot */
 	while (!s_rainbow_exited && guard++ < 500)
