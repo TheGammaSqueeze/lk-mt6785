@@ -711,6 +711,9 @@ static volatile int s_rainbow_exited;
 static volatile int s_anim_complete;
 static volatile unsigned int s_rainbow_start_ms;
 
+/* nearest-neighbour source-x lookup so scaling is a table read, not a divide */
+static unsigned short s_sxmap[2048];
+
 /* unaligned little-endian reads from the blob (avoid alignment faults) */
 static unsigned int rd16(const unsigned char *p) { return p[0] | (p[1] << 8); }
 static unsigned int rd32(const unsigned char *p)
@@ -759,7 +762,7 @@ static int ayaneo_rainbow_thread(void *arg)
 	unsigned int disp_pa[2];
 	unsigned int *disp_va[2];
 	unsigned char *blob, *rgb;
-	unsigned int magic, sw, sh, nf, fps, i, off, dw, dh, xoff, yoff, start_ms;
+	unsigned int magic, sw, sh, nf, fps, i, off, dw, dh, xoff, yoff, start_ms, base;
 	int rd;
 
 	W = CFG_DISPLAY_WIDTH;
@@ -783,15 +786,25 @@ static int ayaneo_rainbow_thread(void *arg)
 		primary_display_config_input(&din);
 	}
 
-	rd = (int)partition_read(AYANEO_ANIM_PART, AYANEO_ANIM_HDR, blob,
-				 AYANEO_ANIM_READ_SZ);
-	magic = rd32(blob + 0);
-	sw = rd16(blob + 8);
-	sh = rd16(blob + 10);
-	nf = rd16(blob + 12);
-	fps = rd16(blob + 14);
-	if (rd < 16 || magic != AYANEO_ANIM_MAGIC || sw == 0 || sh == 0 ||
-	    sw * 2 > W || sh * 2 > H || nf == 0) {
+	rd = (int)partition_read(AYANEO_ANIM_PART, 0, blob, AYANEO_ANIM_READ_SZ);
+	/*
+	 * Accept either layout: a raw blob at offset 0 (fastboot flash) or one
+	 * wrapped with the 512-byte MTK image header (SP Flash Tool). Detect by the
+	 * GBA1 magic so the flashing method does not matter.
+	 */
+	base = 0;
+	if (rd32(blob + 0) != AYANEO_ANIM_MAGIC &&
+	    rd >= (int)(AYANEO_ANIM_HDR + 16) &&
+	    rd32(blob + AYANEO_ANIM_HDR) == AYANEO_ANIM_MAGIC)
+		base = AYANEO_ANIM_HDR;
+
+	magic = rd32(blob + base);
+	sw = rd16(blob + base + 8);
+	sh = rd16(blob + base + 10);
+	nf = rd16(blob + base + 12);
+	fps = rd16(blob + base + 14);
+	if (rd < (int)(base + 16) || magic != AYANEO_ANIM_MAGIC || sw == 0 || sh == 0 ||
+	    sw > 2048 || sh > H || nf == 0) {
 #ifdef AYANEO_DEBUG_LOGGING
 		dprintf(CRITICAL, "AYANEO_ANIM: bad blob rd=%d magic=0x%x %ux%u n=%u\n",
 			rd, magic, sw, sh, nf);
@@ -801,8 +814,17 @@ static int ayaneo_rainbow_thread(void *arg)
 	}
 	(void)fps;
 
-	dw = sw * 2; dh = sh * 2;
+	/* scale to fill the panel width, keep aspect, letterbox; clamp to height */
+	dw = W;
+	dh = W * sh / sw;
+	if (dh > H) { dh = H; dw = H * sw / sh; }
+	if (dw > 2048) dw = 2048;
 	xoff = (W - dw) / 2; yoff = (H - dh) / 2;
+	{
+		unsigned int ox;
+		for (ox = 0; ox < dw; ox++)
+			s_sxmap[ox] = (unsigned short)(ox * sw / dw);
+	}
 
 	/* black both buffers once for the letterbox bars */
 	memset(disp_va[0], 0, fb_size);
@@ -822,7 +844,7 @@ static int ayaneo_rainbow_thread(void *arg)
 		unsigned int clen = rd32(blob + off);	/* compressed length (stored) */
 		unsigned long zlen = clen;		/* zunzip in; overwritten with out len */
 		unsigned int *dst = disp_va[i & 1];
-		unsigned int sx, sy, target, now;
+		unsigned int ox, oy, target, now;
 
 		if (off + 4 + clen > AYANEO_ANIM_READ_SZ)
 			break;
@@ -830,20 +852,18 @@ static int ayaneo_rainbow_thread(void *arg)
 			break;
 		off += 4 + clen;
 
-		for (sy = 0; sy < sh; sy++) {
-			unsigned short *srow = (unsigned short *)(rgb + sy * sw * 2);
-			unsigned int *o0 = dst + (yoff + sy * 2) * pitch_w + xoff;
-			unsigned int *o1 = o0 + pitch_w;
+		/* RGB565 -> BGRA8888, nearest-neighbour scale into the letterbox region */
+		for (oy = 0; oy < dh; oy++) {
+			unsigned short *srow = (unsigned short *)(rgb + (oy * sh / dh) * sw * 2);
+			unsigned int *orow = dst + (yoff + oy) * pitch_w + xoff;
 
-			for (sx = 0; sx < sw; sx++) {
-				unsigned int v = srow[sx];
+			for (ox = 0; ox < dw; ox++) {
+				unsigned int v = srow[s_sxmap[ox]];
 				unsigned int r = ((v >> 11) & 0x1f) << 3;
 				unsigned int g = ((v >> 5) & 0x3f) << 2;
 				unsigned int b = (v & 0x1f) << 3;
-				unsigned int c = 0xFF000000u | (r << 16) | (g << 8) | b;
 
-				o0[sx * 2] = c; o0[sx * 2 + 1] = c;
-				o1[sx * 2] = c; o1[sx * 2 + 1] = c;
+				orow[ox] = 0xFF000000u | (r << 16) | (g << 8) | b;
 			}
 		}
 		arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w),
