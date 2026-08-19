@@ -664,9 +664,15 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 
 #ifdef AYANEO_RAINBOW_BOOT
 #include <kernel/thread.h>
+#include <platform.h>			/* current_time() */
 
-#ifndef AYANEO_RAINBOW_SPEED
-#define AYANEO_RAINBOW_SPEED  2
+/* Milliseconds the scroll takes to advance one rainbow row. Lower = faster. */
+#ifndef AYANEO_RAINBOW_MS_PER_ROW
+#define AYANEO_RAINBOW_MS_PER_ROW 6
+#endif
+/* Loop pacing target (~vsync); the boot thread runs during this sleep. */
+#ifndef AYANEO_RAINBOW_LOOP_MS
+#define AYANEO_RAINBOW_LOOP_MS 14
 #endif
 
 /*
@@ -789,19 +795,23 @@ static int ayaneo_rainbow_thread(void *arg)
 	arch_clean_cache_range((unsigned int)fb_addr, tall * pitch_w * 4);
 
 	for (f = 0; !s_rainbow_stop; f++) {
-		unsigned int off = (f * AYANEO_RAINBOW_SPEED) & (AYANEO_RB_PERIOD - 1);
+		/*
+		 * Drive the scroll offset from real time, not the frame counter: without
+		 * the old per-frame render, config_input() no longer reliably blocks on
+		 * FRAME_DONE, so the loop free-runs and a frame-based offset would race
+		 * (huge per-refresh jumps). Time-based keeps the scroll speed constant no
+		 * matter how fast the loop spins.
+		 */
+		unsigned int off = ((unsigned int)(current_time() / AYANEO_RAINBOW_MS_PER_ROW))
+				   & (AYANEO_RB_PERIOD - 1);
 		unsigned int pa = (unsigned int)fb_addr_pa + off * pitch_w * 4;
 
 		ayaneo_present(pa, W, H, pitch_w);
 		if (f == 0)
 			mt65xx_backlight_on();
 
-		/*
-		 * config_input() normally blocks on FRAME_DONE (~vsync) and yields, but
-		 * a tiny sleep guarantees the boot thread makes progress (and can kick
-		 * the watchdog) even in the rare windows where it returns immediately.
-		 */
-		thread_sleep(1);
+		/* pace to roughly one panel refresh; boot runs during the sleep */
+		thread_sleep(AYANEO_RAINBOW_LOOP_MS);
 	}
 
 	/* clean handoff: leave the buffer base (== videolfb) as the shown window */
