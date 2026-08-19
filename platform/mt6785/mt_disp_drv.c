@@ -682,8 +682,11 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 #define AYANEO_ANIM_MAX_MS 8000
 #endif
 
-/* Compressed animation blob lives in the "logo" partition (13 MB). */
+/* Compressed animation blob lives in the "logo" partition (13 MB). The image
+ * flashed there is wrapped with the standard 512-byte MTK image header (so SP
+ * Flash Tool's download agent accepts the partition type), so skip it. */
 #define AYANEO_ANIM_PART      "logo"
+#define AYANEO_ANIM_HDR       512
 #define AYANEO_ANIM_MAGIC     0x31414247u	/* 'GBA1' little-endian */
 #define AYANEO_ANIM_READ_SZ   (3 * 1024 * 1024)	/* whole blob is ~2.9 MB */
 
@@ -780,7 +783,8 @@ static int ayaneo_rainbow_thread(void *arg)
 		primary_display_config_input(&din);
 	}
 
-	rd = (int)partition_read(AYANEO_ANIM_PART, 0, blob, AYANEO_ANIM_READ_SZ);
+	rd = (int)partition_read(AYANEO_ANIM_PART, AYANEO_ANIM_HDR, blob,
+				 AYANEO_ANIM_READ_SZ);
 	magic = rd32(blob + 0);
 	sw = rd16(blob + 8);
 	sh = rd16(blob + 10);
