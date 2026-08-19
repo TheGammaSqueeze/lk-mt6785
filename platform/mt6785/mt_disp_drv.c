@@ -684,6 +684,8 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
  * (ovl_dirty=1), which is how a running video-mode path actually takes a new
  * frame (the same path the fastboot menu / AVB warnings use).
  */
+extern void mt65xx_backlight_on(void);
+
 void video_rainbow_boot(void)
 {
 	unsigned int lut[256];
@@ -763,6 +765,16 @@ void video_rainbow_boot(void)
 		input.alpha     = 0xff;
 		primary_display_config_input(&input);
 		primary_display_trigger(TRUE);
+
+		/*
+		 * The normal boot flow only enables the backlight AFTER
+		 * mt_disp_show_boot_logo() returns, so without this the whole animation
+		 * plays on a dark panel and only the final frame is ever seen. Turn it
+		 * on once the first frame is on screen. platform.c enabling it again
+		 * after we return is harmless.
+		 */
+		if (f == 0)
+			mt65xx_backlight_on();
 
 		if ((f % 40) == 0)
 			dprintf(CRITICAL, "AYANEO_RAINBOW: frame %u phase=%u buf=%u addr=0x%08x\n",
