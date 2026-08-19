@@ -682,10 +682,16 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 #define AYANEO_ANIM_MAX_MS 8000
 #endif
 
-/* Compressed animation blob lives in the "logo" partition (13 MB). The image
- * flashed there is wrapped with the standard 512-byte MTK image header (so SP
- * Flash Tool's download agent accepts the partition type), so skip it. */
-#define AYANEO_ANIM_PART      "logo"
+/*
+ * Compressed animation blob lives in the unused inactive boot slot, boot_b
+ * (33 MB, raw NORMAL_ROM). The logo partition's DA verification buffer is too
+ * small (~1.5 MB) for our blob, but boot_b is raw-flashed with a large buffer
+ * and no MTK-header type check, so the full-quality blob fits. The device runs
+ * slot A (pinned) and skips verification, so boot_b is never selected.
+ * The player still auto-detects a raw (offset 0) or MTK-header-wrapped
+ * (offset AYANEO_ANIM_HDR) layout.
+ */
+#define AYANEO_ANIM_PART      "boot_b"
 #define AYANEO_ANIM_HDR       512
 #define AYANEO_ANIM_MAGIC     0x31414247u	/* 'GBA1' little-endian */
 #define AYANEO_ANIM_READ_SZ   (3 * 1024 * 1024)	/* whole blob is ~2.9 MB */

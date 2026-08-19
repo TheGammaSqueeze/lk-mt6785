@@ -1,6 +1,6 @@
 import glob, zlib, struct, numpy as np
 from PIL import Image
-RES=(352,198); FADE=12
+RES=(640,360); FADE=15
 files=sorted(glob.glob('/tmp/gba_frames/f_*.png'))
 frames=[np.asarray(Image.open(f).convert('RGB').resize(RES, Image.LANCZOS), dtype=np.float32) for f in files]
 last=frames[-1]
