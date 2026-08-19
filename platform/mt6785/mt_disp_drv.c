@@ -664,13 +664,14 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 
 #ifdef AYANEO_RAINBOW_BOOT
 #ifndef AYANEO_RAINBOW_FRAMES
-#define AYANEO_RAINBOW_FRAMES 150
+#define AYANEO_RAINBOW_FRAMES 90
 #endif
 #ifndef AYANEO_RAINBOW_SPEED
 #define AYANEO_RAINBOW_SPEED  2
 #endif
+/* config_input() already blocks on FRAME_DONE (~vsync), so no extra delay. */
 #ifndef AYANEO_RAINBOW_FRAME_MS
-#define AYANEO_RAINBOW_FRAME_MS 12
+#define AYANEO_RAINBOW_FRAME_MS 0
 #endif
 
 /*
@@ -687,22 +688,30 @@ void video_rainbow_boot(void)
 {
 	unsigned int lut[256];
 	unsigned int i, f, x, y, W, H, pitch_w;
-	unsigned int *fb;
+	unsigned int *buf_va[2];
+	unsigned int buf_pa[2];
 	disp_input_config input;
 
 	W = CFG_DISPLAY_WIDTH;
 	H = CFG_DISPLAY_HEIGHT;
 	pitch_w = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT);
-	fb = (unsigned int *)mt_get_fb_addr();
 
-	dprintf(CRITICAL, "AYANEO_RAINBOW: enter W=%u H=%u fb=0x%08x fb_pa=0x%08x redoff=%u vmode=%d frames=%d\n",
-		W, H, (unsigned int)fb, (unsigned int)fb_addr_pa,
+	/*
+	 * Two scan-out buffers. config_input() with the SAME address is treated as
+	 * "no change" by the OVL and never re-fetches, so a single buffer stays
+	 * static. Alternate between buffer 0 (fb_addr, offset 0) and buffer 2
+	 * (the logo tempfb, offset 2, unused because we replace the logo) so every
+	 * frame hands the OVL a genuinely different address and forces a re-latch.
+	 */
+	buf_va[0] = (unsigned int *)fb_addr;
+	buf_va[1] = (unsigned int *)((unsigned char *)fb_addr + 2 * fb_size);
+	buf_pa[0] = (unsigned int)fb_addr_pa;
+	buf_pa[1] = (unsigned int)fb_addr_pa + 2 * fb_size;
+
+	dprintf(CRITICAL, "AYANEO_RAINBOW: enter W=%u H=%u fb_pa0=0x%08x fb_pa1=0x%08x redoff=%u vmode=%d frames=%d\n",
+		W, H, buf_pa[0], buf_pa[1],
 		(unsigned int)redoffset_32bit, primary_display_is_video_mode(),
 		AYANEO_RAINBOW_FRAMES);
-	if (!fb) {
-		dprintf(CRITICAL, "AYANEO_RAINBOW: fb NULL, abort\n");
-		return;
-	}
 
 	for (i = 0; i < 256; i++) {
 		unsigned int h = i * 6;
@@ -723,6 +732,8 @@ void video_rainbow_boot(void)
 
 	for (f = 0; f < AYANEO_RAINBOW_FRAMES; f++) {
 		unsigned int phase = f * AYANEO_RAINBOW_SPEED;
+		unsigned int b = f & 1;
+		unsigned int *fb = buf_va[b];
 
 		for (y = 0; y < H; y++) {
 			unsigned int *row = fb + y * pitch_w;
@@ -732,13 +743,13 @@ void video_rainbow_boot(void)
 				row[x] = lut[(x + base) & 0xFF];
 		}
 
-		arch_clean_cache_range((unsigned int)fb_addr, DISP_GetFBRamSize());
+		arch_clean_cache_range((unsigned int)fb, pitch_w * H * 4);
 
 		memset(&input, 0, sizeof(input));
 		input.layer     = FB_LAYER;
 		input.layer_en  = 1;
 		input.fmt       = redoffset_32bit ? eBGRA8888 : eRGBA8888;
-		input.addr      = (unsigned int)fb_addr_pa;
+		input.addr      = buf_pa[b];
 		input.src_x     = 0;
 		input.src_y     = 0;
 		input.src_w     = W;
@@ -754,7 +765,8 @@ void video_rainbow_boot(void)
 		primary_display_trigger(TRUE);
 
 		if ((f % 40) == 0)
-			dprintf(CRITICAL, "AYANEO_RAINBOW: frame %u phase=%u\n", f, phase);
+			dprintf(CRITICAL, "AYANEO_RAINBOW: frame %u phase=%u buf=%u addr=0x%08x\n",
+				f, phase, b, buf_pa[b]);
 
 		mdelay(AYANEO_RAINBOW_FRAME_MS);
 	}
