@@ -696,6 +696,9 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 #define AYANEO_ANIM_MAGIC     0x31414247u	/* 'GBA1' little-endian */
 /* max decoded source frame we support (1280x720 RGB565); source is streamed */
 #define AYANEO_ANIM_RGBMAX    (1280 * 720 * 2)
+/* number of trailing frames (the fade) always played sequentially, never
+ * frame-skipped, so the fade-to-black always completes on screen */
+#define AYANEO_ANIM_TAIL      30
 
 extern int zunzip(unsigned char *src, unsigned long *lenp, void *dst,
 		  int dstlen, int offset);
@@ -795,6 +798,30 @@ static int anim_ensure(const char *part, unsigned char *sbuf, unsigned int scap,
 	return (*svalid - *spos >= need);
 }
 
+/* RGB565 (sw x sh) -> BGRA8888, nearest-neighbour scale into the letterbox rect */
+static void anim_blit(const unsigned char *rgb, unsigned int *dst,
+		      unsigned int sw, unsigned int sh, unsigned int dw, unsigned int dh,
+		      unsigned int xoff, unsigned int yoff, unsigned int pitch_w)
+{
+	unsigned int ox, oy;
+
+	for (oy = 0; oy < dh; oy++) {
+		const unsigned short *srow = (const unsigned short *)
+			(rgb + (oy * sh / dh) * sw * 2);
+		unsigned int *orow = dst + (yoff + oy) * pitch_w + xoff;
+
+		for (ox = 0; ox < dw; ox++) {
+			unsigned int v = srow[s_sxmap[ox]];
+			unsigned int r = ((v >> 11) & 0x1f) << 3;
+			unsigned int g = ((v >> 5) & 0x3f) << 2;
+			unsigned int b = (v & 0x1f) << 3;
+
+			orow[ox] = 0xFF000000u | (r << 16) | (g << 8) | b;
+		}
+	}
+	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
+}
+
 static int ayaneo_rainbow_thread(void *arg)
 {
 	unsigned int W, H, pitch_w;
@@ -888,24 +915,25 @@ static int ayaneo_rainbow_thread(void *arg)
 	 */
 	i = 0;			/* frames consumed from the stream */
 	{
-		unsigned int disp_i = 0;
+		unsigned int disp_i = 0, clen, limit;
+		unsigned long zlen;
 		int shown = 0;
 
+		limit = (nf > AYANEO_ANIM_TAIL) ? nf - AYANEO_ANIM_TAIL : 0;
+
+		/* phase 1: frame-skip the content to hold real-time speed */
 		while (!s_rainbow_stop) {
 			unsigned int want = (unsigned int)((unsigned long)
 				(current_time() - start_ms) * fps / 1000u);
-			unsigned int *dst = disp_va[disp_i & 1];
 
-			if (want >= nf)
+			if (want >= limit)
 				break;
 			if (want < i) {		/* ahead of schedule -> wait */
 				thread_sleep(2);
 				continue;
 			}
-			while (i <= want && !s_rainbow_stop) {
+			while (i <= want && i < limit && !s_rainbow_stop) {
 				int show = (i == want);
-				unsigned int clen, ox, oy;
-				unsigned long zlen;
 
 				if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
 						 &poff, &svalid, &spos, 4))
@@ -927,27 +955,46 @@ static int ayaneo_rainbow_thread(void *arg)
 				i++;
 				if (!show)
 					continue;
-
-				for (oy = 0; oy < dh; oy++) {
-					unsigned short *srow = (unsigned short *)
-						(rgb + (oy * sh / dh) * sw * 2);
-					unsigned int *orow = dst + (yoff + oy) * pitch_w + xoff;
-
-					for (ox = 0; ox < dw; ox++) {
-						unsigned int v = srow[s_sxmap[ox]];
-						unsigned int r = ((v >> 11) & 0x1f) << 3;
-						unsigned int g = ((v >> 5) & 0x3f) << 2;
-						unsigned int b = (v & 0x1f) << 3;
-
-						orow[ox] = 0xFF000000u | (r << 16) | (g << 8) | b;
-					}
-				}
-				arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w),
-						       dh * pitch_w * 4);
+				anim_blit(rgb, disp_va[disp_i & 1], sw, sh, dw, dh,
+					  xoff, yoff, pitch_w);
 				ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
 				disp_i++;
 				if (!shown) { mt65xx_backlight_on(); shown = 1; }
 			}
+		}
+
+		/*
+		 * phase 2: play the tail (the fade) sequentially, never skipping, so the
+		 * fade-to-black always completes on screen even if phase 1 fell behind.
+		 * Paced to real time but a slow decode only stretches the short tail.
+		 */
+		for (; i < nf && !s_rainbow_stop; i++) {
+			unsigned int target, now;
+
+			if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
+					 &poff, &svalid, &spos, 4))
+				goto anim_done;
+			clen = rd32(sbuf + spos);
+			spos += 4;
+			if (clen == 0 || clen > scap - 4)
+				goto anim_done;
+			if (!anim_ensure(AYANEO_ANIM_PART, sbuf, scap,
+					 &poff, &svalid, &spos, clen))
+				goto anim_done;
+			zlen = clen;
+			if (zunzip(sbuf + spos, &zlen, rgb, (int)(sw * sh * 2), 0) != 0)
+				goto anim_done;
+			spos += clen;
+			anim_blit(rgb, disp_va[disp_i & 1], sw, sh, dw, dh,
+				  xoff, yoff, pitch_w);
+			ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
+			disp_i++;
+			if (!shown) { mt65xx_backlight_on(); shown = 1; }
+
+			target = start_ms + (i + 1) * 1000u / fps;
+			now = (unsigned int)current_time();
+			if (now < target)
+				thread_sleep(target - now);
 		}
 	}
 anim_done:
