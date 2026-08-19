@@ -6,6 +6,7 @@
 #include <platform/lcd_drv.h>
 #include <platform/mt_logo.h>
 #include <platform/disp_drv_platform.h>
+#include <platform/mt_gpt.h>
 
 #include <target/board.h>
 #include "lcm_drv.h"
@@ -139,10 +140,18 @@ void mt_logo_get_custom_if(void)
  * moving rainbow.
  */
 #ifndef AYANEO_RAINBOW_FRAMES
-#define AYANEO_RAINBOW_FRAMES 120
+#define AYANEO_RAINBOW_FRAMES 80
 #endif
 #ifndef AYANEO_RAINBOW_SPEED
 #define AYANEO_RAINBOW_SPEED  3
+#endif
+/*
+ * Per-frame delay. Without it the whole loop paints all frames faster than the
+ * panel refreshes, so only the final (static) frame is ever scanned out. ~16 ms
+ * holds each frame for roughly one 60 Hz refresh, making the scroll visible.
+ */
+#ifndef AYANEO_RAINBOW_FRAME_MS
+#define AYANEO_RAINBOW_FRAME_MS 16
 #endif
 
 static void ayaneo_build_rainbow_lut(unsigned int *lut)
@@ -197,6 +206,8 @@ static void mt_disp_show_rainbow_boot(void)
 		}
 		/* flush cache + trigger the DSI panel to scan out this frame */
 		mt_disp_update(0, 0, W, H);
+		/* hold the frame long enough for the panel to actually show it */
+		mdelay(AYANEO_RAINBOW_FRAME_MS);
 	}
 }
 #endif /* AYANEO_RAINBOW_BOOT */
