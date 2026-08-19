@@ -261,6 +261,17 @@ static void hp_pull_down_off(void)
 	}
 }
 
+/* pull-down HPL/R to AVSS28 enable: i 0->7, hp_pull_down(true). Actively clamps
+ * the HP outputs to VCM so there is no charge for the amp to discharge (pop). */
+static void hp_pull_down_on(void)
+{
+	int i;
+	for (i = 0; i <= 7; i++) {
+		pmic_rmw(MT6359_AUDDEC_ANA_CON2, (0x7 << 12), ((unsigned)i << 12));
+		udelay(120);
+	}
+}
+
 /* ---------- headphone driver power-up (mtk_hp_enable, non-hifi) ---------- */
 /*
  * The loudspeaker external class-D amp is wired to the MT6359 headphone
@@ -441,7 +452,10 @@ static void audio_shutdown(void)
 	mt6359_hp_mute_ramp();
 	mdelay(30);			/* drain the codec pipeline to VCM */
 
-	/* HP output is now silent and settled: cut the amp (quietest moment). */
+	/* actively clamp the HP outputs to VCM so the amp has no charge to dump */
+	hp_pull_down_on();
+
+	/* HP output is now silent, settled and clamped: cut the amp (quietest). */
 	spk_amp_enable(0);
 	mdelay(10);			/* let the amp fully discharge */
 
