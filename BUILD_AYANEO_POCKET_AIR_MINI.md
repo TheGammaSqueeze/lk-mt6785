@@ -53,3 +53,11 @@ To match the patched stock lk this device ran, the source carries:
   never shows the corruption screen or powers off.
 - Tuned panel drive voltages: VGH/VGL 0x78, charge pump 0x48, AVDD 0xFF,
   AVEE 0x60 (see the panel driver defines).
+
+## One-step build and sign
+
+    ./build_ayaneo_pocket_air_mini.sh
+
+Produces `out/lk_a_signed.img` (2 MB, flashable). Everything needed is in the
+repo: the bundled toolchain, the MTK default test keys and the device cert
+blobs (`tools/ayaneo/`). Flash with `fastboot flash lk_a out/lk_a_signed.img`.

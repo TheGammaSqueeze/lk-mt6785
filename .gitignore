@@ -1,3 +1,7 @@
 build-*
 *.img
 sig
+
+# AYANEO build output
+build-k85v1_64/
+out/
