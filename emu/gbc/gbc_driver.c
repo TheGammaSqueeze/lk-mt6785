@@ -92,9 +92,17 @@ static int gbc_emu_thread(void *arg)
 
 	for (;;) {
 		unsigned samples = GBC_SND_MAX;
-		long r = gbc_run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
+		long r;
+
+		if (frame == 0)
+			dprintf(CRITICAL, "GBC: entering first runFor\n");
+		r = gbc_run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
+		if (frame == 0)
+			dprintf(CRITICAL, "GBC: first runFor ret=%ld samples=%u\n", r, samples);
 
 		if (r >= 0) {			/* a video frame completed */
+			if (frame == 0)
+				dprintf(CRITICAL, "GBC: showing first frame\n");
 			ayaneo_gbc_show_frame(vbuf);
 			if ((frame % 60) == 0)
 				dprintf(CRITICAL, "GBC: frame %u\n", frame);
