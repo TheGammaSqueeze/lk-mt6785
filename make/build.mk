@@ -46,7 +46,7 @@ ifeq ($(BUILD_DEVINFO_LIB), yes)
 	@ar cq $(LK_TOP_DIR)/app/mt_boot/lib/libdevinfo.a $(DEVINFO_OBJS)
 endif
 	@echo linking $@
-	$(NOECHO)$(LD) $(LDFLAGS) -T $(LINKER_SCRIPT) $(OUTPUT_TZ_BIN) $(ALLOBJS) $(LIBGCC) $(LIBSEC) $(LIBSEC_PLAT) $(wildcard $(PICACHU_LIB)) -o $@
+	$(NOECHO)$(LD) $(LDFLAGS) -T $(LINKER_SCRIPT) $(OUTPUT_TZ_BIN) $(ALLOBJS) $(wildcard $(GBC_LIB)) $(LIBGCC) $(LIBSEC) $(LIBSEC_PLAT) $(wildcard $(PICACHU_LIB)) -o $@
 else
 $(OUTELF): $(ALLOBJS) $(LINKER_SCRIPT)
 ifeq ($(BUILD_SEC_LIB),yes)
@@ -74,7 +74,7 @@ ifeq ($(BUILD_HW_CRYPTO_LIB),yes)
 	@ar cq $(LK_TOP_DIR)/app/mt_boot/lib/libhw_crypto.a $(HW_CRYPTO_OBJS)
 endif
 	@echo linking $@
-	$(NOECHO)$(LD) $(LDFLAGS) -T $(LINKER_SCRIPT) $(ALLOBJS) $(LIBGCC) $(LIBSEC) $(LIBSEC_PLAT) $(LIBHW_CRYPTO) $(wildcard $(PICACHU_LIB)) -o $@
+	$(NOECHO)$(LD) $(LDFLAGS) -T $(LINKER_SCRIPT) $(ALLOBJS) $(wildcard $(GBC_LIB)) $(LIBGCC) $(LIBSEC) $(LIBSEC_PLAT) $(LIBHW_CRYPTO) $(wildcard $(PICACHU_LIB)) -o $@
 endif
 
 $(OUTELF).sym: $(OUTELF)

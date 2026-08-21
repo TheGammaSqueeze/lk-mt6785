@@ -11,7 +11,7 @@ AR=arm-none-eabi-ar
 INC="-I$CORE/src -I$CORE/include -I$DIR/common -I$DIR/common/resample \
      -I$CORE/libretro -I$CORE/libretro-common/include"
 FLAGS="-march=armv7-a -mfloat-abi=soft -mthumb-interwork -ffreestanding \
-       -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit \
+       -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -fno-short-enums \
        -Os -fno-common -D__LIBRETRO__ -DVIDEO_RGB565 $INC"
 
 OBJDIR="$DIR/obj"

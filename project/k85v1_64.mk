@@ -57,6 +57,14 @@ endif
 # simple, flexible knob for future per-user preferences.
 AYANEO_AUDIO_VOLUME ?= 40
 DEFINES += AYANEO_AUDIO_VOLUME=$(AYANEO_AUDIO_VOLUME)
+# Experimental: after the boot animation, run a GBC emulator (gambatte) in LK
+# instead of booting the kernel. The core archive (emu/gbc/libgbc.a) must be
+# prebuilt via emu/gbc/build_core.sh.
+AYANEO_GBC ?= yes
+ifeq ($(AYANEO_GBC),yes)
+DEFINES += AYANEO_GBC
+GBC_LIB := $(LK_TOP_DIR)/emu/gbc/libgbc.a
+endif
 CUSTOM_LK_USB_UNIQUE_SERIAL=no
 MTK_TINYSYS_SCP_SUPPORT = no
 MTK_PROTOCOL1_RAT_CONFIG = C/Lf/Lt/W/T/G

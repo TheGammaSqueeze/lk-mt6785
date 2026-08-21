@@ -762,6 +762,62 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 	primary_display_trigger(TRUE);
 }
 
+#ifdef AYANEO_GBC
+/*
+ * Display a 160x144 RGB565 Game Boy frame from the emulator: integer 6x scale
+ * (960x864) centred on the panel with black borders. Double-buffered like the
+ * animation so the OVL re-latches in DSI video mode. The static black borders
+ * are cleared once; per frame only the game area is blitted.
+ */
+#define GBC_SRC_W	160
+#define GBC_SRC_H	144
+#define GBC_SCALE	6
+void ayaneo_gbc_show_frame(const unsigned short *pix)
+{
+	static int inited = 0, buf = 0;
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	unsigned int dw = GBC_SRC_W * GBC_SCALE, dh = GBC_SRC_H * GBC_SCALE;
+	unsigned int xoff = (W - dw) / 2, yoff = (H - dh) / 2;
+	unsigned int *dst;
+	unsigned int dpa;
+	unsigned int sx, sy, ix, iy;
+
+	if (!inited) {
+		memset(fb_addr, 0, fb_size);
+		memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
+		arch_clean_cache_range((unsigned int)fb_addr, fb_size);
+		arch_clean_cache_range((unsigned int)fb_addr + fb_size, fb_size);
+		inited = 1;
+	}
+
+	dst = (unsigned int *)((unsigned char *)fb_addr + (buf ? fb_size : 0));
+	dpa = (unsigned int)fb_addr_pa + (buf ? fb_size : 0);
+
+	for (sy = 0; sy < GBC_SRC_H; sy++) {
+		const unsigned short *srow = pix + sy * GBC_SRC_W;
+		for (sx = 0; sx < GBC_SRC_W; sx++) {
+			unsigned int v = srow[sx];
+			unsigned int r = ((v >> 11) & 0x1f) << 3;
+			unsigned int g = ((v >> 5) & 0x3f) << 2;
+			unsigned int b = (v & 0x1f) << 3;
+			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+
+			for (iy = 0; iy < GBC_SCALE; iy++) {
+				unsigned int *o = dst +
+					(yoff + sy * GBC_SCALE + iy) * pitch_w +
+					(xoff + sx * GBC_SCALE);
+				for (ix = 0; ix < GBC_SCALE; ix++)
+					o[ix] = px;
+			}
+		}
+	}
+	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
+	ayaneo_present(dpa, W, H, pitch_w);
+	buf ^= 1;
+}
+#endif /* AYANEO_GBC */
+
 /*
  * Boot animation player. Reads a compressed frame blob from the "logo"
  * partition (header: 'GBA1', ver, w, h, nframes, fps; then per-frame
