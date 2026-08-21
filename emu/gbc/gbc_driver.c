@@ -23,6 +23,8 @@ extern long gbc_run(unsigned short *video, int pitch,
 extern void *memcpy(void *, const void *, unsigned int);
 extern time_t current_time(void);
 extern void ayaneo_gbc_show_frame(const unsigned short *pix);	/* mt_disp_drv.c */
+extern void mtk_wdt_restart(void);	/* kick the hardware watchdog */
+extern void mtk_wdt_disable(void);
 
 /* ---- freestanding externals the core needs that LK/libgcc lack ----
  * (cartridge_set_rumble is a C++ symbol, defined in gbc_shim.cpp) */
@@ -90,6 +92,10 @@ static int gbc_emu_thread(void *arg)
 	dprintf(CRITICAL, "GBC: loaded romsz=%u heap_used=%u\n", romsz, gbc_heap_used());
 	gbc_ready = 1;
 
+	/* we run forever with no kernel handoff, so the boot watchdog would fire
+	 * after a few seconds - disable it and also kick it every frame. */
+	mtk_wdt_disable();
+
 	for (;;) {
 		unsigned samples = GBC_SND_MAX;
 		long r;
@@ -104,6 +110,7 @@ static int gbc_emu_thread(void *arg)
 			if (frame == 0)
 				dprintf(CRITICAL, "GBC: showing first frame\n");
 			ayaneo_gbc_show_frame(vbuf);
+			mtk_wdt_restart();	/* keep the watchdog happy */
 			if ((frame % 60) == 0)
 				dprintf(CRITICAL, "GBC: frame %u\n", frame);
 			frame++;
