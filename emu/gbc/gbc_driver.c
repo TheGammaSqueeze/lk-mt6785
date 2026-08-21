@@ -10,6 +10,13 @@
 #include <kernel/thread.h>
 #include <part_interface.h>
 
+/* per-frame logging over UART is slow; keep it only in debug builds */
+#ifdef AYANEO_DEBUG_LOGGING
+#define GBC_LOG(...)	dprintf(CRITICAL, __VA_ARGS__)
+#else
+#define GBC_LOG(...)	do {} while (0)
+#endif
+
 /* ---- extern C bridge into the gambatte core (emu/gbc/gbc_wrap.cpp) ---- */
 extern void gbc_heap_init(void *base, unsigned size);
 extern unsigned gbc_heap_used(void);
@@ -96,25 +103,30 @@ static int gbc_emu_thread(void *arg)
 	 * after a few seconds - disable it and also kick it every frame. */
 	mtk_wdt_disable();
 
-	for (;;) {
-		unsigned samples = GBC_SND_MAX;
-		long r;
+	{
+		unsigned start = (unsigned)current_time();
 
-		if (frame == 0)
-			dprintf(CRITICAL, "GBC: entering first runFor\n");
-		r = gbc_run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
-		if (frame == 0)
-			dprintf(CRITICAL, "GBC: first runFor ret=%ld samples=%u\n", r, samples);
+		for (;;) {
+			unsigned samples = GBC_SND_MAX;
+			long r = gbc_run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
 
-		if (r >= 0) {			/* a video frame completed */
-			if (frame == 0)
-				dprintf(CRITICAL, "GBC: showing first frame\n");
-			ayaneo_gbc_show_frame(vbuf);
-			mtk_wdt_restart();	/* keep the watchdog happy */
-			if ((frame % 60) == 0)
-				dprintf(CRITICAL, "GBC: frame %u\n", frame);
-			frame++;
-			thread_sleep(12);	/* rough ~60fps pacing (refined later) */
+			if (r >= 0) {		/* a video frame completed */
+				unsigned target, now;
+
+				ayaneo_gbc_show_frame(vbuf);
+				mtk_wdt_restart();
+				frame++;
+				if ((frame % 120) == 0)
+					GBC_LOG("GBC: frame %u\n", frame);
+
+				/* pace to the GB's ~59.7275 Hz; if emulation can't keep
+				 * up we just run flat out (no negative sleep). */
+				target = start + (unsigned)(((unsigned long long)frame
+							     * 100000ull) / 5973u);
+				now = (unsigned)current_time();
+				if ((int)(target - now) > 0)
+					thread_sleep(target - now);
+			}
 		}
 	}
 	return 0;
