@@ -28,7 +28,7 @@ $(OUTELF)-sign.img: $(OUTELF)-dtb.img
 	$(NOECHO)perl $(LK_TOP_DIR)/scripts/sign/SignTool.pl "$(PROJECT)" "$(PROJECT)" "$(LK_TOP_DIR)/certs" "yes" "2048" "true" "$(BUILDDIR)" "lk.img" "no"
 
 ifeq ($(ENABLE_TRUSTZONE), 1)
-$(OUTELF): $(ALLOBJS) $(LINKER_SCRIPT) $(OUTPUT_TZ_BIN)
+$(OUTELF): $(ALLOBJS) $(LINKER_SCRIPT) $(OUTPUT_TZ_BIN) $(wildcard $(GBC_LIB))
 ifeq ($(BUILD_SEC_LIB),yes)
 	@echo delete old security library
 	@rm -rf $(LK_TOP_DIR)/app/mt_boot/lib/libcrypto.a
@@ -48,7 +48,7 @@ endif
 	@echo linking $@
 	$(NOECHO)$(LD) $(LDFLAGS) -T $(LINKER_SCRIPT) $(OUTPUT_TZ_BIN) $(ALLOBJS) $(wildcard $(GBC_LIB)) $(LIBGCC) $(LIBSEC) $(LIBSEC_PLAT) $(wildcard $(PICACHU_LIB)) -o $@
 else
-$(OUTELF): $(ALLOBJS) $(LINKER_SCRIPT)
+$(OUTELF): $(ALLOBJS) $(LINKER_SCRIPT) $(wildcard $(GBC_LIB))
 ifeq ($(BUILD_SEC_LIB),yes)
 	@echo delete old security library
 	@rm -rf $(LK_TOP_DIR)/app/mt_boot/lib/libcrypto.a

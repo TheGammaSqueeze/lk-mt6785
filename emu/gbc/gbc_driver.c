@@ -24,8 +24,8 @@ extern void *memcpy(void *, const void *, unsigned int);
 extern time_t current_time(void);
 extern void ayaneo_gbc_show_frame(const unsigned short *pix);	/* mt_disp_drv.c */
 
-/* ---- freestanding-C++ externals the core needs that LK/libgcc lack ---- */
-void cartridge_set_rumble(unsigned on) { (void)on; }
+/* ---- freestanding externals the core needs that LK/libgcc lack ----
+ * (cartridge_set_rumble is a C++ symbol, defined in gbc_shim.cpp) */
 int  atexit(void (*fn)(void)) { (void)fn; return 0; }
 long time(long *t) { long v = (long)current_time() / 1000; if (t) *t = v; return v; }
 float powf(float b, float e) { (void)e; return b; }	/* color-correction only; unused */

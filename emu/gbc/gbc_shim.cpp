@@ -60,6 +60,9 @@ void gambatte_log(int, const char *, ...) {}
 
 }
 
+/* rumble callback the cartridge code calls (C++ symbol) - no rumble in LK */
+void cartridge_set_rumble(unsigned) {}
+
 namespace std {
 /* STL containers call these on error paths; with -fno-exceptions they must not
  * return. Halt (should never happen with a valid ROM and sized arena). */
