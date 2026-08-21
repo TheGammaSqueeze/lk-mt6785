@@ -622,3 +622,79 @@ void ayaneo_boot_audio_stop(void)
 	while (s_audio_active && guard++ < 400)
 		thread_sleep(5);
 }
+
+/* ================= streaming audio for the GBC emulator ================= */
+/*
+ * The emulator produces stereo audio at the Game Boy's native 2097152 Hz; we
+ * box-resample it to 48 kHz and stream it into a looping AFE DL ring that plays
+ * continuously. The run loop calls ayaneo_gbc_audio_submit() each frame to keep
+ * the ring fed ahead of the DMA read pointer.
+ */
+#define GBC_RING_FRAMES		16384u		/* power of two, ~341 ms @48k */
+#define GBC_SRC_HZ		2097152u
+#define GBC_DST_HZ		48000u
+
+static short s_gbc_ring[GBC_RING_FRAMES * 2] __attribute__((aligned(64)));
+static volatile int s_gbc_audio_on;
+static unsigned s_gbc_widx;			/* ring write cursor, in frames */
+static long long s_rs_accl, s_rs_accr;		/* box-filter accumulators */
+static unsigned s_rs_n, s_rs_phase;		/* samples accumulated, phase */
+
+void ayaneo_gbc_audio_init(void)
+{
+	if (s_gbc_audio_on)
+		return;
+
+	memset(s_gbc_ring, 0, sizeof(s_gbc_ring));
+	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+	s_gbc_widx = GBC_RING_FRAMES / 4;	/* ~85 ms of lead over the DMA */
+	s_rs_accl = s_rs_accr = 0;
+	s_rs_n = 0;
+	s_rs_phase = 0;
+
+	/* full codec/AFE bring-up, memif looping over the ring */
+	spm_mtcmos_ctrl_audio(STA_POWER_ON);
+	mt6359_hp_on();
+	afe_dl1_setup((unsigned int)(addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+	mdelay(2);
+	spk_amp_enable(1);
+	s_gbc_audio_on = 1;
+}
+
+/* Resample `count` stereo samples (each u32 = L|R<<16 at 2097152 Hz) to 48 kHz
+ * and write them into the ring. Volume from AYANEO_AUDIO_VOLUME. */
+void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
+{
+	unsigned q = (AYANEO_AUDIO_VOLUME >= 100) ? 256u
+			: (AYANEO_AUDIO_VOLUME * 256u / 100u);
+	unsigned i;
+
+	if (!s_gbc_audio_on)
+		return;
+
+	for (i = 0; i < count; i++) {
+		int l = (short)(samples[i] & 0xffff);
+		int r = (short)(samples[i] >> 16);
+
+		s_rs_accl += l;
+		s_rs_accr += r;
+		s_rs_n++;
+		s_rs_phase += GBC_DST_HZ;
+		if (s_rs_phase >= GBC_SRC_HZ) {
+			int ol, or_;
+			unsigned idx;
+
+			s_rs_phase -= GBC_SRC_HZ;
+			ol  = (int)(s_rs_accl / (long long)s_rs_n);
+			or_ = (int)(s_rs_accr / (long long)s_rs_n);
+			s_rs_accl = s_rs_accr = 0;
+			s_rs_n = 0;
+			if (q < 256) { ol = (ol * (int)q) >> 8; or_ = (or_ * (int)q) >> 8; }
+			idx = s_gbc_widx & (GBC_RING_FRAMES - 1);
+			s_gbc_ring[idx * 2 + 0] = (short)ol;
+			s_gbc_ring[idx * 2 + 1] = (short)or_;
+			s_gbc_widx++;
+		}
+	}
+	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+}

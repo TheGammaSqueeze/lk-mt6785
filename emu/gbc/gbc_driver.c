@@ -32,6 +32,8 @@ extern time_t current_time(void);
 extern void ayaneo_gbc_show_frame(const unsigned short *pix);	/* mt_disp_drv.c */
 extern void mtk_wdt_restart(void);	/* kick the hardware watchdog */
 extern void mtk_wdt_disable(void);
+extern void ayaneo_gbc_audio_init(void);			/* ayaneo_audio.c */
+extern void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count);
 
 /* ---- freestanding externals the core needs that LK/libgcc lack ----
  * (cartridge_set_rumble is a C++ symbol, defined in gbc_shim.cpp) */
@@ -103,12 +105,16 @@ static int gbc_emu_thread(void *arg)
 	 * after a few seconds - disable it and also kick it every frame. */
 	mtk_wdt_disable();
 
+	ayaneo_gbc_audio_init();		/* bring up the streaming audio path */
+
 	{
 		unsigned start = (unsigned)current_time();
 
 		for (;;) {
 			unsigned samples = GBC_SND_MAX;
 			long r = gbc_run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
+
+			ayaneo_gbc_audio_submit(snd, samples);	/* stream this chunk */
 
 			if (r >= 0) {		/* a video frame completed */
 				unsigned target, now;
