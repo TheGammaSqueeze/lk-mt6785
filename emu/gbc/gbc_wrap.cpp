@@ -5,17 +5,32 @@
 #include <gambatte.h>
 #include <stddef.h>
 
+#include <inputgetter.h>
+
 using namespace gambatte;
 
 static GB *g_gb;
 
 extern "C" void gbc_heap_init(void *base, unsigned size);	/* shim.cpp */
+extern "C" unsigned gbc_read_buttons(void);			/* gbc_driver.c */
+
+/* Feeds the physical button state (SoC GPIOs) into the core. */
+namespace {
+struct LkInput : InputGetter {
+	unsigned operator()() { return gbc_read_buttons(); }
+};
+}
+static InputGetter *g_input;
 
 /* Create the emulator (placement into the bump arena via operator new). */
 extern "C" int gbc_create(void)
 {
 	g_gb = new GB();
-	return g_gb ? 0 : -1;
+	if (!g_gb)
+		return -1;
+	g_input = new LkInput();
+	g_gb->setInputGetter(g_input);
+	return 0;
 }
 
 /* Load a ROM image from a memory buffer. flags=0 auto-detects CGB. */
@@ -30,6 +45,21 @@ extern "C" void gbc_reset(void)
 {
 	if (g_gb)
 		g_gb->reset();
+}
+
+/* ---- save states (buffer based) ---- */
+extern "C" unsigned gbc_state_size(void)
+{
+	return g_gb ? (unsigned)g_gb->stateSize() : 0;
+}
+extern "C" void gbc_save_state(void *buf)
+{
+	if (g_gb)
+		g_gb->saveState(buf);
+}
+extern "C" int gbc_load_state(const void *buf, unsigned size)
+{
+	return (g_gb && g_gb->loadState(buf, size)) ? 0 : -1;
 }
 
 /*

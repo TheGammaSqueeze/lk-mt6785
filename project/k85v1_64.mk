@@ -57,6 +57,12 @@ endif
 # simple, flexible knob for future per-user preferences.
 AYANEO_AUDIO_VOLUME ?= 40
 DEFINES += AYANEO_AUDIO_VOLUME=$(AYANEO_AUDIO_VOLUME)
+# Diagnostic: always-on trace of the boot-chime -> emulator audio handoff, even
+# in the release build (a handful of prints, does not meaningfully alter timing).
+AYANEO_AUDIO_TRACE ?= no
+ifeq ($(AYANEO_AUDIO_TRACE),yes)
+DEFINES += AYANEO_AUDIO_TRACE
+endif
 # Experimental: after the boot animation, run a GBC emulator (gambatte) in LK
 # instead of booting the kernel. The core archive (emu/gbc/libgbc.a) must be
 # prebuilt via emu/gbc/build_core.sh.

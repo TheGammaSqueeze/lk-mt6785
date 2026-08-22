@@ -25,6 +25,19 @@
 #include <string.h>
 #include <debug.h>
 #include <part_interface.h>
+#ifdef AYANEO_AUDIO_TRACE
+#include <platform/boot_mode.h>		/* g_boot_arg->log_enable (force UART) */
+#endif
+
+/* Diagnostic trace that survives a release build. The dprintf macro is compiled
+ * out when DEBUGLEVEL==0 (release), so call _dprintf directly - it still emits,
+ * gated only by uart_putc's log_enable, which the trace build force-enables. */
+#if defined(AYANEO_AUDIO_TRACE) || defined(AYANEO_DEBUG_LOGGING)
+extern int _dprintf(const char *fmt, ...);
+#define ATRACE(...)	_dprintf(__VA_ARGS__)
+#else
+#define ATRACE(...)	do {} while (0)
+#endif
 
 /* ---- externs (provided elsewhere in LK) ---- */
 extern signed int pwrap_read(unsigned int adr, unsigned int *rdata);
@@ -552,13 +565,12 @@ static int ayaneo_audio_thread(void *arg)
 	afe_dl1_setup((unsigned int)(addr_t)s_pcm, pcm_bytes);
 	mdelay(2);			/* let the HP output settle before the amp */
 	spk_amp_enable(1);
-#ifdef AYANEO_DEBUG_LOGGING
-	dprintf(CRITICAL, "AYANEO_AUD: playing rate=%u pcm=%u ms=%u aud_on=%d VAUD18=0x%x CON14=0x%x CON0(rb)=0x%x DAC_CON0=0x%x\n",
+	ATRACE("AYANEO_AUD: playing rate=%u pcm=%u ms=%u aud_on=%d VAUD18=0x%x CON14=0x%x CON0(rb)=0x%x DAC_CON0=0x%x CON9=0x%x amp_out=%d\n",
 		rate, pcm_bytes, s_audio_ms,
 		!!(DRV_Reg32(PWR_STATUS) & AUDIO_PWR_STA_MASK),
 		pmic_r(MT6359_LDO_VAUD18_CON0), pmic_r(MT6359_AUDDEC_ANA_CON14),
-		pmic_r(MT6359_AUDDEC_ANA_CON0), afe_r(AFE_DAC_CON0));
-#endif
+		pmic_r(MT6359_AUDDEC_ANA_CON0), afe_r(AFE_DAC_CON0),
+		pmic_r(MT6359_AUDDEC_ANA_CON9), mt_get_gpio_out(0x80000000u | 24));
 
 	/*
 	 * Play exactly once. The memif is a hardware ring, so watch the DMA read
@@ -568,16 +580,41 @@ static int ayaneo_audio_thread(void *arg)
 	 * scheduling latency the way a time estimate could.
 	 */
 	{
+		/*
+		 * Play exactly once. The memif is a hardware ring; watching the DMA read
+		 * pointer (AFE_DL1_CUR) wrap tells us one full pass is done. But the very
+		 * first sample of prev must not be taken before the DMA has actually
+		 * started moving: in the release build there is no logging delay between
+		 * afe_dl1_setup/amp-enable and this read, so prev can be sampled at t=0
+		 * and the next read already reads lower, faking a wrap and cutting the
+		 * chime to silence. Two guards make this timing-independent:
+		 *   1) only accept a wrap once at least half the clip has elapsed, and
+		 *   2) a hard backstop at the exact clip length + margin, so we always
+		 *      stop after one pass even if the wrap edge is missed.
+		 * s_audio_ms is the exact clip duration (from the sample count).
+		 */
+		unsigned int start_ms = (unsigned int)current_time();
 		unsigned int prev = afe_r(AFE_DL1_CUR);
-
+		int seen_progress = 0;
+		ATRACE("AYANEO_AUD: chime play begin cur=0x%x ms=%u t=%u\n",
+			prev, s_audio_ms, start_ms);
 		while (!s_audio_stop_req) {
 			unsigned int cur = afe_r(AFE_DL1_CUR);
+			unsigned int elapsed = (unsigned int)current_time() - start_ms;
 
-			if (cur < prev)
-				break;			/* wrapped -> played once */
+			if (cur != prev)
+				seen_progress = 1;
+			/* wrap, but only once we are past the midpoint of the clip */
+			if (seen_progress && cur < prev && elapsed * 2u >= s_audio_ms)
+				break;
+			/* backstop: never exceed one clip length (+ small margin) */
+			if (elapsed >= s_audio_ms + 40u)
+				break;
 			prev = cur;
 			thread_sleep(4);
 		}
+		ATRACE("AYANEO_AUD: chime done stop_req=%d last=0x%x t=%u\n",
+			s_audio_stop_req, prev, (unsigned)current_time());
 	}
 
 	audio_shutdown();
@@ -594,6 +631,12 @@ void ayaneo_boot_audio_start(void)
 {
 	thread_t *t;
 
+#ifdef AYANEO_AUDIO_TRACE
+	/* diagnostic: force LK's UART console on even in a release build so the
+	 * chime bring-up register dump reaches the wire (uart_putc gates on both). */
+	g_boot_arg->log_enable = 1;
+	g_boot_arg->meta_log_disable = 0;
+#endif
 	if (s_audio_active)
 		return;
 	s_audio_stop_req = 0;
@@ -609,6 +652,8 @@ void ayaneo_boot_audio_start(void)
 		thread_resume(t);
 	else
 		s_audio_active = 0;
+	ATRACE("AYANEO_AUD: boot chime start spawned=%d t=%u\n",
+		!!t, (unsigned)current_time());
 }
 
 void ayaneo_boot_audio_stop(void)
@@ -636,9 +681,60 @@ void ayaneo_boot_audio_stop(void)
 
 static short s_gbc_ring[GBC_RING_FRAMES * 2] __attribute__((aligned(64)));
 static volatile int s_gbc_audio_on;
+static volatile int s_gbc_paused;			/* silence while set */
+static volatile int s_gbc_vol = AYANEO_AUDIO_VOLUME;	/* runtime, 0-100 */
 static unsigned s_gbc_widx;			/* ring write cursor, in frames */
 static long long s_rs_accl, s_rs_accr;		/* box-filter accumulators */
 static unsigned s_rs_n, s_rs_phase;		/* samples accumulated, phase */
+
+void ayaneo_gbc_audio_set_volume(int v)
+{
+	if (v < 0) v = 0;
+	if (v > 100) v = 100;
+	s_gbc_vol = v;
+}
+int ayaneo_gbc_audio_get_volume(void) { return s_gbc_vol; }
+
+/* is the boot chime still playing? (emulator waits for it before taking over) */
+int ayaneo_boot_audio_active(void) { return s_audio_active; }
+
+/*
+ * Tear the streaming audio down to a clean, cold state (mute -> drain -> amp off
+ * -> stop DMA -> park DAC), exactly like the boot chime does when it finishes.
+ * Called before a save-state power-off: mt_power_off() is a soft off that keeps
+ * the PMIC audio registers latched, so without this the amp/DAC were left
+ * enabled and the NEXT boot's chime bring-up came up wrong (silent). A hard
+ * reset cold-resets the block, which is why a forced reboot masked the bug.
+ */
+void ayaneo_gbc_audio_shutdown(void)
+{
+	if (!s_gbc_audio_on)
+		return;
+	s_gbc_audio_on = 0;
+	audio_shutdown();
+}
+
+/*
+ * Pause/resume the game audio (used for fast-forward). On pause we fill the ring
+ * with silence so the looping DMA plays nothing; on resume we re-seat the write
+ * cursor a fixed lead ahead of the hardware read pointer so latency stays sane.
+ */
+void ayaneo_gbc_audio_pause(int on)
+{
+	if (!s_gbc_audio_on)
+		return;
+	if (on) {
+		s_gbc_paused = 1;
+		memset(s_gbc_ring, 0, sizeof(s_gbc_ring));
+		arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+	} else {
+		unsigned cur = afe_r(AFE_DL1_CUR);
+		unsigned base = (unsigned)(addr_t)s_gbc_ring;
+		unsigned f = (cur >= base) ? (cur - base) / 4 : 0;
+		s_gbc_widx = (f + GBC_RING_FRAMES / 4) & (GBC_RING_FRAMES - 1);
+		s_gbc_paused = 0;
+	}
+}
 
 void ayaneo_gbc_audio_init(void)
 {
@@ -665,11 +761,11 @@ void ayaneo_gbc_audio_init(void)
  * and write them into the ring. Volume from AYANEO_AUDIO_VOLUME. */
 void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
 {
-	unsigned q = (AYANEO_AUDIO_VOLUME >= 100) ? 256u
-			: (AYANEO_AUDIO_VOLUME * 256u / 100u);
+	int vol = s_gbc_vol;
+	unsigned q = (vol >= 100) ? 256u : ((unsigned)vol * 256u / 100u);
 	unsigned i;
 
-	if (!s_gbc_audio_on)
+	if (!s_gbc_audio_on || s_gbc_paused)
 		return;
 
 	for (i = 0; i < count; i++) {
