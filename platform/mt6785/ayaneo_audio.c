@@ -636,6 +636,15 @@ void ayaneo_boot_audio_stop(void)
 
 static short s_gbc_ring[GBC_RING_FRAMES * 2] __attribute__((aligned(64)));
 static volatile int s_gbc_audio_on;
+static volatile int s_gbc_vol = AYANEO_AUDIO_VOLUME;	/* runtime, 0-100 */
+
+void ayaneo_gbc_audio_set_volume(int v)
+{
+	if (v < 0) v = 0;
+	if (v > 100) v = 100;
+	s_gbc_vol = v;
+}
+int ayaneo_gbc_audio_get_volume(void) { return s_gbc_vol; }
 static unsigned s_gbc_widx;			/* ring write cursor, in frames */
 static long long s_rs_accl, s_rs_accr;		/* box-filter accumulators */
 static unsigned s_rs_n, s_rs_phase;		/* samples accumulated, phase */
@@ -665,8 +674,8 @@ void ayaneo_gbc_audio_init(void)
  * and write them into the ring. Volume from AYANEO_AUDIO_VOLUME. */
 void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
 {
-	unsigned q = (AYANEO_AUDIO_VOLUME >= 100) ? 256u
-			: (AYANEO_AUDIO_VOLUME * 256u / 100u);
+	int vol = s_gbc_vol;
+	unsigned q = (vol >= 100) ? 256u : ((unsigned)vol * 256u / 100u);
 	unsigned i;
 
 	if (!s_gbc_audio_on)

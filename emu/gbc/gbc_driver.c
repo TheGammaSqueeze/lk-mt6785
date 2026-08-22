@@ -34,6 +34,27 @@ extern void mtk_wdt_restart(void);	/* kick the hardware watchdog */
 extern void mtk_wdt_disable(void);
 extern void ayaneo_gbc_audio_init(void);			/* ayaneo_audio.c */
 extern void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count);
+extern void ayaneo_gbc_audio_set_volume(int v);
+extern int  ayaneo_gbc_audio_get_volume(void);
+
+/* input: SoC GPIOs (gpio-keys, active-low) + MTK keypad for volume */
+extern int mt_set_gpio_mode(unsigned pin, unsigned mode);
+extern int mt_set_gpio_dir(unsigned pin, unsigned dir);
+extern int mt_set_gpio_pull_enable(unsigned pin, unsigned en);
+extern int mt_set_gpio_pull_select(unsigned pin, unsigned sel);
+extern int mt_get_gpio_in(unsigned pin);
+extern int mtk_detect_key(unsigned short hwkey);	/* KP matrix key pressed? */
+
+/* gambatte input bitmask (inputgetter.h) */
+#define IG_A	0x01u
+#define IG_B	0x02u
+#define IG_SEL	0x04u
+#define IG_START 0x08u
+#define IG_RIGHT 0x10u
+#define IG_LEFT	0x20u
+#define IG_UP	0x40u
+#define IG_DOWN	0x80u
+
 
 /* ---- freestanding externals the core needs that LK/libgcc lack ----
  * (cartridge_set_rumble is a C++ symbol, defined in gbc_shim.cpp) */
@@ -55,6 +76,49 @@ float powf(float b, float e) { (void)e; return b; }	/* color-correction only; un
 #define GBC_SND_MAX	35208u
 
 static int gbc_ready;
+
+/* gpio-keys mapping (from the device tree, active-low): GB buttons -> SoC GPIO */
+static const struct { unsigned gpio; unsigned mask; } s_btn[] = {
+	{ 89, IG_UP },   { 79, IG_DOWN }, { 78, IG_LEFT }, { 80, IG_RIGHT },
+	{ 82, IG_A },    { 83, IG_B },    { 90, IG_START },{ 91, IG_SEL },
+};
+
+/* configure the button GPIOs once: GPIO mode, input, pull-up */
+static void gbc_input_init(void)
+{
+	unsigned i;
+	for (i = 0; i < sizeof(s_btn) / sizeof(s_btn[0]); i++) {
+		mt_set_gpio_mode(s_btn[i].gpio, 0);		/* GPIO function */
+		mt_set_gpio_dir(s_btn[i].gpio, 0);		/* input */
+		mt_set_gpio_pull_enable(s_btn[i].gpio, 1);
+		mt_set_gpio_pull_select(s_btn[i].gpio, 1);	/* GPIO_PULL_UP */
+	}
+}
+
+/* read the buttons -> gambatte bitmask (called by the core's InputGetter) */
+unsigned gbc_read_buttons(void)
+{
+	unsigned m = 0, i;
+	for (i = 0; i < sizeof(s_btn) / sizeof(s_btn[0]); i++)
+		if (mt_get_gpio_in(s_btn[i].gpio) == 0)		/* active-low */
+			m |= s_btn[i].mask;
+	return m;
+}
+
+/* poll the volume keys (MTK keypad) and adjust playback volume, edge-detected */
+static void gbc_poll_volume(void)
+{
+	static int vu_prev, vd_prev;
+	int vu = mtk_detect_key(0x11);		/* VolumeUp  (hw key 0x11) */
+	int vd = mtk_detect_key(0x00);		/* VolumeDown (hw key 0x00) */
+
+	if (vu && !vu_prev)
+		ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + 10);
+	if (vd && !vd_prev)
+		ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() - 10);
+	vu_prev = vu;
+	vd_prev = vd;
+}
 
 /* Load the ROM from boot_b into the arena. Returns rom size or 0 on failure. */
 static unsigned gbc_load_rom(unsigned char *dst)
@@ -105,6 +169,7 @@ static int gbc_emu_thread(void *arg)
 	 * after a few seconds - disable it and also kick it every frame. */
 	mtk_wdt_disable();
 
+	gbc_input_init();		/* configure the button GPIOs */
 	ayaneo_gbc_audio_init();		/* bring up the streaming audio path */
 
 	{
@@ -121,6 +186,7 @@ static int gbc_emu_thread(void *arg)
 
 				ayaneo_gbc_show_frame(vbuf);
 				mtk_wdt_restart();
+				gbc_poll_volume();
 				frame++;
 				if ((frame % 120) == 0)
 					GBC_LOG("GBC: frame %u\n", frame);
