@@ -47,6 +47,21 @@ extern "C" void gbc_reset(void)
 		g_gb->reset();
 }
 
+/* ---- save states (buffer based) ---- */
+extern "C" unsigned gbc_state_size(void)
+{
+	return g_gb ? (unsigned)g_gb->stateSize() : 0;
+}
+extern "C" void gbc_save_state(void *buf)
+{
+	if (g_gb)
+		g_gb->saveState(buf);
+}
+extern "C" int gbc_load_state(const void *buf, unsigned size)
+{
+	return (g_gb && g_gb->loadState(buf, size)) ? 0 : -1;
+}
+
 /*
  * Run emulation. videoBuf is 160x144 RGB565 (pitch in pixels); soundBuf holds
  * up to soundBufSize stereo samples at 2097152 Hz (each u32 = L|R<<16). On

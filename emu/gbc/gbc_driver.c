@@ -25,6 +25,12 @@ extern int  gbc_load(const void *rom, unsigned size);
 extern void gbc_reset(void);
 extern long gbc_run(unsigned short *video, int pitch,
 		    unsigned int *sound, unsigned soundBufSize, unsigned *samples);
+extern unsigned gbc_state_size(void);
+extern void gbc_save_state(void *buf);
+extern int  gbc_load_state(const void *buf, unsigned size);
+extern int  pmic_detect_powerkey(void);		/* 1 = power key pressed */
+extern void mt_power_off(void);
+/* partition_read/partition_write come from <part_interface.h> */
 
 /* ---- LK primitives ---- */
 extern void *memcpy(void *, const void *, unsigned int);
@@ -77,31 +83,61 @@ float powf(float b, float e) { (void)e; return b; }	/* color-correction only; un
 
 static int gbc_ready;
 
-/* gpio-keys mapping (from the device tree, active-low): GB buttons -> SoC GPIO */
+/* gpio-keys mapping (from the device tree, active-low): GB buttons -> SoC GPIO.
+ * A/B are swapped vs the DTS labels to match the physical layout. */
 static const struct { unsigned gpio; unsigned mask; } s_btn[] = {
 	{ 89, IG_UP },   { 79, IG_DOWN }, { 78, IG_LEFT }, { 80, IG_RIGHT },
-	{ 82, IG_A },    { 83, IG_B },    { 90, IG_START },{ 91, IG_SEL },
+	{ 83, IG_A },    { 82, IG_B },    { 90, IG_START },{ 91, IG_SEL },
 };
 
-/* configure the button GPIOs once: GPIO mode, input, pull-up */
+/* extra buttons used for functions, not direct GB inputs */
+#define GBC_GPIO_X	84	/* autofire A */
+#define GBC_GPIO_Y	85	/* autofire B */
+#define GBC_GPIO_R	81	/* hold = fast-forward */
+#define GBC_AUTOFIRE_HZ	12
+
+static volatile int s_fast_forward;
+
+static void gbc_gpio_in_pullup(unsigned gpio)
+{
+	mt_set_gpio_mode(gpio, 0);		/* GPIO function */
+	mt_set_gpio_dir(gpio, 0);		/* input */
+	mt_set_gpio_pull_enable(gpio, 1);
+	mt_set_gpio_pull_select(gpio, 1);	/* GPIO_PULL_UP */
+}
+
+/* configure all the button GPIOs once */
 static void gbc_input_init(void)
 {
 	unsigned i;
-	for (i = 0; i < sizeof(s_btn) / sizeof(s_btn[0]); i++) {
-		mt_set_gpio_mode(s_btn[i].gpio, 0);		/* GPIO function */
-		mt_set_gpio_dir(s_btn[i].gpio, 0);		/* input */
-		mt_set_gpio_pull_enable(s_btn[i].gpio, 1);
-		mt_set_gpio_pull_select(s_btn[i].gpio, 1);	/* GPIO_PULL_UP */
-	}
+	for (i = 0; i < sizeof(s_btn) / sizeof(s_btn[0]); i++)
+		gbc_gpio_in_pullup(s_btn[i].gpio);
+	gbc_gpio_in_pullup(GBC_GPIO_X);
+	gbc_gpio_in_pullup(GBC_GPIO_Y);
+	gbc_gpio_in_pullup(GBC_GPIO_R);
 }
+
+#define GBC_PRESSED(g)	(mt_get_gpio_in(g) == 0)	/* active-low */
 
 /* read the buttons -> gambatte bitmask (called by the core's InputGetter) */
 unsigned gbc_read_buttons(void)
 {
 	unsigned m = 0, i;
+	int af;
+
 	for (i = 0; i < sizeof(s_btn) / sizeof(s_btn[0]); i++)
-		if (mt_get_gpio_in(s_btn[i].gpio) == 0)		/* active-low */
+		if (GBC_PRESSED(s_btn[i].gpio))
 			m |= s_btn[i].mask;
+
+	/* X/Y = autofire A/B: pulse the button at GBC_AUTOFIRE_HZ while held */
+	af = ((unsigned)current_time() * GBC_AUTOFIRE_HZ / 500u) & 1;
+	if (af) {
+		if (GBC_PRESSED(GBC_GPIO_X)) m |= IG_A;
+		if (GBC_PRESSED(GBC_GPIO_Y)) m |= IG_B;
+	}
+
+	/* R held = fast-forward (consumed by the run loop) */
+	s_fast_forward = GBC_PRESSED(GBC_GPIO_R);
 	return m;
 }
 
@@ -118,6 +154,64 @@ static void gbc_poll_volume(void)
 		ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() - 10);
 	vu_prev = vu;
 	vd_prev = vd;
+}
+
+/* save state stored in boot_b: [magic u32][size u32][state] */
+#define GBC_STATE_OFF	0x01800000u	/* 24 MB into boot_b (past the ROM) */
+#define GBC_STATE_MAGIC	0x53534247u	/* "GBSS" */
+#define GBC_STATE_MAX	(1024u * 1024u)	/* scratch cap for [hdr+state] */
+
+static unsigned rd32le(const unsigned char *p)
+{
+	return (unsigned)p[0] | (p[1] << 8) | (p[2] << 16) | ((unsigned)p[3] << 24);
+}
+static void wr32le(unsigned char *p, unsigned v)
+{
+	p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24;
+}
+
+/* On boot: if a save state exists in boot_b, load it into the running emulator. */
+static void gbc_try_load_state(unsigned char *scratch)
+{
+	unsigned char hdr[8];
+	unsigned magic, sz;
+
+	if (partition_read(GBC_ROM_PART, GBC_STATE_OFF, hdr, 8) != 8)
+		return;
+	magic = rd32le(hdr);
+	sz = rd32le(hdr + 4);
+	if (magic != GBC_STATE_MAGIC || sz == 0 || sz > GBC_STATE_MAX - 8)
+		return;
+	if (partition_read(GBC_ROM_PART, GBC_STATE_OFF + 8, scratch, sz) != (ssize_t)sz)
+		return;
+	if (gbc_load_state(scratch, sz) == 0)
+		dprintf(CRITICAL, "GBC: resumed save state (%u bytes)\n", sz);
+}
+
+/* Power key: save state to boot_b, then power off. Does not return. */
+static void gbc_save_and_poweroff(unsigned char *scratch)
+{
+	unsigned sz = gbc_state_size();
+
+	if (sz && sz <= GBC_STATE_MAX - 8) {
+		gbc_save_state(scratch + 8);
+		wr32le(scratch + 0, GBC_STATE_MAGIC);
+		wr32le(scratch + 4, sz);
+		partition_write(GBC_ROM_PART, GBC_STATE_OFF, scratch, 8 + sz);
+	}
+	mt_power_off();
+}
+
+/* Poll power key (armed after first release so a boot-time hold is ignored). */
+static void gbc_check_power(unsigned char *scratch)
+{
+	static int armed;
+	int p = pmic_detect_powerkey();
+
+	if (!p)
+		armed = 1;
+	else if (armed)
+		gbc_save_and_poweroff(scratch);		/* no return */
 }
 
 /* Load the ROM from boot_b into the arena. Returns rom size or 0 on failure. */
@@ -142,8 +236,10 @@ static int gbc_emu_thread(void *arg)
 	unsigned char *arena = (unsigned char *)GBC_HEAP_PA;
 	unsigned char *rom   = arena;			/* 0 .. 8MB : ROM */
 	unsigned int  *snd   = (unsigned int *)(arena + GBC_ROM_MAX);
+	unsigned char *state = arena + GBC_HEAP_SZ - GBC_STATE_MAX;	/* end slab */
 	void          *cxx   = arena + GBC_ROM_MAX + GBC_SND_MAX * 4;
-	unsigned       cxxsz = GBC_HEAP_SZ - GBC_ROM_MAX - GBC_SND_MAX * 4;
+	unsigned       cxxsz = GBC_HEAP_SZ - GBC_ROM_MAX - GBC_SND_MAX * 4
+			       - GBC_STATE_MAX;
 	static unsigned short vbuf[GBC_W * GBC_H];
 	unsigned romsz, frame = 0;
 
@@ -163,6 +259,7 @@ static int gbc_emu_thread(void *arg)
 		return 0;
 	}
 	dprintf(CRITICAL, "GBC: loaded romsz=%u heap_used=%u\n", romsz, gbc_heap_used());
+	gbc_try_load_state(state);	/* resume if a save state exists in boot_b */
 	gbc_ready = 1;
 
 	/* we run forever with no kernel handoff, so the boot watchdog would fire
@@ -173,28 +270,44 @@ static int gbc_emu_thread(void *arg)
 	ayaneo_gbc_audio_init();		/* bring up the streaming audio path */
 
 	{
-		unsigned start = (unsigned)current_time();
+		unsigned pace_base = (unsigned)current_time();
+		unsigned pace_n = 0;		/* frames since pace_base */
 
 		for (;;) {
 			unsigned samples = GBC_SND_MAX;
 			long r = gbc_run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
 
-			ayaneo_gbc_audio_submit(snd, samples);	/* stream this chunk */
+			/* skip audio while fast-forwarding (the 48k ring can't keep
+			 * up with sped-up generation without artifacts) */
+			if (!s_fast_forward)
+				ayaneo_gbc_audio_submit(snd, samples);
 
 			if (r >= 0) {		/* a video frame completed */
 				unsigned target, now;
 
-				ayaneo_gbc_show_frame(vbuf);
 				mtk_wdt_restart();
 				gbc_poll_volume();
+				gbc_check_power(state);	/* power -> save + off */
 				frame++;
+
+				if (s_fast_forward) {
+					/* run flat out; present every 4th frame so the
+					 * vsync-locked blit doesn't cap the speed */
+					if ((frame & 3) == 0)
+						ayaneo_gbc_show_frame(vbuf);
+					pace_base = (unsigned)current_time();
+					pace_n = 0;	/* rebase for a clean exit */
+					continue;	/* no pacing sleep */
+				}
+
+				ayaneo_gbc_show_frame(vbuf);
 				if ((frame % 120) == 0)
 					GBC_LOG("GBC: frame %u\n", frame);
 
-				/* pace to the GB's ~59.7275 Hz; if emulation can't keep
-				 * up we just run flat out (no negative sleep). */
-				target = start + (unsigned)(((unsigned long long)frame
-							     * 100000ull) / 5973u);
+				/* pace to the GB's ~59.7275 Hz */
+				pace_n++;
+				target = pace_base + (unsigned)(((unsigned long long)pace_n
+								 * 100000ull) / 5973u);
 				now = (unsigned)current_time();
 				if ((int)(target - now) > 0)
 					thread_sleep(target - now);
