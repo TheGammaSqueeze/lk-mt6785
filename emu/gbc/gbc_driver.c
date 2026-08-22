@@ -100,12 +100,17 @@ static const struct { unsigned gpio; unsigned mask; } s_btn[] = {
 
 static volatile int s_fast_forward;
 
+/* MTK gpio helpers expect the pin OR'd with this "magic" bit; without it they
+ * spam a "decrypt warning" on every call (which floods the UART and stalls the
+ * emulator, since the input getter runs many times per frame). */
+#define GP(n)	((n) | 0x80000000u)
+
 static void gbc_gpio_in_pullup(unsigned gpio)
 {
-	mt_set_gpio_mode(gpio, 0);		/* GPIO function */
-	mt_set_gpio_dir(gpio, 0);		/* input */
-	mt_set_gpio_pull_enable(gpio, 1);
-	mt_set_gpio_pull_select(gpio, 1);	/* GPIO_PULL_UP */
+	mt_set_gpio_mode(GP(gpio), 0);		/* GPIO function */
+	mt_set_gpio_dir(GP(gpio), 0);		/* input */
+	mt_set_gpio_pull_enable(GP(gpio), 1);
+	mt_set_gpio_pull_select(GP(gpio), 1);	/* GPIO_PULL_UP */
 }
 
 /* configure all the button GPIOs once */
@@ -119,7 +124,7 @@ static void gbc_input_init(void)
 	gbc_gpio_in_pullup(GBC_GPIO_R);
 }
 
-#define GBC_PRESSED(g)	(mt_get_gpio_in(g) == 0)	/* active-low */
+#define GBC_PRESSED(g)	(mt_get_gpio_in(GP(g)) == 0)	/* active-low */
 
 /* Early boot: is Select held? (configures + reads the Select GPIO). Used to
  * skip the boot animation/chime and jump straight into the emulator. */
@@ -129,8 +134,13 @@ int ayaneo_gbc_select_held(void)
 	return GBC_PRESSED(91);
 }
 
-/* read the buttons -> gambatte bitmask (called by the core's InputGetter) */
-unsigned gbc_read_buttons(void)
+/* current button state, refreshed once per frame by gbc_update_buttons() and
+ * returned to the core's InputGetter (which is called many times per frame). */
+static volatile unsigned s_btn_state;
+
+/* refresh the button state from the GPIOs; called once per frame (NOT per
+ * input-getter call, which would read the GPIOs thousands of times per frame). */
+static void gbc_update_buttons(void)
 {
 	unsigned m = 0, i;
 	int af;
@@ -139,16 +149,21 @@ unsigned gbc_read_buttons(void)
 		if (GBC_PRESSED(s_btn[i].gpio))
 			m |= s_btn[i].mask;
 
-	/* X/Y = autofire A/B: pulse the button at GBC_AUTOFIRE_HZ while held */
+	/* X/Y = autofire B/A: pulse the button at GBC_AUTOFIRE_HZ while held */
 	af = ((unsigned)current_time() * GBC_AUTOFIRE_HZ / 500u) & 1;
 	if (af) {
 		if (GBC_PRESSED(GBC_GPIO_X)) m |= IG_B;	/* X = autofire B */
 		if (GBC_PRESSED(GBC_GPIO_Y)) m |= IG_A;	/* Y = autofire A */
 	}
 
-	/* R held = fast-forward (consumed by the run loop) */
-	s_fast_forward = GBC_PRESSED(GBC_GPIO_R);
-	return m;
+	s_fast_forward = GBC_PRESSED(GBC_GPIO_R);	/* R held = fast-forward */
+	s_btn_state = m;
+}
+
+/* cheap getter for the core's InputGetter - returns the cached state */
+unsigned gbc_read_buttons(void)
+{
+	return s_btn_state;
 }
 
 /* poll the volume keys (MTK keypad) and adjust playback volume, edge-detected */
@@ -305,26 +320,19 @@ static int gbc_emu_thread(void *arg)
 		while (ayaneo_boot_audio_active() && g++ < 300)
 			thread_sleep(20);
 	}
-	dprintf(CRITICAL, "GBC: audio wait done, init audio\n");
 	ayaneo_gbc_audio_init();		/* bring up the streaming audio path */
-	dprintf(CRITICAL, "GBC: audio init done, entering run loop\n");
 
 	{
 		unsigned pace_base = (unsigned)current_time();
 		unsigned pace_n = 0;		/* frames since pace_base */
 		int ff_prev = 0;
 
-		int trace = 0;
 		for (;;) {
 			unsigned samples = GBC_SND_MAX;
 			long r;
 
-			if (trace < 3)
-				dprintf(CRITICAL, "GBC: >run %d\n", trace);
+			gbc_update_buttons();	/* refresh input once per frame */
 			r = gbc_run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
-			if (trace < 3)
-				dprintf(CRITICAL, "GBC: <run %d r=%ld samples=%u\n", trace, r, samples);
-			if (trace < 3) trace++;
 
 			/* fast-forward edge: mute (silence the ring) on enter, resync
 			 * the audio on exit */
@@ -340,8 +348,6 @@ static int gbc_emu_thread(void *arg)
 			if (r >= 0) {		/* a video frame completed */
 				unsigned target, now;
 
-				if (frame == 0)
-					dprintf(CRITICAL, "GBC: first frame ready, presenting\n");
 				mtk_wdt_restart();
 				gbc_poll_volume();
 				gbc_check_power(state);	/* power -> save + off */
