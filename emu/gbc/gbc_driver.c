@@ -157,10 +157,12 @@ static void gbc_poll_volume(void)
 	vd_prev = vd;
 }
 
-/* save state stored in boot_b: [magic u32][size u32][state] */
-#define GBC_STATE_OFF	0x01800000u	/* 24 MB into boot_b (past the ROM) */
+/* Save state stored in boot_b, placed past the ROM's *max* reserved region
+ * (GBC_ROM_OFF + GBC_ROM_MAX = 28 MB) so it can never overlap the ROM, and well
+ * clear of the audio blob (16-17.2 MB) and video (0). boot_b is 32 MB. */
+#define GBC_STATE_OFF	(GBC_ROM_OFF + GBC_ROM_MAX)	/* 0x1C00000 = 28 MB */
 #define GBC_STATE_MAGIC	0x53534247u	/* "GBSS" */
-#define GBC_STATE_MAX	(1024u * 1024u)	/* scratch cap for [hdr+state] */
+#define GBC_STATE_MAX	(2u * 1024u * 1024u)	/* scratch cap for [hdr+state] */
 
 static unsigned rd32le(const unsigned char *p)
 {
@@ -199,11 +201,25 @@ static void gbc_save_and_poweroff(unsigned char *scratch)
 {
 	unsigned sz = gbc_state_size();
 
-	if (sz && sz <= GBC_STATE_MAX - 8) {
+	if (sz && (unsigned long long)sz + 8 <= GBC_STATE_MAX) {
+		unsigned total = 8 + sz;
+
 		gbc_save_state(scratch + 8);
 		wr32le(scratch + 0, GBC_STATE_MAGIC);
 		wr32le(scratch + 4, sz);
-		partition_write(GBC_ROM_PART, GBC_STATE_OFF, scratch, 8 + sz);
+		/* pad to a 512-byte block and zero the tail so the eMMC write is
+		 * block-aligned (no partial-block read-modify-write) and touches
+		 * nothing but the state region (28 MB+, past ROM/audio/video). */
+		if (total & 511u) {
+			unsigned padded = (total + 511u) & ~511u;
+			if (padded <= GBC_STATE_MAX) {
+				unsigned k;
+				for (k = total; k < padded; k++)
+					scratch[k] = 0;
+				total = padded;
+			}
+		}
+		partition_write(GBC_ROM_PART, GBC_STATE_OFF, scratch, total);
 	}
 	mt_power_off();
 }
