@@ -35,6 +35,7 @@ extern void mt_power_off(void);
 /* ---- LK primitives ---- */
 extern void *memcpy(void *, const void *, unsigned int);
 extern time_t current_time(void);
+extern void arch_clean_cache_range(unsigned long start, unsigned int len);
 extern void ayaneo_gbc_show_frame(const unsigned short *pix);	/* mt_disp_drv.c */
 extern void mtk_wdt_restart(void);	/* kick the hardware watchdog */
 extern void mtk_wdt_disable(void);
@@ -138,25 +139,41 @@ int ayaneo_gbc_select_held(void)
  * returned to the core's InputGetter (which is called many times per frame). */
 static volatile unsigned s_btn_state;
 
+/* extra raw bits for the function buttons (above the 8 GB button bits) */
+#define RB_X	0x100u
+#define RB_Y	0x200u
+#define RB_R	0x400u
+
 /* refresh the button state from the GPIOs; called once per frame (NOT per
- * input-getter call, which would read the GPIOs thousands of times per frame). */
+ * input-getter call, which would read the GPIOs thousands of times per frame).
+ * A bit only registers if pressed in two consecutive reads (~2 frames = ~33ms),
+ * which debounces the line noise that otherwise causes phantom presses. */
 static void gbc_update_buttons(void)
 {
-	unsigned m = 0, i;
+	static unsigned prev_raw;
+	unsigned raw = 0, deb, m = 0, i;
 	int af;
 
 	for (i = 0; i < sizeof(s_btn) / sizeof(s_btn[0]); i++)
 		if (GBC_PRESSED(s_btn[i].gpio))
-			m |= s_btn[i].mask;
+			raw |= s_btn[i].mask;
+	if (GBC_PRESSED(GBC_GPIO_X)) raw |= RB_X;
+	if (GBC_PRESSED(GBC_GPIO_Y)) raw |= RB_Y;
+	if (GBC_PRESSED(GBC_GPIO_R)) raw |= RB_R;
+
+	deb = raw & prev_raw;		/* stable across two reads */
+	prev_raw = raw;
+
+	m = deb & 0xffu;		/* the 8 GB buttons */
 
 	/* X/Y = autofire B/A: pulse the button at GBC_AUTOFIRE_HZ while held */
 	af = ((unsigned)current_time() * GBC_AUTOFIRE_HZ / 500u) & 1;
 	if (af) {
-		if (GBC_PRESSED(GBC_GPIO_X)) m |= IG_B;	/* X = autofire B */
-		if (GBC_PRESSED(GBC_GPIO_Y)) m |= IG_A;	/* Y = autofire A */
+		if (deb & RB_X) m |= IG_B;	/* X = autofire B */
+		if (deb & RB_Y) m |= IG_A;	/* Y = autofire A */
 	}
 
-	s_fast_forward = GBC_PRESSED(GBC_GPIO_R);	/* R held = fast-forward */
+	s_fast_forward = (deb & RB_R) ? 1 : 0;	/* R held = fast-forward */
 	s_btn_state = m;
 }
 
@@ -243,6 +260,10 @@ static void gbc_save_and_poweroff(unsigned char *scratch)
 				total = padded;
 			}
 		}
+		/* flush the CPU-written buffer to DRAM so the eMMC DMA writes the
+		 * real state, not stale cache (else the reloaded state is garbage
+		 * and the emulator hangs on resume). */
+		arch_clean_cache_range((unsigned long)scratch, total);
 		partition_write(GBC_ROM_PART, GBC_STATE_OFF, scratch, total);
 	}
 	mt_power_off();
