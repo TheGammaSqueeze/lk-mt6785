@@ -784,10 +784,18 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 	unsigned int sx, sy, ix, iy;
 
 	if (!inited) {
+		disp_input_config din;
+
 		memset(fb_addr, 0, fb_size);
 		memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
 		arch_clean_cache_range((unsigned int)fb_addr, fb_size);
 		arch_clean_cache_range((unsigned int)fb_addr + fb_size, fb_size);
+		/* only our FB_LAYER should show (the animation does this too; needed
+		 * here for the Select-skip path where the animation never ran) */
+		memset(&din, 0, sizeof(din));
+		din.layer = BOOT_MENU_LAYER;
+		din.layer_en = 0;
+		primary_display_config_input(&din);
 		mt65xx_backlight_on();	/* in case the animation was skipped */
 		inited = 1;
 	}
