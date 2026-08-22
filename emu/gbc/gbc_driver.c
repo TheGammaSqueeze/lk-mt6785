@@ -42,6 +42,7 @@ extern void ayaneo_gbc_audio_init(void);			/* ayaneo_audio.c */
 extern void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count);
 extern void ayaneo_gbc_audio_set_volume(int v);
 extern int  ayaneo_gbc_audio_get_volume(void);
+extern void ayaneo_gbc_audio_pause(int on);
 
 /* input: SoC GPIOs (gpio-keys, active-low) + MTK keypad for volume */
 extern int mt_set_gpio_mode(unsigned pin, unsigned mode);
@@ -132,8 +133,8 @@ unsigned gbc_read_buttons(void)
 	/* X/Y = autofire A/B: pulse the button at GBC_AUTOFIRE_HZ while held */
 	af = ((unsigned)current_time() * GBC_AUTOFIRE_HZ / 500u) & 1;
 	if (af) {
-		if (GBC_PRESSED(GBC_GPIO_X)) m |= IG_A;
-		if (GBC_PRESSED(GBC_GPIO_Y)) m |= IG_B;
+		if (GBC_PRESSED(GBC_GPIO_X)) m |= IG_B;	/* X = autofire B */
+		if (GBC_PRESSED(GBC_GPIO_Y)) m |= IG_A;	/* Y = autofire A */
 	}
 
 	/* R held = fast-forward (consumed by the run loop) */
@@ -176,6 +177,11 @@ static void gbc_try_load_state(unsigned char *scratch)
 	unsigned char hdr[8];
 	unsigned magic, sz;
 
+	/* hold Start during boot to skip the save state and start fresh */
+	if (GBC_PRESSED(90)) {
+		dprintf(CRITICAL, "GBC: Start held - skipping save state\n");
+		return;
+	}
 	if (partition_read(GBC_ROM_PART, GBC_STATE_OFF, hdr, 8) != 8)
 		return;
 	magic = rd32le(hdr);
@@ -259,24 +265,32 @@ static int gbc_emu_thread(void *arg)
 		return 0;
 	}
 	dprintf(CRITICAL, "GBC: loaded romsz=%u heap_used=%u\n", romsz, gbc_heap_used());
-	gbc_try_load_state(state);	/* resume if a save state exists in boot_b */
+
+	gbc_input_init();		/* configure the button GPIOs (before state) */
+	gbc_try_load_state(state);	/* resume unless Start is held */
 	gbc_ready = 1;
 
 	/* we run forever with no kernel handoff, so the boot watchdog would fire
 	 * after a few seconds - disable it and also kick it every frame. */
 	mtk_wdt_disable();
 
-	gbc_input_init();		/* configure the button GPIOs */
 	ayaneo_gbc_audio_init();		/* bring up the streaming audio path */
 
 	{
 		unsigned pace_base = (unsigned)current_time();
 		unsigned pace_n = 0;		/* frames since pace_base */
+		int ff_prev = 0;
 
 		for (;;) {
 			unsigned samples = GBC_SND_MAX;
 			long r = gbc_run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
 
+			/* fast-forward edge: mute (silence the ring) on enter, resync
+			 * the audio on exit */
+			if (s_fast_forward != ff_prev) {
+				ayaneo_gbc_audio_pause(s_fast_forward);
+				ff_prev = s_fast_forward;
+			}
 			/* skip audio while fast-forwarding (the 48k ring can't keep
 			 * up with sped-up generation without artifacts) */
 			if (!s_fast_forward)

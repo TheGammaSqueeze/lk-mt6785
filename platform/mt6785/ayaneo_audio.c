@@ -636,6 +636,7 @@ void ayaneo_boot_audio_stop(void)
 
 static short s_gbc_ring[GBC_RING_FRAMES * 2] __attribute__((aligned(64)));
 static volatile int s_gbc_audio_on;
+static volatile int s_gbc_paused;			/* silence while set */
 static volatile int s_gbc_vol = AYANEO_AUDIO_VOLUME;	/* runtime, 0-100 */
 
 void ayaneo_gbc_audio_set_volume(int v)
@@ -645,6 +646,28 @@ void ayaneo_gbc_audio_set_volume(int v)
 	s_gbc_vol = v;
 }
 int ayaneo_gbc_audio_get_volume(void) { return s_gbc_vol; }
+
+/*
+ * Pause/resume the game audio (used for fast-forward). On pause we fill the ring
+ * with silence so the looping DMA plays nothing; on resume we re-seat the write
+ * cursor a fixed lead ahead of the hardware read pointer so latency stays sane.
+ */
+void ayaneo_gbc_audio_pause(int on)
+{
+	if (!s_gbc_audio_on)
+		return;
+	if (on) {
+		s_gbc_paused = 1;
+		memset(s_gbc_ring, 0, sizeof(s_gbc_ring));
+		arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+	} else {
+		unsigned cur = afe_r(AFE_DL1_CUR);
+		unsigned base = (unsigned)(addr_t)s_gbc_ring;
+		unsigned f = (cur >= base) ? (cur - base) / 4 : 0;
+		s_gbc_widx = (f + GBC_RING_FRAMES / 4) & (GBC_RING_FRAMES - 1);
+		s_gbc_paused = 0;
+	}
+}
 static unsigned s_gbc_widx;			/* ring write cursor, in frames */
 static long long s_rs_accl, s_rs_accr;		/* box-filter accumulators */
 static unsigned s_rs_n, s_rs_phase;		/* samples accumulated, phase */
@@ -678,7 +701,7 @@ void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
 	unsigned q = (vol >= 100) ? 256u : ((unsigned)vol * 256u / 100u);
 	unsigned i;
 
-	if (!s_gbc_audio_on)
+	if (!s_gbc_audio_on || s_gbc_paused)
 		return;
 
 	for (i = 0; i < count; i++) {
