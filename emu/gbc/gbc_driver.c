@@ -305,7 +305,9 @@ static int gbc_emu_thread(void *arg)
 		while (ayaneo_boot_audio_active() && g++ < 300)
 			thread_sleep(20);
 	}
+	dprintf(CRITICAL, "GBC: audio wait done, init audio\n");
 	ayaneo_gbc_audio_init();		/* bring up the streaming audio path */
+	dprintf(CRITICAL, "GBC: audio init done, entering run loop\n");
 
 	{
 		unsigned pace_base = (unsigned)current_time();
@@ -330,6 +332,8 @@ static int gbc_emu_thread(void *arg)
 			if (r >= 0) {		/* a video frame completed */
 				unsigned target, now;
 
+				if (frame == 0)
+					dprintf(CRITICAL, "GBC: first frame ready, presenting\n");
 				mtk_wdt_restart();
 				gbc_poll_volume();
 				gbc_check_power(state);	/* power -> save + off */
