@@ -38,6 +38,7 @@ extern time_t current_time(void);
 extern void ayaneo_gbc_show_frame(const unsigned short *pix);	/* mt_disp_drv.c */
 extern void mtk_wdt_restart(void);	/* kick the hardware watchdog */
 extern void mtk_wdt_disable(void);
+extern int  ayaneo_boot_audio_active(void);			/* boot chime playing? */
 extern void ayaneo_gbc_audio_init(void);			/* ayaneo_audio.c */
 extern void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count);
 extern void ayaneo_gbc_audio_set_volume(int v);
@@ -119,6 +120,14 @@ static void gbc_input_init(void)
 }
 
 #define GBC_PRESSED(g)	(mt_get_gpio_in(g) == 0)	/* active-low */
+
+/* Early boot: is Select held? (configures + reads the Select GPIO). Used to
+ * skip the boot animation/chime and jump straight into the emulator. */
+int ayaneo_gbc_select_held(void)
+{
+	gbc_gpio_in_pullup(91);		/* Select */
+	return GBC_PRESSED(91);
+}
 
 /* read the buttons -> gambatte bitmask (called by the core's InputGetter) */
 unsigned gbc_read_buttons(void)
@@ -290,6 +299,12 @@ static int gbc_emu_thread(void *arg)
 	 * after a few seconds - disable it and also kick it every frame. */
 	mtk_wdt_disable();
 
+	/* let the boot chime finish before we take over the codec (bounded) */
+	{
+		int g = 0;
+		while (ayaneo_boot_audio_active() && g++ < 300)
+			thread_sleep(20);
+	}
 	ayaneo_gbc_audio_init();		/* bring up the streaming audio path */
 
 	{

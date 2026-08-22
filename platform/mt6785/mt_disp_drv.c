@@ -788,6 +788,7 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
 		arch_clean_cache_range((unsigned int)fb_addr, fb_size);
 		arch_clean_cache_range((unsigned int)fb_addr + fb_size, fb_size);
+		mt65xx_backlight_on();	/* in case the animation was skipped */
 		inited = 1;
 	}
 
@@ -1077,6 +1078,10 @@ anim_done:
 	return 0;
 }
 
+#ifdef AYANEO_GBC
+extern int ayaneo_gbc_select_held(void);
+#endif
+
 void video_rainbow_boot_start(void)
 {
 	thread_t *t;
@@ -1085,6 +1090,16 @@ void video_rainbow_boot_start(void)
 	s_rainbow_exited = 0;
 	s_anim_complete = 0;
 	s_fade_request = 0;
+
+#ifdef AYANEO_GBC
+	/* hold Select at boot: skip the animation + chime, go straight to the
+	 * emulator. Mark everything complete so the stop path returns at once. */
+	if (ayaneo_gbc_select_held()) {
+		s_anim_complete = 1;
+		s_rainbow_exited = 1;
+		return;
+	}
+#endif
 	/*
 	 * HIGH_PRIORITY so the thread gets its quick per-frame present in promptly
 	 * even during the CPU/bandwidth-heavy boot-image verify (fewer dropped
@@ -1125,8 +1140,10 @@ void video_rainbow_boot_stop(void)
 	while (!s_rainbow_exited && guard++ < 500)
 		thread_sleep(2);
 
-#ifdef AYANEO_BOOT_AUDIO
-	/* make sure the AFE/codec is quiet before the kernel re-inits audio */
+#if defined(AYANEO_BOOT_AUDIO) && !defined(AYANEO_GBC)
+	/* make sure the AFE/codec is quiet before the kernel re-inits audio.
+	 * In the GBC build there is no kernel: let the chime play to completion
+	 * (the emulator waits for it before bringing up its own audio). */
 	ayaneo_boot_audio_stop();
 #endif
 }

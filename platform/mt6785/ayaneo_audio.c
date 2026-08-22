@@ -650,6 +650,9 @@ void ayaneo_gbc_audio_set_volume(int v)
 }
 int ayaneo_gbc_audio_get_volume(void) { return s_gbc_vol; }
 
+/* is the boot chime still playing? (emulator waits for it before taking over) */
+int ayaneo_boot_audio_active(void) { return s_audio_active; }
+
 /*
  * Pause/resume the game audio (used for fast-forward). On pause we fill the ring
  * with silence so the looping DMA plays nothing; on resume we re-seat the write
