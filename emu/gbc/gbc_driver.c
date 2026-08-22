@@ -35,6 +35,9 @@ extern void mt_power_off(void);
 /* ---- LK primitives ---- */
 extern void *memcpy(void *, const void *, unsigned int);
 extern time_t current_time(void);
+/* free-running 13 MHz counter (13 ticks/us); the scheduler tick (current_time)
+ * is only 10 ms, far too coarse to pace a 16.74 ms GB frame without beating. */
+extern unsigned gpt4_get_current_tick(void);
 extern void arch_clean_cache_range(unsigned long start, unsigned int len);
 extern void ayaneo_gbc_show_frame(const unsigned short *pix);	/* mt_disp_drv.c */
 extern void mtk_wdt_restart(void);	/* kick the hardware watchdog */
@@ -344,8 +347,15 @@ static int gbc_emu_thread(void *arg)
 	ayaneo_gbc_audio_init();		/* bring up the streaming audio path */
 
 	{
-		unsigned pace_base = (unsigned)current_time();
-		unsigned pace_n = 0;		/* frames since pace_base */
+		/* Pace off the 13 MHz free-running counter, not the 10 ms scheduler
+		 * tick. Ticks per GB frame = 13e6 * (samples/frame) / soundrate =
+		 * 13000000 * 35112 / 2097152. Kept as an exact rational and applied
+		 * cumulatively from a fixed base so there is no per-frame rounding
+		 * drift (and the u32 truncation wraps in step with the hardware). */
+		const unsigned long long TPF_NUM = 13000000ull * 35112ull;
+		const unsigned long long TPF_DEN = 2097152ull;
+		unsigned pace_base = gpt4_get_current_tick();
+		unsigned long long pace_n = 0;	/* frames since pace_base */
 		int ff_prev = 0;
 
 		for (;;) {
@@ -367,7 +377,7 @@ static int gbc_emu_thread(void *arg)
 				ayaneo_gbc_audio_submit(snd, samples);
 
 			if (r >= 0) {		/* a video frame completed */
-				unsigned target, now;
+				unsigned target;
 
 				mtk_wdt_restart();
 				gbc_poll_volume();
@@ -379,7 +389,7 @@ static int gbc_emu_thread(void *arg)
 					 * vsync-locked blit doesn't cap the speed */
 					if ((frame & 3) == 0)
 						ayaneo_gbc_show_frame(vbuf);
-					pace_base = (unsigned)current_time();
+					pace_base = gpt4_get_current_tick();
 					pace_n = 0;	/* rebase for a clean exit */
 					continue;	/* no pacing sleep */
 				}
@@ -388,13 +398,20 @@ static int gbc_emu_thread(void *arg)
 				if ((frame % 120) == 0)
 					GBC_LOG("GBC: frame %u\n", frame);
 
-				/* pace to the GB's ~59.7275 Hz */
+				/* pace to the GB's ~59.7275 Hz: cumulative target tick */
 				pace_n++;
-				target = pace_base + (unsigned)(((unsigned long long)pace_n
-								 * 100000ull) / 5973u);
-				now = (unsigned)current_time();
-				if ((int)(target - now) > 0)
-					thread_sleep(target - now);
+				target = pace_base + (unsigned)((pace_n * TPF_NUM) / TPF_DEN);
+
+				/* if we have fallen more than a couple of frames behind
+				 * (long hitch), rebase so we don't then sprint to catch
+				 * up; otherwise spin on the fine counter until target. */
+				if ((int)(gpt4_get_current_tick() - target) > 2 * 217645) {
+					pace_base = gpt4_get_current_tick();
+					pace_n = 0;
+				} else {
+					while ((int)(gpt4_get_current_tick() - target) < 0)
+						; /* busy-wait ~<16 ms; we own the CPU */
+				}
 			}
 		}
 	}
