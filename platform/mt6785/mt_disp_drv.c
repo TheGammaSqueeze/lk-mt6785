@@ -722,6 +722,31 @@ extern void ayaneo_boot_audio_start(void);
 extern void ayaneo_boot_audio_stop(void);
 #endif
 
+/* ---- backlight brightness + on-screen slider (volume/brightness) ---- */
+extern int mt65xx_leds_brightness_set(int type, int level);	/* mt_leds.c */
+extern void ayaneo_apply_persisted_brightness(void);		/* ayaneo_audio.c */
+
+/* Drive the LCD backlight to 'level' (0-255). Called from ayaneo_audio.c which
+ * owns the persisted/runtime brightness value. type 6 = MT65XX_LED_TYPE_LCD. */
+void ayaneo_apply_backlight(int level)
+{
+	mt65xx_leds_brightness_set(6, level);
+}
+
+/* OSD slider shown briefly when the user changes volume/brightness. Set from the
+ * emulator's input poll (gbc_driver.c), drawn by ayaneo_gbc_show_frame(). */
+static volatile int s_osd_kind;			/* 0 none, 1 volume, 2 brightness */
+static volatile int s_osd_pct;			/* 0-100 */
+static volatile unsigned int s_osd_until_ms;	/* current_time() deadline */
+void ayaneo_gbc_osd_show(int kind, int pct)
+{
+	if (pct < 0) pct = 0;
+	if (pct > 100) pct = 100;
+	s_osd_kind = kind;
+	s_osd_pct = pct;
+	s_osd_until_ms = (unsigned int)current_time() + 1500;	/* ~1.5 s */
+}
+
 static volatile int s_rainbow_stop;
 static volatile int s_rainbow_exited;
 static volatile int s_anim_complete;
@@ -772,6 +797,57 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 #define GBC_SRC_W	160
 #define GBC_SRC_H	144
 #define GBC_SCALE	6
+
+/*
+ * Draw (or clear) the OSD slider in the bottom letterbox border of the current
+ * back buffer. The border band is only ever touched by the OSD, so when the OSD
+ * expires we paint it black for a couple of frames to clear both buffers. Colours
+ * distinguish the two controls: volume = cyan, brightness = amber.
+ */
+static void ayaneo_draw_osd(unsigned int *dst, unsigned int pitch_w,
+			    unsigned int W, unsigned int H)
+{
+	static int clear_left;
+	unsigned int dh = GBC_SRC_H * GBC_SCALE, yoff = (H - dh) / 2;
+	int active = s_osd_kind &&
+		     (int)(s_osd_until_ms - (unsigned int)current_time()) > 0;
+	unsigned int barW, barH, bx, by, fillW, fill, border, x, y;
+
+	if (active)
+		clear_left = 2;		/* keep clearing after it expires */
+	else if (clear_left > 0)
+		clear_left--;
+	else
+		return;
+
+	barW = (W * 3) / 5;		/* ~60% of the panel width */
+	barH = 22;
+	bx = (W - barW) / 2;
+	by = yoff + dh + (yoff > barH + 8 ? (yoff - barH) / 2 : 4);
+	if (by + barH >= H)		/* safety: keep inside the panel */
+		by = H - barH - 1;
+
+	fill   = active ? (s_osd_kind == 1 ? 0xFF20D0FFu : 0xFFFFC020u) : 0xFF000000u;
+	border = active ? 0xFFFFFFFFu : 0xFF000000u;
+	fillW  = active ? ((barW - 4) * (unsigned int)s_osd_pct) / 100u : 0;
+
+	for (y = 0; y < barH; y++) {
+		unsigned int *o = dst + (by + y) * pitch_w + bx;
+		int edge_row = (y < 2 || y >= barH - 2);
+		for (x = 0; x < barW; x++) {
+			unsigned int c;
+			if (!active)
+				c = 0xFF000000u;		/* clearing */
+			else if (edge_row || x < 2 || x >= barW - 2)
+				c = border;			/* 2px frame */
+			else
+				c = (x - 2 < fillW) ? fill : 0xFF202020u;
+			o[x] = c;
+		}
+	}
+	arch_clean_cache_range((unsigned int)(dst + by * pitch_w), barH * pitch_w * 4);
+}
+
 void ayaneo_gbc_show_frame(const unsigned short *pix)
 {
 	static int inited = 0, buf = 0;
@@ -797,6 +873,7 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		din.layer_en = 0;
 		primary_display_config_input(&din);
 		mt65xx_backlight_on();	/* in case the animation was skipped */
+		ayaneo_apply_persisted_brightness();	/* honour the saved level */
 		inited = 1;
 	}
 
@@ -822,6 +899,7 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		}
 	}
 	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
+	ayaneo_draw_osd(dst, pitch_w, W, H);	/* volume/brightness slider, if active */
 	ayaneo_present(dpa, W, H, pitch_w);
 	buf ^= 1;
 }
@@ -1059,7 +1137,7 @@ static int ayaneo_rainbow_thread(void *arg)
 				ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
 				disp_i++;
 				have_frame = 1;
-				if (!shown) { mt65xx_backlight_on(); shown = 1; }
+				if (!shown) { mt65xx_backlight_on(); ayaneo_apply_persisted_brightness(); shown = 1; }
 			}
 		}
 

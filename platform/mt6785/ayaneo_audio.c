@@ -172,6 +172,26 @@ static volatile int s_audio_active;	/* audio thread is running */
 static volatile int s_audio_stop_req;	/* request the thread to stop early */
 static unsigned int s_audio_ms;
 
+/* ---- persisted user settings (audio volume + screen brightness) ----
+ * Stored in a single 512-byte block in boot_b at 30 MB, past the ROM (20-28 MB)
+ * and the save state (28-30 MB); boot_b is 32 MB. Applied to both the boot chime
+ * and the game, and to the backlight during the animation and in-game. */
+#define AYANEO_SET_OFF		0x01E00000u	/* 30 MB into boot_b */
+#define AYANEO_SET_MAGIC	0x54455341u	/* "ASET" LE */
+#define AYANEO_SET_VER		1u
+#define AYANEO_BL_MIN		24		/* keep the panel visible (never 0) */
+#define AYANEO_BL_MAX		255		/* mt65xx LCD level is 0-255 */
+#define AYANEO_BL_STEP		24
+#ifndef AYANEO_BL_DEFAULT
+#define AYANEO_BL_DEFAULT	200
+#endif
+
+extern void ayaneo_apply_backlight(int level);	/* mt_disp_drv.c: drive the LCD */
+
+static volatile int s_gbc_vol = AYANEO_AUDIO_VOLUME;	/* audio level, 0-100 */
+static volatile int s_brightness = AYANEO_BL_DEFAULT;	/* LCD level, 0-255 */
+static int s_settings_loaded;
+
 /* ---------- little-endian helpers ---------- */
 static unsigned int rd32(const unsigned char *p)
 {
@@ -181,6 +201,97 @@ static unsigned int rd32(const unsigned char *p)
 static unsigned int rd16(const unsigned char *p)
 {
 	return (unsigned int)p[0] | ((unsigned int)p[1] << 8);
+}
+static void wr32(unsigned char *p, unsigned int v)
+{
+	p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24;
+}
+
+/* ---------- persisted volume + brightness ---------- */
+
+int ayaneo_gbc_audio_get_volume(void) { return s_gbc_vol; }
+void ayaneo_gbc_audio_set_volume(int v)
+{
+	if (v < 0) v = 0;
+	if (v > 100) v = 100;
+	s_gbc_vol = v;
+}
+
+/* apply a backlight level (clamped) to the hardware and remember it */
+static void ayaneo_set_brightness(int level)
+{
+	if (level < AYANEO_BL_MIN) level = AYANEO_BL_MIN;
+	if (level > AYANEO_BL_MAX) level = AYANEO_BL_MAX;
+	s_brightness = level;
+	ayaneo_apply_backlight(level);
+}
+
+/* nudge brightness by one step (dir +1/-1); returns the new level as 0-100% */
+int ayaneo_brightness_step(int dir)
+{
+	ayaneo_set_brightness(s_brightness + dir * AYANEO_BL_STEP);
+	return s_brightness * 100 / AYANEO_BL_MAX;
+}
+int ayaneo_brightness_pct(void) { return s_brightness * 100 / AYANEO_BL_MAX; }
+
+/* load the persisted settings from boot_b (once). Missing/invalid -> keep the
+ * compile-time defaults. Does not touch the hardware; callers apply brightness. */
+void ayaneo_settings_load(void)
+{
+	unsigned char b[16];
+
+	if (s_settings_loaded)
+		return;
+	/* If storage is not up yet (early boot), leave s_settings_loaded clear so a
+	 * later call retries; only commit once we have actually read the block. */
+	if (partition_read(AYANEO_AUDIO_PART, AYANEO_SET_OFF, b, sizeof(b)) != (ssize_t)sizeof(b))
+		return;
+	s_settings_loaded = 1;			/* storage worked: decide once */
+	if (rd32(b) != AYANEO_SET_MAGIC)
+		return;				/* no/invalid blob: keep defaults */
+	{
+		int vol = (int)rd32(b + 8);
+		int bl  = (int)rd32(b + 12);
+
+		if (vol >= 0 && vol <= 100)
+			s_gbc_vol = vol;
+		if (bl >= AYANEO_BL_MIN && bl <= AYANEO_BL_MAX)
+			s_brightness = bl;
+	}
+}
+
+/* write the current volume/brightness back to boot_b (block-aligned) */
+void ayaneo_settings_save(void)
+{
+	static unsigned char b[512] __attribute__((aligned(64)));
+
+	memset(b, 0, sizeof(b));
+	wr32(b + 0, AYANEO_SET_MAGIC);
+	wr32(b + 4, AYANEO_SET_VER);
+	wr32(b + 8, (unsigned int)s_gbc_vol);
+	wr32(b + 12, (unsigned int)s_brightness);
+	s_settings_loaded = 1;			/* our value is now authoritative */
+	arch_clean_cache_range((addr_t)b, sizeof(b));
+	partition_write(AYANEO_AUDIO_PART, AYANEO_SET_OFF, b, sizeof(b));
+}
+
+/* ensure settings are loaded, then push the brightness to the panel. Called by
+ * the display path right after the backlight is turned on (animation frame 1,
+ * or the Select-skip emulator init) so the persisted level is used from boot. */
+void ayaneo_apply_persisted_brightness(void)
+{
+	ayaneo_settings_load();
+	ayaneo_apply_backlight(s_brightness);
+}
+
+/* The persisted LCD level for mt65xx_backlight_on() to use instead of the
+ * cust default, so every backlight-on during boot (there are several, in
+ * platform.c / boot_mode.c) honours the saved brightness rather than snapping
+ * to full. Lazily loads settings; falls back to the default until storage is up. */
+int ayaneo_backlight_level_for_boot(void)
+{
+	ayaneo_settings_load();
+	return s_brightness;
 }
 
 /*
@@ -542,9 +653,11 @@ static int ayaneo_audio_thread(void *arg)
 	if (zunzip(comp, &zlen, s_pcm, (int)pcm_bytes, 0) != 0)
 		goto done;
 
-	if (AYANEO_AUDIO_VOLUME == 0)		/* silent: skip playback entirely */
+	/* use the persisted volume so the chime matches the level set in-game */
+	ayaneo_settings_load();
+	if (s_gbc_vol == 0)			/* silent: skip playback entirely */
 		goto done;
-	apply_volume(pcm_bytes, AYANEO_AUDIO_VOLUME);
+	apply_volume(pcm_bytes, (unsigned int)s_gbc_vol);
 	apply_tail_fade(pcm_bytes, rate);
 	arch_clean_cache_range((addr_t)s_pcm, pcm_bytes);
 
@@ -682,18 +795,10 @@ void ayaneo_boot_audio_stop(void)
 static short s_gbc_ring[GBC_RING_FRAMES * 2] __attribute__((aligned(64)));
 static volatile int s_gbc_audio_on;
 static volatile int s_gbc_paused;			/* silence while set */
-static volatile int s_gbc_vol = AYANEO_AUDIO_VOLUME;	/* runtime, 0-100 */
+/* s_gbc_vol / the volume getters+setters live up top with the persisted settings */
 static unsigned s_gbc_widx;			/* ring write cursor, in frames */
 static long long s_rs_accl, s_rs_accr;		/* box-filter accumulators */
 static unsigned s_rs_n, s_rs_phase;		/* samples accumulated, phase */
-
-void ayaneo_gbc_audio_set_volume(int v)
-{
-	if (v < 0) v = 0;
-	if (v > 100) v = 100;
-	s_gbc_vol = v;
-}
-int ayaneo_gbc_audio_get_volume(void) { return s_gbc_vol; }
 
 /* is the boot chime still playing? (emulator waits for it before taking over) */
 int ayaneo_boot_audio_active(void) { return s_audio_active; }

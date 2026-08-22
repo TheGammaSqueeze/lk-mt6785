@@ -60,6 +60,12 @@ extern void ayaneo_gbc_audio_set_volume(int v);
 extern int  ayaneo_gbc_audio_get_volume(void);
 extern void ayaneo_gbc_audio_pause(int on);
 extern void ayaneo_gbc_audio_shutdown(void);	/* clean codec teardown before off */
+/* persisted settings (volume + backlight) and the on-screen slider */
+extern void ayaneo_settings_load(void);		/* ayaneo_audio.c */
+extern void ayaneo_settings_save(void);
+extern int  ayaneo_brightness_step(int dir);	/* dir +1/-1; returns new 0-100% */
+extern int  ayaneo_brightness_pct(void);
+extern void ayaneo_gbc_osd_show(int kind, int pct);	/* kind: 1=volume 2=brightness (mt_disp_drv.c) */
 
 /* input: SoC GPIOs (gpio-keys, active-low) + MTK keypad for volume */
 extern int mt_set_gpio_mode(unsigned pin, unsigned mode);
@@ -101,11 +107,18 @@ float powf(float b, float e) { (void)e; return b; }	/* color-correction only; un
 
 static int gbc_ready;
 
+/* Start/Select physical GPIOs. Swapped from the original mapping (Start was 90,
+ * Select was 91) so the two buttons trade functions. Select doubles as the
+ * brightness modifier (Select + Volume). */
+#define GBC_GPIO_START	91
+#define GBC_GPIO_SELECT	90
+
 /* gpio-keys mapping (from the device tree, active-low): GB buttons -> SoC GPIO.
  * A/B are swapped vs the DTS labels to match the physical layout. */
 static const struct { unsigned gpio; unsigned mask; } s_btn[] = {
 	{ 89, IG_UP },   { 79, IG_DOWN }, { 78, IG_LEFT }, { 80, IG_RIGHT },
-	{ 83, IG_A },    { 82, IG_B },    { 90, IG_START },{ 91, IG_SEL },
+	{ 83, IG_A },    { 82, IG_B },
+	{ GBC_GPIO_START, IG_START }, { GBC_GPIO_SELECT, IG_SEL },
 };
 
 /* extra buttons used for functions, not direct GB inputs */
@@ -146,9 +159,13 @@ static void gbc_input_init(void)
  * skip the boot animation/chime and jump straight into the emulator. */
 int ayaneo_gbc_select_held(void)
 {
-	gbc_gpio_in_pullup(91);		/* Select */
-	return GBC_PRESSED(91);
+	gbc_gpio_in_pullup(GBC_GPIO_SELECT);
+	return GBC_PRESSED(GBC_GPIO_SELECT);
 }
+
+/* set while Select is being used as the brightness modifier (Select + Volume),
+ * so the Select press is not also delivered to the game as GB Select. */
+static volatile int s_sel_modifier;
 
 /* current button state, refreshed once per frame by gbc_update_buttons() and
  * returned to the core's InputGetter (which is called many times per frame). */
@@ -181,6 +198,10 @@ static void gbc_update_buttons(void)
 
 	m = deb & 0xffu;		/* the 8 GB buttons */
 
+	/* while Select is driving the brightness slider, keep it out of the game */
+	if (s_sel_modifier)
+		m &= ~IG_SEL;
+
 	/* X/Y = autofire B/A: pulse the button at GBC_AUTOFIRE_HZ while held */
 	af = ((unsigned)current_time() * GBC_AUTOFIRE_HZ / 500u) & 1;
 	if (af) {
@@ -198,17 +219,35 @@ unsigned gbc_read_buttons(void)
 	return s_btn_state;
 }
 
-/* poll the volume keys (MTK keypad) and adjust playback volume, edge-detected */
+/* Poll the volume keys (MTK keypad), edge-detected. Plain Volume adjusts the
+ * audio level; Select + Volume adjusts the screen brightness. Both show an
+ * on-screen slider and persist the new value to boot_b so it survives reboots. */
 static void gbc_poll_volume(void)
 {
 	static int vu_prev, vd_prev;
 	int vu = mtk_detect_key(0x11);		/* VolumeUp  (hw key 0x11) */
 	int vd = mtk_detect_key(0x00);		/* VolumeDown (hw key 0x00) */
+	int sel = GBC_PRESSED(GBC_GPIO_SELECT);	/* Select = brightness modifier */
+	int dir = 0;
 
-	if (vu && !vu_prev)
-		ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + 10);
-	if (vd && !vd_prev)
-		ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() - 10);
+	if (vu && !vu_prev) dir = +1;
+	else if (vd && !vd_prev) dir = -1;
+
+	if (dir) {
+		if (sel) {
+			int pct = ayaneo_brightness_step(dir);
+			ayaneo_gbc_osd_show(2, pct);	/* 2 = brightness */
+			s_sel_modifier = 1;		/* suppress GB Select this hold */
+		} else {
+			int v = ayaneo_gbc_audio_get_volume() + dir * 10;
+			ayaneo_gbc_audio_set_volume(v);
+			ayaneo_gbc_osd_show(1, ayaneo_gbc_audio_get_volume());	/* 1 = volume */
+		}
+		ayaneo_settings_save();		/* persist across reboots */
+	}
+	if (!sel)
+		s_sel_modifier = 0;		/* Select released: hand it back to the game */
+
 	vu_prev = vu;
 	vd_prev = vd;
 }
@@ -236,7 +275,7 @@ static void gbc_try_load_state(unsigned char *scratch)
 	unsigned magic, sz;
 
 	/* hold Start during boot to skip the save state and start fresh */
-	if (GBC_PRESSED(90)) {
+	if (GBC_PRESSED(GBC_GPIO_START)) {
 		dprintf(CRITICAL, "GBC: Start held - skipping save state\n");
 		return;
 	}
@@ -281,6 +320,7 @@ static void gbc_save_and_poweroff(unsigned char *scratch)
 		arch_clean_cache_range((unsigned long)scratch, total);
 		partition_write(GBC_ROM_PART, GBC_STATE_OFF, scratch, total);
 	}
+	ayaneo_settings_save();		/* persist volume/brightness */
 	/* leave the codec/amp cold so the next boot's chime plays (mt_power_off is
 	 * a soft off that keeps the audio registers latched). */
 	ayaneo_gbc_audio_shutdown();
@@ -346,6 +386,7 @@ static int gbc_emu_thread(void *arg)
 	dprintf(CRITICAL, "GBC: loaded romsz=%u heap_used=%u\n", romsz, gbc_heap_used());
 
 	gbc_input_init();		/* configure the button GPIOs (before state) */
+	ayaneo_settings_load();		/* persisted volume/brightness for the game */
 	gbc_try_load_state(state);	/* resume unless Start is held */
 	gbc_ready = 1;
 

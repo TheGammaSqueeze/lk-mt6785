@@ -396,6 +396,13 @@ void leds_deinit(void)
 void mt65xx_backlight_on(void)
 {
 	enum led_brightness backlight_level = get_cust_led_default_level();
+#if defined(AYANEO_GBC) || defined(AYANEO_RAINBOW_BOOT)
+	/* Honour the user's persisted brightness so the several boot-time
+	 * backlight-on calls (platform.c / boot_mode.c) don't snap the panel to
+	 * full and override the saved level during the animation. */
+	extern int ayaneo_backlight_level_for_boot(void);
+	backlight_level = ayaneo_backlight_level_for_boot();
+#endif
 	LEDS_INFO("[LEDS]LK: mt65xx_backlight_on:level =  %d\n\r",backlight_level);
 	mt65xx_leds_brightness_set(MT65XX_LED_TYPE_LCD, backlight_level);
 }
