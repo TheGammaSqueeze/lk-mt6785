@@ -314,9 +314,17 @@ static int gbc_emu_thread(void *arg)
 		unsigned pace_n = 0;		/* frames since pace_base */
 		int ff_prev = 0;
 
+		int trace = 0;
 		for (;;) {
 			unsigned samples = GBC_SND_MAX;
-			long r = gbc_run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
+			long r;
+
+			if (trace < 3)
+				dprintf(CRITICAL, "GBC: >run %d\n", trace);
+			r = gbc_run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
+			if (trace < 3)
+				dprintf(CRITICAL, "GBC: <run %d r=%ld samples=%u\n", trace, r, samples);
+			if (trace < 3) trace++;
 
 			/* fast-forward edge: mute (silence the ring) on enter, resync
 			 * the audio on exit */
