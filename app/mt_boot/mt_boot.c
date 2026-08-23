@@ -738,6 +738,8 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	 * been stopped above.
 	 */
 	{
+		/* Run the emulator instead of the kernel. (Charger-insert offline
+		 * charging is handled at platform init in kernel_charging_boot.) */
 		extern void ayaneo_gbc_start(void);
 		ayaneo_gbc_start();
 		for (;;)

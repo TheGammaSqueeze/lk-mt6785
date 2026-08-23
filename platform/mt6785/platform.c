@@ -932,6 +932,16 @@ void platform_init(void)
 
 #ifdef MTK_KERNEL_POWER_OFF_CHARGING
 	if (kernel_charging_boot() == 1) {
+#ifdef AYANEO_GBC
+		/* Offline charging: the charger woke the SoC (unavoidable). Show OUR
+		 * charging screen here at platform init (this is where mt6785 handles
+		 * KPOC; it never reaches the emulator boot hook). It blocks until the
+		 * user holds POWER, then we continue as a normal boot into the game. */
+		extern void ayaneo_gbc_charging_screen(void);
+		mt_disp_power(TRUE);
+		ayaneo_gbc_charging_screen();
+		g_boot_mode = NORMAL_BOOT;
+#else
 		PROFILING_START("show logo");
 #ifdef MTK_BATLOWV_NO_PANEL_ON_EARLY
 		CHARGER_TYPE CHR_Type_num = CHARGER_UNKNOWN;
@@ -948,6 +958,7 @@ void platform_init(void)
 		}
 #endif
 		PROFILING_END();
+#endif /* AYANEO_GBC */
 	} else if (g_boot_mode != KERNEL_POWER_OFF_CHARGING_BOOT && g_boot_mode != LOW_POWER_OFF_CHARGING_BOOT) {
 	/*  fast meta mode */
 		if(g_boot_mode != META_BOOT)

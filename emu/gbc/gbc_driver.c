@@ -93,11 +93,13 @@ extern int  ayaneo_text(unsigned int *buf, unsigned int pitch_w,
 			int x, int y, int scale, unsigned int argb, const char *s);
 extern unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigned int *H);
 extern void ayaneo_canvas_present(void);
-/* battery (mt_battery.c / mt_pmic.c) */
+/* battery (mt_battery.c / mt_pmic.c / mt_pmic_dlpt.c) */
 extern int get_bat_sense_volt(int times);	/* mV */
 extern int upmu_is_chr_det(void);		/* charger present */
 extern unsigned int ayaneo_get_cpu_mhz(void);	/* pll.c: ARM PLL output MHz */
 extern void ayaneo_set_cpu_mhz(unsigned int mhz);	/* pll.c: step the ARM PLL */
+/* charge-indicator LED: AW2033 RGB on i2c6 (mt_leds.c) */
+extern void ayaneo_charge_led(int r, int g, int b);	/* each 0-255; 0,0,0=off */
 
 /* input: SoC GPIOs (gpio-keys, active-low) + MTK keypad for volume */
 extern int mt_set_gpio_mode(unsigned pin, unsigned mode);
@@ -516,36 +518,66 @@ static int gbc_ocv_pct(int mv)
 }
 
 /*
- * Hardened battery percentage. get_bat_sense_volt() is a single noisy
- * instantaneous ADC read and the terminal voltage jumps up the moment a charger
- * is attached, so a direct map fluctuates wildly and leaps on plug-in. Average a
- * batch of samples, subtract a charge offset to approximate the open-circuit
- * voltage while charging, then rate-limit the displayed value so it can only
- * drift a couple of percent per update. Returns 0-100; *charging set if on USB.
+ * Simple, cheap, snapshot battery percentage. Averages a batch of plain BATADC
+ * reads (no PTIM gauge snapshot - that hitched the game and flickered the menu)
+ * and subtracts a modest offset while charging to approximate the resting
+ * voltage. Callers read this once and hold the value (e.g. when the menu opens),
+ * so it is steady and never climbs while you watch it. A voltage snapshot is not
+ * a coulomb-counting gauge, so it is only approximate.
  */
+#define BAT_CHARGE_OFFSET_MV	80	/* approx terminal lift while charging */
 static int gbc_battery_read(int *charging)
 {
-	static int disp = -1;
 	int chr = upmu_is_chr_det();
 	long sum = 0;
-	int i, mv, raw, d;
+	int i, vmv;
 
-	for (i = 0; i < 8; i++)
+	for (i = 0; i < 16; i++)
 		sum += get_bat_sense_volt(1);
-	mv = (int)(sum / 8);
+	vmv = (int)(sum / 16);
 	if (chr)
-		mv -= 180;		/* charge current lifts the terminal ~150-200 mV */
-	raw = gbc_ocv_pct(mv);
-	if (disp < 0) {
-		disp = raw;		/* first reading: snap */
-	} else {			/* otherwise move at most 2% toward raw */
-		d = raw - disp;
-		if (d > 2) d = 2; else if (d < -2) d = -2;
-		disp += d;
-	}
+		vmv -= BAT_CHARGE_OFFSET_MV;
 	if (charging)
 		*charging = chr;
-	return disp;
+	return gbc_ocv_pct(vmv);
+}
+
+/* Drive the charge-indicator LED: green when charging and full, red while
+ * charging, off on battery. Only re-writes on a state change (LED I2C is slow). */
+static void gbc_set_charge_led(int charging, int pct)
+{
+	static int prev = -1;
+	int state = !charging ? 0 : (pct >= 99 ? 2 : 1);	/* 0 off, 1 red, 2 green */
+
+	if (state == prev)
+		return;
+	prev = state;
+	if (state == 2)
+		ayaneo_charge_led(0, 255, 0);	/* full: green */
+	else if (state == 1)
+		ayaneo_charge_led(255, 0, 0);	/* charging: red */
+	else
+		ayaneo_charge_led(0, 0, 0);	/* on battery: off */
+}
+
+/* Update the charge LED from the run loop at ~1 Hz. Kept cheap (no PTIM gauge
+ * snapshot, which would hitch the game): charger-detect for red/off and a single
+ * ADC read for the near-full green. */
+/* Battery % cached from the run loop so the menu can display it WITHOUT calling
+ * the PTIM gauge during rendering (that snapshot hitches the frame and made the
+ * overlay flicker). Refreshed here only while the menu is open. */
+static volatile int s_batt_pct = 50;
+static void gbc_poll_led(void)
+{
+	static int tick;
+	int chr, full;
+
+	if (tick-- > 0)
+		return;
+	tick = 60;
+	chr = upmu_is_chr_det();
+	full = chr && get_bat_sense_volt(1) >= 4300;	/* near CV -> treat as full */
+	gbc_set_charge_led(chr, full ? 100 : 50);
 }
 
 /* CPU OPP stepping (ARM PLL). Not persisted - a bad value clears on power cycle. */
@@ -624,15 +656,12 @@ static const char *gbc_menu_value(int item, char *buf, unsigned char *state)
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
 	case MI_LOADSTATE:
 	case MI_SAVESTATE: p = mi_puts(p, "[A]"); break;
-	case MI_BATTERY: {
-		/* refresh at ~1.5 Hz (each refresh rate-limits itself) so the line is
-		 * steady between the two scan-out buffers. */
-		static int pct = -1, chr, tick;
-		if (pct < 0 || tick-- <= 0) { pct = gbc_battery_read(&chr); tick = 40; }
-		p = mi_putu(p, (unsigned)pct); p = mi_puts(p, "% ");
-		p = mi_puts(p, chr ? "Charging" : "Battery");
+	case MI_BATTERY:
+		/* display the value cached by the run loop (gbc_poll_led); reading the
+		 * gauge here would hitch the render and flicker the overlay. */
+		p = mi_putu(p, (unsigned)s_batt_pct); p = mi_puts(p, "% ");
+		p = mi_puts(p, upmu_is_chr_det() ? "Charging" : "Battery");
 		break;
-	}
 	case MI_CPU: {
 		/* cache so the value is identical in both scan-out buffers (the PLL
 		 * read-back low bits jitter, which would flicker this row); refresh on
@@ -719,6 +748,10 @@ static void gbc_menu_toggle(void)
 {
 	s_menu_open = !s_menu_open;
 	s_menu_status[0] = 0;
+	if (s_menu_open) {		/* seed the battery cache so it shows at once */
+		int c;
+		s_batt_pct = gbc_battery_read(&c);
+	}
 	gbc_menu_keys();		/* drop the AYA edge so it isn't re-read */
 }
 
@@ -858,6 +891,7 @@ static int gbc_emu_thread(void *arg)
 
 				mtk_wdt_restart();
 				gbc_poll_volume();
+				gbc_poll_led();		/* charge LED reflects charging */
 				gbc_check_power(state);	/* power -> save + off */
 				frame++;
 
@@ -921,6 +955,110 @@ static int gbc_emu_thread(void *arg)
 		}
 	}
 	return 0;
+}
+
+/* ===================== offline charging screen ===================== */
+extern void ayaneo_display_prepare(void);	/* mt_disp_drv.c */
+extern void ayaneo_apply_backlight(int level);
+extern void ayaneo_apply_persisted_brightness(void);
+
+static void gbc_text_center(unsigned int *buf, unsigned int pitch, int cx, int y,
+			    int scale, unsigned int argb, const char *s)
+{
+	int n = 0;
+	while (s[n]) n++;
+	ayaneo_text(buf, pitch, cx - n * 8 * scale / 2, y, scale, argb, s);
+}
+
+/*
+ * Offline charging: entered when the device was powered on by a charger insert
+ * (g_boot_mode == *_POWER_OFF_CHARGING_BOOT) rather than the power key. Shows a
+ * dim battery screen and does NOT boot into the game. Hold POWER (~1.2 s) to
+ * start the game; unplug to power off. Blocks until the user starts the game.
+ */
+void ayaneo_gbc_charging_screen(void)
+{
+	int hold = 0, unplug = 0, disp_on = 1, idle = 0;
+	int pct = 0, btick = 0, dummy;
+	unsigned iter = 0;
+
+	ayaneo_settings_load();
+	ayaneo_display_prepare();
+	ayaneo_apply_backlight(40);		/* dim to save power while charging */
+	mtk_wdt_disable();
+	pct = gbc_battery_read(&dummy);
+	GBC_ATRACE("GBC: charging screen enter chr=%d pwrkey=%d t=%u\n",
+		   upmu_is_chr_det(), pmic_detect_powerkey(), (unsigned)current_time());
+
+	for (;;) {
+		int chr = upmu_is_chr_det();	/* cheap, every loop: unplug + LED */
+		int pk = pmic_detect_powerkey();
+
+		/* Re-measure the clean OCV every ~15 s (it briefly pauses charging, and
+		 * SOC changes slowly). It is accurate and steady, so no per-second
+		 * sampling and no ramp. */
+		if (--btick <= 0) { pct = gbc_battery_read(&dummy); btick = 10; }
+
+		gbc_set_charge_led(chr, pct);	/* red charging / green full / off */
+		if ((iter++ % 20) == 0)
+			GBC_ATRACE("GBC: charging chr=%d pwrkey=%d hold=%d disp=%d pct=%d t=%u\n",
+				   chr, pk, hold, disp_on, pct, (unsigned)current_time());
+
+		/* draw only while the display is on; blank it after 10 s idle */
+		if (disp_on) {
+			unsigned int pitch, W, H;
+			unsigned int *buf = ayaneo_canvas_back(&pitch, &W, &H);
+			int cx = (int)W / 2, cy = (int)H / 2;
+			char line[16], *p;
+
+			p = mi_putu(line, (unsigned)pct); p = mi_puts(p, "%"); *p = 0;
+			ayaneo_fill(buf, pitch, 0, 0, (int)W, (int)H, 0xFF000000u);
+			gbc_text_center(buf, pitch, cx, cy - 96, 6, 0xFFFFFFFFu, line);
+			gbc_text_center(buf, pitch, cx, cy + 24, 3,
+					chr ? 0xFF60D080u : 0xFFD08060u,
+					chr ? "Charging" : "On battery");
+			gbc_text_center(buf, pitch, cx, cy + 96, 1, 0xFF808890u,
+					"Tap POWER for status  -  hold to start  -  unplug for off");
+			ayaneo_canvas_present();
+			if (++idle >= 100) {		/* ~10 s -> screen off */
+				disp_on = 0;
+				ayaneo_apply_backlight(0);
+			}
+		}
+
+		if (!chr) {			/* debounce: unplugged -> power off */
+			if (++unplug >= 3) {
+				GBC_ATRACE("GBC: charging unplugged -> power off t=%u\n",
+					   (unsigned)current_time());
+				mt_power_off();
+			}
+		} else {
+			unplug = 0;
+		}
+
+		/* POWER: hold ~1.2 s -> start the game (from on OR off screen); a short
+		 * tap while off wakes the display and shows charging status. */
+		if (pk) {
+			if (++hold >= 12) {
+				GBC_ATRACE("GBC: charging power-hold -> start game t=%u\n",
+					   (unsigned)current_time());
+				ayaneo_apply_persisted_brightness();
+				return;
+			}
+		} else {
+			if (hold > 0 && hold < 12) {	/* short tap released */
+				if (!disp_on) {
+					disp_on = 1;
+					ayaneo_apply_backlight(40);
+				}
+				idle = 0;		/* keep the screen on / reset timeout */
+			}
+			hold = 0;
+		}
+
+		mtk_wdt_restart();
+		thread_sleep(100);
+	}
 }
 
 void ayaneo_gbc_start(void)

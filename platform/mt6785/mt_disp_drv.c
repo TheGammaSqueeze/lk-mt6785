@@ -748,7 +748,11 @@ void ayaneo_gbc_osd_show(int kind, int pct)
 }
 
 static volatile int s_rainbow_stop;
-static volatile int s_rainbow_exited;
+/* Default 1 ("nothing running") so video_rainbow_boot_stop() returns at once when
+ * the animation was never started (e.g. the charger-boot path skips it) instead
+ * of sitting in its ~9 s wait-for-animation timeout. Set to 0 while the animation
+ * thread is actually running; back to 1 when it exits. */
+static volatile int s_rainbow_exited = 1;
 static volatile int s_anim_complete;
 static volatile int s_fade_request;	/* boot is ready -> fade out and hand off */
 static volatile unsigned int s_rainbow_start_ms;

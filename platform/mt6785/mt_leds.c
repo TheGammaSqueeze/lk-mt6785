@@ -465,3 +465,44 @@ struct cust_mt65xx_led *get_cust_led_dtsi(void)
 out:
 	return pled_dtsi;
 }
+
+/* ---- AYANEO charge-indicator LED (AW2033 RGB, i2c6 @ 0x45) ----
+ * The stock mt65xx_leds path drives the PMIC isink, which is not wired to this
+ * device's charge LED; the physical LED is an Awinic AW2033 on i2c6. */
+#include <platform/mt_i2c.h>
+#define AW2033_I2C_ID	I2C6
+#define AW2033_ADDR	0x45
+static int aw2033_write(unsigned char reg, unsigned char val)
+{
+	mt_i2c i2c = {0};
+	unsigned char buf[2];
+
+	i2c.id = AW2033_I2C_ID;
+	i2c.addr = AW2033_ADDR;
+	i2c.mode = FS_MODE;
+	i2c.speed = 400;
+	buf[0] = reg;
+	buf[1] = val;
+	return i2c_write(&i2c, buf, 2);
+}
+
+/* Set the charge LED to an RGB value (each 0-255). 0,0,0 = off. */
+void ayaneo_charge_led(int r, int g, int b)
+{
+	static int inited;
+	int en;
+
+	if (!inited) {
+		aw2033_write(0x00, 0x55);	/* soft reset */
+		aw2033_write(0x01, 0x01);	/* GCR: chip enable */
+		aw2033_write(0x31, 0x03);	/* LED0 (red) current config */
+		aw2033_write(0x32, 0x03);	/* LED1 (green) */
+		aw2033_write(0x33, 0x03);	/* LED2 (blue) */
+		inited = 1;
+	}
+	aw2033_write(0x34, (unsigned char)r);	/* PWM red */
+	aw2033_write(0x35, (unsigned char)g);	/* PWM green */
+	aw2033_write(0x36, (unsigned char)b);	/* PWM blue */
+	en = (r ? 0x01 : 0) | (g ? 0x02 : 0) | (b ? 0x04 : 0);
+	aw2033_write(0x30, (unsigned char)en);	/* LED enable bits */
+}
