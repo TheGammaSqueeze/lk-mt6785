@@ -39,6 +39,10 @@ extern long gbc_run(unsigned short *video, int pitch,
 extern unsigned gbc_state_size(void);
 extern void gbc_save_state(void *buf);
 extern int  gbc_load_state(const void *buf, unsigned size);
+extern void *gbc_savedata_ptr(void);	/* cartridge battery SRAM (.sav) */
+extern unsigned gbc_savedata_size(void);
+extern void *gbc_rtcdata_ptr(void);	/* cartridge RTC (Pokemon clock) */
+extern unsigned gbc_rtcdata_size(void);
 extern int  pmic_detect_powerkey(void);		/* 1 = power key pressed */
 extern void mt_power_off(void);
 /* partition_read/partition_write come from <part_interface.h> */
@@ -66,6 +70,32 @@ extern void ayaneo_settings_save(void);
 extern int  ayaneo_brightness_step(int dir);	/* dir +1/-1; returns new 0-100% */
 extern int  ayaneo_brightness_pct(void);
 extern void ayaneo_gbc_osd_show(int kind, int pct);	/* kind: 1=volume 2=brightness (mt_disp_drv.c) */
+/* persisted boot/video settings (ayaneo_audio.c) */
+extern int  ayaneo_get_load_on_boot(void);
+extern void ayaneo_set_load_on_boot(int v);
+extern int  ayaneo_get_skip_boot(void);
+extern void ayaneo_set_skip_boot(int v);
+extern int  ayaneo_get_lcd_filter(void);
+extern void ayaneo_set_lcd_filter(int v);
+extern int  ayaneo_get_color_correct(void);
+extern void ayaneo_set_color_correct(int v);
+extern int  ayaneo_get_dark_filter(void);
+extern void ayaneo_set_dark_filter(int v);
+/* gambatte CGB colour bridge (gbc_wrap.cpp) */
+extern void gbc_set_color_correction(int enable);
+extern void gbc_set_dark_filter(unsigned level);
+/* menu rendering canvas + text (mt_disp_drv.c) */
+extern void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
+			int x, int y, int w, int h, unsigned int argb);
+extern void ayaneo_fill_blend(unsigned int *buf, unsigned int pitch_w,
+			int x, int y, int w, int h, unsigned int argb, int alpha);
+extern int  ayaneo_text(unsigned int *buf, unsigned int pitch_w,
+			int x, int y, int scale, unsigned int argb, const char *s);
+extern unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigned int *H);
+extern void ayaneo_canvas_present(void);
+/* battery (mt_battery.c / mt_pmic.c) */
+extern int get_bat_sense_volt(int times);	/* mV */
+extern int upmu_is_chr_det(void);		/* charger present */
 
 /* input: SoC GPIOs (gpio-keys, active-low) + MTK keypad for volume */
 extern int mt_set_gpio_mode(unsigned pin, unsigned mode);
@@ -151,6 +181,7 @@ static void gbc_input_init(void)
 	gbc_gpio_in_pullup(GBC_GPIO_X);
 	gbc_gpio_in_pullup(GBC_GPIO_Y);
 	gbc_gpio_in_pullup(GBC_GPIO_R);
+	gbc_gpio_in_pullup(86);		/* AYA button = menu trigger */
 }
 
 #define GBC_PRESSED(g)	(mt_get_gpio_in(GP(g)) == 0)	/* active-low */
@@ -166,6 +197,10 @@ int ayaneo_gbc_select_held(void)
 /* set while Select is being used as the brightness modifier (Select + Volume),
  * so the Select press is not also delivered to the game as GB Select. */
 static volatile int s_sel_modifier;
+
+/* forward decl (defined with the menu below): the overlay menu is open, so the
+ * d-pad/face buttons drive the menu, not the game. */
+static volatile int s_menu_open;
 
 /* current button state, refreshed once per frame by gbc_update_buttons() and
  * returned to the core's InputGetter (which is called many times per frame). */
@@ -210,6 +245,8 @@ static void gbc_update_buttons(void)
 	}
 
 	s_fast_forward = (deb & RB_R) ? 1 : 0;	/* R held = fast-forward */
+	if (s_menu_open)			/* menu owns the buttons while open */
+		m = 0;
 	s_btn_state = m;
 }
 
@@ -239,7 +276,7 @@ static void gbc_poll_volume(void)
 			ayaneo_gbc_osd_show(2, pct);	/* 2 = brightness */
 			s_sel_modifier = 1;		/* suppress GB Select this hold */
 		} else {
-			int v = ayaneo_gbc_audio_get_volume() + dir * 10;
+			int v = ayaneo_gbc_audio_get_volume() + dir * 5;
 			ayaneo_gbc_audio_set_volume(v);
 			ayaneo_gbc_osd_show(1, ayaneo_gbc_audio_get_volume());	/* 1 = volume */
 		}
@@ -268,58 +305,131 @@ static void wr32le(unsigned char *p, unsigned v)
 	p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24;
 }
 
-/* On boot: if a save state exists in boot_b, load it into the running emulator. */
-static void gbc_try_load_state(unsigned char *scratch)
+/* Write the current emulator state to boot_b. Returns 1 on success. */
+static int gbc_write_state(unsigned char *scratch)
+{
+	unsigned sz = gbc_state_size();
+	unsigned total;
+
+	if (!sz || (unsigned long long)sz + 8 > GBC_STATE_MAX)
+		return 0;
+	total = 8 + sz;
+	gbc_save_state(scratch + 8);
+	wr32le(scratch + 0, GBC_STATE_MAGIC);
+	wr32le(scratch + 4, sz);
+	/* pad to a 512-byte block and zero the tail so the eMMC write is
+	 * block-aligned (no partial-block read-modify-write) and touches
+	 * nothing but the state region (28 MB+, past ROM/audio/video). */
+	if (total & 511u) {
+		unsigned padded = (total + 511u) & ~511u;
+		if (padded <= GBC_STATE_MAX) {
+			unsigned k;
+			for (k = total; k < padded; k++)
+				scratch[k] = 0;
+			total = padded;
+		}
+	}
+	/* flush the CPU-written buffer to DRAM so the eMMC DMA writes the real
+	 * state, not stale cache (else the reloaded state is garbage/hangs). */
+	arch_clean_cache_range((unsigned long)scratch, total);
+	partition_write(GBC_ROM_PART, GBC_STATE_OFF, scratch, total);
+	return 1;
+}
+
+/* Load a save state from boot_b into the running emulator. Returns 1 on success. */
+static int gbc_read_state(unsigned char *scratch)
 {
 	unsigned char hdr[8];
 	unsigned magic, sz;
 
-	/* hold Start during boot to skip the save state and start fresh */
+	if (partition_read(GBC_ROM_PART, GBC_STATE_OFF, hdr, 8) != 8)
+		return 0;
+	magic = rd32le(hdr);
+	sz = rd32le(hdr + 4);
+	if (magic != GBC_STATE_MAGIC || sz == 0 || sz > GBC_STATE_MAX - 8)
+		return 0;
+	if (partition_read(GBC_ROM_PART, GBC_STATE_OFF + 8, scratch, sz) != (ssize_t)sz)
+		return 0;
+	return gbc_load_state(scratch, sz) == 0;
+}
+
+/* Cartridge battery save (.sav) + RTC, persisted independently of save states so
+ * the game's own in-cart save behaves like a real cartridge. Own region in
+ * boot_b past the settings block. Layout: [magic][savsz][rtcsz][sav][rtc]. */
+#define GBC_SAV_OFF	0x01E08000u	/* 30 MB + 32 KB (past settings at 30 MB) */
+#define GBC_SAV_MAGIC	0x56415347u	/* "GSAV" */
+#define GBC_SAV_MAX	(320u * 1024u)	/* SRAM<=128KB + RTC + header, block-aligned */
+
+static void gbc_sav_save(unsigned char *scratch)
+{
+	unsigned savsz = gbc_savedata_size();
+	unsigned rtcsz = gbc_rtcdata_size();
+	unsigned total = 12 + savsz + rtcsz;
+
+	if (!savsz || total > GBC_SAV_MAX)
+		return;
+	wr32le(scratch + 0, GBC_SAV_MAGIC);
+	wr32le(scratch + 4, savsz);
+	wr32le(scratch + 8, rtcsz);
+	memcpy(scratch + 12, gbc_savedata_ptr(), savsz);
+	if (rtcsz)
+		memcpy(scratch + 12 + savsz, gbc_rtcdata_ptr(), rtcsz);
+	if (total & 511u) {
+		unsigned padded = (total + 511u) & ~511u;
+		if (padded <= GBC_SAV_MAX) {
+			unsigned k;
+			for (k = total; k < padded; k++)
+				scratch[k] = 0;
+			total = padded;
+		}
+	}
+	arch_clean_cache_range((unsigned long)scratch, total);
+	partition_write(GBC_ROM_PART, GBC_SAV_OFF, scratch, total);
+}
+
+static void gbc_sav_load(unsigned char *scratch)
+{
+	unsigned char hdr[12];
+	unsigned savsz, rtcsz, live_sav = gbc_savedata_size(), live_rtc = gbc_rtcdata_size();
+
+	if (partition_read(GBC_ROM_PART, GBC_SAV_OFF, hdr, 12) != 12)
+		return;
+	if (rd32le(hdr) != GBC_SAV_MAGIC)
+		return;
+	savsz = rd32le(hdr + 4);
+	rtcsz = rd32le(hdr + 8);
+	if (!savsz || 12u + savsz + rtcsz > GBC_SAV_MAX)
+		return;
+	if (partition_read(GBC_ROM_PART, GBC_SAV_OFF + 12, scratch, savsz + rtcsz)
+	    != (ssize_t)(savsz + rtcsz))
+		return;
+	if (savsz == live_sav)			/* only inject a matching-size SRAM */
+		memcpy(gbc_savedata_ptr(), scratch, savsz);
+	if (rtcsz && rtcsz == live_rtc)
+		memcpy(gbc_rtcdata_ptr(), scratch + savsz, rtcsz);
+}
+
+/* On boot: resume the save state unless the user opted out (Start held, or the
+ * "load state on boot" setting is off). */
+static void gbc_try_load_state(unsigned char *scratch)
+{
 	if (GBC_PRESSED(GBC_GPIO_START)) {
 		dprintf(CRITICAL, "GBC: Start held - skipping save state\n");
 		return;
 	}
-	if (partition_read(GBC_ROM_PART, GBC_STATE_OFF, hdr, 8) != 8)
+	if (!ayaneo_get_load_on_boot()) {
+		dprintf(CRITICAL, "GBC: load-on-boot disabled - fresh start\n");
 		return;
-	magic = rd32le(hdr);
-	sz = rd32le(hdr + 4);
-	if (magic != GBC_STATE_MAGIC || sz == 0 || sz > GBC_STATE_MAX - 8)
-		return;
-	if (partition_read(GBC_ROM_PART, GBC_STATE_OFF + 8, scratch, sz) != (ssize_t)sz)
-		return;
-	if (gbc_load_state(scratch, sz) == 0)
-		dprintf(CRITICAL, "GBC: resumed save state (%u bytes)\n", sz);
+	}
+	if (gbc_read_state(scratch))
+		dprintf(CRITICAL, "GBC: resumed save state\n");
 }
 
 /* Power key: save state to boot_b, then power off. Does not return. */
 static void gbc_save_and_poweroff(unsigned char *scratch)
 {
-	unsigned sz = gbc_state_size();
-
-	if (sz && (unsigned long long)sz + 8 <= GBC_STATE_MAX) {
-		unsigned total = 8 + sz;
-
-		gbc_save_state(scratch + 8);
-		wr32le(scratch + 0, GBC_STATE_MAGIC);
-		wr32le(scratch + 4, sz);
-		/* pad to a 512-byte block and zero the tail so the eMMC write is
-		 * block-aligned (no partial-block read-modify-write) and touches
-		 * nothing but the state region (28 MB+, past ROM/audio/video). */
-		if (total & 511u) {
-			unsigned padded = (total + 511u) & ~511u;
-			if (padded <= GBC_STATE_MAX) {
-				unsigned k;
-				for (k = total; k < padded; k++)
-					scratch[k] = 0;
-				total = padded;
-			}
-		}
-		/* flush the CPU-written buffer to DRAM so the eMMC DMA writes the
-		 * real state, not stale cache (else the reloaded state is garbage
-		 * and the emulator hangs on resume). */
-		arch_clean_cache_range((unsigned long)scratch, total);
-		partition_write(GBC_ROM_PART, GBC_STATE_OFF, scratch, total);
-	}
+	gbc_write_state(scratch);
+	gbc_sav_save(scratch);		/* persist the cartridge battery save (.sav) */
 	ayaneo_settings_save();		/* persist volume/brightness */
 	/* leave the codec/amp cold so the next boot's chime plays (mt_power_off is
 	 * a soft off that keeps the audio registers latched). */
@@ -356,6 +466,210 @@ static unsigned gbc_load_rom(unsigned char *dst)
 	return size;
 }
 
+/* ===================== GammaOS Pico overlay menu ===================== */
+/* Triggered by the AYA button (GPIO 86). Pauses the emulator, dims the panel,
+ * and lets the user change settings (all persisted to boot_b) and load/save
+ * state. Navigation: Up/Down move, Left/Right change value, A activate,
+ * B or AYA close. */
+#define GBC_GPIO_AYA	86
+
+/* apply the emulator-side colour settings to the running core */
+static void gbc_apply_video_settings(void)
+{
+	gbc_set_color_correction(ayaneo_get_color_correct());
+	gbc_set_dark_filter((unsigned)ayaneo_get_dark_filter());
+}
+
+/* minimal unsigned/int -> decimal, appended to *p (no libc dependency) */
+static char *mi_puts(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+static char *mi_putu(char *p, unsigned v)
+{
+	char t[12]; int n = 0;
+	if (!v) { *p++ = '0'; return p; }
+	while (v) { t[n++] = '0' + v % 10; v /= 10; }
+	while (n) *p++ = t[--n];
+	return p;
+}
+
+/* rough Li-ion percentage from the pack voltage (3.50 V = 0%, 4.30 V = 100%) */
+static int gbc_battery_pct(int mv)
+{
+	int pct = (mv - 3500) * 100 / (4300 - 3500);
+	return pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+}
+
+/* edge-detected menu button read: returns bits for newly-pressed keys */
+enum { MK_UP=1, MK_DOWN=2, MK_LEFT=4, MK_RIGHT=8, MK_A=16, MK_B=32, MK_AYA=64 };
+static unsigned gbc_menu_keys(void)
+{
+	static unsigned prev;
+	unsigned raw = 0, edge;
+	if (GBC_PRESSED(89)) raw |= MK_UP;
+	if (GBC_PRESSED(79)) raw |= MK_DOWN;
+	if (GBC_PRESSED(78)) raw |= MK_LEFT;
+	if (GBC_PRESSED(80)) raw |= MK_RIGHT;
+	if (GBC_PRESSED(83)) raw |= MK_A;	/* physical A (see button table) */
+	if (GBC_PRESSED(82)) raw |= MK_B;	/* physical B */
+	if (GBC_PRESSED(GBC_GPIO_AYA)) raw |= MK_AYA;
+	edge = raw & ~prev;
+	prev = raw;
+	return edge;
+}
+
+enum {
+	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_COLORCC, MI_DARKF,
+	MI_LOADBOOT, MI_SKIPBOOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY,
+	MI_CLOSE, MI_COUNT
+};
+
+static const char *filter_name(int f)
+{
+	return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : "Off";
+}
+
+/* build the value string for one row into buf; returns buf */
+static const char *gbc_menu_value(int item, char *buf, unsigned char *state)
+{
+	char *p = buf;
+	(void)state;
+	switch (item) {
+	case MI_BRIGHT:   p = mi_putu(p, (unsigned)ayaneo_brightness_pct()); p = mi_puts(p, "%"); break;
+	case MI_VOLUME:   p = mi_putu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mi_puts(p, "%"); break;
+	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter())); break;
+	case MI_COLORCC:  p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
+	case MI_DARKF:    p = mi_putu(p, (unsigned)ayaneo_get_dark_filter()); break;
+	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
+	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
+	case MI_LOADSTATE:
+	case MI_SAVESTATE: p = mi_puts(p, "[A]"); break;
+	case MI_BATTERY: {
+		/* cache the reading and refresh it at ~1 Hz so the line doesn't jitter
+		 * between the two scan-out buffers (which would flicker on that row). */
+		static int mv, chr, tick;
+		if (tick-- <= 0) { mv = get_bat_sense_volt(1); chr = upmu_is_chr_det(); tick = 60; }
+		p = mi_putu(p, (unsigned)gbc_battery_pct(mv)); p = mi_puts(p, "% ");
+		p = mi_puts(p, chr ? "Charging" : "Battery");
+		break;
+	}
+	case MI_CLOSE: default: break;
+	}
+	*p = 0;
+	return buf;
+}
+
+static const char *gbc_menu_label(int item)
+{
+	switch (item) {
+	case MI_BRIGHT:    return "Brightness";
+	case MI_VOLUME:    return "Volume";
+	case MI_FILTER:    return "LCD Filter";
+	case MI_COLORCC:   return "Color Correction";
+	case MI_DARKF:     return "Dark Filter";
+	case MI_LOADBOOT:  return "Load State on Boot";
+	case MI_SKIPBOOT:  return "Skip Boot Anim/Chime";
+	case MI_LOADSTATE: return "Load State";
+	case MI_SAVESTATE: return "Save State";
+	case MI_BATTERY:   return "Battery";
+	case MI_CLOSE:     return "Close";
+	}
+	return "";
+}
+
+/* change the selected item by dir (-1/+1) or activate it (act). Returns 1 if
+ * the menu should close. status[] gets a short transient message. */
+static int gbc_menu_change(int item, int dir, int act, unsigned char *state, char *status)
+{
+	int changed = 1;
+	status[0] = 0;
+	switch (item) {
+	case MI_BRIGHT:   if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
+	case MI_VOLUME:   if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
+	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
+	case MI_COLORCC:  if (dir || act) { ayaneo_set_color_correct(!ayaneo_get_color_correct()); gbc_apply_video_settings(); } else changed = 0; break;
+	case MI_DARKF:    if (dir) { ayaneo_set_dark_filter(ayaneo_get_dark_filter() + dir); gbc_apply_video_settings(); } else changed = 0; break;
+	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;
+	case MI_SKIPBOOT: if (dir || act) ayaneo_set_skip_boot(!ayaneo_get_skip_boot()); else changed = 0; break;
+	case MI_LOADSTATE: if (act) { mi_puts(status, gbc_read_state(state) ? "State loaded" : "No save state"); } changed = 0; break;
+	case MI_SAVESTATE: if (act) { int ok = gbc_write_state(state); gbc_sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;
+	case MI_CLOSE:    if (act) return 1; changed = 0; break;
+	default: changed = 0; break;
+	}
+	if (changed)
+		ayaneo_settings_save();		/* every setting is persisted */
+	return 0;
+}
+
+/* The menu is a live overlay: the emulator keeps running underneath so filter,
+ * colour and save-state changes are visible in real time. State is file-scope so
+ * the run loop can drive input while the display path draws the panel on top of
+ * each game frame. (s_menu_open is forward-declared above gbc_update_buttons.) */
+static int s_menu_sel;
+static char s_menu_status[48];
+
+int gbc_menu_is_open(void) { return s_menu_open; }
+
+/* AYA button edge -> toggle the menu */
+static int gbc_aya_edge(void)
+{
+	static int prev;
+	int now = GBC_PRESSED(GBC_GPIO_AYA), edge = now && !prev;
+	prev = now;
+	return edge;
+}
+static void gbc_menu_toggle(void)
+{
+	s_menu_open = !s_menu_open;
+	s_menu_status[0] = 0;
+	gbc_menu_keys();		/* drop the AYA edge so it isn't re-read */
+}
+
+/* Per-frame menu input while open (does NOT pause the game). B closes; AYA is
+ * handled by the toggle. Game input is suppressed elsewhere while open. */
+static void gbc_menu_tick(unsigned char *state)
+{
+	unsigned k = gbc_menu_keys();
+
+	if (k & MK_UP)    { s_menu_sel = (s_menu_sel + MI_COUNT - 1) % MI_COUNT; s_menu_status[0] = 0; }
+	if (k & MK_DOWN)  { s_menu_sel = (s_menu_sel + 1) % MI_COUNT; s_menu_status[0] = 0; }
+	if (k & MK_LEFT)  { if (gbc_menu_change(s_menu_sel, -1, 0, state, s_menu_status)) s_menu_open = 0; }
+	if (k & MK_RIGHT) { if (gbc_menu_change(s_menu_sel, +1, 0, state, s_menu_status)) s_menu_open = 0; }
+	if (k & MK_A)     { if (gbc_menu_change(s_menu_sel, 0, 1, state, s_menu_status)) s_menu_open = 0; }
+	if (k & MK_B)     s_menu_open = 0;
+}
+
+/* Draw the menu panel on top of the already-blitted game frame. A translucent
+ * background keeps the game visible so changes show through in real time. */
+void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
+			   unsigned int W, unsigned int H)
+{
+	int panelW = 640, panelH = 560;
+	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2;
+	int rowH = 40, x = px + 28, y = py + 92, i;
+	char val[48];
+
+	/* Opaque panel so its pixels are identical in both scan-out buffers: a
+	 * mid-scan buffer swap then shows the same menu either way, with no drifting
+	 * tear on the static text. The game stays visible and live AROUND the panel. */
+	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);		/* panel */
+	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);			/* top bar */
+	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "GammaOS Pico");
+
+	for (i = 0; i < MI_COUNT; i++, y += rowH) {
+		unsigned int fg = (i == s_menu_sel) ? 0xFF101018u : 0xFFC8D0E0u;
+		int vw;
+		if (i == s_menu_sel)
+			ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
+		ayaneo_text(buf, pitch, x, y, 2, fg, gbc_menu_label(i));
+		gbc_menu_value(i, val, (unsigned char *)0);
+		for (vw = 0; val[vw]; vw++) ;
+		ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, val);
+	}
+	if (s_menu_status[0])
+		ayaneo_text(buf, pitch, x, py + panelH - 40, 2, 0xFF80E080u, s_menu_status);
+	ayaneo_text(buf, pitch, x, py + panelH - 16, 1, 0xFF8890A0u,
+		    "Up/Down move  Left/Right change  A select  B/AYA close");
+}
+
 static int gbc_emu_thread(void *arg)
 {
 	unsigned char *arena = (unsigned char *)GBC_HEAP_PA;
@@ -387,7 +701,9 @@ static int gbc_emu_thread(void *arg)
 
 	gbc_input_init();		/* configure the button GPIOs (before state) */
 	ayaneo_settings_load();		/* persisted volume/brightness for the game */
-	gbc_try_load_state(state);	/* resume unless Start is held */
+	gbc_apply_video_settings();	/* colour correction / dark filter from settings */
+	gbc_sav_load(state);		/* inject the cartridge battery save (.sav) */
+	gbc_try_load_state(state);	/* resume unless Start is held (overrides SRAM) */
 	gbc_ready = 1;
 
 	/* we run forever with no kernel handoff, so the boot watchdog would fire
@@ -444,6 +760,13 @@ static int gbc_emu_thread(void *arg)
 				gbc_poll_volume();
 				gbc_check_power(state);	/* power -> save + off */
 				frame++;
+
+				/* AYA toggles the live overlay menu; while open, drive the
+				 * menu each frame (game keeps running underneath). */
+				if (gbc_aya_edge())
+					gbc_menu_toggle();
+				if (s_menu_open)
+					gbc_menu_tick(state);
 
 				if (s_fast_forward) {
 					/* run flat out; present every 4th frame so the

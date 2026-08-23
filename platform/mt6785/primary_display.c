@@ -722,6 +722,15 @@ int priamry_display_wait_for_vsync(void)
 	return 0;
 }
 
+/* AYANEO: block until the current frame has finished scanning out (frame-done),
+ * with a short timeout so it can never hang. Used to time a buffer/address swap
+ * to the frame boundary and avoid tearing on static overlay content. */
+int ayaneo_wait_frame_done(void)
+{
+	return dpmgr_wait_event_timeout(pgc->dpmgr_handle,
+				       DISP_PATH_EVENT_FRAME_DONE, HZ / 20);
+}
+
 int primary_display_suspend(void)
 {
 	DISP_STATUS ret = DISP_STATUS_OK;

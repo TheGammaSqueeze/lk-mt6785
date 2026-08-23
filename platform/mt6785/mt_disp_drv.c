@@ -788,6 +788,8 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 }
 
 #ifdef AYANEO_GBC
+#include <video_font.h>		/* mtk_vdo_fntdata: 8x16 ASCII font */
+
 /*
  * Display a 160x144 RGB565 Game Boy frame from the emulator: integer 6x scale
  * (960x864) centred on the panel with black borders. Double-buffered like the
@@ -797,6 +799,120 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 #define GBC_SRC_W	160
 #define GBC_SRC_H	144
 #define GBC_SCALE	6
+
+/* Shared double-buffer flip index for the game frame and the menu canvas (they
+ * are never rendered at the same time - the menu pauses the emulator). */
+static int s_fb_flip;
+
+/* ---- primitive drawing into a 32-bit BGRA back buffer (used by the menu) ---- */
+
+/* filled rectangle, clipped to the panel */
+void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
+		 int x, int y, int w, int h, unsigned int argb)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	int iy, ix;
+
+	if (x < 0) { w += x; x = 0; }
+	if (y < 0) { h += y; y = 0; }
+	if (x + w > (int)W) w = (int)W - x;
+	if (y + h > (int)H) h = (int)H - y;
+	for (iy = 0; iy < h; iy++) {
+		unsigned int *o = buf + (unsigned int)(y + iy) * pitch_w + x;
+		for (ix = 0; ix < w; ix++)
+			o[ix] = argb;
+	}
+}
+
+/* alpha-blended filled rectangle (argb source over the existing buffer pixels),
+ * alpha 0-255. Used for the translucent menu panel so the game shows through. */
+void ayaneo_fill_blend(unsigned int *buf, unsigned int pitch_w,
+		       int x, int y, int w, int h, unsigned int argb, int alpha)
+{
+	unsigned int Wd = CFG_DISPLAY_WIDTH, Hd = CFG_DISPLAY_HEIGHT;
+	/* 0-255 alpha mapped to 0-256 so the blend is a shift, not a divide (per-
+	 * pixel divides were heavy enough to push the menu frame past one refresh
+	 * and halve the emulation rate). Pre-scale the source term once. */
+	unsigned int a = (unsigned int)alpha + ((unsigned int)alpha >> 7);	/* 0..256 */
+	unsigned int ia = 256 - a;
+	unsigned int sr = (((argb >> 16) & 0xff) * a);
+	unsigned int sg = (((argb >> 8) & 0xff) * a);
+	unsigned int sb = ((argb & 0xff) * a);
+	int iy, ix;
+
+	if (x < 0) { w += x; x = 0; }
+	if (y < 0) { h += y; y = 0; }
+	if (x + w > (int)Wd) w = (int)Wd - x;
+	if (y + h > (int)Hd) h = (int)Hd - y;
+	for (iy = 0; iy < h; iy++) {
+		unsigned int *o = buf + (unsigned int)(y + iy) * pitch_w + x;
+		for (ix = 0; ix < w; ix++) {
+			unsigned int d = o[ix];
+			unsigned int r = (sr + ((d >> 16) & 0xff) * ia) >> 8;
+			unsigned int g = (sg + ((d >> 8) & 0xff) * ia) >> 8;
+			unsigned int b = (sb + (d & 0xff) * ia) >> 8;
+			o[ix] = 0xFF000000u | (r << 16) | (g << 8) | b;
+		}
+	}
+}
+
+/* one glyph from the 8x16 font, integer-scaled */
+static void ayaneo_glyph(unsigned int *buf, unsigned int pitch_w,
+			 int x, int y, int scale, unsigned int argb, unsigned char c)
+{
+	const unsigned char *g = &mtk_vdo_fntdata[(unsigned int)c * MTK_VFH];
+	int row, col, sy, sx;
+
+	for (row = 0; row < MTK_VFH; row++) {
+		unsigned char bits = g[row];
+		for (col = 0; col < MTK_VFW; col++) {
+			if (!(bits & (0x80 >> col)))
+				continue;
+			for (sy = 0; sy < scale; sy++) {
+				unsigned int *o = buf +
+					(unsigned int)(y + row * scale + sy) * pitch_w +
+					(x + col * scale);
+				for (sx = 0; sx < scale; sx++)
+					o[sx] = argb;
+			}
+		}
+	}
+}
+
+/* draw a NUL-terminated string; returns the x just past the last glyph */
+int ayaneo_text(unsigned int *buf, unsigned int pitch_w,
+		int x, int y, int scale, unsigned int argb, const char *s)
+{
+	for (; *s; s++) {
+		if (*s != ' ')
+			ayaneo_glyph(buf, pitch_w, x, y, scale, argb, (unsigned char)*s);
+		x += MTK_VFW * scale;
+	}
+	return x;
+}
+
+/* Get the current back buffer (the one not being scanned out) to draw a full
+ * frame into. The menu uses this + ayaneo_canvas_present() to render itself. */
+unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigned int *H)
+{
+	*pitch_w = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT);
+	*W = CFG_DISPLAY_WIDTH;
+	*H = CFG_DISPLAY_HEIGHT;
+	return (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
+}
+
+/* flush the whole back buffer and present it, then flip */
+void ayaneo_canvas_present(void)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	unsigned int dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
+
+	arch_clean_cache_range((unsigned int)((unsigned char *)fb_addr +
+			       (s_fb_flip ? fb_size : 0)), fb_size);
+	ayaneo_present(dpa, W, H, pitch_w);
+	s_fb_flip ^= 1;
+}
 
 /*
  * Draw (or clear) the OSD slider in the bottom letterbox border of the current
@@ -848,9 +964,15 @@ static void ayaneo_draw_osd(unsigned int *dst, unsigned int pitch_w,
 	arch_clean_cache_range((unsigned int)(dst + by * pitch_w), barH * pitch_w * 4);
 }
 
+extern int ayaneo_get_lcd_filter(void);		/* ayaneo_audio.c */
+extern int gbc_menu_is_open(void);		/* gbc_driver.c */
+extern void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
+				  unsigned int W, unsigned int H);
+extern int ayaneo_wait_frame_done(void);	/* primary_display.c */
+
 void ayaneo_gbc_show_frame(const unsigned short *pix)
 {
-	static int inited = 0, buf = 0;
+	static int inited = 0;
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
 	unsigned int dw = GBC_SRC_W * GBC_SCALE, dh = GBC_SRC_H * GBC_SCALE;
@@ -877,31 +999,48 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		inited = 1;
 	}
 
-	dst = (unsigned int *)((unsigned char *)fb_addr + (buf ? fb_size : 0));
-	dpa = (unsigned int)fb_addr_pa + (buf ? fb_size : 0);
+	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
+	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
 
-	for (sy = 0; sy < GBC_SRC_H; sy++) {
-		const unsigned short *srow = pix + sy * GBC_SRC_W;
-		for (sx = 0; sx < GBC_SRC_W; sx++) {
-			unsigned int v = srow[sx];
-			unsigned int r = ((v >> 11) & 0x1f) << 3;
-			unsigned int g = ((v >> 5) & 0x3f) << 2;
-			unsigned int b = (v & 0x1f) << 3;
-			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+	{
+		/* LCD filter: 1 scanlines (dim last row of each 6x block), 2 grid
+		 * (dim last row + col), 3 both/heavier. Cheap per-subpixel darkening. */
+		int filt = ayaneo_get_lcd_filter();
+		for (sy = 0; sy < GBC_SRC_H; sy++) {
+			const unsigned short *srow = pix + sy * GBC_SRC_W;
+			for (sx = 0; sx < GBC_SRC_W; sx++) {
+				unsigned int v = srow[sx];
+				unsigned int r = ((v >> 11) & 0x1f) << 3;
+				unsigned int g = ((v >> 5) & 0x3f) << 2;
+				unsigned int b = (v & 0x1f) << 3;
+				unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+				unsigned int dk = 0xFF000000u |
+					((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
 
-			for (iy = 0; iy < GBC_SCALE; iy++) {
-				unsigned int *o = dst +
-					(yoff + sy * GBC_SCALE + iy) * pitch_w +
-					(xoff + sx * GBC_SCALE);
-				for (ix = 0; ix < GBC_SCALE; ix++)
-					o[ix] = px;
+				for (iy = 0; iy < GBC_SCALE; iy++) {
+					unsigned int *o = dst +
+						(yoff + sy * GBC_SCALE + iy) * pitch_w +
+						(xoff + sx * GBC_SCALE);
+					int lastrow = (iy == GBC_SCALE - 1);
+					for (ix = 0; ix < GBC_SCALE; ix++) {
+						unsigned int c = px;
+						int lastcol = (ix == GBC_SCALE - 1);
+						if (filt == 1 && lastrow) c = dk;
+						else if (filt == 2 && (lastrow || lastcol)) c = dk;
+						else if (filt == 3 && (lastrow || lastcol)) c = dk;
+						o[ix] = c;
+					}
+				}
 			}
 		}
 	}
+	if (gbc_menu_is_open())			/* opaque panel sits within the game area */
+		gbc_menu_draw_overlay(dst, pitch_w, W, H);
+	else
+		ayaneo_draw_osd(dst, pitch_w, W, H);	/* volume/brightness slider */
 	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
-	ayaneo_draw_osd(dst, pitch_w, W, H);	/* volume/brightness slider, if active */
 	ayaneo_present(dpa, W, H, pitch_w);
-	buf ^= 1;
+	s_fb_flip ^= 1;
 }
 #endif /* AYANEO_GBC */
 
@@ -1166,6 +1305,8 @@ anim_done:
 
 #ifdef AYANEO_GBC
 extern int ayaneo_gbc_select_held(void);
+extern void ayaneo_settings_load(void);
+extern int ayaneo_get_skip_boot(void);
 #endif
 
 void video_rainbow_boot_start(void)
@@ -1178,9 +1319,11 @@ void video_rainbow_boot_start(void)
 	s_fade_request = 0;
 
 #ifdef AYANEO_GBC
-	/* hold Select at boot: skip the animation + chime, go straight to the
-	 * emulator. Mark everything complete so the stop path returns at once. */
-	if (ayaneo_gbc_select_held()) {
+	/* hold Select at boot, or the persisted "skip boot" setting: skip the
+	 * animation + chime and go straight to the emulator. Mark everything
+	 * complete so the stop path returns at once. */
+	ayaneo_settings_load();
+	if (ayaneo_gbc_select_held() || ayaneo_get_skip_boot()) {
 		s_anim_complete = 1;
 		s_rainbow_exited = 1;
 		return;

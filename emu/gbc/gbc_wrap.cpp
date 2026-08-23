@@ -47,6 +47,37 @@ extern "C" void gbc_reset(void)
 		g_gb->reset();
 }
 
+/* ---- cartridge battery save (.sav) + RTC access ---- */
+extern "C" void *gbc_savedata_ptr(void) { return g_gb ? g_gb->savedata_ptr() : 0; }
+extern "C" unsigned gbc_savedata_size(void) { return g_gb ? g_gb->savedata_size() : 0; }
+extern "C" void *gbc_rtcdata_ptr(void) { return g_gb ? g_gb->rtcdata_ptr() : 0; }
+extern "C" unsigned gbc_rtcdata_size(void) { return g_gb ? g_gb->rtcdata_size() : 0; }
+
+/* ---- CGB colour / palette knobs (menu-driven) ---- */
+extern "C" void gbc_set_color_correction(int enable)
+{
+	if (g_gb)
+		g_gb->setColorCorrection(enable != 0);
+}
+extern "C" void gbc_set_color_correction_mode(unsigned mode)
+{
+	if (g_gb)
+		g_gb->setColorCorrectionMode(mode);
+}
+extern "C" void gbc_set_dark_filter(unsigned level)
+{
+	if (g_gb)
+		g_gb->setDarkFilterLevel(level);
+}
+/* DMG (mono) games only: set one of the 4 shades of a palette. No effect on a
+ * CGB game, which supplies its own palettes. */
+extern "C" void gbc_set_dmg_palette_color(unsigned palNum, unsigned colorNum,
+					  unsigned rgb32)
+{
+	if (g_gb)
+		g_gb->setDmgPaletteColor(palNum, colorNum, rgb32);
+}
+
 /* ---- save states (buffer based) ---- */
 extern "C" unsigned gbc_state_size(void)
 {

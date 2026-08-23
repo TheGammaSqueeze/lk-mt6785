@@ -178,18 +178,26 @@ static unsigned int s_audio_ms;
  * and the game, and to the backlight during the animation and in-game. */
 #define AYANEO_SET_OFF		0x01E00000u	/* 30 MB into boot_b */
 #define AYANEO_SET_MAGIC	0x54455341u	/* "ASET" LE */
-#define AYANEO_SET_VER		1u
-#define AYANEO_BL_MIN		24		/* keep the panel visible (never 0) */
+#define AYANEO_SET_VER		2u
+#define AYANEO_BL_MIN		16		/* keep the panel visible (never 0) */
 #define AYANEO_BL_MAX		255		/* mt65xx LCD level is 0-255 */
-#define AYANEO_BL_STEP		24
+#define AYANEO_BL_STEP		8		/* fine granularity (~30 steps) */
 #ifndef AYANEO_BL_DEFAULT
 #define AYANEO_BL_DEFAULT	200
 #endif
 
 extern void ayaneo_apply_backlight(int level);	/* mt_disp_drv.c: drive the LCD */
 
+/* All settings are persisted in the boot_b block. Field byte offsets:
+ * 0 magic, 4 version, 8 volume, 12 brightness, 16 load-state-on-boot,
+ * 20 skip-boot-anim/chime, 24 lcd-filter, 28 color-correction, 32 dark-filter. */
 static volatile int s_gbc_vol = AYANEO_AUDIO_VOLUME;	/* audio level, 0-100 */
 static volatile int s_brightness = AYANEO_BL_DEFAULT;	/* LCD level, 0-255 */
+static volatile int s_load_on_boot = 1;		/* resume save state after boot */
+static volatile int s_skip_boot = 0;		/* skip the animation + chime */
+static volatile int s_lcd_filter = 0;		/* 0 off, 1 scanlines, 2 grid, 3 both */
+static volatile int s_color_correct = 0;	/* CGB colour correction on/off */
+static volatile int s_dark_filter = 0;		/* 0-5 dark filter level */
 static int s_settings_loaded;
 
 /* ---------- little-endian helpers ---------- */
@@ -234,11 +242,24 @@ int ayaneo_brightness_step(int dir)
 }
 int ayaneo_brightness_pct(void) { return s_brightness * 100 / AYANEO_BL_MAX; }
 
+/* ---- boot behaviour + video settings (all persisted) ---- */
+int ayaneo_get_load_on_boot(void)   { return s_load_on_boot; }
+void ayaneo_set_load_on_boot(int v) { s_load_on_boot = v ? 1 : 0; }
+int ayaneo_get_skip_boot(void)      { return s_skip_boot; }
+void ayaneo_set_skip_boot(int v)    { s_skip_boot = v ? 1 : 0; }
+int ayaneo_get_lcd_filter(void)     { return s_lcd_filter; }
+void ayaneo_set_lcd_filter(int v)   { s_lcd_filter = (v < 0) ? 0 : (v > 3 ? 3 : v); }
+int ayaneo_get_color_correct(void)  { return s_color_correct; }
+void ayaneo_set_color_correct(int v){ s_color_correct = v ? 1 : 0; }
+int ayaneo_get_dark_filter(void)    { return s_dark_filter; }
+void ayaneo_set_dark_filter(int v)  { s_dark_filter = (v < 0) ? 0 : (v > 5 ? 5 : v); }
+
 /* load the persisted settings from boot_b (once). Missing/invalid -> keep the
  * compile-time defaults. Does not touch the hardware; callers apply brightness. */
 void ayaneo_settings_load(void)
 {
-	unsigned char b[16];
+	unsigned char b[64];
+	unsigned int ver;
 
 	if (s_settings_loaded)
 		return;
@@ -249,6 +270,7 @@ void ayaneo_settings_load(void)
 	s_settings_loaded = 1;			/* storage worked: decide once */
 	if (rd32(b) != AYANEO_SET_MAGIC)
 		return;				/* no/invalid blob: keep defaults */
+	ver = rd32(b + 4);
 	{
 		int vol = (int)rd32(b + 8);
 		int bl  = (int)rd32(b + 12);
@@ -258,9 +280,16 @@ void ayaneo_settings_load(void)
 		if (bl >= AYANEO_BL_MIN && bl <= AYANEO_BL_MAX)
 			s_brightness = bl;
 	}
+	if (ver >= 2) {			/* new fields; older blobs keep the defaults */
+		s_load_on_boot  = rd32(b + 16) ? 1 : 0;
+		s_skip_boot     = rd32(b + 20) ? 1 : 0;
+		ayaneo_set_lcd_filter((int)rd32(b + 24));
+		s_color_correct = rd32(b + 28) ? 1 : 0;
+		ayaneo_set_dark_filter((int)rd32(b + 32));
+	}
 }
 
-/* write the current volume/brightness back to boot_b (block-aligned) */
+/* write all current settings back to boot_b (block-aligned) */
 void ayaneo_settings_save(void)
 {
 	static unsigned char b[512] __attribute__((aligned(64)));
@@ -270,6 +299,11 @@ void ayaneo_settings_save(void)
 	wr32(b + 4, AYANEO_SET_VER);
 	wr32(b + 8, (unsigned int)s_gbc_vol);
 	wr32(b + 12, (unsigned int)s_brightness);
+	wr32(b + 16, (unsigned int)s_load_on_boot);
+	wr32(b + 20, (unsigned int)s_skip_boot);
+	wr32(b + 24, (unsigned int)s_lcd_filter);
+	wr32(b + 28, (unsigned int)s_color_correct);
+	wr32(b + 32, (unsigned int)s_dark_filter);
 	s_settings_loaded = 1;			/* our value is now authoritative */
 	arch_clean_cache_range((addr_t)b, sizeof(b));
 	partition_write(AYANEO_AUDIO_PART, AYANEO_SET_OFF, b, sizeof(b));
