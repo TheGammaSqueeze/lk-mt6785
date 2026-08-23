@@ -96,6 +96,8 @@ extern void ayaneo_canvas_present(void);
 /* battery (mt_battery.c / mt_pmic.c) */
 extern int get_bat_sense_volt(int times);	/* mV */
 extern int upmu_is_chr_det(void);		/* charger present */
+extern unsigned int ayaneo_get_cpu_mhz(void);	/* pll.c: ARM PLL output MHz */
+extern void ayaneo_set_cpu_mhz(unsigned int mhz);	/* pll.c: step the ARM PLL */
 
 /* input: SoC GPIOs (gpio-keys, active-low) + MTK keypad for volume */
 extern int mt_set_gpio_mode(unsigned pin, unsigned mode);
@@ -491,11 +493,83 @@ static char *mi_putu(char *p, unsigned v)
 	return p;
 }
 
-/* rough Li-ion percentage from the pack voltage (3.50 V = 0%, 4.30 V = 100%) */
-static int gbc_battery_pct(int mv)
+/* Li-ion open-circuit-voltage (resting mV) -> percent, piecewise-linear. The
+ * pack charges to ~4.35 V (charger CV ~4.4 V), so the curve tops out there. */
+static int gbc_ocv_pct(int mv)
 {
-	int pct = (mv - 3500) * 100 / (4300 - 3500);
-	return pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+	static const short lut[][2] = {
+		{4350,100},{4250, 95},{4150, 85},{4060, 75},{3980, 65},{3900, 55},
+		{3840, 45},{3790, 35},{3740, 25},{3690, 17},{3630, 10},{3550,  5},
+		{3450,  1},{3300,  0}
+	};
+	int n = (int)(sizeof(lut) / sizeof(lut[0])), i;
+
+	if (mv >= lut[0][0]) return 100;
+	if (mv <= lut[n - 1][0]) return 0;
+	for (i = 0; i < n - 1; i++)
+		if (mv <= lut[i][0] && mv > lut[i + 1][0]) {
+			int v0 = lut[i][0], p0 = lut[i][1];
+			int v1 = lut[i + 1][0], p1 = lut[i + 1][1];
+			return p1 + (mv - v1) * (p0 - p1) / (v0 - v1);
+		}
+	return 0;
+}
+
+/*
+ * Hardened battery percentage. get_bat_sense_volt() is a single noisy
+ * instantaneous ADC read and the terminal voltage jumps up the moment a charger
+ * is attached, so a direct map fluctuates wildly and leaps on plug-in. Average a
+ * batch of samples, subtract a charge offset to approximate the open-circuit
+ * voltage while charging, then rate-limit the displayed value so it can only
+ * drift a couple of percent per update. Returns 0-100; *charging set if on USB.
+ */
+static int gbc_battery_read(int *charging)
+{
+	static int disp = -1;
+	int chr = upmu_is_chr_det();
+	long sum = 0;
+	int i, mv, raw, d;
+
+	for (i = 0; i < 8; i++)
+		sum += get_bat_sense_volt(1);
+	mv = (int)(sum / 8);
+	if (chr)
+		mv -= 180;		/* charge current lifts the terminal ~150-200 mV */
+	raw = gbc_ocv_pct(mv);
+	if (disp < 0) {
+		disp = raw;		/* first reading: snap */
+	} else {			/* otherwise move at most 2% toward raw */
+		d = raw - disp;
+		if (d > 2) d = 2; else if (d < -2) d = -2;
+		disp += d;
+	}
+	if (charging)
+		*charging = chr;
+	return disp;
+}
+
+/* CPU OPP stepping (ARM PLL). Not persisted - a bad value clears on power cycle. */
+static const unsigned s_cpu_opp[] = { 600, 800, 1000, 1200, 1400, 1600, 1800, 2000 };
+static int s_cpu_idx = -1;
+static int s_cpu_dirty = 1;		/* force a fresh CPU-MHz read for the menu */
+static void gbc_cpu_step(int dir)
+{
+	int n = (int)(sizeof(s_cpu_opp) / sizeof(s_cpu_opp[0])), i;
+
+	if (s_cpu_idx < 0) {		/* first use: snap to the nearest OPP */
+		unsigned cur = ayaneo_get_cpu_mhz(), bd = ~0u;
+		int best = 0;
+		for (i = 0; i < n; i++) {
+			unsigned d = s_cpu_opp[i] > cur ? s_cpu_opp[i] - cur : cur - s_cpu_opp[i];
+			if (d < bd) { bd = d; best = i; }
+		}
+		s_cpu_idx = best;
+	}
+	s_cpu_idx += dir;
+	if (s_cpu_idx < 0) s_cpu_idx = 0;
+	if (s_cpu_idx >= n) s_cpu_idx = n - 1;
+	ayaneo_set_cpu_mhz(s_cpu_opp[s_cpu_idx]);
+	s_cpu_dirty = 1;		/* refresh the menu read-back immediately */
 }
 
 /* edge-detected menu button read: returns bits for newly-pressed keys */
@@ -519,8 +593,16 @@ static unsigned gbc_menu_keys(void)
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_COLORCC, MI_DARKF,
 	MI_LOADBOOT, MI_SKIPBOOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY,
-	MI_CLOSE, MI_COUNT
+	MI_CPU, MI_BENCH, MI_CLOSE, MI_COUNT
 };
+
+/* Benchmark mode: run the emulator uncapped (no 59.7 Hz pacing, no audio) and
+ * count emulated frames per second, so CPU-clock changes can be measured. Not
+ * persisted. s_fps is the last measured emulated FPS. */
+static volatile int s_benchmark;
+static volatile int s_fps;
+int gbc_benchmark_on(void) { return s_benchmark; }
+int gbc_get_fps(void) { return s_fps; }
 
 static const char *filter_name(int f)
 {
@@ -543,14 +625,27 @@ static const char *gbc_menu_value(int item, char *buf, unsigned char *state)
 	case MI_LOADSTATE:
 	case MI_SAVESTATE: p = mi_puts(p, "[A]"); break;
 	case MI_BATTERY: {
-		/* cache the reading and refresh it at ~1 Hz so the line doesn't jitter
-		 * between the two scan-out buffers (which would flicker on that row). */
-		static int mv, chr, tick;
-		if (tick-- <= 0) { mv = get_bat_sense_volt(1); chr = upmu_is_chr_det(); tick = 60; }
-		p = mi_putu(p, (unsigned)gbc_battery_pct(mv)); p = mi_puts(p, "% ");
+		/* refresh at ~1.5 Hz (each refresh rate-limits itself) so the line is
+		 * steady between the two scan-out buffers. */
+		static int pct = -1, chr, tick;
+		if (pct < 0 || tick-- <= 0) { pct = gbc_battery_read(&chr); tick = 40; }
+		p = mi_putu(p, (unsigned)pct); p = mi_puts(p, "% ");
 		p = mi_puts(p, chr ? "Charging" : "Battery");
 		break;
 	}
+	case MI_CPU: {
+		/* cache so the value is identical in both scan-out buffers (the PLL
+		 * read-back low bits jitter, which would flicker this row); refresh on
+		 * a step (s_cpu_dirty) or ~every 40 frames. */
+		static unsigned mhz, tick;
+		if (s_cpu_dirty || !mhz || tick-- <= 0) { mhz = ayaneo_get_cpu_mhz(); tick = 40; s_cpu_dirty = 0; }
+		p = mi_putu(p, mhz); p = mi_puts(p, " MHz");
+		break;
+	}
+	case MI_BENCH:
+		if (s_benchmark) { p = mi_putu(p, (unsigned)s_fps); p = mi_puts(p, " fps"); }
+		else p = mi_puts(p, "Off");
+		break;
 	case MI_CLOSE: default: break;
 	}
 	*p = 0;
@@ -570,6 +665,8 @@ static const char *gbc_menu_label(int item)
 	case MI_LOADSTATE: return "Load State";
 	case MI_SAVESTATE: return "Save State";
 	case MI_BATTERY:   return "Battery";
+	case MI_CPU:       return "CPU Clock";
+	case MI_BENCH:     return "Benchmark (Uncap)";
 	case MI_CLOSE:     return "Close";
 	}
 	return "";
@@ -589,6 +686,8 @@ static int gbc_menu_change(int item, int dir, int act, unsigned char *state, cha
 	case MI_DARKF:    if (dir) { ayaneo_set_dark_filter(ayaneo_get_dark_filter() + dir); gbc_apply_video_settings(); } else changed = 0; break;
 	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;
 	case MI_SKIPBOOT: if (dir || act) ayaneo_set_skip_boot(!ayaneo_get_skip_boot()); else changed = 0; break;
+	case MI_CPU:       if (dir) gbc_cpu_step(dir); changed = 0; break;	/* not persisted */
+	case MI_BENCH:     if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
 	case MI_LOADSTATE: if (act) { mi_puts(status, gbc_read_state(state) ? "State loaded" : "No save state"); } changed = 0; break;
 	case MI_SAVESTATE: if (act) { int ok = gbc_write_state(state); gbc_sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;
 	case MI_CLOSE:    if (act) return 1; changed = 0; break;
@@ -642,9 +741,9 @@ static void gbc_menu_tick(unsigned char *state)
 void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 			   unsigned int W, unsigned int H)
 {
-	int panelW = 640, panelH = 560;
+	int panelW = 660, panelH = 700;
 	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2;
-	int rowH = 40, x = px + 28, y = py + 92, i;
+	int rowH = 38, x = px + 28, y = py + 84, i;
 	char val[48];
 
 	/* Opaque panel so its pixels are identical in both scan-out buffers: a
@@ -742,16 +841,17 @@ static int gbc_emu_thread(void *arg)
 			gbc_update_buttons();	/* refresh input once per frame */
 			r = gbc_run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
 
-			/* fast-forward edge: mute (silence the ring) on enter, resync
-			 * the audio on exit */
-			if (s_fast_forward != ff_prev) {
-				ayaneo_gbc_audio_pause(s_fast_forward);
-				ff_prev = s_fast_forward;
+			/* fast-forward OR benchmark: mute (silence the ring) on enter,
+			 * resync the audio on exit; skip audio submit while uncapped. */
+			{
+				int uncapped = s_fast_forward || s_benchmark;
+				if (uncapped != ff_prev) {
+					ayaneo_gbc_audio_pause(uncapped);
+					ff_prev = uncapped;
+				}
+				if (!uncapped)
+					ayaneo_gbc_audio_submit(snd, samples);
 			}
-			/* skip audio while fast-forwarding (the 48k ring can't keep
-			 * up with sped-up generation without artifacts) */
-			if (!s_fast_forward)
-				ayaneo_gbc_audio_submit(snd, samples);
 
 			if (r >= 0) {		/* a video frame completed */
 				unsigned target;
@@ -767,6 +867,27 @@ static int gbc_emu_thread(void *arg)
 					gbc_menu_toggle();
 				if (s_menu_open)
 					gbc_menu_tick(state);
+
+				if (s_benchmark) {
+					/* uncapped: measure emulated FPS over ~0.5 s windows
+					 * using the 13 MHz counter; present sparsely so the
+					 * blit doesn't cap the measured emulation rate. */
+					static unsigned bench_base, bench_cnt;
+					unsigned now = gpt4_get_current_tick(), el;
+					if (!bench_base) bench_base = now;
+					bench_cnt++;
+					el = now - bench_base;
+					if (el >= 6500000u) {	/* ~0.5 s */
+						s_fps = (int)((unsigned long long)bench_cnt
+							      * 13000000ull / el);
+						bench_base = now; bench_cnt = 0;
+					}
+					if ((frame & 7) == 0)
+						ayaneo_gbc_show_frame(vbuf);
+					pace_base = gpt4_get_current_tick();
+					pace_n = 0;
+					continue;	/* no pacing */
+				}
 
 				if (s_fast_forward) {
 					/* run flat out; present every 4th frame so the

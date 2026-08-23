@@ -792,7 +792,16 @@ void platform_init(void)
 	PROFILING_END(); /* boot mode select */
 #endif /*MACH_FPGA */
 
+#ifndef AYANEO_GBC
+	/* AVB-verify the boot logo. Skipped for the GBC build: we replace the logo
+	 * with our own video animation and never boot the kernel, so this security
+	 * check is unnecessary - and it mallocs a buffer up to LK_LOGO_MAX_SIZE (16 MB)
+	 * which exhausted the ~1.2 MB LK heap and panicked (img_utils.c:58). The
+	 * animation still loads the logo partition data separately. */
 	lk_vb_vfy_logo();
+#else
+	(void)lk_vb_vfy_logo;	/* silence unused-function warning */
+#endif
 
 #ifndef MACH_FPGA_NO_DISPLAY
 	/*  fast meta mode */

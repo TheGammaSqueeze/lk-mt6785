@@ -105,3 +105,51 @@ void mt_pll_turn_off(void)
 #endif
 }
 
+
+/*
+ * AYANEO: read the ARM PLL output frequency in MHz. MTK PLL formula:
+ * Fout = 26 MHz * PCW / 2^14 / 2^POSDIV, with PCW in CON1[21:0] and POSDIV in
+ * CON1[26:24]. Used by the GammaOS Pico menu to display the CPU clock. This is
+ * the PLL output; the cores may run at a further integer divide of it.
+ */
+unsigned int ayaneo_get_cpu_mhz(void)
+{
+	/* ARMPLL_CON1 = APMIXED_BASE(0x1000C000) + 0x204 */
+	unsigned int con1 = *((volatile unsigned int *)(0x1000C000u + 0x204u));
+	unsigned int pcw = con1 & 0x3FFFFF;
+	unsigned int posdiv = (con1 >> 24) & 0x7;
+	unsigned long long f = 26000000ull * pcw;
+
+	f >>= 14;
+	f >>= posdiv;
+	return (unsigned int)(f / 1000000ull);
+}
+
+/*
+ * AYANEO: set the ARM PLL output frequency (MHz) by rewriting CON1's PCW and
+ * pulsing the PCW_CHG bit (bit 31) to relock the PLL, keeping the current
+ * POSDIV. This changes the clock the CPU cores may be running on, so the ~20 us
+ * relock can briefly disturb the CPU; it is intentionally NOT persisted, so a
+ * bad value is cleared by a power cycle. Clamped to a sane range.
+ */
+void ayaneo_set_cpu_mhz(unsigned int mhz)
+{
+	volatile unsigned int *con1 = (volatile unsigned int *)(0x1000C000u + 0x204u);
+	extern void udelay(unsigned long usec);
+	unsigned int c = *con1;
+	unsigned int posdiv = (c >> 24) & 0x7;
+	unsigned long long pcw;
+
+	if (mhz < 400) mhz = 400;
+	if (mhz > 2100) mhz = 2100;
+	pcw = ((unsigned long long)mhz * 1000000ull) << 14;	/* * 2^14 */
+	pcw <<= posdiv;						/* * 2^POSDIV */
+	pcw /= 26000000ull;					/* / 26 MHz */
+	if (pcw > 0x3FFFFF) pcw = 0x3FFFFF;
+
+	c = c & ~0x003FFFFFu & ~0x80000000u;	/* clear old PCW and CHG */
+	c |= (unsigned int)pcw;
+	*con1 = c;				/* new PCW, CHG=0 */
+	*con1 = c | 0x80000000u;		/* CHG rising edge -> relock */
+	udelay(20);				/* PLL relock time */
+}

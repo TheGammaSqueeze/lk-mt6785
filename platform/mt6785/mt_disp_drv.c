@@ -968,7 +968,28 @@ extern int ayaneo_get_lcd_filter(void);		/* ayaneo_audio.c */
 extern int gbc_menu_is_open(void);		/* gbc_driver.c */
 extern void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 				  unsigned int W, unsigned int H);
+extern int gbc_benchmark_on(void);		/* gbc_driver.c */
+extern int gbc_get_fps(void);
 extern int ayaneo_wait_frame_done(void);	/* primary_display.c */
+
+/* Clear both scan-out buffers, disable the boot-menu layer so only our FB_LAYER
+ * shows, and bring the backlight up at the persisted level. Idempotent; shared
+ * by the emulator display and the offline-charging screen. */
+void ayaneo_display_prepare(void)
+{
+	disp_input_config din;
+
+	memset(fb_addr, 0, fb_size);
+	memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
+	arch_clean_cache_range((unsigned int)fb_addr, fb_size);
+	arch_clean_cache_range((unsigned int)fb_addr + fb_size, fb_size);
+	memset(&din, 0, sizeof(din));
+	din.layer = BOOT_MENU_LAYER;
+	din.layer_en = 0;
+	primary_display_config_input(&din);
+	mt65xx_backlight_on();
+	ayaneo_apply_persisted_brightness();
+}
 
 void ayaneo_gbc_show_frame(const unsigned short *pix)
 {
@@ -982,20 +1003,7 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 	unsigned int sx, sy, ix, iy;
 
 	if (!inited) {
-		disp_input_config din;
-
-		memset(fb_addr, 0, fb_size);
-		memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
-		arch_clean_cache_range((unsigned int)fb_addr, fb_size);
-		arch_clean_cache_range((unsigned int)fb_addr + fb_size, fb_size);
-		/* only our FB_LAYER should show (the animation does this too; needed
-		 * here for the Select-skip path where the animation never ran) */
-		memset(&din, 0, sizeof(din));
-		din.layer = BOOT_MENU_LAYER;
-		din.layer_en = 0;
-		primary_display_config_input(&din);
-		mt65xx_backlight_on();	/* in case the animation was skipped */
-		ayaneo_apply_persisted_brightness();	/* honour the saved level */
+		ayaneo_display_prepare();
 		inited = 1;
 	}
 
@@ -1038,6 +1046,15 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		gbc_menu_draw_overlay(dst, pitch_w, W, H);
 	else
 		ayaneo_draw_osd(dst, pitch_w, W, H);	/* volume/brightness slider */
+	if (gbc_benchmark_on()) {		/* FPS counter, top-left of the game area */
+		char s[16]; int fps = gbc_get_fps(), n = 0, t[8], k = 0;
+		s[n++]='F'; s[n++]='P'; s[n++]='S'; s[n++]=':'; s[n++]=' ';
+		if (fps <= 0) s[n++]='0';
+		else { while (fps) { t[k++]='0'+fps%10; fps/=10; } while (k) s[n++]=t[--k]; }
+		s[n]=0;
+		ayaneo_fill(dst, pitch_w, xoff + 4, yoff + 4, 200, 28, 0xFF000000u);
+		ayaneo_text(dst, pitch_w, xoff + 8, yoff + 6, 2, 0xFF30FF60u, s);
+	}
 	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
 	ayaneo_present(dpa, W, H, pitch_w);
 	s_fb_flip ^= 1;
@@ -1319,9 +1336,10 @@ void video_rainbow_boot_start(void)
 	s_fade_request = 0;
 
 #ifdef AYANEO_GBC
-	/* hold Select at boot, or the persisted "skip boot" setting: skip the
-	 * animation + chime and go straight to the emulator. Mark everything
-	 * complete so the stop path returns at once. */
+	/* Skip the animation + chime and hand off immediately when: Select is held,
+	 * the persisted "skip boot" setting is on, or this is a charger-insert
+	 * power-on (offline charging) - in that last case the emulator hook shows
+	 * the charging screen instead of booting the game. */
 	ayaneo_settings_load();
 	if (ayaneo_gbc_select_held() || ayaneo_get_skip_boot()) {
 		s_anim_complete = 1;
