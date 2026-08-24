@@ -21,6 +21,7 @@ typedef struct {
 	snes_rnode *menubar;          /* menubar_upper subtree in the home scene */
 	snes_rnode *mb_btn[5];        /* the 5 menubar icon buttons (cm1..cm5) */
 	snes_rnode *mb_active[5];      /* per-button cyan active-highlight sprite node */
+	float mb_scale[5];             /* per-icon focus scale (animates toward 1.2) */
 	snes_rnode *overlay[5];       /* settings overlays opened per icon */
 
 	int state;                    /* 0 home, 1 menubar, 2 submenu */

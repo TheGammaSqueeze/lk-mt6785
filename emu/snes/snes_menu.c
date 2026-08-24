@@ -266,6 +266,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			 * real menu shows it only on the focused icon (and only in the
 			 * menubar state), so start them all hidden. */
 			if (m->mb_active[b]) m->mb_active[b]->enabled = 0;
+			m->mb_scale[b] = 1.0f;
 		}
 	}
 	/* per-icon settings overlays (display, options, language, copyright, manual) */
@@ -342,12 +343,19 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	m->pa = in->a; m->pb = in->b; m->ps = in->select;
 	if (m->sort_label_t > 0) m->sort_label_t -= dt;
 
-	/* show the cyan active highlight only on the focused menubar icon */
+	/* menubar: cyan highlight + focus-scale (1.2x) only on the focused icon */
 	{
 		int b;
-		for (b = 0; b < 5; b++)
-			if (m->mb_active[b])
-				m->mb_active[b]->enabled = (m->state >= 1 && b == m->mb_focus);
+		float ks = dt * 12.0f; if (ks > 1.0f) ks = 1.0f;
+		for (b = 0; b < 5; b++) {
+			int foc = (m->state >= 1 && b == m->mb_focus);
+			if (m->mb_active[b]) m->mb_active[b]->enabled = foc;
+			if (m->mb_btn[b]) {
+				float tgt = foc ? 1.2f : 1.0f;
+				m->mb_scale[b] += (tgt - m->mb_scale[b]) * ks;
+				m->mb_btn[b]->tf[0] = m->mb_btn[b]->tf[4] = m->mb_scale[b];
+			}
+		}
 	}
 
 	/* smooth carousel scroll toward the focused index */
