@@ -17,6 +17,8 @@ typedef struct {
 	const snes_pack *pk;
 	snes_scene home, bg;
 	snes_rnode *wall;
+	snes_rnode *homemenu;         /* home-state subtree in the home scene */
+	snes_rnode *menubar;          /* menubar_upper subtree in the home scene */
 	uint32_t *wp;                 /* wallpaper cache, WP_W*WP_H u32 (caller-provided) */
 	int wp_ready;
 	float scroll;

@@ -6,3 +6,10 @@ sig
 build-k85v1_64/
 out/
 __pycache__/
+
+# host render harness build output
+emu/snes/host_render
+emu/snes/diag
+# GBA prebuilt objects/lib (rebuildable)
+emu/gba/obj/
+emu/gba/libgpsp.a

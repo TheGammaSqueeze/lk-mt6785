@@ -401,16 +401,9 @@ static void paint(snes_target *t, snes_scene *s, snes_dr *dr)
 	}
 }
 
-void snes_render_scene(snes_target *t, snes_scene *s)
+static void sort_and_paint(snes_target *t, snes_scene *s)
 {
-	static const float I[6] = {1,0,0,0,1,0};
-	static const float W[4] = {1,1,1,1};
 	int i, k;
-	g_ndr = 0;
-	g_zt = 0;
-	if (!s->root) return;
-	collect(s, s->root, I, W, 0);
-	/* stable sort by (layer, seq) */
 	for (i = 1; i < g_ndr; i++) {
 		snes_dr key = g_dr[i];
 		k = i - 1;
@@ -422,6 +415,29 @@ void snes_render_scene(snes_target *t, snes_scene *s)
 	}
 	for (i = 0; i < g_ndr; i++)
 		paint(t, s, &g_dr[i]);
+}
+
+void snes_render_scene(snes_target *t, snes_scene *s)
+{
+	static const float I[6] = {1,0,0,0,1,0};
+	static const float W[4] = {1,1,1,1};
+	g_ndr = 0; g_zt = 0;
+	if (!s->root) return;
+	collect(s, s->root, I, W, 0);
+	sort_and_paint(t, s);
+}
+
+/* Render the subtree rooted at n at its authored world position (n's own
+ * transform is applied on top of its parent's world matrix). */
+void snes_render_node(snes_target *t, snes_scene *s, snes_rnode *n)
+{
+	static const float W[4] = {1,1,1,1};
+	float pm[6] = {1,0,0,0,1,0};
+	g_ndr = 0; g_zt = 0;
+	if (!n) return;
+	if (n->parent) snes_node_world(n->parent, pm);
+	collect(s, n, pm, W, 0);
+	sort_and_paint(t, s);
 }
 
 int snes_render_count(void) { return g_ndr; }

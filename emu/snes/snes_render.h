@@ -16,6 +16,8 @@ typedef struct {
 
 /* Draw a whole scene into the target (does not clear). */
 void snes_render_scene(snes_target *t, snes_scene *s);
+/* Draw the subtree rooted at n at its authored world position. */
+void snes_render_node(snes_target *t, snes_scene *s, snes_rnode *n);
 
 /* number of drawables emitted by the last snes_render_scene (diagnostic). */
 int snes_render_count(void);

@@ -1,6 +1,16 @@
 #include "snes_menu.h"
 
 /* ---- small helpers ---- */
+static const snes_scene_entry *scene_by_name(const snes_pack *p, const char *want)
+{
+	unsigned i;
+	for (i = 0; i < p->hdr->scene_count; i++) {
+		const char *a = snes_str(p, p->scene[i].name), *b = want;
+		while (*a && *a == *b) { a++; b++; }
+		if (*a == *b) return &p->scene[i];
+	}
+	return 0;
+}
 static const snes_game_rec *game(const snes_pack *p, int i)
 {
 	unsigned n = p->hdr->game_count;
@@ -123,23 +133,44 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->pl = m->pr = m->pu = m->pd = m->pa = m->pb = 0;
 	m->sndh = m->sndt = 0; m->wall = 0;
 
-	home = snes_res_scene(pk, pk->init->default_scene_hash);
+	(void)i;
+	/* the real home menu (carousel + menubar) is defaultscene.scn, not the
+	 * init default_scene (which is the boot/dialog scene sys_boot). */
+	home = scene_by_name(pk, "defaultscene.scn");
+	if (!home) home = snes_res_scene(pk, pk->init->default_scene_hash);
 	if (!home || !snes_scene_build(&m->home, pk, home, home_pool, home_cap))
 		return -1;
-	/* find bg.scn by name */
-	bg = 0;
-	for (i = 0; i < pk->hdr->scene_count; i++) {
-		const char *nm = snes_str(pk, pk->scene[i].name);
-		const char *a = nm, *b = "bg.scn";
-		while (*a && *a == *b) { a++; b++; }
-		if (*a == *b) { bg = &pk->scene[i]; break; }
-	}
+	bg = scene_by_name(pk, "bg.scn");
 	if (bg && snes_scene_build(&m->bg, pk, bg, bg_pool, bg_cap)) {
 		snes_rnode *demo = snes_scene_find(&m->bg, "demo_bg");
 		if (demo) demo->enabled = 0;
 		m->wall = snes_scene_find(&m->bg, "wall");
 		build_wp(m);
 	}
+	/* on the home state Lua shows only `homemenu`; its siblings (copyright,
+	 * manual, option_*, resumemenu, unlock_event) are overlays hidden here. */
+	{
+		static const char *hide[] = { "copyright", "manual", "option_display",
+			"option_languages", "option_languages_first", "option_settings",
+			"resumemenu", "unlock_event", "sys_autoplay", "dbg_menu", 0 };
+		int hi;
+		for (hi = 0; hide[hi]; hi++) {
+			snes_rnode *o = snes_scene_find(&m->home, hide[hi]);
+			if (o) o->enabled = 0;
+		}
+	}
+	/* inside homemenu, the resume/suspend overlay is hidden on the home state */
+	{
+		static const char *hide2[] = { "sys_resumedummy", "resume_floating",
+			"gametitle_label", 0 };
+		int hj;
+		for (hj = 0; hide2[hj]; hj++) {
+			snes_rnode *o = snes_scene_find(&m->home, hide2[hj]);
+			if (o) o->enabled = 0;
+		}
+	}
+	m->homemenu = snes_scene_find(&m->home, "homemenu");
+	m->menubar = snes_scene_find(&m->home, "menubar_upper");
 	m->f_title = snes_hash("title.font");
 	m->f_l = snes_hash("l.font");
 	m->f_s = snes_hash("s.font");
@@ -171,18 +202,14 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 {
 	const snes_game_rec *g;
 	draw_wp(m, t, (int)m->scroll);
+	/* authored home chrome (menubar, title frame, bottom filmstrip, hud) */
+	if (m->homemenu) snes_render_node(t, &m->home, m->homemenu);
+	else             snes_render_scene(t, &m->home);
 	draw_carousel(m, t);
 
-	/* title bar + focused game name (SNES title font) */
+	/* focused game name drawn into the authored title frame (SNES title font) */
 	g = game(m->pk, m->focus);
-	snes_fill_quad(t, 640, t->offy ? 158 : 158, SNES_VW - 480, 46, 0.94f, 0.94f, 0.94f, 1.0f);
 	if (g)
-		snes_draw_text(t, m->pk, m->f_title, 640, 140, 0.8f, 0xFF101010u, 1,
+		snes_draw_text(t, m->pk, m->f_title, 640, 148, 0.85f, 0xFF202020u, 1,
 			       snes_str(m->pk, g->name));
-
-	/* top + bottom menu-layer bars + HUD hints (SNES small font) */
-	snes_fill_quad(t, 640, 32, SNES_VW, 64, 0.06f, 0.08f, 0.10f, 0.75f);
-	snes_fill_quad(t, 640, SNES_VH - 28, SNES_VW, 56, 0.06f, 0.08f, 0.10f, 0.75f);
-	snes_draw_text(t, m->pk, m->f_s, 40, SNES_VH - 40, 1.0f, 0xFFC8D0E0u, 0,
-		       "Menu     Suspend Point List          SELECT Sort     START Start Game");
 }
