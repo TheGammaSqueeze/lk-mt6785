@@ -119,6 +119,33 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 	draw_card(m, t, m->focus, m->focus);
 }
 
+/* ---- bottom thumbnail filmstrip (Lua-instantiated in the web app) ---- */
+#define FS_CY    582.0f
+#define FS_GAP   62.0f
+#define FS_W     48.0f
+#define FS_H     34.0f
+static void draw_filmstrip(snes_menu *m, snes_target *t)
+{
+	int n = (int)m->pk->hdr->game_count, d;
+	if (n <= 0) return;
+	for (d = -9; d <= 9; d++) {
+		int gi = m->focus + d;
+		const snes_game_rec *g;
+		const snes_img_entry *im;
+		float cx = 640.0f + ((float)gi - m->car_x) * FS_GAP, cy = FS_CY;
+		int foc = (d == 0);
+		float w = foc ? FS_W + 8 : FS_W, h = foc ? FS_H + 6 : FS_H;
+		if (gi < 0 || gi >= n) continue;
+		if (cx < -40 || cx > SNES_VW + 40) continue;
+		g = game(m->pk, gi);
+		im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
+		if (foc) snes_fill_quad(t, cx, cy, w + 6, h + 6, 0.20f, 0.55f, 1.0f, 1.0f);
+		snes_fill_quad(t, cx, cy, w + 2, h + 2, 0.0f, 0.0f, 0.0f, 1.0f);
+		if (im) snes_blit_tex(t, m->pk, im, cx, cy, w, h, foc ? 1.0f : 0.7f);
+		else    snes_fill_quad(t, cx, cy, w, h, 0.15f, 0.15f, 0.2f, 1.0f);
+	}
+}
+
 /* ---- public ---- */
 int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		   snes_rnode *home_pool, unsigned home_cap,
@@ -174,8 +201,12 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->f_title = snes_hash("title.font");
 	m->f_l = snes_hash("l.font");
 	m->f_s = snes_hash("s.font");
-	/* sound hashes wired when audio lands */
-	m->sfx_move = m->sfx_decide = m->sfx_cancel = m->bgm = 0;
+	/* sound resource hashes (fnv1a of the firmware GUIDs) */
+	m->sfx_move   = snes_hash("5d71cecd-38d1-42d6-9f16-77581477eb97"); /* se_sys_cursor */
+	m->sfx_decide = snes_hash("e8d6f848-db86-4b5f-9657-8a43a761a8d6"); /* se_sys_click_game */
+	m->sfx_cancel = snes_hash("fd22b34f-5b1b-4162-92dd-f63277ca5af4"); /* se_sys_cancel */
+	m->sfx_up     = snes_hash("9d492e12-d0fb-489b-8814-ff9a5c84493c"); /* se_sys_up */
+	m->bgm        = snes_hash("29593b07-3016-49a0-9e70-c9d651bcafa2"); /* bgm_home */
 	return 0;
 }
 
@@ -185,6 +216,8 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	/* edge-triggered navigation */
 	if (in->left && !m->pl) { m->focus--; push_snd(m, m->sfx_move); }
 	if (in->right && !m->pr) { m->focus++; push_snd(m, m->sfx_move); }
+	if (in->a && !m->pa) push_snd(m, m->sfx_decide);
+	if (in->b && !m->pb) push_snd(m, m->sfx_cancel);
 	m->pl = in->left; m->pr = in->right; m->pu = in->up; m->pd = in->down;
 	m->pa = in->a; m->pb = in->b;
 
@@ -206,6 +239,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	if (m->homemenu) snes_render_node(t, &m->home, m->homemenu);
 	else             snes_render_scene(t, &m->home);
 	draw_carousel(m, t);
+	draw_filmstrip(m, t);
 
 	/* focused game name drawn into the authored title frame (SNES title font) */
 	g = game(m->pk, m->focus);

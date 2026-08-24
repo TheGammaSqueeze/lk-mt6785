@@ -14,6 +14,7 @@
 #include <part_interface.h>
 
 #include "snes_menu.h"
+#include "snes_audio.h"
 
 /* ---- LK primitives ---- */
 extern time_t current_time(void);
@@ -31,6 +32,10 @@ extern void ayaneo_apply_persisted_brightness(void);
 extern void ayaneo_set_cpu_mhz(unsigned int mhz);
 extern int  mt_power_off(void);
 extern int  pmic_detect_powerkey(void);
+
+/* ---- audio (ayaneo_audio.c): codec bring-up + direct 48 kHz ring submit ---- */
+extern void ayaneo_gbc_audio_init(void);
+extern void ayaneo_snes_audio_submit(const short *stereo, unsigned frames);
 
 /* ---- input (gpio-keys, active-low) ---- */
 extern int mt_set_gpio_mode(unsigned pin, unsigned mode);
@@ -65,6 +70,19 @@ extern int mt_get_gpio_in(unsigned pin);
 
 static snes_pack s_pk;
 static snes_menu s_menu;
+static snes_mixer s_mix;
+static short s_mixbuf[2048 * 2];   /* up to ~42 ms of stereo 48 kHz per frame */
+
+/* Resolve a sound res-hash to its PCM + loop info and start a mixer voice. */
+static void play_sound(uint32_t hash, int loop, int is_bgm)
+{
+	const snes_snd_entry *sn = snes_res_snd(&s_pk, hash);
+	const int16_t *pcm;
+	if (!sn || !sn->frames) return;
+	pcm = (const int16_t *)(s_pk.base + sn->pcm);
+	snes_audio_play(&s_mix, pcm, sn->frames, sn->rate,
+			sn->loop_start, sn->loop_end, loop, 256, is_bgm);
+}
 
 static void dbg(const char *msg)
 {
@@ -133,6 +151,12 @@ static int snes_emu_thread(void *arg)
 	input_init();
 	ayaneo_set_cpu_mhz(1800);
 	ayaneo_apply_persisted_brightness();
+
+	/* bring up the codec/AFE ring and start the looping home BGM */
+	snes_audio_init(&s_mix);
+	ayaneo_gbc_audio_init();
+	if (s_menu.bgm) play_sound(s_menu.bgm, 1, 1);
+
 	last = (unsigned)current_time();
 
 	for (;;) {
@@ -158,7 +182,21 @@ static int snes_emu_thread(void *arg)
 
 		snes_menu_update(&s_menu, &in, dt);
 		snes_menu_render(&s_menu, &t);
-		while (snes_menu_next_sound(&s_menu)) { /* audio wired next */ }
+
+		/* start any queued one-shot SFX, then mix a frame's worth of audio
+		 * and push it to the AFE ring (keeps the ring fed ahead of the DMA) */
+		{
+			uint32_t h;
+			unsigned frames;
+			while ((h = snes_menu_next_sound(&s_menu)) != 0)
+				play_sound(h, 0, 0);
+			frames = (unsigned)(SNES_AUD_HZ * dt);
+			if (frames > 2048) frames = 2048;
+			if (frames) {
+				snes_audio_mix(&s_mix, s_mixbuf, frames);
+				ayaneo_snes_audio_submit(s_mixbuf, frames);
+			}
+		}
 
 		ayaneo_canvas_present();
 		mtk_wdt_restart();

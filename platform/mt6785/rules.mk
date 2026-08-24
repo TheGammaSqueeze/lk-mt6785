@@ -358,7 +358,7 @@ OBJS += \
 
 # In-LK app driver: SNES home menu (native C) vs the GBC emulator, by build gate.
 ifeq ($(AYANEO_SNES),yes)
-OBJS += emu/snes/snes_pack.o emu/snes/snes_scene.o emu/snes/snes_render.o emu/snes/snes_menu.o emu/snes/snes_driver.o
+OBJS += emu/snes/snes_pack.o emu/snes/snes_scene.o emu/snes/snes_render.o emu/snes/snes_menu.o emu/snes/snes_audio.o emu/snes/snes_driver.o
 else
 OBJS += emu/gbc/gbc_driver.o
 endif

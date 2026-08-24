@@ -37,7 +37,7 @@ typedef struct {
 	/* cached font-name hashes */
 	uint32_t f_title, f_l, f_s;
 	/* cached sfx/bgm res hashes (0 if absent) */
-	uint32_t sfx_move, sfx_decide, sfx_cancel, bgm;
+	uint32_t sfx_move, sfx_decide, sfx_cancel, sfx_up, bgm;
 } snes_menu;
 
 /* wallpaper cache dims (caller allocates WP_CACHE_W*WP_CACHE_H u32). */

@@ -896,6 +896,31 @@ void ayaneo_gbc_audio_init(void)
 	s_gbc_audio_on = 1;
 }
 
+/* Write `frames` interleaved stereo s16 samples that are ALREADY at 48 kHz
+ * straight into the ring (no resample). Used by the SNES menu mixer, which
+ * mixes at the AFE rate itself. Volume is applied here from s_gbc_vol. */
+void ayaneo_snes_audio_submit(const short *stereo, unsigned frames)
+{
+	int vol = s_gbc_vol;
+	unsigned q = (vol >= 100) ? 256u : ((unsigned)vol * 256u / 100u);
+	unsigned i;
+
+	if (!s_gbc_audio_on || s_gbc_paused)
+		return;
+
+	for (i = 0; i < frames; i++) {
+		int l = stereo[i * 2 + 0];
+		int r = stereo[i * 2 + 1];
+		unsigned idx;
+		if (q < 256) { l = (l * (int)q) >> 8; r = (r * (int)q) >> 8; }
+		idx = s_gbc_widx & (GBC_RING_FRAMES - 1);
+		s_gbc_ring[idx * 2 + 0] = (short)l;
+		s_gbc_ring[idx * 2 + 1] = (short)r;
+		s_gbc_widx++;
+	}
+	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+}
+
 /* Resample `count` stereo samples (each u32 = L|R<<16 at 2097152 Hz) to 48 kHz
  * and write them into the ring. Volume from AYANEO_AUDIO_VOLUME. */
 void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
