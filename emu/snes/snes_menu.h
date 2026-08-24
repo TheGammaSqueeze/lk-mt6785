@@ -25,7 +25,8 @@ typedef struct {
 	snes_rnode *mb_caption[5];     /* per-icon caption bubble (shown when focused) */
 	snes_rnode *overlay[5];       /* settings overlays opened per icon */
 
-	int state;                    /* 0 home, 1 menubar, 2 submenu */
+	snes_rnode *resume;           /* resume/suspend-point menu overlay */
+	int state;                    /* 0 home, 1 menubar, 2 submenu, 3 resume */
 	int mb_focus;                 /* selected menubar icon 0..4 */
 	int open;                     /* open overlay index, -1 if none */
 

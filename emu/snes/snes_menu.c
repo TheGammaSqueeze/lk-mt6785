@@ -277,6 +277,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->overlay[2] = snes_scene_find(&m->home, "option_languages");
 	m->overlay[3] = snes_scene_find(&m->home, "copyright");
 	m->overlay[4] = snes_scene_find(&m->home, "manual");
+	m->resume = snes_scene_find(&m->home, "resumemenu");
 	m->state = 0; m->mb_focus = 0; m->open = -1;
 	/* roster order (title sort by default) */
 	m->ngames = (int)pk->hdr->game_count;
@@ -307,6 +308,10 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		if (el) { m->focus--; push_snd(m, m->sfx_move); }
 		if (er) { m->focus++; push_snd(m, m->sfx_move); }
 		if (eu) { m->state = 1; push_snd(m, m->sfx_up); }
+		if (ed && m->resume) {                 /* Down -> suspend-point menu */
+			m->resume->enabled = 1;
+			m->state = 3; push_snd(m, m->sfx_decide);
+		}
 		if (ea) push_snd(m, m->sfx_decide);    /* launch stubbed */
 		if (in->select && !m->ps) {            /* cycle roster sort */
 			const snes_game_rec *cur = game(m, m->focus);
@@ -334,11 +339,16 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			m->overlay[m->open]->tf[5] = 0;
 			m->state = 2; push_snd(m, m->sfx_decide);
 		}
-	} else {                                   /* ---- open submenu ---- */
+	} else if (m->state == 2) {                /* ---- open submenu ---- */
 		if (eb) {
 			if (m->open >= 0 && m->overlay[m->open])
 				m->overlay[m->open]->enabled = 0;
 			m->open = -1; m->state = 1; push_snd(m, m->sfx_cancel);
+		}
+	} else {                                   /* ---- resume menu ---- */
+		if (eb || eu) {
+			if (m->resume) m->resume->enabled = 0;
+			m->state = 0; push_snd(m, m->sfx_cancel);
 		}
 	}
 	m->pl = in->left; m->pr = in->right; m->pu = in->up; m->pd = in->down;
@@ -413,5 +423,10 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
 		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 0.55f);
 		snes_render_node(t, &m->home, m->overlay[m->open]);
+	}
+	/* the suspend-point (resume) menu, over a dimmed home */
+	if (m->state == 3 && m->resume) {
+		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 0.55f);
+		snes_render_node(t, &m->home, m->resume);
 	}
 }
