@@ -731,9 +731,9 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	video_rainbow_boot_stop();
 #endif
 
-#ifdef AYANEO_GBC
+#if defined(AYANEO_GBC) || defined(AYANEO_GBA)
 	/*
-	 * Experiment: instead of booting the kernel, hand the panel to the GBC
+	 * Experiment: instead of booting the kernel, hand the panel to the GBC/GBA
 	 * emulator and run it forever. The boot animation has already played and
 	 * been stopped above.
 	 */

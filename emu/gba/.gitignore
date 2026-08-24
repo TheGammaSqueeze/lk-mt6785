@@ -1,0 +1,5 @@
+obj/
+libgpsp.a
+# The GBA BIOS is copyrighted (Nintendo) - do NOT commit it. Generate it locally
+# from your own dumped gba_bios.bin with gen_bios_header.py (see build_core_gba.sh).
+gba_bios_data.h

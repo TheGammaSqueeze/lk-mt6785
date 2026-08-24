@@ -139,6 +139,16 @@ static void exception_die(struct arm_fault_frame *frame, int pc_off, const char 
 	dprintf(CRITICAL, "%s", msg);
 	dump_fault_frame(frame);
 
+#if defined(AYANEO_GBA)
+	/* This device does not surface LK's UART, so paint the fault (type + faulting
+	 * PC + data-fault address) to the panel for the in-LK GBA emulator bring-up. */
+	{
+		extern void ayaneo_gba_fault_screen(const char *msg, unsigned pc,
+						     unsigned addr, unsigned spsr);
+		ayaneo_gba_fault_screen(msg, frame->pc, arch_read_dfar(), frame->spsr);
+	}
+#endif
+
 	halt();
 	for(;;);
 }

@@ -770,6 +770,10 @@ static unsigned int rd32(const unsigned char *p)
 /* Present display buffer at physical 'pa'. Alternating pa each frame forces the
  * OVL to re-latch (config_input with an unchanged address is a no-op in video
  * mode); a bare trigger alone never pushes a new frame. */
+/* When set, primary_display_config_input() skips its frame-done wait so presents
+ * are non-blocking (used by the GBA benchmark to run uncapped). */
+int ayaneo_present_skip_framedone = 0;
+
 static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 			   unsigned int pitch_w)
 {
@@ -791,7 +795,7 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 	primary_display_trigger(TRUE);
 }
 
-#ifdef AYANEO_GBC
+#if defined(AYANEO_GBC) || defined(AYANEO_GBA)
 #include <video_font.h>		/* mtk_vdo_fntdata: 8x16 ASCII font */
 
 /*
@@ -800,9 +804,17 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
  * animation so the OVL re-latches in DSI video mode. The static black borders
  * are cleared once; per frame only the game area is blitted.
  */
+#if defined(AYANEO_GBA)
+/* GBA: 240x160 native, integer 5x -> 1200x800 centred on the 1280x960 panel. */
+#define GBC_SRC_W	240
+#define GBC_SRC_H	160
+#define GBC_SCALE	5
+#else
+/* GBC: 160x144 native, integer 6x -> 960x864. */
 #define GBC_SRC_W	160
 #define GBC_SRC_H	144
 #define GBC_SCALE	6
+#endif
 
 /* Shared double-buffer flip index for the game frame and the menu canvas (they
  * are never rendered at the same time - the menu pauses the emulator). */
@@ -1324,7 +1336,7 @@ anim_done:
 	return 0;
 }
 
-#ifdef AYANEO_GBC
+#if defined(AYANEO_GBC) || defined(AYANEO_GBA)
 extern int ayaneo_gbc_select_held(void);
 extern void ayaneo_settings_load(void);
 extern int ayaneo_get_skip_boot(void);
@@ -1339,7 +1351,7 @@ void video_rainbow_boot_start(void)
 	s_anim_complete = 0;
 	s_fade_request = 0;
 
-#ifdef AYANEO_GBC
+#if defined(AYANEO_GBC) || defined(AYANEO_GBA)
 	/* Skip the animation + chime and hand off immediately when: Select is held,
 	 * the persisted "skip boot" setting is on, or this is a charger-insert
 	 * power-on (offline charging) - in that last case the emulator hook shows
@@ -1391,7 +1403,7 @@ void video_rainbow_boot_stop(void)
 	while (!s_rainbow_exited && guard++ < 500)
 		thread_sleep(2);
 
-#if defined(AYANEO_BOOT_AUDIO) && !defined(AYANEO_GBC)
+#if defined(AYANEO_BOOT_AUDIO) && !defined(AYANEO_GBC) && !defined(AYANEO_GBA)
 	/* make sure the AFE/codec is quiet before the kernel re-inits audio.
 	 * In the GBC build there is no kernel: let the chime play to completion
 	 * (the emulator waits for it before bringing up its own audio). */

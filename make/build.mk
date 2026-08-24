@@ -28,7 +28,7 @@ $(OUTELF)-sign.img: $(OUTELF)-dtb.img
 	$(NOECHO)perl $(LK_TOP_DIR)/scripts/sign/SignTool.pl "$(PROJECT)" "$(PROJECT)" "$(LK_TOP_DIR)/certs" "yes" "2048" "true" "$(BUILDDIR)" "lk.img" "no"
 
 ifeq ($(ENABLE_TRUSTZONE), 1)
-$(OUTELF): $(ALLOBJS) $(LINKER_SCRIPT) $(OUTPUT_TZ_BIN) $(wildcard $(GBC_LIB))
+$(OUTELF): $(ALLOBJS) $(LINKER_SCRIPT) $(OUTPUT_TZ_BIN) $(wildcard $(GBC_LIB)) $(wildcard $(GBA_LIB))
 ifeq ($(BUILD_SEC_LIB),yes)
 	@echo delete old security library
 	@rm -rf $(LK_TOP_DIR)/app/mt_boot/lib/libcrypto.a
@@ -46,9 +46,9 @@ ifeq ($(BUILD_DEVINFO_LIB), yes)
 	@ar cq $(LK_TOP_DIR)/app/mt_boot/lib/libdevinfo.a $(DEVINFO_OBJS)
 endif
 	@echo linking $@
-	$(NOECHO)$(LD) $(LDFLAGS) -T $(LINKER_SCRIPT) $(OUTPUT_TZ_BIN) $(ALLOBJS) $(wildcard $(GBC_LIB)) $(LIBGCC) $(LIBSEC) $(LIBSEC_PLAT) $(wildcard $(PICACHU_LIB)) -o $@
+	$(NOECHO)$(LD) $(LDFLAGS) -T $(LINKER_SCRIPT) $(OUTPUT_TZ_BIN) $(ALLOBJS) $(wildcard $(GBC_LIB)) $(wildcard $(GBA_LIB)) $(LIBGCC) $(LIBSEC) $(LIBSEC_PLAT) $(wildcard $(PICACHU_LIB)) -o $@
 else
-$(OUTELF): $(ALLOBJS) $(LINKER_SCRIPT) $(wildcard $(GBC_LIB))
+$(OUTELF): $(ALLOBJS) $(LINKER_SCRIPT) $(wildcard $(GBC_LIB)) $(wildcard $(GBA_LIB))
 ifeq ($(BUILD_SEC_LIB),yes)
 	@echo delete old security library
 	@rm -rf $(LK_TOP_DIR)/app/mt_boot/lib/libcrypto.a
@@ -74,7 +74,7 @@ ifeq ($(BUILD_HW_CRYPTO_LIB),yes)
 	@ar cq $(LK_TOP_DIR)/app/mt_boot/lib/libhw_crypto.a $(HW_CRYPTO_OBJS)
 endif
 	@echo linking $@
-	$(NOECHO)$(LD) $(LDFLAGS) -T $(LINKER_SCRIPT) $(ALLOBJS) $(wildcard $(GBC_LIB)) $(LIBGCC) $(LIBSEC) $(LIBSEC_PLAT) $(LIBHW_CRYPTO) $(wildcard $(PICACHU_LIB)) -o $@
+	$(NOECHO)$(LD) $(LDFLAGS) -T $(LINKER_SCRIPT) $(ALLOBJS) $(wildcard $(GBC_LIB)) $(wildcard $(GBA_LIB)) $(LIBGCC) $(LIBSEC) $(LIBSEC_PLAT) $(LIBHW_CRYPTO) $(wildcard $(PICACHU_LIB)) -o $@
 endif
 
 $(OUTELF).sym: $(OUTELF)

@@ -63,6 +63,22 @@ AYANEO_AUDIO_TRACE ?= no
 ifeq ($(AYANEO_AUDIO_TRACE),yes)
 DEFINES += AYANEO_AUDIO_TRACE
 endif
+# Experimental: after the boot animation, run a GBA emulator (gpSP, ARM dynarec)
+# in LK instead of the kernel. Mutually exclusive with the GBC build - it takes
+# over the same hooks (ayaneo_gbc_start / _charging_screen / _select_held). The
+# core archive (emu/gba/libgpsp.a) must be prebuilt via emu/gba/build_core_gba.sh.
+# Enable with `AYANEO_GBA=yes`.
+AYANEO_GBA ?= no
+ifeq ($(AYANEO_GBA),yes)
+DEFINES += AYANEO_GBA
+GBA_LIB := $(LK_TOP_DIR)/emu/gba/libgpsp.a
+AYANEO_GBC := no
+# Diagnostic: force the pure interpreter (no ARM dynarec) to isolate JIT issues.
+ifeq ($(AYANEO_GBA_INTERP),yes)
+DEFINES += AYANEO_GBA_INTERP
+endif
+endif
+
 # Experimental: after the boot animation, run a GBC emulator (gambatte) in LK
 # instead of booting the kernel. The core archive (emu/gbc/libgbc.a) must be
 # prebuilt via emu/gbc/build_core.sh.

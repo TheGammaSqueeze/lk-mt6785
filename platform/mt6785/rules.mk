@@ -296,7 +296,6 @@ OBJS += \
 	$(LOCAL_DIR)/gpio.o \
 	$(LOCAL_DIR)/mt_disp_drv.o \
 	$(LOCAL_DIR)/ayaneo_audio.o \
-	emu/gbc/gbc_driver.o \
 	$(LOCAL_DIR)/gpio_init.o \
 	$(LOCAL_DIR)/mt_i2c.o \
 	$(LOCAL_DIR)/mt_latch.o \
@@ -356,6 +355,13 @@ OBJS += \
 	$(LOCAL_DIR)/oaep.o \
 	$(LOCAL_DIR)/rsa_oaep.o \
 	$(LOCAL_DIR)/anti_rollback_cust.o
+
+# In-LK emulator driver: GBA (gpSP) takes over the same hooks as the GBC build.
+ifeq ($(AYANEO_GBA),yes)
+OBJS += emu/gba/gba_driver.o
+else
+OBJS += emu/gbc/gbc_driver.o
+endif
 
 MTK_DFD_ENABLE_CACHE_DUMP := yes
 

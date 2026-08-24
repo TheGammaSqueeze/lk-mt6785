@@ -25,8 +25,16 @@
 #include <string.h>
 #include <debug.h>
 #include <part_interface.h>
-#ifdef AYANEO_AUDIO_TRACE
+#if defined(AYANEO_AUDIO_TRACE) || defined(AYANEO_DEBUG_LOGGING)
 #include <platform/boot_mode.h>		/* g_boot_arg->log_enable (force UART) */
+/* Force LK's UART console on so _dprintf/GBA_ATRACE output reaches the wire even
+ * when the boot chime never runs (uart_putc gates on log_enable). Called from the
+ * GBA emulator entry so its bring-up traces are always visible. */
+void ayaneo_gba_force_uart(void)
+{
+	g_boot_arg->log_enable = 1;
+	g_boot_arg->meta_log_disable = 0;
+}
 #endif
 
 /* Diagnostic trace that survives a release build. The dprintf macro is compiled
@@ -932,4 +940,134 @@ void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
 		}
 	}
 	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+}
+
+/* ================= streaming audio for the GBA (gpSP) emulator =================
+ * gpSP renders s16 interleaved stereo at its sound_frequency (65536 Hz by
+ * default); box-resample it to the same 48 kHz ring the GBC path uses. Reuses
+ * the ring, the codec/AFE bring-up (ayaneo_gbc_audio_init), pause and shutdown -
+ * only the input format + source rate differ, so only this submit is new. */
+#define GBA_SRC_HZ	65536u
+
+static long long s_ga_accl, s_ga_accr;
+static unsigned s_ga_n, s_ga_phase;
+static int s_ga_inc = (int)GBC_DST_HZ;	/* resampler output rate (nom 48000) */
+
+int ayaneo_gba_audio_drc_rate(void) { return s_ga_inc; }
+
+/*
+ * Calibrate the resampler ONCE to the measured panel refresh (panel_hz100 =
+ * Hz*100). The emulator is vsync-locked, so it produces audio at
+ * panel_fps * 1097.25 samples/s; we pick a FIXED output increment so that
+ * resamples exactly to the 48 kHz AFE rate -> zero long-term drift AND a constant
+ * rate (no dynamic pitch wobble). inc = 48000 * 59.7275 / panel_fps
+ *     = 48000 * 5972.75 / panel_hz100 = 286692000 / panel_hz100.
+ * (samples/frame * GBA_fps = 65536, so 65536/1097.25 = 59.7275 exactly.)
+ */
+void ayaneo_gba_audio_set_rate(int panel_hz100)
+{
+	int inc;
+	if (panel_hz100 < 5000 || panel_hz100 > 7000)	/* sanity: 50-70 Hz */
+		return;
+	inc = (int)(286692000 / panel_hz100);
+	if (inc < 44000) inc = 44000;
+	if (inc > 52000) inc = 52000;
+	s_ga_inc = inc;
+}
+
+/* `frames` stereo frames, s16 interleaved [L,R,L,R,...] at GBA_SRC_HZ. */
+void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
+{
+	int vol = s_gbc_vol;
+	unsigned q = (vol >= 100) ? 256u : ((unsigned)vol * 256u / 100u);
+	unsigned i;
+
+	if (!s_gbc_audio_on || s_gbc_paused)
+		return;
+
+	/*
+	 * The resample rate is FIXED (calibrated once to the panel refresh by
+	 * ayaneo_gba_audio_set_rate) -> constant pitch, no dynamic wobble. Since the
+	 * panel is tuned to within ~0.03% of the GBA rate the residual drift is
+	 * negligible (many minutes to move). This wide-band safety only snaps the write
+	 * cursor if it ever strays near underrun/overrun (a real emergency - bad
+	 * calibration or a very long session); it does not fire in normal play, so it
+	 * never disturbs the pitch.
+	 */
+	{
+		unsigned cur  = afe_r(AFE_DL1_CUR);
+		unsigned base = (unsigned)(addr_t)s_gbc_ring;
+		unsigned rd   = (cur >= base) ? (cur - base) / 4u : 0u;
+		int lead = (int)((s_gbc_widx - rd) & (GBC_RING_FRAMES - 1));
+
+		if (lead >= (int)(GBC_RING_FRAMES / 2))
+			lead -= (int)GBC_RING_FRAMES;
+		if (lead < (int)(GBC_RING_FRAMES / 16) ||	/* ~<21 ms: near underrun */
+		    lead > (int)((GBC_RING_FRAMES * 7) / 16))	/* ~>150 ms: near overrun */
+			s_gbc_widx = (rd + GBC_RING_FRAMES / 4) & (GBC_RING_FRAMES - 1);
+	}
+
+	for (i = 0; i < frames; i++) {
+		int l = interleaved[i * 2 + 0];
+		int r = interleaved[i * 2 + 1];
+
+		s_ga_accl += l;
+		s_ga_accr += r;
+		s_ga_n++;
+		s_ga_phase += (unsigned)s_ga_inc;
+		if (s_ga_phase >= GBA_SRC_HZ) {
+			int ol, or_;
+			unsigned idx;
+
+			s_ga_phase -= GBA_SRC_HZ;
+			ol  = (int)(s_ga_accl / (long long)s_ga_n);
+			or_ = (int)(s_ga_accr / (long long)s_ga_n);
+			s_ga_accl = s_ga_accr = 0;
+			s_ga_n = 0;
+			if (q < 256) { ol = (ol * (int)q) >> 8; or_ = (or_ * (int)q) >> 8; }
+			idx = s_gbc_widx & (GBC_RING_FRAMES - 1);
+			s_gbc_ring[idx * 2 + 0] = (short)ol;
+			s_gbc_ring[idx * 2 + 1] = (short)or_;
+			s_gbc_widx++;
+		}
+	}
+	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+}
+
+/*
+ * Audio-mastered frame pacing for the GBA. The AFE DMA drains the ring at exactly
+ * 48 kHz (a hardware clock), so instead of pacing video off the 13 MHz counter
+ * (which lets the emulated rate drift against the audio clock -> ~1 s microstutter
+ * as the ring is over/underfed, and a ~30 s wrap-around distortion when the write
+ * cursor laps the read cursor), we busy-wait until the audio buffered ahead of the
+ * DMA read pointer has drained to a target lead. That locks emulation to the real
+ * 48 kHz clock: each frame produces ~804 output samples and we wait for exactly
+ * that many to be consumed (~59.73 fps) with bounded, non-drifting latency. If the
+ * emulator falls behind (a cache-flush hitch) the buffer is already below the lead
+ * so we return at once to catch up; a 13 MHz safety cap avoids stalling if the DMA
+ * ever wedges.
+ */
+extern unsigned gpt4_get_current_tick(void);
+#define GBA_AUDIO_LEAD		3072u		/* frames buffered ahead (~64 ms) */
+#define GBA_FRAME_TICKS		217663u		/* 13e6 * 280896 / 16777216 */
+
+void ayaneo_gba_audio_pace(void)
+{
+	unsigned base = (unsigned)(addr_t)s_gbc_ring;
+	unsigned start;
+
+	if (!s_gbc_audio_on || s_gbc_paused)
+		return;
+	start = gpt4_get_current_tick();
+	for (;;) {
+		unsigned cur = afe_r(AFE_DL1_CUR);
+		unsigned rd  = (cur >= base) ? (cur - base) / 4u : 0u;
+		unsigned fill = (s_gbc_widx - rd) & (GBC_RING_FRAMES - 1);
+
+		if (fill <= GBA_AUDIO_LEAD)
+			break;
+		/* safety: never block more than ~3 frame periods if the DMA stalls */
+		if ((int)(gpt4_get_current_tick() - start) > (int)(3u * GBA_FRAME_TICKS))
+			break;
+	}
 }

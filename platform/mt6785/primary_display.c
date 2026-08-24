@@ -1074,7 +1074,11 @@ int primary_display_config_input(disp_input_config* input)
 
 	if (pgc->mode == DIRECT_LINK_MODE || pgc->mode == DECOUPLE_MODE) {
 		if (dpmgr_path_is_busy(pgc->dpmgr_handle)) {
-			if (primary_display_is_video_mode()) {
+			/* AYANEO GBA benchmark: skip the frame-done wait so presents are
+			 * non-blocking -> emulation runs uncapped and every frame is pushed to
+			 * the OVL (the panel samples the latest at each scan). */
+			extern int ayaneo_present_skip_framedone;
+			if (primary_display_is_video_mode() && !ayaneo_present_skip_framedone) {
 				dpmgr_wait_event_timeout(pgc->dpmgr_handle, DISP_PATH_EVENT_FRAME_DONE, HZ*1);
 			}
 		}

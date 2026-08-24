@@ -282,7 +282,18 @@ static void lcm_get_params(LCM_PARAMS *params)
 
 	params->dsi.vertical_sync_active = 8;
 	params->dsi.vertical_backporch = 8;
+#if defined(AYANEO_GBA)
+	/* The in-LK GBA emulator locks its frame rate to the panel vsync, so we tune
+	 * the panel to the GBA's true 59.7275 Hz for correct game speed (and minimal
+	 * audio rate-conversion). MEASURED on-device: vtotal 1038 (vfp 62) -> 57.46 Hz,
+	 * i.e. real pixel clock ~85.28 MHz (htotal 1430). Target vtotal =
+	 * 1038 * 57.46/59.7275 = 998.6 -> 999 lines (vfp = 999-976 = 23) -> ~59.70 Hz
+	 * (0.04% off, the audio DRC trims the remainder). Only frame blanking changes;
+	 * DSI data rate / signal integrity are untouched. */
+	params->dsi.vertical_frontporch = 23;
+#else
 	params->dsi.vertical_frontporch = 16;
+#endif
 	params->dsi.vertical_active_line = FRAME_HEIGHT;
 
 	params->dsi.horizontal_sync_active = 30;

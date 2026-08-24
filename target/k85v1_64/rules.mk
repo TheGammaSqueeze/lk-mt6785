@@ -26,7 +26,13 @@ else ifeq ($(MTK_TLC_NAND_SUPPORT), yes)
 DEFINES += MTK_TLC_NAND_SUPPORT
 MEMSIZE := 0x00900000 # 9MB
 else
-MEMSIZE := 0x00400000 # 4MB
+# AYANEO in-LK emulator: the gpSP GBA core adds ~1.6 MB of static BSS (EWRAM,
+# dynarec block tables, sound buffer, gamepak backup), pushing LK's _end past the
+# stock 4 MB window - the heap goes negative and BSS lands in unmapped RAM, so LK
+# faults before printing anything. Grow the LK RAM window to 9 MB (same value the
+# NAND configs above already use, so it is validated for this target). New top =
+# 0x4CD00000, still safely below BL31/TZ at 0x4CE00000.
+MEMSIZE := 0x00900000 # 9MB (was 4MB; enlarged for the emulator's static BSS)
 endif
 
 
