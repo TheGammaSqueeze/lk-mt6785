@@ -36,6 +36,15 @@ extern int  pmic_detect_powerkey(void);
 /* ---- audio (ayaneo_audio.c): codec bring-up + direct 48 kHz ring submit ---- */
 extern void ayaneo_gbc_audio_init(void);
 extern void ayaneo_snes_audio_submit(const short *stereo, unsigned frames);
+extern void ayaneo_gbc_audio_set_volume(int v);
+extern int  ayaneo_gbc_audio_get_volume(void);
+
+/* ---- volume/brightness (MTK keypad volume keys; Select = brightness modifier) ---- */
+extern int  mtk_detect_key(unsigned short key);
+extern int  ayaneo_brightness_step(int dir);   /* dir +1/-1; returns new 0-100% */
+extern int  ayaneo_brightness_pct(void);
+extern void ayaneo_settings_load(void);
+extern void ayaneo_settings_save(void);
 
 /* ---- input (gpio-keys, active-low) ---- */
 extern int mt_set_gpio_mode(unsigned pin, unsigned mode);
@@ -82,6 +91,51 @@ static void play_sound(uint32_t hash, int loop, int is_bgm)
 	pcm = (const int16_t *)(s_pk.base + sn->pcm);
 	snes_audio_play(&s_mix, pcm, sn->frames, sn->rate,
 			sn->loop_start, sn->loop_end, loop, 256, is_bgm);
+}
+
+/* on-screen volume/brightness slider (drawn for a short time after a change) */
+static int s_osd_kind;    /* 0 none, 1 volume, 2 brightness */
+static int s_osd_pct;
+static int s_osd_ticks;
+
+/* Poll the hardware volume keys. Plain Volume adjusts audio; Select + Volume
+ * adjusts screen brightness. Persists the new value to boot_b. */
+static void poll_volume(void)
+{
+	static int vu_prev, vd_prev;
+	int vu = mtk_detect_key(0x11);      /* VolumeUp   */
+	int vd = mtk_detect_key(0x00);      /* VolumeDown */
+	int sel = PRESSED(K_SELECT);        /* brightness modifier */
+	int dir = 0;
+	if (vu && !vu_prev) dir = +1;
+	else if (vd && !vd_prev) dir = -1;
+	if (dir) {
+		if (sel) {
+			s_osd_pct = ayaneo_brightness_step(dir);
+			s_osd_kind = 2;
+		} else {
+			ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5);
+			s_osd_pct = ayaneo_gbc_audio_get_volume();
+			s_osd_kind = 1;
+		}
+		s_osd_ticks = 90;   /* ~1.4 s at 8 ms/frame */
+		ayaneo_settings_save();
+	}
+	vu_prev = vu; vd_prev = vd;
+}
+
+/* draw the volume/brightness slider onto the canvas (letterbox top bar) */
+static void draw_osd(unsigned int *fb, unsigned int pitch, int W)
+{
+	int bw = 360, bh = 34, bx = (W - bw) / 2, by = 18, fillw;
+	if (s_osd_ticks <= 0) return;
+	ayaneo_fill(fb, pitch, bx - 8, by - 8, bw + 16, bh + 16, 0xE0101418u);
+	ayaneo_fill(fb, pitch, bx, by, bw, bh, 0xFF303840u);
+	fillw = bw * (s_osd_pct < 0 ? 0 : s_osd_pct > 100 ? 100 : s_osd_pct) / 100;
+	ayaneo_fill(fb, pitch, bx, by, fillw, bh, 0xFF37B0FFu);
+	ayaneo_text(fb, pitch, bx, by - 20, 2, 0xFFFFFFFFu,
+		    s_osd_kind == 2 ? "BRIGHTNESS" : "VOLUME");
+	s_osd_ticks--;
 }
 
 static void dbg(const char *msg)
@@ -153,6 +207,7 @@ static int snes_emu_thread(void *arg)
 	ayaneo_apply_persisted_brightness();
 
 	/* bring up the codec/AFE ring and start the looping home BGM */
+	ayaneo_settings_load();          /* persisted volume + brightness */
 	snes_audio_init(&s_mix);
 	ayaneo_gbc_audio_init();
 	if (s_menu.bgm) play_sound(s_menu.bgm, 1, 1);
@@ -180,8 +235,10 @@ static int snes_emu_thread(void *arg)
 		ayaneo_fill(fb, pitch, 0, 0, (int)W, t.offy, 0xFF000000u);
 		ayaneo_fill(fb, pitch, 0, t.offy + SNES_VH, (int)W, t.offy, 0xFF000000u);
 
+		poll_volume();
 		snes_menu_update(&s_menu, &in, dt);
 		snes_menu_render(&s_menu, &t);
+		draw_osd(fb, pitch, (int)W);
 
 		/* start any queued one-shot SFX, then mix a frame's worth of audio
 		 * and push it to the AFE ring (keeps the ring fed ahead of the DMA) */
