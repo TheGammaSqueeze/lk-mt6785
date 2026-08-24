@@ -262,6 +262,8 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			m->mb_btn[b] = els ? child_named(pk, els, cm[b]) : 0;
 			btn = child_named(pk, m->mb_btn[b], "button");
 			m->mb_active[b] = child_named(pk, btn, "btn_menubar_active");
+			m->mb_caption[b] = child_named(pk, m->mb_btn[b], "caption_down");
+			if (m->mb_caption[b]) m->mb_caption[b]->enabled = 0;
 			/* the cyan active highlight is authored-on for every button; the
 			 * real menu shows it only on the focused icon (and only in the
 			 * menubar state), so start them all hidden. */
@@ -350,6 +352,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		for (b = 0; b < 5; b++) {
 			int foc = (m->state >= 1 && b == m->mb_focus);
 			if (m->mb_active[b]) m->mb_active[b]->enabled = foc;
+			if (m->mb_caption[b]) m->mb_caption[b]->enabled = foc;
 			if (m->mb_btn[b]) {
 				float tgt = foc ? 1.2f : 1.0f;
 				m->mb_scale[b] += (tgt - m->mb_scale[b]) * ks;
@@ -391,6 +394,19 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		snes_fill_quad(t, 640, 210, 360, 40, 0.06f, 0.08f, 0.10f, 0.85f);
 		snes_draw_text(t, m->pk, m->f_s, 640, 202, 1.0f, 0xFFE0E8F0u, 1,
 			       nm[m->sort_rule & 3]);
+	}
+
+	/* caption name inside the focused menubar icon's bubble (authored label is a
+	 * localization key we render blank, so draw the name ourselves) */
+	if (m->state == 1 && m->mb_caption[m->mb_focus]) {
+		static const char *cap[5] = { "Display", "Options", "Language",
+			"Copyright", "Manual" };
+		float w[6], cx, cy;
+		snes_node_world(m->mb_caption[m->mb_focus], w);
+		cx = SNES_VW / 2.0f + w[2];
+		cy = SNES_VH / 2.0f - w[5];
+		snes_draw_text(t, m->pk, m->f_s, cx, cy + 18, 0.9f, 0xFF202020u, 1,
+			       cap[m->mb_focus]);
 	}
 
 	/* an opened settings overlay renders on top, dimming the home behind it */
