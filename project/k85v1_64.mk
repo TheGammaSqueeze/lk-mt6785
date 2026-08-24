@@ -63,6 +63,16 @@ AYANEO_AUDIO_TRACE ?= no
 ifeq ($(AYANEO_AUDIO_TRACE),yes)
 DEFINES += AYANEO_AUDIO_TRACE
 endif
+# Experimental: after the boot animation, run the SNES/SFC Classic home menu in
+# LK instead of booting the kernel (native C, assets in boot_b). Mutually
+# exclusive with the GBC/GBA emulator builds; reuses the same display/boot hooks.
+# Enable with `AYANEO_SNES=yes`.
+AYANEO_SNES ?= no
+ifeq ($(AYANEO_SNES),yes)
+DEFINES += AYANEO_SNES
+AYANEO_GBC := no
+endif
+
 # Experimental: after the boot animation, run a GBC emulator (gambatte) in LK
 # instead of booting the kernel. The core archive (emu/gbc/libgbc.a) must be
 # prebuilt via emu/gbc/build_core.sh.

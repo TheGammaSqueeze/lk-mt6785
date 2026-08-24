@@ -792,7 +792,7 @@ void platform_init(void)
 	PROFILING_END(); /* boot mode select */
 #endif /*MACH_FPGA */
 
-#ifndef AYANEO_GBC
+#if !defined(AYANEO_GBC) && !defined(AYANEO_SNES)
 	/* AVB-verify the boot logo. Skipped for the GBC build: we replace the logo
 	 * with our own video animation and never boot the kernel, so this security
 	 * check is unnecessary - and it mallocs a buffer up to LK_LOGO_MAX_SIZE (16 MB)
@@ -932,7 +932,7 @@ void platform_init(void)
 
 #ifdef MTK_KERNEL_POWER_OFF_CHARGING
 	if (kernel_charging_boot() == 1) {
-#ifdef AYANEO_GBC
+#if defined(AYANEO_GBC) || defined(AYANEO_SNES)
 		/* Offline charging: the charger woke the SoC (unavoidable). Show OUR
 		 * charging screen here at platform init (this is where mt6785 handles
 		 * KPOC; it never reaches the emulator boot hook). It blocks until the

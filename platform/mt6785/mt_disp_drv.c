@@ -791,7 +791,7 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 	primary_display_trigger(TRUE);
 }
 
-#ifdef AYANEO_GBC
+#if defined(AYANEO_GBC) || defined(AYANEO_SNES)
 #include <video_font.h>		/* mtk_vdo_fntdata: 8x16 ASCII font */
 
 /*
@@ -918,6 +918,7 @@ void ayaneo_canvas_present(void)
 	s_fb_flip ^= 1;
 }
 
+#ifdef AYANEO_GBC   /* GBC-specific overlay/OSD/show_frame (uses GBC geometry + menu) */
 /*
  * Draw (or clear) the OSD slider in the bottom letterbox border of the current
  * back buffer. The border band is only ever touched by the OSD, so when the OSD
@@ -975,6 +976,7 @@ extern void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 extern int gbc_benchmark_on(void);		/* gbc_driver.c */
 extern int gbc_get_fps(void);
 extern int ayaneo_wait_frame_done(void);	/* primary_display.c */
+#endif /* AYANEO_GBC osd/menu externs */
 
 /* Clear both scan-out buffers, disable the boot-menu layer so only our FB_LAYER
  * shows, and bring the backlight up at the persisted level. Idempotent; shared
@@ -995,6 +997,7 @@ void ayaneo_display_prepare(void)
 	ayaneo_apply_persisted_brightness();
 }
 
+#ifdef AYANEO_GBC   /* GBC frame blit (GBC geometry + overlay menu) */
 void ayaneo_gbc_show_frame(const unsigned short *pix)
 {
 	static int inited = 0;
@@ -1063,7 +1066,8 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 	ayaneo_present(dpa, W, H, pitch_w);
 	s_fb_flip ^= 1;
 }
-#endif /* AYANEO_GBC */
+#endif /* AYANEO_GBC show_frame */
+#endif /* AYANEO_GBC || AYANEO_SNES display block */
 
 /*
  * Boot animation player. Reads a compressed frame blob from the "logo"
@@ -1391,7 +1395,7 @@ void video_rainbow_boot_stop(void)
 	while (!s_rainbow_exited && guard++ < 500)
 		thread_sleep(2);
 
-#if defined(AYANEO_BOOT_AUDIO) && !defined(AYANEO_GBC)
+#if defined(AYANEO_BOOT_AUDIO) && !defined(AYANEO_GBC) && !defined(AYANEO_SNES)
 	/* make sure the AFE/codec is quiet before the kernel re-inits audio.
 	 * In the GBC build there is no kernel: let the chime play to completion
 	 * (the emulator waits for it before bringing up its own audio). */

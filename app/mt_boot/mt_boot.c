@@ -731,11 +731,11 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	video_rainbow_boot_stop();
 #endif
 
-#ifdef AYANEO_GBC
+#if defined(AYANEO_GBC) || defined(AYANEO_SNES)
 	/*
-	 * Experiment: instead of booting the kernel, hand the panel to the GBC
-	 * emulator and run it forever. The boot animation has already played and
-	 * been stopped above.
+	 * Experiment: instead of booting the kernel, hand the panel to the in-LK app
+	 * (GBC emulator or SNES menu) and run it forever. The boot animation has
+	 * already played and been stopped above.
 	 */
 	{
 		/* Run the emulator instead of the kernel. (Charger-insert offline
