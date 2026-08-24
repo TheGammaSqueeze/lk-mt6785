@@ -567,10 +567,20 @@ def main():
         common = fj.get("common", {})
         pages = fj.get("pages", [])
         page_idx = 0
-        if pages:
-            pi = add_image(os.path.join(os.path.dirname(jp), pages[0]), False)
+        # the json's pages[] often names a non-existent *_eur.fnt_0.png; the real
+        # page is "<jsonbase>_0.png". Try that first, then pages[], then a glob.
+        base = jp[:-5] if jp.endswith(".json") else jp
+        cands = [base + "_0.png"] + [os.path.join(os.path.dirname(jp), p) for p in pages]
+        pngpath = next((c for c in cands if c and os.path.exists(c)), None)
+        if pngpath is None:
+            g = glob.glob(base + "*_0.png") or glob.glob(os.path.join(os.path.dirname(jp), "*_0.png"))
+            pngpath = g[0] if g else None
+        if pngpath:
+            pi = add_image(pngpath, False)
             if pi is not None:
                 page_idx = pi
+        else:
+            print("  !! font page not found for %s" % r["path"])
         glyphs = []
         for cp, g in fj.get("chars", {}).items():
             glyphs.append((int(cp), int(g["x"]), int(g["y"]), int(g["w"]),
@@ -580,7 +590,11 @@ def main():
         glyphs_off = blob.tell()
         for (cp, x, y, w2, h2, xo, yo, xadv) in glyphs:
             blob.write(struct.pack("<IHHHHhhhh", cp, x, y, w2, h2, xo, yo, xadv, 0))
-        res_map[r["id"]] = (RES_FONT, len(font_entries))
+        idx = len(font_entries)
+        res_map[r["id"]] = (RES_FONT, idx)
+        # also register the font under its basename (e.g. "title.font") so the
+        # engine can look fonts up by name without knowing the GUID.
+        res_map[os.path.basename(r["path"])] = (RES_FONT, idx)
         font_entries.append((page_idx, int(common.get("lineHeight", 0)),
                              int(common.get("base", 0)), len(glyphs), glyphs_off))
 

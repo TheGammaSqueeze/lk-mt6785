@@ -260,6 +260,51 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 	}
 }
 
+/* Public: draw a string with a pack font at a screen position (x,y = pen origin;
+ * align 0 left / 1 centre / 2 right about x). argb = 0xAARRGGBB. */
+void snes_draw_text(snes_target *t, const snes_pack *pk, uint32_t font_hash,
+		    float x, float y, float scale, uint32_t argb, int align,
+		    const char *text)
+{
+	const snes_font_entry *fe = snes_res_font(pk, font_hash);
+	const snes_glyph *glyphs;
+	const snes_img_entry *page;
+	const uint8_t *pgpix;
+	const char *p;
+	float col[4], penx, wpx = 0;
+	int pgw, pgh, rgb565;
+	if (!fe || !text) return;
+	page = &pk->img[fe->page];
+	pgpix = snes_img_pixels(pk, page); pgw = page->w; pgh = page->h;
+	rgb565 = (page->flags & SNES_IMG_RGB565) ? 1 : 0;
+	glyphs = (const snes_glyph *)(pk->base + fe->glyphs);
+	col[0] = ((argb >> 16) & 0xff) / 255.0f; col[1] = ((argb >> 8) & 0xff) / 255.0f;
+	col[2] = (argb & 0xff) / 255.0f; col[3] = ((argb >> 24) & 0xff) / 255.0f;
+	for (p = text; *p; p++) {
+		const snes_glyph *g = glyph_find(fe, glyphs, (uint8_t)*p);
+		wpx += g ? g->xadv : 8;
+	}
+	penx = x;
+	if (align == 1) penx -= wpx * scale / 2.0f;
+	else if (align == 2) penx -= wpx * scale;
+	for (p = text; *p; p++) {
+		const snes_glyph *g = glyph_find(fe, glyphs, (uint8_t)*p);
+		if (!g) { penx += 8 * scale; continue; }
+		if (g->w > 0) {
+			snes_draw d; float gm[6];
+			d.pix = pgpix; d.rgb565 = rgb565; d.img_w = pgw; d.img_h = pgh;
+			d.sx = g->x; d.sy = g->y; d.sw = g->w; d.sh = g->h;
+			d.dw = g->w * scale; d.dh = g->h * scale; d.px = 0; d.py = 0;
+			d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+			d.tr = col[0]; d.tg = col[1]; d.tb = col[2]; d.ta = col[3];
+			gm[0] = 1; gm[1] = 0; gm[2] = 0; gm[3] = 1;
+			gm[4] = penx + g->xo * scale; gm[5] = y + g->yo * scale;
+			blit(t, gm, &d);
+		}
+		penx += g->xadv * scale;
+	}
+}
+
 /* ---- collect + z-sort (mirrors renderer.js collect/drawScene) ---- */
 typedef struct { const snes_comp *comp; snes_rnode *node; float m[6]; float col[4];
 		 int layer; int seq; } snes_dr;

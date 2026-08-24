@@ -1,0 +1,58 @@
+/*
+ * Portable SNES home-menu logic + drawing (no LK dependencies), driven by the
+ * LK driver on-device and by a host render harness for local validation against
+ * the web app. The caller provides work memory (rnode pools + wallpaper cache):
+ * fixed DRAM on LK, malloc on the host.
+ */
+#ifndef SNES_MENU_H
+#define SNES_MENU_H
+
+#include "snes_render.h"
+
+typedef struct {
+	int left, right, up, down, a, b, start, select;   /* level: 1 = pressed */
+} snes_input;
+
+typedef struct {
+	const snes_pack *pk;
+	snes_scene home, bg;
+	snes_rnode *wall;
+	uint32_t *wp;                 /* wallpaper cache, WP_W*WP_H u32 (caller-provided) */
+	int wp_ready;
+	float scroll;
+
+	int focus;                    /* selected game index */
+	float car_x;                  /* current carousel x (for smooth scroll) */
+	float car_target;             /* target carousel x */
+
+	/* input edge state */
+	int pl, pr, pu, pd, pa, pb;
+
+	/* sound event queue (res-hash of sounds to play; driver drains it) */
+	uint32_t sndq[8];
+	int sndh, sndt;
+
+	/* cached font-name hashes */
+	uint32_t f_title, f_l, f_s;
+	/* cached sfx/bgm res hashes (0 if absent) */
+	uint32_t sfx_move, sfx_decide, sfx_cancel, bgm;
+} snes_menu;
+
+/* wallpaper cache dims (caller allocates WP_CACHE_W*WP_CACHE_H u32). */
+#define WP_CACHE_W 1536
+#define WP_CACHE_H 720
+
+/* Initialise. home_pool/bg_pool are snes_rnode arrays of the given capacities;
+ * wp is a WP_CACHE_W*WP_CACHE_H u32 buffer. Returns 0 on success. */
+int snes_menu_init(snes_menu *m, const snes_pack *pk,
+		   snes_rnode *home_pool, unsigned home_cap,
+		   snes_rnode *bg_pool, unsigned bg_cap,
+		   uint32_t *wp);
+
+void snes_menu_update(snes_menu *m, const snes_input *in, float dt);
+void snes_menu_render(snes_menu *m, snes_target *t);
+
+/* Drain one queued sound (res hash) to play, or 0 if none. */
+uint32_t snes_menu_next_sound(snes_menu *m);
+
+#endif
