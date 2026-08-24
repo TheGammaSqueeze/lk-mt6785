@@ -26,6 +26,12 @@ typedef struct {
 	int state;                    /* 0 home, 1 menubar, 2 submenu */
 	int mb_focus;                 /* selected menubar icon 0..4 */
 	int open;                     /* open overlay index, -1 if none */
+
+	/* roster sort: order[] indirects the carousel/filmstrip into the game table */
+	unsigned short order[128];
+	int ngames;
+	int sort_rule;                /* 0 title, 1 publisher, 2 players, 3 release */
+	float sort_label_t;           /* seconds remaining to show the sort-name label */
 	uint32_t *wp;                 /* wallpaper cache, WP_W*WP_H u32 (caller-provided) */
 	int wp_ready;
 	float scroll;
@@ -35,7 +41,7 @@ typedef struct {
 	float car_target;             /* target carousel x */
 
 	/* input edge state */
-	int pl, pr, pu, pd, pa, pb;
+	int pl, pr, pu, pd, pa, pb, ps;
 
 	/* sound event queue (res-hash of sounds to play; driver drains it) */
 	uint32_t sndq[8];

@@ -26,12 +26,49 @@ static snes_rnode *child_named(const snes_pack *p, snes_rnode *par, const char *
 		if (name_eq(p, c, nm)) return c;
 	return 0;
 }
-static const snes_game_rec *game(const snes_pack *p, int i)
+static const snes_game_rec *game_raw(const snes_pack *p, int idx)
 {
-	unsigned n = p->hdr->game_count;
-	if (!n) return 0;
-	i = ((i % (int)n) + (int)n) % (int)n;
-	return (const snes_game_rec *)(p->base + p->game_offs[i]);
+	return (const snes_game_rec *)(p->base + p->game_offs[idx]);
+}
+/* game at carousel slot i, honouring the current sort order */
+static const snes_game_rec *game(const snes_menu *m, int i)
+{
+	int n = m->ngames;
+	if (n <= 0) return 0;
+	i = ((i % n) + n) % n;
+	return game_raw(m->pk, m->order[i]);
+}
+static int str_cmp(const snes_pack *p, uint32_t a, uint32_t b)
+{
+	const char *x = snes_str(p, a), *y = snes_str(p, b);
+	if (!x) x = ""; if (!y) y = "";
+	while (*x && *x == *y) { x++; y++; }
+	return (int)(unsigned char)*x - (int)(unsigned char)*y;
+}
+/* order the roster by the current sort rule (stable insertion sort) */
+static void apply_sort(snes_menu *m)
+{
+	const snes_pack *p = m->pk;
+	int i, j;
+	for (i = 1; i < m->ngames; i++) {
+		unsigned short key = m->order[i];
+		const snes_game_rec *gk = game_raw(p, key);
+		j = i - 1;
+		while (j >= 0) {
+			const snes_game_rec *gj = game_raw(p, m->order[j]);
+			int c;
+			switch (m->sort_rule) {
+			case 1:  c = str_cmp(p, gj->sort_publisher, gk->sort_publisher); break;
+			case 2:  c = (int)gk->players - (int)gj->players; break;  /* most first */
+			case 3:  c = (int)gj->release - (int)gk->release; break;  /* oldest first */
+			default: c = str_cmp(p, gj->sort_title, gk->sort_title); break;
+			}
+			if (c <= 0) break;
+			m->order[j + 1] = m->order[j];
+			j--;
+		}
+		m->order[j + 1] = key;
+	}
 }
 static void push_snd(snes_menu *m, uint32_t h)
 {
@@ -113,7 +150,7 @@ static void draw_wp(snes_menu *m, snes_target *t, int scroll_px)
 
 static void draw_card(snes_menu *m, snes_target *t, int gi, int focus)
 {
-	const snes_game_rec *g = game(m->pk, gi);
+	const snes_game_rec *g = game(m, gi);
 	float cx = 640.0f + (gi - m->car_x) * CAR_HGAP, cy = CAR_CY;
 	int foc = (gi == focus);
 	float bw = foc ? 236.0f : 200.0f;
@@ -129,7 +166,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, int focus)
 static void draw_carousel(snes_menu *m, snes_target *t)
 {
 	int c = (int)(m->car_x + (m->car_x >= 0 ? 0.5f : -0.5f)), d;
-	if ((int)m->pk->hdr->game_count <= 0) return;
+	if (m->ngames <= 0) return;
 	for (d = 5; d >= 1; d--) { draw_card(m, t, c - d, m->focus); draw_card(m, t, c + d, m->focus); }
 	draw_card(m, t, m->focus, m->focus);
 }
@@ -141,7 +178,7 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 #define FS_H     34.0f
 static void draw_filmstrip(snes_menu *m, snes_target *t)
 {
-	int n = (int)m->pk->hdr->game_count, d;
+	int n = m->ngames, d;
 	if (n <= 0) return;
 	for (d = -9; d <= 9; d++) {
 		int gi = m->focus + d;
@@ -152,7 +189,7 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 		float w = foc ? FS_W + 8 : FS_W, h = foc ? FS_H + 6 : FS_H;
 		if (gi < 0 || gi >= n) continue;
 		if (cx < -40 || cx > SNES_VW + 40) continue;
-		g = game(m->pk, gi);
+		g = game(m, gi);
 		im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
 		if (foc) snes_fill_quad(t, cx, cy, w + 6, h + 6, 0.20f, 0.55f, 1.0f, 1.0f);
 		snes_fill_quad(t, cx, cy, w + 2, h + 2, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -172,7 +209,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	/* zero the struct fields we rely on */
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
-	m->pl = m->pr = m->pu = m->pd = m->pa = m->pb = 0;
+	m->pl = m->pr = m->pu = m->pd = m->pa = m->pb = m->ps = 0;
 	m->sndh = m->sndt = 0; m->wall = 0;
 
 	(void)i;
@@ -238,6 +275,12 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->overlay[3] = snes_scene_find(&m->home, "copyright");
 	m->overlay[4] = snes_scene_find(&m->home, "manual");
 	m->state = 0; m->mb_focus = 0; m->open = -1;
+	/* roster order (title sort by default) */
+	m->ngames = (int)pk->hdr->game_count;
+	if (m->ngames > 128) m->ngames = 128;
+	for (i = 0; i < (unsigned)m->ngames; i++) m->order[i] = (unsigned short)i;
+	m->sort_rule = 0; m->sort_label_t = 0;
+	apply_sort(m);
 	m->f_title = snes_hash("title.font");
 	m->f_l = snes_hash("l.font");
 	m->f_s = snes_hash("s.font");
@@ -262,6 +305,19 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		if (er) { m->focus++; push_snd(m, m->sfx_move); }
 		if (eu) { m->state = 1; push_snd(m, m->sfx_up); }
 		if (ea) push_snd(m, m->sfx_decide);    /* launch stubbed */
+		if (in->select && !m->ps) {            /* cycle roster sort */
+			const snes_game_rec *cur = game(m, m->focus);
+			m->sort_rule = (m->sort_rule + 1) % 4;
+			apply_sort(m);
+			/* keep the focused game selected after the reorder */
+			if (cur) {
+				int k;
+				for (k = 0; k < m->ngames; k++)
+					if (game(m, k) == cur) { m->focus = k; m->car_x = k; break; }
+			}
+			m->sort_label_t = 1.5f;
+			push_snd(m, m->sfx_decide);
+		}
 	} else if (m->state == 1) {                /* ---- menubar row ---- */
 		if (el) { m->mb_focus = (m->mb_focus + 4) % 5; push_snd(m, m->sfx_move); }
 		if (er) { m->mb_focus = (m->mb_focus + 1) % 5; push_snd(m, m->sfx_move); }
@@ -283,7 +339,8 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		}
 	}
 	m->pl = in->left; m->pr = in->right; m->pu = in->up; m->pd = in->down;
-	m->pa = in->a; m->pb = in->b;
+	m->pa = in->a; m->pb = in->b; m->ps = in->select;
+	if (m->sort_label_t > 0) m->sort_label_t -= dt;
 
 	/* show the cyan active highlight only on the focused menubar icon */
 	{
@@ -314,10 +371,19 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	draw_filmstrip(m, t);
 
 	/* focused game name drawn into the authored title frame (SNES title font) */
-	g = game(m->pk, m->focus);
+	g = game(m, m->focus);
 	if (g)
 		snes_draw_text(t, m->pk, m->f_title, 640, 148, 0.85f, 0xFF202020u, 1,
 			       snes_str(m->pk, g->name));
+
+	/* sort-rule label, briefly shown after a Select press */
+	if (m->sort_label_t > 0) {
+		static const char *nm[4] = { "Sort: Title", "Sort: Publisher",
+			"Sort: Players", "Sort: Release" };
+		snes_fill_quad(t, 640, 210, 360, 40, 0.06f, 0.08f, 0.10f, 0.85f);
+		snes_draw_text(t, m->pk, m->f_s, 640, 202, 1.0f, 0xFFE0E8F0u, 1,
+			       nm[m->sort_rule & 3]);
+	}
 
 	/* an opened settings overlay renders on top, dimming the home behind it */
 	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
