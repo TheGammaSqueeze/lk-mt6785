@@ -216,6 +216,12 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 	const uint8_t *pgpix;
 	const char *text = snes_str(pk, lb->text);
 	float S[6], scale, penx, wpx = 0;
+	/* localise: if the label carries an @key, resolve it in the active locale */
+	if (lb->text_key) {
+		const char *key = snes_str(pk, lb->text_key);
+		if (key && key[0] == '@') key++;
+		text = snes_text_locale(pk, pk->locale, key);
+	}
 	const char *p;
 	int pgw, pgh, rgb565;
 	if (!fe || !text || !text[0]) return;

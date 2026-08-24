@@ -22,6 +22,7 @@ typedef struct {
 	const snes_str_table *str;
 	const uint32_t  *game_offs;
 	const snes_init_block *init;
+	int locale;                 /* active locale index into str[] (default usa_en) */
 } snes_pack;
 
 /* Bind the accessor to a decompressed blob. Returns 0 ok, <0 on bad magic/version. */

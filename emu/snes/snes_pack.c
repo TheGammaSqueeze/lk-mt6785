@@ -26,6 +26,14 @@ int snes_pack_open(snes_pack *p, const void *blob, unsigned len)
 	p->str     = (const snes_str_table *)(p->base + h->str_off);
 	p->game_offs = (const uint32_t *)(p->base + h->game_off);
 	p->init    = (const snes_init_block *)(p->base + h->init_off);
+	/* pick the active locale (init default, e.g. usa_en); fall back to index 0 */
+	p->locale = 0;
+	{
+		const char *want = snes_str(p, p->init->locale);
+		uint32_t i;
+		for (i = 0; i < h->str_count; i++)
+			if (streq(snes_str(p, p->str[i].locale), want)) { p->locale = (int)i; break; }
+	}
 	return 0;
 }
 
