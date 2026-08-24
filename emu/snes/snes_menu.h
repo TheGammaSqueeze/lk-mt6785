@@ -19,6 +19,13 @@ typedef struct {
 	snes_rnode *wall;
 	snes_rnode *homemenu;         /* home-state subtree in the home scene */
 	snes_rnode *menubar;          /* menubar_upper subtree in the home scene */
+	snes_rnode *mb_btn[5];        /* the 5 menubar icon buttons (cm1..cm5) */
+	snes_rnode *mb_active[5];      /* per-button cyan active-highlight sprite node */
+	snes_rnode *overlay[5];       /* settings overlays opened per icon */
+
+	int state;                    /* 0 home, 1 menubar, 2 submenu */
+	int mb_focus;                 /* selected menubar icon 0..4 */
+	int open;                     /* open overlay index, -1 if none */
 	uint32_t *wp;                 /* wallpaper cache, WP_W*WP_H u32 (caller-provided) */
 	int wp_ready;
 	float scroll;

@@ -11,6 +11,21 @@ static const snes_scene_entry *scene_by_name(const snes_pack *p, const char *wan
 	}
 	return 0;
 }
+static int name_eq(const snes_pack *p, const snes_rnode *n, const char *want)
+{
+	const char *a = snes_str(p, n->def->name), *b = want;
+	if (!a) return 0;
+	while (*a && *a == *b) { a++; b++; }
+	return *a == *b;
+}
+static snes_rnode *child_named(const snes_pack *p, snes_rnode *par, const char *nm)
+{
+	snes_rnode *c;
+	if (!par) return 0;
+	for (c = par->child; c; c = c->sib)
+		if (name_eq(p, c, nm)) return c;
+	return 0;
+}
 static const snes_game_rec *game(const snes_pack *p, int i)
 {
 	unsigned n = p->hdr->game_count;
@@ -198,6 +213,31 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	}
 	m->homemenu = snes_scene_find(&m->home, "homemenu");
 	m->menubar = snes_scene_find(&m->home, "menubar_upper");
+	/* the real 5-icon row is menubar_upper -> elements -> cm1..cm5 (comps=2);
+	 * snes_scene_find would return the hvc_position duplicates, so navigate. */
+	{
+		static const char *cm[5] = { "sys_menubar_cm1", "sys_menubar_cm2",
+			"sys_menubar_cm3", "sys_menubar_cm4", "sys_menubar_cm5" };
+		snes_rnode *els = child_named(pk, m->menubar, "elements");
+		int b;
+		for (b = 0; b < 5; b++) {
+			snes_rnode *btn;
+			m->mb_btn[b] = els ? child_named(pk, els, cm[b]) : 0;
+			btn = child_named(pk, m->mb_btn[b], "button");
+			m->mb_active[b] = child_named(pk, btn, "btn_menubar_active");
+			/* the cyan active highlight is authored-on for every button; the
+			 * real menu shows it only on the focused icon (and only in the
+			 * menubar state), so start them all hidden. */
+			if (m->mb_active[b]) m->mb_active[b]->enabled = 0;
+		}
+	}
+	/* per-icon settings overlays (display, options, language, copyright, manual) */
+	m->overlay[0] = snes_scene_find(&m->home, "option_display");
+	m->overlay[1] = snes_scene_find(&m->home, "option_settings");
+	m->overlay[2] = snes_scene_find(&m->home, "option_languages");
+	m->overlay[3] = snes_scene_find(&m->home, "copyright");
+	m->overlay[4] = snes_scene_find(&m->home, "manual");
+	m->state = 0; m->mb_focus = 0; m->open = -1;
 	m->f_title = snes_hash("title.font");
 	m->f_l = snes_hash("l.font");
 	m->f_s = snes_hash("s.font");
@@ -213,13 +253,45 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 {
 	float k;
-	/* edge-triggered navigation */
-	if (in->left && !m->pl) { m->focus--; push_snd(m, m->sfx_move); }
-	if (in->right && !m->pr) { m->focus++; push_snd(m, m->sfx_move); }
-	if (in->a && !m->pa) push_snd(m, m->sfx_decide);
-	if (in->b && !m->pb) push_snd(m, m->sfx_cancel);
+	int el = in->left && !m->pl, er = in->right && !m->pr;
+	int eu = in->up && !m->pu, ed = in->down && !m->pd;
+	int ea = in->a && !m->pa, eb = in->b && !m->pb;
+
+	if (m->state == 0) {                       /* ---- home carousel ---- */
+		if (el) { m->focus--; push_snd(m, m->sfx_move); }
+		if (er) { m->focus++; push_snd(m, m->sfx_move); }
+		if (eu) { m->state = 1; push_snd(m, m->sfx_up); }
+		if (ea) push_snd(m, m->sfx_decide);    /* launch stubbed */
+	} else if (m->state == 1) {                /* ---- menubar row ---- */
+		if (el) { m->mb_focus = (m->mb_focus + 4) % 5; push_snd(m, m->sfx_move); }
+		if (er) { m->mb_focus = (m->mb_focus + 1) % 5; push_snd(m, m->sfx_move); }
+		if (ed || eb) { m->state = 0; push_snd(m, m->sfx_cancel); }
+		if (ea && m->overlay[m->mb_focus]) {
+			m->open = m->mb_focus;
+			m->overlay[m->open]->enabled = 1;
+			/* authored at the hidden (off-top) position; bring it on-screen to
+			 * its shown position (centered). Lua animates this slide-in. */
+			m->overlay[m->open]->tf[2] = 0;
+			m->overlay[m->open]->tf[5] = 0;
+			m->state = 2; push_snd(m, m->sfx_decide);
+		}
+	} else {                                   /* ---- open submenu ---- */
+		if (eb) {
+			if (m->open >= 0 && m->overlay[m->open])
+				m->overlay[m->open]->enabled = 0;
+			m->open = -1; m->state = 1; push_snd(m, m->sfx_cancel);
+		}
+	}
 	m->pl = in->left; m->pr = in->right; m->pu = in->up; m->pd = in->down;
 	m->pa = in->a; m->pb = in->b;
+
+	/* show the cyan active highlight only on the focused menubar icon */
+	{
+		int b;
+		for (b = 0; b < 5; b++)
+			if (m->mb_active[b])
+				m->mb_active[b]->enabled = (m->state >= 1 && b == m->mb_focus);
+	}
 
 	/* smooth carousel scroll toward the focused index */
 	k = dt * 12.0f; if (k > 1.0f) k = 1.0f;
@@ -246,4 +318,10 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	if (g)
 		snes_draw_text(t, m->pk, m->f_title, 640, 148, 0.85f, 0xFF202020u, 1,
 			       snes_str(m->pk, g->name));
+
+	/* an opened settings overlay renders on top, dimming the home behind it */
+	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
+		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 0.55f);
+		snes_render_node(t, &m->home, m->overlay[m->open]);
+	}
 }
