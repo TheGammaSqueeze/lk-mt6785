@@ -49,7 +49,7 @@ void snes_audio_mix(snes_mixer *mx, int16_t *out, unsigned frames)
 		int acc = 0;
 		for (i = 0; i < SNES_AUD_VOICES; i++) {
 			snes_voice *v = &mx->v[i];
-			uint32_t idx;
+			uint64_t idx;
 			int s;
 			if (!v->active) continue;
 			idx = v->phase >> 16;
@@ -60,7 +60,7 @@ void snes_audio_mix(snes_mixer *mx, int16_t *out, unsigned frames)
 			idx = v->phase >> 16;
 			if (v->loop) {
 				if (idx >= v->loop_end)
-					v->phase -= (uint32_t)(v->loop_end - v->loop_start) << 16;
+					v->phase -= (uint64_t)(v->loop_end - v->loop_start) << 16;
 			} else if (idx >= v->len) {
 				v->active = 0;
 			}

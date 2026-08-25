@@ -18,7 +18,8 @@ typedef struct {
 	uint32_t len;           /* total frames */
 	uint32_t loop_start, loop_end;   /* frames; loop when loop_end > loop_start */
 	uint32_t step;          /* 16.16 phase increment (src_rate/48000) */
-	uint32_t phase;         /* 16.16 position into pcm */
+	uint64_t phase;         /* 16.16 position into pcm (64-bit: BGM is >2^16 frames,
+				 * a 32-bit phase overflowed and restarted the BGM ~2.7s in) */
 	int      loop;
 	int      active;
 	int      gain;          /* 0..256 */
