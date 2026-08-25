@@ -523,7 +523,7 @@ static void draw_copyright_list(snes_menu *m, snes_target *t)
 	uint32_t font = snes_hash("copyright.fnt"), seen[128];
 	unsigned short ord[128];
 	int n = m->ngames, i, j, ns = 0;
-	float y = 278.0f - m->open_y;   /* follow the panel slide-in */
+	float y = 276.0f - m->open_y;   /* follow the panel slide-in (2px up to match web) */
 	if (!txt || n <= 0) return;
 	for (i = 0; i < n; i++) ord[i] = (unsigned short)i;
 	for (i = 1; i < n; i++) {                       /* sort (publisher, release, title) */
