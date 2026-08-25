@@ -500,8 +500,9 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		for (it = el ? el->child : 0; it; it = it->sib) {
 			snes_rnode *cur = child_named(pk, it, "cursor");
 			snes_rnode *ca2 = child_named(pk, it, "cursor_area");
-			snes_rnode *lbl = child_named(pk, it, "Label");
+			snes_rnode *btn = child_named(pk, it, "button");
 			if (cur) cur->enabled = 0;          /* hide focus arrow */
+			if (btn) btn->enabled = 0;          /* hide authored dot (draw our own) */
 			/* selected = current locale's language; default usa_en = language01
 			 * (label key @sys_language_USA_en). Show its blue box. */
 			if (ca2 && name_eq(pk, it, "language01")) ca2->enabled = 1;
@@ -703,6 +704,21 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
 		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
 		snes_render_node(t, &m->home, m->overlay[m->open]);
+		/* radio dots: draw radiobtn_off (empty) / radiobtn_on (selected) at each
+		 * language item's authored dot position (the authored dot is disabled) */
+		if (m->open == 2 && m->card_act) {
+			snes_rnode *el = child_named(m->pk, m->overlay[2], "elements"), *it;
+			for (it = el ? el->child : 0; it; it = it->sib) {
+				snes_rnode *btn = child_named(m->pk, it, "button");
+				float w[6];
+				int on = name_eq(m->pk, it, "language01");
+				snes_spr_entry d = { m->card_act->img, (uint16_t)(on ? 113 : 99),
+						     881, 12, 12, 6, 6 };
+				if (!btn) continue;
+				snes_node_world(btn, w);
+				snes_blit_spr(t, m->pk, &d, 640.0f + w[2], 360.0f - w[5], 2.4f, 1.0f);
+			}
+		}
 	}
 	/* the suspend-point (resume) menu, over a strong black scrim */
 	if (m->state == 3 && m->resume) {
