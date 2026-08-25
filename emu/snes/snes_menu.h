@@ -22,6 +22,7 @@ typedef struct {
 	snes_rnode *mb_btn[5];        /* the 5 menubar icon buttons (cm1..cm5) */
 	snes_rnode *mb_active[5];      /* per-button cyan active-highlight sprite node */
 	float mb_scale[5];             /* per-icon focus scale (animates toward 1.2) */
+	float mb_cell_y0[5];           /* authored button tf[5] (base for focus-down nudge) */
 	snes_rnode *mb_caption[5];     /* per-icon caption bubble (shown when focused) */
 	snes_rnode *overlay[5];       /* settings overlays opened per icon */
 

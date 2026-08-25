@@ -332,6 +332,10 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CAR_REPEAT_DELAY 0.22f  /* first held step delay */
 #define CAR_REPEAT_RATE  0.06f  /* subsequent held-step interval */
 
+/* focused menubar cell drops this many world-y units below its authored row
+ * position at full 1.2x focus (matches the web selection sitting ~5px lower) */
+#define MB_FOCUS_DY 5.0f
+
 /* ---- wallpaper parallax (CloverConst.BG.default, ported at 30fps) ---- */
 #define BG_STEP            0.03333333f /* fixed 30fps parallax timestep */
 #define BG_DEFAULT_SPEED   0.175f      /* DEFAULT_SCROLL_SPEED (anim units/sec) */
@@ -785,6 +789,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			 * menubar state), so start them all hidden. */
 			if (m->mb_active[b]) m->mb_active[b]->enabled = 0;
 			m->mb_scale[b] = 1.0f;
+			m->mb_cell_y0[b] = m->mb_btn[b] ? m->mb_btn[b]->tf[5] : 0.0f;
 		}
 	}
 	/* per-icon settings overlays (display, options, language, copyright, manual) */
@@ -1163,6 +1168,11 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				float tgt = foc ? 1.2f : 1.0f;
 				m->mb_scale[b] += (tgt - m->mb_scale[b]) * ks;
 				m->mb_btn[b]->tf[0] = m->mb_btn[b]->tf[4] = m->mb_scale[b];
+				/* the web drops the focused cell (icon + cyan highlight) ~5 screen
+				 * px vs its authored row position; nudge tf[5] down (world -y) in
+				 * proportion to the focus scale so it tracks the grow-in. */
+				m->mb_btn[b]->tf[5] = m->mb_cell_y0[b]
+					- MB_FOCUS_DY * (m->mb_scale[b] - 1.0f) / 0.2f;
 			}
 		}
 	}
