@@ -586,7 +586,7 @@ static void draw_menubar_caption(snes_menu *m, snes_target *t)
 	const snes_comp_label *cl = 0;
 	const snes_font_entry *fe;
 	const char *txt;
-	float w[6], cx, cy = 117.0f, sc = 1.1f;
+	float w[6], cx, cy = 135.0f, sc = 0.80f;
 	unsigned i;
 	int b = m->mb_focus;
 	if (b < 0 || b >= 5) return;
@@ -623,7 +623,7 @@ static void draw_menubar_caption(snes_menu *m, snes_target *t)
 				if (tw > 150.0f) tsc = tsc * 150.0f / tw;
 				fe = snes_res_font(m->pk, fh);
 				snes_draw_text(t, m->pk, fh, cx,
-					       cy - (fe ? fe->line_height : 31) * tsc * s / 2.0f,
+					       cy - (fe ? fe->line_height : 31) * tsc * s * 0.80f,
 					       tsc * s, 0xFFF4F4F4u, 1, txt);
 			}
 		}
