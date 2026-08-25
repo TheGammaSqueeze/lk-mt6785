@@ -324,6 +324,11 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define OPEN_SLIDE 688.0f   /* submenu panel slide-in distance (world up, screen px; frame-matched to the web open slide) */
 #define CLOSE_DUR  0.22f    /* submenu close slide-up duration (cubic ease-in) */
 #define RESUME_SLIDE 688.0f /* resume panel slide-up-from-bottom distance (screen px) */
+/* opening the Suspend Point List raises the home content behind it
+ * (resumemenu_position position_changer, markers gametitle/cardlist): the game
+ * title lifts ~52px and the carousel ~69px. */
+#define RESUME_TITLE_DY 52.0f
+#define RESUME_CARD_DY  69.0f
 #define CAP_DELAY  0.25f    /* MENUBAR_CAPTION_DELAY: wait before the caption scales in */
 #define CAR_CY     360.0f                   /* cardlist container world y=0 (+card box offset) */
 #define CAR_SC     1.0f                    /* native 252x276 -> ~230px card */
@@ -355,6 +360,17 @@ static int ring_delta(int a, int b, int n)
 	int d = (((b - a) % n) + n) % n;
 	if (d > n / 2) d -= n;
 	return d;
+}
+
+/* How far the Suspend Point List is open (0 = closed/just-starting, 1 = settled).
+ * The home content (title + carousel) is raised in proportion. */
+static float resume_open_frac(snes_menu *m)
+{
+	float ay, o;
+	if (m->state != 3) return 0.0f;
+	ay = m->open_y < 0.0f ? -m->open_y : m->open_y;
+	o = 1.0f - ay / RESUME_SLIDE;
+	return o < 0.0f ? 0.0f : (o > 1.0f ? 1.0f : o);
 }
 
 /* The rounded selection cursor (cursor_rounded / cursor_game_1..9) is a 9-slice
@@ -400,6 +416,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 	const snes_game_rec *g = game(m, gi);
 	float cy = CAR_CY, sc = CAR_SC;
 	const snes_spr_entry *frame = m->card_norm ? m->card_norm : m->card_act;
+	cy -= RESUME_CARD_DY * resume_open_frac(m);   /* raised behind the Suspend List */
 	const snes_img_entry *im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
 	if (cx < -280 || cx > SNES_VW + 280) return;
 	if (frame) {
@@ -1439,8 +1456,9 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	/* focused game name drawn into the authored title frame (SNES title font) */
 	g = game(m, m->focus);
 	if (g)
-		snes_draw_text(t, m->pk, m->f_title, 640, 152, 1.0f, 0xFF4C4C4Cu, 1,
-			       snes_str(m->pk, g->name));
+		snes_draw_text(t, m->pk, m->f_title, 640,
+			       152.0f - RESUME_TITLE_DY * resume_open_frac(m), 1.0f,
+			       0xFF4C4C4Cu, 1, snes_str(m->pk, g->name));
 
 	/* sort-rule label, briefly shown after a Select press */
 	if (m->sort_label_t > 0) {
