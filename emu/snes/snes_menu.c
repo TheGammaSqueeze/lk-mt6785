@@ -872,6 +872,14 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			snes_rnode *c2 = child_named(pk, it, "cursor");
 			if (c2) c2->enabled = 0;
 		}
+		/* aspect-ratio radio: each item authors BOTH radiobtn_off (empty ring)
+		 * and radiobtn_on (filled) enabled; the Lua shows _on only on the
+		 * selected mode. Disable radiobtn_on (atlas 113,881) on every item
+		 * except the selected 4:3 so the others show the empty ring. */
+		for (it = el ? el->child : 0; it; it = it->sib) {
+			if (!name_eq(pk, it, "item_4_3"))
+				disable_spr_comp(pk, &m->home, it, 113, 881);
+		}
 	}
 	/* option_languages resting state: `cursor` is the per-item focus ARROW
 	 * (shown on all -> hide); enable `cursor_area` (blue box) on the selected
