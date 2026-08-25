@@ -293,11 +293,19 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, int foc)
 	if (cx < -280 || cx > SNES_VW + 280) return;
 	if (frame) {
 		/* the `card` sprite is the screen BACKGROUND (blue when active, dark when
-		 * not); draw it first, then the boxart on top, stretched to the screen
-		 * window (228x204) so only the coloured border shows around it. */
-		float bw = m->screen_w * sc, bh = m->screen_h * sc;
+		 * not); draw it first, then the boxart on top. The boxart is scaled
+		 * ASPECT-PRESERVING to fit the screen window, NOT stretched: web uses
+		 * scale = min(screenX/w, screenX/h, 1) (sys_game_card.loadingDone), which
+		 * for a 228x160 thumb is 1 -> native 228x160, centred in the window. */
 		snes_blit_spr(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f);
-		if (im) snes_blit_tex(t, m->pk, im, cx, cy - m->screen_oy * sc, bw, bh, 1.0f);
+		if (im) {
+			float sf = m->screen_w / (float)im->w, sfh = m->screen_w / (float)im->h;
+			float bw, bh;
+			if (sfh < sf) sf = sfh;
+			if (sf > 1.0f) sf = 1.0f;
+			bw = im->w * sf * sc; bh = im->h * sf * sc;
+			snes_blit_tex(t, m->pk, im, cx, cy - m->screen_oy * sc, bw, bh, 1.0f);
+		}
 		/* player-count dots along the bottom-left of the card */
 		if (m->card_dot && g) {
 			int np = g->players > 4 ? 4 : (g->players < 1 ? 1 : g->players), d;
