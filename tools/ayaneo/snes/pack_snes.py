@@ -821,6 +821,19 @@ def main():
         blob.write(rec)
         game_recs.append(rec_off)
 
+    # ---- decorative frame thumbnails (option_display line2 Frame strip) ----
+    # The DecorativeFrames Lua populates the horizontal frame strip at runtime
+    # from frames/<theme>/<theme>_thumbnail.png. Pack each theme's thumbnail keyed
+    # by "frame_thumb_<theme>" so the native render can look it up by name.
+    frames_dir = os.path.join(asset_dir, "frames")
+    if os.path.isdir(frames_dir):
+        for folder in sorted(os.listdir(frames_dir)):
+            tp = os.path.join(frames_dir, folder, folder + "_thumbnail.png")
+            if os.path.exists(tp):
+                fidx = add_image(tp, False)
+                if fidx is not None:
+                    res_map["frame_thumb_" + folder] = (RES_TEXTURE, fidx)
+
     # ---- resource hash table (pow2, open addressed) ----
     n = len(res_map)
     cap = 1

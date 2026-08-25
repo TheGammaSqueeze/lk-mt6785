@@ -676,6 +676,24 @@ static void draw_manual_hints(snes_menu *m, snes_target *t)
 	};
 	draw_overlay_hints(m, t, H, 1, 1180.0f, 74.0f - m->open_y, 26.0f);
 }
+/* Display panel line2 "Frame" strip: the decorative-frame thumbnails. The Lua's
+ * DecorativeFrames lays these out at runtime from frames/<theme>/thumbnail pngs;
+ * the packer stores them keyed "frame_thumb_<theme>". Slot 0 (None, the checkmark
+ * box) is the authored item_0 (repositioned to the first slot in init); we draw
+ * the themed thumbnails at slots 1..3. Native thumb is 172x98, drawn 1:1. */
+static void draw_frame_strip(snes_menu *m, snes_target *t)
+{
+	static const char *themes[3] = {
+		"frame_thumb_01_ambient", "frame_thumb_02_wire", "frame_thumb_03_crystal"
+	};
+	static const float xs[3] = { 541.0f, 737.0f, 933.0f };
+	float cy = 591.0f - m->open_y;
+	int i;
+	for (i = 0; i < 3; i++) {
+		const snes_img_entry *im = snes_res_img(m->pk, snes_hash(themes[i]));
+		if (im) snes_blit_tex(t, m->pk, im, xs[i], cy, 172.0f, 98.0f, 1.0f);
+	}
+}
 /* Display/Options/Language settings-panel header hints: Select / Back / OK.
  * (Same runtime-collapsed authored hud row as the other overlays.) */
 static void draw_option_hints(snes_menu *m, snes_target *t)
@@ -863,6 +881,15 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		snes_rnode *ef = child_named(pk, m->overlay[0], "elements_frame");
 		snes_rnode *fn = ef ? child_named(pk, ef, "focused_node") : 0;
 		snes_rnode *el = child_named(pk, m->overlay[0], "elements");
+		/* Frame strip: the authored None/checkmark box (elements_frame>elements>
+		 * item_0) is centred; the web lays it at the first strip slot (screen
+		 * x~347 = world -293). Move it there; draw_frame_strip adds the themed
+		 * thumbnails at the following slots. */
+		{
+			snes_rnode *fel = ef ? child_named(pk, ef, "elements") : 0;
+			snes_rnode *it0 = fel ? child_named(pk, fel, "item_0") : 0;
+			if (it0) it0->tf[2] = -293.0f;
+		}
 		snes_rnode *sel = el ? child_named(pk, el, "item_4_3") : 0;
 		snes_rnode *ca = sel ? child_named(pk, sel, "cursor_area") : 0, *it;
 		if (fn) fn->enabled = 0;               /* hide Frame-line blue bar */
@@ -1229,6 +1256,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
 		else if (m->open == 4) draw_manual_hints(m, t);
 		else if (m->open >= 0 && m->open <= 2) draw_option_hints(m, t);
+		if (m->open == 0) draw_frame_strip(m, t);
 		if (m->open == 2 && m->card_act) {
 			snes_rnode *el = child_named(m->pk, m->overlay[2], "elements"), *it;
 			for (it = el ? el->child : 0; it; it = it->sib) {
