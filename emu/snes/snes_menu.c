@@ -357,6 +357,40 @@ static int ring_delta(int a, int b, int n)
 	return d;
 }
 
+/* The rounded selection cursor (cursor_rounded / cursor_game_1..9) is a 9-slice
+ * bright-cyan border the engine wraps around the focused card's `cursor` sprite
+ * component (size 246x270). Corners are 32x32 curves; the 4 edges stretch to
+ * w-31 / h-31; the centre (slice 5) is transparent. Ports sys_cursor.moveTo +
+ * the 2.25s R,G colour pulse (blue channel stays 1). */
+static void draw_card_cursor(snes_menu *m, snes_target *t, float cx, float cy,
+			     float alpha, float dim, uint16_t img)
+{
+	/* cursor box (card `cursor` component) and 9-slice geometry */
+	const float w2 = 246.0f, h2 = 270.0f, cw = 32.0f;
+	const float hw = w2 / 2.0f, hh = h2 / 2.0f;         /* corner offsets 123,135 */
+	const float ew = w2 - cw + 1.0f, eh = h2 - cw + 1.0f;   /* stretched edge 215,239 */
+	/* atlas rects: 1 TL,2 top,3 TR,4 left,6 right,7 BL,8 bottom,9 BR (5 = empty) */
+	static const uint16_t sxa[10] = {0,103,131,122,137,156,171,190,137,145};
+	static const uint16_t sya[10] = {0,941,987,895,941,895,941,895,847,809};
+	/* 2.25s colour pulse: R,G ramp 0.75<->1.0 (outExpo-ish, linear ok), B stays 1 */
+	float pt = m->clock - 2.25f * (float)((int)(m->clock / 2.25f));
+	float v = (pt < 0.5f) ? 0.75f + pt / 0.5f * 0.25f
+		: (pt < 1.25f) ? 1.0f
+		: (pt < 2.0f) ? 1.0f - (pt - 1.25f) / 0.75f * 0.25f
+		: 0.75f;
+	float tr = v * dim, tg = v * dim, tb = 1.0f * dim;
+	snes_spr_entry s = { img, 0, 0, 32, 32, 16, 16 };
+	#define CUR_CORNER(i,px,py) do { s.sx = sxa[i]; s.sy = sya[i]; \
+		snes_blit_spr_wh_tint(t, m->pk, &s, cx + (px), cy - (py), cw, cw, alpha, tr, tg, tb); } while (0)
+	#define CUR_EDGE(i,px,py,dw,dh) do { s.sx = sxa[i]; s.sy = sya[i]; \
+		snes_blit_spr_wh_tint(t, m->pk, &s, cx + (px), cy - (py), (dw), (dh), alpha, tr, tg, tb); } while (0)
+	CUR_CORNER(1, -hw,  hh);  CUR_EDGE(2, 0.0f,  hh, ew, cw);  CUR_CORNER(3,  hw,  hh);
+	CUR_EDGE(4, -hw, 0.0f, cw, eh);                            CUR_EDGE(6,  hw, 0.0f, cw, eh);
+	CUR_CORNER(7, -hw, -hh);  CUR_EDGE(8, 0.0f, -hh, ew, cw);  CUR_CORNER(9,  hw, -hh);
+	#undef CUR_CORNER
+	#undef CUR_EDGE
+}
+
 /* blue_a = opacity of the active (blue) card frame on top of the normal (dark)
  * one: 0 = unfocused, 1 = focused, in-between = the 0.2s selection crossfade.
  * dim = RGB tint (1 = normal; the resume menu darkens the non-focused cards to
@@ -418,6 +452,12 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 						   cy + 108.0f, rscale, 1.0f, dim, dim, dim);
 			}
 		}
+		/* rounded selection cursor on the focused card - only while the carousel
+		 * is the active focus (state 0 home); in the menubar/submenu states the
+		 * cursor travels up to the menubar item, so the card shows none. */
+		if (blue_a > 0.003f && m->state == 0)
+			draw_card_cursor(m, t, cx, cy, blue_a > 1.0f ? 1.0f : blue_a,
+					 dim, frame->img);
 	} else {                                 /* fallback: plain framed boxart */
 		int foc = blue_a > 0.5f;
 		float bw = foc ? 236.0f : 200.0f, bh = bw * 160.0f / 228.0f;

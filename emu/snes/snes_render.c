@@ -544,6 +544,23 @@ void snes_blit_spr_tint(snes_target *t, const snes_pack *pk, const snes_spr_entr
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
 }
+void snes_blit_spr_wh_tint(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp,
+			   float cx, float cy, float dw, float dh, float alpha,
+			   float tr, float tg, float tb)
+{
+	snes_draw d; float S[6];
+	if (!sp) return;
+	d.pix = snes_img_pixels(pk, &pk->img[sp->img]);
+	d.rgb565 = (pk->img[sp->img].flags & SNES_IMG_RGB565) ? 1 : 0;
+	d.img_w = pk->img[sp->img].w; d.img_h = pk->img[sp->img].h;
+	d.sx = sp->sx; d.sy = sp->sy; d.sw = sp->sw; d.sh = sp->sh;
+	d.dw = dw; d.dh = dh;
+	d.px = dw / 2.0f; d.py = dh / 2.0f;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.tr = tr; d.tg = tg; d.tb = tb; d.ta = alpha;
+	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
+	blit(t, S, &d);
+}
 void snes_blit_spr_tint_flip(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp,
 			     float cx, float cy, float scale, float alpha,
 			     float tr, float tg, float tb, int hflip, int vflip)
