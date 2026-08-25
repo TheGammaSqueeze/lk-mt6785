@@ -758,7 +758,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		disable_all_named(pk, m->overlay[3], "hud_item3_back");
 	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
-	m->open_y = 0.0f; m->closing = 0; m->close_t = 0.0f; m->close_target = 0.0f; m->cap_t = 0.0f; m->cap_s = 0.0f;
+	m->open_y = 0.0f; m->closing = 0; m->close_t = 0.0f; m->close_target = 0.0f; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f;
 	/* roster order (title sort by default) */
 	m->ngames = (int)pk->hdr->game_count;
 	if (m->ngames > 128) m->ngames = 128;
@@ -846,12 +846,20 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			m->cap_s += (1.0f - m->cap_s) * ke;
 			if (m->cap_s > 0.999f) m->cap_s = 1.0f;
 		}
+		/* the focus highlight (cursor square) scales in fast, no delay (web: the
+		 * cyan box grows to ~full in ~2 frames on focus). */
+		{
+			float kh = 0.8f * (dt / 0.0333f);
+			if (kh > 1.0f) kh = 1.0f;
+			m->hl_s += (1.0f - m->hl_s) * kh;
+			if (m->hl_s > 0.999f) m->hl_s = 1.0f;
+		}
 	}
 
 	if (m->state == 0) {                       /* ---- home carousel ---- */
 		if (el) car_navigate(m, -1);
 		if (er) car_navigate(m, 1);
-		if (eu) { m->state = 1; m->cap_t = 0.0f; m->cap_s = 0.0f; push_snd(m, m->sfx_up); }
+		if (eu) { m->state = 1; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; push_snd(m, m->sfx_up); }
 		if (ed && m->resume) {                 /* Down -> suspend-point menu */
 			m->resume->enabled = 1;
 			/* the panel slides UP from off-bottom into place, easing out (world
@@ -875,8 +883,8 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			push_snd(m, m->sfx_decide);
 		}
 	} else if (m->state == 1) {                /* ---- menubar row ---- */
-		if (el) { m->mb_focus = (m->mb_focus + 4) % 5; m->cap_t = 0.0f; m->cap_s = 0.0f; push_snd(m, m->sfx_move); }
-		if (er) { m->mb_focus = (m->mb_focus + 1) % 5; m->cap_t = 0.0f; m->cap_s = 0.0f; push_snd(m, m->sfx_move); }
+		if (el) { m->mb_focus = (m->mb_focus + 4) % 5; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; push_snd(m, m->sfx_move); }
+		if (er) { m->mb_focus = (m->mb_focus + 1) % 5; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; push_snd(m, m->sfx_move); }
 		if (ed || eb) { m->state = 0; push_snd(m, m->sfx_cancel); }
 		if (ea && m->overlay[m->mb_focus]) {
 			m->open = m->mb_focus;
@@ -924,7 +932,13 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			/* highlight only in the menubar (1) and open-submenu (2) states,
 			 * NOT in the resume menu (3) where the menubar isn't focused */
 			int foc = ((m->state == 1 || m->state == 2) && b == m->mb_focus);
-			if (m->mb_active[b]) m->mb_active[b]->enabled = foc;
+			if (m->mb_active[b]) {
+				m->mb_active[b]->enabled = foc;
+				/* scale the highlight in from 0 on focus (authored scale is 1.0);
+				 * settled + open-submenu states use full scale. */
+				m->mb_active[b]->tf[0] = m->mb_active[b]->tf[4] =
+					(foc && m->state == 1) ? m->hl_s : 1.0f;
+			}
 			if (m->mb_caption[b]) m->mb_caption[b]->enabled = foc;
 			if (m->mb_btn[b]) {
 				float tgt = foc ? 1.2f : 1.0f;

@@ -35,6 +35,7 @@ typedef struct {
 	float close_target;           /* close-slide open_y target (+up submenu / -down resume) */
 	float cap_t;                  /* time in menubar since focus change (caption delay) */
 	float cap_s;                  /* menubar caption scale, eases 0->1 (outExpo, after delay) */
+	float hl_s;                   /* menubar focus highlight (cursor) scale, eases 0->1 fast */
 
 	/* roster sort: order[] indirects the carousel/filmstrip into the game table */
 	unsigned short order[128];
