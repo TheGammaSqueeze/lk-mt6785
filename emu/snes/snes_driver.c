@@ -82,7 +82,7 @@ extern int mt_get_gpio_in(unsigned pin);
 static snes_pack s_pk;
 static snes_menu s_menu;
 static snes_mixer s_mix;
-static short s_mixbuf[8192 * 2];   /* holds a full ring-half refill (~170 ms) */
+static short s_mixbuf[16384 * 2];  /* holds a full ring-half refill (~341 ms) */
 
 /* Resolve a sound res-hash to its PCM + loop info and start a mixer voice. */
 static void play_sound(uint32_t hash, int loop, int is_bgm)
@@ -253,7 +253,7 @@ static int snes_emu_thread(void *arg)
 			/* self-clocked: top the ring up to its target lead over the DMA
 			 * read cursor, so 15-20 fps can't starve it into replaying */
 			need = ayaneo_snes_audio_room();
-			if (need > 8192) need = 8192;
+			if (need > 16384) need = 16384;
 			if (need > 0) {
 				snes_audio_mix(&s_mix, s_mixbuf, (unsigned)need);
 				ayaneo_snes_audio_submit(s_mixbuf, (unsigned)need);

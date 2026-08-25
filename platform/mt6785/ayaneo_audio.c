@@ -822,7 +822,11 @@ void ayaneo_boot_audio_stop(void)
  * continuously. The run loop calls ayaneo_gbc_audio_submit() each frame to keep
  * the ring fed ahead of the DMA read pointer.
  */
-#define GBC_RING_FRAMES		16384u		/* power of two, ~341 ms @48k */
+#define GBC_RING_FRAMES		32768u		/* power of two, ~682 ms @48k (target
+						 * lead = half = ~341 ms, so even a single
+						 * heavy menu-transition render frame cannot
+						 * drain the ring and make the DMA re-read the
+						 * just-played SFX segment) */
 #define GBC_SRC_HZ		2097152u
 #define GBC_DST_HZ		48000u
 
@@ -922,11 +926,12 @@ void ayaneo_snes_audio_submit(const short *stereo, unsigned frames)
 {
 	int vol = s_gbc_vol;
 	unsigned q = (vol >= 100) ? 256u : ((unsigned)vol * 256u / 100u);
-	unsigned i;
+	unsigned i, start;
 
 	if (!s_gbc_audio_on || s_gbc_paused)
 		return;
 
+	start = s_gbc_widx & (GBC_RING_FRAMES - 1);
 	for (i = 0; i < frames; i++) {
 		int l = stereo[i * 2 + 0];
 		int r = stereo[i * 2 + 1];
@@ -937,7 +942,18 @@ void ayaneo_snes_audio_submit(const short *stereo, unsigned frames)
 		s_gbc_ring[idx * 2 + 1] = (short)r;
 		s_gbc_widx++;
 	}
-	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+	/* Clean only the samples we just wrote (may wrap), not the whole ring -
+	 * a per-frame saving that grows with the ring size. */
+	if (frames) {
+		unsigned end = start + frames;
+		if (end <= GBC_RING_FRAMES) {
+			arch_clean_cache_range((addr_t)&s_gbc_ring[start * 2], frames * 4u);
+		} else {
+			unsigned first = GBC_RING_FRAMES - start;
+			arch_clean_cache_range((addr_t)&s_gbc_ring[start * 2], first * 4u);
+			arch_clean_cache_range((addr_t)&s_gbc_ring[0], (frames - first) * 4u);
+		}
+	}
 }
 
 /* Resample `count` stereo samples (each u32 = L|R<<16 at 2097152 Hz) to 48 kHz
