@@ -45,6 +45,12 @@ typedef struct {
 	float car_x;                  /* current carousel x (for smooth scroll) */
 	float car_target;             /* target carousel x */
 
+	/* authored game-card frame (from sys_game_card.scn): the cartridge-display
+	 * sprite drawn around each boxart. active = focused, norm = unfocused. */
+	const snes_spr_entry *card_act, *card_norm, *card_dot, *card_dot_on;
+	float card_fw, card_fh;       /* frame draw size (native*3 = 252x276) */
+	float screen_w, screen_h, screen_oy;  /* boxart area within the card */
+
 	/* input edge state */
 	int pl, pr, pu, pd, pa, pb, ps;
 

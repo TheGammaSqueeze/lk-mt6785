@@ -144,6 +144,57 @@ static void draw_wp(snes_menu *m, snes_target *t, int scroll_px)
 	}
 }
 
+/* Resolve the authored game-card frame sprites + boxart-area geometry from the
+ * sys_game_card.scn prefab, so draw_card can reproduce the cartridge-display
+ * look natively. Sprite entries point into the pack (stable after build). */
+static snes_rnode s_card_pool[192];
+static const snes_spr_entry *node_spr(const snes_pack *p, snes_scene *s, snes_rnode *n)
+{
+	unsigned i;
+	if (!n) return 0;
+	for (i = 0; i < n->def->comp_count; i++) {
+		const snes_comp *c = snes_node_comp(s, n->def, i);
+		if (c->type == COMP_SPRITE) {
+			const snes_comp_visual *cv = (const snes_comp_visual *)c;
+			return snes_res_spr(p, cv->res_hash);
+		}
+	}
+	return 0;
+}
+static snes_rnode *desc(const snes_pack *p, snes_rnode *n, const char *nm)
+{
+	snes_rnode *c, *r;
+	if (!n) return 0;
+	if (name_eq(p, n, nm)) return n;
+	for (c = n->child; c; c = c->sib)
+		if ((r = desc(p, c, nm))) return r;
+	return 0;
+}
+static void resolve_card(snes_menu *m)
+{
+	const snes_scene_entry *ce = scene_by_name(m->pk, "sys_game_card.scn");
+	snes_scene cs;
+	snes_rnode *root, *act, *nac, *scr;
+	m->card_act = m->card_norm = m->card_dot = m->card_dot_on = 0;
+	m->card_fw = 252; m->card_fh = 276;
+	m->screen_w = 228; m->screen_h = 204; m->screen_oy = 24;
+	if (!ce) return;
+	root = snes_scene_build(&cs, m->pk, ce, s_card_pool, 192);
+	if (!root) return;
+	act = desc(m->pk, root, "active");
+	nac = desc(m->pk, root, "non_active");
+	m->card_act  = node_spr(m->pk, &cs, act ? desc(m->pk, act, "card") : 0);
+	m->card_norm = node_spr(m->pk, &cs, nac ? desc(m->pk, nac, "card") : 0);
+	m->card_dot  = node_spr(m->pk, &cs, nac ? desc(m->pk, nac, "icon_1") : 0);
+	scr = desc(m->pk, root, "screen");
+	if (scr && scr->def->comp_count) {
+		const snes_comp *c = snes_node_comp(&cs, scr->def, 0);
+		const snes_comp_visual *cv = (const snes_comp_visual *)c;
+		if (c->flags & SNES_COMP_HAS_SIZE) { m->screen_w = cv->size_w; m->screen_h = cv->size_h; }
+		m->screen_oy = scr->tf[5];
+	}
+}
+
 /* ---- static home-chrome cache ----
  * The homemenu chrome (menubar, title frame, bottom bar, filmstrip frames) is
  * identical every frame in the home state but costs ~4 ms to re-blit (large
@@ -186,15 +237,34 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, int focus)
 	const snes_game_rec *g = game(m, gi);
 	float cx = 640.0f + (gi - m->car_x) * CAR_HGAP, cy = CAR_CY;
 	int foc = (gi == focus);
-	float bw = foc ? 236.0f : 200.0f;
-	float bh = bw * 160.0f / 228.0f;
+	float sc = foc ? 0.92f : 0.78f;         /* focused card larger */
+	const snes_spr_entry *frame = foc ? m->card_act : m->card_norm;
 	const snes_img_entry *im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
-	if (cx < -200 || cx > SNES_VW + 200) return;
-	if (foc) snes_fill_quad(t, cx, cy, bw + 18, bh + 18, 0.20f, 0.55f, 1.0f, 1.0f);
-	else     snes_fill_quad(t, cx, cy, bw + 10, bh + 10, 0.06f, 0.07f, 0.10f, 1.0f);
-	snes_fill_quad(t, cx, cy, bw + 4, bh + 4, 0.0f, 0.0f, 0.0f, 1.0f);
-	if (im) snes_blit_tex(t, m->pk, im, cx, cy, bw, bh, 1.0f);
-	else    snes_fill_quad(t, cx, cy, bw, bh, 0.15f, 0.15f, 0.2f, 1.0f);
+	if (cx < -280 || cx > SNES_VW + 280) return;
+	if (frame) {
+		/* boxart sits in the screen window (drawn under the frame, which has a
+		 * transparent cutout there); native 84x92 frame stretched to 252x276 */
+		float bw = m->screen_w * sc;
+		float bh = im ? bw * (float)im->h / (float)im->w : m->screen_h * sc;
+		if (im) snes_blit_tex(t, m->pk, im, cx, cy - m->screen_oy * sc, bw, bh, 1.0f);
+		snes_blit_spr(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f);
+		/* player-count dots along the bottom-left of the card */
+		if (m->card_dot && g) {
+			int np = g->players > 4 ? 4 : (g->players < 1 ? 1 : g->players), d;
+			for (d = 0; d < 4; d++) {
+				float dx = cx + (-96 + d * 24) * sc, dy = cy + 108 * sc;
+				float a = (d < np) ? 1.0f : 0.3f;
+				snes_blit_spr(t, m->pk, m->card_dot, dx, dy,
+					      (24.0f / (float)m->card_dot->sw) * sc * 0.7f, a);
+			}
+		}
+	} else {                                 /* fallback: plain framed boxart */
+		float bw = foc ? 236.0f : 200.0f, bh = bw * 160.0f / 228.0f;
+		if (foc) snes_fill_quad(t, cx, cy, bw + 18, bh + 18, 0.20f, 0.55f, 1.0f, 1.0f);
+		snes_fill_quad(t, cx, cy, bw + 4, bh + 4, 0.0f, 0.0f, 0.0f, 1.0f);
+		if (im) snes_blit_tex(t, m->pk, im, cx, cy, bw, bh, 1.0f);
+		else    snes_fill_quad(t, cx, cy, bw, bh, 0.15f, 0.15f, 0.2f, 1.0f);
+	}
 }
 static void draw_carousel(snes_menu *m, snes_target *t)
 {
@@ -347,6 +417,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	for (i = 0; i < (unsigned)m->ngames; i++) m->order[i] = (unsigned short)i;
 	m->sort_rule = 0; m->sort_label_t = 0;
 	apply_sort(m);
+	resolve_card(m);
 	/* pre-render the static home chrome into the cache overlay (home state has
 	 * no menubar highlight, so this snapshot is valid for home + resume) */
 	build_chrome(m);
