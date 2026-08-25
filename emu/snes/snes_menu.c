@@ -274,7 +274,7 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CLOSE_DUR  0.20f    /* submenu close slide-up duration (cubic ease-in) */
 #define RESUME_SLIDE 688.0f /* resume panel slide-up-from-bottom distance (screen px) */
 #define CAP_DELAY  0.25f    /* MENUBAR_CAPTION_DELAY: wait before the caption scales in */
-#define CAR_CY     368.0f                   /* cardlist container world y=0 (+card box offset) */
+#define CAR_CY     359.0f                   /* cardlist container world y=0 (+card box offset) */
 #define CAR_SC     0.91f                    /* native 252x276 -> ~230px card */
 
 static int ring_delta(int a, int b, int n)
