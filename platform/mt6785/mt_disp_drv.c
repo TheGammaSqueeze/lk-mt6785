@@ -906,6 +906,7 @@ unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigne
 }
 
 /* flush the whole back buffer and present it, then flip */
+extern int priamry_display_wait_for_vsync(void);
 void ayaneo_canvas_present(void)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
@@ -915,6 +916,13 @@ void ayaneo_canvas_present(void)
 	arch_clean_cache_range((unsigned int)((unsigned char *)fb_addr +
 			       (s_fb_flip ? fb_size : 0)), fb_size);
 	ayaneo_present(dpa, W, H, pitch_w);
+	/* Video mode: the OVL latches the new buffer address at the NEXT vsync, but
+	 * primary_display_trigger returns immediately. Without waiting, the loop
+	 * starts redrawing the OTHER buffer while this one is still being scanned out
+	 * -> tearing + partial-black. Block for one vsync so the swap is live before
+	 * we hand the old buffer back to the renderer. This also paces to the panel
+	 * (clean 60/N fps) instead of racing it. */
+	priamry_display_wait_for_vsync();
 	s_fb_flip ^= 1;
 }
 

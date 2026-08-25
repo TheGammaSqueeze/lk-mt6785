@@ -453,7 +453,11 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		 * for a 228x160 thumb is 1 -> native 228x160, centred in the window. The
 		 * dark frame is the base; the blue frame cross-fades in on top (Tween over
 		 * REPEAT/0.2s, sys_gametitlelist onElementFocus). */
-		snes_blit_spr_tint(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f, dim, dim, dim);
+		/* the blue (active) frame has the same silhouette as the dark one, so
+		 * when it is fully opaque it completely covers the dark frame - skip the
+		 * redundant dark-frame blit for the focused card. */
+		if (!(blue_a >= 0.997f && m->card_act))
+			snes_blit_spr_tint(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f, dim, dim, dim);
 		if (blue_a > 0.003f && m->card_act)
 			snes_blit_spr_tint(t, m->pk, m->card_act, cx, cy,
 				      (m->card_fw / (float)m->card_act->sw) * sc,

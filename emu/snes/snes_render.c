@@ -61,6 +61,9 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	int tr = (int)(d->tr * 256.0f), tg = (int)(d->tg * 256.0f);
 	int tb = (int)(d->tb * 256.0f), ta = (int)(d->ta * 256.0f);
 	int bpp = d->rgb565 ? 3 : 4;
+	/* the common card frame / box art blit is opaque and untinted; skip the four
+	 * per-pixel tint multiplies in that case (source colour passes straight). */
+	int plain = (tr == 256 && tg == 256 && tb == 256 && ta == 256 && !d->additive);
 	int axis = (b == 0.0f && c == 0.0f && a != 0.0f && dd != 0.0f);
 	float inv_a = axis ? 1.0f / a : 0, inv_d = axis ? 1.0f / dd : 0;
 	float du = axis ? inv_a / d->dw : 0;   /* u increment per X (no per-pixel divide) */
@@ -94,12 +97,21 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 				sp = srow + (unsigned)ix * bpp;
 				src_rgba(sp, d->rgb565, &sr, &sg, &sb, &sa);
 				if (sa == 0) continue;
-				sr = (sr * tr) >> 8; sg = (sg * tg) >> 8; sb = (sb * tb) >> 8;
-				af = (sa * ta) >> 8; if (af <= 0) continue; if (af > 255) af = 255;
-				if (af == 255 && !d->additive) {
-					row[X] = 0xff000000u | ((unsigned)sr << 16)
-					       | ((unsigned)sg << 8) | (unsigned)sb;
-					continue;
+				if (plain) {
+					if (sa == 255) {   /* opaque + untinted: straight store */
+						row[X] = 0xff000000u | ((unsigned)sr << 16)
+						       | ((unsigned)sg << 8) | (unsigned)sb;
+						continue;
+					}
+					af = sa;
+				} else {
+					sr = (sr * tr) >> 8; sg = (sg * tg) >> 8; sb = (sb * tb) >> 8;
+					af = (sa * ta) >> 8; if (af <= 0) continue; if (af > 255) af = 255;
+					if (af == 255 && !d->additive) {
+						row[X] = 0xff000000u | ((unsigned)sr << 16)
+						       | ((unsigned)sg << 8) | (unsigned)sb;
+						continue;
+					}
 				}
 				{
 					uint32_t dst = row[X];
