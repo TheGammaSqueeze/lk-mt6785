@@ -1065,6 +1065,35 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 void snes_menu_render(snes_menu *m, snes_target *t)
 {
 	const snes_game_rec *g;
+
+	/* Submenu (state 2) is a full-screen opaque panel over a black scrim: the
+	 * home/wallpaper/carousel behind it are 100% covered, so skip rendering them
+	 * entirely. This was ~the whole frame's cost (the carousel even rendered
+	 * twice), and starving the single-threaded audio ring feed made SFX loop in
+	 * every non-home menu. Just paint the scrim + the panel. */
+	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
+		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
+		m->overlay[m->open]->tf[5] = m->open_y;
+		snes_render_node(t, &m->home, m->overlay[m->open]);
+		if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
+		else if (m->open == 4) draw_manual_hints(m, t);
+		else if (m->open >= 0 && m->open <= 2) draw_option_hints(m, t);
+		if (m->open == 2 && m->card_act) {
+			snes_rnode *el = child_named(m->pk, m->overlay[2], "elements"), *it;
+			for (it = el ? el->child : 0; it; it = it->sib) {
+				snes_rnode *btn = child_named(m->pk, it, "button");
+				float w[6];
+				int on = name_eq(m->pk, it, "language01");
+				snes_spr_entry d = { m->card_act->img, (uint16_t)(on ? 113 : 99),
+						     881, 12, 12, 6, 6 };
+				if (!btn) continue;
+				snes_node_world(btn, w);
+				snes_blit_spr(t, m->pk, &d, 640.0f + w[2], 360.0f - w[5], 2.4f, 1.0f);
+			}
+		}
+		return;
+	}
+
 	draw_wp(m, t, (int)m->scroll);
 	/* authored home chrome. States without a live menubar highlight (home,
 	 * resume) use the cached overlay; menubar/submenu render live. */
@@ -1093,32 +1122,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	}
 
 
-	/* an opened settings overlay renders on top, over a FULLY black background
-	 * (the web settings panels fully hide the home behind them) */
-	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
-		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
-		/* apply the slide-in offset (world +y = screen up); children follow */
-		m->overlay[m->open]->tf[5] = m->open_y;
-		snes_render_node(t, &m->home, m->overlay[m->open]);
-		if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
-		else if (m->open == 4) draw_manual_hints(m, t);
-		else if (m->open >= 0 && m->open <= 2) draw_option_hints(m, t);
-		/* radio dots: draw radiobtn_off (empty) / radiobtn_on (selected) at each
-		 * language item's authored dot position (the authored dot is disabled) */
-		if (m->open == 2 && m->card_act) {
-			snes_rnode *el = child_named(m->pk, m->overlay[2], "elements"), *it;
-			for (it = el ? el->child : 0; it; it = it->sib) {
-				snes_rnode *btn = child_named(m->pk, it, "button");
-				float w[6];
-				int on = name_eq(m->pk, it, "language01");
-				snes_spr_entry d = { m->card_act->img, (uint16_t)(on ? 113 : 99),
-						     881, 12, 12, 6, 6 };
-				if (!btn) continue;
-				snes_node_world(btn, w);
-				snes_blit_spr(t, m->pk, &d, 640.0f + w[2], 360.0f - w[5], 2.4f, 1.0f);
-			}
-		}
-	}
+	/* (state 2 / submenu is handled by the early-return at the top of render) */
 	/* the suspend-point (resume) menu slides up over the home; the web dims
 	 * nothing behind it (the menubar + cards stay full brightness), so no scrim. */
 	if (m->state == 3 && m->resume) {
