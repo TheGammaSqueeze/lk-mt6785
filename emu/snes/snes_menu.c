@@ -686,18 +686,6 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			       nm[m->sort_rule & 3]);
 	}
 
-	/* caption name inside the focused menubar icon's bubble (authored label is a
-	 * localization key we render blank, so draw the name ourselves) */
-	if (m->state == 1 && m->mb_caption[m->mb_focus]) {
-		static const char *cap[5] = { "Display", "Options", "Language",
-			"Copyright", "Manual" };
-		float w[6], cx, cy;
-		snes_node_world(m->mb_caption[m->mb_focus], w);
-		cx = SNES_VW / 2.0f + w[2];
-		cy = SNES_VH / 2.0f - w[5];
-		snes_draw_text(t, m->pk, m->f_s, cx, cy + 18, 0.9f, 0xFF202020u, 1,
-			       cap[m->mb_focus]);
-	}
 
 	/* an opened settings overlay renders on top, over a FULLY black background
 	 * (the web settings panels fully hide the home behind them) */
