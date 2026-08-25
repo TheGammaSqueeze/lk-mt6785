@@ -237,6 +237,13 @@ static void resolve_card(snes_menu *m)
 	m->card_act  = node_spr(m->pk, &cs, act ? desc(m->pk, act, "card") : 0);
 	m->card_norm = node_spr(m->pk, &cs, nac ? desc(m->pk, nac, "card") : 0);
 	m->card_dot  = node_spr(m->pk, &cs, nac ? desc(m->pk, nac, "icon_1") : 0);
+	{
+		snes_rnode *pi = act ? desc(m->pk, act, "player_icon") : 0;
+		m->card_pi = node_spr(m->pk, &cs, pi);   /* comp0 = icon_1P (sy 661) */
+		/* the scene world pos (81,-102) lands ~7px left / 10px high vs the web
+		 * render; use the measured screen-space offset. */
+		m->card_pi_wx = 89.0f; m->card_pi_wy = -113.0f;
+	}
 	scr = desc(m->pk, root, "screen");
 	if (scr && scr->def->comp_count) {
 		const snes_comp *c = snes_node_comp(&cs, scr->def, 0);
@@ -350,15 +357,16 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, int foc)
 			bw = im->w * sf * sc; bh = im->h * sf * sc;
 			snes_blit_tex(t, m->pk, im, cx, cy - m->screen_oy * sc, bw, bh, 1.0f);
 		}
-		/* player-count dots along the bottom-left of the card */
-		if (m->card_dot && g) {
-			int np = g->players > 4 ? 4 : (g->players < 1 ? 1 : g->players), d;
-			for (d = 0; d < 4; d++) {
-				float dx = cx + (-96 + d * 24) * sc, dy = cy + 108 * sc;
-				float a = (d < np) ? 1.0f : 0.3f;
-				snes_blit_spr(t, m->pk, m->card_dot, dx, dy,
-					      (24.0f / (float)m->card_dot->sw) * sc * 0.7f, a);
-			}
+		/* player-count icon (bottom-right): 1P / 2P-simultaneous / 1P-2P, chosen
+		 * by players+simultaneous (sys_game_card_show.setPlayers). The player_icon
+		 * node authors three sprite comps differing only in atlas sy (icon_1P=661,
+		 * icon_1P-2P=645, icon_2P_simultaneous=677); pick the right one. */
+		if (m->card_pi && g) {
+			snes_spr_entry pi = *m->card_pi;
+			pi.sy = (g->players <= 1) ? 661 : (g->simultaneous ? 677 : 645);
+			snes_blit_spr(t, m->pk, &pi, cx + m->card_pi_wx * sc,
+				      cy - m->card_pi_wy * sc,
+				      (m->card_fw / (float)frame->sw) * sc, 1.0f);
 		}
 	} else {                                 /* fallback: plain framed boxart */
 		float bw = foc ? 236.0f : 200.0f, bh = bw * 160.0f / 228.0f;

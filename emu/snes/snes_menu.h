@@ -57,6 +57,8 @@ typedef struct {
 	/* authored game-card frame (from sys_game_card.scn): the cartridge-display
 	 * sprite drawn around each boxart. active = focused, norm = unfocused. */
 	const snes_spr_entry *card_act, *card_norm, *card_dot, *card_dot_on;
+	const snes_spr_entry *card_pi;   /* player-count icon (icon_1P base); variants vary sy */
+	float card_pi_wx, card_pi_wy;    /* player icon local pos in the card scene */
 	float card_fw, card_fh;       /* frame draw size (native*3 = 252x276) */
 	float screen_w, screen_h, screen_oy;  /* boxart area within the card */
 
