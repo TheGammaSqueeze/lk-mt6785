@@ -1372,7 +1372,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	/* focused game name drawn into the authored title frame (SNES title font) */
 	g = game(m, m->focus);
 	if (g)
-		snes_draw_text(t, m->pk, m->f_title, 640, 148, 0.85f, 0xFF202020u, 1,
+		snes_draw_text(t, m->pk, m->f_title, 640, 152, 1.0f, 0xFF4C4C4Cu, 1,
 			       snes_str(m->pk, g->name));
 
 	/* sort-rule label, briefly shown after a Select press */
