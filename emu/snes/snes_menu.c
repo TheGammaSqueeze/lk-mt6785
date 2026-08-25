@@ -527,6 +527,22 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		disable_all_named(pk, m->overlay[1], "cursor");
 		if (sel) sel->enabled = 1;
 	}
+	/* copyright panel resting state (IP Notice = the `copyright` tab selected):
+	 * blue box on the copyright tab, hide the OSS tab_on + OSS body text */
+	if (m->overlay[3]) {
+		snes_rnode *menu = child_named(pk, m->overlay[3], "menu");
+		snes_rnode *body = child_named(pk, m->overlay[3], "body");
+		snes_rnode *cptab = menu ? child_named(pk, menu, "copyright") : 0;
+		snes_rnode *osstab = menu ? child_named(pk, menu, "oss") : 0;
+		snes_rnode *ossbody = body ? child_named(pk, body, "oss") : 0;
+		snes_rnode *r;
+		if (cptab) {
+			if ((r = child_named(pk, cptab, "cursor_area"))) r->enabled = 1;
+			if ((r = child_named(pk, cptab, "tab_off"))) r->enabled = 0;
+		}
+		if (osstab && (r = child_named(pk, osstab, "tab_on"))) r->enabled = 0;
+		if (ossbody) ossbody->enabled = 0;
+	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
 	/* roster order (title sort by default) */
 	m->ngames = (int)pk->hdr->game_count;
