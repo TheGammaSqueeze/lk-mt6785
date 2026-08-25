@@ -576,10 +576,16 @@ static void draw_menubar_caption(snes_menu *m, snes_target *t)
 				snes_fill_quad(t, cx, cy, 155.0f * s, 38.0f * s, 0.0f, 0.0f, 0.0f, 1.0f);
 			{
 				uint32_t fh = snes_hash("m.font");
+				float tsc = sc, tw;
+				/* shrink long labels to fit the fixed 161px box (m.font runs
+				 * wider than the web caption font, so e.g. "Legal Notices"
+				 * would otherwise overflow the bubble). */
+				tw = snes_text_width(m->pk, fh, tsc, txt);
+				if (tw > 150.0f) tsc = tsc * 150.0f / tw;
 				fe = snes_res_font(m->pk, fh);
 				snes_draw_text(t, m->pk, fh, cx,
-					       cy - (fe ? fe->line_height : 31) * sc * s / 2.0f,
-					       sc * s, 0xFFF4F4F4u, 1, txt);
+					       cy - (fe ? fe->line_height : 31) * tsc * s / 2.0f,
+					       tsc * s, 0xFFF4F4F4u, 1, txt);
 			}
 		}
 	}
