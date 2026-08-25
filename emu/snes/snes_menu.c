@@ -37,6 +37,24 @@ static void disable_labels(snes_scene *s, snes_rnode *n)
 		if (c->type == COMP_LABEL) c->flags &= ~SNES_COMP_ENABLED;
 	}
 }
+/* recursively clear ENABLED on any sprite comp using the atlas frame at (sx,sy).
+ * Used to hide one of a GUICheckButton's two authored toggle visuals (checked +
+ * unchecked are both authored-on; the engine enables only one per state). */
+static void disable_spr_comp(const snes_pack *pk, snes_scene *s, snes_rnode *n,
+			     int sx, int sy)
+{
+	snes_rnode *ch;
+	unsigned i;
+	if (!n) return;
+	for (i = 0; i < n->def->comp_count; i++) {
+		snes_comp *c = (snes_comp *)snes_node_comp(s, n->def, i);
+		if (c->type == COMP_SPRITE) {
+			const snes_spr_entry *sp = snes_res_spr(pk, ((const snes_comp_visual *)c)->res_hash);
+			if (sp && sp->sx == sx && sp->sy == sy) c->flags &= ~SNES_COMP_ENABLED;
+		}
+	}
+	for (ch = n->child; ch; ch = ch->sib) disable_spr_comp(pk, s, ch, sx, sy);
+}
 /* recursively disable every descendant node named nm */
 static void disable_all_named(const snes_pack *p, snes_rnode *n, const char *nm)
 {
@@ -763,6 +781,10 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		snes_rnode *sel = top_named(pk, m->overlay[1], "cursor_area", 0, &by);
 		disable_all_named(pk, m->overlay[1], "cursor");
 		if (sel) sel->enabled = 1;
+		/* each toggle authors BOTH the checked (ON, knob-right, atlas 481,755) and
+		 * unchecked (OFF, knob-left, 481,737) sprites enabled -> two knobs. All
+		 * settings default ON, so hide the OFF visual. */
+		disable_spr_comp(pk, &m->home, m->overlay[1], 481, 737);
 	}
 	/* copyright panel resting state (IP Notice = the `copyright` tab selected):
 	 * blue box on the copyright tab, hide the OSS tab_on + OSS body text */
