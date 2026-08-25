@@ -1095,16 +1095,22 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	}
 
 	draw_wp(m, t, (int)m->scroll);
-	/* authored home chrome. States without a live menubar highlight (home,
-	 * resume) use the cached overlay; menubar/submenu render live. */
-	if (!m->homemenu)                 snes_render_scene(t, &m->home);
-	else if (m->state == 1 || m->state == 2)
-		snes_render_node(t, &m->home, m->homemenu);
-	else                              draw_chrome(m, t);
+	/* Home + menubar + resume all use the cached home chrome (the full-scene
+	 * re-render was a big per-frame cost; the menubar even re-rendered the cards
+	 * that draw_carousel then overpaints). The menubar's live bits (focus
+	 * highlight + scaled icon) are drawn by re-rendering just the focused button
+	 * subtree on top of the chrome below. */
+	if (!m->homemenu) snes_render_scene(t, &m->home);
+	else              draw_chrome(m, t);
 	draw_carousel(m, t);
 	draw_filmstrip(m, t);
 	if (m->state == 0) draw_hints(m, t);
-	else if (m->state == 1) { draw_menubar_caption(m, t); draw_menubar_hints(m, t); }
+	else if (m->state == 1) {
+		if (m->mb_focus >= 0 && m->mb_focus < 5 && m->mb_btn[m->mb_focus])
+			snes_render_node(t, &m->home, m->mb_btn[m->mb_focus]);
+		draw_menubar_caption(m, t);
+		draw_menubar_hints(m, t);
+	}
 
 	/* focused game name drawn into the authored title frame (SNES title font) */
 	g = game(m, m->focus);
