@@ -1,0 +1,2 @@
+#!/bin/bash
+exec qemu-arm-static "$(dirname "$0")/host_render_arm" "$@"

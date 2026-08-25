@@ -5,6 +5,9 @@
  * additive blend + flip + wallpaper tiling, and BMFont text.
  */
 #include "snes_render.h"
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+#endif
 
 /* ---- pixel helpers (source is RGB565+A8 or RGBA8888; fb is 0xAARRGGBB) ---- */
 static inline void src_rgba(const uint8_t *px, int rgb565, int *r, int *g, int *b, int *a)
@@ -89,6 +92,82 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 			if (!d->hflip) { su0f = d->sx + u0 * d->sw;          sustepf =  du * d->sw; }
 			else           { su0f = d->sx + (1.0f - u0) * d->sw; sustepf = -du * d->sw; }
 			su = (int)(su0f * 65536.0f); sustep = (int)(sustepf * 65536.0f);
+#ifdef __ARM_NEON
+			/* NEON: for the opaque untinted 565 upscale (card frame + box art),
+			 * process 8 destination pixels at once - gather 8 source texels,
+			 * unpack 565->8888 8-wide, store. Edge/transparent blocks fall back
+			 * to scalar. Pixel-identical to the scalar path (qemu-validated). */
+			if (plain && d->rgb565 && sustep > 0) {
+				const uint16x8_t m3f = vdupq_n_u16(0x3f), m1f = vdupq_n_u16(0x1f);
+				const uint32x4_t A = vdupq_n_u32(0xff000000u);
+				X = x0;
+				while (X < x1 && su < sxlo) { su += sustep; X++; }
+				while (X + 8 <= x1) {
+					uint16_t cv[8]; int allop = 1, k, s = su;
+					for (k = 0; k < 8; k++) {
+						int ix;
+						const uint8_t *p;
+						if (s >= sxhi) { allop = 0; break; }
+						ix = s >> 16; p = srow + (unsigned)ix * 3;
+						if (p[2] != 255) { allop = 0; break; }
+						cv[k] = (uint16_t)(p[0] | (p[1] << 8)); s += sustep;
+					}
+					if (allop) {
+						uint16x8_t v = vld1q_u16(cv);
+						uint16x8_t r5 = vshrq_n_u16(v, 11);
+						uint16x8_t g6 = vandq_u16(vshrq_n_u16(v, 5), m3f);
+						uint16x8_t b5 = vandq_u16(v, m1f);
+						uint16x8_t r8 = vorrq_u16(vshlq_n_u16(r5, 3), vshrq_n_u16(r5, 2));
+						uint16x8_t g8 = vorrq_u16(vshlq_n_u16(g6, 2), vshrq_n_u16(g6, 4));
+						uint16x8_t b8 = vorrq_u16(vshlq_n_u16(b5, 3), vshrq_n_u16(b5, 2));
+						uint32x4_t lo = vorrq_u32(vorrq_u32(A, vshll_n_u16(vget_low_u16(r8), 16)),
+							vorrq_u32(vshll_n_u16(vget_low_u16(g8), 8), vmovl_u16(vget_low_u16(b8))));
+						uint32x4_t hi = vorrq_u32(vorrq_u32(A, vshll_n_u16(vget_high_u16(r8), 16)),
+							vorrq_u32(vshll_n_u16(vget_high_u16(g8), 8), vmovl_u16(vget_high_u16(b8))));
+						vst1q_u32(&row[X], lo); vst1q_u32(&row[X + 4], hi);
+						X += 8; su += 8 * sustep;
+					} else {
+						for (k = 0; k < 8; k++, X++, su += sustep) {
+							int ix, sr, sg, sb, sa;
+							const uint8_t *sp;
+							if (su < sxlo || su >= sxhi) continue;
+							ix = su >> 16; if (ix >= d->img_w) ix = d->img_w - 1;
+							sp = srow + (unsigned)ix * 3;
+							src_rgba(sp, 1, &sr, &sg, &sb, &sa);
+							if (sa == 0) continue;
+							if (sa == 255) {
+								row[X] = 0xff000000u | ((unsigned)sr << 16) | ((unsigned)sg << 8) | (unsigned)sb;
+							} else {
+								uint32_t dst = row[X];
+								int dr = (dst >> 16) & 0xff, dg = (dst >> 8) & 0xff, db = dst & 0xff, ia = 255 - sa;
+								dr = (sr * sa + dr * ia + 127) / 255; dg = (sg * sa + dg * ia + 127) / 255; db = (sb * sa + db * ia + 127) / 255;
+								if (dr > 255) dr = 255; if (dg > 255) dg = 255; if (db > 255) db = 255;
+								row[X] = 0xff000000u | ((unsigned)dr << 16) | ((unsigned)dg << 8) | (unsigned)db;
+							}
+						}
+					}
+				}
+				for (; X < x1; X++, su += sustep) {
+					int ix, sr, sg, sb, sa;
+					const uint8_t *sp;
+					if (su < sxlo || su >= sxhi) continue;
+					ix = su >> 16; if (ix >= d->img_w) ix = d->img_w - 1;
+					sp = srow + (unsigned)ix * 3;
+					src_rgba(sp, 1, &sr, &sg, &sb, &sa);
+					if (sa == 0) continue;
+					if (sa == 255) {
+						row[X] = 0xff000000u | ((unsigned)sr << 16) | ((unsigned)sg << 8) | (unsigned)sb;
+					} else {
+						uint32_t dst = row[X];
+						int dr = (dst >> 16) & 0xff, dg = (dst >> 8) & 0xff, db = dst & 0xff, ia = 255 - sa;
+						dr = (sr * sa + dr * ia + 127) / 255; dg = (sg * sa + dg * ia + 127) / 255; db = (sb * sa + db * ia + 127) / 255;
+						if (dr > 255) dr = 255; if (dg > 255) dg = 255; if (db > 255) db = 255;
+						row[X] = 0xff000000u | ((unsigned)dr << 16) | ((unsigned)dg << 8) | (unsigned)db;
+					}
+				}
+				continue;
+			}
+#endif
 			for (X = x0; X < x1; X++, su += sustep) {
 				int sr, sg, sb, sa, af, ix;
 				const uint8_t *sp;
