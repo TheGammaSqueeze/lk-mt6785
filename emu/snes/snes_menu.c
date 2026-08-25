@@ -272,6 +272,7 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CAR_REPEAT 0.24f
 #define OPEN_SLIDE 585.0f   /* submenu panel slide-in distance (world up, screen px) */
 #define CLOSE_DUR  0.20f    /* submenu close slide-up duration (cubic ease-in) */
+#define RESUME_SLIDE 688.0f /* resume panel slide-up-from-bottom distance (screen px) */
 #define CAR_CY     368.0f                   /* cardlist container world y=0 (+card box offset) */
 #define CAR_SC     0.91f                    /* native 252x276 -> ~230px card */
 
@@ -827,6 +828,9 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		if (eu) { m->state = 1; push_snd(m, m->sfx_up); }
 		if (ed && m->resume) {                 /* Down -> suspend-point menu */
 			m->resume->enabled = 1;
+			/* the panel slides UP from off-bottom into place, easing out (world
+			 * -y = screen down); reuse the open_y ease (toward 0). */
+			m->open_y = -RESUME_SLIDE;
 			m->state = 3; push_snd(m, m->sfx_decide);
 		}
 		if (ea) push_snd(m, m->sfx_decide);    /* launch stubbed */
@@ -878,7 +882,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	} else {                                   /* ---- resume menu ---- */
 		if (eb || eu) {
 			if (m->resume) m->resume->enabled = 0;
-			m->state = 0; push_snd(m, m->sfx_cancel);
+			m->state = 0; m->open_y = 0.0f; push_snd(m, m->sfx_cancel);
 		}
 	}
 	m->pl = in->left; m->pr = in->right; m->pu = in->up; m->pd = in->down;
@@ -976,6 +980,8 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	}
 	/* the suspend-point (resume) menu slides up over the home; the web dims
 	 * nothing behind it (the menubar + cards stay full brightness), so no scrim. */
-	if (m->state == 3 && m->resume)
+	if (m->state == 3 && m->resume) {
+		m->resume->tf[5] = m->open_y;   /* slide-up-from-bottom offset */
 		snes_render_node(t, &m->home, m->resume);
+	}
 }
