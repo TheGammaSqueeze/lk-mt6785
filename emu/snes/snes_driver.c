@@ -77,7 +77,6 @@ extern int mt_get_gpio_in(unsigned pin);
 #define SNES_COMP_PA  0x51000000u   /* compressed staging */
 #define SNES_WP_PA    0x52000000u   /* wallpaper cache (1536*720*4) */
 #define SNES_CHROME_PA 0x53000000u  /* static chrome cache (1280*720*4) */
-#define SNES_CARDCACHE_PA 0x54000000u /* card-strip cache (1280*720*4 premult RGBA) */
 #define SNES_RAW_MAX  (32u * 1024 * 1024)
 #define SNES_COMP_MAX (16u * 1024 * 1024)
 #define HOME_CAP (16u * 1024 * 1024 / (unsigned)sizeof(snes_rnode))
@@ -247,7 +246,7 @@ static int snes_emu_thread(void *arg)
 	}
 	if (snes_menu_init(&s_menu, &s_pk, (snes_rnode *)SNES_HOME_PA, HOME_CAP,
 			   (snes_rnode *)SNES_BG_PA, BG_CAP, (uint32_t *)SNES_WP_PA,
-			   (uint32_t *)SNES_CHROME_PA, (uint32_t *)SNES_CARDCACHE_PA) != 0) {
+			   (uint32_t *)SNES_CHROME_PA) != 0) {
 		dbg("SNES ERR: menu init");
 		for (;;) { mtk_wdt_restart(); thread_sleep(200); }
 	}

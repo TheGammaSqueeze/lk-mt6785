@@ -30,7 +30,7 @@ int main(int argc, char **argv)
 	wp = malloc((size_t)WP_CACHE_W * WP_CACHE_H * 4);
 	home_pool = malloc(sizeof(snes_rnode) * 4096);
 	bg_pool = malloc(sizeof(snes_rnode) * 256);
-	if (snes_menu_init(&menu, &pk, home_pool, 4096, bg_pool, 256, wp, malloc((size_t)SNES_VW*SNES_VH*4), malloc((size_t)SNES_VW*SNES_VH*4)) != 0) {
+	if (snes_menu_init(&menu, &pk, home_pool, 4096, bg_pool, 256, wp, malloc((size_t)SNES_VW*SNES_VH*4)) != 0) {
 		fprintf(stderr, "init failed\n"); return 1;
 	}
 	fprintf(stderr, "--- HOME scene tree ---\n");
