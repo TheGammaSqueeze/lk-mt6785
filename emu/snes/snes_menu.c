@@ -849,6 +849,16 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			m->mb_cell_y0[b] = m->mb_btn[b] ? m->mb_btn[b]->tf[5] : 0.0f;
 		}
 	}
+	/* The top bar has a darker inset panel (menubar_U_2, 480px) behind the 5-icon
+	 * strip: the full-width menubar_U renders ~189, the panel ~163. Both region
+	 * bars (menubar_btn_nes 480px / menubar_btn_hvc 384px) are authored disabled
+	 * and enabled by sys_menubarU per console region; this firmware runs the NES
+	 * (480px) bar, matching the web reference exactly. Enable it so the chrome
+	 * cache picks it up. */
+	{
+		snes_rnode *bn = snes_scene_find(&m->home, "menubar_btn_nes");
+		if (bn) bn->enabled = 1;
+	}
 	/* per-icon settings overlays (display, options, language, copyright, manual) */
 	m->overlay[0] = snes_scene_find(&m->home, "option_display");
 	m->overlay[1] = snes_scene_find(&m->home, "option_settings");
