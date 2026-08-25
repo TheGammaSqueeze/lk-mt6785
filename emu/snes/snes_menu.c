@@ -624,9 +624,10 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			       cap[m->mb_focus]);
 	}
 
-	/* an opened settings overlay renders on top, over a strong black scrim */
+	/* an opened settings overlay renders on top, over a FULLY black background
+	 * (the web settings panels fully hide the home behind them) */
 	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
-		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 0.82f);
+		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
 		snes_render_node(t, &m->home, m->overlay[m->open]);
 	}
 	/* the suspend-point (resume) menu, over a strong black scrim */
