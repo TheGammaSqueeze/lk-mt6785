@@ -883,6 +883,10 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			if (o) o->enabled = 0;
 		}
 	}
+	/* the game-title bar (gametitle -> caption_title) is drawn dynamically so it
+	 * can be raised behind the Suspend Point List; keep it out of the chrome. */
+	m->gametitle = snes_scene_find(&m->home, "gametitle");
+	if (m->gametitle) m->gametitle->enabled = 0;
 	m->homemenu = snes_scene_find(&m->home, "homemenu");
 	/* The authored thumbnail cursor (a downward chevron the engine repositions
 	 * over the selected filmstrip icon at runtime) is baked static at scene
@@ -1453,6 +1457,13 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		draw_menubar_hints(m, t);
 	}
 
+	/* the white title bar (caption_title, 348x22 @3x = 1044x66), raised in resume;
+	 * drawn here (not in the chrome cache) so it tracks the game title. */
+	if (m->card_act) {
+		float ty = 178.0f - RESUME_TITLE_DY * resume_open_frac(m);
+		snes_spr_entry bar = { m->card_act->img, 1, 325, 348, 22, 174, 11 };
+		snes_blit_spr(t, m->pk, &bar, 640.0f, ty, 3.0f, 1.0f);
+	}
 	/* focused game name drawn into the authored title frame (SNES title font) */
 	g = game(m, m->focus);
 	if (g)
