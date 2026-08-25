@@ -295,33 +295,32 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1);
 }
 
-/* ---- bottom thumbnail filmstrip (Lua-instantiated in the web app) ---- */
-#define FS_CY    540.0f
-#define FS_GAP   50.0f
-#define FS_W     42.0f
-#define FS_H     30.0f
+/* ---- bottom thumbnail filmstrip (ports sys_thumbnail_icon: a fixed 21-icon
+ * strip, NOT scrolling; icon i at world x=-410+41*i (screen 230+41*i), 32x32
+ * bottom-anchored at world y=-191 (screen bottom 551); cursor over selected). */
+#define TH_X0      230.0f    /* screen x of icon 0 (640-410) */
+#define TH_SPACING 41.0f
+#define TH_BOTTOM  551.0f    /* icon bottom edge */
+#define TH_SIZE    32.0f
 static void draw_filmstrip(snes_menu *m, snes_target *t)
 {
-	int n = m->ngames, d;
+	int n = m->ngames, i;
+	float ccx, ccy = TH_BOTTOM - TH_SIZE / 2.0f;
 	if (n <= 0) return;
-	for (d = -9; d <= 9; d++) {
-		int gi = m->focus + d;
-		const snes_game_rec *g;
-		const snes_img_entry *im;
-		float cx = 640.0f + ((float)gi - m->car_x) * FS_GAP, cy = FS_CY;
-		int foc = (d == 0);
-		float w = foc ? FS_W + 8 : FS_W, h = foc ? FS_H + 6 : FS_H;
-		if (gi < 0 || gi >= n) continue;
-		if (cx < -40 || cx > SNES_VW + 40) continue;
-		g = game(m, gi);
-		im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
-		if (foc) {                              /* cursor: white ring + blue frame */
-			snes_fill_quad(t, cx, cy, w + 10, h + 10, 1.0f, 1.0f, 1.0f, 1.0f);
-			snes_fill_quad(t, cx, cy, w + 6, h + 6, 0.15f, 0.5f, 1.0f, 1.0f);
-		}
-		snes_fill_quad(t, cx, cy, w + 2, h + 2, 0.0f, 0.0f, 0.0f, 1.0f);
-		if (im) snes_blit_tex(t, m->pk, im, cx, cy, w, h, foc ? 1.0f : 0.7f);
-		else    snes_fill_quad(t, cx, cy, w, h, 0.15f, 0.15f, 0.2f, 1.0f);
+	for (i = 0; i < n; i++) {
+		const snes_game_rec *g = game(m, i);
+		const snes_img_entry *im = (g && g->small_img != 0xFFFF) ? &m->pk->img[g->small_img] : 0;
+		float cx = TH_X0 + TH_SPACING * (float)i;
+		if (im) snes_blit_tex(t, m->pk, im, cx, ccy, TH_SIZE, TH_SIZE, 1.0f);
+	}
+	/* cursor indicator over the selected icon (cursor_node world y=-141 -> 501) */
+	ccx = TH_X0 + TH_SPACING * (float)m->focus;
+	snes_fill_quad(t, ccx, ccy, TH_SIZE + 6, TH_SIZE + 6, 1.0f, 1.0f, 1.0f, 1.0f);
+	snes_fill_quad(t, ccx, ccy, TH_SIZE + 2, TH_SIZE + 2, 0.15f, 0.5f, 1.0f, 1.0f);
+	if (m->focus >= 0 && m->focus < n) {
+		const snes_game_rec *g = game(m, m->focus);
+		const snes_img_entry *im = (g && g->small_img != 0xFFFF) ? &m->pk->img[g->small_img] : 0;
+		if (im) snes_blit_tex(t, m->pk, im, ccx, ccy, TH_SIZE, TH_SIZE, 1.0f);
 	}
 }
 

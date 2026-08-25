@@ -38,12 +38,14 @@ def render_mine(pack, binp, nav, ppm):
     return im.crop((0, 120, 1280, 840))   # content region (offy=120, 720 tall)
 
 def score(a, b):
-    d = ImageChops.difference(a, b)
-    hist = d.histogram()
-    # mean abs diff across all channels
-    tot = sum(i % 256 * hist[i] for i in range(len(hist)))
-    n = sum(hist)
-    return tot / n if n else 0
+    """Mean abs diff over UI pixels only: skip where BOTH images are dark neon
+    wallpaper (its scroll phase differs between web+mine and would swamp the
+    signal). A pixel counts if either image's max channel > 70."""
+    import numpy as np
+    an = np.asarray(a, dtype=np.int16); bn = np.asarray(b, dtype=np.int16)
+    d = np.abs(an - bn).sum(axis=2)                      # summed abs diff per pixel
+    ui = (an.max(axis=2) > 70) | (bn.max(axis=2) > 70)   # UI content mask
+    return float(d[ui].mean() / 3.0) if ui.any() else 0.0
 
 def main():
     pack, binp = sys.argv[1], sys.argv[2]
