@@ -39,6 +39,60 @@ int main(int argc, char **argv)
 	t.fb = fb; t.pitch = W; t.W = W; t.H = H;
 	t.offx = (W - SNES_VW) / 2; t.offy = (H - SNES_VH) / 2;
 
+	/* Transition-capture mode: `host_render <pack> <outdir> seq <prefixNav> <transKeys> <nframes>`
+	 * mirrors the web frame-stepper (tools/_web_car_right_mid.mjs). It settles the
+	 * attract, walks <prefixNav> to reach the starting state, then steps at
+	 * dt=0.0333 (30fps, MATCHING the web capture): frame 0 = pre-press, then for
+	 * each key in <transKeys> presses it for one step, then free-runs the rest to
+	 * <nframes>. Each frame is written outdir/NNN.ppm so the validator can diff the
+	 * transition frame-by-frame against /tmp/web_car_mid/NNN.png. */
+	if (argc > 3 && strcmp(argv[3], "seq") == 0) {
+		const char *outdir = argv[2];
+		const char *prefix = argc > 4 ? argv[4] : "RRR";
+		const char *tk     = argc > 5 ? argv[5] : "R";
+		int nframes = argc > 6 ? atoi(argv[6]) : 20;
+		int flatwp = argc > 7 && strcmp(argv[7], "flat") == 0;
+		const float DT = 0.0333f;
+		int s, fi = 0; size_t ni; char path[512];
+		for (s = 0; s < 240; s++) { memset(&in, 0, sizeof(in)); snes_menu_update(&menu, &in, 1.0f/60.0f); }
+		for (ni = 0; ni < strlen(prefix); ni++) {   /* walk to the start state */
+			memset(&in, 0, sizeof(in));
+			if (prefix[ni]=='R') in.right=1; else if (prefix[ni]=='L') in.left=1;
+			else if (prefix[ni]=='U') in.up=1; else if (prefix[ni]=='D') in.down=1;
+			else if (prefix[ni]=='A') in.a=1; else if (prefix[ni]=='B') in.b=1;
+			snes_menu_update(&menu, &in, 1.0f/60.0f);
+			memset(&in, 0, sizeof(in));
+			for (s = 0; s < 30; s++) snes_menu_update(&menu, &in, 1.0f/60.0f);
+		}
+		for (; fi < nframes; fi++) {
+			memset(&in, 0, sizeof(in));
+			if (fi >= 1 && (size_t)(fi-1) < strlen(tk)) {   /* press the transition key on its frame */
+				char c = tk[fi-1];
+				if (c=='R') in.right=1; else if (c=='L') in.left=1;
+				else if (c=='U') in.up=1; else if (c=='D') in.down=1;
+				else if (c=='A') in.a=1; else if (c=='B') in.b=1;
+			}
+			snes_menu_update(&menu, &in, DT);
+			if (flatwp) { size_t k, nn = (size_t)WP_CACHE_W * WP_CACHE_H;
+				for (k = 0; k < nn; k++) wp[k] = 0xFF204060u; menu.wp_ready = 1; }
+			for (i = 0; i < W * H; i++) fb[i] = 0xFF000000u;
+			snes_menu_render(&menu, &t);
+			snprintf(path, sizeof(path), "%s/%03d.ppm", outdir, fi);
+			f = fopen(path, "wb");
+			if (f) {
+				fprintf(f, "P6\n%d %d\n255\n", W, H);
+				for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+					uint32_t p = fb[y*W+x];
+					unsigned char rgb[3] = { (p>>16)&0xff, (p>>8)&0xff, p&0xff };
+					fwrite(rgb, 1, 3, f);
+				}
+				fclose(f);
+			}
+		}
+		fprintf(stderr, "seq wrote %d frames to %s\n", nframes, outdir);
+		return 0;
+	}
+
 	/* Drive the nav sequence like real hardware: each key is pressed for one
 	 * frame then released, followed by settle frames so animations/transitions
 	 * complete and repeated same-keys still edge-trigger. `frames` is the
