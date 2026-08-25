@@ -89,6 +89,43 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 			if (!d->hflip) { su0f = d->sx + u0 * d->sw;          sustepf =  du * d->sw; }
 			else           { su0f = d->sx + (1.0f - u0) * d->sw; sustepf = -du * d->sw; }
 			su = (int)(su0f * 65536.0f); sustep = (int)(sustepf * 65536.0f);
+			/* Source-driven run fill (upscale, untinted): each source texel is
+			 * decoded ONCE, then written to the whole run of destination pixels
+			 * it covers - instead of re-decoding per dest pixel (a 3x card frame
+			 * has 3 dest px per texel). Identical output to the per-pixel loop. */
+			if (plain && sustep > 0) {
+				X = x0;
+				while (X < x1 && su < sxlo) { su += sustep; X++; }
+				while (X < x1 && su < sxhi) {
+					int ix = su >> 16, sr, sg, sb, sa, bnd, need, run;
+					const uint8_t *sp = srow + (unsigned)ix * bpp;
+					src_rgba(sp, d->rgb565, &sr, &sg, &sb, &sa);
+					bnd = (ix + 1) << 16; if (bnd > sxhi) bnd = sxhi;
+					need = (bnd - su + sustep - 1) / sustep;   /* >= 1 */
+					run = (X + need > x1) ? (x1 - X) : need;
+					if (sa == 255) {
+						uint32_t col = 0xff000000u | ((unsigned)sr << 16)
+							     | ((unsigned)sg << 8) | (unsigned)sb;
+						int k = run; while (k--) row[X++] = col;
+					} else if (sa == 0) {
+						X += run;
+					} else {
+						int af = sa, ia = 255 - af;
+						int pr = sr * af, pg = sg * af, pb = sb * af, k = run;
+						while (k--) {
+							uint32_t dst = row[X];
+							int dr = (dst >> 16) & 0xff, dg = (dst >> 8) & 0xff, db = dst & 0xff;
+							dr = (pr + dr * ia + 127) / 255;
+							dg = (pg + dg * ia + 127) / 255;
+							db = (pb + db * ia + 127) / 255;
+							if (dr > 255) dr = 255; if (dg > 255) dg = 255; if (db > 255) db = 255;
+							row[X++] = 0xff000000u | ((unsigned)dr << 16) | ((unsigned)dg << 8) | (unsigned)db;
+						}
+					}
+					su += run * sustep;
+				}
+				continue;
+			}
 			for (X = x0; X < x1; X++, su += sustep) {
 				int sr, sg, sb, sa, af, ix;
 				const uint8_t *sp;
