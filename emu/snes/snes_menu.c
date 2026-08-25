@@ -406,10 +406,13 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		 * screen mapping is 1:1 (screen offset from card centre == scene coord,
 		 * same as the player_icon where 89*0.91 == 81). */
 		{
+			/* focused (active) card shows the cyan icon_Resume_off_active
+			 * (atlas 505,51); unfocused cards the grey icon_Resume_off (505,43). */
 			int di;
+			uint16_t dsy = (blue_a > 0.5f) ? 51 : 43;
 			float rscale = m->card_fw / (float)frame->sw;   /* 18px (web 1:1) */
 			for (di = 0; di < 4; di++) {
-				snes_spr_entry dot = { frame->img, 505, 43, 6, 6, 3, 3 };
+				snes_spr_entry dot = { frame->img, 505, dsy, 6, 6, 3, 3 };
 				float sx = -96.0f + 24.0f * (float)di;
 				snes_blit_spr_tint(t, m->pk, &dot, cx + sx,
 						   cy + 107.0f, rscale, 1.0f, dim, dim, dim);
