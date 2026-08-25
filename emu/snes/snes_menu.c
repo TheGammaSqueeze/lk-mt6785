@@ -454,6 +454,24 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		if (fn) fn->enabled = 0;               /* hide Frame-line blue bar */
 		if (ca) ca->enabled = 1;               /* blue box on selected 4:3 */
 	}
+	/* option_languages resting state: `cursor` is the per-item focus ARROW
+	 * (shown on all -> hide); enable `cursor_area` (blue box) on the selected
+	 * language (English for the default usa_en locale, the top-left item). */
+	if (m->overlay[2]) {
+		snes_rnode *el = child_named(pk, m->overlay[2], "elements"), *it;
+		for (it = el ? el->child : 0; it; it = it->sib) {
+			snes_rnode *cur = child_named(pk, it, "cursor");
+			snes_rnode *ca2 = child_named(pk, it, "cursor_area");
+			snes_rnode *lbl = child_named(pk, it, "Label");
+			if (cur) cur->enabled = 0;          /* hide focus arrow */
+			if (ca2 && lbl && lbl->def->comp_count) {
+				const snes_comp *c = snes_node_comp(&m->home, lbl->def, 0);
+				const snes_comp_label *cl = (const snes_comp_label *)c;
+				const char *tx = (c->type == COMP_LABEL) ? snes_str(pk, cl->text) : "";
+				if (tx[0] == 'E' && tx[1] == 'n') ca2->enabled = 1;   /* English */
+			}
+		}
+	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
 	/* roster order (title sort by default) */
 	m->ngames = (int)pk->hdr->game_count;
