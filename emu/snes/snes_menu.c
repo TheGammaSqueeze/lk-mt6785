@@ -555,7 +555,7 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 typedef struct { int sx, sy, sw, sh; const char *key; } snes_hint;
 static void draw_hint_row(snes_menu *m, snes_target *t, const snes_hint *H, int n, float cx)
 {
-	const float sc = 0.85f, gap = 6.0f, vgap = 26.0f, y = 592.0f;
+	const float sc = 0.85f, gap = 6.0f, vgap = 26.0f, y = 604.0f;
 	const char *lab[6];
 	float iw[6], lw[6], total = 0, x;
 	int i;
