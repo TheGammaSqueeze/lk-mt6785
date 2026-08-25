@@ -29,7 +29,9 @@ typedef struct {
 	int state;                    /* 0 home, 1 menubar, 2 submenu, 3 resume */
 	int mb_focus;                 /* selected menubar icon 0..4 */
 	int open;                     /* open overlay index, -1 if none */
-	float open_y;                 /* submenu slide-in offset (world up), eases to 0 */
+	float open_y;                 /* submenu slide offset (world up), eases to 0 */
+	int closing;                  /* submenu sliding back up/off before it hides */
+	float close_t;                /* close-slide elapsed time (cubic ease-in) */
 
 	/* roster sort: order[] indirects the carousel/filmstrip into the game table */
 	unsigned short order[128];

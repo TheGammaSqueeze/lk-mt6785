@@ -271,6 +271,7 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CAR_DEAD   (CAR_HGAP * 1.5f)
 #define CAR_REPEAT 0.24f
 #define OPEN_SLIDE 585.0f   /* submenu panel slide-in distance (world up, screen px) */
+#define CLOSE_DUR  0.20f    /* submenu close slide-up duration (cubic ease-in) */
 #define CAR_CY     368.0f                   /* cardlist container world y=0 (+card box offset) */
 #define CAR_SC     0.91f                    /* native 252x276 -> ~230px card */
 
@@ -748,6 +749,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		disable_all_named(pk, m->overlay[3], "hud_item3_back");
 	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
+	m->open_y = 0.0f; m->closing = 0; m->close_t = 0.0f;
 	/* roster order (title sort by default) */
 	m->ngames = (int)pk->hdr->game_count;
 	if (m->ngames > 128) m->ngames = 128;
@@ -792,14 +794,31 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	int el = in->left && !m->pl, er = in->right && !m->pr;
 	int eu = in->up && !m->pu, ed = in->down && !m->pd;
 	int ea = in->a && !m->pa, eb = in->b && !m->pb;
-	/* submenu open slide-in ease (BEFORE input handling so the open-trigger frame
-	 * itself does not ease - matching the web's 1-frame input latency). Panel
-	 * slides from off-top to rest; per-frame factor 0.67 at the web's 30fps. */
-	if (m->open_y != 0.0f) {
+	/* submenu open/close slide ease (BEFORE input handling so the trigger frame
+	 * itself does not ease - matching the web's 1-frame input latency). Open:
+	 * slide from off-top (open_y=OPEN_SLIDE) down to rest (0). Close: slide back
+	 * up to OPEN_SLIDE then hide. Per-frame factor 0.67 at the web's 30fps. */
+	if (m->open_y != 0.0f || m->closing) {
 		float ke = 0.67f * (dt / 0.0333f);
 		if (ke > 1.0f) ke = 1.0f;
-		m->open_y -= m->open_y * ke;
-		if (m->open_y < 1.0f && m->open_y > -1.0f) m->open_y = 0.0f;
+		if (m->closing) {
+			/* the web close is a strong ease-in (panel nearly still for ~3 frames
+			 * then accelerates up/off); model as a cubic over CLOSE_DUR. */
+			float r;
+			m->close_t += dt;
+			r = m->close_t / CLOSE_DUR;
+			if (r >= 1.0f) {                       /* fully off-screen: finish */
+				if (m->open >= 0 && m->overlay[m->open])
+					m->overlay[m->open]->enabled = 0;
+				m->open = -1; m->state = 1;
+				m->closing = 0; m->open_y = 0.0f; m->close_t = 0.0f;
+			} else {
+				m->open_y = OPEN_SLIDE * r * r * r;
+			}
+		} else {
+			m->open_y -= m->open_y * ke;
+			if (m->open_y < 1.0f && m->open_y > -1.0f) m->open_y = 0.0f;
+		}
 	}
 
 	if (m->state == 0) {                       /* ---- home carousel ---- */
@@ -851,10 +870,10 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				push_snd(m, m->sfx_move);
 			}
 		}
-		if (eb) {
-			if (m->open >= 0 && m->overlay[m->open])
-				m->overlay[m->open]->enabled = 0;
-			m->open = -1; m->state = 1; push_snd(m, m->sfx_cancel);
+		if (eb && !m->closing) {
+			/* slide the panel back up/off before hiding (see the ease above); the
+			 * overlay stays rendered until open_y reaches OPEN_SLIDE. */
+			m->closing = 1; push_snd(m, m->sfx_cancel);
 		}
 	} else {                                   /* ---- resume menu ---- */
 		if (eb || eu) {
