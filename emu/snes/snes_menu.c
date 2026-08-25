@@ -464,12 +464,9 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			snes_rnode *ca2 = child_named(pk, it, "cursor_area");
 			snes_rnode *lbl = child_named(pk, it, "Label");
 			if (cur) cur->enabled = 0;          /* hide focus arrow */
-			if (ca2 && lbl && lbl->def->comp_count) {
-				const snes_comp *c = snes_node_comp(&m->home, lbl->def, 0);
-				const snes_comp_label *cl = (const snes_comp_label *)c;
-				const char *tx = (c->type == COMP_LABEL) ? snes_str(pk, cl->text) : "";
-				if (tx[0] == 'E' && tx[1] == 'n') ca2->enabled = 1;   /* English */
-			}
+			/* selected = current locale's language; default usa_en = language01
+			 * (label key @sys_language_USA_en). Show its blue box. */
+			if (ca2 && name_eq(pk, it, "language01")) ca2->enabled = 1;
 		}
 	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
