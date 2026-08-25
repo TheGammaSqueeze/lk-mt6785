@@ -260,14 +260,17 @@ static int snes_emu_thread(void *arg)
 			}
 		}
 
-		ayaneo_canvas_present();
+		ayaneo_canvas_present();   /* config_input() blocks on FRAME_DONE = vsync,
+					    * so this already paces the loop to 60Hz and
+					    * yields the CPU during the wait. An extra
+					    * thread_sleep() here would push each frame past
+					    * the vsync boundary and halve us to 30fps. */
 		mtk_wdt_restart();
 		{
 			static int armed;
 			int p = pmic_detect_powerkey();
 			if (!p) armed = 1; else if (armed) mt_power_off();
 		}
-		thread_sleep(8);
 	}
 	return 0;
 }

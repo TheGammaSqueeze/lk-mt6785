@@ -236,6 +236,9 @@ static void resolve_card(snes_menu *m)
  * pixel transparent (alpha 0). Each frame we just copy the covered pixels over
  * the scrolling wallpaper instead of walking the scene. */
 #define CHROME_SENTINEL 0xFFFF00FFu
+#define CHROME_MAXRUN 48
+static uint16_t s_chrome_run[SNES_VH * CHROME_MAXRUN * 2];  /* (x0,x1) opaque runs/row */
+static uint16_t s_chrome_nrun[SNES_VH];
 static void build_chrome(snes_menu *m)
 {
 	snes_target ct;
@@ -247,17 +250,40 @@ static void build_chrome(snes_menu *m)
 	snes_render_node(&ct, &m->home, m->homemenu);
 	for (i = 0; i < n; i++)
 		m->chrome[i] = (m->chrome[i] == CHROME_SENTINEL) ? 0u : (0xFF000000u | m->chrome[i]);
+	/* Precompute the opaque horizontal runs per row once, so draw_chrome (called
+	 * every frame in the home/resume states) can memcpy the runs instead of doing
+	 * a per-pixel alpha branch over 921600 pixels - a big per-frame CPU saving. */
+	{
+		int y, x;
+		for (y = 0; y < SNES_VH; y++) {
+			const uint32_t *src = m->chrome + (unsigned)y * SNES_VW;
+			int nr = 0, x0 = -1;
+			for (x = 0; x < SNES_VW; x++) {
+				if (src[x] & 0xFF000000u) { if (x0 < 0) x0 = x; }
+				else if (x0 >= 0) {
+					if (nr < CHROME_MAXRUN) { s_chrome_run[(y*CHROME_MAXRUN+nr)*2]=(uint16_t)x0; s_chrome_run[(y*CHROME_MAXRUN+nr)*2+1]=(uint16_t)x; nr++; }
+					x0 = -1;
+				}
+			}
+			if (x0 >= 0 && nr < CHROME_MAXRUN) { s_chrome_run[(y*CHROME_MAXRUN+nr)*2]=(uint16_t)x0; s_chrome_run[(y*CHROME_MAXRUN+nr)*2+1]=(uint16_t)SNES_VW; nr++; }
+			s_chrome_nrun[y] = (uint16_t)nr;
+		}
+	}
 	m->chrome_ready = 1;
 }
 static void draw_chrome(snes_menu *m, snes_target *t)
 {
-	int y, x;
+	int y, i;
 	if (!m->chrome_ready) { snes_render_node(t, &m->home, m->homemenu); return; }
 	for (y = 0; y < SNES_VH; y++) {
 		const uint32_t *src = m->chrome + (unsigned)y * SNES_VW;
 		uint32_t *dst = t->fb + (unsigned)(t->offy + y) * t->pitch + t->offx;
-		for (x = 0; x < SNES_VW; x++)
-			if (src[x] & 0xFF000000u) dst[x] = src[x];
+		const uint16_t *r = &s_chrome_run[(unsigned)y * CHROME_MAXRUN * 2];
+		int nr = s_chrome_nrun[y];
+		for (i = 0; i < nr; i++) {
+			int x0 = r[i*2], x1 = r[i*2+1];
+			__builtin_memcpy(dst + x0, src + x0, (unsigned)(x1 - x0) * 4);
+		}
 	}
 }
 
