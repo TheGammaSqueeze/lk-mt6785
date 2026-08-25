@@ -60,6 +60,17 @@ int main(int argc, char **argv)
 			for (j = 0; j < settle; j++) snes_menu_update(&menu, &in, 1.0f / 60.0f);
 		}
 	}
+	/* Validation aid: with "flat" as the 5th arg, replace the scrolling
+	 * wallpaper cache with a constant colour. The UI (opaque chrome, cards,
+	 * text) renders identically either way, so diffing a normal render against
+	 * a flat one yields a precise UI mask - letting the validator score only UI
+	 * pixels and ignore the wallpaper, whose scroll phase is non-deterministic
+	 * (time-based) and can never match a single web screenshot. */
+	if (argc > 5 && strcmp(argv[5], "flat") == 0) {
+		size_t n = (size_t)WP_CACHE_W * WP_CACHE_H, k;
+		for (k = 0; k < n; k++) wp[k] = 0xFF204060u;
+		menu.wp_ready = 1;
+	}
 	/* clear letterbox + render final frame */
 	for (i = 0; i < W * H; i++) fb[i] = 0xFF000000u;
 	snes_menu_render(&menu, &t);

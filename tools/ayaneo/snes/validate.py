@@ -37,14 +37,34 @@ def render_mine(pack, binp, nav, ppm):
     im = Image.open(ppm).convert("RGB")
     return im.crop((0, 120, 1280, 840))   # content region (offy=120, 720 tall)
 
-def score(a, b):
-    """Mean abs diff over UI pixels only: skip where BOTH images are dark neon
-    wallpaper (its scroll phase differs between web+mine and would swamp the
-    signal). A pixel counts if either image's max channel > 70."""
+def render_mine_flat(pack, binp, nav, ppm):
+    """Same render but with the scrolling wallpaper replaced by a flat colour,
+    so opaque UI is identical to the normal render and wallpaper-showing pixels
+    differ - giving us a precise UI mask independent of wallpaper scroll phase."""
+    subprocess.run([binp, pack, ppm, str(SETTLE), nav, "flat"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    im = Image.open(ppm).convert("RGB")
+    return im.crop((0, 120, 1280, 840))
+
+def score(web, mine, flat=None):
+    """Mean abs diff over UI pixels only. When a flat-wallpaper render is given,
+    UI pixels are exactly those the wallpaper doesn't show through (mine==flat);
+    we also include any bright web pixel so a missing UI element is still
+    penalised. Wallpaper (non-deterministic scroll phase) is excluded. Without a
+    flat render, fall back to the both-bright heuristic."""
     import numpy as np
-    an = np.asarray(a, dtype=np.int16); bn = np.asarray(b, dtype=np.int16)
-    d = np.abs(an - bn).sum(axis=2)                      # summed abs diff per pixel
-    ui = (an.max(axis=2) > 70) | (bn.max(axis=2) > 70)   # UI content mask
+    an = np.asarray(web, dtype=np.int16); bn = np.asarray(mine, dtype=np.int16)
+    d = np.abs(an - bn).sum(axis=2)
+    if flat is not None:
+        fn = np.asarray(flat, dtype=np.int16)
+        # UI = pixels the wallpaper doesn't reach in my render (opaque chrome,
+        # cards, text). Deliberately NOT including bright web pixels: the web's
+        # neon wallpaper is itself bright, so that would re-admit the very
+        # scroll-phase noise we are trying to exclude. Missing UI elements are
+        # caught by eye in the SBS, not by this metric.
+        ui = np.all(bn == fn, axis=2)
+    else:
+        ui = (an.max(axis=2) > 70) | (bn.max(axis=2) > 70)
     return float(d[ui].mean() / 3.0) if ui.any() else 0.0
 
 def main():
@@ -59,10 +79,11 @@ def main():
             print(f"{name:18s} NO WEB REF"); continue
         web = Image.open(webp).convert("RGB").resize((1280, 720))
         mine = render_mine(pack, binp, nav, f"/tmp/mine_{name}.ppm")
+        flat = render_mine_flat(pack, binp, nav, f"/tmp/mineflat_{name}.ppm")
         diff = ImageChops.difference(web, mine)
         # amplify diff for visibility
         dv = diff.point(lambda p: min(255, p * 3))
-        s = score(web, mine)
+        s = score(web, mine, flat)
         web.save(f"{OUT}/{name}_web.png"); mine.save(f"{OUT}/{name}_mine.png")
         dv.save(f"{OUT}/{name}_diff.png")
         sbs = Image.new("RGB", (1280, 720 * 3 + 40), (20, 20, 20))
