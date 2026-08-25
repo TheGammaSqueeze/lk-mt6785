@@ -321,8 +321,8 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CAR_SLOT_X (-393.0f)
 #define CAR_DEAD   (CAR_HGAP * 1.5f)
 #define CAR_REPEAT 0.24f
-#define OPEN_SLIDE 585.0f   /* submenu panel slide-in distance (world up, screen px) */
-#define CLOSE_DUR  0.20f    /* submenu close slide-up duration (cubic ease-in) */
+#define OPEN_SLIDE 688.0f   /* submenu panel slide-in distance (world up, screen px; frame-matched to the web open slide) */
+#define CLOSE_DUR  0.24f    /* submenu close slide-up duration (cubic ease-in) */
 #define RESUME_SLIDE 688.0f /* resume panel slide-up-from-bottom distance (screen px) */
 #define CAP_DELAY  0.25f    /* MENUBAR_CAPTION_DELAY: wait before the caption scales in */
 #define CAR_CY     359.0f                   /* cardlist container world y=0 (+card box offset) */
@@ -1250,7 +1250,34 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	 * twice), and starving the single-threaded audio ring feed made SFX loop in
 	 * every non-home menu. Just paint the scrim + the panel. */
 	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
-		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
+		/* While the panel is SLIDING in/out, the web slides the OPAQUE full-screen
+		 * panel over the still-visible, undimmed menubar/home: the home shows only in
+		 * the strip the panel has vacated (below its moving bottom edge on open, above
+		 * on close), and the panel's own dark background covers the rest. Reproduce
+		 * that by rendering the home behind, then an opaque black scrim TRANSLATED with
+		 * the panel (centre y = 360 - open_y) so it covers exactly the panel's extent
+		 * and reveals the home in the vacated strip. Once settled, the full-screen
+		 * panel covers everything, so use the cheap fixed black fill (no home
+		 * re-render). Only a handful of frames, so the audio-feed cost is negligible. */
+		if (m->open_y != 0.0f || m->closing) {
+			draw_wp(m, t, (int)m->scroll);
+			if (!m->homemenu) snes_render_scene(t, &m->home);
+			else              draw_chrome(m, t);
+			draw_carousel(m, t);
+			draw_filmstrip(m, t);
+			if (m->mb_focus >= 0 && m->mb_focus < 5 && m->mb_btn[m->mb_focus])
+				snes_render_node(t, &m->home, m->mb_btn[m->mb_focus]);
+			draw_menubar_caption(m, t);
+			draw_menubar_hints(m, t);
+			g = game(m, m->focus);
+			if (g)
+				snes_draw_text(t, m->pk, m->f_title, 640, 148, 0.85f,
+					       0xFF202020u, 1, snes_str(m->pk, g->name));
+			snes_fill_quad(t, 640, 360 - m->open_y, SNES_VW, SNES_VH,
+				       0.0f, 0.0f, 0.0f, 1.0f);
+		} else {
+			snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
+		}
 		m->overlay[m->open]->tf[5] = m->open_y;
 		snes_render_node(t, &m->home, m->overlay[m->open]);
 		if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
