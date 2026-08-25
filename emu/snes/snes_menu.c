@@ -26,6 +26,17 @@ static snes_rnode *child_named(const snes_pack *p, snes_rnode *par, const char *
 		if (name_eq(p, c, nm)) return c;
 	return 0;
 }
+/* clear the ENABLED flag on a node's Label comps (Lua disables the authored
+ * copyright text labels and draws the list itself). Mutates the DRAM blob. */
+static void disable_labels(snes_scene *s, snes_rnode *n)
+{
+	unsigned i;
+	if (!n) return;
+	for (i = 0; i < n->def->comp_count; i++) {
+		snes_comp *c = (snes_comp *)snes_node_comp(s, n->def, i);
+		if (c->type == COMP_LABEL) c->flags &= ~SNES_COMP_ENABLED;
+	}
+}
 /* recursively disable every descendant node named nm */
 static void disable_all_named(const snes_pack *p, snes_rnode *n, const char *nm)
 {
@@ -372,6 +383,80 @@ static void draw_hint_row(snes_menu *m, snes_target *t, const snes_hint *H, int 
 		x += iw[i] + gap + lw[i] + vgap;
 	}
 }
+/* draw `text` word-wrapped to wrapw px starting at (x,*y), advancing *y by lineh
+ * per line (left/top anchored). Ports the copyright body's greedy wrap. */
+static void draw_wrapped(snes_menu *m, snes_target *t, uint32_t font, float x, float *y,
+			 float sc, uint32_t argb, float wrapw, float lineh, const char *text)
+{
+	char line[320];
+	int ll = 0;
+	const char *p = text;
+	while (*p) {
+		const char *ws = p;
+		char trial[320];
+		int wl, tl;
+		while (*p && *p != ' ') p++;
+		wl = (int)(p - ws);
+		if (wl > 300) wl = 300;
+		tl = ll ? ll + 1 + wl : wl;
+		if (tl >= (int)sizeof(trial)) tl = (int)sizeof(trial) - 1;
+		if (ll) { __builtin_memcpy(trial, line, ll); trial[ll] = ' '; __builtin_memcpy(trial + ll + 1, ws, wl); }
+		else __builtin_memcpy(trial, ws, wl);
+		trial[tl] = 0;
+		if (ll && snes_text_width(m->pk, font, sc, trial) > wrapw) {
+			line[ll] = 0;
+			snes_draw_text(t, m->pk, font, x, *y, sc, argb, 0, line);
+			*y += lineh;
+			__builtin_memcpy(line, ws, wl); ll = wl; line[ll] = 0;
+		} else {
+			__builtin_memcpy(line, trial, tl); ll = tl;
+		}
+		while (*p == ' ') p++;
+	}
+	if (ll) { line[ll] = 0; snes_draw_text(t, m->pk, font, x, *y, sc, argb, 0, line); *y += lineh; }
+}
+/* the copyright IP-Notice body: the deduped game-copyright list, ordered by
+ * (sort_publisher, release, sort_title), word-wrapped into the body area. */
+static void draw_copyright_list(snes_menu *m, snes_target *t)
+{
+	const snes_pack *pk = m->pk;
+	snes_rnode *body = child_named(pk, m->overlay[3], "body");
+	snes_rnode *cp = body ? child_named(pk, body, "copyright") : 0;
+	snes_rnode *txt = cp ? child_named(pk, cp, "text") : 0;
+	/* the Lua overrides the authored s.font placeholder with copyright.fnt
+	 * (the only body font that carries every digit/glyph) at runtime. */
+	uint32_t font = snes_hash("copyright.fnt"), seen[128];
+	unsigned short ord[128];
+	int n = m->ngames, i, j, ns = 0;
+	float y = 278.0f;
+	if (!txt || n <= 0) return;
+	for (i = 0; i < n; i++) ord[i] = (unsigned short)i;
+	for (i = 1; i < n; i++) {                       /* sort (publisher, release, title) */
+		unsigned short k = ord[i];
+		const snes_game_rec *gk = game_raw(pk, k);
+		j = i - 1;
+		while (j >= 0) {
+			const snes_game_rec *gj = game_raw(pk, ord[j]);
+			int c = str_cmp(pk, gj->sort_publisher, gk->sort_publisher);
+			if (c == 0) c = (int)gj->release - (int)gk->release;
+			if (c == 0) c = str_cmp(pk, gj->sort_title, gk->sort_title);
+			if (c <= 0) break;
+			ord[j + 1] = ord[j]; j--;
+		}
+		ord[j + 1] = k;
+	}
+	for (i = 0; i < n; i++) {
+		const snes_game_rec *g = game_raw(pk, ord[i]);
+		int dup = 0;
+		if (!g->copyright) continue;
+		for (j = 0; j < ns; j++) if (seen[j] == g->copyright) { dup = 1; break; }
+		if (dup) continue;
+		seen[ns++] = g->copyright;
+		if (y > 625.0f) break;                  /* clip to the visible body */
+		draw_wrapped(m, t, font, 168.0f, &y, 1.0f, 0xFFF0F0F0u, 900.0f, 24.0f,
+			     snes_str(pk, g->copyright));
+	}
+}
 /* home carousel hints: Menu / Suspend Point List / Sort / Start Game */
 static void draw_hints(snes_menu *m, snes_target *t)
 {
@@ -547,6 +632,11 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		}
 		if (osstab && (r = child_named(pk, osstab, "tab_on"))) r->enabled = 0;
 		if (ossbody) ossbody->enabled = 0;
+		/* Lua disables the authored body text labels + draws the list itself */
+		if (body) {
+			snes_rnode *cpb = child_named(pk, body, "copyright"), *tx;
+			if (cpb && (tx = child_named(pk, cpb, "text"))) disable_labels(&m->home, tx);
+		}
 	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
 	/* roster order (title sort by default) */
@@ -724,6 +814,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
 		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
 		snes_render_node(t, &m->home, m->overlay[m->open]);
+		if (m->open == 3) draw_copyright_list(m, t);   /* IP-Notice text */
 		/* radio dots: draw radiobtn_off (empty) / radiobtn_on (selected) at each
 		 * language item's authored dot position (the authored dot is disabled) */
 		if (m->open == 2 && m->card_act) {

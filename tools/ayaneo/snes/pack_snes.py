@@ -802,6 +802,12 @@ def main():
         # cursor), THEN capture rec_off, so game_offs points at the GameRec struct
         # and not at the interned string bytes.
         c_off  = blob.str(code)
+        # NOTE: index.json ships display text double-UTF-8-encoded, but the web
+        # oracle does NOT repair it - it renders the raw bytes and the mojibake
+        # code points (Â, â, ...) are simply absent from the fonts, so they drop
+        # out to zero width (the trademark glyphs vanish, the copyright sign
+        # survives). We match that verbatim: keep the raw bytes, and make missing
+        # glyphs advance 0 (see snes_draw_text) so the layout lines up 1:1.
         n_off  = blob.str(e.get("Name", code))
         p_off  = blob.str(e.get("SortRawPublisher", ""))
         st_off = blob.str(e.get("SortRawTitle", ""))

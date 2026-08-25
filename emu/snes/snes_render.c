@@ -252,7 +252,7 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 	/* measure for anchor */
 	for (p = text; *p; ) {
 		const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
-		wpx += g ? g->xadv : 12;
+		wpx += g ? g->xadv : 0;   /* missing glyphs drop to zero width (web parity) */
 	}
 	penx = S[4];
 	if (lb->h_anchor == ANCHOR_CENTER) penx -= wpx * scale / 2.0f;
@@ -267,7 +267,7 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 		else if (lb->v_anchor == ANCHOR_BOTTOM) peny -= th;
 		for (p = text; *p; ) {
 			const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
-			if (!g) { penx += 12 * scale; continue; }
+			if (!g) continue;   /* missing glyphs drop to zero width (web parity) */
 			if (g->w > 0) {
 				snes_draw d;
 				float gm[6];
@@ -298,7 +298,7 @@ float snes_text_width(const snes_pack *pk, uint32_t font_hash, float scale, cons
 	glyphs = (const snes_glyph *)(pk->base + fe->glyphs);
 	for (p = text; *p; ) {
 		const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
-		w += g ? g->xadv : 8;
+		w += g ? g->xadv : 0;   /* missing glyphs drop to zero width (web parity) */
 	}
 	return w * scale;
 }
@@ -323,14 +323,14 @@ void snes_draw_text(snes_target *t, const snes_pack *pk, uint32_t font_hash,
 	col[2] = (argb & 0xff) / 255.0f; col[3] = ((argb >> 24) & 0xff) / 255.0f;
 	for (p = text; *p; ) {
 		const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
-		wpx += g ? g->xadv : 8;
+		wpx += g ? g->xadv : 0;   /* missing glyphs drop to zero width (web parity) */
 	}
 	penx = x;
 	if (align == 1) penx -= wpx * scale / 2.0f;
 	else if (align == 2) penx -= wpx * scale;
 	for (p = text; *p; ) {
 		const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
-		if (!g) { penx += 8 * scale; continue; }
+		if (!g) continue;   /* missing glyphs drop to zero width (web parity) */
 		if (g->w > 0) {
 			snes_draw d; float gm[6];
 			d.pix = pgpix; d.rgb565 = rgb565; d.img_w = pgw; d.img_h = pgh;
