@@ -479,6 +479,44 @@ static void draw_menubar_hints(snes_menu *m, snes_target *t)
 	};
 	draw_hint_row(m, t, H, 4, 626.0f);
 }
+/* full-screen overlay (Legal Notices) header hints: right-aligned row at the
+ * top, ending just inside the header frame. */
+static void draw_overlay_hints(snes_menu *m, snes_target *t, const snes_hint *H,
+			       int n, float x_right, float y)
+{
+	const float sc = 0.9f, gap = 6.0f, vgap = 26.0f, iscale = 2.55f;
+	const char *lab[6];
+	float iw[6], lw[6], total = 0, x;
+	int i;
+	if (!m->card_act || n > 6) return;
+	for (i = 0; i < n; i++) {
+		lab[i] = snes_text(m->pk, H[i].key);
+		iw[i] = H[i].sw * iscale;
+		lw[i] = snes_text_width(m->pk, m->f_s, sc, lab[i]);
+		total += iw[i] + gap + lw[i];
+	}
+	total += vgap * (n - 1);
+	x = x_right - total;
+	for (i = 0; i < n; i++) {
+		snes_spr_entry ic = { m->card_act->img, (uint16_t)H[i].sx, (uint16_t)H[i].sy,
+				      (uint16_t)H[i].sw, (uint16_t)H[i].sh,
+				      (int16_t)(H[i].sw / 2), (int16_t)(H[i].sh / 2) };
+		snes_blit_spr(t, m->pk, &ic, x + iw[i] / 2.0f, y, iscale, 1.0f);
+		snes_draw_text(t, m->pk, m->f_s, x + iw[i] + gap, y - 10.0f, sc,
+			       0xFFF2F2F2u, 0, lab[i]);
+		x += iw[i] + gap + lw[i] + vgap;
+	}
+}
+/* Legal Notices (copyright overlay) header hints: Scroll / Select / Back */
+static void draw_copyright_hints(snes_menu *m, snes_target *t)
+{
+	static const snes_hint H[3] = {
+		{ 487, 185, 12, 12, "sys_copyright_hud_Scroll" },  /* vertical dpad */
+		{  71, 881, 12, 12, "sys_copyright_hud_Page" },     /* lateral dpad = Select */
+		{  15, 881, 12, 12, "sys_copyright_hud_Return" },   /* B = Back */
+	};
+	draw_overlay_hints(m, t, H, 3, 1152.0f, 74.0f);
+}
 
 /* ---- public ---- */
 int snes_menu_init(snes_menu *m, const snes_pack *pk,
@@ -637,6 +675,12 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			snes_rnode *cpb = child_named(pk, body, "copyright"), *tx;
 			if (cpb && (tx = child_named(pk, cpb, "text"))) disable_labels(&m->home, tx);
 		}
+		/* the authored header hint row is laid out horizontally by the engine at
+		 * runtime; the static transforms collapse all three items onto one spot,
+		 * so hide them and draw the row synthetically (see draw_overlay_hints). */
+		disable_all_named(pk, m->overlay[3], "hud_item1_scroll");
+		disable_all_named(pk, m->overlay[3], "hud_item2_page");
+		disable_all_named(pk, m->overlay[3], "hud_item3_back");
 	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
 	/* roster order (title sort by default) */
@@ -814,7 +858,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
 		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
 		snes_render_node(t, &m->home, m->overlay[m->open]);
-		if (m->open == 3) draw_copyright_list(m, t);   /* IP-Notice text */
+		if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
 		/* radio dots: draw radiobtn_off (empty) / radiobtn_on (selected) at each
 		 * language item's authored dot position (the authored dot is disabled) */
 		if (m->open == 2 && m->card_act) {
