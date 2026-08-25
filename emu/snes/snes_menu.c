@@ -413,11 +413,18 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 		float cx = TH_X0 + TH_SPACING * (float)i;
 		if (im) snes_blit_tex(t, m->pk, im, cx, ccy, TH_SIZE, TH_SIZE, 1.0f);
 	}
-	/* cursor pin (curor_thumbnail) above the selected icon (cursor_node -> y501) */
+	/* Animated downward-chevron cursor over the selected filmstrip icon
+	 * (cursor_v.spriteanim: dot_cursor_v_1/2/3, 16x8, a 13-frame blink at 30fps
+	 * pulsing full->faint->full). Atlas: _1=182,929  _2=200,929  _3=127,881. */
 	ccx = TH_X0 + TH_SPACING * (float)m->focus;
 	if (m->card_act) {
-		snes_spr_entry pin = { m->card_act->img, 145, 881, 12, 8, 6, 8 };
-		snes_blit_spr(t, m->pk, &pin, ccx, 505.0f, 1.6f, 1.0f);
+		static const uint16_t seq[13] = { 0,1,1,1,1,2,2,2,1,1,0,0,0 };
+		static const uint16_t sx[3] = { 182, 200, 127 };
+		static const uint16_t sy[3] = { 929, 929, 881 };
+		int fr = seq[((int)(m->clock / 0.03333f)) % 13];
+		snes_spr_entry cur = { m->card_act->img, sx[fr], sy[fr], 16, 8, 8, 8 };
+		snes_blit_spr_tint(t, m->pk, &cur, ccx, 510.0f, 2.5f, 1.0f,
+				   63.0f / 255.0f, 191.0f / 255.0f, 1.0f);
 	}
 }
 
@@ -721,6 +728,12 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		}
 	}
 	m->homemenu = snes_scene_find(&m->home, "homemenu");
+	/* The authored thumbnail cursor (a downward chevron the engine repositions
+	 * over the selected filmstrip icon at runtime) is baked static at scene
+	 * centre x640,y501 -> it would render "stuck in the middle" in our cached
+	 * chrome. Hide the authored node and draw the animated chevron ourselves
+	 * (see draw_filmstrip). */
+	if (m->homemenu) disable_all_named(pk, m->homemenu, "cursor_node");
 	m->menubar = snes_scene_find(&m->home, "menubar_upper");
 	/* the real 5-icon row is menubar_upper -> elements -> cm1..cm5 (comps=2);
 	 * snes_scene_find would return the hvc_position duplicates, so navigate. */
@@ -926,6 +939,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 {
 	float k;
 	int el = in->left && !m->pl, er = in->right && !m->pr;
+	m->clock += dt;
 	int eu = in->up && !m->pu, ed = in->down && !m->pd;
 	int ea = in->a && !m->pa, eb = in->b && !m->pb;
 	/* submenu open/close slide ease (BEFORE input handling so the trigger frame

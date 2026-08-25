@@ -30,6 +30,9 @@ void snes_blit_tex(snes_target *t, const snes_pack *pk, const snes_img_entry *im
 		   float cx, float cy, float w, float h, float alpha);
 void snes_blit_spr(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp,
 		   float cx, float cy, float scale, float alpha);
+void snes_blit_spr_tint(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp,
+			float cx, float cy, float scale, float alpha,
+			float tr, float tg, float tb);
 void snes_fill_quad(snes_target *t, float cx, float cy, float w, float h,
 		    float r, float g, float b, float a);
 /* draw text with a pack font (by font-name hash); align 0 left/1 centre/2 right. */
