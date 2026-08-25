@@ -887,9 +887,8 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			}
 		}
 	}
-	/* the suspend-point (resume) menu, over a strong black scrim */
-	if (m->state == 3 && m->resume) {
-		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 0.82f);
+	/* the suspend-point (resume) menu slides up over the home; the web dims
+	 * nothing behind it (the menubar + cards stay full brightness), so no scrim. */
+	if (m->state == 3 && m->resume)
 		snes_render_node(t, &m->home, m->resume);
-	}
 }
