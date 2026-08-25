@@ -348,7 +348,7 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define BG_CURSOR_SPEED_MAX 4.0f       /* SCROLL_CURSOR_SPEED_MAX */
 /* px advanced per anim-unit: preserves the prior tuned 72 px/s base at the
  * default speed 0.175 (72 / 0.175), so the neutral scroll is unchanged. */
-#define BG_PX_PER_UNIT     (72.0f / BG_DEFAULT_SPEED)
+#define BG_PX_PER_UNIT     (30.0f / BG_DEFAULT_SPEED)
 
 static int ring_delta(int a, int b, int n)
 {
