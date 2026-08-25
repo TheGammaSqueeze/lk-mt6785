@@ -497,6 +497,20 @@ void snes_blit_tex(snes_target *t, const snes_pack *pk, const snes_img_entry *im
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
 }
+void snes_blit_tex_tint(snes_target *t, const snes_pack *pk, const snes_img_entry *im,
+			float cx, float cy, float w, float h, float alpha,
+			float tr, float tg, float tb)
+{
+	snes_draw d; float S[6];
+	if (!im) return;
+	d.pix = snes_img_pixels(pk, im); d.rgb565 = (im->flags & SNES_IMG_RGB565) ? 1 : 0;
+	d.img_w = im->w; d.img_h = im->h; d.sx = 0; d.sy = 0; d.sw = im->w; d.sh = im->h;
+	d.dw = w; d.dh = h; d.px = w / 2; d.py = h / 2;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.tr = tr; d.tg = tg; d.tb = tb; d.ta = alpha;
+	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
+	blit(t, S, &d);
+}
 void snes_blit_spr(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp,
 		   float cx, float cy, float scale, float alpha)
 {

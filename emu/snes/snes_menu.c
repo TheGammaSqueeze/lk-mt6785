@@ -358,8 +358,10 @@ static int ring_delta(int a, int b, int n)
 }
 
 /* blue_a = opacity of the active (blue) card frame on top of the normal (dark)
- * one: 0 = unfocused, 1 = focused, in-between = the 0.2s selection crossfade. */
-static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue_a)
+ * one: 0 = unfocused, 1 = focused, in-between = the 0.2s selection crossfade.
+ * dim = RGB tint (1 = normal; the resume menu darkens the non-focused cards to
+ * 0.5, sys_game_card.cardColorToDark). */
+static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue_a, float dim)
 {
 	const snes_game_rec *g = game(m, gi);
 	float cy = CAR_CY, sc = CAR_SC;
@@ -374,18 +376,18 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		 * for a 228x160 thumb is 1 -> native 228x160, centred in the window. The
 		 * dark frame is the base; the blue frame cross-fades in on top (Tween over
 		 * REPEAT/0.2s, sys_gametitlelist onElementFocus). */
-		snes_blit_spr(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f);
+		snes_blit_spr_tint(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f, dim, dim, dim);
 		if (blue_a > 0.003f && m->card_act)
-			snes_blit_spr(t, m->pk, m->card_act, cx, cy,
+			snes_blit_spr_tint(t, m->pk, m->card_act, cx, cy,
 				      (m->card_fw / (float)m->card_act->sw) * sc,
-				      blue_a > 1.0f ? 1.0f : blue_a);
+				      blue_a > 1.0f ? 1.0f : blue_a, dim, dim, dim);
 		if (im) {
 			float sf = m->screen_w / (float)im->w, sfh = m->screen_w / (float)im->h;
 			float bw, bh;
 			if (sfh < sf) sf = sfh;
 			if (sf > 1.0f) sf = 1.0f;
 			bw = im->w * sf * sc; bh = im->h * sf * sc;
-			snes_blit_tex(t, m->pk, im, cx, cy - m->screen_oy * sc, bw, bh, 1.0f);
+			snes_blit_tex_tint(t, m->pk, im, cx, cy - m->screen_oy * sc, bw, bh, 1.0f, dim, dim, dim);
 		}
 		/* player-count icon (bottom-right): 1P / 2P-simultaneous / 1P-2P, chosen
 		 * by players+simultaneous (sys_game_card_show.setPlayers). The player_icon
@@ -394,9 +396,9 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		if (m->card_pi && g) {
 			snes_spr_entry pi = *m->card_pi;
 			pi.sy = (g->players <= 1) ? 661 : (g->simultaneous ? 677 : 645);
-			snes_blit_spr(t, m->pk, &pi, cx + m->card_pi_wx * sc,
+			snes_blit_spr_tint(t, m->pk, &pi, cx + m->card_pi_wx * sc,
 				      cy - m->card_pi_wy * sc,
-				      (m->card_fw / (float)frame->sw) * sc, 1.0f);
+				      (m->card_fw / (float)frame->sw) * sc, 1.0f, dim, dim, dim);
 		}
 		/* TODO: resume/suspend-point indicators (bottom-left) - 4 empty rings
 		 * (atlas 505,51) at wx=-96..-24, wy=-108; the icon scale vs the card
@@ -417,6 +419,9 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 	 * while the incoming one's fades in over CAR_XFADE (sys_gametitlelist). */
 	float prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus)
 		     ? m->xfade_t / CAR_XFADE : 0.0f;      /* 1 at onset -> 0 when done */
+	/* resume menu darkens the NON-focused cards to 0.5 (cardColorToDark), fading
+	 * in with resume_dim; the focused card stays full brightness. */
+	float ndim = 1.0f - 0.5f * m->resume_dim;
 	if (n <= 0) return;
 	/* painter's order: draw non-focused first, focused last (on top) */
 	for (j = 0; j < n; j++) {
@@ -426,9 +431,9 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 		cx = 640.0f + wx;
 		if (cx < -280 || cx > SNES_VW + 280) continue;
 		blue_a = (j == m->prev_focus) ? prog : 0.0f;   /* outgoing card fades out */
-		draw_card(m, t, j, cx, blue_a);
+		draw_card(m, t, j, cx, blue_a, ndim);
 	}
-	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1.0f - prog);
+	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1.0f - prog, 1.0f);
 }
 
 /* ---- bottom thumbnail filmstrip (ports sys_thumbnail_icon: a fixed 21-icon
@@ -739,7 +744,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->chrome = chrome; m->chrome_ready = 0;
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
 	m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
-	m->prev_focus = 0; m->xfade_t = 0.0f;
+	m->prev_focus = 0; m->xfade_t = 0.0f; m->resume_dim = 0.0f;
 	m->pl = m->pr = m->pu = m->pd = m->pa = m->pb = m->ps = 0;
 	m->sndh = m->sndt = 0; m->wall = 0;
 	m->bg_acc = 0.0f; m->scr_speed = BG_DEFAULT_SPEED; m->scr_dir = 1.0f;
@@ -1247,6 +1252,14 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	}
 	/* blue selection-frame crossfade timer */
 	if (m->xfade_t > 0.0f) { m->xfade_t -= dt; if (m->xfade_t < 0.0f) m->xfade_t = 0.0f; }
+	/* resume card-darken fade: ramp in while the suspend list is open (state 3,
+	 * not closing), back out on close, over ~0.2s (matches the web fade). */
+	{
+		int on = (m->state == 3 && !m->closing);
+		float step = dt / 0.20f;
+		if (on) { m->resume_dim += step; if (m->resume_dim > 1.0f) m->resume_dim = 1.0f; }
+		else    { m->resume_dim -= step; if (m->resume_dim < 0.0f) m->resume_dim = 0.0f; }
+	}
 	/* filmstrip smooth index follow */
 	k = dt * 12.0f; if (k > 1.0f) k = 1.0f;
 	m->car_x += ((float)m->focus - m->car_x) * k;

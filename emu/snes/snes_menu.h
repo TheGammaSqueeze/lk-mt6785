@@ -70,6 +70,7 @@ typedef struct {
 	float cont_shift;             /* container scroll offset, animates back to 0 */
 	int   prev_focus;             /* card focused before the last nav (blue-frame crossfade) */
 	float xfade_t;                /* seconds left in the 0.2s blue-frame crossfade */
+	float resume_dim;             /* 0..1 fade of the resume card-darken (non-focused cards -> 0.5) */
 
 	/* authored game-card frame (from sys_game_card.scn): the cartridge-display
 	 * sprite drawn around each boxart. active = focused, norm = unfocused. */
