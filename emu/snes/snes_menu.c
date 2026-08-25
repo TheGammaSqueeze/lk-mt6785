@@ -322,7 +322,7 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CAR_DEAD   (CAR_HGAP * 1.5f)
 #define CAR_REPEAT 0.24f
 #define OPEN_SLIDE 688.0f   /* submenu panel slide-in distance (world up, screen px; frame-matched to the web open slide) */
-#define CLOSE_DUR  0.24f    /* submenu close slide-up duration (cubic ease-in) */
+#define CLOSE_DUR  0.22f    /* submenu close slide-up duration (cubic ease-in) */
 #define RESUME_SLIDE 688.0f /* resume panel slide-up-from-bottom distance (screen px) */
 #define CAP_DELAY  0.25f    /* MENUBAR_CAPTION_DELAY: wait before the caption scales in */
 #define CAR_CY     359.0f                   /* cardlist container world y=0 (+card box offset) */
