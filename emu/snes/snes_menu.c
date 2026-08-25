@@ -273,6 +273,7 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define OPEN_SLIDE 585.0f   /* submenu panel slide-in distance (world up, screen px) */
 #define CLOSE_DUR  0.20f    /* submenu close slide-up duration (cubic ease-in) */
 #define RESUME_SLIDE 688.0f /* resume panel slide-up-from-bottom distance (screen px) */
+#define CAP_DELAY  0.25f    /* MENUBAR_CAPTION_DELAY: wait before the caption scales in */
 #define CAR_CY     368.0f                   /* cardlist container world y=0 (+card box offset) */
 #define CAR_SC     0.91f                    /* native 252x276 -> ~230px card */
 
@@ -511,21 +512,24 @@ static void draw_menubar_caption(snes_menu *m, snes_target *t)
 	cx = 640.0f + w[2];
 	txt = snes_str(m->pk, cl->text);
 	if (txt[0] == '@') txt = snes_text(m->pk, txt + 1);
-	/* white border box + black fill (web: 161x44, ~3px border). The web plays an
-	 * intricate CLOVER "cursor draw-in" on menubar entry (a cyan wireframe that
-	 * traces/fills over ~10 frames in a pattern that doesn't reduce to top-down
-	 * or bottom-up fill - three reverse-engineering attempts from screenshots
-	 * failed). Faithfully reproducing it needs the real CLOVER cursor animator,
-	 * not fill-quads; we draw the settled box (matches the resting state that the
-	 * static validation checks) and leave the transient draw-in as a known gap. */
-	snes_fill_quad(t, cx, cy, 161.0f, 44.0f, 1.0f, 1.0f, 1.0f, 1.0f);
-	snes_fill_quad(t, cx, cy, 155.0f, 38.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+	/* caption draw-in (sys_menubar_cm.lua): the caption node starts at scale 0
+	 * and, after MENUBAR_CAPTION_DELAY, scales uniformly to 1 (Ease.outExpo). The
+	 * box (161x44 white border + black fill), the label, and the arrow all scale
+	 * together about the box centre. */
 	{
-		uint32_t fh = snes_hash("m.font");
-		fe = snes_res_font(m->pk, fh);
-		snes_draw_text(t, m->pk, fh, cx,
-			       cy - (fe ? fe->line_height : 31) * sc / 2.0f, sc,
-			       0xFFF4F4F4u, 1, txt);
+		float s = m->cap_s;
+		if (s > 0.001f) {
+			snes_fill_quad(t, cx, cy, 161.0f * s, 44.0f * s, 1.0f, 1.0f, 1.0f, 1.0f);
+			if (s * 44.0f > 6.0f)
+				snes_fill_quad(t, cx, cy, 155.0f * s, 38.0f * s, 0.0f, 0.0f, 0.0f, 1.0f);
+			{
+				uint32_t fh = snes_hash("m.font");
+				fe = snes_res_font(m->pk, fh);
+				snes_draw_text(t, m->pk, fh, cx,
+					       cy - (fe ? fe->line_height : 31) * sc * s / 2.0f,
+					       sc * s, 0xFFF4F4F4u, 1, txt);
+			}
+		}
 	}
 	(void)cl;
 }
@@ -754,7 +758,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		disable_all_named(pk, m->overlay[3], "hud_item3_back");
 	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
-	m->open_y = 0.0f; m->closing = 0; m->close_t = 0.0f; m->close_target = 0.0f;
+	m->open_y = 0.0f; m->closing = 0; m->close_t = 0.0f; m->close_target = 0.0f; m->cap_t = 0.0f; m->cap_s = 0.0f;
 	/* roster order (title sort by default) */
 	m->ngames = (int)pk->hdr->game_count;
 	if (m->ngames > 128) m->ngames = 128;
@@ -831,11 +835,23 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			if (m->open_y < 1.0f && m->open_y > -1.0f) m->open_y = 0.0f;
 		}
 	}
+	/* menubar caption: after MENUBAR_CAPTION_DELAY the caption scales 0->1 with an
+	 * ease-out (the web uses Tween:scaleTo(caption,0.2,1,1,Ease.outExpo)); the
+	 * geometric ease approximates outExpo's fast-rise shape, libm-free. */
+	if (m->state == 1) {
+		m->cap_t += dt;
+		if (m->cap_t >= CAP_DELAY) {
+			float ke = 0.55f * (dt / 0.0333f);
+			if (ke > 1.0f) ke = 1.0f;
+			m->cap_s += (1.0f - m->cap_s) * ke;
+			if (m->cap_s > 0.999f) m->cap_s = 1.0f;
+		}
+	}
 
 	if (m->state == 0) {                       /* ---- home carousel ---- */
 		if (el) car_navigate(m, -1);
 		if (er) car_navigate(m, 1);
-		if (eu) { m->state = 1; push_snd(m, m->sfx_up); }
+		if (eu) { m->state = 1; m->cap_t = 0.0f; m->cap_s = 0.0f; push_snd(m, m->sfx_up); }
 		if (ed && m->resume) {                 /* Down -> suspend-point menu */
 			m->resume->enabled = 1;
 			/* the panel slides UP from off-bottom into place, easing out (world
@@ -859,8 +875,8 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			push_snd(m, m->sfx_decide);
 		}
 	} else if (m->state == 1) {                /* ---- menubar row ---- */
-		if (el) { m->mb_focus = (m->mb_focus + 4) % 5; push_snd(m, m->sfx_move); }
-		if (er) { m->mb_focus = (m->mb_focus + 1) % 5; push_snd(m, m->sfx_move); }
+		if (el) { m->mb_focus = (m->mb_focus + 4) % 5; m->cap_t = 0.0f; m->cap_s = 0.0f; push_snd(m, m->sfx_move); }
+		if (er) { m->mb_focus = (m->mb_focus + 1) % 5; m->cap_t = 0.0f; m->cap_s = 0.0f; push_snd(m, m->sfx_move); }
 		if (ed || eb) { m->state = 0; push_snd(m, m->sfx_cancel); }
 		if (ea && m->overlay[m->mb_focus]) {
 			m->open = m->mb_focus;
