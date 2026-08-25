@@ -32,6 +32,7 @@ typedef struct {
 	float open_y;                 /* submenu slide offset (world up), eases to 0 */
 	int closing;                  /* submenu sliding back up/off before it hides */
 	float close_t;                /* close-slide elapsed time (cubic ease-in) */
+	float close_target;           /* close-slide open_y target (+up submenu / -down resume) */
 
 	/* roster sort: order[] indirects the carousel/filmstrip into the game table */
 	unsigned short order[128];

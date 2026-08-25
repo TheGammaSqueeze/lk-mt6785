@@ -750,7 +750,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		disable_all_named(pk, m->overlay[3], "hud_item3_back");
 	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
-	m->open_y = 0.0f; m->closing = 0; m->close_t = 0.0f;
+	m->open_y = 0.0f; m->closing = 0; m->close_t = 0.0f; m->close_target = 0.0f;
 	/* roster order (title sort by default) */
 	m->ngames = (int)pk->hdr->game_count;
 	if (m->ngames > 128) m->ngames = 128;
@@ -804,17 +804,23 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		if (ke > 1.0f) ke = 1.0f;
 		if (m->closing) {
 			/* the web close is a strong ease-in (panel nearly still for ~3 frames
-			 * then accelerates up/off); model as a cubic over CLOSE_DUR. */
+			 * then accelerates off); model as a cubic over CLOSE_DUR. Direction is
+			 * close_target: +up (submenu, state 2) or -down (resume, state 3). */
 			float r;
 			m->close_t += dt;
 			r = m->close_t / CLOSE_DUR;
 			if (r >= 1.0f) {                       /* fully off-screen: finish */
-				if (m->open >= 0 && m->overlay[m->open])
-					m->overlay[m->open]->enabled = 0;
-				m->open = -1; m->state = 1;
+				if (m->state == 3) {
+					if (m->resume) m->resume->enabled = 0;
+					m->state = 0;
+				} else {
+					if (m->open >= 0 && m->overlay[m->open])
+						m->overlay[m->open]->enabled = 0;
+					m->open = -1; m->state = 1;
+				}
 				m->closing = 0; m->open_y = 0.0f; m->close_t = 0.0f;
 			} else {
-				m->open_y = OPEN_SLIDE * r * r * r;
+				m->open_y = m->close_target * r * r * r * r;
 			}
 		} else {
 			m->open_y -= m->open_y * ke;
@@ -875,14 +881,15 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			}
 		}
 		if (eb && !m->closing) {
-			/* slide the panel back up/off before hiding (see the ease above); the
-			 * overlay stays rendered until open_y reaches OPEN_SLIDE. */
-			m->closing = 1; push_snd(m, m->sfx_cancel);
+			/* slide the panel back up/off before hiding (see the ease above) */
+			m->closing = 1; m->close_target = OPEN_SLIDE; m->close_t = 0.0f;
+			push_snd(m, m->sfx_cancel);
 		}
 	} else {                                   /* ---- resume menu ---- */
-		if (eb || eu) {
-			if (m->resume) m->resume->enabled = 0;
-			m->state = 0; m->open_y = 0.0f; push_snd(m, m->sfx_cancel);
+		if ((eb || eu) && !m->closing) {
+			/* slide the resume panel back down/off before hiding */
+			m->closing = 1; m->close_target = -RESUME_SLIDE; m->close_t = 0.0f;
+			push_snd(m, m->sfx_cancel);
 		}
 	}
 	m->pl = in->left; m->pr = in->right; m->pu = in->up; m->pd = in->down;
