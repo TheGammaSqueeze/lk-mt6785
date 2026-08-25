@@ -270,6 +270,7 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CAR_SLOT_X (-393.0f)
 #define CAR_DEAD   (CAR_HGAP * 1.5f)
 #define CAR_REPEAT 0.24f
+#define OPEN_SLIDE 585.0f   /* submenu panel slide-in distance (world up, screen px) */
 #define CAR_CY     368.0f                   /* cardlist container world y=0 (+card box offset) */
 #define CAR_SC     0.91f                    /* native 252x276 -> ~230px card */
 
@@ -428,7 +429,7 @@ static void draw_copyright_list(snes_menu *m, snes_target *t)
 	uint32_t font = snes_hash("copyright.fnt"), seen[128];
 	unsigned short ord[128];
 	int n = m->ngames, i, j, ns = 0;
-	float y = 278.0f;
+	float y = 278.0f - m->open_y;   /* follow the panel slide-in */
 	if (!txt || n <= 0) return;
 	for (i = 0; i < n; i++) ord[i] = (unsigned short)i;
 	for (i = 1; i < n; i++) {                       /* sort (publisher, release, title) */
@@ -558,7 +559,7 @@ static void draw_copyright_hints(snes_menu *m, snes_target *t)
 		{  71, 881, 12, 12, "sys_copyright_hud_Page" },     /* lateral dpad = Select */
 		{  15, 881, 12, 12, "sys_copyright_hud_Return" },   /* B = Back */
 	};
-	draw_overlay_hints(m, t, H, 3, 1152.0f, 74.0f);
+	draw_overlay_hints(m, t, H, 3, 1152.0f, 74.0f - m->open_y);
 }
 /* Manuals overlay header hint: Back */
 static void draw_manual_hints(snes_menu *m, snes_target *t)
@@ -566,7 +567,7 @@ static void draw_manual_hints(snes_menu *m, snes_target *t)
 	static const snes_hint H[1] = {
 		{ 15, 881, 12, 12, "sys_manual_hud_Back" },   /* B = Back */
 	};
-	draw_overlay_hints(m, t, H, 1, 1180.0f, 74.0f);
+	draw_overlay_hints(m, t, H, 1, 1180.0f, 74.0f - m->open_y);
 }
 
 /* ---- public ---- */
@@ -791,6 +792,15 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	int el = in->left && !m->pl, er = in->right && !m->pr;
 	int eu = in->up && !m->pu, ed = in->down && !m->pd;
 	int ea = in->a && !m->pa, eb = in->b && !m->pb;
+	/* submenu open slide-in ease (BEFORE input handling so the open-trigger frame
+	 * itself does not ease - matching the web's 1-frame input latency). Panel
+	 * slides from off-top to rest; per-frame factor 0.67 at the web's 30fps. */
+	if (m->open_y != 0.0f) {
+		float ke = 0.67f * (dt / 0.0333f);
+		if (ke > 1.0f) ke = 1.0f;
+		m->open_y -= m->open_y * ke;
+		if (m->open_y < 1.0f && m->open_y > -1.0f) m->open_y = 0.0f;
+	}
 
 	if (m->state == 0) {                       /* ---- home carousel ---- */
 		if (el) car_navigate(m, -1);
@@ -822,10 +832,13 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		if (ea && m->overlay[m->mb_focus]) {
 			m->open = m->mb_focus;
 			m->overlay[m->open]->enabled = 1;
-			/* authored at the hidden (off-top) position; bring it on-screen to
-			 * its shown position (centered). Lua animates this slide-in. */
 			m->overlay[m->open]->tf[2] = 0;
 			m->overlay[m->open]->tf[5] = 0;
+			/* the panel slides DOWN from off-top into place, easing out (measured
+			 * against the web: the selection box travels ~585px over ~5 frames at
+			 * 30fps with per-frame factor ~0.67). Seed the slide offset; the ease
+			 * in snes_menu_update brings it to 0. World +y = screen up. */
+			m->open_y = OPEN_SLIDE;
 			m->state = 2; push_snd(m, m->sfx_decide);
 		}
 	} else if (m->state == 2) {                /* ---- open submenu ---- */
@@ -921,6 +934,8 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	 * (the web settings panels fully hide the home behind them) */
 	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
 		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
+		/* apply the slide-in offset (world +y = screen up); children follow */
+		m->overlay[m->open]->tf[5] = m->open_y;
 		snes_render_node(t, &m->home, m->overlay[m->open]);
 		if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
 		else if (m->open == 4) draw_manual_hints(m, t);
