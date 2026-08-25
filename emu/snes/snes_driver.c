@@ -18,6 +18,9 @@
 
 /* ---- LK primitives ---- */
 extern time_t current_time(void);
+/* free-running 13 MHz counter (13 ticks/us); current_time() is only 10 ms
+ * resolution, far too coarse for a per-frame dt (it beats 10/20ms at 60Hz). */
+extern unsigned gpt4_get_current_tick(void);
 extern int  zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstlen, int offset);
 extern void mtk_wdt_disable(void);
 extern void mtk_wdt_restart(void);
@@ -140,6 +143,35 @@ static void draw_osd(unsigned int *fb, unsigned int pitch, int W)
 	s_osd_ticks--;
 }
 
+/* ---- frame-time telemetry (top-left readout) ---- */
+static unsigned s_perf_render_us;    /* last frame: update+render (CPU cost) */
+static unsigned s_perf_present_us;   /* last frame: present incl. vsync wait */
+static char s_perf_str[40] = "";
+static char *u2s(char *p, unsigned v)
+{
+	char tmp[12]; int n = 0;
+	if (v == 0) { *p++ = '0'; return p; }
+	while (v) { tmp[n++] = (char)('0' + v % 10u); v /= 10u; }
+	while (n) *p++ = tmp[--n];
+	return p;
+}
+static void draw_perf(unsigned int *fb, unsigned int pitch)
+{
+	static unsigned acc_r, acc_p, n;
+	acc_r += s_perf_render_us; acc_p += s_perf_present_us; n++;
+	if (n >= 20) {
+		unsigned ar = acc_r / n, ap = acc_p / n, tot = ar + ap;
+		unsigned fps = tot ? (1000000u + tot / 2) / tot : 0;
+		char *p = s_perf_str;
+		p = u2s(p, fps); *p++ = 'f'; *p++ = ' ';
+		*p++ = 'r'; p = u2s(p, ar); *p++ = ' ';
+		*p++ = 'p'; p = u2s(p, ap); *p = 0;
+		acc_r = acc_p = n = 0;
+	}
+	if (s_perf_str[0])
+		ayaneo_text(fb, pitch, 10, 6, 2, 0xFF00FF66u, s_perf_str);
+}
+
 static void dbg(const char *msg)
 {
 	unsigned int pitch, W, H, i;
@@ -215,17 +247,18 @@ static int snes_emu_thread(void *arg)
 	ayaneo_gbc_audio_init();
 	if (s_menu.bgm) play_sound(s_menu.bgm, 1, 1);
 
-	last = (unsigned)current_time();
+	last = gpt4_get_current_tick();
 
 	for (;;) {
 		unsigned int pitch, W, H;
 		unsigned int *fb = ayaneo_canvas_back(&pitch, &W, &H);
 		snes_target t;
 		snes_input in;
-		unsigned now = (unsigned)current_time();
-		float dt = (now - last) / 1000.0f;
+		unsigned t_frame0 = gpt4_get_current_tick();
+		/* 13 MHz counter: dt in seconds = ticks / 13e6 (unsigned wrap-safe) */
+		float dt = (float)(t_frame0 - last) / 13000000.0f;
 		if (dt <= 0) dt = 0.016f; if (dt > 0.1f) dt = 0.1f;
-		last = now;
+		last = t_frame0;
 
 		in.left = PRESSED(K_LEFT); in.right = PRESSED(K_RIGHT);
 		in.up = PRESSED(K_UP); in.down = PRESSED(K_DOWN);
@@ -241,7 +274,9 @@ static int snes_emu_thread(void *arg)
 		poll_volume();
 		snes_menu_update(&s_menu, &in, dt);
 		snes_menu_render(&s_menu, &t);
+		s_perf_render_us = (gpt4_get_current_tick() - t_frame0) / 13u;
 		draw_osd(fb, pitch, (int)W);
+		draw_perf(fb, pitch);
 
 		/* start any queued one-shot SFX, then mix a frame's worth of audio
 		 * and push it to the AFE ring (keeps the ring fed ahead of the DMA) */
@@ -260,11 +295,12 @@ static int snes_emu_thread(void *arg)
 			}
 		}
 
-		ayaneo_canvas_present();   /* config_input() blocks on FRAME_DONE = vsync,
-					    * so this already paces the loop to 60Hz and
-					    * yields the CPU during the wait. An extra
-					    * thread_sleep() here would push each frame past
-					    * the vsync boundary and halve us to 30fps. */
+		{
+			unsigned t_pre = gpt4_get_current_tick();
+			ayaneo_canvas_present();   /* blocks on FRAME_DONE = vsync, pacing
+						    * the loop to 60Hz and yielding the CPU. */
+			s_perf_present_us = (gpt4_get_current_tick() - t_pre) / 13u;
+		}
 		mtk_wdt_restart();
 		{
 			static int armed;
