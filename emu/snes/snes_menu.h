@@ -21,6 +21,7 @@ typedef struct {
 	snes_rnode *menubar;          /* menubar_upper subtree in the home scene */
 	snes_rnode *mb_btn[5];        /* the 5 menubar icon buttons (cm1..cm5) */
 	snes_rnode *mb_active[5];      /* per-button cyan active-highlight sprite node */
+	snes_rnode *mb_icon[5];        /* per-button btn_icon (only this scales to 1.2 on focus) */
 	float mb_scale[5];             /* per-icon focus scale (animates toward 1.2) */
 	float mb_cell_y0[5];           /* authored button tf[5] (base for focus-down nudge) */
 	snes_rnode *mb_caption[5];     /* per-icon caption bubble (shown when focused) */

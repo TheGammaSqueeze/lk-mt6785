@@ -373,22 +373,17 @@ static float resume_open_frac(snes_menu *m)
 	return o < 0.0f ? 0.0f : (o > 1.0f ? 1.0f : o);
 }
 
-/* The rounded selection cursor (cursor_rounded / cursor_game_1..9) is a 9-slice
- * bright-cyan border the engine wraps around the focused card's `cursor` sprite
- * component (size 246x270). Corners are 32x32 curves; the 4 edges stretch to
- * w-31 / h-31; the centre (slice 5) is transparent. Ports sys_cursor.moveTo +
- * the 2.25s R,G colour pulse (blue channel stays 1). */
-static void draw_card_cursor(snes_menu *m, snes_target *t, float cx, float cy,
-			     float alpha, float dim, uint16_t img)
+/* A 9-slice selection cursor wrapping a w2xh2 box centred at (cx,cy): four 32x32
+ * corner sprites + four stretched edges (w-31 / h-31); the centre (slice 5) is
+ * transparent. sxa/sya index the atlas rects 1..9. Bright cyan with the engine's
+ * 2.25s R,G colour pulse (blue channel stays 1). Ports sys_cursor.moveTo. */
+static void draw_cursor_9slice(snes_menu *m, snes_target *t, float cx, float cy,
+			       float w2, float h2, const uint16_t *sxa,
+			       const uint16_t *sya, float alpha, float dim, uint16_t img)
 {
-	/* cursor box (card `cursor` component) and 9-slice geometry */
-	const float w2 = 246.0f, h2 = 270.0f, cw = 32.0f;
-	const float hw = w2 / 2.0f, hh = h2 / 2.0f;         /* corner offsets 123,135 */
-	const float ew = w2 - cw + 1.0f, eh = h2 - cw + 1.0f;   /* stretched edge 215,239 */
-	/* atlas rects: 1 TL,2 top,3 TR,4 left,6 right,7 BL,8 bottom,9 BR (5 = empty) */
-	static const uint16_t sxa[10] = {0,103,131,122,137,156,171,190,137,145};
-	static const uint16_t sya[10] = {0,941,987,895,941,895,941,895,847,809};
-	/* 2.25s colour pulse: R,G ramp 0.75<->1.0 (outExpo-ish, linear ok), B stays 1 */
+	const float cw = 32.0f;
+	const float hw = w2 / 2.0f, hh = h2 / 2.0f;
+	const float ew = w2 - cw + 1.0f, eh = h2 - cw + 1.0f;
 	float pt = m->clock - 2.25f * (float)((int)(m->clock / 2.25f));
 	float v = (pt < 0.5f) ? 0.75f + pt / 0.5f * 0.25f
 		: (pt < 1.25f) ? 1.0f
@@ -405,6 +400,26 @@ static void draw_card_cursor(snes_menu *m, snes_target *t, float cx, float cy,
 	CUR_CORNER(7, -hw, -hh);  CUR_EDGE(8, 0.0f, -hh, ew, cw);  CUR_CORNER(9,  hw, -hh);
 	#undef CUR_CORNER
 	#undef CUR_EDGE
+}
+
+/* rounded cursor (cursor_rounded / cursor_game_1..9) around the focused card's
+ * `cursor` component (246x270). */
+static void draw_card_cursor(snes_menu *m, snes_target *t, float cx, float cy,
+			     float alpha, float dim, uint16_t img)
+{
+	static const uint16_t sxa[10] = {0,103,131,122,137,156,171,190,137,145};
+	static const uint16_t sya[10] = {0,941,987,895,941,895,941,895,847,809};
+	draw_cursor_9slice(m, t, cx, cy, 246.0f, 270.0f, sxa, sya, alpha, dim, img);
+}
+
+/* square cursor (cursor_square: cursor_1/3/7/9 corners + cursor_game_2/4/6/8
+ * edges) around the focused menubar item's btn_menubar_active (96x70). */
+static void draw_menubar_cursor(snes_menu *m, snes_target *t, float cx, float cy,
+				float alpha, uint16_t img)
+{
+	static const uint16_t sxa[10] = {0, 69,131, 69,137,156,171, 88,137,103};
+	static const uint16_t sya[10] = {0,847,987,945,941,895,941,895,847,847};
+	draw_cursor_9slice(m, t, cx, cy, 96.0f, 70.0f, sxa, sya, alpha, 1.0f, img);
 }
 
 /* blue_a = opacity of the active (blue) card frame on top of the normal (dark)
@@ -907,6 +922,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			m->mb_btn[b] = els ? child_named(pk, els, cm[b]) : 0;
 			btn = child_named(pk, m->mb_btn[b], "button");
 			m->mb_active[b] = child_named(pk, btn, "btn_menubar_active");
+			m->mb_icon[b] = child_named(pk, btn, "btn_icon");
 			m->mb_caption[b] = child_named(pk, m->mb_btn[b], "caption_down");
 			if (m->mb_caption[b]) {
 				m->mb_caption[b]->enabled = 0;
@@ -1336,12 +1352,14 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			}
 			if (m->mb_caption[b]) m->mb_caption[b]->enabled = foc;
 			if (m->mb_btn[b]) {
+				/* sys_menubar_cm.activate scales ONLY the btn_icon to 1.2x
+				 * (outExpo); the cyan highlight + button stay at 1.0. */
 				float tgt = foc ? 1.2f : 1.0f;
 				m->mb_scale[b] += (tgt - m->mb_scale[b]) * ks;
-				m->mb_btn[b]->tf[0] = m->mb_btn[b]->tf[4] = m->mb_scale[b];
-				/* the web drops the focused cell (icon + cyan highlight) ~5 screen
-				 * px vs its authored row position; nudge tf[5] down (world -y) in
-				 * proportion to the focus scale so it tracks the grow-in. */
+				if (m->mb_icon[b])
+					m->mb_icon[b]->tf[0] = m->mb_icon[b]->tf[4] = m->mb_scale[b];
+				/* the web drops the focused cell ~5 screen px vs its authored row
+				 * position; nudge tf[5] down (world -y) with the grow-in. */
 				m->mb_btn[b]->tf[5] = m->mb_cell_y0[b]
 					- MB_FOCUS_DY * (m->mb_scale[b] - 1.0f) / 0.2f;
 			}
@@ -1451,8 +1469,14 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	draw_filmstrip(m, t);
 	if (m->state == 0) draw_hints(m, t);
 	else if (m->state == 1) {
-		if (m->mb_focus >= 0 && m->mb_focus < 5 && m->mb_btn[m->mb_focus])
+		if (m->mb_focus >= 0 && m->mb_focus < 5 && m->mb_btn[m->mb_focus]) {
 			snes_render_node(t, &m->home, m->mb_btn[m->mb_focus]);
+			/* square selection cursor around the focused item's 96x70 button
+			 * (icons cells 96px apart, first at x448; the cell drops ~5px). */
+			if (m->card_act)
+				draw_menubar_cursor(m, t, 448.0f + 96.0f * (float)m->mb_focus,
+						    64.0f, m->hl_s, m->card_act->img);
+		}
 		draw_menubar_caption(m, t);
 		draw_menubar_hints(m, t);
 	}
