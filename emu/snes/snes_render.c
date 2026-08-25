@@ -260,7 +260,10 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 	{
 		float peny = S[5];
 		float th = fe->line_height * scale;
-		if (lb->v_anchor == ANCHOR_MIDDLE) peny -= th / 2.0f;
+		/* the CLOVER format encodes vertical Center as ANCHOR_CENTER(1); treat
+		 * both that and MIDDLE(4) as vertical-centred (default Top = no offset) */
+		if (lb->v_anchor == ANCHOR_MIDDLE || lb->v_anchor == ANCHOR_CENTER)
+			peny -= th / 2.0f;
 		else if (lb->v_anchor == ANCHOR_BOTTOM) peny -= th;
 		for (p = text; *p; ) {
 			const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
