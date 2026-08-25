@@ -368,6 +368,9 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, int foc)
 				      cy - m->card_pi_wy * sc,
 				      (m->card_fw / (float)frame->sw) * sc, 1.0f);
 		}
+		/* TODO: resume/suspend-point indicators (bottom-left) - 4 empty rings
+		 * (atlas 505,51) at wx=-96..-24, wy=-108; the icon scale vs the card
+		 * frame scale still needs pinning down before they help the diff. */
 	} else {                                 /* fallback: plain framed boxart */
 		float bw = foc ? 236.0f : 200.0f, bh = bw * 160.0f / 228.0f;
 		if (foc) snes_fill_quad(t, cx, cy, bw + 18, bh + 18, 0.20f, 0.55f, 1.0f, 1.0f);
