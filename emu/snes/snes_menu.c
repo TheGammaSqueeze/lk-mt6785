@@ -343,32 +343,26 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 	}
 }
 
-/* the home HUD hint row (ports sys_hud horizontal-flow of hud_gametitle): four
- * items [dpad-up]Menu [dpad-down]Suspend Point List [SELECT]Sort [decide]Start
- * Game, each = button icon + label, laid left-to-right and centred at x=640.
- * Button icons are the authored 12/32-px atlas sprites scaled x3. */
-static void draw_hints(snes_menu *m, snes_target *t)
+/* a horizontal-flow HUD hint row (ports sys_hud): n items of button-icon +
+ * localized label, laid left-to-right and centred at cx. Icons are 12/32-px
+ * atlas sprites scaled x3. */
+typedef struct { int sx, sy, sw, sh; const char *key; } snes_hint;
+static void draw_hint_row(snes_menu *m, snes_target *t, const snes_hint *H, int n, float cx)
 {
-	static const struct { int sx, sy, sw, sh; const char *key; } H[4] = {
-		{ 85, 881, 12, 12, "sys_gametitlelist_hud_Menu" },
-		{ 57, 881, 12, 12, "sys_gametitlelist_hud_Resume" },
-		{ 88, 929, 32, 10, "sys_gametitlelist_hud_Sort" },
-		{ 481, 783, 28, 10, "sys_gametitlelist_hud_Decide" },
-	};
 	const float sc = 0.85f, gap = 6.0f, vgap = 26.0f, y = 592.0f;
-	const char *lab[4];
-	float iw[4], lw[4], total = 0, x;
+	const char *lab[6];
+	float iw[6], lw[6], total = 0, x;
 	int i;
-	if (!m->card_act) return;
-	for (i = 0; i < 4; i++) {
+	if (!m->card_act || n > 6) return;
+	for (i = 0; i < n; i++) {
 		lab[i] = snes_text(m->pk, H[i].key);
-		iw[i] = H[i].sw * 3.0f;                 /* icons authored at x3 (12->36, 32->96) */
+		iw[i] = H[i].sw * 3.0f;
 		lw[i] = snes_text_width(m->pk, m->f_s, sc, lab[i]);
 		total += iw[i] + gap + lw[i];
 	}
-	total += vgap * 3.0f;
-	x = 626.0f - total / 2.0f;               /* hud content centre (measured) */
-	for (i = 0; i < 4; i++) {
+	total += vgap * (n - 1);
+	x = cx - total / 2.0f;
+	for (i = 0; i < n; i++) {
 		snes_spr_entry ic = { m->card_act->img, (uint16_t)H[i].sx, (uint16_t)H[i].sy,
 				      (uint16_t)H[i].sw, (uint16_t)H[i].sh,
 				      (int16_t)(H[i].sw / 2), (int16_t)(H[i].sh / 2) };
@@ -377,6 +371,28 @@ static void draw_hints(snes_menu *m, snes_target *t)
 			       0xFFF2F2F2u, 0, lab[i]);
 		x += iw[i] + gap + lw[i] + vgap;
 	}
+}
+/* home carousel hints: Menu / Suspend Point List / Sort / Start Game */
+static void draw_hints(snes_menu *m, snes_target *t)
+{
+	static const snes_hint H[4] = {
+		{ 85, 881, 12, 12, "sys_gametitlelist_hud_Menu" },
+		{ 57, 881, 12, 12, "sys_gametitlelist_hud_Resume" },
+		{ 88, 929, 32, 10, "sys_gametitlelist_hud_Sort" },
+		{ 481, 783, 28, 10, "sys_gametitlelist_hud_Decide" },
+	};
+	draw_hint_row(m, t, H, 4, 626.0f);
+}
+/* menubar-focused hints: Game List / Select / Back / OK */
+static void draw_menubar_hints(snes_menu *m, snes_target *t)
+{
+	static const snes_hint H[4] = {
+		{ 57, 881, 12, 12, "sys_menubarU_hud_Gametitle" },  /* dpad down */
+		{ 71, 881, 12, 12, "sys_menubarU_hud_Select" },     /* dpad lateral */
+		{ 15, 881, 12, 12, "sys_menubarU_hud_Return" },     /* B */
+		{  1, 881, 12, 12, "sys_menubarU_hud_Decide" },     /* A */
+	};
+	draw_hint_row(m, t, H, 4, 626.0f);
 }
 
 /* ---- public ---- */
@@ -652,6 +668,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	draw_carousel(m, t);
 	draw_filmstrip(m, t);
 	if (m->state == 0) draw_hints(m, t);
+	else if (m->state == 1) draw_menubar_hints(m, t);
 
 	/* focused game name drawn into the authored title frame (SNES title font) */
 	g = game(m, m->focus);
