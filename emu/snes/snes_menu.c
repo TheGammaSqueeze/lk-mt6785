@@ -255,12 +255,12 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, int foc)
 	const snes_img_entry *im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
 	if (cx < -280 || cx > SNES_VW + 280) return;
 	if (frame) {
-		/* boxart sits in the screen window (drawn under the frame, which has a
-		 * transparent cutout there); native 84x92 frame stretched to 252x276 */
-		float bw = m->screen_w * sc;
-		float bh = im ? bw * (float)im->h / (float)im->w : m->screen_h * sc;
-		if (im) snes_blit_tex(t, m->pk, im, cx, cy - m->screen_oy * sc, bw, bh, 1.0f);
+		/* the `card` sprite is the screen BACKGROUND (blue when active, dark when
+		 * not); draw it first, then the boxart on top, stretched to the screen
+		 * window (228x204) so only the coloured border shows around it. */
+		float bw = m->screen_w * sc, bh = m->screen_h * sc;
 		snes_blit_spr(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f);
+		if (im) snes_blit_tex(t, m->pk, im, cx, cy - m->screen_oy * sc, bw, bh, 1.0f);
 		/* player-count dots along the bottom-left of the card */
 		if (m->card_dot && g) {
 			int np = g->players > 4 ? 4 : (g->players < 1 ? 1 : g->players), d;
