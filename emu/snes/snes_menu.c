@@ -328,6 +328,23 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CAR_CY     359.0f                   /* cardlist container world y=0 (+card box offset) */
 #define CAR_SC     0.91f                    /* native 252x276 -> ~230px card */
 
+/* ---- carousel D-pad auto-repeat (GUI.H tween timings) ---- */
+#define CAR_REPEAT_DELAY 0.22f  /* first held step delay */
+#define CAR_REPEAT_RATE  0.06f  /* subsequent held-step interval */
+
+/* ---- wallpaper parallax (CloverConst.BG.default, ported at 30fps) ---- */
+#define BG_STEP            0.03333333f /* fixed 30fps parallax timestep */
+#define BG_DEFAULT_SPEED   0.175f      /* DEFAULT_SCROLL_SPEED (anim units/sec) */
+#define BG_CURSOR_SPEED    1.75f       /* SCROLL_CURSOR_SPEED (first-press burst) */
+#define BG_CURSOR_ACCEL    0.2f        /* SCROLL_CURSOR_ACCEL */
+#define BG_CURSOR_DECEL    0.2f        /* SCROLL_CURSOR_DECEL */
+#define BG_CURSOR_SECONDS  0.2f        /* SCROLL_CURSOR_SECONDS (burst window) */
+#define BG_CURSOR_DELAY    0.05f       /* SCROLL_CURSOR_DELAY */
+#define BG_CURSOR_SPEED_MAX 4.0f       /* SCROLL_CURSOR_SPEED_MAX */
+/* px advanced per anim-unit: preserves the prior tuned 72 px/s base at the
+ * default speed 0.175 (72 / 0.175), so the neutral scroll is unchanged. */
+#define BG_PX_PER_UNIT     (72.0f / BG_DEFAULT_SPEED)
+
 static int ring_delta(int a, int b, int n)
 {
 	int d = (((b - a) % n) + n) % n;
@@ -687,6 +704,10 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
 	m->pl = m->pr = m->pu = m->pd = m->pa = m->pb = m->ps = 0;
 	m->sndh = m->sndt = 0; m->wall = 0;
+	m->bg_acc = 0.0f; m->scr_speed = BG_DEFAULT_SPEED; m->scr_dir = 1.0f;
+	m->cur_scroll_time = 0.0f; m->cur_scroll_spd = 0.0f;
+	m->rep_t = 0.0f; m->rep_dir = 0; m->rep_primed = 0;
+	m->car_tween = CAR_REPEAT_DELAY;
 
 	(void)i;
 	/* the real home menu (carousel + menubar) is defaultscene.scn, not the
@@ -921,12 +942,56 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 
 /* ports sys_gametitlelist navigation: walk the focused card across the dead
  * zone; at the edge pin it and scroll the strip (container shift animates back) */
+/* CloverScrollBG.ScrollLeft/ScrollRight: kick the parallax cursor burst in the
+ * nav direction (dir = -1 left / +1 right), accumulating on rapid repeats. */
+static void bg_scroll_kick(snes_menu *m, int dir)
+{
+	float s = (float)dir;
+	if (m->cur_scroll_time == 0.0f) {
+		m->cur_scroll_time = BG_CURSOR_SECONDS;
+		m->cur_scroll_spd = s * BG_CURSOR_SPEED;
+	} else {
+		m->cur_scroll_time = BG_CURSOR_SECONDS - BG_CURSOR_DELAY;
+		m->cur_scroll_spd += s * BG_CURSOR_ACCEL;
+		if (m->cur_scroll_spd > BG_CURSOR_SPEED_MAX) m->cur_scroll_spd = BG_CURSOR_SPEED_MAX;
+		else if (m->cur_scroll_spd < -BG_CURSOR_SPEED_MAX) m->cur_scroll_spd = -BG_CURSOR_SPEED_MAX;
+	}
+	m->scr_dir = s;
+}
+
+/* One fixed 30fps parallax step (ports CloverScrollBG.update_scroll). */
+static void bg_step(snes_menu *m)
+{
+	float base = m->scr_dir * BG_DEFAULT_SPEED, target;
+	m->cur_scroll_time -= BG_STEP;
+	if (m->cur_scroll_time < 0.0f) m->cur_scroll_time = 0.0f;
+	if (m->cur_scroll_time > 0.0f &&
+	    m->cur_scroll_time < BG_CURSOR_SECONDS - BG_CURSOR_DELAY) {
+		target = base + m->cur_scroll_spd;
+	} else {
+		if (m->cur_scroll_spd > 0.0f) {
+			m->cur_scroll_spd -= BG_CURSOR_DECEL;
+			if (m->cur_scroll_spd < 0.0f) m->cur_scroll_spd = 0.0f;
+		} else if (m->cur_scroll_spd < 0.0f) {
+			m->cur_scroll_spd += BG_CURSOR_DECEL;
+			if (m->cur_scroll_spd > 0.0f) m->cur_scroll_spd = 0.0f;
+		}
+		target = base + m->cur_scroll_spd;
+	}
+	/* SCROLL_SMOOTH lerp toward target by 0.125 each step */
+	m->scr_speed += (target - m->scr_speed) * 0.125f;
+	m->scroll += BG_STEP * m->scr_speed * BG_PX_PER_UNIT;
+}
+
 static void car_navigate(snes_menu *m, int dir)
 {
 	int n = m->ngames;
 	float old_sw = m->sel_world, cardShift, ns;
 	if (n <= 0) return;
 	m->focus = ((m->focus + dir) % n + n) % n;
+	bg_scroll_kick(m, dir);
+	/* card-slide tween time: first press over REPEAT_DELAY, held over REPEAT_RATE */
+	m->car_tween = m->rep_primed ? CAR_REPEAT_RATE : CAR_REPEAT_DELAY;
 	push_snd(m, m->sfx_move);
 	ns = old_sw + dir * CAR_HGAP;
 	if (ns < -CAR_DEAD) ns = -CAR_DEAD; else if (ns > CAR_DEAD) ns = CAR_DEAD;
@@ -996,8 +1061,23 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	}
 
 	if (m->state == 0) {                       /* ---- home carousel ---- */
-		if (el) car_navigate(m, -1);
-		if (er) car_navigate(m, 1);
+		/* D-pad auto-repeat: step immediately on press, then after
+		 * REPEAT_DELAY, then every REPEAT_RATE while held (GUI.H timings). */
+		int dirnow = in->right ? 1 : (in->left ? -1 : 0);
+		if (dirnow == 0) { m->rep_dir = 0; m->rep_t = 0.0f; m->rep_primed = 0; }
+		else if (dirnow != m->rep_dir) {
+			m->rep_dir = dirnow; m->rep_t = 0.0f; m->rep_primed = 0;
+			car_navigate(m, dirnow);
+		} else {
+			float thresh = m->rep_primed ? CAR_REPEAT_RATE : CAR_REPEAT_DELAY;
+			m->rep_t += dt;
+			while (m->rep_t >= thresh) {
+				m->rep_t -= thresh;
+				m->rep_primed = 1;
+				thresh = CAR_REPEAT_RATE;
+				car_navigate(m, dirnow);
+			}
+		}
 		if (eu) { m->state = 1; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; push_snd(m, m->sfx_up); }
 		if (ed && m->resume) {                 /* Down -> suspend-point menu */
 			m->resume->enabled = 1;
@@ -1090,7 +1170,8 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	/* carousel container scroll: animate cont_shift back to 0 at constant rate
 	 * (HGAP/REPEAT px/s), matching the linear scroll tween */
 	{
-		float rate = (CAR_HGAP / CAR_REPEAT) * dt;
+		float tw = m->car_tween > 0.0f ? m->car_tween : CAR_REPEAT;
+		float rate = (CAR_HGAP / tw) * dt;
 		if (m->cont_shift > 0) { m->cont_shift -= rate; if (m->cont_shift < 0) m->cont_shift = 0; }
 		else if (m->cont_shift < 0) { m->cont_shift += rate; if (m->cont_shift > 0) m->cont_shift = 0; }
 	}
@@ -1098,8 +1179,13 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	k = dt * 12.0f; if (k > 1.0f) k = 1.0f;
 	m->car_x += ((float)m->focus - m->car_x) * k;
 
-	/* wallpaper parallax scroll */
-	m->scroll += dt * 60.0f * 1.2f;
+	/* wallpaper parallax scroll (ported CloverScrollBG, fixed 30fps step). The
+	 * Suspend Point List (state 3) freezes the wallpaper: the device sleeps the
+	 * "bg" task and holds the last frame, so we simply stop stepping. */
+	if (m->state != 3) {
+		m->bg_acc += dt;
+		while (m->bg_acc >= BG_STEP) { bg_step(m); m->bg_acc -= BG_STEP; }
+	}
 }
 
 void snes_menu_render(snes_menu *m, snes_target *t)

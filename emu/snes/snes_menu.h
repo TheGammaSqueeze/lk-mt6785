@@ -49,6 +49,19 @@ typedef struct {
 	int chrome_ready;
 	float scroll;
 
+	/* wallpaper parallax (ports CloverScrollBG at a fixed 30fps step) */
+	float bg_acc;                 /* dt accumulator for the fixed 30fps parallax step */
+	float scr_speed;              /* current_scroll_speed (smoothed anim units/sec) */
+	float scr_dir;                /* scroll_dir (+1 right / -1 left, follows last nav) */
+	float cur_scroll_time;        /* cursor_scroll_time (burst window countdown) */
+	float cur_scroll_spd;         /* cursor_scroll_speed (burst magnitude, signed) */
+
+	/* carousel D-pad auto-repeat (ports GUI.H REPEAT_DELAY/REPEAT_RATE) */
+	float rep_t;                  /* time held in the current direction */
+	int   rep_dir;                /* held direction: -1 left, +1 right, 0 none */
+	int   rep_primed;             /* initial REPEAT_DELAY elapsed -> now REPEAT_RATE */
+	float car_tween;              /* current card-slide tween time (HGAP/rate) */
+
 	int focus;                    /* selected game index */
 	float car_x;                  /* legacy smooth carousel x (filmstrip) */
 	float car_target;
