@@ -614,6 +614,18 @@ static void draw_menubar_hints(snes_menu *m, snes_target *t)
 	};
 	draw_hint_row(m, t, H, 4, 626.0f);
 }
+/* A rounded-corner rectangle drawn as two overlapping quads (a full-width bar
+ * inset vertically + a full-height bar inset horizontally); the union leaves the
+ * four corners cut by radius r, matching the caption/caption_edge 9-slice bubble
+ * the web builds from authored sprites. */
+static void round_rect(snes_target *t, float cx, float cy, float w, float h, float r,
+		       float R, float G, float B, float A)
+{
+	if (r * 2.0f > w) r = w / 2.0f;
+	if (r * 2.0f > h) r = h / 2.0f;
+	snes_fill_quad(t, cx, cy, w, h - 2.0f * r, R, G, B, A);
+	snes_fill_quad(t, cx, cy, w - 2.0f * r, h, R, G, B, A);
+}
 /* The focused menubar icon's caption bubble ("Display"/"Option"/...). The
  * authored box auto-sizes/positions at runtime (our static render placed it
  * low+mis-sized), so we hid the authored box+label in init and draw it here to
@@ -650,9 +662,9 @@ static void draw_menubar_caption(snes_menu *m, snes_target *t)
 	{
 		float s = m->cap_s;
 		if (s > 0.001f) {
-			snes_fill_quad(t, cx, cy, 161.0f * s, 44.0f * s, 1.0f, 1.0f, 1.0f, 1.0f);
+			round_rect(t, cx, cy, 161.0f * s, 44.0f * s, 6.0f * s, 1.0f, 1.0f, 1.0f, 1.0f);
 			if (s * 44.0f > 6.0f)
-				snes_fill_quad(t, cx, cy, 155.0f * s, 38.0f * s, 0.0f, 0.0f, 0.0f, 1.0f);
+				round_rect(t, cx, cy, 155.0f * s, 38.0f * s, 5.0f * s, 0.0f, 0.0f, 0.0f, 1.0f);
 			{
 				uint32_t fh = snes_hash("m.font");
 				float tsc = sc, tw;
