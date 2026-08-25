@@ -26,6 +26,28 @@ static snes_rnode *child_named(const snes_pack *p, snes_rnode *par, const char *
 		if (name_eq(p, c, nm)) return c;
 	return 0;
 }
+/* recursively disable every descendant node named nm */
+static void disable_all_named(const snes_pack *p, snes_rnode *n, const char *nm)
+{
+	snes_rnode *c;
+	if (!n) return;
+	if (name_eq(p, n, nm)) n->enabled = 0;
+	for (c = n->child; c; c = c->sib) disable_all_named(p, c, nm);
+}
+/* recursively find the descendant named nm with the greatest world y (top of a
+ * vertical list = the resting-selected item) and return it */
+static snes_rnode *top_named(const snes_pack *p, snes_rnode *n, const char *nm,
+			     snes_rnode *best, float *besty)
+{
+	snes_rnode *c;
+	if (!n) return best;
+	if (name_eq(p, n, nm)) {
+		float w[6]; snes_node_world(n, w);
+		if (!best || w[5] > *besty) { best = n; *besty = w[5]; }
+	}
+	for (c = n->child; c; c = c->sib) best = top_named(p, c, nm, best, besty);
+	return best;
+}
 static const snes_game_rec *game_raw(const snes_pack *p, int idx)
 {
 	return (const snes_game_rec *)(p->base + p->game_offs[idx]);
@@ -468,6 +490,14 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			 * (label key @sys_language_USA_en). Show its blue box. */
 			if (ca2 && name_eq(pk, it, "language01")) ca2->enabled = 1;
 		}
+	}
+	/* option_settings resting state: hide the per-item focus arrows, show the
+	 * blue box on the top (default-selected) toggle item */
+	if (m->overlay[1]) {
+		float by = 0;
+		snes_rnode *sel = top_named(pk, m->overlay[1], "cursor_area", 0, &by);
+		disable_all_named(pk, m->overlay[1], "cursor");
+		if (sel) sel->enabled = 1;
 	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
 	/* roster order (title sort by default) */
