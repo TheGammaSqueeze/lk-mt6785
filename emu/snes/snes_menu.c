@@ -783,6 +783,32 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		 * (saved_card = blue fill + screen + frame + timer + icons), leaving
 		 * the recessed slot + the "No Data" empty_label */
 		disable_all_named(pk, m->resume, "saved_card");
+		/* the header cube icon + "Suspend Point List" title are both authored at
+		 * centre 640 (the runtime lays them out as a centred icon-left / text-
+		 * right group). Find the title group and shift the cube left + text right
+		 * to match web (cube centre ~467, text centre ~668). */
+		{
+			snes_rnode *st[64]; int sp = 0;
+			st[sp++] = m->resume;
+			while (sp) {
+				snes_rnode *n = st[--sp], *ch, *cube = 0, *txt = 0;
+				for (ch = n->child; ch; ch = ch->sib) {
+					const char *nm = snes_str(pk, ch->def->name);
+					if (nm && !strcmp(nm, "hud_2_label")) {
+						unsigned i;
+						for (i = 0; i < ch->def->comp_count; i++) {
+							const snes_comp *c = snes_node_comp(&m->home, ch->def, i);
+							if (c->type == COMP_LABEL) {
+								const char *tx = snes_str(pk, ((const snes_comp_label *)c)->text);
+								if (tx && !strcmp(tx, "@sys_resume_Title")) txt = ch;
+							}
+						}
+					} else if (nm && !strcmp(nm, "hud_1_sprite")) cube = ch;
+				}
+				if (txt) { txt->tf[2] += 28.0f; if (cube) cube->tf[2] -= 173.0f; break; }
+				for (ch = n->child; ch; ch = ch->sib) if (sp < 64) st[sp++] = ch;
+			}
+		}
 	}
 	/* option_display resting state (ports sys_option_display.setup): line 1
 	 * (display modes) focused, frame-line focus box hidden, selected mode 4:3
