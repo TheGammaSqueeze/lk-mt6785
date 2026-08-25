@@ -39,18 +39,26 @@ int main(int argc, char **argv)
 	t.fb = fb; t.pitch = W; t.W = W; t.H = H;
 	t.offx = (W - SNES_VW) / 2; t.offy = (H - SNES_VH) / 2;
 
-	memset(&in, 0, sizeof(in));
-	for (i = 0; i < frames; i++) {
-		/* apply one nav key on its frame (pressed one frame, released next) */
+	/* Drive the nav sequence like real hardware: each key is pressed for one
+	 * frame then released, followed by settle frames so animations/transitions
+	 * complete and repeated same-keys still edge-trigger. `frames` is the
+	 * settle count per key (and the final settle). */
+	{
+		int settle = frames > 0 ? frames : 30, j, s;
+		size_t ni;
 		memset(&in, 0, sizeof(in));
-		if (i < (int)strlen(nav)) {
-			char c = nav[i];
+		for (s = 0; s < settle; s++) snes_menu_update(&menu, &in, 1.0f / 60.0f);
+		for (ni = 0; ni < strlen(nav); ni++) {
+			char c = nav[ni];
+			memset(&in, 0, sizeof(in));
 			if (c == 'L') in.left = 1; else if (c == 'R') in.right = 1;
 			else if (c == 'U') in.up = 1; else if (c == 'D') in.down = 1;
 			else if (c == 'A') in.a = 1; else if (c == 'B') in.b = 1;
 			else if (c == 'S') in.select = 1; else if (c == 'T') in.start = 1;
+			snes_menu_update(&menu, &in, 1.0f / 60.0f);   /* pressed 1 frame */
+			memset(&in, 0, sizeof(in));
+			for (j = 0; j < settle; j++) snes_menu_update(&menu, &in, 1.0f / 60.0f);
 		}
-		snes_menu_update(&menu, &in, 1.0f / 60.0f);
 	}
 	/* clear letterbox + render final frame */
 	for (i = 0; i < W * H; i++) fb[i] = 0xFF000000u;

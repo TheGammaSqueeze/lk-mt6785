@@ -228,16 +228,29 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 	}
 }
 
-/* ---- carousel ---- */
-#define CAR_HGAP  262.0f
-#define CAR_CY    338.0f
+/* ---- carousel (ring + dead-zone, ports sys_gametitlelist) ----
+ * The focused card rests at world x = SLOT_X (screen 247, left-of-centre). Cards
+ * lie on a ring: card j at selWorld + HGAP*ringDelta(focus,j). Navigation walks
+ * the focused card across the dead zone [-DEAD,+DEAD]; at the edge the whole
+ * strip scrolls instead (container shift animates back to 0 at HGAP/REPEAT). */
+#define CAR_HGAP   262.0f
+#define CAR_SLOT_X (-393.0f)
+#define CAR_DEAD   (CAR_HGAP * 1.5f)
+#define CAR_REPEAT 0.24f
+#define CAR_CY     344.0f
+#define CAR_SC     0.91f                    /* native 252x276 -> ~230px card */
 
-static void draw_card(snes_menu *m, snes_target *t, int gi, int focus)
+static int ring_delta(int a, int b, int n)
+{
+	int d = (((b - a) % n) + n) % n;
+	if (d > n / 2) d -= n;
+	return d;
+}
+
+static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, int foc)
 {
 	const snes_game_rec *g = game(m, gi);
-	float cx = 640.0f + (gi - m->car_x) * CAR_HGAP, cy = CAR_CY;
-	int foc = (gi == focus);
-	float sc = foc ? 0.92f : 0.78f;         /* focused card larger */
+	float cy = CAR_CY, sc = CAR_SC;
 	const snes_spr_entry *frame = foc ? m->card_act : m->card_norm;
 	const snes_img_entry *im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
 	if (cx < -280 || cx > SNES_VW + 280) return;
@@ -268,10 +281,18 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, int focus)
 }
 static void draw_carousel(snes_menu *m, snes_target *t)
 {
-	int c = (int)(m->car_x + (m->car_x >= 0 ? 0.5f : -0.5f)), d;
-	if (m->ngames <= 0) return;
-	for (d = 5; d >= 1; d--) { draw_card(m, t, c - d, m->focus); draw_card(m, t, c + d, m->focus); }
-	draw_card(m, t, m->focus, m->focus);
+	int n = m->ngames, j;
+	if (n <= 0) return;
+	/* painter's order: draw non-focused first, focused last (on top) */
+	for (j = 0; j < n; j++) {
+		float wx, cx;
+		if (j == m->focus) continue;
+		wx = m->sel_world + CAR_HGAP * (float)ring_delta(m->focus, j, n) + m->cont_shift;
+		cx = 640.0f + wx;
+		if (cx < -280 || cx > SNES_VW + 280) continue;
+		draw_card(m, t, j, cx, 0);
+	}
+	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1);
 }
 
 /* ---- bottom thumbnail filmstrip (Lua-instantiated in the web app) ---- */
@@ -338,6 +359,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
 	m->chrome = chrome; m->chrome_ready = 0;
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
+	m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
 	m->pl = m->pr = m->pu = m->pd = m->pa = m->pb = m->ps = 0;
 	m->sndh = m->sndt = 0; m->wall = 0;
 
@@ -433,6 +455,22 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	return 0;
 }
 
+/* ports sys_gametitlelist navigation: walk the focused card across the dead
+ * zone; at the edge pin it and scroll the strip (container shift animates back) */
+static void car_navigate(snes_menu *m, int dir)
+{
+	int n = m->ngames;
+	float old_sw = m->sel_world, cardShift, ns;
+	if (n <= 0) return;
+	m->focus = ((m->focus + dir) % n + n) % n;
+	push_snd(m, m->sfx_move);
+	ns = old_sw + dir * CAR_HGAP;
+	if (ns < -CAR_DEAD) ns = -CAR_DEAD; else if (ns > CAR_DEAD) ns = CAR_DEAD;
+	m->sel_world = ns;
+	cardShift = (m->sel_world - old_sw) - dir * CAR_HGAP;   /* 0 walk, -dir*HGAP scroll */
+	m->cont_shift = -cardShift;                            /* animates back to 0 */
+}
+
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 {
 	float k;
@@ -441,8 +479,8 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	int ea = in->a && !m->pa, eb = in->b && !m->pb;
 
 	if (m->state == 0) {                       /* ---- home carousel ---- */
-		if (el) { m->focus--; push_snd(m, m->sfx_move); }
-		if (er) { m->focus++; push_snd(m, m->sfx_move); }
+		if (el) car_navigate(m, -1);
+		if (er) car_navigate(m, 1);
 		if (eu) { m->state = 1; push_snd(m, m->sfx_up); }
 		if (ed && m->resume) {                 /* Down -> suspend-point menu */
 			m->resume->enabled = 1;
@@ -459,6 +497,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				for (k = 0; k < m->ngames; k++)
 					if (game(m, k) == cur) { m->focus = k; m->car_x = k; break; }
 			}
+			m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
 			m->sort_label_t = 1.5f;
 			push_snd(m, m->sfx_decide);
 		}
@@ -518,11 +557,16 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		}
 	}
 
-	/* smooth carousel scroll toward the focused index */
+	/* carousel container scroll: animate cont_shift back to 0 at constant rate
+	 * (HGAP/REPEAT px/s), matching the linear scroll tween */
+	{
+		float rate = (CAR_HGAP / CAR_REPEAT) * dt;
+		if (m->cont_shift > 0) { m->cont_shift -= rate; if (m->cont_shift < 0) m->cont_shift = 0; }
+		else if (m->cont_shift < 0) { m->cont_shift += rate; if (m->cont_shift > 0) m->cont_shift = 0; }
+	}
+	/* filmstrip smooth index follow */
 	k = dt * 12.0f; if (k > 1.0f) k = 1.0f;
 	m->car_x += ((float)m->focus - m->car_x) * k;
-	if (m->car_x > m->focus - 0.002f && m->car_x < m->focus + 0.002f)
-		m->car_x = (float)m->focus;
 
 	/* wallpaper parallax scroll */
 	m->scroll += dt * 60.0f * 1.2f;

@@ -42,8 +42,10 @@ typedef struct {
 	float scroll;
 
 	int focus;                    /* selected game index */
-	float car_x;                  /* current carousel x (for smooth scroll) */
-	float car_target;             /* target carousel x */
+	float car_x;                  /* legacy smooth carousel x (filmstrip) */
+	float car_target;
+	float sel_world;              /* focused card world x (walks the dead zone) */
+	float cont_shift;             /* container scroll offset, animates back to 0 */
 
 	/* authored game-card frame (from sys_game_card.scn): the cartridge-display
 	 * sprite drawn around each boxart. active = focused, norm = unfocused. */
