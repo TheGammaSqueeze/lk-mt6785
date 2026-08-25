@@ -480,6 +480,17 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->overlay[3] = snes_scene_find(&m->home, "copyright");
 	m->overlay[4] = snes_scene_find(&m->home, "manual");
 	m->resume = snes_scene_find(&m->home, "resumemenu");
+	/* resume empty (no-save) resting state: hide the overlapping changemode
+	 * animation card-sets + the emptymode explanation, leaving the cardlist's
+	 * four "No Data" slots (sys_resumemenu empty branch). */
+	if (m->resume) {
+		disable_all_named(pk, m->resume, "changemode");
+		disable_all_named(pk, m->resume, "emptymode");
+		/* in the empty state each card hides its whole saved-data view
+		 * (saved_card = blue fill + screen + frame + timer + icons), leaving
+		 * the recessed slot + the "No Data" empty_label */
+		disable_all_named(pk, m->resume, "saved_card");
+	}
 	/* option_display resting state (ports sys_option_display.setup): line 1
 	 * (display modes) focused, frame-line focus box hidden, selected mode 4:3
 	 * shows its blue selection box (cursor_area). */
