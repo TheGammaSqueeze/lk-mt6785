@@ -680,13 +680,41 @@ def main():
         res_map[r["id"]] = (RES_SCENEANIM, len(anim_entries))
         anim_entries.append((dur, tracks_off, len(track_recs)))
 
-    # ---- sprite animations (SpriteAnimationResource): registered, empty body ----
+    # ---- sprite animations (SpriteAnimationResource): frame lists ----
+    # Each .spriteanim = {sprite_sheet:"sheet_<guid>", frames:[[ms,"name.png"],...]}.
+    # A frame's sprite id is "<guid>.<name>" (how SpriteResources are keyed), so
+    # map each frame name to its packed spr index and emit snes_sanim_frame[].
     sanim_entries = []
     for r in resources:
         if r["type"] != "SpriteAnimationResource":
             continue
+        frame_off = 0
+        fcount = 0
+        p = rp(r["path"]) if r.get("path") else None
+        if p and os.path.exists(p):
+            try:
+                sj = json.load(open(p))
+            except Exception:
+                sj = None
+            if sj:
+                sheet = sj.get("sprite_sheet", "")
+                guid = sheet[6:] if sheet.startswith("sheet_") else sheet
+                recs = []
+                for fr in sj.get("frames", []):
+                    if not isinstance(fr, (list, tuple)) or len(fr) < 2:
+                        continue
+                    sid = guid + "." + str(fr[1])
+                    ent = res_map.get(sid)
+                    if ent and ent[0] == RES_SPRITE:
+                        recs.append((float(fr[0]), ent[1]))
+                if recs:
+                    blob.align(4)
+                    frame_off = blob.tell()
+                    for (ms, spr) in recs:
+                        blob.write(struct.pack("<fHH", ms, spr, 0))
+                    fcount = len(recs)
         res_map[r["id"]] = (RES_SPRITEANIM, len(sanim_entries))
-        sanim_entries.append((0, 0, 0))
+        sanim_entries.append((0, fcount, frame_off))
 
     # ---- scenes ----
     scene_entries = []
