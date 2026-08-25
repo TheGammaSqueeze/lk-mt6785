@@ -33,6 +33,9 @@ void snes_blit_spr(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp
 void snes_blit_spr_tint(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp,
 			float cx, float cy, float scale, float alpha,
 			float tr, float tg, float tb);
+void snes_blit_spr_tint_flip(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp,
+			     float cx, float cy, float scale, float alpha,
+			     float tr, float tg, float tb, int hflip, int vflip);
 void snes_blit_tex_tint(snes_target *t, const snes_pack *pk, const snes_img_entry *im,
 			float cx, float cy, float w, float h, float alpha,
 			float tr, float tg, float tb);

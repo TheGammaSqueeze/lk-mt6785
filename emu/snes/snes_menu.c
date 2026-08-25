@@ -473,17 +473,19 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 		if (im) snes_blit_tex(t, m->pk, im, cx, ccy, TH_SIZE, TH_SIZE, 1.0f);
 	}
 	/* Animated downward-chevron cursor over the selected filmstrip icon
-	 * (cursor_v.spriteanim: dot_cursor_v_1/2/3, 16x8, a 13-frame blink at 30fps
-	 * pulsing full->faint->full). Atlas: _1=182,929  _2=200,929  _3=127,881. */
+	 * (cursor_node: cursor_thumbnails.spriteanim, curor_thumbnail_1/2/3, 12x8,
+	 * pivot 6,4). The node is scaled 3x with scaleY -3 (vertical flip), so the
+	 * authored up-pointing arrowhead renders pointing DOWN onto the thumbnail.
+	 * 13-frame 30fps blink pulsing full(1)->line(3)->full. Atlas: _1=145,881
+	 * _2=159,881  _3=173,881. Cyan tint (63,191,255). */
 	ccx = TH_X0 + TH_SPACING * (float)m->focus;
 	if (m->card_act) {
 		static const uint16_t seq[13] = { 0,1,1,1,1,2,2,2,1,1,0,0,0 };
-		static const uint16_t sx[3] = { 182, 200, 127 };
-		static const uint16_t sy[3] = { 929, 929, 881 };
+		static const uint16_t sx[3] = { 145, 159, 173 };
 		int fr = seq[((int)(m->clock / 0.03333f)) % 13];
-		snes_spr_entry cur = { m->card_act->img, sx[fr], sy[fr], 16, 8, 8, 8 };
-		snes_blit_spr_tint(t, m->pk, &cur, ccx, 510.0f, 2.5f, 1.0f,
-				   63.0f / 255.0f, 191.0f / 255.0f, 1.0f);
+		snes_spr_entry cur = { m->card_act->img, sx[fr], 881, 12, 8, 6, 4 };
+		snes_blit_spr_tint_flip(t, m->pk, &cur, ccx, 511.0f, 3.0f, 1.0f,
+					63.0f / 255.0f, 191.0f / 255.0f, 1.0f, 0, 1);
 	}
 }
 
