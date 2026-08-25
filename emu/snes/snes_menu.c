@@ -340,6 +340,15 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			m->state = 2; push_snd(m, m->sfx_decide);
 		}
 	} else if (m->state == 2) {                /* ---- open submenu ---- */
+		/* Language screen (cm3): L/R pick a locale, re-localizing all text live */
+		if (m->open == 2 && (el || er)) {
+			snes_pack *mp = (snes_pack *)m->pk;
+			int nl = (int)mp->hdr->str_count;
+			if (nl > 0) {
+				mp->locale = (mp->locale + (er ? 1 : nl - 1)) % nl;
+				push_snd(m, m->sfx_move);
+			}
+		}
 		if (eb) {
 			if (m->open >= 0 && m->overlay[m->open])
 				m->overlay[m->open]->enabled = 0;
