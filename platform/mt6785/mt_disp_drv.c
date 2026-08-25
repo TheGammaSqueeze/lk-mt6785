@@ -1343,6 +1343,14 @@ void video_rainbow_boot_start(void)
 	s_anim_complete = 0;
 	s_fade_request = 0;
 
+#ifdef AYANEO_SNES
+	/* SNES build: skip the video boot animation + chime by default and go
+	 * straight into the menu (no thread, no chime). */
+	s_anim_complete = 1;
+	s_rainbow_exited = 1;
+	return;
+#endif
+
 #ifdef AYANEO_GBC
 	/* Skip the animation + chime and hand off immediately when: Select is held,
 	 * the persisted "skip boot" setting is on, or this is a charger-insert
