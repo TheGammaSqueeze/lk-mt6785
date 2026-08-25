@@ -499,9 +499,14 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		snes_rnode *fn = ef ? child_named(pk, ef, "focused_node") : 0;
 		snes_rnode *el = child_named(pk, m->overlay[0], "elements");
 		snes_rnode *sel = el ? child_named(pk, el, "item_4_3") : 0;
-		snes_rnode *ca = sel ? child_named(pk, sel, "cursor_area") : 0;
+		snes_rnode *ca = sel ? child_named(pk, sel, "cursor_area") : 0, *it;
 		if (fn) fn->enabled = 0;               /* hide Frame-line blue bar */
 		if (ca) ca->enabled = 1;               /* blue box on selected 4:3 */
+		/* disable the authored `cursor` dots (drawn as radiobtn in render) */
+		for (it = el ? el->child : 0; it; it = it->sib) {
+			snes_rnode *c2 = child_named(pk, it, "cursor");
+			if (c2) c2->enabled = 0;
+		}
 	}
 	/* option_languages resting state: `cursor` is the per-item focus ARROW
 	 * (shown on all -> hide); enable `cursor_area` (blue box) on the selected
