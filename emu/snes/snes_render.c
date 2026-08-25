@@ -64,6 +64,60 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	int axis = (b == 0.0f && c == 0.0f && a != 0.0f && dd != 0.0f);
 	float inv_a = axis ? 1.0f / a : 0, inv_d = axis ? 1.0f / dd : 0;
 	float du = axis ? inv_a / d->dw : 0;   /* u increment per X (no per-pixel divide) */
+	if (axis && !d->is_quad && !d->tile) {
+		/* Fast axis-aligned path (every sprite/texture blit in the menu). v is
+		 * constant per row, so iy + the source row pointer hoist out of the pixel
+		 * loop; the source x advances by a fixed 16.16 step - no per-pixel float
+		 * mul or float->int convert. Keeps the opaque write-through fast path. */
+		int sxlo = d->sx << 16, sxhi = (d->sx + d->sw) << 16;
+		for (Y = y0; Y < y1; Y++) {
+			uint32_t *row = t->fb + (unsigned)(t->offy + Y) * t->pitch + t->offx;
+			float fy = (float)Y + 0.5f - f;
+			float vv = (fy * inv_d + d->py) / d->dh;
+			float sv, u0, su0f, sustepf;
+			const uint8_t *srow;
+			int iy, su, sustep;
+			if (d->vflip) vv = 1.0f - vv;
+			if (vv < 0.0f || vv >= 1.0f) continue;
+			sv = d->sy + vv * d->sh;
+			iy = (int)sv; if (iy < 0) iy = 0; if (iy >= d->img_h) iy = d->img_h - 1;
+			srow = d->pix + (unsigned)iy * d->img_w * bpp;
+			u0 = (((float)x0 + 0.5f - e) * inv_a + d->px) / d->dw;
+			if (!d->hflip) { su0f = d->sx + u0 * d->sw;          sustepf =  du * d->sw; }
+			else           { su0f = d->sx + (1.0f - u0) * d->sw; sustepf = -du * d->sw; }
+			su = (int)(su0f * 65536.0f); sustep = (int)(sustepf * 65536.0f);
+			for (X = x0; X < x1; X++, su += sustep) {
+				int sr, sg, sb, sa, af, ix;
+				const uint8_t *sp;
+				if (su < sxlo || su >= sxhi) continue;
+				ix = su >> 16; if (ix >= d->img_w) ix = d->img_w - 1;
+				sp = srow + (unsigned)ix * bpp;
+				src_rgba(sp, d->rgb565, &sr, &sg, &sb, &sa);
+				if (sa == 0) continue;
+				sr = (sr * tr) >> 8; sg = (sg * tg) >> 8; sb = (sb * tb) >> 8;
+				af = (sa * ta) >> 8; if (af <= 0) continue; if (af > 255) af = 255;
+				if (af == 255 && !d->additive) {
+					row[X] = 0xff000000u | ((unsigned)sr << 16)
+					       | ((unsigned)sg << 8) | (unsigned)sb;
+					continue;
+				}
+				{
+					uint32_t dst = row[X];
+					int dr = (dst >> 16) & 0xff, dg = (dst >> 8) & 0xff, db = dst & 0xff;
+					if (d->additive) {
+						dr += (sr * af) >> 8; dg += (sg * af) >> 8; db += (sb * af) >> 8;
+					} else {
+						int ia = 255 - af;
+						dr = (sr * af + dr * ia + 127) / 255;
+						dg = (sg * af + dg * ia + 127) / 255;
+						db = (sb * af + db * ia + 127) / 255;
+					}
+					if (dr > 255) dr = 255; if (dg > 255) dg = 255; if (db > 255) db = 255;
+					row[X] = 0xff000000u | ((unsigned)dr << 16) | ((unsigned)dg << 8) | (unsigned)db;
+				}
+			}
+		}
+	} else
 	for (Y = y0; Y < y1; Y++) {
 		uint32_t *row = t->fb + (unsigned)(t->offy + Y) * t->pitch + t->offx;
 		float fy = (float)Y + 0.5f - f;
@@ -112,6 +166,14 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 			af = (sa * ta) >> 8;
 			if (af <= 0) continue;
 			if (af > 255) af = 255;
+			/* opaque fast path: fully-covered, non-additive pixels (the bulk of
+			 * the card frames + box art) need no destination read or blend -
+			 * just write. Avoids a framebuffer read + the blend math per pixel. */
+			if (af == 255 && !d->additive) {
+				row[X] = 0xff000000u | ((unsigned)sr << 16)
+				       | ((unsigned)sg << 8) | (unsigned)sb;
+				continue;
+			}
 			dst = row[X];
 			dr = (dst >> 16) & 0xff; dg = (dst >> 8) & 0xff; db = dst & 0xff;
 			if (d->additive) {

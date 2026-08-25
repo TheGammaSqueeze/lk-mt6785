@@ -1,5 +1,16 @@
 #include "snes_menu.h"
 
+/* ---- optional per-phase render profiler ----
+ * The driver sets g_perf_tick to a free-running counter (13 MHz on device); the
+ * home render records each phase's elapsed ticks into g_perf[]. Zero cost when
+ * g_perf_tick is NULL (host / release without the hook). */
+unsigned (*g_perf_tick)(void) = 0;
+unsigned g_perf[8];              /* 0 wp, 1 chrome, 2 carousel, 3 filmstrip, 4 rest */
+static unsigned g_perf_last;
+#define PERF_BEGIN() do { if (g_perf_tick) g_perf_last = g_perf_tick(); } while (0)
+#define PERF_END(i)  do { if (g_perf_tick) { unsigned n_ = g_perf_tick(); \
+	g_perf[i] = n_ - g_perf_last; g_perf_last = n_; } } while (0)
+
 /* ---- small helpers ---- */
 static const snes_scene_entry *scene_by_name(const snes_pack *p, const char *want)
 {
@@ -1457,7 +1468,9 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		return;
 	}
 
+	PERF_BEGIN();
 	draw_wp(m, t, (int)m->scroll);
+	PERF_END(0);
 	/* Home + menubar + resume all use the cached home chrome (the full-scene
 	 * re-render was a big per-frame cost; the menubar even re-rendered the cards
 	 * that draw_carousel then overpaints). The menubar's live bits (focus
@@ -1465,8 +1478,11 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	 * subtree on top of the chrome below. */
 	if (!m->homemenu) snes_render_scene(t, &m->home);
 	else              draw_chrome(m, t);
+	PERF_END(1);
 	draw_carousel(m, t);
+	PERF_END(2);
 	draw_filmstrip(m, t);
+	PERF_END(3);
 	if (m->state == 0) draw_hints(m, t);
 	else if (m->state == 1) {
 		if (m->mb_focus >= 0 && m->mb_focus < 5 && m->mb_btn[m->mb_focus]) {
@@ -1512,4 +1528,5 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		m->resume->tf[5] = m->open_y;   /* slide-up-from-bottom offset */
 		snes_render_node(t, &m->home, m->resume);
 	}
+	PERF_END(4);
 }

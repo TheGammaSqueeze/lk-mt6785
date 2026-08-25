@@ -144,6 +144,9 @@ static void draw_osd(unsigned int *fb, unsigned int pitch, int W)
 }
 
 /* ---- frame-time telemetry (top-left readout) ---- */
+extern unsigned (*g_perf_tick)(void);  /* snes_menu.c per-phase profiler hook */
+extern unsigned g_perf[8];             /* 0 wp,1 chrome,2 carousel,3 filmstrip,4 rest */
+static unsigned perf_tick(void) { return gpt4_get_current_tick(); }
 static unsigned s_perf_render_us;    /* last frame: update+render (CPU cost) */
 static unsigned s_perf_present_us;   /* last frame: present incl. vsync wait */
 static char s_perf_str[40] = "";
@@ -155,10 +158,13 @@ static char *u2s(char *p, unsigned v)
 	while (n) *p++ = tmp[--n];
 	return p;
 }
+static char s_perf_str2[48] = "";
 static void draw_perf(unsigned int *fb, unsigned int pitch)
 {
-	static unsigned acc_r, acc_p, n;
+	static unsigned acc_r, acc_p, n, ap0, ap1, ap2, ap3, ap4;
 	acc_r += s_perf_render_us; acc_p += s_perf_present_us; n++;
+	ap0 += g_perf[0]/13; ap1 += g_perf[1]/13; ap2 += g_perf[2]/13;
+	ap3 += g_perf[3]/13; ap4 += g_perf[4]/13;
 	if (n >= 20) {
 		unsigned ar = acc_r / n, ap = acc_p / n, tot = ar + ap;
 		unsigned fps = tot ? (1000000u + tot / 2) / tot : 0;
@@ -166,10 +172,18 @@ static void draw_perf(unsigned int *fb, unsigned int pitch)
 		p = u2s(p, fps); *p++ = 'f'; *p++ = ' ';
 		*p++ = 'r'; p = u2s(p, ar); *p++ = ' ';
 		*p++ = 'p'; p = u2s(p, ap); *p = 0;
-		acc_r = acc_p = n = 0;
+		p = s_perf_str2;
+		*p++='w'; p=u2s(p,ap0/n); *p++=' ';
+		*p++='c'; p=u2s(p,ap1/n); *p++=' ';
+		*p++='r'; p=u2s(p,ap2/n); *p++=' ';
+		*p++='f'; p=u2s(p,ap3/n); *p++=' ';
+		*p++='o'; p=u2s(p,ap4/n); *p=0;
+		acc_r = acc_p = n = ap0 = ap1 = ap2 = ap3 = ap4 = 0;
 	}
-	if (s_perf_str[0])
+	if (s_perf_str[0]) {
 		ayaneo_text(fb, pitch, 10, 6, 2, 0xFF00FF66u, s_perf_str);
+		ayaneo_text(fb, pitch, 10, 26, 2, 0xFF00FF66u, s_perf_str2);
+	}
 }
 
 static void dbg(const char *msg)
@@ -247,6 +261,7 @@ static int snes_emu_thread(void *arg)
 	ayaneo_gbc_audio_init();
 	if (s_menu.bgm) play_sound(s_menu.bgm, 1, 1);
 
+	g_perf_tick = perf_tick;      /* enable the render per-phase profiler */
 	last = gpt4_get_current_tick();
 
 	for (;;) {
