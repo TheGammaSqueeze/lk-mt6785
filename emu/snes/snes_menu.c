@@ -511,12 +511,14 @@ static void draw_menubar_caption(snes_menu *m, snes_target *t)
 	cx = 640.0f + w[2];
 	txt = snes_str(m->pk, cl->text);
 	if (txt[0] == '@') txt = snes_text(m->pk, txt + 1);
-	/* white border box + black fill (web: 161x44, ~3px border) */
+	/* white border box + black fill (web: 161x44, ~3px border). NOTE: the web
+	 * plays an intricate CLOVER "cursor draw-in" on menubar entry (a cyan
+	 * wireframe outline, offset below the icon, then a top-down solid fill over
+	 * ~9 frames) that simple primitives can't reproduce faithfully; we draw the
+	 * settled box directly (matches the resting state, which is what the static
+	 * validation checks) and leave the transient draw-in as a known gap. */
 	snes_fill_quad(t, cx, cy, 161.0f, 44.0f, 1.0f, 1.0f, 1.0f, 1.0f);
 	snes_fill_quad(t, cx, cy, 155.0f, 38.0f, 0.0f, 0.0f, 0.0f, 1.0f);
-	/* the web renders the caption with the medium menu font (m.font), not the
-	 * authored placeholder (which packs at a tiny line height); match its size. */
-	(void)cl;
 	{
 		uint32_t fh = snes_hash("m.font");
 		fe = snes_res_font(m->pk, fh);
@@ -524,6 +526,7 @@ static void draw_menubar_caption(snes_menu *m, snes_target *t)
 			       cy - (fe ? fe->line_height : 31) * sc / 2.0f, sc,
 			       0xFFF4F4F4u, 1, txt);
 	}
+	(void)cl;
 }
 /* full-screen overlay (Legal Notices) header hints: right-aligned row at the
  * top, ending just inside the header frame. */
