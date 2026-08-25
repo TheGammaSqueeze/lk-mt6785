@@ -511,12 +511,13 @@ static void draw_menubar_caption(snes_menu *m, snes_target *t)
 	cx = 640.0f + w[2];
 	txt = snes_str(m->pk, cl->text);
 	if (txt[0] == '@') txt = snes_text(m->pk, txt + 1);
-	/* white border box + black fill (web: 161x44, ~3px border). NOTE: the web
-	 * plays an intricate CLOVER "cursor draw-in" on menubar entry (a cyan
-	 * wireframe outline, offset below the icon, then a top-down solid fill over
-	 * ~9 frames) that simple primitives can't reproduce faithfully; we draw the
-	 * settled box directly (matches the resting state, which is what the static
-	 * validation checks) and leave the transient draw-in as a known gap. */
+	/* white border box + black fill (web: 161x44, ~3px border). The web plays an
+	 * intricate CLOVER "cursor draw-in" on menubar entry (a cyan wireframe that
+	 * traces/fills over ~10 frames in a pattern that doesn't reduce to top-down
+	 * or bottom-up fill - three reverse-engineering attempts from screenshots
+	 * failed). Faithfully reproducing it needs the real CLOVER cursor animator,
+	 * not fill-quads; we draw the settled box (matches the resting state that the
+	 * static validation checks) and leave the transient draw-in as a known gap. */
 	snes_fill_quad(t, cx, cy, 161.0f, 44.0f, 1.0f, 1.0f, 1.0f, 1.0f);
 	snes_fill_quad(t, cx, cy, 155.0f, 38.0f, 0.0f, 0.0f, 0.0f, 1.0f);
 	{
