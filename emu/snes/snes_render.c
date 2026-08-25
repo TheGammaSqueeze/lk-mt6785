@@ -194,6 +194,23 @@ static void screen_matrix(const float m[6], float S[6])
 }
 
 /* ---- BMFont text (axis-aligned: translation + scale from the world matrix) ---- */
+/* decode one UTF-8 codepoint from *p, advancing *p past it (labels are UTF-8:
+ * accented Latin + Cyrillic glyphs are keyed by Unicode codepoint in the font). */
+static uint32_t utf8_next(const char **pp)
+{
+	const uint8_t *p = (const uint8_t *)*pp;
+	uint32_t c = *p++;
+	if (c >= 0xF0 && (p[0] & 0xC0) == 0x80 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+		c = ((c & 0x07) << 18) | ((p[0] & 0x3F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F); p += 3;
+	} else if (c >= 0xE0 && (p[0] & 0xC0) == 0x80 && (p[1] & 0xC0) == 0x80) {
+		c = ((c & 0x0F) << 12) | ((p[0] & 0x3F) << 6) | (p[1] & 0x3F); p += 2;
+	} else if (c >= 0xC0 && (p[0] & 0xC0) == 0x80) {
+		c = ((c & 0x1F) << 6) | (p[0] & 0x3F); p += 1;
+	}
+	*pp = (const char *)p;
+	return c;
+}
+
 static const snes_glyph *glyph_find(const snes_font_entry *fe, const snes_glyph *g, uint32_t cp)
 {
 	int lo = 0, hi = fe->glyph_count - 1;
@@ -233,8 +250,8 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 	scale = S[0] < 0 ? -S[0] : S[0];         /* uniform-ish scale for text */
 	if (scale < 0.01f) scale = 1.0f;
 	/* measure for anchor */
-	for (p = text; *p; p++) {
-		const snes_glyph *g = glyph_find(fe, glyphs, (uint8_t)*p);
+	for (p = text; *p; ) {
+		const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
 		wpx += g ? g->xadv : 12;
 	}
 	penx = S[4];
@@ -245,8 +262,8 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 		float th = fe->line_height * scale;
 		if (lb->v_anchor == ANCHOR_MIDDLE) peny -= th / 2.0f;
 		else if (lb->v_anchor == ANCHOR_BOTTOM) peny -= th;
-		for (p = text; *p; p++) {
-			const snes_glyph *g = glyph_find(fe, glyphs, (uint8_t)*p);
+		for (p = text; *p; ) {
+			const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
 			if (!g) { penx += 12 * scale; continue; }
 			if (g->w > 0) {
 				snes_draw d;
@@ -276,8 +293,8 @@ float snes_text_width(const snes_pack *pk, uint32_t font_hash, float scale, cons
 	float w = 0;
 	if (!fe || !text) return 0;
 	glyphs = (const snes_glyph *)(pk->base + fe->glyphs);
-	for (p = text; *p; p++) {
-		const snes_glyph *g = glyph_find(fe, glyphs, (uint8_t)*p);
+	for (p = text; *p; ) {
+		const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
 		w += g ? g->xadv : 8;
 	}
 	return w * scale;
@@ -301,15 +318,15 @@ void snes_draw_text(snes_target *t, const snes_pack *pk, uint32_t font_hash,
 	glyphs = (const snes_glyph *)(pk->base + fe->glyphs);
 	col[0] = ((argb >> 16) & 0xff) / 255.0f; col[1] = ((argb >> 8) & 0xff) / 255.0f;
 	col[2] = (argb & 0xff) / 255.0f; col[3] = ((argb >> 24) & 0xff) / 255.0f;
-	for (p = text; *p; p++) {
-		const snes_glyph *g = glyph_find(fe, glyphs, (uint8_t)*p);
+	for (p = text; *p; ) {
+		const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
 		wpx += g ? g->xadv : 8;
 	}
 	penx = x;
 	if (align == 1) penx -= wpx * scale / 2.0f;
 	else if (align == 2) penx -= wpx * scale;
-	for (p = text; *p; p++) {
-		const snes_glyph *g = glyph_find(fe, glyphs, (uint8_t)*p);
+	for (p = text; *p; ) {
+		const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
 		if (!g) { penx += 8 * scale; continue; }
 		if (g->w > 0) {
 			snes_draw d; float gm[6];
