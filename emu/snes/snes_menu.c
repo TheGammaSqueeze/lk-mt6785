@@ -801,6 +801,13 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	/* manual overlay: hide the runtime-laid-out header Back hint (drawn
 	 * synthetically, see draw_manual_hints) so it doesn't collapse/garble. */
 	if (m->overlay[4]) disable_all_named(pk, m->overlay[4], "hud_item1_cancel");
+	/* The manual body group ("all": the QR + "View..." + URL) renders ~3px right
+	 * and ~3.5px low vs the web (the header/title align exactly); nudge the group
+	 * back into registration. World +x = screen right, world +y = screen up. */
+	if (m->overlay[4]) {
+		snes_rnode *all = child_named(pk, m->overlay[4], "all");
+		if (all) { all->tf[2] -= 3.0f; all->tf[5] += 3.5f; }
+	}
 	/* Display/Options/Language panels: same collapsed authored hint row; hide it
 	 * (drawn synthetically by draw_option_hints). */
 	{
