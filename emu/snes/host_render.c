@@ -33,7 +33,8 @@ int main(int argc, char **argv)
 	chrome = malloc((size_t)SNES_VW * SNES_VH * 4);
 	home_pool = malloc(sizeof(snes_rnode) * 4096);
 	bg_pool = malloc(sizeof(snes_rnode) * 256);
-	if (snes_menu_init(&menu, &pk, home_pool, 4096, bg_pool, 256, wp, chrome) != 0) {
+	if (snes_menu_init(&menu, &pk, home_pool, 4096, bg_pool, 256, wp, chrome,
+			   malloc((size_t)SNES_VW * SNES_VH * 4)) != 0) {
 		fprintf(stderr, "menu init failed\n"); return 1;
 	}
 	t.fb = fb; t.pitch = W; t.W = W; t.H = H;
@@ -125,7 +126,12 @@ int main(int argc, char **argv)
 		for (k = 0; k < n; k++) wp[k] = 0xFF204060u;
 		menu.wp_ready = 1;
 	}
-	/* clear letterbox + render final frame */
+	/* clear letterbox + render final frame. Render TWICE with no update between:
+	 * the 1st render primes the card-cache signature (direct path), the 2nd is
+	 * served from the card cache - so validation exercises the cached compositing
+	 * path, not just the direct one. */
+	for (i = 0; i < W * H; i++) fb[i] = 0xFF000000u;
+	snes_menu_render(&menu, &t);
 	for (i = 0; i < W * H; i++) fb[i] = 0xFF000000u;
 	snes_menu_render(&menu, &t);
 

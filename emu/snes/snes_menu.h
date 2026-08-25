@@ -50,6 +50,10 @@ typedef struct {
 	int wp_ready;
 	uint32_t *chrome;             /* cached static home chrome, VW*VH u32 (0 alpha = uncovered) */
 	int chrome_ready;
+	uint32_t *cardcache;          /* cached card strip, VW*VH premultiplied RGBA (caller-provided) */
+	int cc_valid;                 /* cardcache holds a current build */
+	uint32_t cc_sig;              /* signature of the carousel state the cache was built for */
+	int cc_y0, cc_y1;             /* non-empty row band in the cache (composite bounds) */
 	float scroll;
 
 	/* wallpaper parallax (ports CloverScrollBG at a fixed 30fps step) */
@@ -104,7 +108,7 @@ typedef struct {
 int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		   snes_rnode *home_pool, unsigned home_cap,
 		   snes_rnode *bg_pool, unsigned bg_cap,
-		   uint32_t *wp, uint32_t *chrome);
+		   uint32_t *wp, uint32_t *chrome, uint32_t *cardcache);
 
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt);
 void snes_menu_render(snes_menu *m, snes_target *t);

@@ -12,6 +12,9 @@ typedef struct {
 	unsigned  pitch;     /* pixels per row */
 	int       W, H;      /* framebuffer size */
 	int       offx, offy;/* top-left of the virtual 1280x720 area in the fb */
+	int       cache_layer;/* 1 = render into a PREMULTIPLIED-alpha layer buffer
+	                       * (source-over, preserves alpha) instead of onto an
+	                       * opaque framebuffer; used to cache the card strip. */
 } snes_target;
 
 /* Draw a whole scene into the target (does not clear). */

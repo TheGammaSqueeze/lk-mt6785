@@ -70,7 +70,7 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	int axis = (b == 0.0f && c == 0.0f && a != 0.0f && dd != 0.0f);
 	float inv_a = axis ? 1.0f / a : 0, inv_d = axis ? 1.0f / dd : 0;
 	float du = axis ? inv_a / d->dw : 0;   /* u increment per X (no per-pixel divide) */
-	if (axis && !d->is_quad && !d->tile) {
+	if (axis && !d->is_quad && !d->tile && !t->cache_layer) {
 		/* Fast axis-aligned path (every sprite/texture blit in the menu). v is
 		 * constant per row, so iy + the source row pointer hoist out of the pixel
 		 * loop; the source x advances by a fixed 16.16 step - no per-pixel float
@@ -257,6 +257,21 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 			af = (sa * ta) >> 8;
 			if (af <= 0) continue;
 			if (af > 255) af = 255;
+			/* cache-layer mode: premultiplied source-over into an RGBA layer
+			 * (preserves alpha so the card strip composites correctly over the
+			 * live wallpaper later). Only used when building the card cache. */
+			if (t->cache_layer) {
+				uint32_t c = row[X];
+				int da = (c >> 24) & 0xff, dpr = (c >> 16) & 0xff, dpg = (c >> 8) & 0xff, dpb = c & 0xff;
+				int ia = 255 - af;
+				int opr = (sr * af + 127) / 255 + (dpr * ia + 127) / 255;
+				int opg = (sg * af + 127) / 255 + (dpg * ia + 127) / 255;
+				int opb = (sb * af + 127) / 255 + (dpb * ia + 127) / 255;
+				int oa  = af + (da * ia + 127) / 255;
+				if (opr > 255) opr = 255; if (opg > 255) opg = 255; if (opb > 255) opb = 255; if (oa > 255) oa = 255;
+				row[X] = ((unsigned)oa << 24) | ((unsigned)opr << 16) | ((unsigned)opg << 8) | (unsigned)opb;
+				continue;
+			}
 			/* opaque fast path: fully-covered, non-additive pixels (the bulk of
 			 * the card frames + box art) need no destination read or blend -
 			 * just write. Avoids a framebuffer read + the blend math per pixel. */

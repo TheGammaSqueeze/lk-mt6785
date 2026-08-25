@@ -499,12 +499,9 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 						   cy + 108.0f, rscale, 1.0f, dim, dim, dim);
 			}
 		}
-		/* rounded selection cursor on the focused card - only while the carousel
-		 * is the active focus (state 0 home); in the menubar/submenu states the
-		 * cursor travels up to the menubar item, so the card shows none. */
-		if (blue_a > 0.003f && m->state == 0)
-			draw_card_cursor(m, t, cx, cy, blue_a > 1.0f ? 1.0f : blue_a,
-					 dim, frame->img);
+		/* the rounded selection cursor is drawn LIVE (it colour-pulses every
+		 * frame) by draw_focus_cursor after the card strip - so it is not baked
+		 * into the card cache. */
 	} else {                                 /* fallback: plain framed boxart */
 		int foc = blue_a > 0.5f;
 		float bw = foc ? 236.0f : 200.0f, bh = bw * 160.0f / 228.0f;
@@ -542,6 +539,102 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 		float fdim = 1.0f - 0.27f * m->resume_dim;
 		draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, fblue, fdim);
 	}
+}
+
+/* the focused card's rounded selection cursor, drawn LIVE each frame (it colour-
+ * pulses) over the card strip - only when the carousel itself is focused. */
+static void draw_focus_cursor(snes_menu *m, snes_target *t)
+{
+	const snes_spr_entry *frame = m->card_norm ? m->card_norm : m->card_act;
+	float prog, fblue, cx, cy;
+	if (m->state != 0 || !frame) return;
+	prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus) ? m->xfade_t / CAR_XFADE : 0.0f;
+	fblue = (1.0f - prog) * (1.0f - m->resume_dim);
+	if (fblue <= 0.003f) return;
+	cx = 640.0f + m->sel_world + m->cont_shift;
+	cy = CAR_CY - RESUME_CARD_DY * resume_open_frac(m);
+	draw_card_cursor(m, t, cx, cy, fblue > 1.0f ? 1.0f : fblue, 1.0f, frame->img);
+}
+
+/* signature of every input that changes what the card strip looks like; when it
+ * is unchanged frame-to-frame the strip is static and can be served from cache. */
+static uint32_t cc_signature(snes_menu *m)
+{
+	union { float f; uint32_t u; } c;
+	uint32_t h = 2166136261u;
+#define CC_MIX(v) do { h = (h ^ (uint32_t)(v)) * 16777619u; } while (0)
+	CC_MIX(m->focus); CC_MIX(m->prev_focus); CC_MIX(m->state); CC_MIX(m->sort_rule);
+	c.f = m->xfade_t;    CC_MIX(c.u);
+	c.f = m->sel_world;  CC_MIX(c.u);
+	c.f = m->cont_shift; CC_MIX(c.u);
+	c.f = m->resume_dim; CC_MIX(c.u);
+	c.f = m->open_y;     CC_MIX(c.u);
+#undef CC_MIX
+	return h;
+}
+
+/* render the (cursorless) card strip once into the premultiplied-alpha cache and
+ * record its non-empty row band. */
+static void build_cardcache(snes_menu *m)
+{
+	snes_target ct;
+	unsigned i, npix = (unsigned)SNES_VW * SNES_VH;
+	int y, x, y0 = SNES_VH, y1 = 0;
+	if (!m->cardcache) return;
+	for (i = 0; i < npix; i++) m->cardcache[i] = 0;
+	ct.fb = m->cardcache; ct.pitch = SNES_VW; ct.W = SNES_VW; ct.H = SNES_VH;
+	ct.offx = 0; ct.offy = 0; ct.cache_layer = 1;
+	draw_carousel(m, &ct);
+	for (y = 0; y < SNES_VH; y++) {
+		const uint32_t *r = m->cardcache + (unsigned)y * SNES_VW;
+		for (x = 0; x < SNES_VW; x++)
+			if (r[x]) { if (y < y0) y0 = y; y1 = y; break; }
+	}
+	m->cc_y0 = y0; m->cc_y1 = y1;
+}
+
+/* composite the premultiplied card cache over the (opaque) framebuffer wallpaper:
+ * out = cache.rgb + fb.rgb*(255-a)/255. Opaque pixels are a straight copy. */
+static void composite_cardcache(snes_menu *m, snes_target *t)
+{
+	int y, x;
+	if (!m->cardcache || m->cc_y1 < m->cc_y0) return;
+	for (y = m->cc_y0; y <= m->cc_y1; y++) {
+		const uint32_t *cr = m->cardcache + (unsigned)y * SNES_VW;
+		uint32_t *fr = t->fb + (unsigned)(t->offy + y) * t->pitch + t->offx;
+		for (x = 0; x < SNES_VW; x++) {
+			uint32_t c = cr[x];
+			unsigned a = c >> 24;
+			if (!a) continue;
+			if (a == 255) { fr[x] = 0xff000000u | (c & 0xffffffu); continue; }
+			{
+				unsigned d = fr[x], ia = 255u - a;
+				unsigned pr = (c >> 16) & 0xff, pg = (c >> 8) & 0xff, pb = c & 0xff;
+				unsigned dr = (d >> 16) & 0xff, dg = (d >> 8) & 0xff, db = d & 0xff;
+				dr = pr + (dr * ia + 127) / 255;
+				dg = pg + (dg * ia + 127) / 255;
+				db = pb + (db * ia + 127) / 255;
+				if (dr > 255) dr = 255; if (dg > 255) dg = 255; if (db > 255) db = 255;
+				fr[x] = 0xff000000u | (dr << 16) | (dg << 8) | db;
+			}
+		}
+	}
+}
+
+/* Draw the carousel: served from the card cache when the strip is static (fast),
+ * rendered directly (NEON) while it animates. The live cursor is drawn on top. */
+static void draw_carousel_cached(snes_menu *m, snes_target *t)
+{
+	uint32_t sig = cc_signature(m);
+	if (m->cardcache && sig == m->cc_sig) {
+		if (!m->cc_valid) { build_cardcache(m); m->cc_valid = 1; }
+		composite_cardcache(m, t);
+	} else {
+		draw_carousel(m, t);
+		m->cc_valid = 0;
+	}
+	m->cc_sig = sig;
+	draw_focus_cursor(m, t);
 }
 
 /* ---- bottom thumbnail filmstrip (ports sys_thumbnail_icon: a fixed 21-icon
@@ -857,13 +950,15 @@ static void draw_option_hints(snes_menu *m, snes_target *t)
 int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		   snes_rnode *home_pool, unsigned home_cap,
 		   snes_rnode *bg_pool, unsigned bg_cap,
-		   uint32_t *wp, uint32_t *chrome)
+		   uint32_t *wp, uint32_t *chrome, uint32_t *cardcache)
 {
 	const snes_scene_entry *home, *bg;
 	unsigned i;
 	/* zero the struct fields we rely on */
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
 	m->chrome = chrome; m->chrome_ready = 0;
+	m->cardcache = cardcache; m->cc_valid = 0; m->cc_sig = 0;
+	m->cc_y0 = 0; m->cc_y1 = -1;
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
 	m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
 	m->prev_focus = 0; m->xfade_t = 0.0f; m->resume_dim = 0.0f;
@@ -1435,7 +1530,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			draw_wp(m, t, (int)m->scroll);
 			if (!m->homemenu) snes_render_scene(t, &m->home);
 			else              draw_chrome(m, t);
-			draw_carousel(m, t);
+			draw_carousel_cached(m, t);
 			draw_filmstrip(m, t);
 			if (m->mb_focus >= 0 && m->mb_focus < 5 && m->mb_btn[m->mb_focus])
 				snes_render_node(t, &m->home, m->mb_btn[m->mb_focus]);
@@ -1483,7 +1578,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	if (!m->homemenu) snes_render_scene(t, &m->home);
 	else              draw_chrome(m, t);
 	PERF_END(1);
-	draw_carousel(m, t);
+	draw_carousel_cached(m, t);
 	PERF_END(2);
 	draw_filmstrip(m, t);
 	PERF_END(3);
