@@ -237,7 +237,7 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CAR_SLOT_X (-393.0f)
 #define CAR_DEAD   (CAR_HGAP * 1.5f)
 #define CAR_REPEAT 0.24f
-#define CAR_CY     344.0f
+#define CAR_CY     368.0f                   /* cardlist container world y=0 (+card box offset) */
 #define CAR_SC     0.91f                    /* native 252x276 -> ~230px card */
 
 static int ring_delta(int a, int b, int n)
@@ -313,14 +313,11 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 		float cx = TH_X0 + TH_SPACING * (float)i;
 		if (im) snes_blit_tex(t, m->pk, im, cx, ccy, TH_SIZE, TH_SIZE, 1.0f);
 	}
-	/* cursor indicator over the selected icon (cursor_node world y=-141 -> 501) */
+	/* cursor pin (curor_thumbnail) above the selected icon (cursor_node -> y501) */
 	ccx = TH_X0 + TH_SPACING * (float)m->focus;
-	snes_fill_quad(t, ccx, ccy, TH_SIZE + 6, TH_SIZE + 6, 1.0f, 1.0f, 1.0f, 1.0f);
-	snes_fill_quad(t, ccx, ccy, TH_SIZE + 2, TH_SIZE + 2, 0.15f, 0.5f, 1.0f, 1.0f);
-	if (m->focus >= 0 && m->focus < n) {
-		const snes_game_rec *g = game(m, m->focus);
-		const snes_img_entry *im = (g && g->small_img != 0xFFFF) ? &m->pk->img[g->small_img] : 0;
-		if (im) snes_blit_tex(t, m->pk, im, ccx, ccy, TH_SIZE, TH_SIZE, 1.0f);
+	if (m->card_act) {
+		snes_spr_entry pin = { m->card_act->img, 145, 881, 12, 8, 6, 8 };
+		snes_blit_spr(t, m->pk, &pin, ccx, 505.0f, 1.6f, 1.0f);
 	}
 }
 
