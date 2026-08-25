@@ -240,9 +240,9 @@ static void resolve_card(snes_menu *m)
 	{
 		snes_rnode *pi = act ? desc(m->pk, act, "player_icon") : 0;
 		m->card_pi = node_spr(m->pk, &cs, pi);   /* comp0 = icon_1P (sy 661) */
-		/* the scene world pos (81,-102) lands ~7px left / 10px high vs the web
-		 * render; use the measured screen-space offset. */
-		m->card_pi_wx = 89.0f; m->card_pi_wy = -113.0f;
+		/* card drawn at native scale (sc=1.0), so the player_icon scene world
+		 * pos (81,-102) maps 1:1 to the screen offset from the card centre. */
+		m->card_pi_wx = 81.0f; m->card_pi_wy = -102.0f;
 	}
 	scr = desc(m->pk, root, "screen");
 	if (scr && scr->def->comp_count) {
@@ -325,8 +325,8 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CLOSE_DUR  0.22f    /* submenu close slide-up duration (cubic ease-in) */
 #define RESUME_SLIDE 688.0f /* resume panel slide-up-from-bottom distance (screen px) */
 #define CAP_DELAY  0.25f    /* MENUBAR_CAPTION_DELAY: wait before the caption scales in */
-#define CAR_CY     361.0f                   /* cardlist container world y=0 (+card box offset) */
-#define CAR_SC     0.928f                    /* native 252x276 -> ~230px card */
+#define CAR_CY     360.0f                   /* cardlist container world y=0 (+card box offset) */
+#define CAR_SC     1.0f                    /* native 252x276 -> ~230px card */
 
 /* ---- carousel D-pad auto-repeat (GUI.H tween timings) ---- */
 #define CAR_REPEAT_DELAY 0.22f  /* first held step delay */
@@ -415,7 +415,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 				snes_spr_entry dot = { frame->img, 505, dsy, 6, 6, 3, 3 };
 				float sx = -96.0f + 24.0f * (float)di;
 				snes_blit_spr_tint(t, m->pk, &dot, cx + sx,
-						   cy + 107.0f, rscale, 1.0f, dim, dim, dim);
+						   cy + 108.0f, rscale, 1.0f, dim, dim, dim);
 			}
 		}
 	} else {                                 /* fallback: plain framed boxart */
