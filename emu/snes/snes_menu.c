@@ -400,9 +400,21 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 				      cy - m->card_pi_wy * sc,
 				      (m->card_fw / (float)frame->sw) * sc, 1.0f, dim, dim, dim);
 		}
-		/* TODO: resume/suspend-point indicators (bottom-left) - 4 empty rings
-		 * (atlas 505,51) at wx=-96..-24, wy=-108; the icon scale vs the card
-		 * frame scale still needs pinning down before they help the diff. */
+		/* suspend-point indicators (resume_icon): 4 empty rings along the card
+		 * bottom-left. Resting/no-save state = icon_Resume_off (atlas 505,43,6x6,
+		 * pivot 3,3). Scene wx -96,-72,-48,-24 (step 24), wy -108; the scene->
+		 * screen mapping is 1:1 (screen offset from card centre == scene coord,
+		 * same as the player_icon where 89*0.91 == 81). */
+		{
+			int di;
+			float rscale = m->card_fw / (float)frame->sw;   /* 18px (web 1:1) */
+			for (di = 0; di < 4; di++) {
+				snes_spr_entry dot = { frame->img, 505, 43, 6, 6, 3, 3 };
+				float sx = -96.0f + 24.0f * (float)di;
+				snes_blit_spr_tint(t, m->pk, &dot, cx + sx,
+						   cy + 109.0f, rscale, 1.0f, dim, dim, dim);
+			}
+		}
 	} else {                                 /* fallback: plain framed boxart */
 		int foc = blue_a > 0.5f;
 		float bw = foc ? 236.0f : 200.0f, bh = bw * 160.0f / 228.0f;
