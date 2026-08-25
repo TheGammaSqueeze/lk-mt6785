@@ -479,6 +479,49 @@ static void draw_menubar_hints(snes_menu *m, snes_target *t)
 	};
 	draw_hint_row(m, t, H, 4, 626.0f);
 }
+/* The focused menubar icon's caption bubble ("Display"/"Option"/...). The
+ * authored box auto-sizes/positions at runtime (our static render placed it
+ * low+mis-sized), so we hid the authored box+label in init and draw it here to
+ * match the web exactly: a fixed 161x44 black box with a white border centred on
+ * the icon at screen y117, the label centred inside. The authored arrow (kept
+ * enabled) still points from the icon down to the box top. */
+static void draw_menubar_caption(snes_menu *m, snes_target *t)
+{
+	snes_rnode *cap, *lbl;
+	const snes_comp_label *cl = 0;
+	const snes_font_entry *fe;
+	const char *txt;
+	float w[6], cx, cy = 117.0f, sc = 1.1f;
+	unsigned i;
+	int b = m->mb_focus;
+	if (b < 0 || b >= 5) return;
+	cap = m->mb_caption[b];
+	if (!cap || !cap->enabled) return;
+	lbl = child_named(m->pk, cap, "Label");
+	if (!lbl) return;
+	for (i = 0; i < lbl->def->comp_count; i++) {
+		const snes_comp *c = snes_node_comp(&m->home, lbl->def, i);
+		if (c->type == COMP_LABEL) { cl = (const snes_comp_label *)c; break; }
+	}
+	if (!cl) return;
+	snes_node_world(cap, w);
+	cx = 640.0f + w[2];
+	txt = snes_str(m->pk, cl->text);
+	if (txt[0] == '@') txt = snes_text(m->pk, txt + 1);
+	/* white border box + black fill (web: 161x44, ~3px border) */
+	snes_fill_quad(t, cx, cy, 161.0f, 44.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+	snes_fill_quad(t, cx, cy, 155.0f, 38.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+	/* the web renders the caption with the medium menu font (m.font), not the
+	 * authored placeholder (which packs at a tiny line height); match its size. */
+	(void)cl;
+	{
+		uint32_t fh = snes_hash("m.font");
+		fe = snes_res_font(m->pk, fh);
+		snes_draw_text(t, m->pk, fh, cx,
+			       cy - (fe ? fe->line_height : 31) * sc / 2.0f, sc,
+			       0xFFF4F4F4u, 1, txt);
+	}
+}
 /* full-screen overlay (Legal Notices) header hints: right-aligned row at the
  * top, ending just inside the header frame. */
 static void draw_overlay_hints(snes_menu *m, snes_target *t, const snes_hint *H,
@@ -596,7 +639,17 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			btn = child_named(pk, m->mb_btn[b], "button");
 			m->mb_active[b] = child_named(pk, btn, "btn_menubar_active");
 			m->mb_caption[b] = child_named(pk, m->mb_btn[b], "caption_down");
-			if (m->mb_caption[b]) m->mb_caption[b]->enabled = 0;
+			if (m->mb_caption[b]) {
+				m->mb_caption[b]->enabled = 0;
+				/* The bubble box body + label are laid out/auto-sized by the
+				 * engine at runtime; our static render places them ~20px low and
+				 * mis-sized. Hide those parts (keep the arrow, which is correct)
+				 * and draw the bubble synthetically (see draw_menubar_caption). */
+				disable_all_named(pk, m->mb_caption[b], "caption");
+				disable_all_named(pk, m->mb_caption[b], "caption_l");
+				disable_all_named(pk, m->mb_caption[b], "caption_r");
+				disable_all_named(pk, m->mb_caption[b], "Label");
+			}
 			/* the cyan active highlight is authored-on for every button; the
 			 * real menu shows it only on the focused icon (and only in the
 			 * menubar state), so start them all hidden. */
@@ -846,7 +899,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	draw_carousel(m, t);
 	draw_filmstrip(m, t);
 	if (m->state == 0) draw_hints(m, t);
-	else if (m->state == 1) draw_menubar_hints(m, t);
+	else if (m->state == 1) { draw_menubar_caption(m, t); draw_menubar_hints(m, t); }
 
 	/* focused game name drawn into the authored title frame (SNES title font) */
 	g = game(m, m->focus);
