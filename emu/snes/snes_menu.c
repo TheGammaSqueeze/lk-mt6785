@@ -321,26 +321,40 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 	}
 }
 
-/* a small dark button chip with a caption, returns the x after it */
-static float chip(snes_menu *m, snes_target *t, float x, float y, const char *btn,
-		  const char *label)
-{
-	float bw = 12.0f + (float)__builtin_strlen(btn) * 11.0f;
-	snes_fill_quad(t, x + bw / 2, y, bw, 26, 0.10f, 0.11f, 0.14f, 0.95f);
-	snes_draw_text(t, m->pk, m->f_s, x + bw / 2, y - 9, 0.85f, 0xFFF0F0F0u, 1, btn);
-	x += bw + 8;
-	snes_draw_text(t, m->pk, m->f_s, x, y - 9, 0.9f, 0xFFF0F0F0u, 0, label);
-	return x + (float)__builtin_strlen(label) * 11.0f + 34.0f;
-}
-/* the home hint row (the authored HUD stacks its items, so we lay ours out) */
+/* the home HUD hint row (ports sys_hud horizontal-flow of hud_gametitle): four
+ * items [dpad-up]Menu [dpad-down]Suspend Point List [SELECT]Sort [decide]Start
+ * Game, each = button icon + label, laid left-to-right and centred at x=640.
+ * Button icons are the authored 12/32-px atlas sprites scaled x3. */
 static void draw_hints(snes_menu *m, snes_target *t)
 {
-	float x = 300.0f, y = 588.0f;
-	x = chip(m, t, x, y, "UP", "Menu");
-	x = chip(m, t, x, y, "DOWN", "Suspend Point List");
-	x = chip(m, t, x, y, "SELECT", "Sort");
-	x = chip(m, t, x, y, "START", "Start Game");
-	(void)x;
+	static const struct { int sx, sy, sw, sh; const char *key; } H[4] = {
+		{ 85, 881, 12, 12, "sys_gametitlelist_hud_Menu" },
+		{ 57, 881, 12, 12, "sys_gametitlelist_hud_Resume" },
+		{ 88, 929, 32, 10, "sys_gametitlelist_hud_Sort" },
+		{ 481, 783, 28, 10, "sys_gametitlelist_hud_Decide" },
+	};
+	const float sc = 0.85f, gap = 6.0f, vgap = 26.0f, y = 592.0f;
+	const char *lab[4];
+	float iw[4], lw[4], total = 0, x;
+	int i;
+	if (!m->card_act) return;
+	for (i = 0; i < 4; i++) {
+		lab[i] = snes_text(m->pk, H[i].key);
+		iw[i] = H[i].sw * 3.0f;                 /* icons authored at x3 (12->36, 32->96) */
+		lw[i] = snes_text_width(m->pk, m->f_s, sc, lab[i]);
+		total += iw[i] + gap + lw[i];
+	}
+	total += vgap * 3.0f;
+	x = 626.0f - total / 2.0f;               /* hud content centre (measured) */
+	for (i = 0; i < 4; i++) {
+		snes_spr_entry ic = { m->card_act->img, (uint16_t)H[i].sx, (uint16_t)H[i].sy,
+				      (uint16_t)H[i].sw, (uint16_t)H[i].sh,
+				      (int16_t)(H[i].sw / 2), (int16_t)(H[i].sh / 2) };
+		snes_blit_spr(t, m->pk, &ic, x + iw[i] / 2.0f, y, 3.0f, 1.0f);
+		snes_draw_text(t, m->pk, m->f_s, x + iw[i] + gap, y - 10.0f, sc,
+			       0xFFF2F2F2u, 0, lab[i]);
+		x += iw[i] + gap + lw[i] + vgap;
+	}
 }
 
 /* ---- public ---- */

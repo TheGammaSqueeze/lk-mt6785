@@ -268,6 +268,21 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 
 /* Public: draw a string with a pack font at a screen position (x,y = pen origin;
  * align 0 left / 1 centre / 2 right about x). argb = 0xAARRGGBB. */
+float snes_text_width(const snes_pack *pk, uint32_t font_hash, float scale, const char *text)
+{
+	const snes_font_entry *fe = snes_res_font(pk, font_hash);
+	const snes_glyph *glyphs;
+	const char *p;
+	float w = 0;
+	if (!fe || !text) return 0;
+	glyphs = (const snes_glyph *)(pk->base + fe->glyphs);
+	for (p = text; *p; p++) {
+		const snes_glyph *g = glyph_find(fe, glyphs, (uint8_t)*p);
+		w += g ? g->xadv : 8;
+	}
+	return w * scale;
+}
+
 void snes_draw_text(snes_target *t, const snes_pack *pk, uint32_t font_hash,
 		    float x, float y, float scale, uint32_t argb, int align,
 		    const char *text)

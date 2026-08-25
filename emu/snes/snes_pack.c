@@ -116,5 +116,5 @@ const char *snes_text_locale(const snes_pack *p, int li, const char *key)
 }
 const char *snes_text(const snes_pack *p, const char *key)
 {
-	return snes_text_locale(p, 0, key);
+	return snes_text_locale(p, p->locale, key);   /* active locale, not index 0 */
 }

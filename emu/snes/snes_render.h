@@ -36,5 +36,8 @@ void snes_fill_quad(snes_target *t, float cx, float cy, float w, float h,
 void snes_draw_text(snes_target *t, const snes_pack *pk, uint32_t font_hash,
 		    float x, float y, float scale, uint32_t argb, int align,
 		    const char *text);
+/* measured advance width of a string in a font at a scale (screen px). */
+float snes_text_width(const snes_pack *pk, uint32_t font_hash, float scale,
+		      const char *text);
 
 #endif
