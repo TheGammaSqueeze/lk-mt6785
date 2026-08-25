@@ -36,6 +36,7 @@ extern int  pmic_detect_powerkey(void);
 /* ---- audio (ayaneo_audio.c): codec bring-up + direct 48 kHz ring submit ---- */
 extern void ayaneo_gbc_audio_init(void);
 extern void ayaneo_snes_audio_submit(const short *stereo, unsigned frames);
+extern int  ayaneo_snes_audio_room(void);
 extern void ayaneo_gbc_audio_set_volume(int v);
 extern int  ayaneo_gbc_audio_get_volume(void);
 
@@ -72,6 +73,7 @@ extern int mt_get_gpio_in(unsigned pin);
 #define SNES_BG_PA    0x50E00000u   /* bg rnode pool */
 #define SNES_COMP_PA  0x51000000u   /* compressed staging */
 #define SNES_WP_PA    0x52000000u   /* wallpaper cache (1536*720*4) */
+#define SNES_CHROME_PA 0x53000000u  /* static chrome cache (1280*720*4) */
 #define SNES_RAW_MAX  (32u * 1024 * 1024)
 #define SNES_COMP_MAX (16u * 1024 * 1024)
 #define HOME_CAP (16u * 1024 * 1024 / (unsigned)sizeof(snes_rnode))
@@ -80,7 +82,7 @@ extern int mt_get_gpio_in(unsigned pin);
 static snes_pack s_pk;
 static snes_menu s_menu;
 static snes_mixer s_mix;
-static short s_mixbuf[2048 * 2];   /* up to ~42 ms of stereo 48 kHz per frame */
+static short s_mixbuf[8192 * 2];   /* holds a full ring-half refill (~170 ms) */
 
 /* Resolve a sound res-hash to its PCM + loop info and start a mixer voice. */
 static void play_sound(uint32_t hash, int loop, int is_bgm)
@@ -197,13 +199,14 @@ static int snes_emu_thread(void *arg)
 		for (;;) { mtk_wdt_restart(); thread_sleep(200); }
 	}
 	if (snes_menu_init(&s_menu, &s_pk, (snes_rnode *)SNES_HOME_PA, HOME_CAP,
-			   (snes_rnode *)SNES_BG_PA, BG_CAP, (uint32_t *)SNES_WP_PA) != 0) {
+			   (snes_rnode *)SNES_BG_PA, BG_CAP, (uint32_t *)SNES_WP_PA,
+			   (uint32_t *)SNES_CHROME_PA) != 0) {
 		dbg("SNES ERR: menu init");
 		for (;;) { mtk_wdt_restart(); thread_sleep(200); }
 	}
 
 	input_init();
-	ayaneo_set_cpu_mhz(1800);
+	ayaneo_set_cpu_mhz(2000);
 	ayaneo_apply_persisted_brightness();
 
 	/* bring up the codec/AFE ring and start the looping home BGM */
@@ -244,14 +247,16 @@ static int snes_emu_thread(void *arg)
 		 * and push it to the AFE ring (keeps the ring fed ahead of the DMA) */
 		{
 			uint32_t h;
-			unsigned frames;
+			int need;
 			while ((h = snes_menu_next_sound(&s_menu)) != 0)
 				play_sound(h, 0, 0);
-			frames = (unsigned)(SNES_AUD_HZ * dt);
-			if (frames > 2048) frames = 2048;
-			if (frames) {
-				snes_audio_mix(&s_mix, s_mixbuf, frames);
-				ayaneo_snes_audio_submit(s_mixbuf, frames);
+			/* self-clocked: top the ring up to its target lead over the DMA
+			 * read cursor, so 15-20 fps can't starve it into replaying */
+			need = ayaneo_snes_audio_room();
+			if (need > 8192) need = 8192;
+			if (need > 0) {
+				snes_audio_mix(&s_mix, s_mixbuf, (unsigned)need);
+				ayaneo_snes_audio_submit(s_mixbuf, (unsigned)need);
 			}
 		}
 

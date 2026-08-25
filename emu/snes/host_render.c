@@ -21,7 +21,7 @@ int main(int argc, char **argv)
 	FILE *f = fopen(packf, "rb");
 	long len; void *blob;
 	snes_pack pk; snes_menu menu; snes_target t; snes_input in;
-	uint32_t *fb, *wp; snes_rnode *home_pool, *bg_pool;
+	uint32_t *fb, *wp, *chrome; snes_rnode *home_pool, *bg_pool;
 	int W = 1280, H = 960, i, x, y;
 	if (!f) { fprintf(stderr, "open %s failed\n", packf); return 1; }
 	fseek(f, 0, SEEK_END); len = ftell(f); fseek(f, 0, SEEK_SET);
@@ -30,9 +30,10 @@ int main(int argc, char **argv)
 
 	fb = calloc((size_t)W * H, 4);
 	wp = malloc((size_t)WP_CACHE_W * WP_CACHE_H * 4);
+	chrome = malloc((size_t)SNES_VW * SNES_VH * 4);
 	home_pool = malloc(sizeof(snes_rnode) * 4096);
 	bg_pool = malloc(sizeof(snes_rnode) * 256);
-	if (snes_menu_init(&menu, &pk, home_pool, 4096, bg_pool, 256, wp) != 0) {
+	if (snes_menu_init(&menu, &pk, home_pool, 4096, bg_pool, 256, wp, chrome) != 0) {
 		fprintf(stderr, "menu init failed\n"); return 1;
 	}
 	t.fb = fb; t.pitch = W; t.W = W; t.H = H;

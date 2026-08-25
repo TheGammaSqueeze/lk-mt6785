@@ -37,6 +37,8 @@ typedef struct {
 	float sort_label_t;           /* seconds remaining to show the sort-name label */
 	uint32_t *wp;                 /* wallpaper cache, WP_W*WP_H u32 (caller-provided) */
 	int wp_ready;
+	uint32_t *chrome;             /* cached static home chrome, VW*VH u32 (0 alpha = uncovered) */
+	int chrome_ready;
 	float scroll;
 
 	int focus;                    /* selected game index */
@@ -65,7 +67,7 @@ typedef struct {
 int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		   snes_rnode *home_pool, unsigned home_cap,
 		   snes_rnode *bg_pool, unsigned bg_cap,
-		   uint32_t *wp);
+		   uint32_t *wp, uint32_t *chrome);
 
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt);
 void snes_menu_render(snes_menu *m, snes_target *t);

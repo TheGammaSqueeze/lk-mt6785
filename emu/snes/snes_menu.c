@@ -144,6 +144,39 @@ static void draw_wp(snes_menu *m, snes_target *t, int scroll_px)
 	}
 }
 
+/* ---- static home-chrome cache ----
+ * The homemenu chrome (menubar, title frame, bottom bar, filmstrip frames) is
+ * identical every frame in the home state but costs ~4 ms to re-blit (large
+ * atlas-sampled sprites). Render it ONCE into a screen-space overlay: seed the
+ * buffer with a magenta sentinel, paint the chrome, then mark every untouched
+ * pixel transparent (alpha 0). Each frame we just copy the covered pixels over
+ * the scrolling wallpaper instead of walking the scene. */
+#define CHROME_SENTINEL 0xFFFF00FFu
+static void build_chrome(snes_menu *m)
+{
+	snes_target ct;
+	unsigned i, n = (unsigned)SNES_VW * SNES_VH;
+	if (!m->chrome || !m->homemenu) return;
+	for (i = 0; i < n; i++) m->chrome[i] = CHROME_SENTINEL;
+	ct.fb = m->chrome; ct.pitch = SNES_VW; ct.W = SNES_VW; ct.H = SNES_VH;
+	ct.offx = 0; ct.offy = 0;
+	snes_render_node(&ct, &m->home, m->homemenu);
+	for (i = 0; i < n; i++)
+		m->chrome[i] = (m->chrome[i] == CHROME_SENTINEL) ? 0u : (0xFF000000u | m->chrome[i]);
+	m->chrome_ready = 1;
+}
+static void draw_chrome(snes_menu *m, snes_target *t)
+{
+	int y, x;
+	if (!m->chrome_ready) { snes_render_node(t, &m->home, m->homemenu); return; }
+	for (y = 0; y < SNES_VH; y++) {
+		const uint32_t *src = m->chrome + (unsigned)y * SNES_VW;
+		uint32_t *dst = t->fb + (unsigned)(t->offy + y) * t->pitch + t->offx;
+		for (x = 0; x < SNES_VW; x++)
+			if (src[x] & 0xFF000000u) dst[x] = src[x];
+	}
+}
+
 /* ---- carousel ---- */
 #define CAR_HGAP  262.0f
 #define CAR_CY    338.0f
@@ -172,10 +205,10 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 }
 
 /* ---- bottom thumbnail filmstrip (Lua-instantiated in the web app) ---- */
-#define FS_CY    582.0f
-#define FS_GAP   62.0f
-#define FS_W     48.0f
-#define FS_H     34.0f
+#define FS_CY    540.0f
+#define FS_GAP   50.0f
+#define FS_W     42.0f
+#define FS_H     30.0f
 static void draw_filmstrip(snes_menu *m, snes_target *t)
 {
 	int n = m->ngames, d;
@@ -191,23 +224,49 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 		if (cx < -40 || cx > SNES_VW + 40) continue;
 		g = game(m, gi);
 		im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
-		if (foc) snes_fill_quad(t, cx, cy, w + 6, h + 6, 0.20f, 0.55f, 1.0f, 1.0f);
+		if (foc) {                              /* cursor: white ring + blue frame */
+			snes_fill_quad(t, cx, cy, w + 10, h + 10, 1.0f, 1.0f, 1.0f, 1.0f);
+			snes_fill_quad(t, cx, cy, w + 6, h + 6, 0.15f, 0.5f, 1.0f, 1.0f);
+		}
 		snes_fill_quad(t, cx, cy, w + 2, h + 2, 0.0f, 0.0f, 0.0f, 1.0f);
 		if (im) snes_blit_tex(t, m->pk, im, cx, cy, w, h, foc ? 1.0f : 0.7f);
 		else    snes_fill_quad(t, cx, cy, w, h, 0.15f, 0.15f, 0.2f, 1.0f);
 	}
 }
 
+/* a small dark button chip with a caption, returns the x after it */
+static float chip(snes_menu *m, snes_target *t, float x, float y, const char *btn,
+		  const char *label)
+{
+	float bw = 12.0f + (float)__builtin_strlen(btn) * 11.0f;
+	snes_fill_quad(t, x + bw / 2, y, bw, 26, 0.10f, 0.11f, 0.14f, 0.95f);
+	snes_draw_text(t, m->pk, m->f_s, x + bw / 2, y - 9, 0.85f, 0xFFF0F0F0u, 1, btn);
+	x += bw + 8;
+	snes_draw_text(t, m->pk, m->f_s, x, y - 9, 0.9f, 0xFFF0F0F0u, 0, label);
+	return x + (float)__builtin_strlen(label) * 11.0f + 34.0f;
+}
+/* the home hint row (the authored HUD stacks its items, so we lay ours out) */
+static void draw_hints(snes_menu *m, snes_target *t)
+{
+	float x = 300.0f, y = 588.0f;
+	x = chip(m, t, x, y, "UP", "Menu");
+	x = chip(m, t, x, y, "DOWN", "Suspend Point List");
+	x = chip(m, t, x, y, "SELECT", "Sort");
+	x = chip(m, t, x, y, "START", "Start Game");
+	(void)x;
+}
+
 /* ---- public ---- */
 int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		   snes_rnode *home_pool, unsigned home_cap,
 		   snes_rnode *bg_pool, unsigned bg_cap,
-		   uint32_t *wp)
+		   uint32_t *wp, uint32_t *chrome)
 {
 	const snes_scene_entry *home, *bg;
 	unsigned i;
 	/* zero the struct fields we rely on */
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
+	m->chrome = chrome; m->chrome_ready = 0;
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
 	m->pl = m->pr = m->pu = m->pd = m->pa = m->pb = m->ps = 0;
 	m->sndh = m->sndt = 0; m->wall = 0;
@@ -241,7 +300,10 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	/* inside homemenu, the resume/suspend overlay is hidden on the home state */
 	{
 		static const char *hide2[] = { "sys_resumedummy", "resume_floating",
-			"gametitle_label", 0 };
+			"gametitle_label",
+			/* the 4 home HUD hints are Lua-spread at runtime; statically they
+			 * stack at one point, so hide them and draw our own hint row */
+			"hud_gametitle", 0 };
 		int hj;
 		for (hj = 0; hide2[hj]; hj++) {
 			snes_rnode *o = snes_scene_find(&m->home, hide2[hj]);
@@ -285,6 +347,9 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	for (i = 0; i < (unsigned)m->ngames; i++) m->order[i] = (unsigned short)i;
 	m->sort_rule = 0; m->sort_label_t = 0;
 	apply_sort(m);
+	/* pre-render the static home chrome into the cache overlay (home state has
+	 * no menubar highlight, so this snapshot is valid for home + resume) */
+	build_chrome(m);
 	m->f_title = snes_hash("title.font");
 	m->f_l = snes_hash("l.font");
 	m->f_s = snes_hash("s.font");
@@ -369,7 +434,9 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		int b;
 		float ks = dt * 12.0f; if (ks > 1.0f) ks = 1.0f;
 		for (b = 0; b < 5; b++) {
-			int foc = (m->state >= 1 && b == m->mb_focus);
+			/* highlight only in the menubar (1) and open-submenu (2) states,
+			 * NOT in the resume menu (3) where the menubar isn't focused */
+			int foc = ((m->state == 1 || m->state == 2) && b == m->mb_focus);
 			if (m->mb_active[b]) m->mb_active[b]->enabled = foc;
 			if (m->mb_caption[b]) m->mb_caption[b]->enabled = foc;
 			if (m->mb_btn[b]) {
@@ -394,11 +461,15 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 {
 	const snes_game_rec *g;
 	draw_wp(m, t, (int)m->scroll);
-	/* authored home chrome (menubar, title frame, bottom filmstrip, hud) */
-	if (m->homemenu) snes_render_node(t, &m->home, m->homemenu);
-	else             snes_render_scene(t, &m->home);
+	/* authored home chrome. States without a live menubar highlight (home,
+	 * resume) use the cached overlay; menubar/submenu render live. */
+	if (!m->homemenu)                 snes_render_scene(t, &m->home);
+	else if (m->state == 1 || m->state == 2)
+		snes_render_node(t, &m->home, m->homemenu);
+	else                              draw_chrome(m, t);
 	draw_carousel(m, t);
 	draw_filmstrip(m, t);
+	if (m->state == 0) draw_hints(m, t);
 
 	/* focused game name drawn into the authored title frame (SNES title font) */
 	g = game(m, m->focus);
@@ -428,14 +499,14 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			       cap[m->mb_focus]);
 	}
 
-	/* an opened settings overlay renders on top, dimming the home behind it */
+	/* an opened settings overlay renders on top, over a strong black scrim */
 	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
-		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 0.55f);
+		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 0.82f);
 		snes_render_node(t, &m->home, m->overlay[m->open]);
 	}
-	/* the suspend-point (resume) menu, over a dimmed home */
+	/* the suspend-point (resume) menu, over a strong black scrim */
 	if (m->state == 3 && m->resume) {
-		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 0.55f);
+		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 0.82f);
 		snes_render_node(t, &m->home, m->resume);
 	}
 }

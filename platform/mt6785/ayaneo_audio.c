@@ -896,6 +896,25 @@ void ayaneo_gbc_audio_init(void)
 	s_gbc_audio_on = 1;
 }
 
+/* How many stereo frames to mix+submit right now to restore the target lead of
+ * the write cursor over the hardware DMA read cursor. Self-clocked: keeps the
+ * ring fed regardless of the caller's (possibly low/uneven) frame rate, so the
+ * DMA never catches up and replays stale samples. Target lead is half the ring
+ * (~170 ms) so even a 15 fps main loop can't underrun between calls. */
+int ayaneo_snes_audio_room(void)
+{
+	unsigned cur, base, rd, widx, ahead, target;
+	if (!s_gbc_audio_on || s_gbc_paused)
+		return 0;
+	cur  = afe_r(AFE_DL1_CUR);
+	base = (unsigned)(addr_t)s_gbc_ring;
+	rd   = (cur >= base) ? ((cur - base) / 4u) & (GBC_RING_FRAMES - 1) : 0;
+	widx = s_gbc_widx & (GBC_RING_FRAMES - 1);
+	ahead  = (widx - rd) & (GBC_RING_FRAMES - 1);
+	target = GBC_RING_FRAMES / 2;
+	return (ahead >= target) ? 0 : (int)(target - ahead);
+}
+
 /* Write `frames` interleaved stereo s16 samples that are ALREADY at 48 kHz
  * straight into the ring (no resample). Used by the SNES menu mixer, which
  * mixes at the AFE rate itself. Volume is applied here from s_gbc_vol. */
