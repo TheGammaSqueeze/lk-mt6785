@@ -442,6 +442,18 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->overlay[3] = snes_scene_find(&m->home, "copyright");
 	m->overlay[4] = snes_scene_find(&m->home, "manual");
 	m->resume = snes_scene_find(&m->home, "resumemenu");
+	/* option_display resting state (ports sys_option_display.setup): line 1
+	 * (display modes) focused, frame-line focus box hidden, selected mode 4:3
+	 * shows its blue selection box (cursor_area). */
+	if (m->overlay[0]) {
+		snes_rnode *ef = child_named(pk, m->overlay[0], "elements_frame");
+		snes_rnode *fn = ef ? child_named(pk, ef, "focused_node") : 0;
+		snes_rnode *el = child_named(pk, m->overlay[0], "elements");
+		snes_rnode *sel = el ? child_named(pk, el, "item_4_3") : 0;
+		snes_rnode *ca = sel ? child_named(pk, sel, "cursor_area") : 0;
+		if (fn) fn->enabled = 0;               /* hide Frame-line blue bar */
+		if (ca) ca->enabled = 1;               /* blue box on selected 4:3 */
+	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
 	/* roster order (title sort by default) */
 	m->ngames = (int)pk->hdr->game_count;
