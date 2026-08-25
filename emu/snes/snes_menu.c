@@ -517,6 +517,14 @@ static void draw_copyright_hints(snes_menu *m, snes_target *t)
 	};
 	draw_overlay_hints(m, t, H, 3, 1152.0f, 74.0f);
 }
+/* Manuals overlay header hint: Back */
+static void draw_manual_hints(snes_menu *m, snes_target *t)
+{
+	static const snes_hint H[1] = {
+		{ 15, 881, 12, 12, "sys_manual_hud_Back" },   /* B = Back */
+	};
+	draw_overlay_hints(m, t, H, 1, 1180.0f, 74.0f);
+}
 
 /* ---- public ---- */
 int snes_menu_init(snes_menu *m, const snes_pack *pk,
@@ -602,6 +610,9 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->overlay[2] = snes_scene_find(&m->home, "option_languages");
 	m->overlay[3] = snes_scene_find(&m->home, "copyright");
 	m->overlay[4] = snes_scene_find(&m->home, "manual");
+	/* manual overlay: hide the runtime-laid-out header Back hint (drawn
+	 * synthetically, see draw_manual_hints) so it doesn't collapse/garble. */
+	if (m->overlay[4]) disable_all_named(pk, m->overlay[4], "hud_item1_cancel");
 	m->resume = snes_scene_find(&m->home, "resumemenu");
 	/* resume empty (no-save) resting state: hide the overlapping changemode
 	 * animation card-sets + the emptymode explanation, leaving the cardlist's
@@ -859,6 +870,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
 		snes_render_node(t, &m->home, m->overlay[m->open]);
 		if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
+		else if (m->open == 4) draw_manual_hints(m, t);
 		/* radio dots: draw radiobtn_off (empty) / radiobtn_on (selected) at each
 		 * language item's authored dot position (the authored dot is disabled) */
 		if (m->open == 2 && m->card_act) {
