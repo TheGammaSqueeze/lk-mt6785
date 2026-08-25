@@ -331,6 +331,7 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 /* ---- carousel D-pad auto-repeat (GUI.H tween timings) ---- */
 #define CAR_REPEAT_DELAY 0.22f  /* first held step delay */
 #define CAR_REPEAT_RATE  0.06f  /* subsequent held-step interval */
+#define CAR_XFADE        0.20f  /* blue selection-frame crossfade duration */
 
 /* focused menubar cell drops this many world-y units below its authored row
  * position at full 1.2x focus (matches the web selection sitting ~5px lower) */
@@ -356,11 +357,13 @@ static int ring_delta(int a, int b, int n)
 	return d;
 }
 
-static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, int foc)
+/* blue_a = opacity of the active (blue) card frame on top of the normal (dark)
+ * one: 0 = unfocused, 1 = focused, in-between = the 0.2s selection crossfade. */
+static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue_a)
 {
 	const snes_game_rec *g = game(m, gi);
 	float cy = CAR_CY, sc = CAR_SC;
-	const snes_spr_entry *frame = foc ? m->card_act : m->card_norm;
+	const snes_spr_entry *frame = m->card_norm ? m->card_norm : m->card_act;
 	const snes_img_entry *im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
 	if (cx < -280 || cx > SNES_VW + 280) return;
 	if (frame) {
@@ -368,8 +371,14 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, int foc)
 		 * not); draw it first, then the boxart on top. The boxart is scaled
 		 * ASPECT-PRESERVING to fit the screen window, NOT stretched: web uses
 		 * scale = min(screenX/w, screenX/h, 1) (sys_game_card.loadingDone), which
-		 * for a 228x160 thumb is 1 -> native 228x160, centred in the window. */
+		 * for a 228x160 thumb is 1 -> native 228x160, centred in the window. The
+		 * dark frame is the base; the blue frame cross-fades in on top (Tween over
+		 * REPEAT/0.2s, sys_gametitlelist onElementFocus). */
 		snes_blit_spr(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f);
+		if (blue_a > 0.003f && m->card_act)
+			snes_blit_spr(t, m->pk, m->card_act, cx, cy,
+				      (m->card_fw / (float)m->card_act->sw) * sc,
+				      blue_a > 1.0f ? 1.0f : blue_a);
 		if (im) {
 			float sf = m->screen_w / (float)im->w, sfh = m->screen_w / (float)im->h;
 			float bw, bh;
@@ -393,6 +402,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, int foc)
 		 * (atlas 505,51) at wx=-96..-24, wy=-108; the icon scale vs the card
 		 * frame scale still needs pinning down before they help the diff. */
 	} else {                                 /* fallback: plain framed boxart */
+		int foc = blue_a > 0.5f;
 		float bw = foc ? 236.0f : 200.0f, bh = bw * 160.0f / 228.0f;
 		if (foc) snes_fill_quad(t, cx, cy, bw + 18, bh + 18, 0.20f, 0.55f, 1.0f, 1.0f);
 		snes_fill_quad(t, cx, cy, bw + 4, bh + 4, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -403,17 +413,22 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, int foc)
 static void draw_carousel(snes_menu *m, snes_target *t)
 {
 	int n = m->ngames, j;
+	/* blue-frame crossfade: on a nav the outgoing card's blue frame fades out
+	 * while the incoming one's fades in over CAR_XFADE (sys_gametitlelist). */
+	float prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus)
+		     ? m->xfade_t / CAR_XFADE : 0.0f;      /* 1 at onset -> 0 when done */
 	if (n <= 0) return;
 	/* painter's order: draw non-focused first, focused last (on top) */
 	for (j = 0; j < n; j++) {
-		float wx, cx;
+		float wx, cx, blue_a;
 		if (j == m->focus) continue;
 		wx = m->sel_world + CAR_HGAP * (float)ring_delta(m->focus, j, n) + m->cont_shift;
 		cx = 640.0f + wx;
 		if (cx < -280 || cx > SNES_VW + 280) continue;
-		draw_card(m, t, j, cx, 0);
+		blue_a = (j == m->prev_focus) ? prog : 0.0f;   /* outgoing card fades out */
+		draw_card(m, t, j, cx, blue_a);
 	}
-	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1);
+	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1.0f - prog);
 }
 
 /* ---- bottom thumbnail filmstrip (ports sys_thumbnail_icon: a fixed 21-icon
@@ -724,6 +739,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->chrome = chrome; m->chrome_ready = 0;
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
 	m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
+	m->prev_focus = 0; m->xfade_t = 0.0f;
 	m->pl = m->pr = m->pu = m->pd = m->pa = m->pb = m->ps = 0;
 	m->sndh = m->sndt = 0; m->wall = 0;
 	m->bg_acc = 0.0f; m->scr_speed = BG_DEFAULT_SPEED; m->scr_dir = 1.0f;
@@ -1035,6 +1051,8 @@ static void car_navigate(snes_menu *m, int dir)
 	int n = m->ngames;
 	float old_sw = m->sel_world, cardShift, ns;
 	if (n <= 0) return;
+	m->prev_focus = m->focus;                 /* start the blue-frame crossfade */
+	m->xfade_t = CAR_XFADE;
 	m->focus = ((m->focus + dir) % n + n) % n;
 	bg_scroll_kick(m, dir);
 	/* card-slide tween time: first press over REPEAT_DELAY, held over REPEAT_RATE */
@@ -1227,6 +1245,8 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		if (m->cont_shift > 0) { m->cont_shift -= rate; if (m->cont_shift < 0) m->cont_shift = 0; }
 		else if (m->cont_shift < 0) { m->cont_shift += rate; if (m->cont_shift > 0) m->cont_shift = 0; }
 	}
+	/* blue selection-frame crossfade timer */
+	if (m->xfade_t > 0.0f) { m->xfade_t -= dt; if (m->xfade_t < 0.0f) m->xfade_t = 0.0f; }
 	/* filmstrip smooth index follow */
 	k = dt * 12.0f; if (k > 1.0f) k = 1.0f;
 	m->car_x += ((float)m->focus - m->car_x) * k;
