@@ -1473,6 +1473,40 @@ static void frame_move(snes_menu *m, int dir)
 	frame_layout(m);
 	push_snd(m, m->sfx_move);
 }
+/* Applying a frame re-skins each mode item's `display` preview with that frame's
+ * pre-rendered image (4:3/CRT use the _4_3 preview, DotByDot the _pixel_perfect
+ * one). frame 0 = "none" clears the override, restoring the base preview. Ports
+ * _updateFramePreviews. */
+static const char *g_frame_folders[11] = {
+	"01_ambient", "02_wire", "03_crystal", "04_dot", "05_mosaic", "06_dot2",
+	"07_wood", "08_space", "09_speaker", "10_curtain", "11_midnight",
+};
+static void apply_frame_previews(snes_menu *m)
+{
+	static const char *pfx[3] = {              /* CRTFilter, 4:3, DotByDot */
+		"frame_preview_43_", "frame_preview_43_", "frame_preview_pp_",
+	};
+	snes_rnode *it[3];
+	int k;
+	resolve_disp_items(m, it);
+	for (k = 0; k < 3; k++) {
+		snes_rnode *disp;
+		const snes_img_entry *im = 0;
+		if (!it[k]) continue;
+		disp = child_named(m->pk, it[k], "display");
+		if (!disp) continue;
+		if (m->frame_applied >= 1 && m->frame_applied <= 11) {
+			char key[64];
+			const char *a = pfx[k], *b = g_frame_folders[m->frame_applied - 1];
+			int p = 0;
+			while (*a && p < 60) key[p++] = *a++;
+			while (*b && p < 63) key[p++] = *b++;
+			key[p] = 0;
+			im = snes_res_img(m->pk, snes_hash(key));
+		}
+		disp->vis.ov_img = im;   /* NULL for "none" restores the packed base preview */
+	}
+}
 
 /* Ports navFire: on a fresh press of any allowed D-pad control (checked in
  * priority order) latch it, seed the delay, and fire; while held, fire every
@@ -1779,8 +1813,9 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				int c = sub_navfire(m, in, dt, 12, DISP_HOLD_DELAY, DISP_HOLD_RATE);
 				if (c) frame_move(m, c == 3 ? -1 : 1);
 				if (ea && m->frame_applied != m->frame_sel) {
-					m->frame_applied = m->frame_sel;  /* preview reskin: TODO (needs preview PNGs) */
+					m->frame_applied = m->frame_sel;
 					frame_layout(m);
+					apply_frame_previews(m);  /* re-skin the 3 mode previews */
 					push_snd(m, m->sfx_decide);
 				}
 			} else {                          /* screen-mode line */

@@ -833,6 +833,15 @@ def main():
                 fidx = add_image(tp, False)
                 if fidx is not None:
                     res_map["frame_thumb_" + folder] = (RES_TEXTURE, fidx)
+            # the two mode previews (Display line1 reskins on Apply): the 4:3/CRT
+            # modes use <folder>_4_3_preview, DotByDot uses _pixel_perfect_preview.
+            for suf, key in (("_4_3_preview", "frame_preview_43_"),
+                             ("_pixel_perfect_preview", "frame_preview_pp_")):
+                pp = os.path.join(frames_dir, folder, folder + suf + ".png")
+                if os.path.exists(pp):
+                    pidx = add_image(pp, False)
+                    if pidx is not None:
+                        res_map[key + folder] = (RES_TEXTURE, pidx)
 
     # ---- resource hash table (pow2, open addressed) ----
     n = len(res_map)
