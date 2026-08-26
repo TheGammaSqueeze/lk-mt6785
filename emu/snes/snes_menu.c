@@ -770,9 +770,10 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 		static const uint16_t sx[3] = { 145, 159, 173 };
 		int fr = seq[((int)(m->clock / 0.03333f)) % 13];
 		snes_spr_entry cur = { m->card_act->img, sx[fr], 881, 12, 8, 6, 4 };
-		/* nudged down from the authored y511 so the chevron top clears the
-		 * focused card's bottom edge (~y498) - the web renders them touching. */
-		snes_blit_spr_tint_flip(t, m->pk, &cur, ccx, 528.0f, 3.0f, 1.0f,
+		/* sit in the gap between the focused card's bottom (~y498) and the
+		 * filmstrip top (~y537): centred ~517 clears the card yet stays above
+		 * the strip (the web renders it touching the card - user wants a gap). */
+		snes_blit_spr_tint_flip(t, m->pk, &cur, ccx, 517.0f, 3.0f, 1.0f,
 					63.0f / 255.0f, 191.0f / 255.0f, 1.0f, 0, 1);
 	}
 }
@@ -1566,6 +1567,7 @@ static void car_navigate(snes_menu *m, int dir)
 	m->sel_world = ns;
 	cardShift = (m->sel_world - old_sw) - dir * CAR_HGAP;   /* 0 walk, -dir*HGAP scroll */
 	m->cont_shift = -cardShift;                            /* animates back to 0 */
+	if (cardShift != 0.0f) m->car_navd = 1;   /* web tween advances from NEXT frame */
 }
 
 /* Display screen-mode line: resolve the 3 radio items in visual (left->right)
@@ -2147,7 +2149,11 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	{
 		float tw = m->car_tween > 0.0f ? m->car_tween : CAR_REPEAT;
 		float rate = (CAR_HGAP / tw) * dt;
-		if (m->cont_shift > 0) { m->cont_shift -= rate; if (m->cont_shift < 0) m->cont_shift = 0; }
+		if (m->car_navd) {
+			/* the frame a nav set cont_shift: the web (Tween.moveTo) does not
+			 * advance the fresh tween until the next frame - hold this frame. */
+			m->car_navd = 0;
+		} else if (m->cont_shift > 0) { m->cont_shift -= rate; if (m->cont_shift < 0) m->cont_shift = 0; }
 		else if (m->cont_shift < 0) { m->cont_shift += rate; if (m->cont_shift > 0) m->cont_shift = 0; }
 	}
 	/* blue selection-frame crossfade timer */
