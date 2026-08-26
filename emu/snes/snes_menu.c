@@ -1704,10 +1704,15 @@ static void apply_options_state(snes_menu *m)
 	int i;
 	resolve_opt_items(m, it);
 	for (i = 0; i < 4; i++) {
-		snes_rnode *ca;
+		snes_rnode *ca, *bf, *bi;
+		int foc = (i == m->opt_cur);
 		if (!it[i]) continue;
 		ca = child_named(m->pk, it[i], "cursor_area");
-		if (ca) ca->enabled = (i == m->opt_cur);
+		if (ca) ca->enabled = foc;
+		/* GUIButton idle/focus frames: the System Reset button shows btn_focus
+		 * (its distinct focused colour) when selected - the web _navHighlight. */
+		bf = child_named(m->pk, it[i], "btn_focus"); if (bf) bf->enabled = foc;
+		bi = child_named(m->pk, it[i], "btn_idle");  if (bi) bi->enabled = !foc;
 		if (i < 3) {
 			int on = (m->opt_on >> i) & 1;
 			set_spr_comp(m->pk, &m->home, it[i], 481, 755, on);
