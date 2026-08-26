@@ -70,7 +70,9 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	if (d->linear) {
 		float ax = a < 0 ? -a : a, ay = dd < 0 ? -dd : dd;
 		float fx = ax - (float)(int)ax, fy = ay - (float)(int)ay;
-		if (ax > 1.0f && (fx > 0.03f || fy > 0.03f)) lin = 1;
+		/* any non-integer scale - magnified (4:3 zoom) OR minified (the 0.85x
+		 * bottom legend). Integer scales stay bit-identical nearest. */
+		if (fx > 0.03f || fy > 0.03f) lin = 1;
 	}
 	/* local dest rect corners: [-px, dw-px] x [-py, dh-py] */
 	float lx0 = -d->px, lx1 = d->dw - d->px, ly0 = -d->py, ly1 = d->dh - d->py;
