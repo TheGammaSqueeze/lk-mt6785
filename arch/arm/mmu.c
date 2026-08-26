@@ -84,6 +84,22 @@ static uint64_t mmu_flags_to_l1_arch_flags(uint flags)
 		arch_flags |= MMU_L1_MEMORY_XN;
 	}
 	arch_flags |= MMU_MEMORY_L1_AF;
+#ifdef AYANEO_BIGCORE_EXPT
+	/* Multicore: mark Normal cacheable memory Inner-Shareable (SH[1:0]=0b11, bits
+	 * 9:8) so the second A55 in the DSU snoops cpu0's caches. LK maps everything
+	 * non-shareable by default, which is fine for a single core but means a second
+	 * core reads STALE/garbage data from shared DRAM (the render worker faulted
+	 * dereferencing a menu pointer it read as garbage). Device/strongly-ordered
+	 * keep their own attributes. No-op for a single core; only compiled when the
+	 * render is split across cores. */
+	switch (flags & MMU_MEMORY_TYPE_MASK) {
+	case MMU_MEMORY_TYPE_NORMAL:
+	case MMU_MEMORY_TYPE_NORMAL_WRITE_THROUGH:
+	case MMU_MEMORY_TYPE_NORMAL_WRITE_BACK:
+		arch_flags |= (0x3ULL << 8);   /* Inner-Shareable */
+		break;
+	}
+#endif
 	return arch_flags;
 }
 
