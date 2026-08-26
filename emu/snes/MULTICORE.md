@@ -26,7 +26,7 @@ kernel/DTB established:
 
 2. **The CPU-power registers are secure-only; NS LK writes are silently dropped.**
    On-HW read-after-write map (from `bigcore.c`'s probe): all of MCUCFG
-   (`0x0C53_xxxx` — boot-vector `0x0C53C900+cpu*8`, `INITARCH 0x0C53C8E4`,
+   (`0x0C53_xxxx` - boot-vector `0x0C53C900+cpu*8`, `INITARCH 0x0C53C8E4`,
    `CPC_FLOW 0x0C53A814`) and the SPM unlock (`0x10006000`) read back **unchanged**
    after writes (DROP), while reads work. So a from-LK raw-MMIO bring-up is impossible.
 
@@ -39,7 +39,7 @@ kernel/DTB established:
    and its un-timed poll spins forever.
 
 We confirmed (3) on hardware: calling `MTK_SIP_KERNEL_BOOT` from LK printed
-`SPM: enable CPC mode` (that log line lives inside `spmc_init`) — the arming *ran* —
+`SPM: enable CPC mode` (that log line lives inside `spmc_init`) - the arming *ran* -
 but the handler then jumped to the (bogus) entry and hung, so we cannot "arm and
 return" from LK via that SiP.
 
@@ -49,7 +49,7 @@ cpu7=0x700` (cpu6/7 are the big A76/A75). So `0x100` = cpu1, a little A55 siblin
 
 ---
 
-## 2. The fix — exact changes
+## 2. The fix - exact changes
 
 ### 2.1 ATF / `tee.img` (BL31): one 4-byte patch + re-sign
 
@@ -58,11 +58,11 @@ ATF's cold-boot init function into the one-shot arming wrapper.
 
 - **Disasm addresses** (device BL31; `tee.img` file offset = disasm addr + `0x400`,
   since the code payload starts at file `0x400`):
-  - `0x91e8` — cold-boot platform init, called exactly once from `bl31_main` at `0x4654`
+  - `0x91e8` - cold-boot platform init, called exactly once from `bl31_main` at `0x4654`
     (CPU0, before the BL33/LK handoff, before any `spm_poweron_cpu`).
-  - `0x9288` — a `bl 0x71f4` (a NOTICE varargs print) inside `0x91e8`. Its result is
+  - `0x9288` - a `bl 0x71f4` (a NOTICE varargs print) inside `0x91e8`. Its result is
     unused and only `w19` (callee-saved) is live afterwards.
-  - `0x92d0` — the arming wrapper: one-shot-guarded by a BSS byte flag at `0x2e000+4080`;
+  - `0x92d0` - the arming wrapper: one-shot-guarded by a BSS byte flag at `0x2e000+4080`;
     when unset it runs `bl 0x9770; 0x971c; 0x99d4; spmc_init(0x125f4)` then returns.
 
 - **The edit** (single instruction):
@@ -75,15 +75,15 @@ ATF's cold-boot init function into the one-shot arming wrapper.
 
 - **Why it's safe:** `0x92d0`'s one-shot flag means the later *real* `MTK_SIP_KERNEL_BOOT`
   → `0x92d0` call (at `0x323c`) sees the flag set and no-ops its body, then still performs
-  its kernel jump — so **normal Linux boot is unaffected**. `spmc_init` only touches the
+  its kernel jump - so **normal Linux boot is unaffected**. `spmc_init` only touches the
   off cores (cpu1..7 `PWR_RST_B` at `0x1000620c..0x10006224`), idempotent `RESETPWRON`
-  clears, and `CPC_CTRL_ENABLE` — no hazard to the running cpu0. `INITARCH 0x0C53C8E4` is
+  clears, and `CPC_CTRL_ENABLE` - no hazard to the running cpu0. `INITARCH 0x0C53C8E4` is
   written by `0x9770` at cold boot (correct place); we deliberately did **not** inject
   inside `spm_poweron_cpu`, because that would rewrite `INITARCH` after `plat_power_domain_on`
   set the target core's arch-state.
 
 - **Re-sign** (the TEE is verified by the preloader via an X.509 `cert2` chain that uses
-  the **same MTK test key** as LK — `keys/img_prvk.pem`, RSA-PSS/SHA-256). Use
+  the **same MTK test key** as LK - `keys/img_prvk.pem`, RSA-PSS/SHA-256). Use
   `tools/ayaneo/sign_lk.py`'s `resign()` **directly** (NOT `main()`/`graft()`, which are
   LK-layout-specific and would pad/corrupt the 166512-byte image):
 
@@ -109,14 +109,14 @@ ATF's cold-boot init function into the one-shot arming wrapper.
 
 | File | Change |
 |---|---|
-| `emu/snes/bigcore.c` (new) | The whole experiment: MMIO helpers, the firewall read-after-write probe, the register map (all verified vs BL31 disasm), and `bigcore_start()` which reads `MCUCFG_CPC_FLOW_CTRL` and — gated on `CPC_CTRL_ENABLE` being set by the patched ATF — issues `PSCI CPU_ON(0x84000003, 0x100, &bc_entry_arm)` and samples the shared comms. All of it is behind `AYANEO_BIGCORE_EXPT` and compiled out otherwise. |
+| `emu/snes/bigcore.c` (new) | The whole experiment: MMIO helpers, the firewall read-after-write probe, the register map (all verified vs BL31 disasm), and `bigcore_start()` which reads `MCUCFG_CPC_FLOW_CTRL` and - gated on `CPC_CTRL_ENABLE` being set by the patched ATF - issues `PSCI CPU_ON(0x84000003, 0x100, &bc_entry_arm)` and samples the shared comms. All of it is behind `AYANEO_BIGCORE_EXPT` and compiled out otherwise. |
 | `emu/snes/bigcore_entry.S` (new) | `bc_entry_arm`: a forced-ARM, 16-byte-aligned proof-of-life stub the secondary core boots into (MMU-off). Writes magic `0xB16C0DE5` then an unbounded incrementing counter to `0x54000000`, each with a `dsb`. |
 | `emu/snes/snes_driver.c` | Calls `bigcore_start()`; adds the debug-only blue OSD line `BC m<mpidr> t<cpc> r<psci_ret> p<spm_status> g<magic?> c<counter>` (behind `AYANEO_DEBUG_LOGGING`), plus the `u2h`/`i2s` helpers. |
 | `platform/mt6785/rules.mk` | Adds `emu/snes/bigcore.o` and `emu/snes/bigcore_entry.o` to `OBJS`. |
 | `project/k85v1_64.mk` | Adds the `AYANEO_BIGCORE_EXPT` build flag (implies `AYANEO_DEBUG_LOGGING`) that gates the experiment. Also the earlier `AYANEO_VERBOSE_LOG` gate for per-frame display spam. |
 | `build_ayaneo_snes.sh` | While the experiment is active, the *debug* image is built with `AYANEO_BIGCORE_EXPT=yes`. The *release* (signed) image is unchanged and always compiles the experiment out. |
 
-Comms scratch is at `0x54000000` (`BC_COMMS_PA`) — a free 16 MB slot above the SNES asset
+Comms scratch is at `0x54000000` (`BC_COMMS_PA`) - a free 16 MB slot above the SNES asset
 regions (blob `0x50000000`, wallpaper `0x52000000`, chrome `0x53000000`), so it never
 collides with menu data. Because the core is brought up by PSCI it returns **non-secure**
 (matching LK), so the comms are visible without any secure/NS gymnastics.
@@ -145,10 +145,10 @@ Flashing `tee_patched_armcpc.img` + the `AYANEO_BIGCORE_EXPT` debug LK, the OSD 
 BC m0x81000000 t720896 r0 p0x474 g1 c<incrementing>
 ```
 
-- `t=0xB0000` — `CPC_FLOW` bit16 set (patched ATF armed the CPC at cold boot; was `0xA0000`).
-- `r0` — `PSCI CPU_ON(cpu1)` returned SUCCESS.
-- `p=0x474` — `SPM_CPU_PWR_STATUS` bit10 set → **cpu1 powered on**.
-- `g1` + climbing `c` — cpu1 is executing `bc_entry_arm` and writing the live counter.
+- `t=0xB0000` - `CPC_FLOW` bit16 set (patched ATF armed the CPC at cold boot; was `0xA0000`).
+- `r0` - `PSCI CPU_ON(cpu1)` returned SUCCESS.
+- `p=0x474` - `SPM_CPU_PWR_STATUS` bit10 set → **cpu1 powered on**.
+- `g1` + climbing `c` - cpu1 is executing `bc_entry_arm` and writing the live counter.
 
 **A second CPU core is alive and executing during the LK menu.**
 
