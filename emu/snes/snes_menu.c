@@ -2232,13 +2232,15 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		snes_spr_entry bar = { m->card_act->img, 1, 325, 348, 22, 174, 11 };
 		snes_blit_spr(t, m->pk, &bar, 640.0f, ty, 3.0f, 1.0f);
 	}
-	/* focused game name drawn into the authored title frame (SNES title font) */
+	/* focused game name drawn into the authored title frame (SNES title font). The
+	 * web renders the SELECTED game's title SOLID BLACK (onElementFocus setColor
+	 * (0,0,0,1)); the authored 0.298 grey is only for unselected games. */
 	set_view(m, t, VIEW_CONTENT);
 	g = game(m, m->focus);
 	if (g)
 		snes_draw_text(t, m->pk, m->f_title, 640,
 			       152.0f - RESUME_TITLE_DY * resume_open_frac(m), 1.0f,
-			       0xFF4C4C4Cu, 1, snes_str(m->pk, g->name));
+			       0xFF000000u, 1, snes_str(m->pk, g->name));
 
 	/* sort-rule label, briefly shown after a Select press */
 	if (m->sort_label_t > 0) {
