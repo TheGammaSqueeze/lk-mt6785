@@ -40,6 +40,17 @@
 /* line 4 (256): post-MMU cached heartbeat written by the secondary */
 #define BC_O_CACHED_OK  256    /* secondary (cached): MMU+caches enabled OK */
 #define BC_O_COUNTER    260    /* secondary (cached) heartbeat */
+/* line 5 (320): worker fault capture (its exception handler records these) */
+#define BC_O_FAULT_TYPE 320    /* 1=undef 2=prefetch-abort 3=data-abort */
+#define BC_O_FAULT_FAR  324    /* faulting address (DFAR/IFAR) */
+#define BC_O_FAULT_FSR  328    /* fault status (DFSR/IFSR) */
+#define BC_O_FAULT_PC   332    /* faulting instruction PC */
+#define BC_O_FAULT_SPSR 336    /* SPSR at fault (mode/state) */
+/* line 6 (384): worker CPU-state snapshot captured just before the render */
+#define BC_O_W_MPIDR    384
+#define BC_O_W_SCTLR    388
+#define BC_O_W_CPACR    392
+#define BC_O_W_FPEXC    396
 
 #ifndef __ASSEMBLER__
 struct bc_comms {
@@ -70,6 +81,19 @@ struct bc_comms {
 	/* line 4: post-MMU cached heartbeat */
 	volatile unsigned cached_ok;             /* 256 */
 	volatile unsigned counter;               /* 260 */
+	volatile unsigned _rc[14];               /* -> 320 */
+	/* line 5: worker fault capture */
+	volatile unsigned fault_type;            /* 320 */
+	volatile unsigned fault_far;             /* 324 */
+	volatile unsigned fault_fsr;             /* 328 */
+	volatile unsigned fault_pc;              /* 332 */
+	volatile unsigned fault_spsr;            /* 336 */
+	volatile unsigned _rf[11];               /* -> 384 */
+	/* line 6: worker CPU-state snapshot (captured just before the render) */
+	volatile unsigned w_mpidr;               /* 384 */
+	volatile unsigned w_sctlr;               /* 388 */
+	volatile unsigned w_cpacr;               /* 392 */
+	volatile unsigned w_fpexc;               /* 396 */
 };
 #endif
 

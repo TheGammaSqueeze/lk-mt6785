@@ -89,10 +89,19 @@ bc_entry_arm2:
 	@ core did not) - the first FP op would trap to Undefined and wedge the worker.
 	mrc	p15, 0, r1, c1, c0, 2	@ CPACR
 	orr	r1, r1, #0x00f00000	@ cp10 + cp11 = full access (bits 20..23)
+	bic	r1, r1, #0x80000000	@ clear ASEDIS so Advanced SIMD (NEON) is enabled
 	mcr	p15, 0, r1, c1, c0, 2
 	isb
 	mov	r1, #0x40000000		@ FPEXC.EN (bit30)
 	vmsr	fpexc, r1
+	str	r1, [r0, #BC_O_W_FPEXC]	@ record the FPEXC we set (diag)
+	isb
+
+	@ Point this core's exception vectors at our own handler so a fault in the C
+	@ render is CAPTURED (address + reason -> comms) instead of jumping to a
+	@ garbage reset vector and wedging silently. (VBAR, 32-byte aligned table.)
+	ldr	r1, =bc_vectors
+	mcr	p15, 0, r1, c12, c0, 0	@ VBAR
 	isb
 
 	movw	r1, #0x0DE5		@ cached_ok = magic (CACHED write, separate line)
@@ -111,3 +120,67 @@ bc_entry_arm2:
 	dsb
 	b	2b
 	.size	bc_entry_arm2, . - bc_entry_arm2
+
+	@ ---- worker exception vectors + fault capture ----
+	@ On a fault the worker records {type, FAR, FSR, PC} into the comms block and
+	@ parks, so cpu0 can read exactly where/why the render died (instead of the
+	@ core silently wedging on a garbage reset vector). r0/r1 are clobbered - we
+	@ never return.
+	.balign 32
+	.global bc_vectors
+bc_vectors:
+	b	.		@ 0x00 reset
+	b	bc_undef	@ 0x04 undefined instruction
+	b	.		@ 0x08 svc
+	b	bc_pabt		@ 0x0C prefetch abort
+	b	bc_dabt		@ 0x10 data abort
+	b	.		@ 0x14 (hyp)
+	b	.		@ 0x18 irq
+	b	.		@ 0x1C fiq
+
+bc_undef:
+	movw	r0, #0x0000
+	movt	r0, #0x5400
+	mov	r1, #1
+	str	r1, [r0, #BC_O_FAULT_TYPE]
+	mrs	r1, spsr
+	str	r1, [r0, #BC_O_FAULT_SPSR]
+	sub	r1, lr, #4		@ ARM undef: lr = faulting PC + 4
+	str	r1, [r0, #BC_O_FAULT_PC]
+	dsb
+1:	wfe
+	b	1b
+
+bc_pabt:
+	movw	r0, #0x0000
+	movt	r0, #0x5400
+	mov	r1, #2
+	str	r1, [r0, #BC_O_FAULT_TYPE]
+	mrs	r1, spsr
+	str	r1, [r0, #BC_O_FAULT_SPSR]
+	mrc	p15, 0, r1, c6, c0, 2	@ IFAR
+	str	r1, [r0, #BC_O_FAULT_FAR]
+	mrc	p15, 0, r1, c5, c0, 1	@ IFSR
+	str	r1, [r0, #BC_O_FAULT_FSR]
+	sub	r1, lr, #4		@ prefetch abort: lr = faulting PC + 4
+	str	r1, [r0, #BC_O_FAULT_PC]
+	dsb
+1:	wfe
+	b	1b
+
+bc_dabt:
+	movw	r0, #0x0000
+	movt	r0, #0x5400
+	mov	r1, #3
+	str	r1, [r0, #BC_O_FAULT_TYPE]
+	mrs	r1, spsr
+	str	r1, [r0, #BC_O_FAULT_SPSR]
+	mrc	p15, 0, r1, c6, c0, 0	@ DFAR (faulting data address)
+	str	r1, [r0, #BC_O_FAULT_FAR]
+	mrc	p15, 0, r1, c5, c0, 0	@ DFSR
+	str	r1, [r0, #BC_O_FAULT_FSR]
+	sub	r1, lr, #8		@ data abort: lr = faulting PC + 8
+	str	r1, [r0, #BC_O_FAULT_PC]
+	dsb
+1:	wfe
+	b	1b

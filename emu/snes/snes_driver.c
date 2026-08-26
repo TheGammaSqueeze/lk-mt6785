@@ -75,6 +75,12 @@ void bc_worker_entry(void)
 			t.offx = (int)g_bc->offx; t.offy = (int)g_bc->offy;
 			snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
 			snes_target_band(&t, (int)g_bc->band_y0, (int)g_bc->band_y1);
+			/* snapshot the worker's own CPU state right before the render, so if
+			 * it faults we can see whether MMU/FP were actually on for it. */
+			{ unsigned v;   /* w_fpexc is captured in asm (vmrs is ARM-only) */
+			  __asm__ volatile("mrc p15,0,%0,c0,c0,5":"=r"(v)); g_bc->w_mpidr = v;
+			  __asm__ volatile("mrc p15,0,%0,c1,c0,0":"=r"(v)); g_bc->w_sctlr = v;
+			  __asm__ volatile("mrc p15,0,%0,c1,c0,2":"=r"(v)); g_bc->w_cpacr = v; }
 			g_bc->stage = 0x33; bc_dsb();  /* about to render */
 			snes_menu_render((snes_menu *)(unsigned long)g_bc->menu_ptr, &t);
 			g_bc->stage = 0x44; bc_dsb();  /* render returned */
@@ -139,11 +145,25 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	if (g_bc->done == seq) g_bc_wfin++;        /* worker finished its band in time */
 	bc_dmb();                                  /* acquire the worker's band writes */
 	waited = (gpt4_get_current_tick() - tw0) / 13u;   /* us cpu0 waited for worker */
-	{	/* rate-limited: how the split is doing (worker vs fallback + wait) */
-		static unsigned fc;
-		if ((++fc % 120u) == 0u)
-			_dprintf("BC split: wfin=%u fb=%u waited=%uus spins=%u wcnt=%u stage=0x%x\n",
-				 g_bc_wfin, g_bc_fb, waited, spins, g_bc->counter, g_bc->stage);
+	{	/* One-time COMPREHENSIVE dump the instant a worker fault is captured
+		 * (everything needed to diagnose: fault regs, worker CPU state, the job
+		 * it was handed), then only a light periodic line so the log is readable. */
+		static unsigned fc, dumped;
+		if (g_bc->fault_type && !dumped) {
+			dumped = 1;
+			_dprintf("BC WORKER FAULT: type=%u(1undef2pabt3dabt) far=0x%x fsr=0x%x pc=0x%x spsr=0x%x\n",
+				 g_bc->fault_type, g_bc->fault_far, g_bc->fault_fsr,
+				 g_bc->fault_pc, g_bc->fault_spsr);
+			_dprintf("BC WORKER STATE: mpidr=0x%x sctlr=0x%x cpacr=0x%x fpexc=0x%x stage=0x%x\n",
+				 g_bc->w_mpidr, g_bc->w_sctlr, g_bc->w_cpacr, g_bc->w_fpexc, g_bc->stage);
+			_dprintf("BC JOB: fb=0x%x pitch=%u W=%u H=%u band=%u..%u menu=0x%x wstacktop=0x%x\n",
+				 g_bc->fb, g_bc->pitch, g_bc->W, g_bc->H,
+				 g_bc->band_y0, g_bc->band_y1, g_bc->menu_ptr, g_bc->stack_top);
+		}
+		if ((++fc % 240u) == 0u)   /* ~every 8s at 30fps: minimal spam */
+			_dprintf("BC split: wfin=%u fb=%u wait=%uus stage=0x%x fault=%u/pc0x%x wcnt=%u\n",
+				 g_bc_wfin, g_bc_fb, waited, g_bc->stage,
+				 g_bc->fault_type, g_bc->fault_pc, g_bc->counter);
 	}
 }
 #endif
