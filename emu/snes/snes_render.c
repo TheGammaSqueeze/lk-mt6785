@@ -585,8 +585,29 @@ struct snes_render_ctx {
 	int     zt;
 };
 
-/* core-0 (and single-core) context. */
-static snes_render_ctx g_ctx0;
+/* Per-core render contexts. Release/host: exactly one (index 0), byte-identical
+ * to the old single g_ctx0. The AYANEO_BIGCORE_EXPT multicore build adds a second
+ * so the boot core and the worker core each collect+sort into private scratch;
+ * bc_render_ctx() picks the caller's by MPIDR Aff1 (0 = boot core, else worker),
+ * so snes_menu_render can be entered by both cores concurrently without sharing
+ * mutable state. The band clip keeps their framebuffer writes disjoint. */
+#ifdef AYANEO_BIGCORE_EXPT
+#define BC_NCTX 2
+#else
+#define BC_NCTX 1
+#endif
+static snes_render_ctx g_ctx[BC_NCTX];
+
+static snes_render_ctx *bc_render_ctx(void)
+{
+#if defined(__arm__) && defined(AYANEO_BIGCORE_EXPT)
+	unsigned m;
+	__asm__ volatile("mrc p15, 0, %0, c0, c0, 5" : "=r"(m));   /* MPIDR */
+	return &g_ctx[((m >> 8) & 0xffu) ? 1 : 0];                 /* Aff1: 0=boot */
+#else
+	return &g_ctx[0];   /* single-core release + host: one context */
+#endif
+}
 
 static int is_drawable(int type)
 {
@@ -704,7 +725,7 @@ void snes_render_scene_ctx(snes_render_ctx *ctx, snes_target *t, snes_scene *s)
 
 void snes_render_scene(snes_target *t, snes_scene *s)
 {
-	snes_render_scene_ctx(&g_ctx0, t, s);
+	snes_render_scene_ctx(bc_render_ctx(), t, s);
 }
 
 void snes_render_node_ctx(snes_render_ctx *ctx, snes_target *t, snes_scene *s, snes_rnode *n)
@@ -722,10 +743,10 @@ void snes_render_node_ctx(snes_render_ctx *ctx, snes_target *t, snes_scene *s, s
  * transform is applied on top of its parent's world matrix). */
 void snes_render_node(snes_target *t, snes_scene *s, snes_rnode *n)
 {
-	snes_render_node_ctx(&g_ctx0, t, s, n);
+	snes_render_node_ctx(bc_render_ctx(), t, s, n);
 }
 
-int snes_render_count(void) { return g_ctx0.ndr; }
+int snes_render_count(void) { return g_ctx[0].ndr; }
 
 /* ---- direct-draw helpers (screen space; cx,cy = centre in the 1280x720 space) --- */
 void snes_blit_tex(snes_target *t, const snes_pack *pk, const snes_img_entry *im,
