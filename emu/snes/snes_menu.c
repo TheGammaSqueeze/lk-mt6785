@@ -675,16 +675,20 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 #define TH_SPACING 41.0f
 #define TH_BOTTOM  551.0f    /* icon bottom edge */
 #define TH_SIZE    32.0f
+#define TH_CENTER_Y 551.0f   /* icon centre (web world Y=-191, centre anchor) */
 static void draw_filmstrip(snes_menu *m, snes_target *t)
 {
 	int n = m->ngames, i;
-	float ccx, ccy = TH_BOTTOM - TH_SIZE / 2.0f;
+	/* the web draws each icon at its NATIVE small.png size (40x28) with a CENTER
+	 * anchor, its centre at world Y=-191 -> screen 551 (NOT a forced 32x32 square
+	 * bottom-anchored at 535). */
+	float ccx, ccy = TH_CENTER_Y;
 	if (n <= 0) return;
 	for (i = 0; i < n; i++) {
 		const snes_game_rec *g = game(m, i);
 		const snes_img_entry *im = (g && g->small_img != 0xFFFF) ? &m->pk->img[g->small_img] : 0;
 		float cx = TH_X0 + TH_SPACING * (float)i;
-		if (im) snes_blit_tex(t, m->pk, im, cx, ccy, TH_SIZE, TH_SIZE, 1.0f);
+		if (im) snes_blit_tex(t, m->pk, im, cx, ccy, (float)im->w, (float)im->h, 1.0f);
 	}
 	/* Animated downward-chevron cursor over the selected filmstrip icon
 	 * (cursor_node: cursor_thumbnails.spriteanim, curor_thumbnail_1/2/3, 12x8,
