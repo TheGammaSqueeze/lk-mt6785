@@ -453,7 +453,21 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CAR_DEAD   (CAR_HGAP * 1.5f)
 #define CAR_REPEAT 0.24f
 #define OPEN_SLIDE 688.0f   /* submenu panel slide-in distance (world up, screen px; frame-matched to the web open slide) */
-#define CLOSE_DUR  0.22f    /* submenu close slide-up duration (cubic ease-in) */
+#define CLOSE_DUR  0.20f    /* submenu close slide duration (web moveTo 0.2s inExpo) */
+/* inExpo(r) = 2^(10(r-1)) for the submenu/resume close slide (libc-free 2^y for
+ * y=10(r-1) in [-10,0]: floor split + a minimax cubic for the [0,1) fraction). */
+static float close_ease_inexpo(float r)
+{
+	float y, f, p;
+	int n;
+	if (r <= 0.0f) return 0.0f;
+	if (r >= 1.0f) return 1.0f;
+	y = 10.0f * (r - 1.0f);            /* in [-10, 0) */
+	n = (int)y; if (y < (float)n) n--; /* floor (n <= -1) */
+	f = y - (float)n;                  /* fraction in [0, 1) */
+	p = 1.0f + f * (0.69315f + f * (0.24152f + f * 0.05177f));  /* 2^f */
+	return p / (float)(1 << (-n));     /* 2^f * 2^n */
+}
 #define RESUME_SLIDE 688.0f /* resume panel slide-up-from-bottom distance (screen px) */
 /* opening the Suspend Point List raises the home content behind it
  * (resumemenu_position position_changer, markers gametitle/cardlist): the game
@@ -1743,9 +1757,10 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		float ke = 0.67f * (dt / 0.0333f);
 		if (ke > 1.0f) ke = 1.0f;
 		if (m->closing) {
-			/* the web close is a strong ease-in (panel nearly still for ~3 frames
-			 * then accelerates off); model as a cubic over CLOSE_DUR. Direction is
-			 * close_target: +up (submenu, state 2) or -down (resume, state 3). */
+			/* the web close is moveTo(...,'inExpo') over 0.2s (2^(10(r-1))): the panel
+			 * stays nearly still ~3 frames then accelerates off. r^6 approximates inExpo
+			 * libc-free (frame4 .088 vs .099, frame5 .335 vs .314) - much closer than the
+			 * old r^4 (~2x too fast mid-slide). close_target: +up submenu (2) / -down (3). */
 			float r;
 			m->close_t += dt;
 			r = m->close_t / CLOSE_DUR;
@@ -1760,7 +1775,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				}
 				m->closing = 0; m->open_y = 0.0f; m->close_t = 0.0f;
 			} else {
-				m->open_y = m->close_target * r * r * r * r;
+				m->open_y = m->close_target * close_ease_inexpo(r);
 			}
 		} else {
 			m->open_y -= m->open_y * ke;
