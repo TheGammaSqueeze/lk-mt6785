@@ -38,7 +38,16 @@ static inline int ifloor(float x) { int i = (int)x; return (x < 0 && (float)i !=
  *   X = a*lx + c*ly + e ;  Y = b*lx + d*ly + f  (lx,ly local dest pixels) */
 void snes_target_view(snes_target *t, float sx, float sy, float dx, float dy)
 {
+	/* NB: this is called per view-group DURING a render; it must NOT touch the
+	 * band clip (band_y0/band_y1), or a multicore core's band would be reset
+	 * mid-frame. The band is zero-initialised at target creation instead. */
 	t->vsx = sx; t->vsy = sy; t->vdx = dx; t->vdy = dy;
+}
+
+/* Absolute-framebuffer scanline band clip (see snes_render.h). */
+void snes_target_band(snes_target *t, int y0, int y1)
+{
+	t->band_y0 = y0; t->band_y1 = y1;
 }
 
 static void blit(snes_target *t, const float M[6], const snes_draw *d)
@@ -77,6 +86,19 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 		if (x1 > xlim) x1 = xlim;
 		if (y1 > ylim) y1 = ylim;
 	}
+	/* Multicore band clip: intersect the destination row range with this core's
+	 * absolute scanline band. Rows are written to fb[(offy+Y)*pitch]; convert the
+	 * band's absolute panel rows [band_y0, band_y1) into virtual Y and tighten
+	 * [y0, y1). band_y1==0 disables (single-core / default). The bands are chosen
+	 * cache-line disjoint by the caller, so no two cores ever touch the same 64B
+	 * framebuffer line and there is no write-write false sharing. */
+	if (t->band_y1 > t->band_y0) {
+		int by0 = t->band_y0 - t->offy;   /* band low  in virtual Y */
+		int by1 = t->band_y1 - t->offy;   /* band high in virtual Y */
+		if (y0 < by0) y0 = by0;
+		if (y1 > by1) y1 = by1;
+	}
+	if (y0 >= y1 || x0 >= x1) return;
 	{
 	/* Integer tint (0..256) and source stride, hoisted out of the pixel loop. */
 	int tr = (int)(d->tr * 256.0f), tg = (int)(d->tg * 256.0f);
@@ -542,16 +564,29 @@ typedef struct { const snes_comp *comp; snes_rnode *node; float m[6]; float col[
 		 int layer; int seq; } snes_dr;
 
 #define SNES_MAXDR 2048
-static snes_dr g_dr[SNES_MAXDR];
-static int g_ndr;
 
-/* item for per-node z ordering. Kept in a global bump scratch (not the C stack)
- * so a deep tree does not overflow the thread stack: each collect frame reserves
- * its items on entry and rewinds on exit; children allocate beyond. */
+/* item for per-node z ordering. Kept in a bump scratch (not the C stack) so a
+ * deep tree does not overflow the thread stack: each collect frame reserves its
+ * items on entry and rewinds on exit; children allocate beyond. */
 typedef struct { int z, layer, g, i; const snes_comp *comp; snes_rnode *child; } zitem;
 #define SNES_MAXZ 4096
-static zitem g_zs[SNES_MAXZ];
-static int g_zt;
+
+/* Per-core render scratch. Single-core (release + default debug) uses exactly
+ * one instance, g_ctx0, so the g_dr/g_zs arrays and g_ndr/g_zt bookkeeping are
+ * byte-identical to the old file-scope globals - no behaviour change. Under the
+ * AYANEO_BIGCORE_EXPT multicore split each core owns its OWN context (its own
+ * z-sort + draw list), so collect()/sort_and_paint() never share mutable state
+ * across cores; the only shared object is the framebuffer, into which each core
+ * writes a disjoint scanline band (see the band clip in blit()). */
+struct snes_render_ctx {
+	snes_dr dr[SNES_MAXDR];
+	int     ndr;
+	zitem   zs[SNES_MAXZ];
+	int     zt;
+};
+
+/* core-0 (and single-core) context. */
+static snes_render_ctx g_ctx0;
 
 static int is_drawable(int type)
 {
@@ -559,12 +594,12 @@ static int is_drawable(int type)
 	       type == COMP_ANIMATED_SPRITE || type == COMP_LABEL;
 }
 
-static void collect(snes_scene *s, snes_rnode *n, const float pm[6],
-		    const float pcol[4], int base_layer)
+static void collect(snes_render_ctx *ctx, snes_scene *s, snes_rnode *n,
+		    const float pm[6], const float pcol[4], int base_layer)
 {
 	float m[6], col[4];
-	int base = g_zt;
-	zitem *items = &g_zs[base];
+	int base = ctx->zt;
+	zitem *items = &ctx->zs[base];
 	int ni = 0, k, kk;
 	unsigned ci;
 	if (!n->enabled || !n->visible) return;
@@ -587,7 +622,7 @@ static void collect(snes_scene *s, snes_rnode *n, const float pm[6],
 			items[ni].child = ch; ni++;
 		}
 	}
-	g_zt = base + ni;   /* reserve; children collect() allocate beyond */
+	ctx->zt = base + ni;   /* reserve; children collect() allocate beyond */
 	/* stable insertion sort by (z, g, layer, i) */
 	for (k = 1; k < ni; k++) {
 		zitem key = items[k];
@@ -604,19 +639,19 @@ static void collect(snes_scene *s, snes_rnode *n, const float pm[6],
 	}
 	for (k = 0; k < ni; k++) {
 		if (items[k].comp) {
-			if (g_ndr < SNES_MAXDR) {
-				snes_dr *dr = &g_dr[g_ndr++];
+			if (ctx->ndr < SNES_MAXDR) {
+				snes_dr *dr = &ctx->dr[ctx->ndr++];
 				dr->comp = items[k].comp; dr->node = n;
 				for (kk = 0; kk < 6; kk++) dr->m[kk] = m[kk];
 				dr->col[0] = col[0]; dr->col[1] = col[1];
 				dr->col[2] = col[2]; dr->col[3] = col[3];
-				dr->layer = base_layer; dr->seq = g_ndr;
+				dr->layer = base_layer; dr->seq = ctx->ndr;
 			}
 		} else {
-			collect(s, items[k].child, m, col, base_layer);
+			collect(ctx, s, items[k].child, m, col, base_layer);
 		}
 	}
-	g_zt = base;   /* rewind this frame's reservation */
+	ctx->zt = base;   /* rewind this frame's reservation */
 }
 
 static void paint(snes_target *t, snes_scene *s, snes_dr *dr)
@@ -633,46 +668,64 @@ static void paint(snes_target *t, snes_scene *s, snes_dr *dr)
 	}
 }
 
-static void sort_and_paint(snes_target *t, snes_scene *s)
+/* Stable-sort a context's draw list by (layer, seq), then paint every drawable.
+ * The z-sort is identical on every core (the collect result is deterministic and
+ * core-independent); only the framebuffer WRITE differs, gated by t->band_y*. So
+ * splitting is "same list, disjoint output rows": no core reorders differently. */
+static void sort_and_paint_ctx(snes_render_ctx *ctx, snes_target *t, snes_scene *s)
 {
 	int i, k;
-	for (i = 1; i < g_ndr; i++) {
-		snes_dr key = g_dr[i];
+	for (i = 1; i < ctx->ndr; i++) {
+		snes_dr key = ctx->dr[i];
 		k = i - 1;
-		while (k >= 0 && ((g_dr[k].layer != key.layer) ? g_dr[k].layer > key.layer
-							       : g_dr[k].seq > key.seq)) {
-			g_dr[k + 1] = g_dr[k]; k--;
+		while (k >= 0 && ((ctx->dr[k].layer != key.layer) ? ctx->dr[k].layer > key.layer
+								  : ctx->dr[k].seq > key.seq)) {
+			ctx->dr[k + 1] = ctx->dr[k]; k--;
 		}
-		g_dr[k + 1] = key;
+		ctx->dr[k + 1] = key;
 	}
-	for (i = 0; i < g_ndr; i++)
-		paint(t, s, &g_dr[i]);
+	for (i = 0; i < ctx->ndr; i++)
+		paint(t, s, &ctx->dr[i]);
+}
+
+/* Collect (+ z-sort) a scene into an explicit context, then paint into the
+ * target honouring the target's band clip. This is the multicore work unit: two
+ * cores call it with the SAME scene and DIFFERENT (ctx, band) so each collects
+ * its own list (private scratch) and paints only its own rows. */
+void snes_render_scene_ctx(snes_render_ctx *ctx, snes_target *t, snes_scene *s)
+{
+	static const float I[6] = {1,0,0,0,1,0};
+	static const float W[4] = {1,1,1,1};
+	ctx->ndr = 0; ctx->zt = 0;
+	if (!s->root) return;
+	collect(ctx, s, s->root, I, W, 0);
+	sort_and_paint_ctx(ctx, t, s);
 }
 
 void snes_render_scene(snes_target *t, snes_scene *s)
 {
-	static const float I[6] = {1,0,0,0,1,0};
+	snes_render_scene_ctx(&g_ctx0, t, s);
+}
+
+void snes_render_node_ctx(snes_render_ctx *ctx, snes_target *t, snes_scene *s, snes_rnode *n)
+{
 	static const float W[4] = {1,1,1,1};
-	g_ndr = 0; g_zt = 0;
-	if (!s->root) return;
-	collect(s, s->root, I, W, 0);
-	sort_and_paint(t, s);
+	float pm[6] = {1,0,0,0,1,0};
+	ctx->ndr = 0; ctx->zt = 0;
+	if (!n) return;
+	if (n->parent) snes_node_world(n->parent, pm);
+	collect(ctx, s, n, pm, W, 0);
+	sort_and_paint_ctx(ctx, t, s);
 }
 
 /* Render the subtree rooted at n at its authored world position (n's own
  * transform is applied on top of its parent's world matrix). */
 void snes_render_node(snes_target *t, snes_scene *s, snes_rnode *n)
 {
-	static const float W[4] = {1,1,1,1};
-	float pm[6] = {1,0,0,0,1,0};
-	g_ndr = 0; g_zt = 0;
-	if (!n) return;
-	if (n->parent) snes_node_world(n->parent, pm);
-	collect(s, n, pm, W, 0);
-	sort_and_paint(t, s);
+	snes_render_node_ctx(&g_ctx0, t, s, n);
 }
 
-int snes_render_count(void) { return g_ndr; }
+int snes_render_count(void) { return g_ctx0.ndr; }
 
 /* ---- direct-draw helpers (screen space; cx,cy = centre in the 1280x720 space) --- */
 void snes_blit_tex(snes_target *t, const snes_pack *pk, const snes_img_entry *im,

@@ -18,7 +18,19 @@ typedef struct {
 	 * these per view group (top/bottom bars pinned, content zoomed, wallpaper
 	 * filled, banner squashed). See snes_target_view(). */
 	float     vsx, vsy, vdx, vdy;
+	/* Optional ABSOLUTE-framebuffer scanline band clip [band_y0, band_y1) in
+	 * panel rows (already including offy). When band_y1 > band_y0 the blitter
+	 * writes only rows in [band_y0, band_y1); a core renders the FULL z-sorted
+	 * draw list but only touches its own disjoint horizontal strip. band_y1==0
+	 * (the default, set by snes_target_view / zero-init) means "no band clip"
+	 * (whole framebuffer). Used by the AYANEO_BIGCORE_EXPT multicore split so N
+	 * cores partition the framebuffer into cache-line-disjoint bands. */
+	int       band_y0, band_y1;
 } snes_target;
+
+/* Restrict a target to an absolute framebuffer scanline band [y0, y1) (panel
+ * rows). Pass (0,0) to clear the band (whole framebuffer). */
+void snes_target_band(snes_target *t, int y0, int y1);
 
 /* Set the per-view-group aspect transform on a target (see snes_target). Call
  * with (1,1,0,0) to reset to the native no-op. */
@@ -28,6 +40,17 @@ void snes_target_view(snes_target *t, float sx, float sy, float dx, float dy);
 void snes_render_scene(snes_target *t, snes_scene *s);
 /* Draw the subtree rooted at n at its authored world position. */
 void snes_render_node(snes_target *t, snes_scene *s, snes_rnode *n);
+
+/* Per-core render scratch (z-sort + draw list). Opaque; size lives in the .c.
+ * Multicore only: each core owns one, so collect/sort never share mutable state.
+ * The single-core path uses a private file-scope instance instead. */
+typedef struct snes_render_ctx snes_render_ctx;
+/* Explicit-context variants of the two entry points above: collect into `ctx`
+ * (its own private z-sort + draw list) then paint into `t` honouring t's band
+ * clip. Call from a secondary core with its own ctx + a disjoint band. */
+void snes_render_scene_ctx(snes_render_ctx *ctx, snes_target *t, snes_scene *s);
+void snes_render_node_ctx(snes_render_ctx *ctx, snes_target *t, snes_scene *s,
+			  snes_rnode *n);
 
 /* number of drawables emitted by the last snes_render_scene (diagnostic). */
 int snes_render_count(void);

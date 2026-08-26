@@ -374,7 +374,7 @@ static uint16_t s_chrome_run[CHROME_H * CHROME_MAXRUN * 2];  /* (x0,x1) opaque r
 static uint16_t s_chrome_nrun[CHROME_H];
 static void build_chrome(snes_menu *m)
 {
-	snes_target ct;
+	snes_target ct = {0};   /* zero-init incl. the band clip */
 	int H = m->aspect ? CHROME_H : SNES_VH;
 	unsigned i, n = (unsigned)SNES_VW * (unsigned)H;
 	if (!m->chrome || !m->homemenu) return;
@@ -768,7 +768,11 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 	if (m->card_act) {
 		static const uint16_t seq[13] = { 0,1,1,1,1,2,2,2,1,1,0,0,0 };
 		static const uint16_t sx[3] = { 145, 159, 173 };
-		int fr = seq[((int)(m->clock / 0.03333f)) % 13];
+		/* positive modulo: m->clock can be transiently negative during a
+		 * transition, and C's % keeps the sign, so a bare %13 would index
+		 * seq[] with a negative subscript (out-of-bounds read). */
+		int ti = (int)(m->clock / 0.03333f);
+		int fr = seq[((ti % 13) + 13) % 13];
 		snes_spr_entry cur = { m->card_act->img, sx[fr], 881, 12, 8, 6, 4 };
 		/* sit in the gap between the focused card's bottom (~y498) and the
 		 * filmstrip top (~y537): centred ~517 clears the card yet stays above

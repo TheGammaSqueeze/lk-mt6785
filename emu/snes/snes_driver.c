@@ -306,7 +306,7 @@ static int snes_emu_thread(void *arg)
 	for (;;) {
 		unsigned int pitch, W, H;
 		unsigned int *fb = ayaneo_canvas_back(&pitch, &W, &H);
-		snes_target t;
+		snes_target t = {0};   /* zero-init incl. the band clip (band_y0/y1) */
 		snes_input in;
 		unsigned t_frame0 = gpt4_get_current_tick();
 		/* 13 MHz counter: dt in seconds = ticks / 13e6 (unsigned wrap-safe) */

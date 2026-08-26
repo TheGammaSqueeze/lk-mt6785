@@ -20,7 +20,7 @@ int main(int argc, char **argv)
 	const char *nav = argc > 4 ? argv[4] : "";
 	FILE *f = fopen(packf, "rb");
 	long len; void *blob;
-	snes_pack pk; snes_menu menu; snes_target t; snes_input in;
+	snes_pack pk; snes_menu menu; snes_target t = {0}; snes_input in;
 	uint32_t *fb, *wp, *chrome; snes_rnode *home_pool, *bg_pool;
 	int W = 1280, H = 960, i, x, y;
 	if (!f) { fprintf(stderr, "open %s failed\n", packf); return 1; }
