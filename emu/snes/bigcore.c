@@ -85,12 +85,15 @@ static inline void clrb(unsigned a, unsigned m) { wr32(a, rd32(a) & ~m); }
 #define MCUCFG_RW_RSVD0    (MCUCFG_BASE + 0x006Cu)   /* low MCUCFG scratch */
 #define MCUCFG_CPC_SPMC_ST (MCUCFG_BASE + 0xA840u)   /* CPC-side SPMC ack, bit=1<<cpu */
 
-/* ---- big<->little comms + entry stub ---- */
-#define BC_COMMS_PA   0x54000000u
-#define BC_MAGIC      0xB16C0DE5u
-struct bc_comms { volatile unsigned magic, counter; };
+/* ---- big<->little comms + entry stubs (shared layout: bigcore_comms.h) ---- */
+#include "bigcore_comms.h"
 static struct bc_comms *const bc = (struct bc_comms *)BC_COMMS_PA;
-extern void bc_entry_arm(void);   /* ARM asm stub, see bigcore_entry.S */
+extern void bc_entry_arm(void);    /* MMU-off proof-of-life stub */
+extern void bc_entry_arm2(void);   /* cached bring-up worker stub (bigcore_entry.S) */
+
+/* worker stack top: 1 MB above the comms block, inside the Normal-WB DRAM window,
+ * grows down; distinct from cpu0's stack. Only used once the worker's MMU is on. */
+#define BC_WORKER_STACK_TOP  (BC_COMMS_PA + 0x00100000u)
 
 /* telemetry read by the driver OSD */
 int      g_bc_target   = -1;
@@ -104,6 +107,27 @@ static unsigned read_mpidr(void)
 	unsigned m;
 	__asm__ volatile("mrc p15, 0, %0, c0, c0, 5" : "=r"(m));
 	return m;
+}
+
+/* Snapshot cpu0's live LPAE MMU config into the comms block so the secondary can
+ * adopt the identical mappings and turn its MMU + caches on (see bc_entry_arm2).
+ * Read the 64-bit TTBR0 with MRRC; the rest are 32-bit. cpu0 cache-cleans the
+ * block afterwards (in bigcore_start) so the MMU-off secondary reads real DRAM. */
+static void bc_snapshot_mmu(void)
+{
+	unsigned ttbr0_lo, ttbr0_hi, ttbcr, mair0, mair1, dacr, sctlr;
+	__asm__ volatile("mrrc p15, 0, %0, %1, c2" : "=r"(ttbr0_lo), "=r"(ttbr0_hi));
+	__asm__ volatile("mrc p15, 0, %0, c2, c0, 2" : "=r"(ttbcr));
+	__asm__ volatile("mrc p15, 0, %0, c10, c2, 0" : "=r"(mair0));
+	__asm__ volatile("mrc p15, 0, %0, c10, c2, 1" : "=r"(mair1));
+	__asm__ volatile("mrc p15, 0, %0, c3, c0, 0" : "=r"(dacr));
+	__asm__ volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(sctlr));
+	bc->ttbr0_lo = ttbr0_lo; bc->ttbr0_hi = ttbr0_hi;
+	bc->ttbcr = ttbcr; bc->mair0 = mair0; bc->mair1 = mair1;
+	bc->dacr = dacr; bc->sctlr = sctlr;
+	bc->stack_top = BC_WORKER_STACK_TOP;
+	_dprintf("BC: mmu snapshot ttbr0=%x:%x ttbcr=%x mair0=%x mair1=%x dacr=%x sctlr=%x\n",
+		 ttbr0_hi, ttbr0_lo, ttbcr, mair0, mair1, dacr, sctlr);
 }
 
 /* Load the SPM PCM firmware and announce it to ATF. The SPMC hardware may need
@@ -219,12 +243,12 @@ void bigcore_start(void)
 	 * PSCI CPU_ON(0x100=cpu1) and check comms; if NOT armed (stock/control tee), SKIP
 	 * PSCI so this same LK is SAFE to boot on an un-patched TEE (no freeze). */
 	unsigned long r1 = 0, r2 = 0, r3 = 0, ret;
-	unsigned entry = ((unsigned long)&bc_entry_arm) & ~1u;   /* 32-bit, ARM (non-Thumb) */
+	unsigned entry = ((unsigned long)&bc_entry_arm2) & ~1u;  /* cached worker, ARM */
 	unsigned cpc;
 
 	g_bc_mpidr = read_mpidr();
 	(void)&bc_manual_poweron; (void)&bc_load_spmfw; (void)&bc_probe_mmio;
-	(void)MTK_SIP_KERNEL_BOOT; (void)KBOOT_BOGUS_ENTRY;
+	(void)&bc_entry_arm; (void)MTK_SIP_KERNEL_BOOT; (void)KBOOT_BOGUS_ENTRY;
 
 	cpc = rd32(MCUCFG_CPC_FLOW_CTRL);
 	_dprintf("BC: boot MPIDR=0x%x CPC_FLOW=0x%x (CPC_CTRL_ENABLE bit16 %s)\n",
@@ -235,11 +259,14 @@ void bigcore_start(void)
 		_dprintf("BC: CPC not armed -> SKIP PSCI (safe on stock/control tee). Flash the patched tee.img.\n");
 		g_bc_psci_ret = 0x7fffffff;   /* sentinel: skipped */
 	} else {
-		bc->magic = 0; bc->counter = 0;
+		bc->magic = 0; bc->cached_ok = 0; bc->counter = 0;
+		bc_snapshot_mmu();   /* publish cpu0's LPAE MMU config for the worker to adopt */
+		/* clean the WHOLE comms block to DRAM so the MMU-off secondary reads the real
+		 * snapshot (its early reads bypass caches). */
 		arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
 		/* CPC armed -> the ack should now fire. (If arming is somehow insufficient the
 		 * un-timed ATF ack poll can still freeze -> power-cycle; that is the datapoint.) */
-		_dprintf("BC: CPC armed -> PSCI CPU_ON mpidr=0x100 entry=0x%x ...\n", entry);
+		_dprintf("BC: CPC armed -> PSCI CPU_ON mpidr=0x100 entry=0x%x (cached worker) ...\n", entry);
 		ret = mt_secure_call_all(PSCI_CPU_ON_SMC32, 0x100u, entry, 0, 0, &r1, &r2, &r3);
 		_dprintf("BC: PSCI CPU_ON ret=0x%lx\n", (unsigned long)ret);
 		g_bc_psci_ret = (int)(unsigned)ret;
@@ -247,7 +274,8 @@ void bigcore_start(void)
 		udelay(3000);
 		arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
 		g_bc_seen = (bc->magic == BC_MAGIC) ? bc->counter : 0;
-		_dprintf("BC: after PSCI magic=0x%x counter=%u\n", bc->magic, g_bc_seen);
+		_dprintf("BC: after PSCI magic=0x%x cached_ok=0x%x counter=%u\n",
+			 bc->magic, bc->cached_ok, bc->counter);
 	}
 	g_bc_pwrstat = rd32(SPM_CPU_PWR_STATUS);
 #endif
@@ -278,4 +306,13 @@ unsigned bigcore_raw_counter(void)
 {
 	arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
 	return bc->counter;
+}
+
+/* nonzero once the worker (bc_entry_arm2) has enabled its MMU + I/D caches and is
+ * running cached. Distinguishes "reached the stub" (raw_magic) from "came up
+ * cached" (this) - if magic is set but this stays 0, the MMU/cache enable wedged. */
+unsigned bigcore_cached_ok(void)
+{
+	arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
+	return bc->cached_ok;
 }

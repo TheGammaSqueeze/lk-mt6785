@@ -37,6 +37,7 @@ extern void bigcore_start(void);
 extern unsigned bigcore_counter(void);
 extern unsigned bigcore_raw_magic(void);
 extern unsigned bigcore_raw_counter(void);
+extern unsigned bigcore_cached_ok(void);
 extern int g_bc_target, g_bc_psci_ret;
 extern unsigned g_bc_mpidr, g_bc_pwrstat;
 extern int  mt_power_off(void);
@@ -196,7 +197,10 @@ static void draw_perf(unsigned int *fb, unsigned int pitch)
 		/* raw (ungated) magic + counter: g=1 if handshake magic present, then the
 		 * live counter regardless of magic, so one flash fully classifies (see
 		 * bigcore.c bigcore_raw_*). */
-		*p++='g'; *p++=(bigcore_raw_magic()==0xB16C0DE5u)?'1':'0'; *p++=' ';
+		/* g = reached-the-stub (magic), k = came-up-cached (MMU+caches on),
+		 * c = worker heartbeat. g1 k0 => reached but MMU-enable wedged. */
+		*p++='g'; *p++=(bigcore_raw_magic()==0xB16C0DE5u)?'1':'0';
+		*p++='k'; *p++=(bigcore_cached_ok()==0xB16C0DE5u)?'1':'0'; *p++=' ';
 		*p++='c'; p=u2s(p, bigcore_raw_counter()); *p=0;
 	}
 #endif
