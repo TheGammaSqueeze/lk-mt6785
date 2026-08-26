@@ -96,6 +96,26 @@ static void disable_spr_comp(const snes_pack *pk, snes_scene *s, snes_rnode *n,
 	}
 	for (ch = n->child; ch; ch = ch->sib) disable_spr_comp(pk, s, ch, sx, sy);
 }
+/* recursively enable/disable every sprite component matching an atlas cell (sx,sy) */
+static void set_spr_comp(const snes_pack *pk, snes_scene *s, snes_rnode *n,
+			 int sx, int sy, int on)
+{
+	snes_rnode *ch;
+	unsigned i;
+	if (!n) return;
+	for (i = 0; i < n->def->comp_count; i++) {
+		snes_comp *c = (snes_comp *)snes_node_comp(s, n->def, i);
+		if (c->type == COMP_SPRITE) {
+			const snes_spr_entry *sp = snes_res_spr(pk, ((const snes_comp_visual *)c)->res_hash);
+			if (sp && sp->sx == sx && sp->sy == sy) {
+				if (on) c->flags |= SNES_COMP_ENABLED;
+				else    c->flags &= ~SNES_COMP_ENABLED;
+			}
+		}
+	}
+	for (ch = n->child; ch; ch = ch->sib) set_spr_comp(pk, s, ch, sx, sy, on);
+}
+static void apply_display_state(snes_menu *m);   /* fwd: used by init + update */
 /* recursively disable every descendant node named nm */
 static void disable_all_named(const snes_pack *p, snes_rnode *n, const char *nm)
 {
@@ -425,6 +445,8 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 /* ---- carousel D-pad auto-repeat (GUI.H tween timings) ---- */
 #define CAR_REPEAT_DELAY 0.22f  /* first held step delay */
 #define CAR_REPEAT_RATE  0.06f  /* subsequent held-step interval */
+#define DISP_HOLD_DELAY  0.5f   /* Display mode/frame L/R auto-repeat delay (GUI.H) */
+#define DISP_HOLD_RATE   0.2f   /* Display mode/frame L/R auto-repeat interval */
 #define CAR_XFADE        0.20f  /* blue selection-frame crossfade duration */
 
 /* focused menubar cell drops this many world-y units below its authored row
@@ -942,6 +964,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	/* zero the struct fields we rely on */
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;
+	m->disp_cur = m->disp_sel = 1; m->sub_rep_t = 0.0f; m->sub_rep_ctrl = 0;
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
 	m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
 	m->prev_focus = 0; m->xfade_t = 0.0f; m->resume_dim = 0.0f;
@@ -1126,23 +1149,17 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			snes_rnode *it0 = fel ? child_named(pk, fel, "item_0") : 0;
 			if (it0) it0->tf[2] = -293.0f;
 		}
-		snes_rnode *sel = el ? child_named(pk, el, "item_4_3") : 0;
-		snes_rnode *ca = sel ? child_named(pk, sel, "cursor_area") : 0, *it;
+		snes_rnode *it;
 		if (fn) fn->enabled = 0;               /* hide Frame-line blue bar */
-		if (ca) ca->enabled = 1;               /* blue box on selected 4:3 */
 		/* disable the authored `cursor` dots (drawn as radiobtn in render) */
 		for (it = el ? el->child : 0; it; it = it->sib) {
 			snes_rnode *c2 = child_named(pk, it, "cursor");
 			if (c2) c2->enabled = 0;
 		}
-		/* aspect-ratio radio: each item authors BOTH radiobtn_off (empty ring)
-		 * and radiobtn_on (filled) enabled; the Lua shows _on only on the
-		 * selected mode. Disable radiobtn_on (atlas 113,881) on every item
-		 * except the selected 4:3 so the others show the empty ring. */
-		for (it = el ? el->child : 0; it; it = it->sib) {
-			if (!name_eq(pk, it, "item_4_3"))
-				disable_spr_comp(pk, &m->home, it, 113, 881);
-		}
+		/* default cursor + committed mode = 4:3 (visual index 1); apply_display_state
+		 * sets cursor_area on disp_cur and radiobtn_on/off per disp_sel. */
+		m->disp_cur = m->disp_sel = 1;
+		apply_display_state(m);
 	}
 	/* option_languages resting state: `cursor` is the per-item focus ARROW
 	 * (shown on all -> hide); enable `cursor_area` (blue box) on the selected
@@ -1285,6 +1302,35 @@ static void car_navigate(snes_menu *m, int dir)
 	m->cont_shift = -cardShift;                            /* animates back to 0 */
 }
 
+/* Display screen-mode line: resolve the 3 radio items in visual (left->right)
+ * order [CRTFilter(-360), 4:3(0), DotByDot(+360)] by name. */
+static void resolve_disp_items(snes_menu *m, snes_rnode *out[3])
+{
+	snes_rnode *el = m->overlay[0] ? child_named(m->pk, m->overlay[0], "elements") : 0, *it;
+	out[0] = out[1] = out[2] = 0;
+	for (it = el ? el->child : 0; it; it = it->sib) {
+		if      (name_eq(m->pk, it, "item_CRTFilter")) out[0] = it;
+		else if (name_eq(m->pk, it, "item_4_3"))       out[1] = it;
+		else if (name_eq(m->pk, it, "item_DotByDot"))  out[2] = it;
+	}
+}
+/* Reflect disp_cur (cursor_area blue box) + disp_sel (radiobtn_on filled ring,
+ * atlas 113,881; radiobtn_off empty ring 99,881) onto the 3 mode items. */
+static void apply_display_state(snes_menu *m)
+{
+	snes_rnode *it[3];
+	int i;
+	resolve_disp_items(m, it);
+	for (i = 0; i < 3; i++) {
+		snes_rnode *ca;
+		if (!it[i]) continue;
+		ca = child_named(m->pk, it[i], "cursor_area");
+		if (ca) ca->enabled = (i == m->disp_cur);
+		set_spr_comp(m->pk, &m->home, it[i], 113, 881, i == m->disp_sel);
+		set_spr_comp(m->pk, &m->home, it[i], 99, 881, i != m->disp_sel);
+	}
+}
+
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 {
 	float k;
@@ -1395,6 +1441,11 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			m->overlay[m->open]->enabled = 1;
 			m->overlay[m->open]->tf[2] = 0;
 			m->overlay[m->open]->tf[5] = 0;
+			m->sub_rep_ctrl = 0;   /* clear any stale L/R auto-repeat */
+			if (m->open == 0) {    /* Display: cursor opens on the committed mode */
+				m->disp_cur = m->disp_sel;
+				apply_display_state(m);
+			}
 			/* the panel slides DOWN from off-top into place, easing out (measured
 			 * against the web: the selection box travels ~585px over ~5 frames at
 			 * 30fps with per-frame factor ~0.67). Seed the slide offset; the ease
@@ -1403,6 +1454,30 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			m->state = 2; push_snd(m, m->sfx_decide);
 		}
 	} else if (m->state == 2) {                /* ---- open submenu ---- */
+		/* Display screen (cm1): the screen-mode line is a 3-item radio row. L/R
+		 * moves the cursor (auto-repeat at DISP_HOLD_*), A commits the selection to
+		 * the cursor's mode (radiobtn_on moves, toggle SFX). Ports updateDisplayNav
+		 * + navHoriz(moveNav) + selectDisplayModeAtCursor/_selectDisplayMode. */
+		if (m->open == 0 && !m->closing) {
+			int fire = 0;                     /* navFire: edge fires now, then repeat */
+			if (el)      { m->sub_rep_ctrl = -1; m->sub_rep_t = DISP_HOLD_DELAY; fire = -1; }
+			else if (er) { m->sub_rep_ctrl = +1; m->sub_rep_t = DISP_HOLD_DELAY; fire = +1; }
+			else if (m->sub_rep_ctrl) {
+				int held = m->sub_rep_ctrl < 0 ? in->left : in->right;
+				if (held) { m->sub_rep_t -= dt; if (m->sub_rep_t < 0.0f) { m->sub_rep_t = DISP_HOLD_RATE; fire = m->sub_rep_ctrl; } }
+				else m->sub_rep_ctrl = 0;
+			}
+			if (fire) {
+				m->disp_cur = (m->disp_cur + fire + 3) % 3;
+				apply_display_state(m);
+				push_snd(m, m->sfx_move);
+			}
+			if (ea && m->disp_cur != m->disp_sel) {
+				m->disp_sel = m->disp_cur;
+				apply_display_state(m);
+				push_snd(m, m->sfx_decide);
+			}
+		}
 		/* Language screen (cm3): L/R pick a locale, re-localizing all text live */
 		if (m->open == 2 && (el || er)) {
 			snes_pack *mp = (snes_pack *)m->pk;

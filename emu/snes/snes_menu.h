@@ -30,6 +30,16 @@ typedef struct {
 	snes_rnode *gametitle;        /* game-title bar (caption_title); raised in resume */
 	snes_rnode *resume;           /* resume/suspend-point menu overlay */
 	int state;                    /* 0 home, 1 menubar, 2 submenu, 3 resume */
+
+	/* Display submenu (option_display) interactivity: the screen-mode line is a
+	 * 3-item radio row [CRTFilter, 4:3, DotByDot] in visual order. The cursor
+	 * (cursor_area blue box) moves independently of the selection (radiobtn_on);
+	 * only A commits the selection to the cursor. sub_rep_* is the L/R auto-repeat
+	 * (navFire, DISP_HOLD_DELAY/RATE). */
+	int disp_cur;                 /* mode-line cursor index 0..2 (visual order) */
+	int disp_sel;                 /* committed screen mode 0..2 (default 1 = 4:3) */
+	float sub_rep_t;              /* submenu L/R auto-repeat countdown */
+	int sub_rep_ctrl;             /* held L/R for repeat: -1 left, +1 right, 0 none */
 	int mb_focus;                 /* selected menubar icon 0..4 */
 	int open;                     /* open overlay index, -1 if none */
 	float open_y;                 /* submenu slide offset (world up), eases to 0 */
