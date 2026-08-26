@@ -1224,6 +1224,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->cur_scroll_time = 0.0f; m->cur_scroll_spd = 0.0f;
 	m->rep_t = 0.0f; m->rep_dir = 0; m->rep_primed = 0;
 	m->car_tween = CAR_REPEAT_DELAY;
+	m->resume_expl_t = 3.5f;   /* notice starts hidden until the list is opened */
 
 	(void)i;
 	/* the real home menu (carousel + menubar) is defaultscene.scn, not the
@@ -1910,6 +1911,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			/* the panel slides UP from off-bottom into place, easing out (world
 			 * -y = screen down); reuse the open_y ease (toward 0). */
 			m->open_y = -RESUME_SLIDE;
+			m->resume_expl_t = 0.0f;    /* re-arm the "When you reset..." notice hold+fade */
 			m->state = 3; push_snd(m, m->sfx_decide);
 		}
 		if (ea) push_snd(m, m->sfx_decide);    /* launch stubbed */
@@ -2156,6 +2158,8 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		if (on) { m->resume_dim += step; if (m->resume_dim > 1.0f) m->resume_dim = 1.0f; }
 		else    { m->resume_dim -= step; if (m->resume_dim < 0.0f) m->resume_dim = 0.0f; }
 	}
+	/* empty-list explanation notice: hold 2s then fade over 1s (showExplanation) */
+	if (m->state == 3 && !m->closing && m->resume_expl_t < 3.5f) m->resume_expl_t += dt;
 	/* filmstrip smooth index follow */
 	k = dt * 12.0f; if (k > 1.0f) k = 1.0f;
 	m->car_x += ((float)m->focus - m->car_x) * k;
@@ -2381,16 +2385,27 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			if (expl) expl->enabled = 0;
 			set_view(m, t, VIEW_CONTENT);
 			snes_render_node(t, &m->home, m->resume);
-			if (expl) {
-				float w[6];
-				snes_rnode *base = child_named(m->pk, desc(m->pk, expl, "wdw"), "base");
-				expl->enabled = 1;
-				if (base) {
-					snes_node_world(base, w);
-					snes_fill_quad(t, 640.0f + w[2], 360.0f - w[5], 800.0f, 48.0f,
-						       0.0f, 0.0f, 0.0f, 1.0f);
+			/* the notice holds fully opaque for 2s, then fades to 0 over 1s and
+			 * disappears (sys_resume_emptymode.showExplanation). */
+			{
+				float ea = 1.0f;
+				if (m->resume_expl_t > 2.0f) ea = 1.0f - (m->resume_expl_t - 2.0f);
+				if (ea < 0.0f) ea = 0.0f;
+				if (expl && ea > 0.003f) {
+					float w[6], oc = expl->col[3];
+					snes_rnode *base = child_named(m->pk, desc(m->pk, expl, "wdw"), "base");
+					expl->enabled = 1;
+					expl->col[3] = oc * ea;
+					if (base) {
+						snes_node_world(base, w);
+						snes_fill_quad(t, 640.0f + w[2], 360.0f - w[5], 800.0f, 48.0f,
+							       0.0f, 0.0f, 0.0f, ea);
+					}
+					snes_render_node(t, &m->home, expl);
+					expl->col[3] = oc;
+				} else if (expl) {
+					expl->enabled = 0;
 				}
-				snes_render_node(t, &m->home, expl);
 			}
 			/* the scene hud lays its Back hint out via refreshHud (unavailable
 			 * here) and inherits the panel world transform, so it does not land
