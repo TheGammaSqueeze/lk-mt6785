@@ -71,8 +71,8 @@ MAGIC   = 0x534E4553
 VERSION = 1
 F_RGB565 = 0x1
 
-HEADER_FMT = "<IIII" + "II" * 11 + "I"
-HEADER_SIZE = struct.calcsize(HEADER_FMT)   # 108
+HEADER_FMT = "<IIII" + "II" * 11 + "I" + "II"   # ...+ init_off + oss_off,oss_count
+HEADER_SIZE = struct.calcsize(HEADER_FMT)   # 116
 
 # snes_comp header is 10 bytes; the C bodies (snes_comp_visual etc.) place their
 # first u32 at offset 12, so 2 pad bytes follow the header before any body.
@@ -921,6 +921,24 @@ def main():
     blob.write(struct.pack("<III", fnv1a(default_scene) if default_scene else 0,
                            0, default_locale))
 
+    # ---- OSS licence text (Legal screen's Open Source Software tab) ----
+    # data/static_legal.json ossLines[]: one array entry per rendered line (already
+    # wrapped by the source). Intern each into the strpool, then emit a u32[] of
+    # their offsets so the engine can render a scroll window by line index.
+    oss_lines = []
+    legal_json = os.path.join(asset_dir, "data", "static_legal.json")
+    if os.path.exists(legal_json):
+        try:
+            oss_lines = json.load(open(legal_json)).get("ossLines", []) or []
+        except Exception:
+            oss_lines = []
+    oss_str_offs = [blob.str(s) for s in oss_lines]
+    blob.align(4)
+    oss_off = blob.tell()
+    for o in oss_str_offs:
+        blob.write(struct.pack("<I", o))
+    oss_count = len(oss_str_offs)
+
     # strpool base is the blob base so string offsets are absolute (matches every
     # other offset and the engine's snes_str = strpool + off with strpool = base).
     strpool_off = 0
@@ -941,6 +959,7 @@ def main():
         str_off, str_count,
         game_off, game_count,
         init_off,
+        oss_off, oss_count,
     )
     blob.buf[:HEADER_SIZE] = hdr
 

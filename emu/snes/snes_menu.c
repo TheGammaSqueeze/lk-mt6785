@@ -800,11 +800,11 @@ static int legal_ip_lines(snes_menu *m, const char **out, int max)
 		out[nl++] = g_legal_tail[i];
 	return nl;
 }
-/* total scrollable lines in the active Legal tab (IP; OSS not yet packed). */
+/* total scrollable lines in the active Legal tab. */
 static int legal_line_count(snes_menu *m)
 {
 	const char *lines[192];
-	if (m->legal_tab == 1) return 0;              /* OSS: no content yet */
+	if (m->legal_tab == 1) return (int)m->pk->hdr->oss_count;   /* OSS licence text */
 	return legal_ip_lines(m, lines, 192);
 }
 static void draw_copyright_list(snes_menu *m, snes_target *t)
@@ -819,7 +819,18 @@ static void draw_copyright_list(snes_menu *m, snes_target *t)
 	const char *lines[192];
 	int nl, i;
 	float Y0 = 276.0f - m->open_y;   /* follow the panel slide-in (2px up to match web) */
-	if (!txt || m->legal_tab == 1) return;   /* OSS tab: content not yet packed */
+	if (!txt) return;
+	if (m->legal_tab == 1) {         /* Open Source Software tab (packed OSS text) */
+		int total = (int)pk->hdr->oss_count;
+		for (i = 0; ; i++) {
+			int idx = m->legal_scroll + i;
+			float y = Y0 + (float)i * 24.0f;
+			if (idx >= total || y > 625.0f) break;
+			snes_draw_text(t, pk, font, 168.0f, y, 1.0f, 0xFFF0F0F0u, 0,
+				       snes_oss_line(pk, (uint32_t)idx));
+		}
+		return;
+	}
 	nl = legal_ip_lines(m, lines, 192);
 	for (i = 0; ; i++) {
 		int idx = m->legal_scroll + i;

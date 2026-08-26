@@ -33,6 +33,7 @@ typedef struct {
 	uint32_t str_off,   str_count;     /* StrTable[] (per locale) */
 	uint32_t game_off,  game_count;    /* GameRec offsets: game_off -> u32[game_count] of GameRec offs */
 	uint32_t init_off;                 /* InitBlock */
+	uint32_t oss_off,   oss_count;     /* OSS licence text: oss_off -> u32[oss_count] of strpool offs (one/line) */
 } snes_header;
 
 /* ---- resource hash table ---- */

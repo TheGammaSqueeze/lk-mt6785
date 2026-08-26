@@ -36,6 +36,15 @@ static inline const void *snes_at(const snes_pack *p, uint32_t off)
 {
 	return off ? (const void *)(p->base + off) : 0;
 }
+/* OSS licence text line i (Legal screen's Open Source Software tab), or "" if out
+ * of range / absent. oss_off -> u32[oss_count] of strpool offsets, one per line. */
+static inline const char *snes_oss_line(const snes_pack *p, uint32_t i)
+{
+	const uint32_t *offs;
+	if (!p->hdr->oss_off || i >= p->hdr->oss_count) return "";
+	offs = (const uint32_t *)(p->base + p->hdr->oss_off);
+	return snes_str(p, offs[i]);
+}
 
 /* Resolve a resource id hash to its ResEntry (open-addressed probe). NULL if absent. */
 const snes_res_entry *snes_res_find(const snes_pack *p, uint32_t hash);
