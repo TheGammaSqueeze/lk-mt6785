@@ -782,9 +782,9 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
  * localized label, laid left-to-right and centred at cx. Icons are 12/32-px
  * atlas sprites scaled x3. */
 typedef struct { int sx, sy, sw, sh; const char *key; } snes_hint;
-static void draw_hint_row(snes_menu *m, snes_target *t, const snes_hint *H, int n, float cx)
+static void draw_hint_row(snes_menu *m, snes_target *t, const snes_hint *H, int n, float cx, float sc)
 {
-	const float sc = 0.85f, gap = 6.0f, vgap = 26.0f, y = 604.0f;
+	const float gap = 6.0f, vgap = 26.0f, y = 604.0f;
 	const char *lab[6];
 	float iw[6], lw[6], total = 0, x;
 	int i;
@@ -991,7 +991,7 @@ static void draw_hints(snes_menu *m, snes_target *t)
 		{ 88, 929, 32, 10, "sys_gametitlelist_hud_Sort" },
 		{ 481, 783, 28, 10, "sys_gametitlelist_hud_Decide" },
 	};
-	draw_hint_row(m, t, H, 4, 626.0f);
+	draw_hint_row(m, t, H, 4, 626.0f, 1.0f);   /* 1x = integer scale = pixel-sharp text */
 }
 /* menubar-focused hints: Game List / Select / Back / OK */
 static void draw_menubar_hints(snes_menu *m, snes_target *t)
@@ -1002,7 +1002,7 @@ static void draw_menubar_hints(snes_menu *m, snes_target *t)
 		{ 15, 881, 12, 12, "sys_menubarU_hud_Return" },     /* B */
 		{  1, 881, 12, 12, "sys_menubarU_hud_Decide" },     /* A */
 	};
-	draw_hint_row(m, t, H, 4, 626.0f);
+	draw_hint_row(m, t, H, 4, 626.0f, 0.85f);
 }
 /* A rounded-corner rectangle drawn as two overlapping quads (a full-width bar
  * inset vertically + a full-height bar inset horizontally); the union leaves the
