@@ -89,7 +89,10 @@ static int bc_worker_ready(void) { return g_bc->cached_ok == 0xB16C0DE5u; }
  * still hold 60 fps at much lower dynamic power. Tune on HW: raise if the FPS HUD
  * dips below 60, lower toward ~1075 for minimum power. Single-core fallback keeps
  * the boot 2000 MHz. */
-#define BC_MHZ 1200
+/* Deferred: keep 2000 until the parallel render is confirmed working on HW, so a
+ * freeze/slowdown can't be confused with the clock. Once the split holds, set this
+ * to ~1200 (then tune toward ~1075) for the low-power win. */
+#define BC_MHZ 2000
 static int s_bc_clk_set;
 
 /* cpu0: fork the bottom band to the worker, render the top band, join. */
@@ -112,14 +115,17 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 		snes_target_band(&t0, 0, sy);
 		snes_menu_render(menu, &t0);
 	}
-	while (g_bc->done != seq) {                 /* join, bounded-spin fallback */
-		if (++spins > 4000000u) {          /* worker missed the deadline */
+	/* Join by BUSY-SPIN (not WFE): a WFE here would park cpu0 and the bounded
+	 * fallback counter would never advance, so a worker that never signals done
+	 * (crashed / missed the wakeup) would hang the menu forever. Busy-spin lets
+	 * the fallback fire and cpu0 render the worker's band itself. */
+	while (g_bc->done != seq) {
+		if (++spins > 8000000u) {          /* worker missed the deadline */
 			snes_target tb = *tfull;
 			snes_target_band(&tb, sy, H);
 			snes_menu_render(menu, &tb);
 			break;
 		}
-		bc_wfe();
 	}
 	bc_dmb();                                  /* acquire the worker's band writes */
 }
@@ -428,7 +434,8 @@ static int snes_emu_thread(void *arg)
 		 * chrome cache is already built (so the two cores never build it at once).
 		 * Falls back to single-core otherwise. */
 		if (bc_worker_ready() && s_menu.chrome_ready) {
-			if (!s_bc_clk_set) { ayaneo_set_cpu_mhz(BC_MHZ); s_bc_clk_set = 1; }
+			if (!s_bc_clk_set && BC_MHZ != 2000) { ayaneo_set_cpu_mhz(BC_MHZ); }
+			s_bc_clk_set = 1;
 			bc_dispatch(fb, pitch, (int)W, (int)H, &s_menu, &t);
 		} else
 #endif

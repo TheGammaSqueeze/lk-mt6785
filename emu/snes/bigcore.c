@@ -91,9 +91,12 @@ static struct bc_comms *const bc = (struct bc_comms *)BC_COMMS_PA;
 extern void bc_entry_arm(void);    /* MMU-off proof-of-life stub */
 extern void bc_entry_arm2(void);   /* cached bring-up worker stub (bigcore_entry.S) */
 
-/* worker stack top: 1 MB above the comms block, inside the Normal-WB DRAM window,
- * grows down; distinct from cpu0's stack. Only used once the worker's MMU is on. */
-#define BC_WORKER_STACK_TOP  (BC_COMMS_PA + 0x00100000u)
+/* Worker stack: a dedicated buffer in LK's OWN BSS, so it is GUARANTEED mapped +
+ * cacheable by the page tables the worker adopts (a hardcoded DRAM address like
+ * 0x54100000 might sit in an unmapped gap -> the worker faults on its first call).
+ * Grows down from the top; 16-byte aligned; only used once the worker MMU is on. */
+static unsigned char bc_worker_stack[32768] __attribute__((aligned(16)));
+#define BC_WORKER_STACK_TOP  ((unsigned)(unsigned long)(bc_worker_stack + sizeof(bc_worker_stack)))
 
 /* telemetry read by the driver OSD */
 int      g_bc_target   = -1;
