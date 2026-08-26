@@ -638,7 +638,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 	const snes_game_rec *g = game(m, gi);
 	float cy = CAR_CY, sc = CAR_SC;
 	const snes_spr_entry *frame = m->card_norm ? m->card_norm : m->card_act;
-	cy -= RESUME_CARD_DY * resume_open_frac(m);   /* raised behind the Suspend List */
+	cy -= RESUME_CARD_DY * m->resume_dim;   /* raised behind the Suspend List */
 	const snes_img_entry *im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
 	if (cx < -280 || cx > SNES_VW + 280) return;
 	if (frame) {
@@ -2298,7 +2298,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	 * drawn here (not in the chrome cache) so it tracks the game title. */
 	set_view(m, t, VIEW_BANNERX);
 	if (m->card_act) {
-		float ty = 178.0f - RESUME_TITLE_DY * resume_open_frac(m);
+		float ty = 178.0f - RESUME_TITLE_DY * m->resume_dim;
 		snes_spr_entry bar = { m->card_act->img, 1, 325, 348, 22, 174, 11 };
 		snes_blit_spr(t, m->pk, &bar, 640.0f, ty, 3.0f, 1.0f);
 	}
@@ -2309,7 +2309,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	g = game(m, m->focus);
 	if (g)
 		snes_draw_text(t, m->pk, m->f_title, 640,
-			       152.0f - RESUME_TITLE_DY * resume_open_frac(m), 1.0f,
+			       152.0f - RESUME_TITLE_DY * m->resume_dim, 1.0f,
 			       0xFF000000u, 1, snes_str(m->pk, g->name));
 
 	/* sort-rule label, briefly shown after a Select press */
