@@ -116,6 +116,7 @@ static void set_spr_comp(const snes_pack *pk, snes_scene *s, snes_rnode *n,
 	for (ch = n->child; ch; ch = ch->sib) set_spr_comp(pk, s, ch, sx, sy, on);
 }
 static void apply_display_state(snes_menu *m);   /* fwd: used by init + update */
+static void frame_layout(snes_menu *m);          /* fwd: used by init + update */
 static void apply_options_state(snes_menu *m);   /* fwd: used by init + update */
 static void apply_language_state(snes_menu *m);  /* fwd: used by init + update */
 static const char *lang_name(int idx);           /* fwd: used by render */
@@ -981,17 +982,41 @@ static void draw_manual_hints(snes_menu *m, snes_target *t)
  * the packer stores them keyed "frame_thumb_<theme>". Slot 0 (None, the checkmark
  * box) is the authored item_0 (repositioned to the first slot in init); we draw
  * the themed thumbnails at slots 1..3. Native thumb is 172x98, drawn 1:1. */
+/* the 11 frame-theme thumbnails (folder order); item 0 = "none" (authored item_0). */
+static const char *g_frame_thumbs[11] = {
+	"frame_thumb_01_ambient", "frame_thumb_02_wire", "frame_thumb_03_crystal",
+	"frame_thumb_04_dot", "frame_thumb_05_mosaic", "frame_thumb_06_dot2",
+	"frame_thumb_07_wood", "frame_thumb_08_space", "frame_thumb_09_speaker",
+	"frame_thumb_10_curtain", "frame_thumb_11_midnight",
+};
+#define FRAME_COUNT 12          /* none + 11 themes */
+#define FRAME_DISP  4           /* visible window width */
+/* window slot screen x (slot 0 = the authored item_0 "none" position). */
+static const float g_frame_slot_x[FRAME_DISP] = { 347.0f, 541.0f, 737.0f, 933.0f };
 static void draw_frame_strip(snes_menu *m, snes_target *t)
 {
-	static const char *themes[3] = {
-		"frame_thumb_01_ambient", "frame_thumb_02_wire", "frame_thumb_03_crystal"
-	};
-	static const float xs[3] = { 541.0f, 737.0f, 933.0f };
 	float cy = 591.0f - m->open_y;
-	int i;
-	for (i = 0; i < 3; i++) {
-		const snes_img_entry *im = snes_res_img(m->pk, snes_hash(themes[i]));
-		if (im) snes_blit_tex(t, m->pk, im, xs[i], cy, 172.0f, 98.0f, 1.0f);
+	int j;
+	for (j = 0; j < FRAME_DISP; j++) {
+		int i = m->frame_scroll + j;
+		float x = g_frame_slot_x[j];
+		if (i >= FRAME_COUNT) break;
+		if (i >= 1) {           /* item 0 (none) is the authored item_0 at slot 0 */
+			const snes_img_entry *im = snes_res_img(m->pk, snes_hash(g_frame_thumbs[i - 1]));
+			if (im) snes_blit_tex(t, m->pk, im, x, cy, 172.0f, 98.0f, 1.0f);
+		}
+		/* applied-frame check marker (atlas 67,809 20x14), centred on the item */
+		if (i == m->frame_applied && i >= 1 && m->card_act) {
+			snes_spr_entry ck = { m->card_act->img, 67, 809, 20, 14, 10, 7 };
+			snes_blit_spr(t, m->pk, &ck, x, cy, 3.0f, 1.0f);
+		}
+		/* frame-zone cursor: the cyan selection box around the focused item
+		 * (same 9-slice as the menubar cursor, sized to the 172x98 frame). */
+		if (m->disp_zone == 1 && i == m->frame_sel && m->card_act) {
+			static const uint16_t sxa[10] = {0, 69,131, 69,137,156,171, 88,137,103};
+			static const uint16_t sya[10] = {0,847,987,945,941,895,941,895,847,847};
+			draw_cursor_9slice(m, t, x, cy, 184.0f, 110.0f, sxa, sya, 1.0f, 1.0f, m->card_act->img);
+		}
 	}
 }
 /* Display/Options/Language settings-panel header hints: Select / Back / OK.
@@ -1043,6 +1068,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;
 	m->disp_cur = m->disp_sel = 1; m->sub_rep_t = 0.0f; m->sub_rep_ctrl = 0;
+	m->disp_zone = 0; m->frame_sel = 0; m->frame_scroll = 0; m->frame_applied = 0;
 	m->opt_cur = 0; m->opt_on = 0x7;   /* 3 toggles, all on by default */
 	m->lang_cur = m->lang_sel = 0;     /* English (top-left) */
 	m->reset_t = 0.0f; m->reset_armed = 0; m->reset_dlg_open = 0;
@@ -1243,6 +1269,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		 * sets cursor_area on disp_cur and radiobtn_on/off per disp_sel. */
 		m->disp_cur = m->disp_sel = 1;
 		apply_display_state(m);
+		frame_layout(m);   /* item_0 / arrows for the frame carousel at rest */
 	}
 	/* option_languages resting state: `cursor` is the per-item focus ARROW
 	 * (shown on all -> hide); enable `cursor_area` (blue box) on the selected
@@ -1406,10 +1433,45 @@ static void apply_display_state(snes_menu *m)
 		snes_rnode *ca;
 		if (!it[i]) continue;
 		ca = child_named(m->pk, it[i], "cursor_area");
-		if (ca) ca->enabled = (i == m->disp_cur);
+		if (ca) ca->enabled = (i == m->disp_cur) && (m->disp_zone == 0);
 		set_spr_comp(m->pk, &m->home, it[i], 113, 881, i == m->disp_sel);
 		set_spr_comp(m->pk, &m->home, it[i], 99, 881, i != m->disp_sel);
 	}
+}
+
+/* Frame carousel layout: the authored item_0 ("none") shows only when the scroll
+ * window includes index 0; its check marker (67,809) shows when none is applied;
+ * its cursor_area shows when none is focused in the frame zone. The scroll arrows
+ * light per available scroll. Ports resetFrameScrollDisplay + _updateFrameArrows. */
+static void frame_layout(snes_menu *m)
+{
+	const snes_pack *pk = m->pk;
+	snes_rnode *ef = m->overlay[0] ? child_named(pk, m->overlay[0], "elements_frame") : 0;
+	snes_rnode *els = ef ? child_named(pk, ef, "elements") : 0;
+	snes_rnode *it0 = els ? child_named(pk, els, "item_0") : 0;
+	snes_rnode *itf = ef ? child_named(pk, ef, "item_frame") : 0;
+	snes_rnode *al = itf ? child_named(pk, itf, "arrow_left") : 0;
+	snes_rnode *ar = itf ? child_named(pk, itf, "arrow_right") : 0;
+	snes_rnode *r;
+	if (it0) {
+		it0->enabled = (m->frame_scroll == 0);
+		set_spr_comp(pk, &m->home, it0, 67, 809, m->frame_applied == 0);  /* check on none */
+		if ((r = child_named(pk, it0, "cursor_area")))
+			r->enabled = (m->disp_zone == 1 && m->frame_sel == 0);
+	}
+	if (al) al->enabled = (m->frame_scroll > 0);
+	if (ar) ar->enabled = (m->frame_scroll + FRAME_DISP < FRAME_COUNT);
+}
+/* Move the frame cursor (no wrap), shifting the scroll window to keep it visible. */
+static void frame_move(snes_menu *m, int dir)
+{
+	int next = m->frame_sel + dir;
+	if (next < 0 || next >= FRAME_COUNT) return;
+	if (dir < 0 && next < m->frame_scroll) m->frame_scroll = next;
+	else if (dir > 0 && next >= m->frame_scroll + FRAME_DISP) m->frame_scroll = next - FRAME_DISP + 1;
+	m->frame_sel = next;
+	frame_layout(m);
+	push_snd(m, m->sfx_move);
 }
 
 /* Ports navFire: on a fresh press of any allowed D-pad control (checked in
@@ -1679,7 +1741,10 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			m->sub_rep_ctrl = 0;   /* clear any stale D-pad auto-repeat */
 			if (m->open == 0) {    /* Display: cursor opens on the committed mode */
 				m->disp_cur = m->disp_sel;
+				m->disp_zone = 0;            /* open focused on the mode line */
+				m->frame_sel = 0; m->frame_scroll = 0;
 				apply_display_state(m);
+				frame_layout(m);
 			} else if (m->open == 1) {   /* Options: cursor opens on the top row */
 				m->opt_cur = 0;
 				apply_options_state(m);
@@ -1699,21 +1764,37 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			m->state = 2; push_snd(m, m->sfx_decide);
 		}
 	} else if (m->state == 2) {                /* ---- open submenu ---- */
-		/* Display screen (cm1): the screen-mode line is a 3-item radio row. L/R
-		 * moves the cursor (auto-repeat at DISP_HOLD_*), A commits the selection to
-		 * the cursor's mode (radiobtn_on moves, toggle SFX). Ports updateDisplayNav
-		 * + navHoriz(moveNav) + selectDisplayModeAtCursor/_selectDisplayMode. */
+		/* Display screen (cm1): two zones - the screen-mode radio line and the frame
+		 * carousel. Up/Down switch zones (switchDispZone). In the mode line L/R move
+		 * the cursor + A commits the mode; in the frame carousel L/R scroll the
+		 * selection (frameMove, no wrap) + A applies the frame (moves the check).
+		 * Ports updateDisplayNav + navHoriz + frameMove + applyFrame. */
 		if (m->open == 0 && !m->closing) {
-			int c = sub_navfire(m, in, dt, 12, DISP_HOLD_DELAY, DISP_HOLD_RATE);
-			if (c) {                          /* 3 = left, 4 = right */
-				m->disp_cur = (m->disp_cur + (c == 3 ? -1 : 1) + 3) % 3;
-				apply_display_state(m);
+			if (eu || ed) {                   /* discrete zone switch */
+				m->disp_zone ^= 1;
+				apply_display_state(m);   /* hides the mode cursor in the frame zone */
+				frame_layout(m);
 				push_snd(m, m->sfx_move);
-			}
-			if (ea && m->disp_cur != m->disp_sel) {
-				m->disp_sel = m->disp_cur;
-				apply_display_state(m);
-				push_snd(m, m->sfx_decide);
+			} else if (m->disp_zone == 1) {   /* frame carousel */
+				int c = sub_navfire(m, in, dt, 12, DISP_HOLD_DELAY, DISP_HOLD_RATE);
+				if (c) frame_move(m, c == 3 ? -1 : 1);
+				if (ea && m->frame_applied != m->frame_sel) {
+					m->frame_applied = m->frame_sel;  /* preview reskin: TODO (needs preview PNGs) */
+					frame_layout(m);
+					push_snd(m, m->sfx_decide);
+				}
+			} else {                          /* screen-mode line */
+				int c = sub_navfire(m, in, dt, 12, DISP_HOLD_DELAY, DISP_HOLD_RATE);
+				if (c) {                          /* 3 = left, 4 = right */
+					m->disp_cur = (m->disp_cur + (c == 3 ? -1 : 1) + 3) % 3;
+					apply_display_state(m);
+					push_snd(m, m->sfx_move);
+				}
+				if (ea && m->disp_cur != m->disp_sel) {
+					m->disp_sel = m->disp_cur;
+					apply_display_state(m);
+					push_snd(m, m->sfx_decide);
+				}
 			}
 		}
 		/* Options screen (cm2): vertical list of 3 toggle rows + the System Reset

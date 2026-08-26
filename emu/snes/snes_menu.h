@@ -38,6 +38,12 @@ typedef struct {
 	 * (navFire, DISP_HOLD_DELAY/RATE). */
 	int disp_cur;                 /* mode-line cursor index 0..2 (visual order) */
 	int disp_sel;                 /* committed screen mode 0..2 (default 1 = 4:3) */
+	/* Display frame carousel: 12 items (0 = none, 1..11 = frame themes), a 4-wide
+	 * scroll window. disp_zone 0 = mode line, 1 = frame carousel. */
+	int disp_zone;                /* 0 mode-line focus, 1 frame-carousel focus */
+	int frame_sel;                /* frame cursor 0..11 */
+	int frame_scroll;             /* scroll-window start 0..8 */
+	int frame_applied;            /* applied frame 0..11 (default 0 = none) */
 	float sub_rep_t;              /* submenu D-pad auto-repeat countdown (navFire) */
 	int sub_rep_ctrl;             /* held D-pad for repeat: 1 up, 2 down, 3 left, 4 right, 0 none */
 
