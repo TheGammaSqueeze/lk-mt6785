@@ -115,6 +115,23 @@ static void set_spr_comp(const snes_pack *pk, snes_scene *s, snes_rnode *n,
 	}
 	for (ch = n->child; ch; ch = ch->sib) set_spr_comp(pk, s, ch, sx, sy, on);
 }
+/* set the pixel height of a sprite/texture comp matching atlas cell (sx,sy). */
+static void set_spr_size_h(const snes_pack *pk, snes_scene *s, snes_rnode *n,
+			   int sx, int sy, float h)
+{
+	snes_rnode *ch;
+	unsigned i;
+	if (!n) return;
+	for (i = 0; i < n->def->comp_count; i++) {
+		snes_comp *c = (snes_comp *)snes_node_comp(s, n->def, i);
+		if (c->type == COMP_SPRITE && (c->flags & SNES_COMP_HAS_SIZE)) {
+			const snes_spr_entry *sp = snes_res_spr(pk, ((const snes_comp_visual *)c)->res_hash);
+			if (sp && sp->sx == sx && sp->sy == sy)
+				((snes_comp_visual *)c)->size_h = h;
+		}
+	}
+	for (ch = n->child; ch; ch = ch->sib) set_spr_size_h(pk, s, ch, sx, sy, h);
+}
 static void apply_display_state(snes_menu *m);   /* fwd: used by init + update */
 static void frame_layout(snes_menu *m);          /* fwd: used by init + update */
 static void apply_options_state(snes_menu *m);   /* fwd: used by init + update */
@@ -807,6 +824,37 @@ static int legal_line_count(snes_menu *m)
 	const char *lines[192];
 	if (m->legal_tab == 1) return (int)m->pk->hdr->oss_count;   /* OSS licence text */
 	return legal_ip_lines(m, lines, 192);
+}
+/* Update the active tab's scrollbar: light the up/down arrows when more remains
+ * that way, and size + place the thumb per the scroll fraction. Ports the
+ * sys_copyright_text scrollbar bits of _legalRender (sbMaxH 336, sbYOff 24). */
+static void legal_scrollbar(snes_menu *m)
+{
+	const snes_pack *pk = m->pk;
+	snes_rnode *body = m->overlay[3] ? child_named(pk, m->overlay[3], "body") : 0;
+	snes_rnode *tab = body ? child_named(pk, body, m->legal_tab == 0 ? "copyright" : "oss") : 0;
+	snes_rnode *txt = tab ? child_named(pk, tab, "text") : 0;
+	snes_rnode *sb = txt ? child_named(pk, txt, "scrollbar") : 0;
+	snes_rnode *bar = sb ? child_named(pk, sb, "bar") : 0;
+	snes_rnode *au = sb ? child_named(pk, sb, "arrow_up") : 0;
+	snes_rnode *ad = sb ? child_named(pk, sb, "arrow_down") : 0;
+	int total = legal_line_count(m), N = LEGAL_NVIS;
+	int base = m->legal_scroll, maxs = total - N;
+	const float sbMaxH = 336.0f, sbYOff = 24.0f;
+	float denom, ff, top, bot, vis, h, pad, f21;
+	if (maxs < 0) maxs = 0;
+	if (au) set_spr_comp(pk, &m->home, au, 55, 829, base > 0);      /* allow_up_on */
+	if (ad) set_spr_comp(pk, &m->home, ad, 19, 829, base < maxs);   /* allow_down_on */
+	if (!bar) return;
+	denom = (float)total - (float)(N - 1); if (denom < 1.0f) denom = 1.0f;
+	ff = (float)base / denom; if (ff < 0.0f) ff = 0.0f; else if (ff > 1.0f) ff = 1.0f;
+	top = base < 0 ? 0.0f : (float)base;
+	bot = (float)base + (float)(N - 1); if (bot > (float)total + 1.0f) bot = (float)total + 1.0f;
+	vis = (bot - top) / (float)(total < 1 ? 1 : total); if (vis > 1.0f) vis = 1.0f;
+	h = vis * sbMaxH; pad = h < 32.0f ? 32.0f - h : 0.0f;
+	f21 = ff + vis; if (f21 > 1.0f) f21 = 1.0f;
+	bar->tf[5] = (-ff * sbMaxH - sbYOff) + h * (-0.5f + ff * f21) + pad * (-0.5f + ff);
+	set_spr_size_h(pk, &m->home, bar, 247, 809, h + pad);
 }
 static void draw_copyright_list(snes_menu *m, snes_target *t)
 {
@@ -1660,6 +1708,7 @@ static void legal_set_tab(snes_menu *m, int tab)
 	}
 	m->legal_tab = tab;
 	m->legal_scroll = 0;
+	legal_scrollbar(m);
 }
 
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
@@ -1918,7 +1967,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				int step = LEGAL_NVIS - 1;
 				int next = m->legal_scroll + (c == 1 ? -step : step);
 				if (next < 0) next = 0; else if (next > maxs) next = maxs;
-				m->legal_scroll = next;   /* web page-scroll is silent */
+				if (next != m->legal_scroll) { m->legal_scroll = next; legal_scrollbar(m); }
 			}
 			if (el && m->legal_tab != 0) { legal_set_tab(m, 0); push_snd(m, m->sfx_move); }
 			else if (er && m->legal_tab != 1) { legal_set_tab(m, 1); push_snd(m, m->sfx_move); }
