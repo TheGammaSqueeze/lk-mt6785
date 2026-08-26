@@ -1258,7 +1258,20 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	 * four "No Data" slots (sys_resumemenu empty branch). */
 	if (m->resume) {
 		disable_all_named(pk, m->resume, "changemode");
+		/* emptymode (the "When you reset a game..." hint + an overlapping card
+		 * template) is hidden by default; the 4:3 resume render re-enables just the
+		 * hint (it sits below the 720 fold in 16:9, so only 4:3 shows it). */
 		disable_all_named(pk, m->resume, "emptymode");
+		/* the resume hud stacks 4 sub-huds (empty/change/locked/float) at x=0; the
+		 * empty state shows only hud_empty ("Back") - hide the others so they do not
+		 * overlap into garbled text. Ports hudSelect("empty"). */
+		{
+			snes_rnode *hud = desc(pk, m->resume, "hud"), *h;
+			static const char *others[3] = { "hud_change", "hud_locked", "hud_float" };
+			int oi;
+			if (hud) for (oi = 0; oi < 3; oi++)
+				if ((h = child_named(pk, hud, others[oi]))) h->enabled = 0;
+		}
 		/* in the empty state each card hides its whole saved-data view
 		 * (saved_card = blue fill + screen + frame + timer + icons), leaving
 		 * the recessed slot + the "No Data" empty_label */
@@ -2224,17 +2237,43 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	if (m->state == 3 && m->resume) {
 		m->resume->tf[5] = m->open_y;   /* slide-up-from-bottom offset */
 		if (m->aspect) {
+			/* the 960 panel has room for the empty-state hint ("When you reset a
+			 * game...") that is below the 720 fold in 16:9: enable just the hint box
+			 * (emptymode/explanation), keeping the overlapping card template hidden. */
+			snes_rnode *em = desc(m->pk, m->resume, "emptymode"), *expl = 0, *eel;
+			if (em) {
+				em->enabled = 1;
+				expl = child_named(m->pk, em, "explanation");
+				if ((eel = child_named(m->pk, em, "elements"))) eel->enabled = 0;
+			}
 			/* resumemenu is 'content' (panel + slot list zoom with the rest) except
 			 * its hud hint bar, which pins to the bottom edge like the home bars. */
+			{
 			snes_rnode *rhud = child_named(m->pk, m->resume, "hud");
 			int e_rhud = rhud ? rhud->enabled : 0;
 			if (rhud) rhud->enabled = 0;
+			/* render the panel + slots first with the hint hidden, then paint its
+			 * opaque black backing (the wdw/base is an empty-sprite quad the renderer
+			 * skips), then the hint frame + text on top - so it covers the slots. */
+			if (expl) expl->enabled = 0;
 			set_view(m, t, VIEW_CONTENT);
 			snes_render_node(t, &m->home, m->resume);
+			if (expl) {
+				float w[6];
+				snes_rnode *base = child_named(m->pk, desc(m->pk, expl, "wdw"), "base");
+				expl->enabled = 1;
+				if (base) {
+					snes_node_world(base, w);
+					snes_fill_quad(t, 640.0f + w[2], 360.0f - w[5], 800.0f, 48.0f,
+						       0.0f, 0.0f, 0.0f, 1.0f);
+				}
+				snes_render_node(t, &m->home, expl);
+			}
 			if (rhud) {
 				rhud->enabled = e_rhud;
 				set_view(m, t, VIEW_BOTTOM);
 				snes_render_node(t, &m->home, rhud);
+			}
 			}
 		} else {
 			snes_render_node(t, &m->home, m->resume);
