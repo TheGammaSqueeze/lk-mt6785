@@ -746,21 +746,32 @@ static void draw_wrapped(snes_menu *m, snes_target *t, uint32_t font, float x, f
 	}
 	if (ll) { line[ll] = 0; snes_draw_text(t, m->pk, font, x, *y, sc, argb, 0, line); *y += lineh; }
 }
-/* the copyright IP-Notice body: the deduped game-copyright list, ordered by
- * (sort_publisher, release, sort_title), word-wrapped into the body area. */
-static void draw_copyright_list(snes_menu *m, snes_target *t)
+/* The IP-Notice body as a flat one-line-per-entry list (ports _legalIPTexts): the
+ * deduped game copyrights ordered by (sort_publisher, release, sort_title), then a
+ * fixed trailing block (Nintendo/trademark/Fontworks notices, EN + FR). Fills out[]
+ * (up to max) and returns the line count. Each entry renders on one line, matching
+ * the web (no word-wrap), so page-scroll is line-based. */
+#define LEGAL_NVIS 14          /* visible lines in the body (276..625 at LH 24) */
+static const char *g_legal_tail[] = {
+	"", "\xC2\xA9""2017 Nintendo", "",
+	"Trademarks are property of their respective owners. Nintendo Entertainment System and SUPER NES",
+	" are trademarks of Nintendo.",
+	"Les marques appartiennent \xC3\xA0 leurs propri\xC3\xA9taires respectifs. Nintendo Entertainment System et SUPER",
+	" NES sont des marques de Nintendo. ", "",
+	"This product uses certain fonts provided by Fontworks Inc.",
+	"Ce produit utilise certaines polices de caract\xC3\xA8res fournies par Fontworks Inc.", "",
+	"The software included in this system represents game content and characters from the original games.",
+	" The porting of games from their original system may result in minor changes to the game display.",
+	"Les logiciels inclus dans cette console reproduisent le contenu des jeux originaux. Le portage de ces",
+	" jeux depuis leur console d'origine peut entra\xC3\xAEner des changements d'affichage mineurs.",
+};
+static int legal_ip_lines(snes_menu *m, const char **out, int max)
 {
 	const snes_pack *pk = m->pk;
-	snes_rnode *body = child_named(pk, m->overlay[3], "body");
-	snes_rnode *cp = body ? child_named(pk, body, "copyright") : 0;
-	snes_rnode *txt = cp ? child_named(pk, cp, "text") : 0;
-	/* the Lua overrides the authored s.font placeholder with copyright.fnt
-	 * (the only body font that carries every digit/glyph) at runtime. */
-	uint32_t font = snes_hash("copyright.fnt"), seen[128];
+	uint32_t seen[128];
 	unsigned short ord[128];
-	int n = m->ngames, i, j, ns = 0;
-	float y = 276.0f - m->open_y;   /* follow the panel slide-in (2px up to match web) */
-	if (!txt || n <= 0) return;
+	int n = m->ngames, i, j, ns = 0, nl = 0;
+	if (n <= 0) return 0;
 	for (i = 0; i < n; i++) ord[i] = (unsigned short)i;
 	for (i = 1; i < n; i++) {                       /* sort (publisher, release, title) */
 		unsigned short k = ord[i];
@@ -776,16 +787,46 @@ static void draw_copyright_list(snes_menu *m, snes_target *t)
 		}
 		ord[j + 1] = k;
 	}
-	for (i = 0; i < n; i++) {
+	for (i = 0; i < n && nl < max; i++) {
 		const snes_game_rec *g = game_raw(pk, ord[i]);
 		int dup = 0;
 		if (!g->copyright) continue;
 		for (j = 0; j < ns; j++) if (seen[j] == g->copyright) { dup = 1; break; }
 		if (dup) continue;
 		seen[ns++] = g->copyright;
-		if (y > 625.0f) break;                  /* clip to the visible body */
-		draw_wrapped(m, t, font, 168.0f, &y, 1.0f, 0xFFF0F0F0u, 900.0f, 24.0f,
-			     snes_str(pk, g->copyright));
+		out[nl++] = snes_str(pk, g->copyright);
+	}
+	for (i = 0; i < (int)(sizeof(g_legal_tail) / sizeof(g_legal_tail[0])) && nl < max; i++)
+		out[nl++] = g_legal_tail[i];
+	return nl;
+}
+/* total scrollable lines in the active Legal tab (IP; OSS not yet packed). */
+static int legal_line_count(snes_menu *m)
+{
+	const char *lines[192];
+	if (m->legal_tab == 1) return 0;              /* OSS: no content yet */
+	return legal_ip_lines(m, lines, 192);
+}
+static void draw_copyright_list(snes_menu *m, snes_target *t)
+{
+	const snes_pack *pk = m->pk;
+	snes_rnode *body = child_named(pk, m->overlay[3], "body");
+	snes_rnode *cp = body ? child_named(pk, body, "copyright") : 0;
+	snes_rnode *txt = cp ? child_named(pk, cp, "text") : 0;
+	/* the Lua overrides the authored s.font placeholder with copyright.fnt
+	 * (the only body font that carries every digit/glyph) at runtime. */
+	uint32_t font = snes_hash("copyright.fnt");
+	const char *lines[192];
+	int nl, i;
+	float Y0 = 276.0f - m->open_y;   /* follow the panel slide-in (2px up to match web) */
+	if (!txt || m->legal_tab == 1) return;   /* OSS tab: content not yet packed */
+	nl = legal_ip_lines(m, lines, 192);
+	for (i = 0; ; i++) {
+		int idx = m->legal_scroll + i;
+		float y = Y0 + (float)i * 24.0f;
+		if (idx >= nl || y > 625.0f) break;
+		snes_draw_text(t, pk, font, 168.0f, y, 1.0f, 0xFFF0F0F0u, 0,
+			       lines[idx]);
 	}
 }
 /* home carousel hints: Menu / Suspend Point List / Sort / Start Game */
@@ -995,6 +1036,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->lang_cur = m->lang_sel = 0;     /* English (top-left) */
 	m->reset_t = 0.0f; m->reset_armed = 0; m->reset_dlg_open = 0;
 	m->dlg_focus = 0; m->reset_dlg_y = -720.0f;
+	m->legal_tab = 0; m->legal_scroll = 0;
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
 	m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
 	m->prev_focus = 0; m->xfade_t = 0.0f; m->resume_dim = 0.0f;
@@ -1364,13 +1406,15 @@ static void apply_display_state(snes_menu *m)
  * `rate`; on release clear. Returns the fired control (1 up, 2 down, 3 left,
  * 4 right) or 0. allow_ud gates the vertical controls (Display uses L/R only). */
 static int sub_navfire(snes_menu *m, const snes_input *in, float dt,
-		       int allow_ud, float delay, float rate)
+		       int mask, float delay, float rate)
 {
 	int lvl[5]  = { 0, in->up, in->down, in->left, in->right };
 	int prev[5] = { 0, m->pu,  m->pd,    m->pl,    m->pr };
 	int order[4], n = 0, i, c;
-	if (allow_ud) { order[n++] = 1; order[n++] = 2; }
-	order[n++] = 3; order[n++] = 4;
+	if (mask & 1) order[n++] = 1;   /* up */
+	if (mask & 2) order[n++] = 2;   /* down */
+	if (mask & 4) order[n++] = 3;   /* left */
+	if (mask & 8) order[n++] = 4;   /* right */
 	for (i = 0; i < n; i++) { c = order[i]; if (lvl[c] && !prev[c]) { m->sub_rep_ctrl = c; m->sub_rep_t = delay; return c; } }
 	if (m->sub_rep_ctrl) {
 		int allowed = 0;
@@ -1483,6 +1527,32 @@ static void close_reset_dialog(snes_menu *m)
 	m->reset_dlg_open = 0;
 	m->reset_armed = 0; m->reset_t = 0.0f;
 	set_reset_gauge(m, 0.0f);
+}
+/* Legal tab switch (IP Notice / Open Source Software): the active tab shows its
+ * cursor_area (blue box) + tab_on, the other its tab_off; the matching body is
+ * enabled. Scroll resets to the top. Ports legalTab + _legalTabHighlight. */
+static void legal_set_tab(snes_menu *m, int tab)
+{
+	const snes_pack *pk = m->pk;
+	snes_rnode *menu = m->overlay[3] ? child_named(pk, m->overlay[3], "menu") : 0;
+	snes_rnode *body = m->overlay[3] ? child_named(pk, m->overlay[3], "body") : 0;
+	snes_rnode *tabs[2], *bods[2], *r;
+	int i;
+	tabs[0] = menu ? child_named(pk, menu, "copyright") : 0;
+	tabs[1] = menu ? child_named(pk, menu, "oss") : 0;
+	bods[0] = body ? child_named(pk, body, "copyright") : 0;
+	bods[1] = body ? child_named(pk, body, "oss") : 0;
+	for (i = 0; i < 2; i++) {
+		int on = (i == tab);
+		if (tabs[i]) {
+			if ((r = child_named(pk, tabs[i], "cursor_area"))) r->enabled = on;
+			if ((r = child_named(pk, tabs[i], "tab_on")))  r->enabled = on;
+			if ((r = child_named(pk, tabs[i], "tab_off"))) r->enabled = !on;
+		}
+		if (bods[i]) bods[i]->enabled = on;
+	}
+	m->legal_tab = tab;
+	m->legal_scroll = 0;
 }
 
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
@@ -1607,6 +1677,8 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			} else if (m->open == 2) {   /* Language: cursor opens on the selection */
 				m->lang_cur = m->lang_sel;
 				apply_language_state(m);
+			} else if (m->open == 3) {   /* Legal: open on the IP Notice tab, top */
+				legal_set_tab(m, 0);
 			}
 			/* the panel slides DOWN from off-top into place, easing out (measured
 			 * against the web: the selection box travels ~585px over ~5 frames at
@@ -1621,7 +1693,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		 * the cursor's mode (radiobtn_on moves, toggle SFX). Ports updateDisplayNav
 		 * + navHoriz(moveNav) + selectDisplayModeAtCursor/_selectDisplayMode. */
 		if (m->open == 0 && !m->closing) {
-			int c = sub_navfire(m, in, dt, 0, DISP_HOLD_DELAY, DISP_HOLD_RATE);
+			int c = sub_navfire(m, in, dt, 12, DISP_HOLD_DELAY, DISP_HOLD_RATE);
 			if (c) {                          /* 3 = left, 4 = right */
 				m->disp_cur = (m->disp_cur + (c == 3 ? -1 : 1) + 3) % 3;
 				apply_display_state(m);
@@ -1653,7 +1725,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			else if (ea) { push_snd(m, m->sfx_decide); close_reset_dialog(m); }
 			else if (eb) { push_snd(m, m->sfx_cancel); close_reset_dialog(m); }
 		} else if (m->open == 1 && !m->closing) {
-			int c = sub_navfire(m, in, dt, 1, SUB_HOLD_DELAY, SUB_HOLD_RATE);
+			int c = sub_navfire(m, in, dt, 15, SUB_HOLD_DELAY, SUB_HOLD_RATE);
 			if (c == 1 || c == 2) {           /* up / down: move cursor, wrap 4 */
 				m->opt_cur = (m->opt_cur + (c == 1 ? 3 : 1)) % 4;
 				apply_options_state(m);
@@ -1692,7 +1764,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		 * language (the radiobtn_on dot moves to it). Ports the Language _buildGrid +
 		 * moveNav + selectRadio path. */
 		if (m->open == 2 && !m->closing) {
-			int c = sub_navfire(m, in, dt, 1, SUB_HOLD_DELAY, SUB_HOLD_RATE);
+			int c = sub_navfire(m, in, dt, 15, SUB_HOLD_DELAY, SUB_HOLD_RATE);
 			if (c) {
 				int row = m->lang_cur / 2, col = m->lang_cur % 2;
 				if (c == 1)      row = (row + 3) % 4;   /* up */
@@ -1707,6 +1779,22 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				m->lang_sel = m->lang_cur;
 				push_snd(m, m->sfx_decide);
 			}
+		}
+		/* Legal screen (copyright, open==3): Up/Down page-scroll the active tab's
+		 * text (navFire SUB_HOLD), Left/Right switch the IP/OSS tab (discrete). Ports
+		 * the copyright dispatch (legalScroll + legalTab). */
+		if (m->open == 3 && !m->closing) {
+			int c = sub_navfire(m, in, dt, 3, SUB_HOLD_DELAY, SUB_HOLD_RATE);  /* U/D only */
+			if (c == 1 || c == 2) {
+				int total = legal_line_count(m);
+				int maxs = total - LEGAL_NVIS; if (maxs < 0) maxs = 0;
+				int step = LEGAL_NVIS - 1;
+				int next = m->legal_scroll + (c == 1 ? -step : step);
+				if (next < 0) next = 0; else if (next > maxs) next = maxs;
+				m->legal_scroll = next;   /* web page-scroll is silent */
+			}
+			if (el && m->legal_tab != 0) { legal_set_tab(m, 0); push_snd(m, m->sfx_move); }
+			else if (er && m->legal_tab != 1) { legal_set_tab(m, 1); push_snd(m, m->sfx_move); }
 		}
 		/* B closes the submenu - unless the reset dialog is open, where B is
 		 * consumed above to close just the dialog. */

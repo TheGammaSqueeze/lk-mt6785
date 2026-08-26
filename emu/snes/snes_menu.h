@@ -53,6 +53,10 @@ typedef struct {
 	int lang_cur;                 /* Language cursor grid index 0..7 */
 	int lang_sel;                 /* selected language grid index 0..7 */
 
+	/* Legal (copyright) screen: IP Notice / Open Source Software tabs + page-scroll. */
+	int legal_tab;                /* 0 = IP Notice, 1 = Open Source Software */
+	int legal_scroll;             /* first visible line index in the active tab */
+
 	/* Options System Reset long-press (sys_button_longpress) + confirm dialog. */
 	float reset_t;                /* OK-held time over the reset row (0..RESET_LONGPRESS_SEC) */
 	int reset_armed;             /* armed on the A press edge over the reset row */
