@@ -731,13 +731,9 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 		blue_a = (j == m->prev_focus) ? prog : 0.0f;   /* outgoing card fades out */
 		draw_card(m, t, j, cx, blue_a, ndim);
 	}
-	/* resume also darkens the focused card (~0.73) and drops its blue selection
-	 * frame (the highlight moves to the panel); fade both with resume_dim. */
-	{
-		float fblue = (1.0f - prog) * (1.0f - m->resume_dim);
-		float fdim = 1.0f - 0.27f * m->resume_dim;
-		draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, fblue, fdim);
-	}
+	/* the selected card stays bright and keeps its blue active frame in resume
+	 * (cardColorDark dims only the OTHER cards); just its normal crossfade. */
+	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1.0f - prog, 1.0f);
 }
 
 /* ---- bottom thumbnail filmstrip (ports sys_thumbnail_icon: a fixed 21-icon
