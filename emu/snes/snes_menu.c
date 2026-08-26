@@ -2263,7 +2263,17 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	/* the suspend-point (resume) menu slides up over the home; the web dims
 	 * nothing behind it (the menubar + cards stay full brightness), so no scrim. */
 	if (m->state == 3 && m->resume) {
+		snes_rnode *rbg, *rtail;
 		m->resume->tf[5] = m->open_y;   /* slide-up-from-bottom offset */
+		/* pin the panel tail/chevron under the SELECTED carousel card (ports
+		 * _resumeTail: tail.transform[2] = selected card world x). There are two
+		 * resumebg variants (resumebg / resumebg_overwrite) each with a tail; pick
+		 * the ENABLED one. Without this the chevron stays at its authored centre -
+		 * visible in 4:3 where the card is zoomed. */
+		rbg = child_named(m->pk, m->resume, "resumebg");
+		if (!rbg || !rbg->enabled) rbg = child_named(m->pk, m->resume, "resumebg_overwrite");
+		if (rbg && (rtail = child_named(m->pk, rbg, "resumebg_tail")))
+			rtail->tf[2] = m->sel_world;
 		if (m->aspect) {
 			/* the 960 panel has room for the empty-state hint ("When you reset a
 			 * game...") that is below the 720 fold in 16:9: enable just the hint box
