@@ -52,6 +52,13 @@ typedef struct {
 	 * lang_sel = the selected (radiobtn_on) language, both 0..7 (default 0 = English). */
 	int lang_cur;                 /* Language cursor grid index 0..7 */
 	int lang_sel;                 /* selected language grid index 0..7 */
+
+	/* Options System Reset long-press (sys_button_longpress) + confirm dialog. */
+	float reset_t;                /* OK-held time over the reset row (0..RESET_LONGPRESS_SEC) */
+	int reset_armed;             /* armed on the A press edge over the reset row */
+	int reset_dlg_open;          /* Yes/No confirm dialog showing */
+	int dlg_focus;               /* dialog button focus: 0 = Cancel, 1 = Reset */
+	float reset_dlg_y;           /* dialog slide offset, eases -720 -> 0 on open */
 	int mb_focus;                 /* selected menubar icon 0..4 */
 	int open;                     /* open overlay index, -1 if none */
 	float open_y;                 /* submenu slide offset (world up), eases to 0 */

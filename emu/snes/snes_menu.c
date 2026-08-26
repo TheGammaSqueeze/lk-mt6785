@@ -119,6 +119,7 @@ static void apply_display_state(snes_menu *m);   /* fwd: used by init + update *
 static void apply_options_state(snes_menu *m);   /* fwd: used by init + update */
 static void apply_language_state(snes_menu *m);  /* fwd: used by init + update */
 static const char *lang_name(int idx);           /* fwd: used by render */
+static void set_reset_gauge(snes_menu *m, float rate);   /* fwd: used by init */
 /* recursively disable every descendant node named nm */
 static void disable_all_named(const snes_pack *p, snes_rnode *n, const char *nm)
 {
@@ -957,6 +958,26 @@ static void draw_option_hints(snes_menu *m, snes_target *t)
 	};
 	draw_overlay_hints(m, t, m->open == 2 ? LANG : OPT, 3, 1180.0f, 74.0f - m->open_y, 41.0f);
 }
+/* The Options confirm dialog (sys_dialog) is the FIRST child of option_settings,
+ * so the scene render draws it behind the toggle rows. Re-render it on top when
+ * open (it slides up from y=-720; opaque base covers the list). */
+static void draw_reset_dialog(snes_menu *m, snes_target *t)
+{
+	snes_rnode *dl, *base;
+	if (m->open != 1 || !m->reset_dlg_open || !m->overlay[1]) return;
+	dl = desc(m->pk, m->overlay[1], "sys_dialog");
+	if (!dl) return;
+	/* the dialog's `base` is an empty-sprite solid-colour quad (the renderer skips
+	 * those), so paint the opaque black backing (646x374, web-matched) at its world
+	 * position before the frame/text/buttons render on top. */
+	base = desc(m->pk, dl, "base");
+	if (base) {
+		float w[6];
+		snes_node_world(base, w);
+		snes_fill_quad(t, 640.0f + w[2], 360.0f - w[5], 646.0f, 374.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+	}
+	snes_render_node(t, &m->home, dl);
+}
 
 /* ---- public ---- */
 int snes_menu_init(snes_menu *m, const snes_pack *pk,
@@ -972,6 +993,8 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->disp_cur = m->disp_sel = 1; m->sub_rep_t = 0.0f; m->sub_rep_ctrl = 0;
 	m->opt_cur = 0; m->opt_on = 0x7;   /* 3 toggles, all on by default */
 	m->lang_cur = m->lang_sel = 0;     /* English (top-left) */
+	m->reset_t = 0.0f; m->reset_armed = 0; m->reset_dlg_open = 0;
+	m->dlg_focus = 0; m->reset_dlg_y = -720.0f;
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
 	m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
 	m->prev_focus = 0; m->xfade_t = 0.0f; m->resume_dim = 0.0f;
@@ -1191,6 +1214,8 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		disable_all_named(pk, m->overlay[1], "cursor");
 		m->opt_cur = 0; m->opt_on = 0x7;
 		apply_options_state(m);
+		set_reset_gauge(m, 0.0f);                  /* fill gauge hidden at rest */
+		disable_all_named(pk, m->overlay[1], "sys_dialog");   /* confirm dialog hidden */
 	}
 	/* copyright panel resting state (IP Notice = the `copyright` tab selected):
 	 * blue box on the copyright tab, hide the OSS tab_on + OSS body text */
@@ -1405,6 +1430,61 @@ static void apply_language_state(snes_menu *m)
 	}
 }
 
+/* Options System Reset (sys_button_longpress): scale the fill gauge to `rate`
+ * (0..1) and flank it with the L/R end caps. rate <= 0 hides all three. Ports
+ * _setResetGauge (gauge w=426, caps w=3). */
+#define RESET_LONGPRESS_SEC 5.0f
+static void set_reset_gauge(snes_menu *m, float rate)
+{
+	snes_rnode *sb = m->overlay[1] ? desc(m->pk, m->overlay[1], "sys_button") : 0;
+	snes_rnode *g  = sb ? desc(m->pk, sb, "gauge") : 0;
+	snes_rnode *gl = sb ? desc(m->pk, sb, "gauge_l") : 0;
+	snes_rnode *gr = sb ? desc(m->pk, sb, "gauge_r") : 0;
+	if (!g) return;
+	if (rate <= 0.0f) { g->enabled = 0; if (gl) gl->enabled = 0; if (gr) gr->enabled = 0; return; }
+	g->enabled = 1; if (gl) gl->enabled = 1; if (gr) gr->enabled = 1;
+	g->tf[0] = rate;                                  /* setLocalScale(rate, 1) */
+	{
+		float half = (426.0f * rate) / 2.0f;
+		if (gl) gl->tf[2] = -(half + 1.5f);       /* glw/2 = 1.5 */
+		if (gr) gr->tf[2] = half + 1.5f;
+	}
+}
+/* reset dialog button focus: swap btn_idle/btn_focus on Cancel vs Reset. */
+static void set_dialog_focus(snes_menu *m, int which)
+{
+	snes_rnode *dl = m->overlay[1] ? desc(m->pk, m->overlay[1], "sys_dialog") : 0;
+	snes_rnode *el = dl ? child_named(m->pk, dl, "elements") : 0;
+	snes_rnode *dec = el ? child_named(m->pk, el, "btn_decide") : 0;
+	snes_rnode *can = el ? child_named(m->pk, el, "btn_cancel") : 0;
+	snes_rnode *n;
+	if (dec) { if ((n = child_named(m->pk, dec, "btn_idle"))) n->enabled = (which != 1);
+		   if ((n = child_named(m->pk, dec, "btn_focus"))) n->enabled = (which == 1); }
+	if (can) { if ((n = child_named(m->pk, can, "btn_idle"))) n->enabled = (which != 0);
+		   if ((n = child_named(m->pk, can, "btn_focus"))) n->enabled = (which == 0); }
+	m->dlg_focus = which;
+}
+/* open/close the Yes/No confirm dialog (authored off-screen at y=-720, slides up).
+ * Reset would reboot the console (out of scope), so both buttons just close. */
+static void open_reset_dialog(snes_menu *m)
+{
+	snes_rnode *dl = m->overlay[1] ? desc(m->pk, m->overlay[1], "sys_dialog") : 0;
+	if (!dl) return;
+	m->reset_dlg_open = 1;
+	dl->enabled = 1;
+	m->reset_dlg_y = -720.0f;
+	dl->tf[5] = m->reset_dlg_y;
+	set_dialog_focus(m, 0);                            /* Cancel focused (safe default) */
+}
+static void close_reset_dialog(snes_menu *m)
+{
+	snes_rnode *dl = m->overlay[1] ? desc(m->pk, m->overlay[1], "sys_dialog") : 0;
+	if (dl) dl->enabled = 0;
+	m->reset_dlg_open = 0;
+	m->reset_armed = 0; m->reset_t = 0.0f;
+	set_reset_gauge(m, 0.0f);
+}
+
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 {
 	float k;
@@ -1522,6 +1602,8 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			} else if (m->open == 1) {   /* Options: cursor opens on the top row */
 				m->opt_cur = 0;
 				apply_options_state(m);
+				m->reset_armed = 0; m->reset_t = 0.0f;
+				close_reset_dialog(m);   /* also hides gauge + dialog node */
 			} else if (m->open == 2) {   /* Language: cursor opens on the selection */
 				m->lang_cur = m->lang_sel;
 				apply_language_state(m);
@@ -1556,11 +1638,26 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		 * L/R on a toggle set it on(R)/off(L) (setToggle, no-op if already there);
 		 * A flips the focused toggle (activateNav). The reset row's long-press gauge
 		 * + confirm dialog are not yet ported (A on it is a no-op, as in the web). */
-		if (m->open == 1 && !m->closing) {
+		if (m->open == 1 && !m->closing && m->reset_dlg_open) {
+			/* confirm dialog input: L focuses Cancel, R focuses Reset, A commits
+			 * (both just close - Reset would reboot, out of scope), B cancels.
+			 * Ease the dialog slide-in (-720 -> 0) each frame. */
+			snes_rnode *dl = desc(m->pk, m->overlay[1], "sys_dialog");
+			float ke = 0.55f * (dt / 0.0333f);
+			if (ke > 1.0f) ke = 1.0f;
+			m->reset_dlg_y += (0.0f - m->reset_dlg_y) * ke;
+			if (m->reset_dlg_y > -1.0f) m->reset_dlg_y = 0.0f;
+			if (dl) dl->tf[5] = m->reset_dlg_y;
+			if (el && m->dlg_focus != 0) { set_dialog_focus(m, 0); push_snd(m, m->sfx_move); }
+			else if (er && m->dlg_focus != 1) { set_dialog_focus(m, 1); push_snd(m, m->sfx_move); }
+			else if (ea) { push_snd(m, m->sfx_decide); close_reset_dialog(m); }
+			else if (eb) { push_snd(m, m->sfx_cancel); close_reset_dialog(m); }
+		} else if (m->open == 1 && !m->closing) {
 			int c = sub_navfire(m, in, dt, 1, SUB_HOLD_DELAY, SUB_HOLD_RATE);
 			if (c == 1 || c == 2) {           /* up / down: move cursor, wrap 4 */
 				m->opt_cur = (m->opt_cur + (c == 1 ? 3 : 1)) % 4;
 				apply_options_state(m);
+				set_reset_gauge(m, 0.0f); m->reset_armed = 0; m->reset_t = 0.0f;
 				push_snd(m, m->sfx_move);
 			} else if ((c == 3 || c == 4) && m->opt_cur < 3) {  /* L off / R on */
 				int on = (c == 4);
@@ -1574,6 +1671,20 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				m->opt_on ^= (1u << m->opt_cur);
 				apply_options_state(m);
 				push_snd(m, m->sfx_decide);
+			}
+			/* System Reset row: OK held fills the gauge over RESET_LONGPRESS_SEC,
+			 * then opens the confirm dialog; releasing early cancels the fill. */
+			if (m->opt_cur == 3) {
+				if (in->a) {
+					if (ea) { m->reset_armed = 1; m->reset_t = 0.0f; }
+					else if (m->reset_armed) {
+						m->reset_t += dt;
+						if (m->reset_t >= RESET_LONGPRESS_SEC) { set_reset_gauge(m, 1.0f); open_reset_dialog(m); }
+						else set_reset_gauge(m, m->reset_t / RESET_LONGPRESS_SEC);
+					}
+				} else if (m->reset_armed || m->reset_t > 0.0f) {
+					m->reset_armed = 0; m->reset_t = 0.0f; set_reset_gauge(m, 0.0f);
+				}
 			}
 		}
 		/* Language screen (cm3): 2D radio grid (4 rows x 2 cols). U/D/L/R move the
@@ -1597,7 +1708,9 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				push_snd(m, m->sfx_decide);
 			}
 		}
-		if (eb && !m->closing) {
+		/* B closes the submenu - unless the reset dialog is open, where B is
+		 * consumed above to close just the dialog. */
+		if (eb && !m->closing && !(m->open == 1 && m->reset_dlg_open)) {
 			/* slide the panel back up/off before hiding (see the ease above) */
 			m->closing = 1; m->close_target = OPEN_SLIDE; m->close_t = 0.0f;
 			push_snd(m, m->sfx_cancel);
@@ -1711,6 +1824,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
 			m->overlay[m->open]->tf[5] = m->open_y;
 			snes_render_node(t, &m->home, m->overlay[m->open]);
+			draw_reset_dialog(m, t);
 			if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
 			else if (m->open == 4) draw_manual_hints(m, t);
 			else if (m->open >= 0 && m->open <= 2) draw_option_hints(m, t);
@@ -1760,6 +1874,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		}
 		m->overlay[m->open]->tf[5] = m->open_y;
 		snes_render_node(t, &m->home, m->overlay[m->open]);
+		draw_reset_dialog(m, t);
 		if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
 		else if (m->open == 4) draw_manual_hints(m, t);
 		else if (m->open >= 0 && m->open <= 2) draw_option_hints(m, t);

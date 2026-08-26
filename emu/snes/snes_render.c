@@ -420,39 +420,51 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 	screen_matrix(m, S);
 	scale = S[0] < 0 ? -S[0] : S[0];         /* uniform-ish scale for text */
 	if (scale < 0.01f) scale = 1.0f;
-	/* measure for anchor */
-	for (p = text; *p; ) {
-		const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
-		wpx += g ? g->xadv : 0;   /* missing glyphs drop to zero width (web parity) */
-	}
-	penx = S[4];
-	if (lb->h_anchor == ANCHOR_CENTER) penx -= wpx * scale / 2.0f;
-	else if (lb->h_anchor == ANCHOR_RIGHT) penx -= wpx * scale;
+	/* Multi-line aware: split on '\n', centre each line horizontally and the whole
+	 * block vertically. Single-line labels are byte-identical (nlines=1 -> the old
+	 * th/2 centring). Ports the web LabelComponent's newline handling; without it a
+	 * multi-line string (e.g. the reset dialog body) collapses onto one line. */
 	{
-		float peny = S[5];
-		float th = fe->line_height * scale;
-		/* the CLOVER format encodes vertical Center as ANCHOR_CENTER(1); treat
-		 * both that and MIDDLE(4) as vertical-centred (default Top = no offset) */
+		float line_h = fe->line_height * scale;
+		int nlines = 1, li;
+		float peny0 = S[5], block_h;
+		const char *ls;
+		(void)wpx;
+		for (p = text; *p; p++) if (*p == '\n') nlines++;
+		block_h = (float)nlines * line_h;
 		if (lb->v_anchor == ANCHOR_MIDDLE || lb->v_anchor == ANCHOR_CENTER)
-			peny -= th / 2.0f;
-		else if (lb->v_anchor == ANCHOR_BOTTOM) peny -= th;
-		for (p = text; *p; ) {
-			const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&p));
-			if (!g) continue;   /* missing glyphs drop to zero width (web parity) */
-			if (g->w > 0) {
-				snes_draw d;
-				float gm[6];
-				d.pix = pgpix; d.rgb565 = rgb565; d.img_w = pgw; d.img_h = pgh;
-				d.sx = g->x; d.sy = g->y; d.sw = g->w; d.sh = g->h;
-				d.dw = g->w * scale; d.dh = g->h * scale; d.px = 0; d.py = 0;
-				d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
-				d.tr = col[0]; d.tg = col[1]; d.tb = col[2]; d.ta = col[3];
-				/* place glyph as an axis-aligned quad at pen (screen space) */
-				gm[0] = 1; gm[1] = 0; gm[2] = 0; gm[3] = 1;
-				gm[4] = penx + g->xo * scale; gm[5] = peny + g->yo * scale;
-				blit(t, gm, &d);
+			peny0 -= block_h / 2.0f;
+		else if (lb->v_anchor == ANCHOR_BOTTOM) peny0 -= block_h;
+		ls = text;
+		for (li = 0; li < nlines; li++) {
+			const char *le = ls, *q;
+			float lw = 0, peny = peny0 + (float)li * line_h;
+			while (*le && *le != '\n') le++;      /* end of this line */
+			for (q = ls; q < le; ) {              /* measure line width for the anchor */
+				const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&q));
+				lw += g ? g->xadv : 0;
 			}
-			penx += g->xadv * scale;
+			penx = S[4];
+			if (lb->h_anchor == ANCHOR_CENTER) penx -= lw * scale / 2.0f;
+			else if (lb->h_anchor == ANCHOR_RIGHT) penx -= lw * scale;
+			for (q = ls; q < le; ) {
+				const snes_glyph *g = glyph_find(fe, glyphs, utf8_next(&q));
+				if (!g) continue;   /* missing glyphs drop to zero width (web parity) */
+				if (g->w > 0) {
+					snes_draw d;
+					float gm[6];
+					d.pix = pgpix; d.rgb565 = rgb565; d.img_w = pgw; d.img_h = pgh;
+					d.sx = g->x; d.sy = g->y; d.sw = g->w; d.sh = g->h;
+					d.dw = g->w * scale; d.dh = g->h * scale; d.px = 0; d.py = 0;
+					d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+					d.tr = col[0]; d.tg = col[1]; d.tb = col[2]; d.ta = col[3];
+					gm[0] = 1; gm[1] = 0; gm[2] = 0; gm[3] = 1;
+					gm[4] = penx + g->xo * scale; gm[5] = peny + g->yo * scale;
+					blit(t, gm, &d);
+				}
+				penx += g->xadv * scale;
+			}
+			ls = (*le == '\n') ? le + 1 : le;
 		}
 	}
 }
