@@ -267,19 +267,37 @@ static void build_wp(snes_menu *m)
 /* 4:3: the neon wallpaper zooms by ASP_WALL_S to fill the whole 960 panel (no
  * black gaps). Inverse-map each of the 960 fb rows + 1280 cols back into the wp
  * cache (x map precomputed once/frame). vdx=640-s*640, vdy=480-s*360. */
+/* Intersect a direct-composite (non-blit) row loop [*lo,*hi) with the target's
+ * optional multicore scanline band. `abs0` is the absolute panel row of local
+ * row 0 (t->offy for offy-relative loops, 0 for panel-absolute). No-op when no
+ * band is set (band_y1==0, single-core), so these composites are unchanged on
+ * the release path. Needed because these loops bypass blit()'s band clip; under
+ * the AYANEO_BIGCORE_EXPT split each core must only touch its own rows or the
+ * full-frame wallpaper/chrome would be redrawn in both passes and clobber the
+ * other core's band. */
+static void band_rows(const snes_target *t, int abs0, int *lo, int *hi)
+{
+	if (t->band_y1 > t->band_y0) {
+		int b0 = t->band_y0 - abs0, b1 = t->band_y1 - abs0;
+		if (*lo < b0) *lo = b0;
+		if (*hi > b1) *hi = b1;
+	}
+}
 static void draw_wp_43(snes_menu *m, snes_target *t, int scroll_px)
 {
 	static int xmap[SNES_VW];
 	int Y, X, off = ((scroll_px % WP_CACHE_W) + WP_CACHE_W) % WP_CACHE_W;
 	float inv = 1.0f / ASP_WALL_S;
 	float vdx = 640.0f - ASP_WALL_S * 640.0f, vdy = 480.0f - ASP_WALL_S * 360.0f;
+	int Ylo = 0, Yhi = (t->H < 960) ? t->H : 960;
 	if (!m->wp_ready) return;
 	for (X = 0; X < SNES_VW; X++) {
 		int wx = (int)(((float)X - vdx) * inv) + off;
 		wx %= WP_CACHE_W; if (wx < 0) wx += WP_CACHE_W;
 		xmap[X] = wx;
 	}
-	for (Y = 0; Y < t->H && Y < 960; Y++) {
+	band_rows(t, 0, &Ylo, &Yhi);   /* 4:3 wallpaper fills panel-absolute rows */
+	for (Y = Ylo; Y < Yhi; Y++) {
 		int wy = (int)(((float)Y - vdy) * inv);
 		uint32_t *src, *dst = t->fb + (unsigned)Y * t->pitch + t->offx;
 		if (wy < 0) wy = 0; if (wy >= WP_CACHE_H) wy = WP_CACHE_H - 1;
@@ -290,9 +308,11 @@ static void draw_wp_43(snes_menu *m, snes_target *t, int scroll_px)
 static void draw_wp(snes_menu *m, snes_target *t, int scroll_px)
 {
 	int cy, off = ((scroll_px % WP_CACHE_W) + WP_CACHE_W) % WP_CACHE_W;
+	int cylo = 0, cyhi = WP_CACHE_H;
 	if (m->aspect) { draw_wp_43(m, t, scroll_px); return; }
 	if (!m->wp_ready) return;
-	for (cy = 0; cy < WP_CACHE_H; cy++) {
+	band_rows(t, t->offy, &cylo, &cyhi);   /* rows written are offy+cy */
+	for (cy = cylo; cy < cyhi; cy++) {
 		uint32_t *src = m->wp + cy * WP_CACHE_W;
 		uint32_t *dst = t->fb + (unsigned)(t->offy + cy) * t->pitch + t->offx;
 		int first = WP_CACHE_W - off;
@@ -434,8 +454,10 @@ static void build_chrome(snes_menu *m)
 static void draw_chrome(snes_menu *m, snes_target *t)
 {
 	int y, i, H = m->aspect ? CHROME_H : SNES_VH;
+	int ylo = 0, yhi = H;
 	if (!m->chrome_ready) { snes_render_node(t, &m->home, m->homemenu); return; }
-	for (y = 0; y < H; y++) {
+	band_rows(t, t->offy, &ylo, &yhi);   /* rows written are offy+y */
+	for (y = ylo; y < yhi; y++) {
 		const uint32_t *src = m->chrome + (unsigned)y * SNES_VW;
 		uint32_t *dst = t->fb + (unsigned)(t->offy + y) * t->pitch + t->offx;
 		const uint16_t *r = &s_chrome_run[(unsigned)y * CHROME_MAXRUN * 2];

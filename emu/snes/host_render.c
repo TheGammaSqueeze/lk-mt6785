@@ -131,6 +131,66 @@ int main(int argc, char **argv)
 	for (i = 0; i < W * H; i++) fb[i] = 0xFF000000u;
 	snes_menu_render(&menu, &t);
 
+	/* Multicore band-split verification: with "split" as the 5th arg, render the
+	 * SAME frame in two scanline bands into a second buffer and byte-compare to
+	 * the whole-frame render above. This proves the AYANEO_BIGCORE_EXPT split is
+	 * output-correct (union of the per-core bands == the single-core frame) on
+	 * the host, without needing the real second core. Exit code = mismatch count
+	 * clamped to 0/1. */
+	if (argc > 5 && strcmp(argv[5], "split") == 0) {
+		uint32_t *fb2 = calloc((size_t)W * H, 4);
+		int sy = (H / 2) & ~15;   /* split on a 16px (>=64B) boundary */
+		snes_target ta = t, tb = t;
+		long diff = 0; int k;
+		/* Flatten the wallpaper so the frame is DETERMINISTIC across the three
+		 * render calls below (the scrolling wallpaper phase would otherwise
+		 * advance per snes_menu_render call and desync full-vs-split - a test
+		 * artifact, not a split bug). On device each frame renders once. */
+		{ size_t wn = (size_t)WP_CACHE_W * WP_CACHE_H, wk;
+		  for (wk = 0; wk < wn; wk++) wp[wk] = 0xFF204060u; menu.wp_ready = 1; }
+		for (i = 0; i < W * H; i++) fb[i] = 0xFF000000u;
+		snes_menu_render(&menu, &t);          /* re-render the full frame, flat wp */
+		for (i = 0; i < W * H; i++) fb2[i] = 0xFF000000u;
+		/* Isolation A: a SINGLE full-covering band [0,H] must equal the no-band
+		 * render (proves the band-clip code path itself does not alter output). */
+		{
+			uint32_t *fbf = calloc((size_t)W * H, 4); long d2 = 0; int kk;
+			snes_target tf = t; tf.fb = fbf;
+			for (kk = 0; kk < W * H; kk++) fbf[kk] = 0xFF000000u;
+			snes_target_band(&tf, 0, H);
+			snes_menu_render(&menu, &tf);
+			for (kk = 0; kk < W * H; kk++) if (fb[kk] != fbf[kk]) d2++;
+			fprintf(stderr, "  [isolation] full-band[0,H] vs no-band: %ld px differ -> %s\n",
+				d2, d2 == 0 ? "clip code OK" : "CLIP CODE BUG");
+			free(fbf);
+		}
+		ta.fb = fb2; snes_target_band(&ta, 0, sy);
+		snes_menu_render(&menu, &ta);        /* top band */
+		tb.fb = fb2; snes_target_band(&tb, sy, H);
+		snes_menu_render(&menu, &tb);        /* bottom band */
+		{
+			int minx = W, miny = H, maxx = -1, maxy = -1, xx, yy;
+			for (yy = 0; yy < H; yy++) for (xx = 0; xx < W; xx++)
+				if (fb[yy * W + xx] != fb2[yy * W + xx]) {
+					diff++;
+					if (xx < minx) minx = xx; if (xx > maxx) maxx = xx;
+					if (yy < miny) miny = yy; if (yy > maxy) maxy = yy;
+				}
+			fprintf(stderr, "SPLIT verify: %ld/%d px differ (cut y=%d) bbox x[%d..%d] y[%d..%d] -> %s\n",
+				diff, W * H, sy, minx, maxx, miny, maxy,
+				diff == 0 ? "IDENTICAL" : "MISMATCH");
+			{ int shown = 0;
+			  for (yy = 0; yy < H && shown < 6; yy++) for (xx = 0; xx < W && shown < 6; xx++)
+				if (fb[yy*W+xx] != fb2[yy*W+xx]) {
+					fprintf(stderr, "  (%d,%d) full=%08x split=%08x\n",
+						xx, yy, fb[yy*W+xx], fb2[yy*W+xx]); shown++;
+				}
+			}
+		}
+		free(fb2);
+		return diff == 0 ? 0 : 1;
+	}
+
 	/* write PPM (P6) - fb is 0xAARRGGBB */
 	f = fopen(outf, "wb");
 	fprintf(f, "P6\n%d %d\n255\n", W, H);
