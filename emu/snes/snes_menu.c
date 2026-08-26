@@ -575,6 +575,60 @@ static void draw_menubar_cursor(snes_menu *m, snes_target *t, float cx, float cy
 	draw_cursor_9slice(m, t, cx, cy, 96.0f, 70.0f, sxa, sya, alpha, 1.0f, img);
 }
 
+/* outExpo(t) = 1 - 2^(-10t), libc-free (floor-split + minimax cubic for 2^frac). */
+static float ease_outexpo(float t)
+{
+	float y, f, p;
+	int n;
+	if (t <= 0.0f) return 0.0f;
+	if (t >= 1.0f) return 1.0f;
+	y = -10.0f * t;                    /* in [-10, 0) */
+	n = (int)y; if (y < (float)n) n--;
+	f = y - (float)n;
+	p = 1.0f + f * (0.69315f + f * (0.24152f + f * 0.05177f));
+	return 1.0f - p / (float)(1 << (-n));
+}
+#define CUR_SLIDE_DUR 0.5f   /* carousel<->menubar cursor slide (web moveTo 0.5s outExpo) */
+/* The blue selection cursor slides + resizes between the focused card (246x270,
+ * rounded) and the focused menubar item (96x70, square) on Up/Down. Returns 1
+ * while sliding (the static card/menubar cursors are suppressed). Ports the
+ * CursorManager square<->rounded handoff (moveTo 0.5s outExpo). */
+static int draw_focus_slide(snes_menu *m, snes_target *t)
+{
+	static const uint16_t sq_x[10] = {0, 69,131, 69,137,156,171, 88,137,103};
+	static const uint16_t sq_y[10] = {0,847,987,945,941,895,941,895,847,847};
+	static const uint16_t rd_x[10] = {0,103,131,122,137,156,171,190,137,145};
+	static const uint16_t rd_y[10] = {0,941,987,895,941,895,941,895,847,809};
+	const uint16_t *sxa, *sya;
+	float p, cardx, mbx, cvx, cvdx, cvdy;
+	float cx, cy, cw, ch, mx, my, mw, mh, fx, fy, fw, fh, tx, ty, tw, th;
+	if (m->cur_slide_t >= CUR_SLIDE_DUR || !m->card_act) return 0;
+	if (m->state != 0 && m->state != 1) return 0;   /* only carousel<->menubar */
+	p = ease_outexpo(m->cur_slide_t / CUR_SLIDE_DUR);
+	/* the card endpoint is in the CONTENT view group and the menubar endpoint in
+	 * TOP (identity); the slide crosses groups, so pre-apply each view transform to
+	 * get screen (pre-offy) coords, interpolate, and draw in the identity view. */
+	cardx = 640.0f + m->sel_world + m->cont_shift;
+	mbx   = 448.0f + 96.0f * (float)m->mb_focus;
+	cvx  = m->aspect ? ASP_CONTENT_S : 1.0f;
+	cvdx = m->aspect ? 640.0f - ASP_CONTENT_S * 640.0f : 0.0f;
+	cvdy = m->aspect ? 480.0f - ASP_CONTENT_S * 360.0f : 0.0f;
+	cx = cvx * cardx + cvdx; cy = cvx * 360.0f + cvdy; cw = 246.0f * cvx; ch = 270.0f * cvx;
+	mx = mbx; my = 64.0f; mw = 96.0f; mh = 70.0f;
+	if (m->state == 1) {            /* up: card -> menubar (square cursor) */
+		fx = cx; fy = cy; fw = cw; fh = ch;  tx = mx; ty = my; tw = mw; th = mh;
+		sxa = sq_x; sya = sq_y;
+	} else {                        /* down: menubar -> card (rounded cursor) */
+		fx = mx; fy = my; fw = mw; fh = mh;  tx = cx; ty = cy; tw = cw; th = ch;
+		sxa = rd_x; sya = rd_y;
+	}
+	snes_target_view(t, 1.0f, 1.0f, 0.0f, 0.0f);   /* identity: coords already in screen space */
+	draw_cursor_9slice(m, t, fx + (tx - fx) * p, fy + (ty - fy) * p,
+			   fw + (tw - fw) * p, fh + (th - fh) * p, sxa, sya, 1.0f, 1.0f,
+			   m->card_act->img);
+	return 1;
+}
+
 /* blue_a = opacity of the active (blue) card frame on top of the normal (dark)
  * one: 0 = unfocused, 1 = focused, in-between = the 0.2s selection crossfade.
  * dim = RGB tint (1 = normal; the resume menu darkens the non-focused cards to
@@ -642,9 +696,9 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 			}
 		}
 		/* rounded selection cursor on the focused card - only while the carousel
-		 * is the active focus (state 0 home); in the menubar/submenu states the
-		 * cursor travels up to the menubar item, so the card shows none. */
-		if (blue_a > 0.003f && m->state == 0)
+		 * is the active focus (state 0 home) AND not mid-slide (the slide cursor
+		 * draws it travelling to/from the menubar). */
+		if (blue_a > 0.003f && m->state == 0 && m->cur_slide_t >= CUR_SLIDE_DUR)
 			draw_card_cursor(m, t, cx, cy, blue_a > 1.0f ? 1.0f : blue_a,
 					 dim, frame->img);
 	} else {                                 /* fallback: plain framed boxart */
@@ -1408,6 +1462,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		disable_all_named(pk, m->overlay[3], "hud_item3_back");
 	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
+	m->cur_slide_t = CUR_SLIDE_DUR;   /* cursor slide idle at boot */
 	m->open_y = 0.0f; m->closing = 0; m->close_t = 0.0f; m->close_target = 0.0f; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f;
 	/* roster order (title sort by default) */
 	m->ngames = (int)pk->hdr->game_count;
@@ -1751,6 +1806,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	float k;
 	int el = in->left && !m->pl, er = in->right && !m->pr;
 	m->clock += dt;
+	if (m->cur_slide_t < CUR_SLIDE_DUR) m->cur_slide_t += dt;   /* carousel<->menubar cursor slide */
 	int eu = in->up && !m->pu, ed = in->down && !m->pd;
 	int ea = in->a && !m->pa, eb = in->b && !m->pb;
 	/* submenu open/close slide ease (BEFORE input handling so the trigger frame
@@ -1825,7 +1881,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				car_navigate(m, dirnow);
 			}
 		}
-		if (eu) { m->state = 1; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; push_snd(m, m->sfx_up); }
+		if (eu) { m->state = 1; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; m->cur_slide_t = 0.0f; push_snd(m, m->sfx_up); }
 		if (ed && m->resume) {                 /* Down -> suspend-point menu */
 			m->resume->enabled = 1;
 			/* the panel slides UP from off-bottom into place, easing out (world
@@ -1851,7 +1907,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	} else if (m->state == 1) {                /* ---- menubar row ---- */
 		if (el) { m->mb_focus = (m->mb_focus + 4) % 5; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; push_snd(m, m->sfx_move); }
 		if (er) { m->mb_focus = (m->mb_focus + 1) % 5; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; push_snd(m, m->sfx_move); }
-		if (ed || eb) { m->state = 0; push_snd(m, m->sfx_cancel); }
+		if (ed || eb) { m->state = 0; m->cur_slide_t = 0.0f; push_snd(m, m->sfx_cancel); }
 		if (ea && m->overlay[m->mb_focus]) {
 			m->open = m->mb_focus;
 			m->overlay[m->open]->enabled = 1;
@@ -2218,7 +2274,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			snes_render_node(t, &m->home, m->mb_btn[m->mb_focus]);
 			/* square selection cursor around the focused item's 96x70 button
 			 * (icons cells 96px apart, first at x448; the cell drops ~5px). */
-			if (m->card_act)
+			if (m->card_act && m->cur_slide_t >= CUR_SLIDE_DUR)
 				draw_menubar_cursor(m, t, 448.0f + 96.0f * (float)m->mb_focus,
 						    64.0f, m->hl_s, m->card_act->img);
 		}
@@ -2230,6 +2286,10 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		set_view(m, t, VIEW_BOTTOM);
 		draw_menubar_hints(m, t);
 	}
+	/* the blue selection cursor sliding between the focused card and menubar item
+	 * on Up/Down (state 0/1); draws in its own identity view, replacing the static
+	 * card/menubar cursors which are suppressed while it runs. */
+	draw_focus_slide(m, t);
 
 	/* the white title bar (caption_title, 348x22 @3x = 1044x66), raised in resume;
 	 * drawn here (not in the chrome cache) so it tracks the game title. */

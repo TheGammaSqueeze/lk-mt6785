@@ -76,6 +76,7 @@ typedef struct {
 	float close_t;                /* close-slide elapsed time (cubic ease-in) */
 	float close_target;           /* close-slide open_y target (+up submenu / -down resume) */
 	float clock;                  /* free-running seconds accumulator (cursor blink anim) */
+	float cur_slide_t;            /* carousel<->menubar cursor slide elapsed (>=CUR_SLIDE_DUR = idle) */
 	float cap_t;                  /* time in menubar since focus change (caption delay) */
 	float cap_s;                  /* menubar caption scale, eases 0->1 (outExpo, after delay) */
 	float hl_s;                   /* menubar focus highlight (cursor) scale, eases 0->1 fast */
