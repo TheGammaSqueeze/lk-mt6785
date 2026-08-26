@@ -84,6 +84,17 @@ bc_entry_arm2:
 	mcr	p15, 0, r10, c1, c0, 0
 	isb				@ now cached + Inner-Shareable coherent with cpu0
 
+	@ Enable VFP/NEON access on this core: snes_menu_render is full of float + NEON,
+	@ and a freshly-powered core has FP disabled (cpu0 enabled it at boot but this
+	@ core did not) - the first FP op would trap to Undefined and wedge the worker.
+	mrc	p15, 0, r1, c1, c0, 2	@ CPACR
+	orr	r1, r1, #0x00f00000	@ cp10 + cp11 = full access (bits 20..23)
+	mcr	p15, 0, r1, c1, c0, 2
+	isb
+	mov	r1, #0x40000000		@ FPEXC.EN (bit30)
+	vmsr	fpexc, r1
+	isb
+
 	movw	r1, #0x0DE5		@ cached_ok = magic (CACHED write, separate line)
 	movt	r1, #0xB16C
 	str	r1, [r0, #BC_O_CACHED_OK]

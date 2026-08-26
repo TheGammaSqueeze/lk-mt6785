@@ -49,6 +49,7 @@ extern unsigned g_bc_mpidr, g_bc_pwrstat;
  * two cores can render disjoint scanline bands of the same frame concurrently.
  * Sync is WFE/SEV with a bounded-spin fallback so a wedged worker never hangs. */
 #include "bigcore_comms.h"
+extern int _dprintf(const char *fmt, ...);
 static volatile struct bc_comms *const g_bc =
 	(volatile struct bc_comms *)(unsigned long)BC_COMMS_PA;
 
@@ -97,11 +98,13 @@ static int s_bc_clk_set;
 
 /* cpu0: fork the bottom band to the worker, render the top band, join. */
 static unsigned s_bc_seq;
+unsigned g_bc_wfin, g_bc_fb;   /* diagnostics: worker-finished vs fallback frames */
+extern unsigned int gpt4_get_current_tick(void);
 static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 			snes_menu *menu, snes_target *tfull)
 {
 	int sy = (H / 2) & ~15;                    /* split on a 16px (>=64B) line */
-	unsigned seq = ++s_bc_seq, spins = 0;
+	unsigned seq = ++s_bc_seq, spins = 0, tw0, waited;
 	g_bc->fb = (unsigned)(unsigned long)fb; g_bc->pitch = pitch;
 	g_bc->W = (unsigned)W; g_bc->H = (unsigned)H;
 	g_bc->offx = (unsigned)tfull->offx; g_bc->offy = (unsigned)tfull->offy;
@@ -115,19 +118,29 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 		snes_target_band(&t0, 0, sy);
 		snes_menu_render(menu, &t0);
 	}
+	tw0 = gpt4_get_current_tick();
 	/* Join by BUSY-SPIN (not WFE): a WFE here would park cpu0 and the bounded
 	 * fallback counter would never advance, so a worker that never signals done
 	 * (crashed / missed the wakeup) would hang the menu forever. Busy-spin lets
 	 * the fallback fire and cpu0 render the worker's band itself. */
 	while (g_bc->done != seq) {
-		if (++spins > 8000000u) {          /* worker missed the deadline */
+		if (++spins > 1000000u) {          /* worker missed the deadline */
 			snes_target tb = *tfull;
 			snes_target_band(&tb, sy, H);
 			snes_menu_render(menu, &tb);
+			g_bc_fb++;
 			break;
 		}
 	}
+	if (g_bc->done == seq) g_bc_wfin++;        /* worker finished its band in time */
 	bc_dmb();                                  /* acquire the worker's band writes */
+	waited = (gpt4_get_current_tick() - tw0) / 13u;   /* us cpu0 waited for worker */
+	{	/* rate-limited: how the split is doing (worker vs fallback + wait) */
+		static unsigned fc;
+		if ((++fc % 120u) == 0u)
+			_dprintf("BC split: wfin=%u fb=%u waited=%uus spins=%u wcnt=%u\n",
+				 g_bc_wfin, g_bc_fb, waited, spins, g_bc->counter);
+	}
 }
 #endif
 extern int  mt_power_off(void);
@@ -291,7 +304,15 @@ static void draw_perf(unsigned int *fb, unsigned int pitch)
 		 * c = worker heartbeat. g1 k0 => reached but MMU-enable wedged. */
 		*p++='g'; *p++=(bigcore_raw_magic()==0xB16C0DE5u)?'1':'0';
 		*p++='k'; *p++=(bigcore_cached_ok()==0xB16C0DE5u)?'1':'0'; *p++=' ';
-		*p++='c'; p=u2s(p, bigcore_raw_counter()); *p=0;
+		*p++='c'; p=u2s(p, bigcore_raw_counter()); *p++=' ';
+		/* d = frames the worker finished its band in time; b = fallback frames
+		 * (worker missed the deadline). d climbing = split working; b climbing
+		 * with d flat = worker not completing (cpu0 doing both bands). */
+#ifdef AYANEO_BIGCORE_EXPT
+		{ extern unsigned g_bc_wfin, g_bc_fb;
+		  *p++='d'; p=u2s(p, g_bc_wfin); *p++='b'; p=u2s(p, g_bc_fb); }
+#endif
+		*p=0;
 	}
 #endif
 	if (n >= 20) {
