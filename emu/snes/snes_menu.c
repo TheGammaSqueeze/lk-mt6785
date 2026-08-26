@@ -965,6 +965,24 @@ static void draw_copyright_list(snes_menu *m, snes_target *t)
 			       lines[idx]);
 	}
 }
+/* Suspend Point List (resume) hint: a single centred "[B] Back". The web renders
+ * resumemenu/hud in the 'bottom' aspect group; in 4:3 it lands at screen y~916,
+ * below the content-zoomed panel. hud_empty is a horizontal-flow layout of the B
+ * icon + "Back" label centred at x640 (refreshHud). Drawn in identity view. */
+static void draw_resume_hint(snes_menu *m, snes_target *t)
+{
+	const float sc = 0.85f, gap = 6.0f, y = 916.0f;
+	const char *lab = snes_text(m->pk, "sys_resume_hud_Return");
+	float iw = 12.0f * 3.0f, lw, total, x;
+	snes_spr_entry ic;
+	if (!m->card_act) return;
+	lw = snes_text_width(m->pk, m->f_s, sc, lab);
+	total = iw + gap + lw;
+	x = 640.0f - total / 2.0f;
+	ic = (snes_spr_entry){ m->card_act->img, 15, 881, 12, 12, 6, 6 };
+	snes_blit_spr(t, m->pk, &ic, x + iw / 2.0f, y, 3.0f, 1.0f);
+	snes_draw_text(t, m->pk, m->f_s, x + iw + gap, y - 10.0f, sc, 0xFFF2F2F2u, 0, lab);
+}
 /* home carousel hints: Menu / Suspend Point List / Sort / Start Game */
 static void draw_hints(snes_menu *m, snes_target *t)
 {
@@ -2373,11 +2391,16 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 				}
 				snes_render_node(t, &m->home, expl);
 			}
-			if (rhud) {
-				rhud->enabled = e_rhud;
-				set_view(m, t, VIEW_BOTTOM);
-				snes_render_node(t, &m->home, rhud);
-			}
+			/* the scene hud lays its Back hint out via refreshHud (unavailable
+			 * here) and inherits the panel world transform, so it does not land
+			 * correctly; draw the "[B] Back" hint manually at the bottom edge. */
+			if (rhud) rhud->enabled = e_rhud;
+			set_view(m, t, VIEW_TOP);
+			/* hideBackElements: the web hides the bottom SNES bezel bar in resume,
+			 * so the area below the content-zoomed panel is black (not the cached
+			 * chrome's bezel). Paint over the bezel strip, then the Back hint. */
+			snes_fill_quad(t, 640.0f, 932.0f, 1280.0f, 56.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+			draw_resume_hint(m, t);
 			}
 		} else {
 			snes_render_node(t, &m->home, m->resume);
