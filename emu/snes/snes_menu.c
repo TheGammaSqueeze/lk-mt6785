@@ -392,17 +392,21 @@ static void build_chrome(snes_menu *m)
 		snes_rnode *mbu  = m->menubar;                                 /* menubar_upper -> top */
 		snes_rnode *mbar = child_named(m->pk, m->homemenu, "menubar"); /* bottom SNES bar */
 		snes_rnode *hud  = child_named(m->pk, m->homemenu, "hud");     /* bottom hint bars */
+		snes_rnode *gt   = child_named(m->pk, m->homemenu, "gametitle"); /* title bar -> bannerx (drawn live) */
 		int e_mbu  = mbu  ? mbu->enabled  : 0;
 		int e_mbar = mbar ? mbar->enabled : 0;
 		int e_hud  = hud  ? hud->enabled  : 0;
+		int e_gt   = gt   ? gt->enabled   : 0;
 		if (mbu)  mbu->enabled  = 0;
 		if (mbar) mbar->enabled = 0;
 		if (hud)  hud->enabled  = 0;
+		if (gt)   gt->enabled   = 0;   /* caption_title is 'bannerx' (native width), not content-zoomed */
 		set_view(m, &ct, VIEW_CONTENT);
 		snes_render_node(&ct, &m->home, m->homemenu);
 		if (mbu)  { mbu->enabled  = e_mbu;  set_view(m, &ct, VIEW_TOP);    snes_render_node(&ct, &m->home, mbu); }
 		if (mbar) { mbar->enabled = e_mbar; set_view(m, &ct, VIEW_BOTTOM); snes_render_node(&ct, &m->home, mbar); }
 		if (hud)  { hud->enabled  = e_hud;  set_view(m, &ct, VIEW_BOTTOM); snes_render_node(&ct, &m->home, hud); }
+		if (gt)   gt->enabled   = e_gt;   /* restore; the live BANNERX/CONTENT draw handles it */
 	}
 	for (i = 0; i < n; i++)
 		m->chrome[i] = (m->chrome[i] == CHROME_SENTINEL) ? 0u : (0xFF000000u | m->chrome[i]);
