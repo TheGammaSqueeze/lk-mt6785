@@ -38,8 +38,14 @@ typedef struct {
 	 * (navFire, DISP_HOLD_DELAY/RATE). */
 	int disp_cur;                 /* mode-line cursor index 0..2 (visual order) */
 	int disp_sel;                 /* committed screen mode 0..2 (default 1 = 4:3) */
-	float sub_rep_t;              /* submenu L/R auto-repeat countdown */
-	int sub_rep_ctrl;             /* held L/R for repeat: -1 left, +1 right, 0 none */
+	float sub_rep_t;              /* submenu D-pad auto-repeat countdown (navFire) */
+	int sub_rep_ctrl;             /* held D-pad for repeat: 1 up, 2 down, 3 left, 4 right, 0 none */
+
+	/* Options submenu (option_settings): a vertical list of 3 toggle rows
+	 * (setting0/1/2, top->bottom) + the System Reset button. opt_cur is the cursor
+	 * row 0..3; opt_on bit i = toggle i on/off (default all on). */
+	int opt_cur;                  /* Options cursor row 0..3 */
+	unsigned opt_on;              /* toggle on/off bitmask (bit i = setting i) */
 	int mb_focus;                 /* selected menubar icon 0..4 */
 	int open;                     /* open overlay index, -1 if none */
 	float open_y;                 /* submenu slide offset (world up), eases to 0 */

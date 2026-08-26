@@ -116,6 +116,7 @@ static void set_spr_comp(const snes_pack *pk, snes_scene *s, snes_rnode *n,
 	for (ch = n->child; ch; ch = ch->sib) set_spr_comp(pk, s, ch, sx, sy, on);
 }
 static void apply_display_state(snes_menu *m);   /* fwd: used by init + update */
+static void apply_options_state(snes_menu *m);   /* fwd: used by init + update */
 /* recursively disable every descendant node named nm */
 static void disable_all_named(const snes_pack *p, snes_rnode *n, const char *nm)
 {
@@ -447,6 +448,8 @@ static void draw_chrome(snes_menu *m, snes_target *t)
 #define CAR_REPEAT_RATE  0.06f  /* subsequent held-step interval */
 #define DISP_HOLD_DELAY  0.5f   /* Display mode/frame L/R auto-repeat delay (GUI.H) */
 #define DISP_HOLD_RATE   0.2f   /* Display mode/frame L/R auto-repeat interval */
+#define SUB_HOLD_DELAY   0.3f   /* Options/Language/Legal list-nav auto-repeat delay */
+#define SUB_HOLD_RATE    0.1f   /* Options/Language/Legal list-nav auto-repeat interval */
 #define CAR_XFADE        0.20f  /* blue selection-frame crossfade duration */
 
 /* focused menubar cell drops this many world-y units below its authored row
@@ -965,6 +968,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;
 	m->disp_cur = m->disp_sel = 1; m->sub_rep_t = 0.0f; m->sub_rep_ctrl = 0;
+	m->opt_cur = 0; m->opt_on = 0x7;   /* 3 toggles, all on by default */
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
 	m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
 	m->prev_focus = 0; m->xfade_t = 0.0f; m->resume_dim = 0.0f;
@@ -1177,17 +1181,13 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 			if (ca2 && name_eq(pk, it, "language01")) ca2->enabled = 1;
 		}
 	}
-	/* option_settings resting state: hide the per-item focus arrows, show the
-	 * blue box on the top (default-selected) toggle item */
+	/* option_settings resting state: hide the per-item focus arrows; cursor on the
+	 * top row (setting0), all 3 toggles ON. apply_options_state sets cursor_area on
+	 * opt_cur and swaps switch_on (481,755) / switch_off (481,737) per opt_on. */
 	if (m->overlay[1]) {
-		float by = 0;
-		snes_rnode *sel = top_named(pk, m->overlay[1], "cursor_area", 0, &by);
 		disable_all_named(pk, m->overlay[1], "cursor");
-		if (sel) sel->enabled = 1;
-		/* each toggle authors BOTH the checked (ON, knob-right, atlas 481,755) and
-		 * unchecked (OFF, knob-left, 481,737) sprites enabled -> two knobs. All
-		 * settings default ON, so hide the OFF visual. */
-		disable_spr_comp(pk, &m->home, m->overlay[1], 481, 737);
+		m->opt_cur = 0; m->opt_on = 0x7;
+		apply_options_state(m);
 	}
 	/* copyright panel resting state (IP Notice = the `copyright` tab selected):
 	 * blue box on the copyright tab, hide the OSS tab_on + OSS body text */
@@ -1331,6 +1331,57 @@ static void apply_display_state(snes_menu *m)
 	}
 }
 
+/* Ports navFire: on a fresh press of any allowed D-pad control (checked in
+ * priority order) latch it, seed the delay, and fire; while held, fire every
+ * `rate`; on release clear. Returns the fired control (1 up, 2 down, 3 left,
+ * 4 right) or 0. allow_ud gates the vertical controls (Display uses L/R only). */
+static int sub_navfire(snes_menu *m, const snes_input *in, float dt,
+		       int allow_ud, float delay, float rate)
+{
+	int lvl[5]  = { 0, in->up, in->down, in->left, in->right };
+	int prev[5] = { 0, m->pu,  m->pd,    m->pl,    m->pr };
+	int order[4], n = 0, i, c;
+	if (allow_ud) { order[n++] = 1; order[n++] = 2; }
+	order[n++] = 3; order[n++] = 4;
+	for (i = 0; i < n; i++) { c = order[i]; if (lvl[c] && !prev[c]) { m->sub_rep_ctrl = c; m->sub_rep_t = delay; return c; } }
+	if (m->sub_rep_ctrl) {
+		int allowed = 0;
+		c = m->sub_rep_ctrl;
+		for (i = 0; i < n; i++) if (order[i] == c) allowed = 1;
+		if (allowed && lvl[c]) { m->sub_rep_t -= dt; if (m->sub_rep_t < 0.0f) { m->sub_rep_t = rate; return c; } return 0; }
+		if (!lvl[c]) m->sub_rep_ctrl = 0;
+	}
+	return 0;
+}
+
+/* Options list: resolve the 4 nav rows top->bottom [setting0, setting1,
+ * setting2, sys_button(reset)] (natural child order = descending world y). */
+static void resolve_opt_items(snes_menu *m, snes_rnode *out[4])
+{
+	static const char *nm[4] = { "setting0", "setting1", "setting2", "sys_button" };
+	int i;
+	for (i = 0; i < 4; i++) out[i] = m->overlay[1] ? desc(m->pk, m->overlay[1], nm[i]) : 0;
+}
+/* Reflect opt_cur (cursor_area) + opt_on bits (switch_on 481,755 / switch_off
+ * 481,737 under each toggle) onto the Options rows. */
+static void apply_options_state(snes_menu *m)
+{
+	snes_rnode *it[4];
+	int i;
+	resolve_opt_items(m, it);
+	for (i = 0; i < 4; i++) {
+		snes_rnode *ca;
+		if (!it[i]) continue;
+		ca = child_named(m->pk, it[i], "cursor_area");
+		if (ca) ca->enabled = (i == m->opt_cur);
+		if (i < 3) {
+			int on = (m->opt_on >> i) & 1;
+			set_spr_comp(m->pk, &m->home, it[i], 481, 755, on);
+			set_spr_comp(m->pk, &m->home, it[i], 481, 737, !on);
+		}
+	}
+}
+
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 {
 	float k;
@@ -1441,10 +1492,13 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			m->overlay[m->open]->enabled = 1;
 			m->overlay[m->open]->tf[2] = 0;
 			m->overlay[m->open]->tf[5] = 0;
-			m->sub_rep_ctrl = 0;   /* clear any stale L/R auto-repeat */
+			m->sub_rep_ctrl = 0;   /* clear any stale D-pad auto-repeat */
 			if (m->open == 0) {    /* Display: cursor opens on the committed mode */
 				m->disp_cur = m->disp_sel;
 				apply_display_state(m);
+			} else if (m->open == 1) {   /* Options: cursor opens on the top row */
+				m->opt_cur = 0;
+				apply_options_state(m);
 			}
 			/* the panel slides DOWN from off-top into place, easing out (measured
 			 * against the web: the selection box travels ~585px over ~5 frames at
@@ -1459,22 +1513,40 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		 * the cursor's mode (radiobtn_on moves, toggle SFX). Ports updateDisplayNav
 		 * + navHoriz(moveNav) + selectDisplayModeAtCursor/_selectDisplayMode. */
 		if (m->open == 0 && !m->closing) {
-			int fire = 0;                     /* navFire: edge fires now, then repeat */
-			if (el)      { m->sub_rep_ctrl = -1; m->sub_rep_t = DISP_HOLD_DELAY; fire = -1; }
-			else if (er) { m->sub_rep_ctrl = +1; m->sub_rep_t = DISP_HOLD_DELAY; fire = +1; }
-			else if (m->sub_rep_ctrl) {
-				int held = m->sub_rep_ctrl < 0 ? in->left : in->right;
-				if (held) { m->sub_rep_t -= dt; if (m->sub_rep_t < 0.0f) { m->sub_rep_t = DISP_HOLD_RATE; fire = m->sub_rep_ctrl; } }
-				else m->sub_rep_ctrl = 0;
-			}
-			if (fire) {
-				m->disp_cur = (m->disp_cur + fire + 3) % 3;
+			int c = sub_navfire(m, in, dt, 0, DISP_HOLD_DELAY, DISP_HOLD_RATE);
+			if (c) {                          /* 3 = left, 4 = right */
+				m->disp_cur = (m->disp_cur + (c == 3 ? -1 : 1) + 3) % 3;
 				apply_display_state(m);
 				push_snd(m, m->sfx_move);
 			}
 			if (ea && m->disp_cur != m->disp_sel) {
 				m->disp_sel = m->disp_cur;
 				apply_display_state(m);
+				push_snd(m, m->sfx_decide);
+			}
+		}
+		/* Options screen (cm2): vertical list of 3 toggle rows + the System Reset
+		 * button. Up/Down move the cursor (moveNav, SUB_HOLD auto-repeat, wrap 4);
+		 * L/R on a toggle set it on(R)/off(L) (setToggle, no-op if already there);
+		 * A flips the focused toggle (activateNav). The reset row's long-press gauge
+		 * + confirm dialog are not yet ported (A on it is a no-op, as in the web). */
+		if (m->open == 1 && !m->closing) {
+			int c = sub_navfire(m, in, dt, 1, SUB_HOLD_DELAY, SUB_HOLD_RATE);
+			if (c == 1 || c == 2) {           /* up / down: move cursor, wrap 4 */
+				m->opt_cur = (m->opt_cur + (c == 1 ? 3 : 1)) % 4;
+				apply_options_state(m);
+				push_snd(m, m->sfx_move);
+			} else if ((c == 3 || c == 4) && m->opt_cur < 3) {  /* L off / R on */
+				int on = (c == 4);
+				if (((m->opt_on >> m->opt_cur) & 1) != (unsigned)on) {
+					m->opt_on ^= (1u << m->opt_cur);
+					apply_options_state(m);
+					push_snd(m, m->sfx_decide);
+				}
+			}
+			if (ea && m->opt_cur < 3) {       /* A flips the focused toggle */
+				m->opt_on ^= (1u << m->opt_cur);
+				apply_options_state(m);
 				push_snd(m, m->sfx_decide);
 			}
 		}
