@@ -76,7 +76,7 @@ extern int mt_get_gpio_in(unsigned pin);
 #define SNES_BG_PA    0x50E00000u   /* bg rnode pool */
 #define SNES_COMP_PA  0x51000000u   /* compressed staging */
 #define SNES_WP_PA    0x52000000u   /* wallpaper cache (1536*720*4) */
-#define SNES_CHROME_PA 0x53000000u  /* static chrome cache (1280*720*4) */
+#define SNES_CHROME_PA 0x53000000u  /* static chrome cache (up to 1280*960*4 in 4:3) */
 #define SNES_RAW_MAX  (32u * 1024 * 1024)
 #define SNES_COMP_MAX (16u * 1024 * 1024)
 #define HOME_CAP (16u * 1024 * 1024 / (unsigned)sizeof(snes_rnode))
@@ -283,6 +283,13 @@ static int snes_emu_thread(void *arg)
 		t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
 		t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;
 		snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
+		/* the panel is physically 1280x960 (4:3); fill it natively instead of
+		 * letterboxing the 720 design. Enable the 4:3 adaptation whenever the panel
+		 * is at least 960 tall and rebuild the chrome cache on the transition. */
+		{
+			int want = ((int)H >= 960) ? 1 : 0;
+			if (want != s_menu.aspect) { s_menu.aspect = want; s_menu.chrome_ready = 0; }
+		}
 		/* clear the letterbox bars (the wallpaper covers the 720 region) */
 		ayaneo_fill(fb, pitch, 0, 0, (int)W, t.offy, 0xFF000000u);
 		ayaneo_fill(fb, pitch, 0, t.offy + SNES_VH, (int)W, t.offy, 0xFF000000u);
