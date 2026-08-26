@@ -166,13 +166,36 @@ BC m0x81000000 t720896 r0 p0x474 g1 c<incrementing>
 
 ---
 
-## 5. Next: Phase 2 — use the core for a low-power 60 fps
+## 5. Phase 2 - multi-core render for a low-power 60 fps (implemented)
 
-The secondary currently runs **MMU-off, caches-off** (uncached = far too slow to render).
-To turn it into a 60 fps lever we need to, on the secondary: enable the MMU + I/D caches
-using LK's LPAE tables (snapshot the boot core's `TTBR0/TTBCR/MAIR0/MAIR1/DACR/SCTLR`),
-enable A55 SMP coherency (`CPUECTLR.SMPEN`), then split `snes_render.c` across the cores
-(per-core z-sort scratch — `g_dr/g_zs` are currently global). The payoff: N little cores
-at a low clock do the same render work as one core at a high clock, at much lower power
-(dynamic power scales ~cubically with frequency in the voltage-scaling region), which is
-the whole point of "multiple cores, minimal clocks, still 60+ fps."
+All behind `AYANEO_BIGCORE_EXPT`; the release build stays single-core and
+byte-identical (verified with the `host_render` split harness).
+
+- Cached+coherent worker (`bc_entry_arm2`, `bigcore_entry.S`): the PSCI-entered A55
+  snapshots cpu0's live LPAE MMU config (`TTBR0` via `mrrc`, `TTBCR/MAIR0/MAIR1/DACR/
+  SCTLR`) from the comms block, invalidates TLB/I-cache/branch-predictor, programs
+  the translation registers and enables MMU + I/D caches. A55 SMP coherency is
+  hardware/DSU managed (there is no software `SMPEN`), so once caches are on it is a
+  coherent snoop participant. The `CPUECTLR` write in the device BL31 is MIDR-gated
+  to the A76 and skipped on A55.
+- Per-core render context (`snes_render.c`): the global z-sort/draw-list scratch
+  became a per-core `snes_render_ctx`, selected by MPIDR (`bc_render_ctx`), so both
+  cores run `snes_menu_render` concurrently without sharing mutable state.
+- Scanline band split: `snes_target` gained a `band_y0/band_y1` clip honoured in
+  `blit()` and in the three direct composites (`draw_wp_43/draw_wp/draw_chrome`). The
+  two cores render disjoint 16px/64B-aligned bands of the same frame. Proven
+  output-correct: `host_render <pack> <ppm> 40 <nav> split` reports IDENTICAL vs the
+  whole-frame render for every state in 16:9 and 4:3.
+- Per-frame fork/join (`snes_driver.c`): cpu0 runs `snes_menu_update`, posts the
+  bottom band to the worker (`comms.go` + `SEV`), renders the top band itself, then
+  joins on `comms.done` with a bounded-spin fallback (renders the worker's band
+  itself if it misses the deadline, so a wedged worker never hangs the menu). Sync is
+  `WFE/SEV` + `dmb/dsb ish`.
+- Clock drop: once both cores render in parallel the little cluster (one shared
+  PLL/buck) drops to `BC_MHZ` (1200, tunable) for lower dynamic power while holding
+  60 fps; single-core fallback keeps 2000 MHz. Two cores at f/2 do the same work as
+  one at f, so the frequency (and, where firmware allows, voltage) can come down.
+
+On-HW validation (needs the patched tee): OSD `g1 k1` with `c` climbing = the worker
+is up and rendering cached; the FPS HUD should hold >=60 at `BC_MHZ`. Tune `BC_MHZ`
+down toward ~1075 for minimum power.
