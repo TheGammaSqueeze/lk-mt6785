@@ -358,7 +358,7 @@ OBJS += \
 
 # In-LK app driver: SNES home menu (native C) vs the GBC emulator, by build gate.
 ifeq ($(AYANEO_SNES),yes)
-OBJS += emu/snes/snes_pack.o emu/snes/snes_scene.o emu/snes/snes_render.o emu/snes/snes_menu.o emu/snes/snes_audio.o emu/snes/snes_driver.o
+OBJS += emu/snes/snes_pack.o emu/snes/snes_scene.o emu/snes/snes_render.o emu/snes/snes_menu.o emu/snes/snes_audio.o emu/snes/snes_driver.o emu/snes/bigcore.o emu/snes/bigcore_entry.o
 # The software renderer is float-heavy; LK's default -mfloat-abi=soft turns every
 # per-pixel float op into an __aeabi_* library call (crippling the blitter). LK
 # already enables the VFP/NEON unit (arch/arm/arch.c: FPEXC + CPACR), so emit

@@ -30,9 +30,12 @@ rm -f "build-$PROJECT/lk" "build-$PROJECT/lk.img"
 make "$PROJECT" AYANEO_SNES=yes -j"$JOBS"
 python3 tools/ayaneo/sign_lk.py "build-$PROJECT/lk.img" out/lk_a_snes_signed.img
 
-echo ">> Building $PROJECT debug (AYANEO_DEBUG_LOGGING=yes)"
+echo ">> Building $PROJECT debug (AYANEO_DEBUG_LOGGING=yes AYANEO_BIGCORE_EXPT=yes)"
+# NOTE: while the 2nd-core experiment is active, the debug image also enables
+# AYANEO_BIGCORE_EXPT (arm SPMC via KERNEL_BOOT SiP, then PSCI). Drop that flag
+# once the experiment concludes so debug builds are just logging again.
 rm -f "build-$PROJECT/lk" "build-$PROJECT/lk.img"
-make "$PROJECT" AYANEO_SNES=yes AYANEO_DEBUG_LOGGING=yes -j"$JOBS"
+make "$PROJECT" AYANEO_SNES=yes AYANEO_DEBUG_LOGGING=yes AYANEO_BIGCORE_EXPT=yes -j"$JOBS"
 python3 tools/ayaneo/sign_lk.py "build-$PROJECT/lk.img" out/lk_a_snes_debug.img
 
 echo ">> Packaging boot_b (anim + compressed pack)"

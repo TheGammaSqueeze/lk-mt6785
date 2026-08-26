@@ -33,6 +33,12 @@ extern int  ayaneo_text(unsigned int *buf, unsigned int pitch_w,
 			int x, int y, int scale, unsigned int argb, const char *s);
 extern void ayaneo_apply_persisted_brightness(void);
 extern void ayaneo_set_cpu_mhz(unsigned int mhz);
+extern void bigcore_start(void);
+extern unsigned bigcore_counter(void);
+extern unsigned bigcore_raw_magic(void);
+extern unsigned bigcore_raw_counter(void);
+extern int g_bc_target, g_bc_psci_ret;
+extern unsigned g_bc_mpidr, g_bc_pwrstat;
 extern int  mt_power_off(void);
 extern int  pmic_detect_powerkey(void);
 
@@ -159,12 +165,41 @@ static char *u2s(char *p, unsigned v)
 	return p;
 }
 static char s_perf_str2[48] = "";
+#ifdef AYANEO_DEBUG_LOGGING
+static char s_perf_str3[48] = "";   /* experimental bigcore proof-of-life line (debug only) */
+#endif
+#ifdef AYANEO_DEBUG_LOGGING   /* i2s/u2h feed the debug-only bigcore line below */
+static char *i2s(char *p, int v) { if (v < 0) { *p++ = '-'; v = -v; } return u2s(p, (unsigned)v); }
+static char *u2h(char *p, unsigned v) {   /* compact hex, no leading zeros */
+	static const char hx[] = "0123456789abcdef"; char t[8]; int n = 0;
+	*p++ = '0'; *p++ = 'x';
+	if (!v) { *p++ = '0'; return p; }
+	while (v) { t[n++] = hx[v & 0xf]; v >>= 4; }
+	while (n) *p++ = t[--n];
+	return p;
+}
+#endif
 static void draw_perf(unsigned int *fb, unsigned int pitch)
 {
 	static unsigned acc_r, acc_p, n, ap0, ap1, ap2, ap3, ap4;
 	acc_r += s_perf_render_us; acc_p += s_perf_present_us; n++;
 	ap0 += g_perf[0]/13; ap1 += g_perf[1]/13; ap2 += g_perf[2]/13;
 	ap3 += g_perf[3]/13; ap4 += g_perf[4]/13;
+#ifdef AYANEO_DEBUG_LOGGING
+	{	/* EXPERIMENTAL multicore proof of life: boot MPIDR, PSCI target, ret, counter */
+		char *p = s_perf_str3;
+		*p++='B'; *p++='C'; *p++=' ';
+		*p++='m'; p=u2h(p, g_bc_mpidr); *p++=' ';
+		*p++='t'; p=i2s(p, g_bc_target); *p++=' ';
+		*p++='r'; p=i2s(p, g_bc_psci_ret); *p++=' ';
+		*p++='p'; p=u2h(p, g_bc_pwrstat); *p++=' ';
+		/* raw (ungated) magic + counter: g=1 if handshake magic present, then the
+		 * live counter regardless of magic, so one flash fully classifies (see
+		 * bigcore.c bigcore_raw_*). */
+		*p++='g'; *p++=(bigcore_raw_magic()==0xB16C0DE5u)?'1':'0'; *p++=' ';
+		*p++='c'; p=u2s(p, bigcore_raw_counter()); *p=0;
+	}
+#endif
 	if (n >= 20) {
 		unsigned ar = acc_r / n, ap = acc_p / n, tot = ar + ap;
 		unsigned fps = tot ? (1000000u + tot / 2) / tot : 0;
@@ -184,6 +219,9 @@ static void draw_perf(unsigned int *fb, unsigned int pitch)
 		ayaneo_text(fb, pitch, 10, 6, 2, 0xFF00FF66u, s_perf_str);
 		ayaneo_text(fb, pitch, 10, 26, 2, 0xFF00FF66u, s_perf_str2);
 	}
+#ifdef AYANEO_DEBUG_LOGGING
+	ayaneo_text(fb, pitch, 10, 46, 2, 0xFF3060FFu, s_perf_str3);   /* blue, debug only */
+#endif
 }
 
 static void dbg(const char *msg)
@@ -253,6 +291,7 @@ static int snes_emu_thread(void *arg)
 
 	input_init();
 	ayaneo_set_cpu_mhz(2000);
+	bigcore_start();   /* EXPERIMENTAL: try to bring up a big A76 core (proof of life) */
 	ayaneo_apply_persisted_brightness();
 
 	/* bring up the codec/AFE ring and start the looping home BGM */

@@ -38,6 +38,23 @@ AYANEO_DEBUG_LOGGING ?= no
 ifeq ($(AYANEO_DEBUG_LOGGING),yes)
 DEFINES += AYANEO_DEBUG_LOGGING
 endif
+# The AYANEO_DEBUG_LOGGING build keeps our own _dprintf traces (e.g. the "BC:"
+# multicore lines) but leaves DEBUGLEVEL=0 so the per-frame display/render
+# dprintf(INFO) spam stays out of the log. Build with `AYANEO_VERBOSE_LOG=yes`
+# to raise DEBUGLEVEL and restore that full, noisy LK logging when needed.
+AYANEO_VERBOSE_LOG ?= no
+ifeq ($(AYANEO_VERBOSE_LOG),yes)
+DEFINES += AYANEO_VERBOSE_LOG
+endif
+# Experimental 2nd-CPU-core bring-up (emu/snes/bigcore.c). OFF by default so the
+# menu always boots; build with `AYANEO_BIGCORE_EXPT=yes` (implies debug logging)
+# to activate the current bigcore experiment (arm the SPMC via the KERNEL_BOOT SiP,
+# then PSCI CPU_ON). Requires AYANEO_DEBUG_LOGGING for the _dprintf traces.
+AYANEO_BIGCORE_EXPT ?= no
+ifeq ($(AYANEO_BIGCORE_EXPT),yes)
+DEFINES += AYANEO_BIGCORE_EXPT
+DEFINES += AYANEO_DEBUG_LOGGING
+endif
 # AYANEO experiment (animated-boot-logo branch): paint a scrolling rainbow
 # gradient over the whole panel during LK instead of the static eMMC boot logo.
 # Set to no to restore the normal boot logo.
