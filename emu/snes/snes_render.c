@@ -36,9 +36,18 @@ static inline int ifloor(float x) { int i = (int)x; return (x < 0 && (float)i !=
 
 /* affine-blit one drawable using screen transform [a,b,c,d,e,f]:
  *   X = a*lx + c*ly + e ;  Y = b*lx + d*ly + f  (lx,ly local dest pixels) */
+void snes_target_view(snes_target *t, float sx, float sy, float dx, float dy)
+{
+	t->vsx = sx; t->vsy = sy; t->vdx = dx; t->vdy = dy;
+}
+
 static void blit(snes_target *t, const float M[6], const snes_draw *d)
 {
-	float a = M[0], b = M[1], c = M[2], dd = M[3], e = M[4], f = M[5];
+	/* Apply the per-view-group aspect transform to the screen matrix: screen
+	 * coords (X,Y) become (vsx*X + vdx, vsy*Y + vdy). At the native no-op
+	 * (1,1,0,0) this leaves M unchanged bit-for-bit (x*1==x, x+0==x). */
+	float a = M[0] * t->vsx, b = M[1] * t->vsy, c = M[2] * t->vsx, dd = M[3] * t->vsy;
+	float e = M[4] * t->vsx + t->vdx, f = M[5] * t->vsy + t->vdy;
 	/* local dest rect corners: [-px, dw-px] x [-py, dh-py] */
 	float lx0 = -d->px, lx1 = d->dw - d->px, ly0 = -d->py, ly1 = d->dh - d->py;
 	float cx[4], cy[4];

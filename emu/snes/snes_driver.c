@@ -282,6 +282,7 @@ static int snes_emu_thread(void *arg)
 
 		t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
 		t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;
+		snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
 		/* clear the letterbox bars (the wallpaper covers the 720 region) */
 		ayaneo_fill(fb, pitch, 0, 0, (int)W, t.offy, 0xFF000000u);
 		ayaneo_fill(fb, pitch, 0, t.offy + SNES_VH, (int)W, t.offy, 0xFF000000u);

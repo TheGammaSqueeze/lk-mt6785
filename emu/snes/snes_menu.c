@@ -283,6 +283,7 @@ static void build_chrome(snes_menu *m)
 	for (i = 0; i < n; i++) m->chrome[i] = CHROME_SENTINEL;
 	ct.fb = m->chrome; ct.pitch = SNES_VW; ct.W = SNES_VW; ct.H = SNES_VH;
 	ct.offx = 0; ct.offy = 0;
+	snes_target_view(&ct, 1.0f, 1.0f, 0.0f, 0.0f);
 	snes_render_node(&ct, &m->home, m->homemenu);
 	for (i = 0; i < n; i++)
 		m->chrome[i] = (m->chrome[i] == CHROME_SENTINEL) ? 0u : (0xFF000000u | m->chrome[i]);

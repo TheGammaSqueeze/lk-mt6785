@@ -12,7 +12,17 @@ typedef struct {
 	unsigned  pitch;     /* pixels per row */
 	int       W, H;      /* framebuffer size */
 	int       offx, offy;/* top-left of the virtual 1280x720 area in the fb */
+	/* per-view-group aspect transform applied to every blit's screen coords
+	 * (X,Y): screen' = (vsx*X + vdx, vsy*Y + vdy). Defaults (1,1,0,0) = no-op so
+	 * native 16:9 (letterboxed via offy) is unchanged. The 4:3 adaptation sets
+	 * these per view group (top/bottom bars pinned, content zoomed, wallpaper
+	 * filled, banner squashed). See snes_target_view(). */
+	float     vsx, vsy, vdx, vdy;
 } snes_target;
+
+/* Set the per-view-group aspect transform on a target (see snes_target). Call
+ * with (1,1,0,0) to reset to the native no-op. */
+void snes_target_view(snes_target *t, float sx, float sy, float dx, float dy);
 
 /* Draw a whole scene into the target (does not clear). */
 void snes_render_scene(snes_target *t, snes_scene *s);

@@ -38,6 +38,7 @@ int main(int argc, char **argv)
 	}
 	t.fb = fb; t.pitch = W; t.W = W; t.H = H;
 	t.offx = (W - SNES_VW) / 2; t.offy = (H - SNES_VH) / 2;
+	snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
 
 	/* Transition-capture mode: `host_render <pack> <outdir> seq <prefixNav> <transKeys> <nframes>`
 	 * mirrors the web frame-stepper (tools/_web_car_right_mid.mjs). It settles the
