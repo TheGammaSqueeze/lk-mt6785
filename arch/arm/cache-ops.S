@@ -348,6 +348,26 @@ FUNCTION(arch_clean_cache_range)
 	bx		lr
 #endif
 
+#ifdef AYANEO_BIGCORE_EXPT
+	/* void arch_invalidate_cache_range(addr_t start, size_t len);
+	 * Invalidate-ONLY (DCIMVAC) to PoC by MVA. Used for cross-core read-after-
+	 * write: drop this core's stale cached copies so the next load re-fetches the
+	 * value the OTHER core wrote to DRAM. Deliberately does NOT clean - cleaning
+	 * would write this core's stale lines back over the peer's fresh DRAM data.
+	 * Guarded to EXPT so the shipping (single-core) release image is unaffected. */
+FUNCTION(arch_invalidate_cache_range)
+	add		r2, r0, r1			// end address
+	bic		r0, #(CACHE_LINE - 1)		// align start down to a line
+0:
+	mcr		p15, 0, r0, c7, c6, 1		// DCIMVAC: invalidate D-cache line by MVA to PoC
+	add		r0, r0, #CACHE_LINE
+	cmp		r0, r2
+	blo		0b
+	mov		r0, #0
+	mcr		p15, 0, r0, c7, c10, 4		// DSB
+	bx		lr
+#endif
+
 	/* void arch_flush_invalidate_cache_range(addr_t start, size_t len); */
 FUNCTION(arch_clean_invalidate_cache_range)
 #ifdef HAVE_CACHE_PL310
@@ -400,6 +420,11 @@ FUNCTION(arch_enable_cache)
 
 FUNCTION(arch_clean_cache_range)
 	bx		lr
+
+#ifdef AYANEO_BIGCORE_EXPT
+FUNCTION(arch_invalidate_cache_range)
+	bx		lr
+#endif
 
 FUNCTION(arch_clean_invalidate_cache_range)
 	bx		lr

@@ -51,6 +51,10 @@
 #define BC_O_W_SCTLR    388
 #define BC_O_W_CPACR    392
 #define BC_O_W_FPEXC    396
+#define BC_O_PAR_LO     400    /* PAR after AT-translating the comms VA (attrs/SH) */
+#define BC_O_PAR_HI     404
+#define BC_O_W_MENU     408    /* menu_ptr the worker actually READ from comms (coherency probe) */
+#define BC_O_W_MENUW0   412    /* first word the worker read THROUGH that pointer (real data vs garbage) */
 
 #ifndef __ASSEMBLER__
 struct bc_comms {
@@ -94,6 +98,10 @@ struct bc_comms {
 	volatile unsigned w_sctlr;               /* 388 */
 	volatile unsigned w_cpacr;               /* 392 */
 	volatile unsigned w_fpexc;               /* 396 */
+	volatile unsigned par_lo;                /* 400 */
+	volatile unsigned par_hi;                /* 404 */
+	volatile unsigned w_menu;                /* 408 menu_ptr the worker read */
+	volatile unsigned w_menuw0;              /* 412 first word read through it */
 };
 #endif
 

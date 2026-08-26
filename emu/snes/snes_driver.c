@@ -49,9 +49,12 @@ extern unsigned g_bc_mpidr, g_bc_pwrstat;
  * two cores can render disjoint scanline bands of the same frame concurrently.
  * Sync is WFE/SEV with a bounded-spin fallback so a wedged worker never hangs. */
 #include "bigcore_comms.h"
+#include <arch/ops.h>   /* arch_clean_cache_range / arch_invalidate_cache_range (addr_t,size_t) */
 extern int _dprintf(const char *fmt, ...);
 static volatile struct bc_comms *const g_bc =
 	(volatile struct bc_comms *)(unsigned long)BC_COMMS_PA;
+#define BC_CLEAN(p, n)  arch_clean_cache_range((unsigned long)(p), (unsigned long)(n))
+#define BC_INVAL(p, n)  arch_invalidate_cache_range((unsigned long)(p), (unsigned long)(n))
 
 static inline void bc_sev(void) { __asm__ volatile("sev" ::: "memory"); }
 static inline void bc_wfe(void) { __asm__ volatile("wfe" ::: "memory"); }
@@ -64,30 +67,52 @@ void bc_worker_entry(void)
 	unsigned last = 0;
 	g_bc->stage = 0x11; bc_dsb();                  /* reached bc_worker_entry */
 	for (;;) {
-		while (g_bc->go == last) bc_wfe();     /* park until cpu0 posts a frame */
+		for (;;) {                             /* wait for a posted frame */
+			BC_INVAL(g_bc, 64);            /* read go fresh from DRAM (no HW coherency) */
+			if (g_bc->go != last) break;
+			bc_wfe();
+		}
 		last = g_bc->go;
-		bc_dmb();                              /* acquire job + menu state */
-		g_bc->stage = 0x22; bc_dsb();          /* woke, got a job */
+		BC_INVAL(g_bc, sizeof(*g_bc));         /* read the whole job fresh */
+		g_bc->stage = 0x22; BC_CLEAN(g_bc, sizeof(*g_bc));
 		{
+			snes_menu *menu = (snes_menu *)(unsigned long)g_bc->menu_ptr;
 			snes_target t = {0};
+			unsigned bandlo, bandhi;
+			/* Coherency probe: record the pointer the worker actually read from
+			 * comms, and flush JUST that (line 6) to DRAM immediately - so even if
+			 * dereferencing a garbage pointer faults below, cpu0 still sees what the
+			 * worker read (== cpu0's menu_ptr means the invalidate delivered it). */
+			g_bc->w_menu = (unsigned)(unsigned long)menu;
+			BC_CLEAN((void *)(unsigned long)(BC_COMMS_PA + 384u), 64u);
 			t.fb = (unsigned int *)(unsigned long)g_bc->fb;
 			t.pitch = g_bc->pitch; t.W = (int)g_bc->W; t.H = (int)g_bc->H;
 			t.offx = (int)g_bc->offx; t.offy = (int)g_bc->offy;
 			snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
 			snes_target_band(&t, (int)g_bc->band_y0, (int)g_bc->band_y1);
-			/* snapshot the worker's own CPU state right before the render, so if
-			 * it faults we can see whether MMU/FP were actually on for it. */
-			{ unsigned v;   /* w_fpexc is captured in asm (vmrs is ARM-only) */
+			bandlo = g_bc->band_y0; bandhi = g_bc->band_y1;
+			{ unsigned v;   /* worker CPU-state snapshot (w_fpexc captured in asm) */
 			  __asm__ volatile("mrc p15,0,%0,c0,c0,5":"=r"(v)); g_bc->w_mpidr = v;
 			  __asm__ volatile("mrc p15,0,%0,c1,c0,0":"=r"(v)); g_bc->w_sctlr = v;
 			  __asm__ volatile("mrc p15,0,%0,c1,c0,2":"=r"(v)); g_bc->w_cpacr = v; }
-			g_bc->stage = 0x33; bc_dsb();  /* about to render */
-			snes_menu_render((snes_menu *)(unsigned long)g_bc->menu_ptr, &t);
-			g_bc->stage = 0x44; bc_dsb();  /* render returned */
+			/* read the menu state + scene pool cpu0 just updated, fresh from DRAM */
+			BC_INVAL(menu, 4096);
+			BC_INVAL(0x50C00000u, 0x00400000u);
+			/* prove the worker can now read the menu's real data through the pointer
+			 * (non-garbage first word) - flush this datum too before the render. */
+			g_bc->w_menuw0 = *(volatile unsigned *)menu;
+			BC_CLEAN((void *)(unsigned long)(BC_COMMS_PA + 384u), 64u);
+			g_bc->stage = 0x33; BC_CLEAN(g_bc, sizeof(*g_bc));
+			snes_menu_render(menu, &t);
+			g_bc->stage = 0x44;
+			/* clean the band we rendered out to DRAM so cpu0/display see it */
+			BC_CLEAN((unsigned long)t.fb + (unsigned long)bandlo * t.pitch * 4u,
+				 (unsigned long)(bandhi - bandlo) * t.pitch * 4u);
 		}
 		g_bc->counter = last;                  /* heartbeat = frames rendered */
-		bc_dsb();                              /* release band writes + done */
 		g_bc->done = last;
+		BC_CLEAN(g_bc, sizeof(*g_bc));         /* publish counter/done/stage to DRAM */
+		bc_dsb();
 		bc_sev();                              /* wake cpu0 */
 	}
 }
@@ -120,6 +145,13 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	g_bc->offx = (unsigned)tfull->offx; g_bc->offy = (unsigned)tfull->offy;
 	g_bc->band_y0 = (unsigned)sy; g_bc->band_y1 = (unsigned)H;   /* worker: bottom */
 	g_bc->menu_ptr = (unsigned)(unsigned long)menu;
+	/* HW cross-core coherency is not working here, so clean the shared data cpu0
+	 * just wrote out to DRAM (Point of Coherency) - the comms job, the menu state,
+	 * and the scene node pool the render walks. The worker invalidates the same
+	 * before reading. */
+	BC_CLEAN(g_bc, sizeof(*g_bc));
+	BC_CLEAN(menu, 4096);                       /* snes_menu struct */
+	BC_CLEAN(0x50C00000u, 0x00400000u);         /* SNES_HOME_PA scene pool (first 4MB) */
 	bc_dsb();                                  /* release job (+ menu update) */
 	g_bc->go = seq;
 	bc_sev();                                  /* wake the worker */
@@ -133,7 +165,9 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	 * fallback counter would never advance, so a worker that never signals done
 	 * (crashed / missed the wakeup) would hang the menu forever. Busy-spin lets
 	 * the fallback fire and cpu0 render the worker's band itself. */
-	while (g_bc->done != seq) {
+	for (;;) {
+		BC_INVAL((unsigned long)BC_COMMS_PA + 128u, 64u);  /* read done fresh */
+		if (g_bc->done == seq) { g_bc_wfin++; break; }
 		if (++spins > 1000000u) {          /* worker missed the deadline */
 			snes_target tb = *tfull;
 			snes_target_band(&tb, sy, H);
@@ -142,13 +176,24 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 			break;
 		}
 	}
-	if (g_bc->done == seq) g_bc_wfin++;        /* worker finished its band in time */
-	bc_dmb();                                  /* acquire the worker's band writes */
+	/* the worker cleaned its band to DRAM; invalidate cpu0's stale copy of it so
+	 * the present/display picks up the worker's rows (not cpu0's blank band). */
+	BC_INVAL((unsigned long)fb + (unsigned long)sy * pitch * 4u,
+		 (unsigned long)(H - sy) * pitch * 4u);
+	bc_dmb();
 	waited = (gpt4_get_current_tick() - tw0) / 13u;   /* us cpu0 waited for worker */
 	{	/* One-time COMPREHENSIVE dump the instant a worker fault is captured
 		 * (everything needed to diagnose: fault regs, worker CPU state, the job
 		 * it was handed), then only a light periodic line so the log is readable. */
-		static unsigned fc, dumped;
+		static unsigned fc, dumped, parlogged;
+		BC_INVAL((unsigned long)BC_COMMS_PA + 384u, 64u);  /* fresh line 6 (par + coherency probe) */
+		if (!parlogged) {   /* once: the worker's mapping of the comms VA + coherency probe */
+			parlogged = 1;
+			_dprintf("BC PAR (comms VA attrs): par=0x%x:0x%x (bit0=fault; SH bits8:7; ATTR 63:56)\n",
+				 g_bc->par_hi, g_bc->par_lo);
+			_dprintf("BC COHERENCY PROBE: cpu0 menu=0x%x  worker-read menu=0x%x  worker-read *menu=0x%x\n",
+				 g_bc->menu_ptr, g_bc->w_menu, g_bc->w_menuw0);
+		}
 		if (g_bc->fault_type && !dumped) {
 			dumped = 1;
 			_dprintf("BC WORKER FAULT: type=%u(1undef2pabt3dabt) far=0x%x fsr=0x%x pc=0x%x spsr=0x%x\n",
@@ -160,10 +205,13 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 				 g_bc->fb, g_bc->pitch, g_bc->W, g_bc->H,
 				 g_bc->band_y0, g_bc->band_y1, g_bc->menu_ptr, g_bc->stack_top);
 		}
-		if ((++fc % 240u) == 0u)   /* ~every 8s at 30fps: minimal spam */
-			_dprintf("BC split: wfin=%u fb=%u wait=%uus stage=0x%x fault=%u/pc0x%x wcnt=%u\n",
+		if ((++fc % 240u) == 0u) {  /* ~every 8s at 30fps: minimal spam */
+			BC_INVAL((unsigned long)BC_COMMS_PA + 384u, 64u);   /* fresh probe line */
+			_dprintf("BC split: wfin=%u fb=%u wait=%uus stage=0x%x fault=%u/pc0x%x wcnt=%u wmenu=0x%x w*menu=0x%x\n",
 				 g_bc_wfin, g_bc_fb, waited, g_bc->stage,
-				 g_bc->fault_type, g_bc->fault_pc, g_bc->counter);
+				 g_bc->fault_type, g_bc->fault_pc, g_bc->counter,
+				 g_bc->w_menu, g_bc->w_menuw0);
+		}
 	}
 }
 #endif
@@ -294,7 +342,7 @@ static char *u2s(char *p, unsigned v)
 }
 static char s_perf_str2[48] = "";
 #ifdef AYANEO_DEBUG_LOGGING
-static char s_perf_str3[48] = "";   /* experimental bigcore proof-of-life line (debug only) */
+static char s_perf_str3[96] = "";   /* experimental bigcore proof-of-life line (debug only) */
 #endif
 #ifdef AYANEO_DEBUG_LOGGING   /* i2s/u2h feed the debug-only bigcore line below */
 static char *i2s(char *p, int v) { if (v < 0) { *p++ = '-'; v = -v; } return u2s(p, (unsigned)v); }

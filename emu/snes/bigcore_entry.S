@@ -130,6 +130,17 @@ bc_entry_arm2:
 	mcr	p15, 0, r1, c12, c0, 0	@ VBAR
 	isb
 
+	@ diagnostic: translate the comms VA through the worker's own MMU and record
+	@ PAR (memory attributes + shareability) so we can see if this core's mapping
+	@ is actually Normal Inner-Shareable cacheable (else no cross-core coherency).
+	movw	r1, #0x0000
+	movt	r1, #0x5400		@ VA = 0x54000000 (comms)
+	mcr	p15, 0, r1, c7, c8, 0	@ ATS1CPR (stage-1 current PL1 read)
+	isb
+	mrrc	p15, 0, r2, r3, c7	@ PAR (LPAE 64-bit) -> {r3:r2}
+	str	r2, [r0, #BC_O_PAR_LO]
+	str	r3, [r0, #BC_O_PAR_HI]
+
 	movw	r1, #0x0DE5		@ cached_ok = magic (CACHED write, separate line)
 	movt	r1, #0xB16C
 	str	r1, [r0, #BC_O_CACHED_OK]

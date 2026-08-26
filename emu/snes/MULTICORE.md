@@ -199,3 +199,57 @@ byte-identical (verified with the `host_render` split harness).
 On-HW validation (needs the patched tee): OSD `g1 k1` with `c` climbing = the worker
 is up and rendering cached; the FPS HUD should hold >=60 at `BC_MHZ`. Tune `BC_MHZ`
 down toward ~1075 for minimum power.
+
+## 6. Phase 2 debug - cross-core coherency is not working, and the workaround
+
+On HW the worker comes up cached (`g1 k1`) but the render either produces garbage or
+faults. The exception handler we point `VBAR` at (`bc_vectors` in `bigcore_entry.S`)
+captured the exact fault: a data abort with the faulting address equal to the worker's
+`menu_ptr` plus a struct offset, where `menu_ptr` was a fixed garbage value every boot.
+In other words the worker read the comms/menu data cpu0 had written and got stale/
+uninitialised DRAM back. Cross-core hardware coherency (which an A55 DSU with
+Inner-Shareable Normal-WB mappings should give for free) is not actually functioning at
+this pre-kernel stage, even after we set the Inner-Shareable bits on the boot mappings
+(`mmu_flags_to_l1_arch_flags`, gated to EXPT) and invalidated the worker's D-cache by
+set/way before enabling it.
+
+Two changes to get a working (if not yet optimal) parallel render and to prove the
+cause:
+
+- Explicit cache maintenance instead of relying on HW coherency. Added a real
+  invalidate-only primitive `arch_invalidate_cache_range` (DCIMVAC by MVA to PoC) in
+  `arch/arm/cache-ops.S` - it was declared in `arch/ops.h` but never implemented for
+  this core. It is invalidate-ONLY on purpose: a clean-invalidate could write this
+  core's stale lines back over the peer's fresh DRAM. It is guarded to
+  `AYANEO_BIGCORE_EXPT` so the release image is byte-identical (the function is absent
+  from the release `cache-ops.o`; verified with `nm`). The discipline
+  (`snes_driver.c`): before releasing a frame cpu0 CLEANs the comms job, the `snes_menu`
+  struct, and the scene-node pool (`0x50C00000`, 4 MB) to DRAM; the worker INVALIDATEs
+  the same regions before reading, renders, then CLEANs its output band; cpu0
+  INVALIDATEs that band before present. The fork/join is a strict ping-pong so the
+  whole-block clean-back is idempotent (no field the peer owns is clobbered).
+- Coherency diagnostics (one flash answers everything, all shipped to the log, not just
+  the OSD):
+  - `AT` probe in `bc_entry_arm2`: after the MMU is on the worker AT-translates the
+    comms VA (`ATS1CPR`) and stores `PAR` (`mrrc p15,0,...,c7`) to comms. `PAR[8:7]` is
+    the shareability and `PAR[63:56]` the memory attributes actually in force for this
+    core - this reveals whether the mapping is really Inner-Shareable Normal-WB (if not,
+    the correct fix is the mapping, and all the explicit maintenance can be deleted).
+  - The worker records the `menu_ptr` it actually read from comms (`w_menu`) and the
+    first word it read THROUGH that pointer (`w_menuw0`), flushing line 6 immediately so
+    the value survives even if the dereference faults. cpu0 logs `cpu0 menu` vs
+    `worker-read menu` vs `worker-read *menu`: equal pointers + a non-garbage word means
+    the explicit invalidate now delivers cpu0's writes; a mismatch means coherency is
+    still broken and points at the mapping.
+  - `bc_vectors`/`bc_undef`/`bc_pabt`/`bc_dabt` capture `{type, FAR, FSR, PC, SPSR}`; a
+    one-time comprehensive dump prints the fault, the worker CPU state
+    (`MPIDR/SCTLR/CPACR/FPEXC`), and the job it was handed. A light periodic line
+    (every 240 frames) prints `wfin/fb/wait/stage/fault/wcnt/wmenu/w*menu`.
+  - OSD readability: a dark semi-transparent backing box (`0xC8000000`) is filled behind
+    the overlay text so it is legible over the light wallpaper.
+
+Open item: the 4 MB scene-pool clean+invalidate per frame on both cores is the obvious
+cost that could erase the multi-core win; it is acceptable only as a correctness crutch
+while the `PAR`/probe data tells us whether a mapping fix can restore real HW coherency
+(and let the explicit maintenance be dropped, or at least narrowed to the nodes actually
+touched).
