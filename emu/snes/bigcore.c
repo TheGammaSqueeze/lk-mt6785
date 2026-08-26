@@ -95,7 +95,7 @@ extern void bc_entry_arm2(void);   /* cached bring-up worker stub (bigcore_entry
  * cacheable by the page tables the worker adopts (a hardcoded DRAM address like
  * 0x54100000 might sit in an unmapped gap -> the worker faults on its first call).
  * Grows down from the top; 16-byte aligned; only used once the worker MMU is on. */
-static unsigned char bc_worker_stack[32768] __attribute__((aligned(16)));
+static unsigned char bc_worker_stack[65536] __attribute__((aligned(16)));
 #define BC_WORKER_STACK_TOP  ((unsigned)(unsigned long)(bc_worker_stack + sizeof(bc_worker_stack)))
 
 /* telemetry read by the driver OSD */

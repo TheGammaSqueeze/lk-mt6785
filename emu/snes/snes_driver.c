@@ -62,10 +62,12 @@ static inline void bc_dsb(void) { __asm__ volatile("dsb ish" ::: "memory"); }
 void bc_worker_entry(void)
 {
 	unsigned last = 0;
+	g_bc->stage = 0x11; bc_dsb();                  /* reached bc_worker_entry */
 	for (;;) {
 		while (g_bc->go == last) bc_wfe();     /* park until cpu0 posts a frame */
 		last = g_bc->go;
 		bc_dmb();                              /* acquire job + menu state */
+		g_bc->stage = 0x22; bc_dsb();          /* woke, got a job */
 		{
 			snes_target t = {0};
 			t.fb = (unsigned int *)(unsigned long)g_bc->fb;
@@ -73,7 +75,9 @@ void bc_worker_entry(void)
 			t.offx = (int)g_bc->offx; t.offy = (int)g_bc->offy;
 			snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
 			snes_target_band(&t, (int)g_bc->band_y0, (int)g_bc->band_y1);
+			g_bc->stage = 0x33; bc_dsb();  /* about to render */
 			snes_menu_render((snes_menu *)(unsigned long)g_bc->menu_ptr, &t);
+			g_bc->stage = 0x44; bc_dsb();  /* render returned */
 		}
 		g_bc->counter = last;                  /* heartbeat = frames rendered */
 		bc_dsb();                              /* release band writes + done */
@@ -138,8 +142,8 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	{	/* rate-limited: how the split is doing (worker vs fallback + wait) */
 		static unsigned fc;
 		if ((++fc % 120u) == 0u)
-			_dprintf("BC split: wfin=%u fb=%u waited=%uus spins=%u wcnt=%u\n",
-				 g_bc_wfin, g_bc_fb, waited, spins, g_bc->counter);
+			_dprintf("BC split: wfin=%u fb=%u waited=%uus spins=%u wcnt=%u stage=0x%x\n",
+				 g_bc_wfin, g_bc_fb, waited, spins, g_bc->counter, g_bc->stage);
 	}
 }
 #endif
@@ -330,6 +334,9 @@ static void draw_perf(unsigned int *fb, unsigned int pitch)
 		*p++='o'; p=u2s(p,ap4/n); *p=0;
 		acc_r = acc_p = n = ap0 = ap1 = ap2 = ap3 = ap4 = 0;
 	}
+	/* dark semi-transparent backing so the overlay is legible over the light
+	 * wallpaper/chrome (the plain green/blue text washes out on gray). */
+	ayaneo_fill(fb, pitch, 4, 2, 740, 62, 0xC8000000u);
 	if (s_perf_str[0]) {
 		ayaneo_text(fb, pitch, 10, 6, 2, 0xFF00FF66u, s_perf_str);
 		ayaneo_text(fb, pitch, 10, 26, 2, 0xFF00FF66u, s_perf_str2);

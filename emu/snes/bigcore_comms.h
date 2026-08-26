@@ -23,6 +23,7 @@
 
 /* line 0 (0..63): pre-MMU - cpu0 MMU snapshot + secondary reached-marker */
 #define BC_O_MAGIC        0    /* secondary (uncached): reached the stub */
+#define BC_O_STAGE        4    /* worker progress marker (debug: where it wedges) */
 #define BC_O_TTBR0_LO     8    /* MMU snapshot from cpu0 (read MMU-off) */
 #define BC_O_TTBR0_HI    12
 #define BC_O_TTBCR       16
@@ -44,7 +45,7 @@
 struct bc_comms {
 	/* line 0 */
 	volatile unsigned magic;                 /* 0  */
-	volatile unsigned _r0;                    /* 4  */
+	volatile unsigned stage;                  /* 4  worker progress marker */
 	volatile unsigned ttbr0_lo;              /* 8  */
 	volatile unsigned ttbr0_hi;              /* 12 */
 	volatile unsigned ttbcr;                 /* 16 */
