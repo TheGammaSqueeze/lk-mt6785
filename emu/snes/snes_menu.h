@@ -46,6 +46,12 @@ typedef struct {
 	 * row 0..3; opt_on bit i = toggle i on/off (default all on). */
 	int opt_cur;                  /* Options cursor row 0..3 */
 	unsigned opt_on;              /* toggle on/off bitmask (bit i = setting i) */
+
+	/* Language submenu (option_languages): 2D radio grid, 4 rows x 2 cols in
+	 * row-major order [language01,05, 02,06, 03,07, 04,08]. lang_cur = cursor cell,
+	 * lang_sel = the selected (radiobtn_on) language, both 0..7 (default 0 = English). */
+	int lang_cur;                 /* Language cursor grid index 0..7 */
+	int lang_sel;                 /* selected language grid index 0..7 */
 	int mb_focus;                 /* selected menubar icon 0..4 */
 	int open;                     /* open overlay index, -1 if none */
 	float open_y;                 /* submenu slide offset (world up), eases to 0 */

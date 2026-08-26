@@ -117,6 +117,8 @@ static void set_spr_comp(const snes_pack *pk, snes_scene *s, snes_rnode *n,
 }
 static void apply_display_state(snes_menu *m);   /* fwd: used by init + update */
 static void apply_options_state(snes_menu *m);   /* fwd: used by init + update */
+static void apply_language_state(snes_menu *m);  /* fwd: used by init + update */
+static const char *lang_name(int idx);           /* fwd: used by render */
 /* recursively disable every descendant node named nm */
 static void disable_all_named(const snes_pack *p, snes_rnode *n, const char *nm)
 {
@@ -969,6 +971,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;
 	m->disp_cur = m->disp_sel = 1; m->sub_rep_t = 0.0f; m->sub_rep_ctrl = 0;
 	m->opt_cur = 0; m->opt_on = 0x7;   /* 3 toggles, all on by default */
+	m->lang_cur = m->lang_sel = 0;     /* English (top-left) */
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
 	m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
 	m->prev_focus = 0; m->xfade_t = 0.0f; m->resume_dim = 0.0f;
@@ -1172,14 +1175,14 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		snes_rnode *el = child_named(pk, m->overlay[2], "elements"), *it;
 		for (it = el ? el->child : 0; it; it = it->sib) {
 			snes_rnode *cur = child_named(pk, it, "cursor");
-			snes_rnode *ca2 = child_named(pk, it, "cursor_area");
 			snes_rnode *btn = child_named(pk, it, "button");
 			if (cur) cur->enabled = 0;          /* hide focus arrow */
 			if (btn) btn->enabled = 0;          /* hide authored dot (draw our own) */
-			/* selected = current locale's language; default usa_en = language01
-			 * (label key @sys_language_USA_en). Show its blue box. */
-			if (ca2 && name_eq(pk, it, "language01")) ca2->enabled = 1;
 		}
+		/* cursor + selection default to English (top-left, grid index 0);
+		 * apply_language_state shows the cursor blue box, the dot is drawn by render. */
+		m->lang_cur = m->lang_sel = 0;
+		apply_language_state(m);
 	}
 	/* option_settings resting state: hide the per-item focus arrows; cursor on the
 	 * top row (setting0), all 3 toggles ON. apply_options_state sets cursor_area on
@@ -1382,6 +1385,26 @@ static void apply_options_state(snes_menu *m)
 	}
 }
 
+/* Language 2D grid, row-major [row*2+col]: col0 (wx -492) = language01/02/03/04
+ * top->bottom, col1 (wx 36) = language05/06/07/08. Index 0 = English (top-left). */
+static const char *lang_name(int idx)
+{
+	static const char *nm[8] = { "language01", "language05", "language02", "language06",
+				     "language03", "language07", "language04", "language08" };
+	return (idx >= 0 && idx < 8) ? nm[idx] : "language01";
+}
+/* cursor_area (blue box) on the lang_cur cell; the selection dot is custom-drawn
+ * in the render by lang_sel, so only the cursor is reflected here. */
+static void apply_language_state(snes_menu *m)
+{
+	snes_rnode *el = m->overlay[2] ? child_named(m->pk, m->overlay[2], "elements") : 0, *it;
+	const char *cur = lang_name(m->lang_cur);
+	for (it = el ? el->child : 0; it; it = it->sib) {
+		snes_rnode *ca = child_named(m->pk, it, "cursor_area");
+		if (ca) ca->enabled = name_eq(m->pk, it, cur);
+	}
+}
+
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 {
 	float k;
@@ -1499,6 +1522,9 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			} else if (m->open == 1) {   /* Options: cursor opens on the top row */
 				m->opt_cur = 0;
 				apply_options_state(m);
+			} else if (m->open == 2) {   /* Language: cursor opens on the selection */
+				m->lang_cur = m->lang_sel;
+				apply_language_state(m);
 			}
 			/* the panel slides DOWN from off-top into place, easing out (measured
 			 * against the web: the selection box travels ~585px over ~5 frames at
@@ -1550,13 +1576,25 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				push_snd(m, m->sfx_decide);
 			}
 		}
-		/* Language screen (cm3): L/R pick a locale, re-localizing all text live */
-		if (m->open == 2 && (el || er)) {
-			snes_pack *mp = (snes_pack *)m->pk;
-			int nl = (int)mp->hdr->str_count;
-			if (nl > 0) {
-				mp->locale = (mp->locale + (er ? 1 : nl - 1)) % nl;
+		/* Language screen (cm3): 2D radio grid (4 rows x 2 cols). U/D/L/R move the
+		 * cursor (moveNav, wrap, SUB_HOLD auto-repeat); A selects the focused
+		 * language (the radiobtn_on dot moves to it). Ports the Language _buildGrid +
+		 * moveNav + selectRadio path. */
+		if (m->open == 2 && !m->closing) {
+			int c = sub_navfire(m, in, dt, 1, SUB_HOLD_DELAY, SUB_HOLD_RATE);
+			if (c) {
+				int row = m->lang_cur / 2, col = m->lang_cur % 2;
+				if (c == 1)      row = (row + 3) % 4;   /* up */
+				else if (c == 2) row = (row + 1) % 4;   /* down */
+				else if (c == 3) col = (col + 1) % 2;   /* left/right wrap 2 cols */
+				else             col = (col + 1) % 2;
+				m->lang_cur = row * 2 + col;
+				apply_language_state(m);
 				push_snd(m, m->sfx_move);
+			}
+			if (ea && m->lang_sel != m->lang_cur) {
+				m->lang_sel = m->lang_cur;
+				push_snd(m, m->sfx_decide);
 			}
 		}
 		if (eb && !m->closing) {
@@ -1682,7 +1720,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 				for (it = el ? el->child : 0; it; it = it->sib) {
 					snes_rnode *btn = child_named(m->pk, it, "button");
 					float w[6];
-					int on = name_eq(m->pk, it, "language01");
+					int on = name_eq(m->pk, it, lang_name(m->lang_sel));
 					snes_spr_entry d = { m->card_act->img, (uint16_t)(on ? 113 : 99),
 							     881, 12, 12, 6, 6 };
 					if (!btn) continue;
@@ -1731,7 +1769,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			for (it = el ? el->child : 0; it; it = it->sib) {
 				snes_rnode *btn = child_named(m->pk, it, "button");
 				float w[6];
-				int on = name_eq(m->pk, it, "language01");
+				int on = name_eq(m->pk, it, lang_name(m->lang_sel));
 				snes_spr_entry d = { m->card_act->img, (uint16_t)(on ? 113 : 99),
 						     881, 12, 12, 6, 6 };
 				if (!btn) continue;
