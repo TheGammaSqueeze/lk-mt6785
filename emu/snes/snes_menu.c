@@ -1659,7 +1659,22 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	 * nothing behind it (the menubar + cards stay full brightness), so no scrim. */
 	if (m->state == 3 && m->resume) {
 		m->resume->tf[5] = m->open_y;   /* slide-up-from-bottom offset */
-		snes_render_node(t, &m->home, m->resume);
+		if (m->aspect) {
+			/* resumemenu is 'content' (panel + slot list zoom with the rest) except
+			 * its hud hint bar, which pins to the bottom edge like the home bars. */
+			snes_rnode *rhud = child_named(m->pk, m->resume, "hud");
+			int e_rhud = rhud ? rhud->enabled : 0;
+			if (rhud) rhud->enabled = 0;
+			set_view(m, t, VIEW_CONTENT);
+			snes_render_node(t, &m->home, m->resume);
+			if (rhud) {
+				rhud->enabled = e_rhud;
+				set_view(m, t, VIEW_BOTTOM);
+				snes_render_node(t, &m->home, rhud);
+			}
+		} else {
+			snes_render_node(t, &m->home, m->resume);
+		}
 	}
 	PERF_END(4);
 }

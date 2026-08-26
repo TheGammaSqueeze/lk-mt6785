@@ -67,7 +67,16 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	x0 = ifloor(minx); x1 = ifloor(maxx) + 1;
 	y0 = ifloor(miny); y1 = ifloor(maxy) + 1;
 	if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
-	if (x1 > SNES_VW) x1 = SNES_VW; if (y1 > SNES_VH) y1 = SNES_VH;
+	/* Clamp to the framebuffer extent (offx/offy is added below). The design is
+	 * 1280x720, so at native 16:9 (offy=120) this is exactly SNES_VW/SNES_VH and
+	 * bit-identical; in 4:3 (offy=0, H=960) it lets the view-transformed content
+	 * and the bottom-pinned bar reach panel rows 720..959 instead of clipping. */
+	{
+		int xlim = t->W - t->offx, ylim = t->H - t->offy;
+		if (xlim > SNES_VW) xlim = SNES_VW;   /* never exceed the virtual design width */
+		if (x1 > xlim) x1 = xlim;
+		if (y1 > ylim) y1 = ylim;
+	}
 	{
 	/* Integer tint (0..256) and source stride, hoisted out of the pixel loop. */
 	int tr = (int)(d->tr * 256.0f), tg = (int)(d->tg * 256.0f);
