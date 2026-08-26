@@ -11,6 +11,36 @@ static unsigned g_perf_last;
 #define PERF_END(i)  do { if (g_perf_tick) { unsigned n_ = g_perf_tick(); \
 	g_perf[i] = n_ - g_perf_last; g_perf_last = n_; } } while (0)
 
+/* ---- 4:3 aspect adaptation (ports static renderer.js setAspect + paint) ----
+ * The panel is 1280x960 = 4:3; native design is 1280x720 (16:9). In 4:3 mode
+ * (m->aspect) offy is forced to 0 and each view group maps virtual screen (X,Y)
+ * to the 960 fb as (vsx*X+vdx, vsy*Y+vdy) via snes_target_view. At 16:9 every
+ * group is the (1,1,0,0) no-op and offy=120 letterboxes as before. The centre of
+ * the content (virtual y=360) stays at the panel centre 480; zoom is about it. */
+enum { VIEW_CONTENT, VIEW_TOP, VIEW_BOTTOM, VIEW_WALL, VIEW_CONTAIN, VIEW_BANNERX };
+#define ASP_CONTENT_S 1.18519f    /* (16/9)/(3/2): capped content zoom */
+#define ASP_WALL_S    1.75824f    /* 480/273: wallpaper fill zoom */
+static void set_view(snes_menu *m, snes_target *t, int group)
+{
+	if (!m->aspect) { snes_target_view(t, 1.0f, 1.0f, 0.0f, 0.0f); return; }
+	switch (group) {
+	case VIEW_TOP:
+		snes_target_view(t, 1.0f, 1.0f, 0.0f, 0.0f); break;
+	case VIEW_BOTTOM:
+		snes_target_view(t, 1.0f, 1.0f, 0.0f, 240.0f); break;
+	case VIEW_WALL:
+		snes_target_view(t, ASP_WALL_S, ASP_WALL_S,
+				 640.0f - ASP_WALL_S * 640.0f, 480.0f - ASP_WALL_S * 360.0f); break;
+	case VIEW_CONTAIN:
+		snes_target_view(t, 1.0f, 1.0f, 0.0f, 120.0f); break;
+	case VIEW_BANNERX:
+		snes_target_view(t, 1.0f, ASP_CONTENT_S, 0.0f, 480.0f - ASP_CONTENT_S * 360.0f); break;
+	default: /* VIEW_CONTENT */
+		snes_target_view(t, ASP_CONTENT_S, ASP_CONTENT_S,
+				 640.0f - ASP_CONTENT_S * 640.0f, 480.0f - ASP_CONTENT_S * 360.0f); break;
+	}
+}
+
 /* ---- small helpers ---- */
 static const snes_scene_entry *scene_by_name(const snes_pack *p, const char *want)
 {
@@ -192,9 +222,33 @@ static void build_wp(snes_menu *m)
 	}
 	m->wp_ready = 1;
 }
+/* 4:3: the neon wallpaper zooms by ASP_WALL_S to fill the whole 960 panel (no
+ * black gaps). Inverse-map each of the 960 fb rows + 1280 cols back into the wp
+ * cache (x map precomputed once/frame). vdx=640-s*640, vdy=480-s*360. */
+static void draw_wp_43(snes_menu *m, snes_target *t, int scroll_px)
+{
+	static int xmap[SNES_VW];
+	int Y, X, off = ((scroll_px % WP_CACHE_W) + WP_CACHE_W) % WP_CACHE_W;
+	float inv = 1.0f / ASP_WALL_S;
+	float vdx = 640.0f - ASP_WALL_S * 640.0f, vdy = 480.0f - ASP_WALL_S * 360.0f;
+	if (!m->wp_ready) return;
+	for (X = 0; X < SNES_VW; X++) {
+		int wx = (int)(((float)X - vdx) * inv) + off;
+		wx %= WP_CACHE_W; if (wx < 0) wx += WP_CACHE_W;
+		xmap[X] = wx;
+	}
+	for (Y = 0; Y < t->H && Y < 960; Y++) {
+		int wy = (int)(((float)Y - vdy) * inv);
+		uint32_t *src, *dst = t->fb + (unsigned)Y * t->pitch + t->offx;
+		if (wy < 0) wy = 0; if (wy >= WP_CACHE_H) wy = WP_CACHE_H - 1;
+		src = m->wp + (unsigned)wy * WP_CACHE_W;
+		for (X = 0; X < SNES_VW; X++) dst[X] = src[xmap[X]];
+	}
+}
 static void draw_wp(snes_menu *m, snes_target *t, int scroll_px)
 {
 	int cy, off = ((scroll_px % WP_CACHE_W) + WP_CACHE_W) % WP_CACHE_W;
+	if (m->aspect) { draw_wp_43(m, t, scroll_px); return; }
 	if (!m->wp_ready) return;
 	for (cy = 0; cy < WP_CACHE_H; cy++) {
 		uint32_t *src = m->wp + cy * WP_CACHE_W;
@@ -864,7 +918,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	unsigned i;
 	/* zero the struct fields we rely on */
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
-	m->chrome = chrome; m->chrome_ready = 0;
+	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;
 	m->focus = 0; m->car_x = 0; m->car_target = 0;
 	m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
 	m->prev_focus = 0; m->xfade_t = 0.0f; m->resume_dim = 0.0f;
@@ -1417,6 +1471,10 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 {
 	const snes_game_rec *g;
 
+	/* 4:3 fills the whole 960 panel (no letterbox); the per-view-group aspect
+	 * transform placed by set_view handles the vertical centring instead. */
+	if (m->aspect) t->offy = 0;
+
 	/* Submenu (state 2) is a full-screen opaque panel over a black scrim: the
 	 * home/wallpaper/carousel behind it are 100% covered, so skip rendering them
 	 * entirely. This was ~the whole frame's cost (the carousel even rendered
@@ -1484,12 +1542,14 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	if (!m->homemenu) snes_render_scene(t, &m->home);
 	else              draw_chrome(m, t);
 	PERF_END(1);
+	set_view(m, t, VIEW_CONTENT);
 	draw_carousel(m, t);
 	PERF_END(2);
 	draw_filmstrip(m, t);
 	PERF_END(3);
-	if (m->state == 0) draw_hints(m, t);
+	if (m->state == 0) { set_view(m, t, VIEW_BOTTOM); draw_hints(m, t); }
 	else if (m->state == 1) {
+		set_view(m, t, VIEW_TOP);
 		if (m->mb_focus >= 0 && m->mb_focus < 5 && m->mb_btn[m->mb_focus]) {
 			snes_render_node(t, &m->home, m->mb_btn[m->mb_focus]);
 			/* square selection cursor around the focused item's 96x70 button
@@ -1498,18 +1558,22 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 				draw_menubar_cursor(m, t, 448.0f + 96.0f * (float)m->mb_focus,
 						    64.0f, m->hl_s, m->card_act->img);
 		}
+		set_view(m, t, VIEW_CONTENT);
 		draw_menubar_caption(m, t);
+		set_view(m, t, VIEW_BOTTOM);
 		draw_menubar_hints(m, t);
 	}
 
 	/* the white title bar (caption_title, 348x22 @3x = 1044x66), raised in resume;
 	 * drawn here (not in the chrome cache) so it tracks the game title. */
+	set_view(m, t, VIEW_BANNERX);
 	if (m->card_act) {
 		float ty = 178.0f - RESUME_TITLE_DY * resume_open_frac(m);
 		snes_spr_entry bar = { m->card_act->img, 1, 325, 348, 22, 174, 11 };
 		snes_blit_spr(t, m->pk, &bar, 640.0f, ty, 3.0f, 1.0f);
 	}
 	/* focused game name drawn into the authored title frame (SNES title font) */
+	set_view(m, t, VIEW_CONTENT);
 	g = game(m, m->focus);
 	if (g)
 		snes_draw_text(t, m->pk, m->f_title, 640,

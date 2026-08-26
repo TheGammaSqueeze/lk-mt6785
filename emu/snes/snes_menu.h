@@ -50,6 +50,7 @@ typedef struct {
 	int wp_ready;
 	uint32_t *chrome;             /* cached static home chrome, VW*VH u32 (0 alpha = uncovered) */
 	int chrome_ready;
+	int aspect;                   /* 0 = native 16:9 (letterboxed); 1 = 4:3 (fills the 960 panel) */
 	float scroll;
 
 	/* wallpaper parallax (ports CloverScrollBG at a fixed 30fps step) */
