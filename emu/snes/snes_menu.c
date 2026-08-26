@@ -1047,8 +1047,11 @@ static void draw_menubar_caption(snes_menu *m, snes_target *t)
 				tw = snes_text_width(m->pk, fh, tsc, txt);
 				if (tw > 150.0f) tsc = tsc * 150.0f / tw;
 				fe = snes_res_font(m->pk, fh);
+				/* vertically centre the label in the box: web caption text sits at
+				 * ~cy+7 (slightly below the box centre). pen y is the line top, so
+				 * offset up ~half the visible text height. */
 				snes_draw_text(t, m->pk, fh, cx,
-					       cy - (fe ? fe->line_height : 31) * tsc * s * 0.80f,
+					       cy - (fe ? fe->line_height : 31) * tsc * s * 0.42f,
 					       tsc * s, 0xFFF4F4F4u, 1, txt);
 			}
 		}
