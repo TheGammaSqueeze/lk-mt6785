@@ -770,7 +770,9 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 		static const uint16_t sx[3] = { 145, 159, 173 };
 		int fr = seq[((int)(m->clock / 0.03333f)) % 13];
 		snes_spr_entry cur = { m->card_act->img, sx[fr], 881, 12, 8, 6, 4 };
-		snes_blit_spr_tint_flip(t, m->pk, &cur, ccx, 511.0f, 3.0f, 1.0f,
+		/* nudged down from the authored y511 so the chevron top clears the
+		 * focused card's bottom edge (~y498) - the web renders them touching. */
+		snes_blit_spr_tint_flip(t, m->pk, &cur, ccx, 528.0f, 3.0f, 1.0f,
 					63.0f / 255.0f, 191.0f / 255.0f, 1.0f, 0, 1);
 	}
 }
