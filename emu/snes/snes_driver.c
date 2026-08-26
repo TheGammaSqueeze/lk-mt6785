@@ -40,6 +40,90 @@ extern unsigned bigcore_raw_counter(void);
 extern unsigned bigcore_cached_ok(void);
 extern int g_bc_target, g_bc_psci_ret;
 extern unsigned g_bc_mpidr, g_bc_pwrstat;
+
+#ifdef AYANEO_BIGCORE_EXPT
+/* ---- per-frame fork/join across cpu0 + the cached worker (cpu1) ----
+ * The render split is proven output-correct on the host (host_render "split").
+ * snes_menu_render is deterministic/non-mutating on the menu, uses a per-core
+ * z-sort context (selected by MPIDR), and writes only its band's rows, so the
+ * two cores can render disjoint scanline bands of the same frame concurrently.
+ * Sync is WFE/SEV with a bounded-spin fallback so a wedged worker never hangs. */
+#include "bigcore_comms.h"
+static volatile struct bc_comms *const g_bc =
+	(volatile struct bc_comms *)(unsigned long)BC_COMMS_PA;
+
+static inline void bc_sev(void) { __asm__ volatile("sev" ::: "memory"); }
+static inline void bc_wfe(void) { __asm__ volatile("wfe" ::: "memory"); }
+static inline void bc_dmb(void) { __asm__ volatile("dmb ish" ::: "memory"); }
+static inline void bc_dsb(void) { __asm__ volatile("dsb ish" ::: "memory"); }
+
+/* worker (cpu1): wait for a posted frame, render its band, signal done. */
+void bc_worker_entry(void)
+{
+	unsigned last = 0;
+	for (;;) {
+		while (g_bc->go == last) bc_wfe();     /* park until cpu0 posts a frame */
+		last = g_bc->go;
+		bc_dmb();                              /* acquire job + menu state */
+		{
+			snes_target t = {0};
+			t.fb = (unsigned int *)(unsigned long)g_bc->fb;
+			t.pitch = g_bc->pitch; t.W = (int)g_bc->W; t.H = (int)g_bc->H;
+			t.offx = (int)g_bc->offx; t.offy = (int)g_bc->offy;
+			snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
+			snes_target_band(&t, (int)g_bc->band_y0, (int)g_bc->band_y1);
+			snes_menu_render((snes_menu *)(unsigned long)g_bc->menu_ptr, &t);
+		}
+		g_bc->counter = last;                  /* heartbeat = frames rendered */
+		bc_dsb();                              /* release band writes + done */
+		g_bc->done = last;
+		bc_sev();                              /* wake cpu0 */
+	}
+}
+
+static int bc_worker_ready(void) { return g_bc->cached_ok == 0xB16C0DE5u; }
+
+/* Target little-cluster clock once the two cores are rendering in parallel. The
+ * whole cluster (cpu0..5) shares one PLL/buck, so this clocks both workers. With
+ * a 2-core split each core does ~half the frame, so we can drop from 2000 MHz and
+ * still hold 60 fps at much lower dynamic power. Tune on HW: raise if the FPS HUD
+ * dips below 60, lower toward ~1075 for minimum power. Single-core fallback keeps
+ * the boot 2000 MHz. */
+#define BC_MHZ 1200
+static int s_bc_clk_set;
+
+/* cpu0: fork the bottom band to the worker, render the top band, join. */
+static unsigned s_bc_seq;
+static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
+			snes_menu *menu, snes_target *tfull)
+{
+	int sy = (H / 2) & ~15;                    /* split on a 16px (>=64B) line */
+	unsigned seq = ++s_bc_seq, spins = 0;
+	g_bc->fb = (unsigned)(unsigned long)fb; g_bc->pitch = pitch;
+	g_bc->W = (unsigned)W; g_bc->H = (unsigned)H;
+	g_bc->offx = (unsigned)tfull->offx; g_bc->offy = (unsigned)tfull->offy;
+	g_bc->band_y0 = (unsigned)sy; g_bc->band_y1 = (unsigned)H;   /* worker: bottom */
+	g_bc->menu_ptr = (unsigned)(unsigned long)menu;
+	bc_dsb();                                  /* release job (+ menu update) */
+	g_bc->go = seq;
+	bc_sev();                                  /* wake the worker */
+	{	/* cpu0 renders the top band [0, sy) meanwhile */
+		snes_target t0 = *tfull;
+		snes_target_band(&t0, 0, sy);
+		snes_menu_render(menu, &t0);
+	}
+	while (g_bc->done != seq) {                 /* join, bounded-spin fallback */
+		if (++spins > 4000000u) {          /* worker missed the deadline */
+			snes_target tb = *tfull;
+			snes_target_band(&tb, sy, H);
+			snes_menu_render(menu, &tb);
+			break;
+		}
+		bc_wfe();
+	}
+	bc_dmb();                                  /* acquire the worker's band writes */
+}
+#endif
 extern int  mt_power_off(void);
 extern int  pmic_detect_powerkey(void);
 
@@ -339,7 +423,16 @@ static int snes_emu_thread(void *arg)
 
 		poll_volume();
 		snes_menu_update(&s_menu, &in, dt);
-		snes_menu_render(&s_menu, &t);
+#ifdef AYANEO_BIGCORE_EXPT
+		/* Split the render across cpu0 + the cached worker when it is up and the
+		 * chrome cache is already built (so the two cores never build it at once).
+		 * Falls back to single-core otherwise. */
+		if (bc_worker_ready() && s_menu.chrome_ready) {
+			if (!s_bc_clk_set) { ayaneo_set_cpu_mhz(BC_MHZ); s_bc_clk_set = 1; }
+			bc_dispatch(fb, pitch, (int)W, (int)H, &s_menu, &t);
+		} else
+#endif
+			snes_menu_render(&s_menu, &t);
 		s_perf_render_us = (gpt4_get_current_tick() - t_frame0) / 13u;
 		draw_osd(fb, pitch, (int)W);
 		draw_perf(fb, pitch);

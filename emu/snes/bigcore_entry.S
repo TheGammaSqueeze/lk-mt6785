@@ -87,9 +87,16 @@ bc_entry_arm2:
 	movw	r1, #0x0DE5		@ cached_ok = magic (CACHED write, separate line)
 	movt	r1, #0xB16C
 	str	r1, [r0, #BC_O_CACHED_OK]
+	dsb
+
+	@ enter the C render worker loop (waits on comms.go, renders its band, sets
+	@ comms.done). sp is set, MMU+caches on, so the full C environment is usable.
+	bl	bc_worker_entry
+	@ should never return; if it ever does, park in an uncached heartbeat so the
+	@ OSD still shows the core is alive rather than silently wedging.
 	mov	r2, #0
 2:	add	r2, r2, #1
-	str	r2, [r0, #BC_O_COUNTER]	@ cached heartbeat (coherency carries it to cpu0)
+	str	r2, [r0, #BC_O_COUNTER]
 	dsb
 	b	2b
 	.size	bc_entry_arm2, . - bc_entry_arm2
