@@ -841,7 +841,7 @@ static void draw_wrapped(snes_menu *m, snes_target *t, uint32_t font, float x, f
  * fixed trailing block (Nintendo/trademark/Fontworks notices, EN + FR). Fills out[]
  * (up to max) and returns the line count. Each entry renders on one line, matching
  * the web (no word-wrap), so page-scroll is line-based. */
-#define LEGAL_NVIS 14          /* visible lines in the body (276..625 at LH 24) */
+#define LEGAL_NVIS 18          /* label pool / page N (web _legalWidget N=18, LH=24) */
 static const char *g_legal_tail[] = {
 	"", "\xC2\xA9""2017 Nintendo", "",
 	"Trademarks are property of their respective owners. Nintendo Entertainment System and SUPER NES",
@@ -911,7 +911,7 @@ static void legal_scrollbar(snes_menu *m)
 	snes_rnode *au = sb ? child_named(pk, sb, "arrow_up") : 0;
 	snes_rnode *ad = sb ? child_named(pk, sb, "arrow_down") : 0;
 	int total = legal_line_count(m), N = LEGAL_NVIS;
-	int base = m->legal_scroll, maxs = total - N;
+	int base = m->legal_scroll, maxs = total - N + 2;   /* web _legalRender: texts-N+2 */
 	const float sbMaxH = 336.0f, sbYOff = 24.0f;
 	float denom, ff, top, bot, vis, h, pad, f21;
 	if (maxs < 0) maxs = 0;
@@ -2075,7 +2075,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			int c = sub_navfire(m, in, dt, 3, SUB_HOLD_DELAY, SUB_HOLD_RATE);  /* U/D only */
 			if (c == 1 || c == 2) {
 				int total = legal_line_count(m);
-				int maxs = total - LEGAL_NVIS; if (maxs < 0) maxs = 0;
+				int maxs = total - LEGAL_NVIS + 2; if (maxs < 0) maxs = 0;  /* web: texts-N+2 */
 				int step = LEGAL_NVIS - 1;
 				int next = m->legal_scroll + (c == 1 ? -step : step);
 				if (next < 0) next = 0; else if (next > maxs) next = maxs;
