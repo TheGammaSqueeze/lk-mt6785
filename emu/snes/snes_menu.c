@@ -1765,6 +1765,7 @@ static void open_reset_dialog(snes_menu *m)
 	m->reset_dlg_open = 1;
 	dl->enabled = 1;
 	m->reset_dlg_y = -720.0f;
+	m->reset_dlg_t = 0.0f;
 	dl->tf[5] = m->reset_dlg_y;
 	set_dialog_focus(m, 0);                            /* Cancel focused (safe default) */
 }
@@ -1956,7 +1957,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			} else if (m->disp_zone == 1) {   /* frame carousel */
 				int c = sub_navfire(m, in, dt, 12, DISP_HOLD_DELAY, DISP_HOLD_RATE);
 				if (c) frame_move(m, c == 3 ? -1 : 1);
-				if (ea && m->frame_applied != m->frame_sel) {
+				if (ea) {                 /* applyFrame: re-applying the same frame still plays the SFX */
 					m->frame_applied = m->frame_sel;
 					frame_layout(m);
 					apply_frame_previews(m);  /* re-skin the 3 mode previews */
@@ -1969,7 +1970,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 					apply_display_state(m);
 					push_snd(m, m->sfx_move);
 				}
-				if (ea && m->disp_cur != m->disp_sel) {
+				if (ea) {                 /* selectDisplayModeAtCursor: commits + plays SFX on every A */
 					m->disp_sel = m->disp_cur;
 					apply_display_state(m);
 					push_snd(m, m->sfx_decide);
@@ -1979,17 +1980,19 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		/* Options screen (cm2): vertical list of 3 toggle rows + the System Reset
 		 * button. Up/Down move the cursor (moveNav, SUB_HOLD auto-repeat, wrap 4);
 		 * L/R on a toggle set it on(R)/off(L) (setToggle, no-op if already there);
-		 * A flips the focused toggle (activateNav). The reset row's long-press gauge
-		 * + confirm dialog are not yet ported (A on it is a no-op, as in the web). */
+		 * A flips the focused toggle (activateNav). The reset row is a long-press
+		 * gauge (OK held over it fills over RESET_LONGPRESS_SEC) that opens a Yes/No
+		 * confirm dialog (sys_button_longpress + sys_dialog, ported below). */
 		if (m->open == 1 && !m->closing && m->reset_dlg_open) {
 			/* confirm dialog input: L focuses Cancel, R focuses Reset, A commits
 			 * (both just close - Reset would reboot, out of scope), B cancels.
 			 * Ease the dialog slide-in (-720 -> 0) each frame. */
+			/* slide the dialog up from -720 to 0 over 0.2s outExpo (Tween.moveTo,
+			 * matches the submenu-open easing) */
 			snes_rnode *dl = desc(m->pk, m->overlay[1], "sys_dialog");
-			float ke = 0.55f * (dt / 0.0333f);
-			if (ke > 1.0f) ke = 1.0f;
-			m->reset_dlg_y += (0.0f - m->reset_dlg_y) * ke;
-			if (m->reset_dlg_y > -1.0f) m->reset_dlg_y = 0.0f;
+			m->reset_dlg_t += dt;
+			m->reset_dlg_y = -720.0f + 720.0f * ease_outexpo(m->reset_dlg_t / 0.2f);
+			if (m->reset_dlg_y > 0.0f) m->reset_dlg_y = 0.0f;
 			if (dl) dl->tf[5] = m->reset_dlg_y;
 			if (el && m->dlg_focus != 0) { set_dialog_focus(m, 0); push_snd(m, m->sfx_move); }
 			else if (er && m->dlg_focus != 1) { set_dialog_focus(m, 1); push_snd(m, m->sfx_move); }

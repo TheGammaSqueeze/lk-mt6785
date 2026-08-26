@@ -69,6 +69,7 @@ typedef struct {
 	int reset_dlg_open;          /* Yes/No confirm dialog showing */
 	int dlg_focus;               /* dialog button focus: 0 = Cancel, 1 = Reset */
 	float reset_dlg_y;           /* dialog slide offset, eases -720 -> 0 on open */
+	float reset_dlg_t;           /* dialog open elapsed (0.2s outExpo slide-in) */
 	int mb_focus;                 /* selected menubar icon 0..4 */
 	int open;                     /* open overlay index, -1 if none */
 	float open_y;                 /* submenu slide offset (world up), eases to 0 */
