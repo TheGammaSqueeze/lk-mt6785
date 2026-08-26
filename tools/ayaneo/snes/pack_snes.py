@@ -777,6 +777,16 @@ def main():
         index = json.load(open(os.path.join(games_dir, "index.json")))
     except Exception:
         index = []
+    # the IP-Notice list uses the CURATED per-game copyright (data/static_legal.json
+    # titleCopyright, from titles_list) - the same source the web oracle reads - not
+    # index.json's longer raw Copyright field (which overflows the panel). Fall back
+    # to the raw field when a game is absent from the curated map.
+    title_copyright = {}
+    try:
+        _sl = json.load(open(os.path.join(asset_dir, "data", "static_legal.json")))
+        title_copyright = _sl.get("titleCopyright", {}) or {}
+    except Exception:
+        title_copyright = {}
     def _rel(d):
         try:
             p = str(d).replace("-", "")
@@ -811,7 +821,7 @@ def main():
         n_off  = blob.str(e.get("Name", code))
         p_off  = blob.str(e.get("SortRawPublisher", ""))
         st_off = blob.str(e.get("SortRawTitle", ""))
-        cp_off = blob.str(e.get("Copyright", ""))
+        cp_off = blob.str(title_copyright.get(code) or e.get("Copyright", ""))
         blob.align(4)
         rec_off = blob.tell()
         rec = struct.pack("<IIIIII", c_off, n_off, p_off, st_off, p_off, cp_off)
