@@ -27,10 +27,25 @@ typedef struct {
 	const uint8_t *pix; int rgb565; int img_w, img_h;
 	int sx, sy, sw, sh;          /* atlas frame */
 	float dw, dh, px, py;        /* dest size + pivot (native px) */
-	int hflip, vflip, tile, additive, is_quad;
+	int hflip, vflip, tile, additive, is_quad, linear;
 	float uvx, uvy, uvrx, uvry;  /* wallpaper uv offset/repeat */
 	float tr, tg, tb, ta;        /* tint 0..1 */
 } snes_draw;
+
+/* Sharp-bilinear sample weight (0..256) for the upper texel across a texel
+ * boundary. `frac` = fractional texel coord (0..1); `w` = texels covered by one
+ * output pixel (<1 when magnifying). The ramp is 1-output-pixel wide, so flat
+ * regions stay crisp (weight snaps to 0/256, exactly like nearest) and only the
+ * ~1px transition at each texel edge is smoothed - anti-aliased staircases
+ * without the softness of full bilinear. */
+static inline int sharp_w(float frac, float w)
+{
+	float t;
+	if (w > 1.0f) w = 1.0f; else if (w < 1.0f / 4096.0f) w = 1.0f / 4096.0f;
+	t = (frac - 0.5f) / w + 0.5f;
+	if (t <= 0.0f) return 0; if (t >= 1.0f) return 256;
+	return (int)(t * 256.0f);
+}
 
 static inline int ifloor(float x) { int i = (int)x; return (x < 0 && (float)i != x) ? i - 1 : i; }
 
@@ -48,6 +63,15 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	 * (1,1,0,0) this leaves M unchanged bit-for-bit (x*1==x, x+0==x). */
 	float a = M[0] * t->vsx, b = M[1] * t->vsy, c = M[2] * t->vsx, dd = M[3] * t->vsy;
 	float e = M[4] * t->vsx + t->vdx, f = M[5] * t->vsy + t->vdy;
+	/* sharp-bilinear only helps (and only avoids softening) at a NON-integer
+	 * magnification: at 1:1 / integer scale nearest is already pixel-exact, so
+	 * leave those bit-identical (this keeps 16:9 text untouched). */
+	int lin = 0;
+	if (d->linear) {
+		float ax = a < 0 ? -a : a, ay = dd < 0 ? -dd : dd;
+		float fx = ax - (float)(int)ax, fy = ay - (float)(int)ay;
+		if (ax > 1.0f && (fx > 0.03f || fy > 0.03f)) lin = 1;
+	}
 	/* local dest rect corners: [-px, dw-px] x [-py, dh-py] */
 	float lx0 = -d->px, lx1 = d->dw - d->px, ly0 = -d->py, ly1 = d->dh - d->py;
 	float cx[4], cy[4];
@@ -110,6 +134,63 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 			if (!d->hflip) { su0f = d->sx + u0 * d->sw;          sustepf =  du * d->sw; }
 			else           { su0f = d->sx + (1.0f - u0) * d->sw; sustepf = -du * d->sw; }
 			su = (int)(su0f * 65536.0f); sustep = (int)(sustepf * 65536.0f);
+			if (lin) {
+				/* Sharp-bilinear magnification for text/icons (4:3 zoom): crisp
+				 * flat regions like nearest, but the ~1px texel-edge transition is
+				 * anti-aliased. Interpolates premultiplied alpha so glyph edges do
+				 * not pick up dark fringes from transparent atlas texels. */
+				int iy1 = iy + 1, ty, xhi = d->sx + d->sw;
+				float dvy = inv_d / d->dh * d->sh, dux = sustepf;
+				const uint8_t *srow1;
+				if (dvy < 0.0f) dvy = -dvy;
+				if (dux < 0.0f) dux = -dux;
+				if (iy1 >= d->sy + d->sh) iy1 = iy;   /* stay within this atlas frame */
+				if (iy1 >= d->img_h) iy1 = d->img_h - 1;
+				srow1 = d->pix + (unsigned)iy1 * d->img_w * bpp;
+				ty = sharp_w(sv - (float)iy, dvy);
+				for (X = x0; X < x1; X++, su += sustep) {
+					int ix0, ix1, tx, sr, sg, sb, sa, af;
+					int r0,g0,b0,a0, r1,g1,b1,a1, r2,g2,b2,a2, r3,g3,b3,a3;
+					int tpr,tpg,tpb,taa, bpr,bpg,bpb,baa, opr,opg,opb,oa;
+					float suf;
+					if (su < sxlo || su >= sxhi) continue;
+					suf = (float)su * (1.0f / 65536.0f);
+					ix0 = (int)suf; ix1 = ix0 + 1;
+					if (ix1 >= xhi) ix1 = ix0;         /* clamp within this frame */
+					if (ix0 >= d->img_w) ix0 = d->img_w - 1;
+					if (ix1 >= d->img_w) ix1 = d->img_w - 1;
+					tx = sharp_w(suf - (float)ix0, dux);
+					src_rgba(srow  + (unsigned)ix0 * bpp, d->rgb565, &r0,&g0,&b0,&a0);
+					src_rgba(srow  + (unsigned)ix1 * bpp, d->rgb565, &r1,&g1,&b1,&a1);
+					src_rgba(srow1 + (unsigned)ix0 * bpp, d->rgb565, &r2,&g2,&b2,&a2);
+					src_rgba(srow1 + (unsigned)ix1 * bpp, d->rgb565, &r3,&g3,&b3,&a3);
+#define SBL_LX(p0,p1) (((p0)*(256-tx) + (p1)*tx) >> 8)
+					tpr = SBL_LX(r0*a0, r1*a1); tpg = SBL_LX(g0*a0, g1*a1);
+					tpb = SBL_LX(b0*a0, b1*a1); taa = SBL_LX(a0, a1);
+					bpr = SBL_LX(r2*a2, r3*a3); bpg = SBL_LX(g2*a2, g3*a3);
+					bpb = SBL_LX(b2*a2, b3*a3); baa = SBL_LX(a2, a3);
+#undef SBL_LX
+					opr = (tpr*(256-ty) + bpr*ty) >> 8;
+					opg = (tpg*(256-ty) + bpg*ty) >> 8;
+					opb = (tpb*(256-ty) + bpb*ty) >> 8;
+					oa  = (taa*(256-ty) + baa*ty) >> 8;
+					if (oa <= 0) continue;
+					sr = opr / oa; sg = opg / oa; sb = opb / oa; sa = oa;  /* un-premultiply */
+					if (plain) { af = sa; }
+					else { sr = (sr*tr)>>8; sg = (sg*tg)>>8; sb = (sb*tb)>>8; af = (sa*ta)>>8; }
+					if (af <= 0) continue; if (af > 255) af = 255;
+					if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
+					{
+						uint32_t dst = row[X];
+						int dr = (dst>>16)&0xff, dg = (dst>>8)&0xff, db = dst&0xff;
+						if (d->additive) { dr += (sr*af)>>8; dg += (sg*af)>>8; db += (sb*af)>>8; }
+						else { int ia = 255-af; dr = (sr*af+dr*ia+127)/255; dg = (sg*af+dg*ia+127)/255; db = (sb*af+db*ia+127)/255; }
+						if (dr>255)dr=255; if (dg>255)dg=255; if (db>255)db=255;
+						row[X] = 0xff000000u | ((unsigned)dr<<16) | ((unsigned)dg<<8) | (unsigned)db;
+					}
+				}
+				continue;
+			}
 #ifdef __ARM_NEON
 			/* NEON: for the opaque untinted 565 upscale (card frame + box art),
 			 * process 8 destination pixels at once - gather 8 source texels,
@@ -345,7 +426,7 @@ static int resolve_visual(snes_scene *s, const snes_comp *c, snes_rnode *n,
 	d->hflip = (c->flags & SNES_COMP_HFLIP) ? 1 : 0;
 	d->vflip = (c->flags & SNES_COMP_VFLIP) ? 1 : 0;
 	d->additive = (c->blend == 1);
-	d->is_quad = 0;
+	d->is_quad = 0; d->linear = 0;
 	d->tile = (im->flags & SNES_IMG_TILE) && (c->flags & SNES_COMP_HAS_SIZE) &&
 		  (d->dw > d->sw + 1 || d->dh > d->sh + 1);
 	if (d->tile) {
@@ -465,6 +546,7 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 					d.sx = g->x; d.sy = g->y; d.sw = g->w; d.sh = g->h;
 					d.dw = g->w * scale; d.dh = g->h * scale; d.px = 0; d.py = 0;
 					d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+					d.linear = 1;   /* sharp-bilinear when magnified (4:3) */
 					d.tr = col[0]; d.tg = col[1]; d.tb = col[2]; d.ta = col[3];
 					gm[0] = 1; gm[1] = 0; gm[2] = 0; gm[3] = 1;
 					gm[4] = penx + g->xo * scale; gm[5] = peny + g->yo * scale;
@@ -528,6 +610,7 @@ void snes_draw_text(snes_target *t, const snes_pack *pk, uint32_t font_hash,
 			d.sx = g->x; d.sy = g->y; d.sw = g->w; d.sh = g->h;
 			d.dw = g->w * scale; d.dh = g->h * scale; d.px = 0; d.py = 0;
 			d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+			d.linear = 1;   /* sharp-bilinear when magnified (4:3) */
 			d.tr = col[0]; d.tg = col[1]; d.tb = col[2]; d.ta = col[3];
 			gm[0] = 1; gm[1] = 0; gm[2] = 0; gm[3] = 1;
 			gm[4] = penx + g->xo * scale; gm[5] = y + g->yo * scale;
@@ -683,7 +766,7 @@ void snes_blit_tex(snes_target *t, const snes_pack *pk, const snes_img_entry *im
 	d.pix = snes_img_pixels(pk, im); d.rgb565 = (im->flags & SNES_IMG_RGB565) ? 1 : 0;
 	d.img_w = im->w; d.img_h = im->h; d.sx = 0; d.sy = 0; d.sw = im->w; d.sh = im->h;
 	d.dw = w; d.dh = h; d.px = w / 2; d.py = h / 2;
-	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = d.linear = 0;
 	d.tr = d.tg = d.tb = 1; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -697,7 +780,7 @@ void snes_blit_tex_tint(snes_target *t, const snes_pack *pk, const snes_img_entr
 	d.pix = snes_img_pixels(pk, im); d.rgb565 = (im->flags & SNES_IMG_RGB565) ? 1 : 0;
 	d.img_w = im->w; d.img_h = im->h; d.sx = 0; d.sy = 0; d.sw = im->w; d.sh = im->h;
 	d.dw = w; d.dh = h; d.px = w / 2; d.py = h / 2;
-	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = d.linear = 0;
 	d.tr = tr; d.tg = tg; d.tb = tb; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -714,6 +797,7 @@ void snes_blit_spr(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp
 	d.dw = sp->sw * scale; d.dh = sp->sh * scale;
 	d.px = sp->sw * scale / 2; d.py = sp->sh * scale / 2;
 	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.linear = 1;   /* HUD icons (dpad/button hints, title bar): sharp-bilinear in 4:3 */
 	d.tr = d.tg = d.tb = 1; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -730,7 +814,7 @@ void snes_blit_spr_tint(snes_target *t, const snes_pack *pk, const snes_spr_entr
 	d.sx = sp->sx; d.sy = sp->sy; d.sw = sp->sw; d.sh = sp->sh;
 	d.dw = sp->sw * scale; d.dh = sp->sh * scale;
 	d.px = sp->sw * scale / 2; d.py = sp->sh * scale / 2;
-	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = d.linear = 0;
 	d.tr = tr; d.tg = tg; d.tb = tb; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -747,7 +831,7 @@ void snes_blit_spr_wh_tint(snes_target *t, const snes_pack *pk, const snes_spr_e
 	d.sx = sp->sx; d.sy = sp->sy; d.sw = sp->sw; d.sh = sp->sh;
 	d.dw = dw; d.dh = dh;
 	d.px = dw / 2.0f; d.py = dh / 2.0f;
-	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = d.linear = 0;
 	d.tr = tr; d.tg = tg; d.tb = tb; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -765,7 +849,7 @@ void snes_blit_spr_tint_flip(snes_target *t, const snes_pack *pk, const snes_spr
 	d.dw = sp->sw * scale; d.dh = sp->sh * scale;
 	d.px = sp->sw * scale / 2; d.py = sp->sh * scale / 2;
 	d.hflip = hflip ? 1 : 0; d.vflip = vflip ? 1 : 0;
-	d.tile = d.additive = d.is_quad = 0;
+	d.tile = d.additive = d.is_quad = d.linear = 0;
 	d.tr = tr; d.tg = tg; d.tb = tb; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -775,7 +859,7 @@ void snes_fill_quad(snes_target *t, float cx, float cy, float w, float h,
 {
 	snes_draw d; float S[6];
 	d.is_quad = 1; d.dw = w; d.dh = h; d.px = w / 2; d.py = h / 2;
-	d.hflip = d.vflip = d.tile = d.additive = 0;
+	d.hflip = d.vflip = d.tile = d.additive = d.linear = 0;
 	d.tr = r; d.tg = g; d.tb = b; d.ta = a;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -790,7 +874,7 @@ static void quad(snes_target *t, float x, float y, float w, float h, float r, fl
 	float S[6]; snes_draw d;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = x; S[5] = y;
 	d.is_quad = 1; d.dw = w; d.dh = h; d.px = 0; d.py = 0;
-	d.hflip = d.vflip = d.tile = d.additive = 0;
+	d.hflip = d.vflip = d.tile = d.additive = d.linear = 0;
 	d.tr = r; d.tg = g; d.tb = b; d.ta = 1;
 	blit(t, S, &d);
 }
