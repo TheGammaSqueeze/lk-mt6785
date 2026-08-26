@@ -2218,7 +2218,10 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 				draw_menubar_cursor(m, t, 448.0f + 96.0f * (float)m->mb_focus,
 						    64.0f, m->hl_s, m->card_act->img);
 		}
-		set_view(m, t, VIEW_CONTENT);
+		/* the caption bubble hangs off the menubar (menubar_upper, 'top' group)
+		 * just below the focused icon - draw it in VIEW_TOP so it pins to the top
+		 * edge with the icons, not the content-zoomed centre. */
+		set_view(m, t, VIEW_TOP);
 		draw_menubar_caption(m, t);
 		set_view(m, t, VIEW_BOTTOM);
 		draw_menubar_hints(m, t);
