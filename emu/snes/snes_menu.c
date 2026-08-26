@@ -2118,9 +2118,11 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		int b;
 		float ks = dt * 12.0f; if (ks > 1.0f) ks = 1.0f;
 		for (b = 0; b < 5; b++) {
-			/* highlight only in the menubar (1) and open-submenu (2) states,
-			 * NOT in the resume menu (3) where the menubar isn't focused */
-			int foc = ((m->state == 1 || m->state == 2) && b == m->mb_focus);
+			/* the item is ACTIVE (blue fill + caption + 1.2 icon) only while the
+			 * menubar itself is focused (state 1). Opening a submenu deactivates it
+			 * (icon -> 1.0, caption out, highlight alpha 0 - controller.openSubmenu);
+			 * only the cursor outline stays, drawn live in the state-2 render. */
+			int foc = (m->state == 1 && b == m->mb_focus);
 			if (m->mb_active[b]) {
 				m->mb_active[b]->enabled = foc;
 				/* scale the highlight in from 0 on focus (authored scale is 1.0);
@@ -2209,6 +2211,14 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			draw_wp(m, t, (int)m->scroll);
 			if (!m->homemenu) snes_render_scene(t, &m->home);
 			else              draw_chrome(m, t);
+			/* the menubar item that opened this submenu is deactivated (no fill/
+			 * caption), but its cyan selection cursor stays on the icon (the web
+			 * keeps the cursor); draw it over the rest-state chrome menubar. */
+			if (m->card_act && m->mb_focus >= 0 && m->mb_focus < 5) {
+				set_view(m, t, VIEW_TOP);
+				draw_menubar_cursor(m, t, 448.0f + 96.0f * (float)m->mb_focus,
+						    64.0f, 1.0f, m->card_act->img);
+			}
 			set_view(m, t, VIEW_CONTAIN);
 			/* the option scene's own full-native black overlay (contain-scaled) is
 			 * the panel's opaque backing - in 16:9 the full-screen scrim provided it,
