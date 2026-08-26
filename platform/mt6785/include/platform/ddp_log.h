@@ -32,8 +32,16 @@
 #ifndef _H_DDP_LOG_
 #define _H_DDP_LOG_
 //#include "xlog.h"
-#define DDP_DFINFO INFO
 #include <debug.h>
+/* The [LK_DDP/...] display-path logs fire every frame (screen update / render)
+ * and flood the console. Route their INFO level above DEBUGLEVEL so they are
+ * suppressed by default, and only restore them with AYANEO_VERBOSE_LOG. The
+ * error/dump macros below use CRITICAL directly, so real errors still print. */
+#ifdef AYANEO_VERBOSE_LOG
+#define DDP_DFINFO INFO
+#else
+#define DDP_DFINFO (SPEW + 10)
+#endif
 #include <assert.h>
 
 #ifndef LOG_TAG

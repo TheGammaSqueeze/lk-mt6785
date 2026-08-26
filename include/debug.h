@@ -34,7 +34,9 @@ extern "C" {
 #endif
 
 /* AYANEO: silent for release; AYANEO_DEBUG_LOGGING build raises the LK console
- * verbosity for bring-up debugging. */
+ * verbosity for bring-up debugging. (The per-frame display/render [LK_DDP...]
+ * spam is separately gated in ddp_log.h behind AYANEO_VERBOSE_LOG so it does not
+ * flood the log; the rest of the LK console stays on at this level.) */
 #ifdef AYANEO_DEBUG_LOGGING
 #define DEBUGLEVEL 2
 #else

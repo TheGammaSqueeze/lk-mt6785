@@ -36,10 +36,12 @@
 #ifndef __DISP_DRV_LOG_H__
 #define __DISP_DRV_LOG_H__
 
-#ifdef USER_BUILD
+/* [DISP]/[DISPCHECK] per-frame display spam: suppressed unless AYANEO_VERBOSE_LOG
+ * (routed above DEBUGLEVEL). DISPMSG/DISPERR use ALWAYS/CRITICAL so they stay. */
+#ifdef AYANEO_VERBOSE_LOG
 #define DISP_DFINFO     (INFO)
 #else
-#define DISP_DFINFO     (INFO)
+#define DISP_DFINFO     (SPEW + 10)
 #endif
 
 #define DISP_LOG_PRINT(level, sub_module, fmt, arg...)      \

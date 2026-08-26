@@ -85,7 +85,9 @@ static void disp_dither_init(disp_dither_id_t id, int width, int height,
 
 static int disp_dither_config(DISP_MODULE_ENUM module, disp_ddp_path_config* pConfig, void* cmdq)
 {
+#ifdef AYANEO_VERBOSE_LOG
 	dprintf(CRITICAL, "config dither dirty = %d\n", pConfig->dst_dirty);
+#endif
 	if (pConfig->dst_dirty) {
 		disp_dither_init(DISP_DITHER0, pConfig->dst_w, pConfig->dst_h,
 		                 pConfig->lcm_bpp, cmdq);
@@ -102,7 +104,9 @@ static int disp_dither_bypass(DISP_MODULE_ENUM module, int bypass)
 		relay = 1;
 
 	DISP_REG_MASK(NULL, DISP_REG_DITHER_CFG, relay, 0x1);
+#ifdef AYANEO_VERBOSE_LOG
 	dprintf(INFO, "disp_dither_bypass(bypass = %d)", bypass);
+#endif
 
 	return 0;
 }
