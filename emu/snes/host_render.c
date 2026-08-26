@@ -30,7 +30,7 @@ int main(int argc, char **argv)
 
 	fb = calloc((size_t)W * H, 4);
 	wp = malloc((size_t)WP_CACHE_W * WP_CACHE_H * 4);
-	chrome = malloc((size_t)SNES_VW * SNES_VH * 4);
+	chrome = malloc((size_t)SNES_VW * 960 * 4);   /* panel-tall so 4:3 chrome fits */
 	home_pool = malloc(sizeof(snes_rnode) * 4096);
 	bg_pool = malloc(sizeof(snes_rnode) * 256);
 	if (snes_menu_init(&menu, &pk, home_pool, 4096, bg_pool, 256, wp, chrome) != 0) {
@@ -39,7 +39,7 @@ int main(int argc, char **argv)
 	t.fb = fb; t.pitch = W; t.W = W; t.H = H;
 	t.offx = (W - SNES_VW) / 2; t.offy = (H - SNES_VH) / 2;
 	snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
-	if (getenv("SNES_ASPECT43")) menu.aspect = 1;   /* inspect the 4:3 adaptation */
+	if (getenv("SNES_ASPECT43")) { menu.aspect = 1; menu.chrome_ready = 0; }  /* rebuild chrome for 4:3 */
 
 	/* Transition-capture mode: `host_render <pack> <outdir> seq <prefixNav> <transKeys> <nframes>`
 	 * mirrors the web frame-stepper (tools/_web_car_right_mid.mjs). It settles the

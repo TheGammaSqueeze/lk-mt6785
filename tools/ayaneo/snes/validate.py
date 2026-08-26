@@ -16,9 +16,14 @@ Usage: validate.py <pack.bin> <host_render_bin> [state ...]
 import os, sys, subprocess
 from PIL import Image, ImageChops, ImageDraw
 
-WEB = "/work/webref"
-OUT = "/work/snesdiff"
+# 4:3 mode: diff the full 1280x960 panel against /work/webref43 (aspect=4:3 web
+# capture) with the host harness driven in 4:3 (SNES_ASPECT43=1). Enable with the
+# env SNES_VALIDATE43=1. Native (16:9) crops to the 720 content region as before.
+ASPECT43 = os.environ.get("SNES_VALIDATE43") == "1"
+WEB = "/work/webref43" if ASPECT43 else "/work/webref"
+OUT = "/work/snesdiff43" if ASPECT43 else "/work/snesdiff"
 os.makedirs(OUT, exist_ok=True)
+CW, CH = (1280, 960) if ASPECT43 else (1280, 720)
 
 # state -> host_render nav string (auto-release + settle between keys)
 STATES = {
@@ -31,20 +36,25 @@ STATES = {
 }
 SETTLE = 40   # frames per key (settle transitions)
 
+ENV43 = {**os.environ, "SNES_ASPECT43": "1"} if ASPECT43 else os.environ
+
+def _crop(im):
+    if ASPECT43:
+        return im                                  # full panel, no letterbox
+    return im.crop((0, 120, 1280, 840))            # content region (offy=120, 720 tall)
+
 def render_mine(pack, binp, nav, ppm):
     subprocess.run([binp, pack, ppm, str(SETTLE), nav],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-    im = Image.open(ppm).convert("RGB")
-    return im.crop((0, 120, 1280, 840))   # content region (offy=120, 720 tall)
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, env=ENV43)
+    return _crop(Image.open(ppm).convert("RGB"))
 
 def render_mine_flat(pack, binp, nav, ppm):
     """Same render but with the scrolling wallpaper replaced by a flat colour,
     so opaque UI is identical to the normal render and wallpaper-showing pixels
     differ - giving us a precise UI mask independent of wallpaper scroll phase."""
     subprocess.run([binp, pack, ppm, str(SETTLE), nav, "flat"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-    im = Image.open(ppm).convert("RGB")
-    return im.crop((0, 120, 1280, 840))
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, env=ENV43)
+    return _crop(Image.open(ppm).convert("RGB"))
 
 def score(web, mine, flat=None):
     """Mean abs diff over UI pixels only. When a flat-wallpaper render is given,
@@ -77,7 +87,7 @@ def main():
         webp = os.path.join(WEB, name + ".png")
         if not os.path.exists(webp):
             print(f"{name:18s} NO WEB REF"); continue
-        web = Image.open(webp).convert("RGB").resize((1280, 720))
+        web = Image.open(webp).convert("RGB").resize((CW, CH))
         mine = render_mine(pack, binp, nav, f"/tmp/mine_{name}.ppm")
         flat = render_mine_flat(pack, binp, nav, f"/tmp/mineflat_{name}.ppm")
         diff = ImageChops.difference(web, mine)
@@ -86,8 +96,8 @@ def main():
         s = score(web, mine, flat)
         web.save(f"{OUT}/{name}_web.png"); mine.save(f"{OUT}/{name}_mine.png")
         dv.save(f"{OUT}/{name}_diff.png")
-        sbs = Image.new("RGB", (1280, 720 * 3 + 40), (20, 20, 20))
-        sbs.paste(web, (0, 0)); sbs.paste(mine, (0, 720 + 20)); sbs.paste(dv, (0, 1480))
+        sbs = Image.new("RGB", (CW, CH * 3 + 40), (20, 20, 20))
+        sbs.paste(web, (0, 0)); sbs.paste(mine, (0, CH + 20)); sbs.paste(dv, (0, CH * 2 + 40))
         sbs.save(f"{OUT}/{name}_sbs.png")
         rows.append((name, s))
         print(f"{name:18s} meanAbsDiff={s:6.2f}")

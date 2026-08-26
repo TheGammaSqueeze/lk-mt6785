@@ -327,26 +327,49 @@ static void resolve_card(snes_menu *m)
  * the scrolling wallpaper instead of walking the scene. */
 #define CHROME_SENTINEL 0xFFFF00FFu
 #define CHROME_MAXRUN 48
-static uint16_t s_chrome_run[SNES_VH * CHROME_MAXRUN * 2];  /* (x0,x1) opaque runs/row */
-static uint16_t s_chrome_nrun[SNES_VH];
+#define CHROME_H 960   /* cache is panel-tall so 4:3 (960) fits; 16:9 uses rows 0..SNES_VH-1 */
+static uint16_t s_chrome_run[CHROME_H * CHROME_MAXRUN * 2];  /* (x0,x1) opaque runs/row */
+static uint16_t s_chrome_nrun[CHROME_H];
 static void build_chrome(snes_menu *m)
 {
 	snes_target ct;
-	unsigned i, n = (unsigned)SNES_VW * SNES_VH;
+	int H = m->aspect ? CHROME_H : SNES_VH;
+	unsigned i, n = (unsigned)SNES_VW * (unsigned)H;
 	if (!m->chrome || !m->homemenu) return;
 	for (i = 0; i < n; i++) m->chrome[i] = CHROME_SENTINEL;
-	ct.fb = m->chrome; ct.pitch = SNES_VW; ct.W = SNES_VW; ct.H = SNES_VH;
+	ct.fb = m->chrome; ct.pitch = SNES_VW; ct.W = SNES_VW; ct.H = H;
 	ct.offx = 0; ct.offy = 0;
-	snes_target_view(&ct, 1.0f, 1.0f, 0.0f, 0.0f);
-	snes_render_node(&ct, &m->home, m->homemenu);
+	if (!m->aspect) {
+		snes_target_view(&ct, 1.0f, 1.0f, 0.0f, 0.0f);
+		snes_render_node(&ct, &m->home, m->homemenu);
+	} else {
+		/* 4:3: the two SNES bars pin to the new top/bottom edges (VIEW_TOP/BOTTOM)
+		 * while everything else zooms about the panel centre (VIEW_CONTENT). Render
+		 * the content pass with the bar subtrees disabled (so they leave no ghost at
+		 * the content position), then over-render each bar with its own view. */
+		snes_rnode *mbu  = m->menubar;                                 /* menubar_upper -> top */
+		snes_rnode *mbar = child_named(m->pk, m->homemenu, "menubar"); /* bottom SNES bar */
+		snes_rnode *hud  = child_named(m->pk, m->homemenu, "hud");     /* bottom hint bars */
+		int e_mbu  = mbu  ? mbu->enabled  : 0;
+		int e_mbar = mbar ? mbar->enabled : 0;
+		int e_hud  = hud  ? hud->enabled  : 0;
+		if (mbu)  mbu->enabled  = 0;
+		if (mbar) mbar->enabled = 0;
+		if (hud)  hud->enabled  = 0;
+		set_view(m, &ct, VIEW_CONTENT);
+		snes_render_node(&ct, &m->home, m->homemenu);
+		if (mbu)  { mbu->enabled  = e_mbu;  set_view(m, &ct, VIEW_TOP);    snes_render_node(&ct, &m->home, mbu); }
+		if (mbar) { mbar->enabled = e_mbar; set_view(m, &ct, VIEW_BOTTOM); snes_render_node(&ct, &m->home, mbar); }
+		if (hud)  { hud->enabled  = e_hud;  set_view(m, &ct, VIEW_BOTTOM); snes_render_node(&ct, &m->home, hud); }
+	}
 	for (i = 0; i < n; i++)
 		m->chrome[i] = (m->chrome[i] == CHROME_SENTINEL) ? 0u : (0xFF000000u | m->chrome[i]);
 	/* Precompute the opaque horizontal runs per row once, so draw_chrome (called
 	 * every frame in the home/resume states) can memcpy the runs instead of doing
 	 * a per-pixel alpha branch over 921600 pixels - a big per-frame CPU saving. */
 	{
-		int y, x;
-		for (y = 0; y < SNES_VH; y++) {
+		int y, x, H = m->aspect ? CHROME_H : SNES_VH;
+		for (y = 0; y < H; y++) {
 			const uint32_t *src = m->chrome + (unsigned)y * SNES_VW;
 			int nr = 0, x0 = -1;
 			for (x = 0; x < SNES_VW; x++) {
@@ -364,9 +387,9 @@ static void build_chrome(snes_menu *m)
 }
 static void draw_chrome(snes_menu *m, snes_target *t)
 {
-	int y, i;
+	int y, i, H = m->aspect ? CHROME_H : SNES_VH;
 	if (!m->chrome_ready) { snes_render_node(t, &m->home, m->homemenu); return; }
-	for (y = 0; y < SNES_VH; y++) {
+	for (y = 0; y < H; y++) {
 		const uint32_t *src = m->chrome + (unsigned)y * SNES_VW;
 		uint32_t *dst = t->fb + (unsigned)(t->offy + y) * t->pitch + t->offx;
 		const uint16_t *r = &s_chrome_run[(unsigned)y * CHROME_MAXRUN * 2];
@@ -1475,12 +1498,53 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	 * transform placed by set_view handles the vertical centring instead. */
 	if (m->aspect) t->offy = 0;
 
+	/* the chrome cache is built for one aspect; rebuild it when the aspect
+	 * changed (build_chrome clears/repaints it with the new view transforms). */
+	if (!m->chrome_ready) build_chrome(m);
+
 	/* Submenu (state 2) is a full-screen opaque panel over a black scrim: the
 	 * home/wallpaper/carousel behind it are 100% covered, so skip rendering them
 	 * entirely. This was ~the whole frame's cost (the carousel even rendered
 	 * twice), and starving the single-threaded audio ring feed made SFX loop in
 	 * every non-home menu. Just paint the scrim + the panel. */
 	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
+		/* 4:3: the submenu panel is the 'contain' view group - kept at native 720
+		 * and centred in the 960 panel (never zoomed/cropped), so the top/bottom SNES
+		 * bars stay visible above and below it. Draw the wallpaper + home chrome (the
+		 * two bars pinned to the edges) behind, then the whole panel and all of its
+		 * hints/lists/strips in the contain view (they are one 'contain' subtree in
+		 * the web, so they move with the panel rather than pinning to the bar edges). */
+		if (m->aspect) {
+			draw_wp(m, t, (int)m->scroll);
+			if (!m->homemenu) snes_render_scene(t, &m->home);
+			else              draw_chrome(m, t);
+			set_view(m, t, VIEW_CONTAIN);
+			/* the option scene's own full-native black overlay (contain-scaled) is
+			 * the panel's opaque backing - in 16:9 the full-screen scrim provided it,
+			 * but contain only covers the centred 720 band, so paint it explicitly to
+			 * hide the wallpaper behind the panel (the top/bottom bars still show). */
+			snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
+			m->overlay[m->open]->tf[5] = m->open_y;
+			snes_render_node(t, &m->home, m->overlay[m->open]);
+			if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
+			else if (m->open == 4) draw_manual_hints(m, t);
+			else if (m->open >= 0 && m->open <= 2) draw_option_hints(m, t);
+			if (m->open == 0) draw_frame_strip(m, t);
+			if (m->open == 2 && m->card_act) {
+				snes_rnode *el = child_named(m->pk, m->overlay[2], "elements"), *it;
+				for (it = el ? el->child : 0; it; it = it->sib) {
+					snes_rnode *btn = child_named(m->pk, it, "button");
+					float w[6];
+					int on = name_eq(m->pk, it, "language01");
+					snes_spr_entry d = { m->card_act->img, (uint16_t)(on ? 113 : 99),
+							     881, 12, 12, 6, 6 };
+					if (!btn) continue;
+					snes_node_world(btn, w);
+					snes_blit_spr(t, m->pk, &d, 640.0f + w[2], 360.0f - w[5], 2.4f, 1.0f);
+				}
+			}
+			return;
+		}
 		/* While the panel is SLIDING in/out, the web slides the OPAQUE full-screen
 		 * panel over the still-visible, undimmed menubar/home: the home shows only in
 		 * the strip the panel has vacated (below its moving bottom edge on open, above
