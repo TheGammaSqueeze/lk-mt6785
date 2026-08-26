@@ -297,6 +297,7 @@ def emit_component(blob, comp):
         body += struct.pack("<f", wrap_w)
         body += struct.pack("<hh", sdx, sdy)
         body += scol
+        body += color4(comp.get("color"))   # label's own tint (multiplies node col)
 
     elif ctype == COMP_ANIMATOR:
         anim_hash = fnv1a(comp["animation"]) if comp.get("animation") else 0

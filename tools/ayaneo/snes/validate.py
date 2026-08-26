@@ -77,6 +77,34 @@ def score(web, mine, flat=None):
         ui = (an.max(axis=2) > 70) | (bn.max(axis=2) > 70)
     return float(d[ui].mean() / 3.0) if ui.any() else 0.0
 
+def worst_tile(web, mine, flat=None, tile=40):
+    """Localized error detector. The global mean dilutes a small high-contrast
+    mistake (e.g. black-vs-white button text over a few hundred px averages to
+    ~1). Tile the UI-masked diff into `tile`x`tile` blocks and return the worst
+    block's mean(diff/3) plus its centre (x,y) and how much of it is UI. A
+    legibility/colour bug shows a high worst-tile score even at a low global
+    mean, so it cannot hide. Only tiles with enough UI coverage count."""
+    import numpy as np
+    an = np.asarray(web, dtype=np.int16); bn = np.asarray(mine, dtype=np.int16)
+    d = np.abs(an - bn).sum(axis=2) / 3.0
+    if flat is not None:
+        fn = np.asarray(flat, dtype=np.int16)
+        ui = np.all(bn == fn, axis=2)
+    else:
+        ui = (an.max(axis=2) > 70) | (bn.max(axis=2) > 70)
+    H, W = d.shape
+    best = (0.0, 0, 0, 0.0)
+    for ty in range(0, H, tile):
+        for tx in range(0, W, tile):
+            m = ui[ty:ty+tile, tx:tx+tile]
+            cov = float(m.mean())
+            if cov < 0.15:            # mostly wallpaper/empty: skip
+                continue
+            v = float(d[ty:ty+tile, tx:tx+tile][m].mean())
+            if v > best[0]:
+                best = (v, tx + tile // 2, ty + tile // 2, cov)
+    return best
+
 def main():
     pack, binp = sys.argv[1], sys.argv[2]
     only = sys.argv[3:]
@@ -94,18 +122,23 @@ def main():
         # amplify diff for visibility
         dv = diff.point(lambda p: min(255, p * 3))
         s = score(web, mine, flat)
+        wt, wx, wy, wcov = worst_tile(web, mine, flat)
         web.save(f"{OUT}/{name}_web.png"); mine.save(f"{OUT}/{name}_mine.png")
         dv.save(f"{OUT}/{name}_diff.png")
         sbs = Image.new("RGB", (CW, CH * 3 + 40), (20, 20, 20))
         sbs.paste(web, (0, 0)); sbs.paste(mine, (0, CH + 20)); sbs.paste(dv, (0, CH * 2 + 40))
+        # ring the worst tile in the diff panel so it is obvious where to look
+        dd = ImageDraw.Draw(sbs)
+        dd.rectangle([wx-20, CH*2+40+wy-20, wx+20, CH*2+40+wy+20], outline=(255,0,0))
         sbs.save(f"{OUT}/{name}_sbs.png")
-        rows.append((name, s))
-        print(f"{name:18s} meanAbsDiff={s:6.2f}")
+        rows.append((name, s, wt, wx, wy))
+        flag = "  <-- LOCALIZED" if wt > 25.0 else ""
+        print(f"{name:18s} meanAbsDiff={s:6.2f}  worstTile={wt:6.2f} @({wx},{wy}){flag}")
     if rows:
-        worst = sorted(rows, key=lambda r: -r[1])
-        print("\nWORST FIRST:")
-        for n, s in worst:
-            print(f"  {n:18s} {s:6.2f}")
+        print("\nWORST (by localized tile):")
+        for n, s, wt, wx, wy in sorted(rows, key=lambda r: -r[2]):
+            flag = "  <-- LOCALIZED" if wt > 25.0 else ""
+            print(f"  {n:18s} mean={s:6.2f}  tile={wt:6.2f} @({wx},{wy}){flag}")
 
 if __name__ == "__main__":
     main()

@@ -412,7 +412,15 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 	}
 	const char *p;
 	int pgw, pgh, rgb565;
+	float lcol[4];
 	if (!fe || !text || !text[0]) return;
+	/* fold the label component's own tint into the node colour chain (web
+	 * mulColor(nodeCol, comp.color)); black button labels, gray captions, etc. */
+	lcol[0] = col[0] * (lb->color[0] / 255.0f);
+	lcol[1] = col[1] * (lb->color[1] / 255.0f);
+	lcol[2] = col[2] * (lb->color[2] / 255.0f);
+	lcol[3] = col[3] * (lb->color[3] / 255.0f);
+	col = lcol;
 	page = &pk->img[fe->page];
 	pgpix = snes_img_pixels(pk, page); pgw = page->w; pgh = page->h;
 	rgb565 = (page->flags & SNES_IMG_RGB565) ? 1 : 0;

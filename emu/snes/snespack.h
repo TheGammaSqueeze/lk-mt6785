@@ -163,6 +163,7 @@ typedef struct {
 	float     wrap_width;
 	int16_t   shadow_dx, shadow_dy;
 	uint8_t   shadow_col[4];
+	uint8_t   color[4];   /* label's own tint (multiplies the node colour chain) */
 } snes_comp_label;
 
 /* animator body (COMP_ANIMATOR) */
