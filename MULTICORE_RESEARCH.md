@@ -211,3 +211,53 @@ Key file/address references: bigcore.c:48,259,269-274; snes_driver.c:96-172 (bc_
 spm_poweron_cpu 0x126dc, PWR_CON table 0x20c70, ack read 0x12574, ack-bit 0x125b4, CLUSTERPWRDN
 0x1a7f4, on_finish 0xbe88 (calls it 0xbf40), CCI admit 0x971c, DSU admit 0x99d4, spmc_init
 0x125f4, cluster init 0x16b64; kernel arch/arm64/kernel/psci.c:47-55.
+
+### External corroboration (online, cycle 1)
+- ARM DynamIQ/DSU: coherency-connect for a core is an AMBA LPI P-Channel handshake
+  (PACCEPT/PDENY) driven by the power controller, SEPARATE from the core executing; it is
+  NOT a register a core or a peer writes. This is why "toggle a coherency-enable bit after
+  the fact" never worked and why an A55's SMPEN is hardware-set at reset.
+- Authoritative sibling ATF source (ARM-software mt8183 drivers/spmc/mtspmc.c
+  spm_poweron_cpu, and the mt8192 equivalent) shows the CPU power-ON path is ONLY: set
+  PWR_RST_B, set PWR_ON, poll PWR_STATUS ack. There is NO cache-coherency / SCU-DSU-snoop /
+  ACINACTM / standby-WFI step anywhere in the software power-on. So coherency admission is
+  entirely the DSU hardware sequence that runs when the CPC/SPMC powers the core correctly.
+  Consequence: there is genuinely no missing software snoop-admit call for LK to make. The
+  only open question is whether our CPC-arm bypass powers the core in a way the DSU treats
+  as a full coherency-connect (Lever 1 will tell us empirically via the self-readback).
+
+### Candidate LK-local bugs to check IF the probe returns "worker path broken / mistranslate"
+(pre-staged so the fix is immediate; do NOT pre-apply, they would confound the probe)
+1. TTBCR walk attrs: the worker adopts cpu0's TTBCR (mcr p15,0,r6,c2,c0,2, bigcore_entry.S:83)
+   with a cacheable inner-shareable page-table walk. A non-snoop-admitted core doing a
+   cacheable-shareable PTW of tables cpu0 recently modified (bc_device_map's L1 split +
+   bc_l2_tbl) could walk stale/garbage. Fix to test: force the worker's TTBCR IRGN/ORGN to
+   Non-cacheable (0b00) and SH to Non-shareable so its PTW goes endpoint-direct to DRAM
+   (tables are already cleaned there). If that fixes cross-core reads it also strongly
+   implies the wall is PTW-visibility, not data-visibility, and a non-shareable-private
+   cacheable data mapping would then give full-speed cached compute (best case).
+2. bc_l2_tbl PA: bc_device_map writes l1[l1i] = (u32)bc_l2_tbl | TABLE (bigcore.c:192). This
+   assumes bc_l2_tbl VA==PA (LK identity map). Verify bc_l2_tbl actually sits in the
+   identity-mapped LK region; if LK ever maps BSS non-identity, the L2 base is wrong and the
+   worker (and cpu0) mistranslate 0x51000000. Check with the probe's PAR-lo PA field.
+3. Worker TLB: bigcore_entry.S:77 TLBIALL runs BEFORE the TTBR0/TTBCR writes (83-87). A stale
+   walk-cache entry could survive. Move a TLBIALL + DSB + ISB to AFTER the TTBR0/TTBCR/MAIR
+   writes and retest.
+4. Snapshot ordering: bigcore_start does bc_device_map (357) then bc_snapshot_mmu (358) then
+   clean comms (361). Confirm the snapshot captures the POST-device_map TTBR0 (it does, order
+   is right) and that arch_clean on bc_l2_tbl (bigcore.c:189) reached PoC before the worker's
+   first PTW.
+
+### Next-experiment plan (deterministic, gated on the probe UART)
+- If probe => "wall confirmed" (worker paths sane, only cpu0->worker fails): implement Lever 4
+  (producer offload: cpu1 rebuilds per-card boxart caches round-robin from the static asset
+  blob into DRAM slots, cpu0 invalidate+reads; zero per-frame coherent cpu0->worker read) as
+  the pragmatic 2-core win; in parallel, if RECON shows CPC_SPMC_ST bits 6/7 set, try Lever 3
+  (PSCI CPU_ON 0x600, A75) reusing the harness.
+- If probe => "LK bug": apply candidate 1 (Non-cacheable/Non-shareable worker walk) first, it
+  is the highest-value fix and could reopen a FULL coherent 2-core split.
+
+### STATUS after cycle 1
+Decisive probe BUILT + SIGNED + STAGED at /mnt/c/pairmini/lk_a_snes_bigcore_probe.img. Blocked
+on one HW flash (operator asleep). All levers ranked and gated. Continuing research on Lever
+3/4 mechanics and candidate-bug fixes so the post-probe step is immediate.
