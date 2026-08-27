@@ -598,7 +598,7 @@ static void snes_present_log(int rebuilt, unsigned build_us, unsigned cursor_us,
 		for (i = 0; i < 6; i++) wd[i] = g_snes_disp_us[i];
 		for (i = 0; i < 4; i++) { wcc[i] = g_cc_us[i]; wcu[i] = g_cur_us[i]; }
 	}
-	if (++n >= 30u) {
+	if (++n >= 90u) {
 		_dprintf("SNESP st=%d reb=%u rend=%uus PRESENT=%uus [build=%u curs=%u pl=%u] "
 			 "cc{clr=%u drw=%u scan=%u unp=%u} cur{clr=%u card=%u cur=%u unp=%u} "
 			 "clean{L0=%u L2=%u L3=%u} cfg=%u trig=%u vsync=%u\n",
@@ -796,6 +796,13 @@ static int snes_emu_thread(void *arg)
 				t_ph2 = gpt4_get_current_tick();
 #endif
 				l3_live = SNES_OVL_L3_PA + (s_l3_flip ? l3_size : 0u);
+				/* Decide the layered present vsync sync from the WHOLE frame CPU cost (render
+				 * + L2 build + L3 cursor), measured just before the swap. Fit a vsync (steady
+				 * idle/pan) -> skip the explicit wait, config_input FRAME_DONE syncs it (60fps);
+				 * overran (L2 rebuild OR a live crossfade render in movement) -> wait so the swap
+				 * lands on vblank not mid-scanout. The old render-only skip missed the cursor +
+				 * build cost, so overrunning movement pan frames tore (the flicker). */
+				ayaneo_present_skip_vsync(((gpt4_get_current_tick() - t_frame0) / 13u) < 15000u);
 				ayaneo_canvas_present_layers(l2_live, l2_pan, rebuilt,
 							     l3_live, SNES_CURSOR_Y0, SNES_CURSOR_Y1);
 #ifdef AYANEO_DEBUG_LOGGING
@@ -827,7 +834,7 @@ static int snes_emu_thread(void *arg)
 					wtot = tot; wr2 = s_perf_render_us; wp2 = s_perf_present_us;
 					for (i = 0; i < 5; i++) wg[i] = g_perf[i] / 13u;
 				}
-				if (++nn >= 30u) {
+				if (++nn >= 90u) {
 					_dprintf("SNESN st=%d rend=%uus pres=%uus phase{wp=%u ch=%u car=%u fs=%u ot=%u}\n",
 						 s_menu.state, wr2, wp2, wg[0], wg[1], wg[2], wg[3], wg[4]);
 					nn = 0; wtot = 0;

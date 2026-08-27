@@ -1123,13 +1123,15 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_pan, int l2_clean,
 #ifdef AYANEO_DEBUG_LOGGING
 	tk1 = gpt4_get_current_tick(); DPH(4, tk0, tk1); tk0 = tk1;
 #endif
-	/* Sync the swap to vblank EXCEPT on a steady idle-layered frame (l2_pa set, no
-	 * rebuild), which fits in a frame and must stay 60fps (its config_input FRAME_DONE
-	 * wait already aligns to vblank). A rebuild frame (l2_clean, the ~tens-of-ms premult
-	 * L2 build) and the layer-disable transition frame (l2_pa==0, which renders the full
-	 * carousel and can exceed a frame) both overrun, so FRAME_DONE has passed there and
-	 * the swap would tear without this explicit wait. */
-	if (l2_clean || !l2_pa)
+	/* Sync the swap to vblank on any frame that OVERRAN a vsync. A frame that fits (steady
+	 * idle) is synced by config_input's FRAME_DONE wait and must NOT wait again (that would
+	 * halve it to 30fps), so the driver sets ayaneo_present_skip_vsync(1) when the whole
+	 * frame's CPU work was under a vsync. When it overran (an L2 rebuild, the layer-disable
+	 * frame, OR a live crossfade render during movement), FRAME_DONE has already passed and
+	 * is a no-op, so the swap would land mid-scanout and TEAR - do the explicit wait. Keying
+	 * on the measured overrun (not just l2_clean) is what stops the movement/idle flicker:
+	 * overrunning pan frames used to skip this wait and tear. */
+	if (!s_present_skip_vsync || !l2_pa)
 		priamry_display_wait_for_vsync();
 #ifdef AYANEO_DEBUG_LOGGING
 	tk1 = gpt4_get_current_tick(); DPH(5, tk0, tk1);
