@@ -972,13 +972,14 @@ void ayaneo_canvas_present(void)
 	 * currently-scanned frame to finish before reconfiguring the OVL to this new buffer.
 	 * That is the same safety the explicit vsync wait provided, so the two are redundant
 	 * and cost ~2 vsyncs of present time (~27ms measured -> 20fps instead of the
-	 * render-bound rate). We drop the explicit wait and rely on the NEXT frame's
-	 * config_input FRAME_DONE wait for pacing: flipping now lets render(N+1) overlap
-	 * scanout(N) (double-buffered pipelining). If it tears/partial-blacks on HW, define
-	 * AYANEO_DISP_KEEP_EXTRA_VSYNC to restore the belt-and-braces wait. */
-#ifdef AYANEO_DISP_KEEP_EXTRA_VSYNC
+	 * render-bound rate) - BUT that only holds when the render fits in a frame. This is
+	 * the single-buffer present (moving carousel, submenus, GBC/GBA), whose render can
+	 * EXCEED a frame (the scrolling carousel is ~31ms). Then config_input's FRAME_DONE
+	 * wait has already passed and is a no-op, the swap lands mid-scanout, and the loop
+	 * redraws the still-displayed buffer -> tearing. So keep the explicit vsync wait
+	 * here to stay tear-free; the layered idle present omits it (its render is < 1
+	 * frame, so its FRAME_DONE wait already syncs, and it must stay 60fps). */
 	priamry_display_wait_for_vsync();
-#endif
 	s_fb_flip ^= 1;
 }
 
@@ -1062,9 +1063,14 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_y0, int l2_y1, int 
 	/* one FRAME_DONE wait + one path config for all three layers, then trigger */
 	primary_display_config_input_multi(in, 3);
 	primary_display_trigger(TRUE);
-#ifdef AYANEO_DISP_KEEP_EXTRA_VSYNC
-	priamry_display_wait_for_vsync();
-#endif
+	/* Sync the swap to vblank EXCEPT on a steady idle-layered frame (l2_pa set, no
+	 * rebuild), which fits in a frame and must stay 60fps (its config_input FRAME_DONE
+	 * wait already aligns to vblank). A rebuild frame (l2_clean, the ~tens-of-ms premult
+	 * L2 build) and the layer-disable transition frame (l2_pa==0, which renders the full
+	 * carousel and can exceed a frame) both overrun, so FRAME_DONE has passed there and
+	 * the swap would tear without this explicit wait. */
+	if (l2_clean || !l2_pa)
+		priamry_display_wait_for_vsync();
 	s_fb_flip ^= 1;
 }
 #endif /* AYANEO_SNES */
