@@ -825,6 +825,20 @@ static int snes_emu_thread(void *arg)
 			}
 			s_perf_present_us = (gpt4_get_current_tick() - t_pre) / 13u;
 #ifdef AYANEO_DEBUG_LOGGING
+			/* Transition capture: when the layered<->single-buffer mode flips (idle <-> menubar/
+			 * submenu, or the movement rebuild pattern), log the NEXT few frames UNTHROTTLED so the
+			 * exact per-frame rend/present timing across the boundary is visible (the flicker the
+			 * user sees at the switch). Rare, so it does not spam. */
+			{
+				static int s_prev_lay = -1, s_burst;
+				if (layered != s_prev_lay) { s_burst = 8; s_prev_lay = layered; }
+				if (s_burst > 0) {
+					s_burst--;
+					_dprintf("SNESX lay=%d st=%d openy=%d rend=%uus pres=%uus tot=%uus\n",
+						 layered, s_menu.state, (int)s_menu.open_y, s_perf_render_us,
+						 s_perf_present_us, s_perf_render_us + s_perf_present_us);
+				}
+			}
 			/* single-buffer (non-layered) states: log render + phase breakdown so the
 			 * render-bound suspend/submenu costs are in the log too (worst per 30 frames). */
 			if (!layered) {
