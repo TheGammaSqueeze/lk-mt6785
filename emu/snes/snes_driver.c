@@ -217,12 +217,13 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	for (;;) {
 		BC_INVAL(BC_L(128), BC_LINE);      /* invalidate DONE (worker-owned), read fresh */
 		if (g_bc->done == seq) { g_bc_wfin++; break; }
-		/* Fallback deadline: 20 ms for this coherency-fix bring-up (the worker is now
-		 * cached + a coherent snoop participant, so it renders its band fast). Generous
-		 * enough that a working worker finishes and wfin climbs; if it still fails the
-		 * menu degrades to ~30 fps single-core, not a hang. Tune toward ~2 ms once the
-		 * split is confirmed and the redundant explicit maintenance is removed. */
-		if ((gpt4_get_current_tick() - tw0) > 13u * 20000u) {   /* 20 ms */
+		/* Fallback deadline: 2 ms. The worker is still not a coherent snoop
+		 * participant on HW (run-15: removing the DCISW did not help, the DSU snoop
+		 * admit is an ATF/hardware power-sequence gap, not our worker code), so it
+		 * faults every frame and cpu0 always renders both bands. Keep the wasted wait
+		 * small so the menu holds ~30 fps single-core until the coherency path is
+		 * resolved. Raise this again when the worker actually completes. */
+		if ((gpt4_get_current_tick() - tw0) > 13u * 2000u) {   /* 2 ms */
 			snes_target tb = *tfull;
 			snes_target_band(&tb, sy, H);
 			snes_menu_render(menu, &tb);
