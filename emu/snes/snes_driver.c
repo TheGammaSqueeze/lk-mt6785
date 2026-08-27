@@ -435,6 +435,7 @@ static void draw_osd(unsigned int *fb, unsigned int pitch, int W)
 
 /* ---- OVL hardware-layering state (OVL_LAYERS.md) ---- */
 static uint32_t s_cc_sig;    /* card-cache signature the L2 buffer was built for */
+static uint32_t s_cc_sig_last; /* card-strip signature of the PREVIOUS frame (settle test) */
 static int s_cc_valid;       /* L2 currently holds a valid build */
 static int s_l2_flip;        /* L2 live-buffer index (flips only on rebuild) */
 static int s_l3_flip;        /* L3 live-buffer index (flips every frame) */
@@ -641,11 +642,19 @@ static int snes_emu_thread(void *arg)
 
 		poll_volume();
 		snes_menu_update(&s_menu, &in, dt);
-		/* OVL hardware layering: only the steady home carousel (state 0, no submenu
-		 * slide) is composited from OVL layers - the card bodies (L2) and cursor (L3)
-		 * are skipped in the framebuffer (L0) pass. Every other state renders the whole
-		 * frame into the framebuffer as before (already 60fps). See OVL_LAYERS.md. */
-		layered = (s_menu.state == 0 && s_menu.open_y == 0.0f && !s_menu.closing);
+		/* OVL hardware layering: only the STATIC home carousel is composited from OVL
+		 * layers - the card bodies (L2) and cursor (L3) are skipped in the framebuffer
+		 * (L0) pass. While the carousel is MOVING (its state signature changed since
+		 * last frame), rebuilding the L2 cache every frame is slow (the premult build
+		 * path is not NEON) and tears, so those frames render single-buffer via the fast
+		 * direct path - exactly the tear-free pre-layering carousel. Likewise every
+		 * non-home state. Layer only once the strip has settled. See OVL_LAYERS.md. */
+		{
+			uint32_t sig = snes_menu_cardcache_sig(&s_menu);
+			int settled = (sig == s_cc_sig_last);
+			s_cc_sig_last = sig;
+			layered = (s_menu.state == 0 && s_menu.open_y == 0.0f && !s_menu.closing && settled);
+		}
 		t.ovl_split = layered;
 #ifdef AYANEO_BIGCORE_EXPT
 		/* Split the render across cpu0 + the cached worker when it is up and the
@@ -714,11 +723,18 @@ static int snes_emu_thread(void *arg)
 				ayaneo_canvas_present_layers(l2_live, s_menu.cc_y0, s_menu.cc_y1, rebuilt,
 							     l3_live, SNES_CURSOR_Y0, SNES_CURSOR_Y1);
 				s_was_layered = 1;
-			} else {
-				/* single-buffer path: L0 only, upper layers disabled */
+			} else if (s_was_layered) {
+				/* leaving the layered state (movement / opening a submenu): disable
+				 * the upper OVL layers ONCE, at a frame boundary, so no stale cards or
+				 * cursor linger over the single-buffer frame. */
 				ayaneo_canvas_present_layers(0u, 0, 0, 0, 0u, 0, 0);
 				s_was_layered = 0;
-				s_cc_valid = 0;   /* force an L2 rebuild on re-entering layered mode */
+				s_cc_valid = 0;   /* force an L2 rebuild when the carousel next settles */
+			} else {
+				/* steady single-buffer state (moving carousel, submenu, resume): the
+				 * plain present, exactly the tear-free pre-layering path - it never
+				 * touches the (already-disabled) L2/L3 layers. */
+				ayaneo_canvas_present();
 			}
 			s_perf_present_us = (gpt4_get_current_tick() - t_pre) / 13u;
 		}
