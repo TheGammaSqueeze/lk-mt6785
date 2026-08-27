@@ -970,13 +970,18 @@ void ayaneo_canvas_present(void)
 	arch_clean_cache_range((unsigned int)((unsigned char *)fb_addr +
 			       (s_fb_flip ? fb_size : 0)), fb_size);
 	ayaneo_present(dpa, W, H, pitch_w);
-	/* Video mode: the OVL latches the new buffer address at the NEXT vsync, but
-	 * primary_display_trigger returns immediately. Without waiting, the loop
-	 * starts redrawing the OTHER buffer while this one is still being scanned out
-	 * -> tearing + partial-black. Block for one vsync so the swap is live before
-	 * we hand the old buffer back to the renderer. This also paces to the panel
-	 * (clean 60/N fps) instead of racing it. */
+	/* NOTE (perf): primary_display_config_input() inside ayaneo_present ALREADY blocks
+	 * on DISP_PATH_EVENT_FRAME_DONE when the video path is busy, i.e. it waits for the
+	 * currently-scanned frame to finish before reconfiguring the OVL to this new buffer.
+	 * That is the same safety the explicit vsync wait provided, so the two are redundant
+	 * and cost ~2 vsyncs of present time (~27ms measured -> 20fps instead of the
+	 * render-bound rate). We drop the explicit wait and rely on the NEXT frame's
+	 * config_input FRAME_DONE wait for pacing: flipping now lets render(N+1) overlap
+	 * scanout(N) (double-buffered pipelining). If it tears/partial-blacks on HW, define
+	 * AYANEO_DISP_KEEP_EXTRA_VSYNC to restore the belt-and-braces wait. */
+#ifdef AYANEO_DISP_KEEP_EXTRA_VSYNC
 	priamry_display_wait_for_vsync();
+#endif
 	s_fb_flip ^= 1;
 }
 
