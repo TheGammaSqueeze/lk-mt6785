@@ -751,7 +751,12 @@ static int snes_emu_thread(void *arg)
 				/* Rebuild the SETTLED wide strip only when the card ORDER changed (a
 				 * nav): cc_signature excludes cont_shift/xfade, so a slide leaves it
 				 * unchanged and is served by the src_x pan below - no per-frame rebuild. */
-				if (!s_cc_valid || sig != s_cc_sig || !s_was_layered) {
+				/* On RE-ENTERING layered (from submenu/resume) do NOT force a rebuild: the
+				 * L2 buffer at 0x54000000 is untouched by the single-buffer states and the
+				 * carousel focus cannot change there, so its cards are still valid - reuse
+				 * them (sig-checked) and just re-enable the layer. Kills the ~30ms rebuild
+				 * that made the re-entry frame a 66ms freeze (the transition flicker). */
+				if (!s_cc_valid || sig != s_cc_sig) {
 					snes_target ct = {0};
 					ct.fb = (unsigned int *)(unsigned long)
 						(SNES_OVL_L2_PA + (s_l2_flip ? 0u : l2_size));
@@ -816,7 +821,9 @@ static int snes_emu_thread(void *arg)
 				 * layers ONCE, at a frame boundary, so no stale cards/cursor linger. */
 				ayaneo_canvas_present_layers(0u, 0, 0, 0u, 0, 0);
 				s_was_layered = 0;
-				s_cc_valid = 0;   /* force an L2 rebuild when we re-enter layered mode */
+				/* keep s_cc_valid: the L2 cards stay valid across the excursion (nothing
+				 * writes 0x54000000 in the single-buffer states, focus cannot change), so
+				 * re-entry reuses them (no 30ms rebuild freeze). sig-checked on return. */
 			} else {
 				/* steady single-buffer state (moving carousel, submenu, resume): the
 				 * plain present, exactly the tear-free pre-layering path - it never
