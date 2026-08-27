@@ -662,7 +662,11 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 	const snes_spr_entry *frame = m->card_norm ? m->card_norm : m->card_act;
 	cy -= RESUME_CARD_DY * m->resume_dim;   /* raised behind the Suspend List */
 	const snes_img_entry *im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
-	if (cx < -280 || cx > SNES_VW + 280) return;
+	/* widen the cull when building the pan cache (cache_layer) by one card-slide so
+	 * the SETTLED strip is a superset of every card visible at any cont_shift during
+	 * the slide - the OVL pan can then show cards that slide in from the edges. */
+	{ int cm = t->cache_layer ? (280 + (int)CAR_HGAP) : 280;
+	  if (cx < -cm || cx > SNES_VW + cm) return; }
 	if (frame) {
 		/* the `card` sprite is the screen BACKGROUND (blue when active, dark when
 		 * not); draw it first, then the boxart on top. The boxart is scaled
@@ -752,7 +756,8 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 		if (j == m->focus) continue;
 		wx = m->sel_world + CAR_HGAP * (float)ring_delta(m->focus, j, n) + m->cont_shift;
 		cx = 640.0f + wx;
-		if (cx < -280 || cx > SNES_VW + 280) continue;
+		{ int cm = t->cache_layer ? (280 + (int)CAR_HGAP) : 280;   /* wider for the pan cache */
+		  if (cx < -cm || cx > SNES_VW + cm) continue; }
 		blue_a = (j == m->prev_focus) ? prog : 0.0f;   /* outgoing card fades out */
 		draw_card(m, t, j, cx, blue_a, ndim);
 	}
@@ -777,11 +782,13 @@ static uint32_t cc_signature(snes_menu *m)
 	union { float f; uint32_t u; } c;
 	uint32_t h = 2166136261u;
 #define CC_MIX(v) do { h = (h ^ (uint32_t)(v)) * 16777619u; } while (0)
-	CC_MIX(m->focus); CC_MIX(m->prev_focus); CC_MIX(m->state); CC_MIX(m->sort_rule);
+	/* SETTLED signature: what the cont_shift=0, xfade=0 cached strip looks like.
+	 * Deliberately EXCLUDES cont_shift and xfade_t/prev_focus - those animate during a
+	 * slide but are handled by the OVL dst_x pan + the crossfade snap, so they must NOT
+	 * trigger a rebuild (that is what lets a scroll pan instead of re-render). */
+	CC_MIX(m->focus); CC_MIX(m->state); CC_MIX(m->sort_rule);
 	CC_MIX(m->ngames); CC_MIX(m->aspect);
-	c.f = m->xfade_t;    CC_MIX(c.u);
 	c.f = m->sel_world;  CC_MIX(c.u);
-	c.f = m->cont_shift; CC_MIX(c.u);
 	c.f = m->resume_dim; CC_MIX(c.u);
 	c.f = m->open_y;     CC_MIX(c.u);
 #undef CC_MIX
@@ -848,11 +855,21 @@ void snes_menu_build_cardcache(snes_menu *m, snes_target *t)
 {
 	int H = t->H, W = t->W, y, x, y0 = t->H, y1 = -1;
 	unsigned i, npix = (unsigned)W * (unsigned)H;
+	float save_cs = m->cont_shift, save_xf = m->xfade_t;
 	t->cache_layer = 1;
-	if (m->aspect) t->offy = 0;
+	/* The caller controls the target geometry (offx/offy/W/H/pitch). For the OVL pan
+	 * this is a WIDE, band-height buffer with offx=margin so cards that slide in from
+	 * the edges are pre-rendered (not clipped) and the layer is panned via src_x; the
+	 * caller sets offy to place the card band, so we do NOT override it here. */
 	for (i = 0; i < npix; i++) t->fb[i] = 0;
+	/* Render the SETTLED strip: cont_shift=0 (the OVL pans the live cont_shift via
+	 * dst_x, so the cache is position-independent and only rebuilds when the focus/
+	 * order changes, not every frame during a slide) and xfade_t=0 (the 0.2s blue
+	 * crossfade is snapped, so a held scroll does not force a rebuild every frame). */
+	m->cont_shift = 0.0f; m->xfade_t = 0.0f;
 	set_view(m, t, VIEW_CONTENT);
 	draw_carousel(m, t);
+	m->cont_shift = save_cs; m->xfade_t = save_xf;
 	for (y = 0; y < H; y++) {
 		const uint32_t *r = t->fb + (unsigned)y * t->pitch;
 		for (x = 0; x < W; x++)

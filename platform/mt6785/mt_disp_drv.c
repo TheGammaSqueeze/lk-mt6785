@@ -1032,7 +1032,13 @@ static void ayaneo_ovl_fill_argb(disp_input_config *in, int layer, unsigned int 
  * is always cleaned. L2/L3 are fixed identity-mapped DRAM (VA==PA); L3 is
  * left-of-centre width, L2 full width. */
 #define SNES_OVL_L3_W  960
-void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_y0, int l2_y1, int l2_clean,
+/* L2 pan-cache geometry - MUST match snes_menu.h SNES_L2_*. The strip is a WIDE,
+ * band-height buffer; the visible 1280 window is panned by src_x (l2_pan). */
+#define SNES_L2_MARGIN_D  608
+#define SNES_L2_W_D       (1280 + 2 * SNES_L2_MARGIN_D)
+#define SNES_L2_BAND_Y0_D 300
+#define SNES_L2_BAND_H_D  384
+void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_pan, int l2_clean,
 				  unsigned int l3_pa, int l3_y0, int l3_y1)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
@@ -1049,13 +1055,26 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_y0, int l2_y1, int 
 	in[0].addr = dpa; in[0].src_w = W; in[0].src_h = H; in[0].src_pitch = pitch_w * 4;
 	in[0].dst_w = W; in[0].dst_h = H; in[0].aen = 1; in[0].alpha = 0xff;
 
-	/* L2 = cursorless card cache (full width, non-empty band only) */
-	if (l2_pa && l2_y1 >= l2_y0) {
-		int h = l2_y1 - l2_y0 + 1;
+	/* L2 = cursorless card cache: a WIDE band-height buffer PANNED by src_x=l2_pan.
+	 * The 1280-wide visible window reads columns [l2_pan, l2_pan+1280) of the wide
+	 * buffer and lands at panel rows [BAND_Y0, BAND_Y0+BAND_H). On a rebuild the whole
+	 * band buffer is flushed (any column may be read as the pan sweeps). */
+	if (l2_pa) {
+		int pan = l2_pan;
+		if (pan < 0) pan = 0;
+		else if (pan > SNES_L2_W_D - (int)W) pan = SNES_L2_W_D - (int)W;
 		if (l2_clean)
-			arch_clean_cache_range(l2_pa + (unsigned)l2_y0 * pitch_w * 4u,
-					       (unsigned)h * pitch_w * 4u);
-		ayaneo_ovl_fill_argb(&in[1], 2, l2_pa, l2_y0, (int)W, h, pitch_w);
+			arch_clean_cache_range(l2_pa, (unsigned)SNES_L2_W_D * SNES_L2_BAND_H_D * 4u);
+		memset(&in[1], 0, sizeof(in[1]));
+		in[1].layer = 2; in[1].layer_en = 1;
+		in[1].fmt = redoffset_32bit ? eBGRA8888 : eRGBA8888;
+		in[1].addr = l2_pa;
+		in[1].src_x = pan; in[1].src_y = 0;
+		in[1].src_w = W; in[1].src_h = SNES_L2_BAND_H_D;
+		in[1].src_pitch = SNES_L2_W_D * 4;
+		in[1].dst_x = 0; in[1].dst_y = SNES_L2_BAND_Y0_D;
+		in[1].dst_w = W; in[1].dst_h = SNES_L2_BAND_H_D;
+		in[1].aen = 1; in[1].alpha = 0xff;
 	} else {
 		memset(&in[1], 0, sizeof(in[1])); in[1].layer = 2; in[1].layer_en = 0;
 	}
