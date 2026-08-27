@@ -10,6 +10,14 @@ static unsigned g_perf_last;
 #define PERF_BEGIN() do { if (g_perf_tick) g_perf_last = g_perf_tick(); } while (0)
 #define PERF_END(i)  do { if (g_perf_tick) { unsigned n_ = g_perf_tick(); \
 	g_perf[i] = n_ - g_perf_last; g_perf_last = n_; } } while (0)
+/* sub-phase timers (us) for the two slow OVL-buffer builds, so the device UART log can
+ * split them: g_cc_us = build_cardcache {clear, draw, band-scan, unpremult};
+ * g_cur_us = render_cursor_layer {clear, focus-card, cursor, unpremult}. */
+unsigned g_cc_us[4], g_cur_us[4];
+static unsigned g_sub_last;
+#define SUB_BEGIN() do { if (g_perf_tick) g_sub_last = g_perf_tick(); } while (0)
+#define SUB_END(arr, i) do { if (g_perf_tick) { unsigned n_ = g_perf_tick(); \
+	(arr)[i] = (n_ - g_sub_last) / 13u; g_sub_last = n_; } } while (0)
 
 /* ---- 4:3 aspect adaptation (ports static renderer.js setAspect + paint) ----
  * The panel is 1280x960 = 4:3; native design is 1280x720 (16:9). In 4:3 mode
@@ -912,7 +920,9 @@ void snes_menu_build_cardcache(snes_menu *m, snes_target *t)
 	 * this is a WIDE, band-height buffer with offx=margin so cards that slide in from
 	 * the edges are pre-rendered (not clipped) and the layer is panned via src_x; the
 	 * caller sets offy to place the card band, so we do NOT override it here. */
+	SUB_BEGIN();
 	for (i = 0; i < npix; i++) t->fb[i] = 0;
+	SUB_END(g_cc_us, 0);
 	/* Render the SETTLED strip: cont_shift=0 (the OVL pans the live cont_shift via
 	 * dst_x, so the cache is position-independent and only rebuilds when the focus/
 	 * order changes, not every frame during a slide) and xfade_t=0 (the 0.2s blue
@@ -921,13 +931,16 @@ void snes_menu_build_cardcache(snes_menu *m, snes_target *t)
 	set_view(m, t, VIEW_CONTENT);
 	draw_carousel(m, t);
 	m->cont_shift = save_cs; m->xfade_t = save_xf;
+	SUB_END(g_cc_us, 1);
 	for (y = 0; y < H; y++) {
 		const uint32_t *r = t->fb + (unsigned)y * t->pitch;
 		for (x = 0; x < W; x++)
 			if (r[x] >> 24) { if (y < y0) y0 = y; y1 = y; break; }
 	}
 	m->cc_y0 = y0; m->cc_y1 = y1;
+	SUB_END(g_cc_us, 2);
 	if (y1 >= y0) cache_unpremult(t, 0, y0, W, y1 + 1);
+	SUB_END(g_cc_us, 3);
 }
 
 /* Clear + render the live selection cursor into the caller's panel-sized L3 buffer.
@@ -999,19 +1012,24 @@ void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t, int full_clear)
 	}
 	if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0;
 	if (cx1 > t->W) cx1 = t->W; if (cy1 > t->H) cy1 = t->H;
+	SUB_BEGIN();
 	for (y = cy0; y < cy1; y++) {
 		uint32_t *r = t->fb + (unsigned)y * t->pitch;
 		for (x = cx0; x < cx1; x++) r[x] = 0;
 	}
+	SUB_END(g_cur_us, 0);
 
 	/* the full blue focused card first (over the L2 dark body), then the cursor */
 	set_view(m, t, VIEW_CONTENT);
 	draw_focus_card(m, t);
+	SUB_END(g_cur_us, 1);
 	if (!draw_focus_slide(m, t)) {
 		set_view(m, t, VIEW_CONTENT);
 		draw_focus_cursor(m, t);
 	}
+	SUB_END(g_cur_us, 2);
 	cache_unpremult(t, cx0, cy0, cx1, cy1);
+	SUB_END(g_cur_us, 3);
 
 	pv0x[buf] = bx0; pv0y[buf] = by0; pv1x[buf] = bx1; pv1y[buf] = by1;
 }

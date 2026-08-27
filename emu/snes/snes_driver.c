@@ -581,21 +581,26 @@ static void input_init(void)
  * full breakdown once, so a brief scroll's hitch frame is captured without flooding
  * the slow UART every frame. g_snes_disp_us[] is filled inside present_layers. */
 extern unsigned g_snes_disp_us[6];   /* [L0clean L2clean L3clean cfg trig vsync] us */
+extern unsigned g_cc_us[4];          /* build_cardcache: clear, draw, band-scan, unpremult */
+extern unsigned g_cur_us[4];         /* render_cursor_layer: clear, card, cursor, unpremult */
 static void snes_present_log(int rebuilt, unsigned build_us, unsigned cursor_us,
 			     unsigned pl_us)
 {
-	static unsigned n, worst, wb, wc, wp, wr, wreb, wd[6];
+	static unsigned n, worst, wb, wc, wp, wr, wreb, wd[6], wcc[4], wcu[4];
 	unsigned total = build_us + cursor_us + pl_us;
 	if (total >= worst) {
 		unsigned i;
 		worst = total; wb = build_us; wc = cursor_us; wp = pl_us;
 		wr = s_perf_render_us; wreb = (unsigned)rebuilt;
 		for (i = 0; i < 6; i++) wd[i] = g_snes_disp_us[i];
+		for (i = 0; i < 4; i++) { wcc[i] = g_cc_us[i]; wcu[i] = g_cur_us[i]; }
 	}
 	if (++n >= 30u) {
 		_dprintf("SNESP st=%d reb=%u rend=%uus PRESENT=%uus [build=%u curs=%u pl=%u] "
+			 "cc{clr=%u drw=%u scan=%u unp=%u} cur{clr=%u card=%u cur=%u unp=%u} "
 			 "clean{L0=%u L2=%u L3=%u} cfg=%u trig=%u vsync=%u\n",
 			 s_menu.state, wreb, wr, worst, wb, wc, wp,
+			 wcc[0], wcc[1], wcc[2], wcc[3], wcu[0], wcu[1], wcu[2], wcu[3],
 			 wd[0], wd[1], wd[2], wd[3], wd[4], wd[5]);
 		n = 0; worst = 0;
 	}
