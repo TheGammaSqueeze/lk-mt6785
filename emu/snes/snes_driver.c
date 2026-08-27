@@ -574,6 +574,34 @@ static void input_init(void)
 	}
 }
 
+#ifdef AYANEO_DEBUG_LOGGING
+/* Per-second UART breakdown of the layered present's cost, so the slow-present
+ * regression can be diagnosed from the log (not just the coarse OSD render/present).
+ * Tracks the WORST (max total) present frame in each 60-frame window and prints its
+ * full breakdown once, so a brief scroll's hitch frame is captured without flooding
+ * the slow UART every frame. g_snes_disp_us[] is filled inside present_layers. */
+extern unsigned g_snes_disp_us[6];   /* [L0clean L2clean L3clean cfg trig vsync] us */
+static void snes_present_log(int rebuilt, unsigned build_us, unsigned cursor_us,
+			     unsigned pl_us)
+{
+	static unsigned n, worst, wb, wc, wp, wr, wreb, wd[6];
+	unsigned total = build_us + cursor_us + pl_us;
+	if (total >= worst) {
+		unsigned i;
+		worst = total; wb = build_us; wc = cursor_us; wp = pl_us;
+		wr = s_perf_render_us; wreb = (unsigned)rebuilt;
+		for (i = 0; i < 6; i++) wd[i] = g_snes_disp_us[i];
+	}
+	if (++n >= 30u) {
+		_dprintf("SNESP st=%d reb=%u rend=%uus PRESENT=%uus [build=%u curs=%u pl=%u] "
+			 "clean{L0=%u L2=%u L3=%u} cfg=%u trig=%u vsync=%u\n",
+			 s_menu.state, wreb, wr, worst, wb, wc, wp,
+			 wd[0], wd[1], wd[2], wd[3], wd[4], wd[5]);
+		n = 0; worst = 0;
+	}
+}
+#endif
+
 static int snes_emu_thread(void *arg)
 {
 	int r;
@@ -705,6 +733,9 @@ static int snes_emu_thread(void *arg)
 				int rebuilt = 0, l2_pan;
 				float vscale = s_menu.aspect ? ASP_CONTENT_S_DRV : 1.0f;
 				float save_cont_shift = s_menu.cont_shift;
+#ifdef AYANEO_DEBUG_LOGGING
+				unsigned t_ph0 = gpt4_get_current_tick(), t_ph1, t_ph2, t_ph3;
+#endif
 				/* Rebuild the SETTLED wide strip only when the card ORDER changed (a
 				 * nav): cc_signature excludes cont_shift/xfade, so a slide leaves it
 				 * unchanged and is served by the src_x pan below - no per-frame rebuild. */
@@ -718,6 +749,9 @@ static int snes_emu_thread(void *arg)
 					snes_menu_build_cardcache(&s_menu, &ct);
 					s_l2_flip ^= 1; s_cc_sig = sig; s_cc_valid = 1; rebuilt = 1;
 				}
+#ifdef AYANEO_DEBUG_LOGGING
+				t_ph1 = gpt4_get_current_tick();
+#endif
 				l2_live = SNES_OVL_L2_PA + (s_l2_flip ? l2_size : 0u);
 				/* Pan the strip by the live cont_shift: screen px = cont_shift*viewscale,
 				 * src_x = MARGIN - that (reads further left in the wide buffer to shift the
@@ -746,9 +780,17 @@ static int snes_emu_thread(void *arg)
 					s_l3_flip ^= 1;
 				}
 				s_menu.cont_shift = save_cont_shift;   /* restore the true animation value */
+#ifdef AYANEO_DEBUG_LOGGING
+				t_ph2 = gpt4_get_current_tick();
+#endif
 				l3_live = SNES_OVL_L3_PA + (s_l3_flip ? l3_size : 0u);
 				ayaneo_canvas_present_layers(l2_live, l2_pan, rebuilt,
 							     l3_live, SNES_CURSOR_Y0, SNES_CURSOR_Y1);
+#ifdef AYANEO_DEBUG_LOGGING
+				t_ph3 = gpt4_get_current_tick();
+				snes_present_log(rebuilt, (t_ph1 - t_ph0)/13u, (t_ph2 - t_ph1)/13u,
+						 (t_ph3 - t_ph2)/13u);
+#endif
 				s_was_layered = 1;
 			} else if (s_was_layered) {
 				/* leaving the layered state (opening a submenu): disable the upper OVL
@@ -763,6 +805,23 @@ static int snes_emu_thread(void *arg)
 				ayaneo_canvas_present();
 			}
 			s_perf_present_us = (gpt4_get_current_tick() - t_pre) / 13u;
+#ifdef AYANEO_DEBUG_LOGGING
+			/* single-buffer (non-layered) states: log render + phase breakdown so the
+			 * render-bound suspend/submenu costs are in the log too (worst per 30 frames). */
+			if (!layered) {
+				static unsigned nn, wtot, wr2, wp2, wg[5];
+				unsigned tot = s_perf_render_us + s_perf_present_us, i;
+				if (tot >= wtot) {
+					wtot = tot; wr2 = s_perf_render_us; wp2 = s_perf_present_us;
+					for (i = 0; i < 5; i++) wg[i] = g_perf[i] / 13u;
+				}
+				if (++nn >= 30u) {
+					_dprintf("SNESN st=%d rend=%uus pres=%uus phase{wp=%u ch=%u car=%u fs=%u ot=%u}\n",
+						 s_menu.state, wr2, wp2, wg[0], wg[1], wg[2], wg[3], wg[4]);
+					nn = 0; wtot = 0;
+				}
+			}
+#endif
 		}
 		mtk_wdt_restart();
 		{

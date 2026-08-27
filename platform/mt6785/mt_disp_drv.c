@@ -1038,6 +1038,17 @@ static void ayaneo_ovl_fill_argb(disp_input_config *in, int layer, unsigned int 
 #define SNES_L2_W_D       (1280 + 2 * SNES_L2_MARGIN_D)
 #define SNES_L2_BAND_Y0_D 300
 #define SNES_L2_BAND_H_D  384
+/* Per-phase present timing (debug build only) so the UART log can break a slow
+ * present down into its cache-flush / config / vsync parts. Filled every call;
+ * the driver logs a throttled summary. us = ticks / 13 (13 MHz gpt4). */
+#ifdef AYANEO_DEBUG_LOGGING
+extern unsigned gpt4_get_current_tick(void);
+unsigned g_snes_disp_us[6];   /* [0]L0clean [1]L2clean [2]L3clean [3]config [4]trigger [5]vsync */
+#define DPH(idx, a, b) do { g_snes_disp_us[idx] = ((b) - (a)) / 13u; } while (0)
+#else
+#define DPH(idx, a, b) do { } while (0)
+#endif
+
 void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_pan, int l2_clean,
 				  unsigned int l3_pa, int l3_y0, int l3_y1)
 {
@@ -1045,10 +1056,18 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_pan, int l2_clean,
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
 	unsigned int dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
 	disp_input_config in[3];
+#ifdef AYANEO_DEBUG_LOGGING
+	unsigned tk0, tk1;
+	tk0 = gpt4_get_current_tick();
+#endif
 
 	/* L0 = framebuffer: flush the back buffer */
 	arch_clean_cache_range((unsigned int)((unsigned char *)fb_addr +
 			       (s_fb_flip ? fb_size : 0)), fb_size);
+#ifdef AYANEO_DEBUG_LOGGING
+	tk1 = gpt4_get_current_tick(); DPH(0, tk0, tk1); tk0 = tk1;
+	g_snes_disp_us[1] = 0;   /* L2 clean: 0 unless rebuilt below */
+#endif
 	memset(&in[0], 0, sizeof(in[0]));
 	in[0].layer = FB_LAYER; in[0].layer_en = 1;
 	in[0].fmt = redoffset_32bit ? eBGRA8888 : eRGBA8888;
@@ -1065,6 +1084,9 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_pan, int l2_clean,
 		else if (pan > SNES_L2_W_D - (int)W) pan = SNES_L2_W_D - (int)W;
 		if (l2_clean)
 			arch_clean_cache_range(l2_pa, (unsigned)SNES_L2_W_D * SNES_L2_BAND_H_D * 4u);
+#ifdef AYANEO_DEBUG_LOGGING
+		tk1 = gpt4_get_current_tick(); DPH(1, tk0, tk1); tk0 = tk1;
+#endif
 		memset(&in[1], 0, sizeof(in[1]));
 		in[1].layer = 2; in[1].layer_en = 1;
 		in[1].fmt = redoffset_32bit ? eBGRA8888 : eRGBA8888;
@@ -1088,10 +1110,19 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_pan, int l2_clean,
 	} else {
 		memset(&in[2], 0, sizeof(in[2])); in[2].layer = 3; in[2].layer_en = 0;
 	}
+#ifdef AYANEO_DEBUG_LOGGING
+	tk1 = gpt4_get_current_tick(); DPH(2, tk0, tk1); tk0 = tk1;
+#endif
 
 	/* one FRAME_DONE wait + one path config for all three layers, then trigger */
 	primary_display_config_input_multi(in, 3);
+#ifdef AYANEO_DEBUG_LOGGING
+	tk1 = gpt4_get_current_tick(); DPH(3, tk0, tk1); tk0 = tk1;
+#endif
 	primary_display_trigger(TRUE);
+#ifdef AYANEO_DEBUG_LOGGING
+	tk1 = gpt4_get_current_tick(); DPH(4, tk0, tk1); tk0 = tk1;
+#endif
 	/* Sync the swap to vblank EXCEPT on a steady idle-layered frame (l2_pa set, no
 	 * rebuild), which fits in a frame and must stay 60fps (its config_input FRAME_DONE
 	 * wait already aligns to vblank). A rebuild frame (l2_clean, the ~tens-of-ms premult
@@ -1100,8 +1131,12 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_pan, int l2_clean,
 	 * the swap would tear without this explicit wait. */
 	if (l2_clean || !l2_pa)
 		priamry_display_wait_for_vsync();
+#ifdef AYANEO_DEBUG_LOGGING
+	tk1 = gpt4_get_current_tick(); DPH(5, tk0, tk1);
+#endif
 	s_fb_flip ^= 1;
 }
+#undef DPH
 #endif /* AYANEO_SNES */
 
 #ifdef AYANEO_GBC   /* GBC-specific overlay/OSD/show_frame (uses GBC geometry + menu) */
