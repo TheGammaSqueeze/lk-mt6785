@@ -776,7 +776,7 @@ static int snes_emu_thread(void *arg)
 						(SNES_OVL_L3_PA + (s_l3_flip ? 0u : l3_size));
 					curt.W = (int)W; curt.H = (int)H; curt.pitch = pitch;
 					curt.offx = ((int)W - SNES_VW) / 2; curt.offy = ((int)H - SNES_VH) / 2;
-					snes_menu_render_cursor_layer(&s_menu, &curt);
+					snes_menu_render_cursor_layer(&s_menu, &curt, !s_was_layered);
 					s_l3_flip ^= 1;
 				}
 				s_menu.cont_shift = save_cont_shift;   /* restore the true animation value */

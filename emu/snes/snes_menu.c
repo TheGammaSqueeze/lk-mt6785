@@ -935,16 +935,75 @@ void snes_menu_build_cardcache(snes_menu *m, snes_target *t)
  * menubar slide path, both aspects) is cleared each frame - so the double-buffered
  * L3 never trails - then the slide cursor (identity view) OR the static focus
  * cursor (content view) is drawn and un-premultiplied to straight alpha. */
-void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t)
+void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t, int full_clear)
 {
-	int y, x, x1 = SNES_CURSOR_X1, y1 = SNES_CURSOR_Y1;
-	if (x1 > t->W) x1 = t->W; if (y1 > t->H) y1 = t->H;
-	for (y = SNES_CURSOR_Y0; y < y1; y++) {
-		uint32_t *r = t->fb + (unsigned)y * t->pitch;
-		for (x = SNES_CURSOR_X0; x < x1; x++) r[x] = 0;
-	}
+	/* L3 lives in a DRAM-bandwidth-bound region, so touching the whole 1280x680 cursor
+	 * rect every frame (clear + un-premult scan) costs ~13ms on device and blows the
+	 * frame budget. Instead touch only the focused (and, mid-crossfade, outgoing) card's
+	 * bounding box. Per-L3-buffer previous bbox (pv*) lets the clear also erase where the
+	 * card was up to 2 frames ago in THIS double-buffer, so the fading outgoing card
+	 * leaves no trail. flip pairs each call with one physical buffer (the driver flips
+	 * its L3 buffer once per call, in lockstep). */
+	static int pv0x[2], pv0y[2], pv1x[2] = {-1, -1}, pv1y[2] = {-1, -1};
+	static int flip;
+	int buf = flip & 1, y, x;
+	int bx0, by0, bx1, by1;   /* this frame's draw bbox (panel coords) */
+	int cx0, cy0, cx1, cy1;   /* clear + un-premult bbox = union(prev[buf], current) */
+	flip ^= 1;
+
 	t->cache_layer = 1;
 	if (m->aspect) t->offy = 0;
+
+	/* Re-entering the layered state: both L3 buffers hold stale content from before the
+	 * excursion, so force a full clear of both by seeding their previous bbox to full. */
+	if (full_clear) {
+		pv0x[0] = pv0x[1] = SNES_CURSOR_X0; pv0y[0] = pv0y[1] = SNES_CURSOR_Y0;
+		pv1x[0] = pv1x[1] = SNES_CURSOR_X1; pv1y[0] = pv1y[1] = SNES_CURSOR_Y1;
+	}
+
+	/* This frame's draw bbox. During the menubar<->carousel slide the cursor travels the
+	 * full height, so fall back to the whole rect; otherwise it is just the card band. */
+	if (m->cur_slide_t < CUR_SLIDE_DUR || m->state != 0 || m->ngames <= 0 || !m->card_act) {
+		bx0 = SNES_CURSOR_X0; by0 = SNES_CURSOR_Y0;
+		bx1 = SNES_CURSOR_X1; by1 = SNES_CURSOR_Y1;
+	} else {
+		float vsx = m->aspect ? ASP_CONTENT_S : 1.0f;
+		float vdx = m->aspect ? (640.0f - ASP_CONTENT_S * 640.0f) : 0.0f;
+		float vdy = m->aspect ? (480.0f - ASP_CONTENT_S * 360.0f) : 0.0f;
+		float cyv = CAR_CY - RESUME_CARD_DY * m->resume_dim;
+		float hw = m->card_fw * 0.5f * CAR_SC + 40.0f;   /* + cursor/icon/dot slop */
+		float hh = m->card_fh * 0.5f * CAR_SC + 40.0f;
+		float prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus) ? m->xfade_t / CAR_XFADE : 0.0f;
+		float cxc = 640.0f + m->sel_world + m->cont_shift;   /* focused card centre (virtual) */
+		int px0 = t->offx + (int)(vsx * (cxc - hw) + vdx);
+		int px1 = t->offx + (int)(vsx * (cxc + hw) + vdx) + 1;
+		bx0 = px0; bx1 = px1;
+		if (prog > 0.003f) {   /* outgoing card, one slot away */
+			float cxo = cxc + CAR_HGAP * (float)ring_delta(m->focus, m->prev_focus, m->ngames);
+			px0 = t->offx + (int)(vsx * (cxo - hw) + vdx);
+			px1 = t->offx + (int)(vsx * (cxo + hw) + vdx) + 1;
+			if (px0 < bx0) bx0 = px0; if (px1 > bx1) bx1 = px1;
+		}
+		by0 = t->offy + (int)(vsx * (cyv - hh) + vdy);
+		by1 = t->offy + (int)(vsx * (cyv + hh) + vdy) + 1;
+		if (bx0 < 0) bx0 = 0; if (by0 < 0) by0 = 0;
+		if (bx1 > t->W) bx1 = t->W; if (by1 > t->H) by1 = t->H;
+		if (bx1 < bx0) bx1 = bx0; if (by1 < by0) by1 = by0;
+	}
+
+	/* clear region = union(this buffer's previous draw bbox, this frame's bbox) */
+	cx0 = bx0; cy0 = by0; cx1 = bx1; cy1 = by1;
+	if (pv1x[buf] >= pv0x[buf]) {
+		if (pv0x[buf] < cx0) cx0 = pv0x[buf]; if (pv0y[buf] < cy0) cy0 = pv0y[buf];
+		if (pv1x[buf] > cx1) cx1 = pv1x[buf]; if (pv1y[buf] > cy1) cy1 = pv1y[buf];
+	}
+	if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0;
+	if (cx1 > t->W) cx1 = t->W; if (cy1 > t->H) cy1 = t->H;
+	for (y = cy0; y < cy1; y++) {
+		uint32_t *r = t->fb + (unsigned)y * t->pitch;
+		for (x = cx0; x < cx1; x++) r[x] = 0;
+	}
+
 	/* the full blue focused card first (over the L2 dark body), then the cursor */
 	set_view(m, t, VIEW_CONTENT);
 	draw_focus_card(m, t);
@@ -952,7 +1011,9 @@ void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t)
 		set_view(m, t, VIEW_CONTENT);
 		draw_focus_cursor(m, t);
 	}
-	cache_unpremult(t, SNES_CURSOR_X0, SNES_CURSOR_Y0, x1, y1);
+	cache_unpremult(t, cx0, cy0, cx1, cy1);
+
+	pv0x[buf] = bx0; pv0y[buf] = by0; pv1x[buf] = bx1; pv1y[buf] = by1;
 }
 
 /* ---- bottom thumbnail filmstrip (ports sys_thumbnail_icon: a fixed 21-icon

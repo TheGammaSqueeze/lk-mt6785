@@ -183,7 +183,7 @@ void snes_menu_render(snes_menu *m, snes_target *t);
  * snes_menu_render_cursor_layer: clear + draw the live selection cursor into t (L3). */
 uint32_t snes_menu_cardcache_sig(snes_menu *m);
 void snes_menu_build_cardcache(snes_menu *m, snes_target *t);
-void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t);
+void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t, int full_clear);
 
 /* Drain one queued sound (res hash) to play, or 0 if none. */
 uint32_t snes_menu_next_sound(snes_menu *m);

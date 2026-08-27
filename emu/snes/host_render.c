@@ -244,7 +244,7 @@ int main(int argc, char **argv)
 			double us = ((tb.tv_sec-ta.tv_sec)*1e9 + (tb.tv_nsec-ta.tv_nsec))/1e3/rep;
 			fprintf(stderr, "  [TIMECC] build_cardcache = %.1f us/call (host)\n", us);
 			clock_gettime(CLOCK_MONOTONIC, &ta);
-			for (q = 0; q < rep; q++) snes_menu_render_cursor_layer(&menu, &t3);
+			for (q = 0; q < rep; q++) snes_menu_render_cursor_layer(&menu, &t3, 0);
 			clock_gettime(CLOCK_MONOTONIC, &tb);
 			us = ((tb.tv_sec-ta.tv_sec)*1e9 + (tb.tv_nsec-ta.tv_nsec))/1e3/rep;
 			fprintf(stderr, "  [TIMECC] render_cursor_layer = %.1f us/call (host)\n", us);
@@ -265,7 +265,7 @@ int main(int argc, char **argv)
 		}
 		/* L3: live selection cursor (straight alpha) */
 		t3.fb = cur;
-		snes_menu_render_cursor_layer(&menu, &t3);
+		snes_menu_render_cursor_layer(&menu, &t3, 0);
 		/* composite L0 + L2(panned band) + L3 with straight (coverage) source-over */
 		for (yy = 0; yy < H; yy++) for (xx = 0; xx < W; xx++) {
 			int by = yy - SNES_L2_BAND_Y0, bx = pan + xx;
