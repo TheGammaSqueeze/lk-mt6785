@@ -437,10 +437,10 @@ static char *u2s(char *p, unsigned v)
 	return p;
 }
 static char s_perf_str2[48] = "";
-#ifdef AYANEO_DEBUG_LOGGING
-static char s_perf_str3[96] = "";   /* experimental bigcore proof-of-life line (debug only) */
+#ifdef AYANEO_BIGCORE_EXPT
+static char s_perf_str3[96] = "";   /* experimental bigcore proof-of-life line (EXPT only) */
 #endif
-#ifdef AYANEO_DEBUG_LOGGING   /* i2s/u2h feed the debug-only bigcore line below */
+#ifdef AYANEO_BIGCORE_EXPT   /* i2s/u2h feed the EXPT-only bigcore line below */
 static char *i2s(char *p, int v) { if (v < 0) { *p++ = '-'; v = -v; } return u2s(p, (unsigned)v); }
 static char *u2h(char *p, unsigned v) {   /* compact hex, no leading zeros */
 	static const char hx[] = "0123456789abcdef"; char t[8]; int n = 0;
@@ -457,7 +457,7 @@ static void draw_perf(unsigned int *fb, unsigned int pitch)
 	acc_r += s_perf_render_us; acc_p += s_perf_present_us; n++;
 	ap0 += g_perf[0]/13; ap1 += g_perf[1]/13; ap2 += g_perf[2]/13;
 	ap3 += g_perf[3]/13; ap4 += g_perf[4]/13;
-#ifdef AYANEO_DEBUG_LOGGING
+#ifdef AYANEO_BIGCORE_EXPT
 	{	/* EXPERIMENTAL multicore proof of life: boot MPIDR, PSCI target, ret, counter */
 		char *p = s_perf_str3;
 		*p++='B'; *p++='C'; *p++=' ';
@@ -505,8 +505,8 @@ static void draw_perf(unsigned int *fb, unsigned int pitch)
 		ayaneo_text(fb, pitch, 10, 6, 2, 0xFF00FF66u, s_perf_str);
 		ayaneo_text(fb, pitch, 10, 26, 2, 0xFF00FF66u, s_perf_str2);
 	}
-#ifdef AYANEO_DEBUG_LOGGING
-	ayaneo_text(fb, pitch, 10, 46, 2, 0xFF3060FFu, s_perf_str3);   /* blue, debug only */
+#ifdef AYANEO_BIGCORE_EXPT
+	ayaneo_text(fb, pitch, 10, 46, 2, 0xFF3060FFu, s_perf_str3);   /* blue, EXPT only */
 #endif
 }
 

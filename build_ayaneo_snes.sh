@@ -30,12 +30,14 @@ rm -f "build-$PROJECT/lk" "build-$PROJECT/lk.img"
 make "$PROJECT" AYANEO_SNES=yes -j"$JOBS"
 python3 tools/ayaneo/sign_lk.py "build-$PROJECT/lk.img" out/lk_a_snes_signed.img
 
-echo ">> Building $PROJECT debug (AYANEO_DEBUG_LOGGING=yes AYANEO_BIGCORE_EXPT=yes)"
-# NOTE: while the 2nd-core experiment is active, the debug image also enables
-# AYANEO_BIGCORE_EXPT (arm SPMC via KERNEL_BOOT SiP, then PSCI). Drop that flag
-# once the experiment concludes so debug builds are just logging again.
+echo ">> Building $PROJECT debug (AYANEO_DEBUG_LOGGING=yes)"
+# The 2nd-core (AYANEO_BIGCORE_EXPT) experiment concluded a dead end: the worker
+# cannot be admitted to the DSU snoop-read domain pre-kernel (see MULTICORE.md
+# s6-9). Its per-frame fork/join + fallback spin + 4MB cache maintenance were
+# dragging the debug fps, so the flag is dropped: debug is now clean single-core
+# + logging (the experiment code is preserved behind AYANEO_BIGCORE_EXPT).
 rm -f "build-$PROJECT/lk" "build-$PROJECT/lk.img"
-make "$PROJECT" AYANEO_SNES=yes AYANEO_DEBUG_LOGGING=yes AYANEO_BIGCORE_EXPT=yes -j"$JOBS"
+make "$PROJECT" AYANEO_SNES=yes AYANEO_DEBUG_LOGGING=yes -j"$JOBS"
 python3 tools/ayaneo/sign_lk.py "build-$PROJECT/lk.img" out/lk_a_snes_debug.img
 
 echo ">> Packaging boot_b (anim + compressed pack)"
