@@ -90,6 +90,30 @@ Read these UART lines:
        "BC CANARY PROBE: cpu0 self-readback / cpu0 PAR-hi / worker PAR-hi".
 Report those three lines back and the next lever is chosen deterministically from the tree above.
 
+### SECOND IMAGE (candidate fix #1, worth flashing right after the probe)
+Discovery this cycle: LK's arch/arm/mmu.c was already patched to mark ALL Normal-WB memory
+Inner-Shareable (SH=0b11), and TTBCR SH0 is Inner-Shareable, so the worker adopts an entirely
+Inner-Shareable view -> it needs the DSU snoop admission a manually-woken core lacks. That is the
+mechanism of the wall. The fix to try: map the shared handoff region Normal-WB NON-shareable
+(SH=0b00) in the shared tables, so BOTH cores see it non-shareable (consistent, no mismatched
+alias), the worker uses it CACHED, and the existing software clean(owner)/invalidate(reader)
+handoff bridges coherency WITHOUT snoop admission.
+
+Image: /mnt/c/pairmini/lk_a_snes_bigcore_nonshare.img  (built with AYANEO_BC_NONSHARE=yes)
+Same tee.img prerequisite. Look for "BC MODE: shared region ... NON-shareable" then the same
+"BC CANARY (non-comms 0x51000000): cpu0->worker worker-read=0x.." line:
+  - worker-read == 0xCA5Axxxx  => THE FIX WORKS. Non-shareable cached cross-core read succeeds ->
+       this is the coherency-free CACHED 2-core path -> build out a real per-frame split. HUGE.
+  - worker-read still garbage   => non-shareable does not bypass the wall either -> the block is a
+       true hardware snoop-domain gap -> fall back to Lever 4 (producer offload, static inputs only)
+       or Lever 3 (A75 fresh cluster).
+
+RECOMMENDED FLASH ORDER (one wake session, both are safe/isolated behind the flag):
+  1. lk_a_snes_bigcore_probe.img   -> classify the wall + read RECON (A75 readiness).
+  2. lk_a_snes_bigcore_nonshare.img -> directly attempt the cached-non-shareable fix.
+Report the "BC CANARY" and "BC LEVER1 PROBE" and "BC RECON" lines from BOTH and the next step is
+deterministic.
+
 ## FINDINGS
 
 ### Cycle 1 (2026-08-28): six-angle deep RE + solo ATF re-read. THE WALL IS REFRAMED.

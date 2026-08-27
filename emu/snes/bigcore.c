@@ -142,7 +142,23 @@ extern void arch_clean_cache_range(unsigned long start, unsigned long len);
 #define BC_ATTR_SO     (0x0ull << 2)
 #define BC_SH_OUTER    (0x2ull << 8)
 #define BC_XN          0x0040000000000000ull   /* L1/L2 block XN (bit 54) */
+#ifdef AYANEO_BC_NONSHARE
+/* EXPERIMENT (candidate fix #1): map the shared region Normal Write-Back but
+ * NON-shareable (SH=0b00), not Device. LK's mmu.c marks all Normal-WB memory
+ * Inner-Shareable (SH=0b11), so the worker (which adopts cpu0's tables) needs DSU
+ * snoop admission it does not have -> cross-core cached reads fail. Both cores share
+ * THESE tables, so flipping the region to Non-shareable makes it non-shareable for
+ * BOTH (consistent, no mismatched-attribute alias). A non-shareable cacheable line
+ * does not require the core to be a shareability-domain snoop participant, so with
+ * software clean(owner)/invalidate(reader) at the handoff (already done in the driver)
+ * the worker can use the region CACHED. If the cpu0->worker canary now reads
+ * 0xCA5Axxxx, this is the coherency-free CACHED 2-core path (full-speed split). */
+#define BC_ATTR_WB     (0x7ull << 2)   /* AttrIndx 7 = Normal-WB in the live MAIR */
+#define BC_SH_NONE     (0x0ull << 8)   /* Non-shareable */
+#define BC_MK_NC(d)    (((d) & ~BC_ATTR_MASK & ~BC_SH_MASK) | BC_ATTR_WB | BC_SH_NONE | BC_XN)
+#else
 #define BC_MK_NC(d)    (((d) & ~BC_ATTR_MASK & ~BC_SH_MASK) | BC_ATTR_SO | BC_SH_OUTER | BC_XN)
+#endif
 static unsigned long long bc_l2_tbl[512] __attribute__((aligned(4096)));
 
 static void bc_device_map(unsigned pa, unsigned size)
@@ -364,6 +380,11 @@ void bigcore_start(void)
 		 * L2 split. If this boots AND the canary flips cpu0->worker to 0xCA5Axxxx, the
 		 * split is safe and non-cacheable is the fix; then extend to comms+menu+scene. */
 		bc_device_map(0x51000000u, 0x200000u);
+#ifdef AYANEO_BC_NONSHARE
+		_dprintf("BC MODE: shared region 0x51000000 mapped Normal-WB NON-shareable (candidate fix #1; cached worker + sw coherency)\n");
+#else
+		_dprintf("BC MODE: shared region 0x51000000 mapped Device-nGnRnE Outer-shareable (baseline probe)\n");
+#endif
 		bc_snapshot_mmu();   /* publish cpu0's LPAE MMU config for the worker to adopt */
 		/* clean the WHOLE comms block to DRAM so the MMU-off secondary reads the real
 		 * snapshot (its early reads bypass caches). */

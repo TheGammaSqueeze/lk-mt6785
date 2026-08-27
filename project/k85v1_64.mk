@@ -55,6 +55,16 @@ ifeq ($(AYANEO_BIGCORE_EXPT),yes)
 DEFINES += AYANEO_BIGCORE_EXPT
 DEFINES += AYANEO_DEBUG_LOGGING
 endif
+# Sub-experiment of AYANEO_BIGCORE_EXPT: map the shared handoff region Normal-WB
+# NON-shareable instead of Device, testing whether a non-snoop-admitted worker can
+# use it CACHED with software clean/invalidate coherency (MULTICORE_RESEARCH.md
+# candidate fix #1). Implies the bigcore experiment + debug logging.
+AYANEO_BC_NONSHARE ?= no
+ifeq ($(AYANEO_BC_NONSHARE),yes)
+DEFINES += AYANEO_BC_NONSHARE
+DEFINES += AYANEO_BIGCORE_EXPT
+DEFINES += AYANEO_DEBUG_LOGGING
+endif
 # AYANEO experiment (animated-boot-logo branch): paint a scrolling rainbow
 # gradient over the whole panel during LK instead of the static eMMC boot logo.
 # Set to no to restore the normal boot logo.
