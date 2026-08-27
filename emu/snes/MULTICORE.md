@@ -301,3 +301,91 @@ no core ever writes back a line it does not own.
 Also: the bounded-fallback that made a failing worker cost 4 fps (cpu0 spun a fixed 1,000,000
 iterations ~= 11 ms every frame) is now a wall-clock deadline of ~1.5 ms using the 13 MHz gpt4
 tick, so a worker that never signals `done` degrades the menu to ~30 fps single-core, not 4 fps.
+
+## 8. The real wall: the worker is never admitted to the DSU snoop-read domain
+
+Sections 6 and 7 documented intermediate theories (cache-maintenance war, a stray set/way
+invalidate). Those were real bugs and were fixed, but they were NOT the root cause. After
+about seventeen on-hardware flashes and three deep reverse-engineering passes on the device
+ATF, the actual wall is now precisely located and thoroughly proven.
+
+### The one-line symptom
+
+Once the worker turns its MMU on, it cannot read ANYTHING cpu0 writes to shared DRAM, under
+ANY memory attribute. The worker's own writes are always visible to cpu0. It is a purely
+directional failure: worker to cpu0 works, cpu0 to worker read is blind.
+
+### Everything that was tried and failed (all confirmed on HW)
+
+- Normal-WB Inner-Shareable mapping: worker reads garbage.
+- Explicit clean (cpu0) + invalidate (worker) to the Point of Coherency: garbage.
+- Removing the DCISW set/way invalidate from the worker bring-up: no change.
+- Worker with D-cache OFF (SCTLR.C=0): garbage.
+- Device-nGnRE (non-cacheable) shared mapping, via a sibling-preserving L2 split: garbage.
+- Strongly-ordered (Device-nGnRnE) + Outer-Shareable, i.e. matching the MMU-off default
+  attribute EXACTLY: still garbage.
+- An ATF patch that NOPs the `w21` gate in `pwr_domain_on_finish` so the worker runs the
+  FULL per-core on-finish body (CCI/DSU admit + EMI setup + every call it normally skips):
+  no change.
+
+### The decisive diagnostics
+
+Three probes, all on the same physical 2 MB Device page, nailed it:
+- cpu0 writes `0x51000000`, DSB, reads it back: sees its own write (`0xca5a0001`).
+- Worker's own PAR (ATS1CPR) of `0x51000000`: ATTR `0x04` = Device. cpu0's PAR agrees.
+  So both cores genuinely map it non-cacheable, no caches involved.
+- Worker reads `0x51000000`: the stale pre-write value (`0xa86dbdec`), every frame.
+- Worker writes `0x51000040` (next word, same page): cpu0 reads it correctly.
+
+Same page, both non-cacheable, cpu0's write lands, worker's write lands, but cpu0 to worker
+read is invisible. With no caches in the path this cannot be a coherency-maintenance problem.
+
+### Why the MMU is the toggle
+
+At bring-up the worker reads cpu0's data CORRECTLY - it reads cpu0's LPAE MMU snapshot from
+the comms block and successfully adopts it. But that read is done with the worker's MMU OFF.
+With the MMU off, an A55 issues all data accesses endpoint-direct (they do not consult the
+DSU/CCI snoop fabric). With the MMU on, the access is issued as a translated transaction
+carrying the core's coherency identity and is routed through the DSU snoop fabric - and the
+worker is not an admitted read-consumer there, so it gets a stale line. The attribute is
+irrelevant because the routing decision is upstream of the attribute.
+
+### Why we cannot fix it from LK
+
+The DSU/CCI coherency-admit registers ATF writes (MCUCFG `0x0C533308/0x0C533B08` CCI,
+`0x0C533240/0x0C533A40` DSU) are CLUSTER-level fixed addresses, already set for cluster0 when
+cpu0 booted. There is no per-core "snoop enable" register. The per-core admission happens
+inside the hardware power-on sequence, which is driven by the SSPM co-processor. SSPM is
+loaded by the preloader but is not servicing CPU power at the LK stage (which is exactly why
+a normal `PSCI CPU_ON` hangs pre-kernel and we had to arm the CPC by hand). LK is Non-Secure
+and DEVAPC drops all NS writes to secure MCUCFG/SPM, and no SiP service exposes snoop
+admission. Forcing ATF to run the full software `pwr_domain_on_finish` body (the `w21`
+un-gate) proved the admission is NOT in that software path - it is in the SSPM-driven
+hardware sequence our cold-boot CPC bypass shortcuts.
+
+Net: at the LK stage the second core can execute and its writes are coherently visible, but
+its reads can never observe cpu0's writes, so no per-frame data can be handed to it and the
+render split is impossible. The kernel gets coherency for free only because the SSPM/SPM
+power stack is fully live by kernel-handover time.
+
+## 9. Next avenue: reach the kernel-handover state, then do not hand over
+
+The kernel does nothing special to make its cores coherent - it just calls `PSCI CPU_ON`.
+The magic is entirely in the firmware/power state that is live by kernel-handover time. So
+the promising direction is to make LK reach that state and then run our own menu instead of
+jumping to Linux (a "fake kernel jump"):
+
+- LK already calls `MTK_SIP_KERNEL_BOOT` (0x82000115) with a BOGUS entry, which arms the
+  SPMC and returns. The real kernel handover calls it with a VALID entry, at which point ATF
+  performs its COMPLETE final EL3 setup and ERETs to the entry. The idea is to point that
+  entry at our own stub, so ATF does the full handover and lands in our code with the
+  handover-complete system state, where a subsequent `PSCI CPU_ON` may admit coherency.
+- Open questions to resolve before trying it: does the full handover reconfigure the world
+  in a way our menu cannot survive (EL/MMU/console)? Does SSPM only start servicing CPU
+  power after a kernel-driver mailbox handshake (in which case the fake jump alone is not
+  enough and we must replicate that handshake)? Is there an NS-reachable SSPM mailbox/SiP to
+  request the CPU-power service?
+
+This is the active line of investigation. All of the Phase-2 machinery (cached worker
+bring-up, per-frame fork/join, the output-correct scanline split) is preserved behind
+`AYANEO_BIGCORE_EXPT` and is ready the moment the worker becomes a coherent read participant.
