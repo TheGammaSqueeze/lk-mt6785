@@ -194,6 +194,7 @@ int primary_display_is_alive(void);
 int primary_display_is_sleepd(void);
 int priamry_display_wait_for_vsync(void);
 int primary_display_config_input(disp_input_config* input);
+int primary_display_config_input_multi(disp_input_config *inputs, int n);
 int primary_display_trigger(int blocking);
 int primary_display_diagnose(void);
 const char* primary_display_get_lcm_name(void);

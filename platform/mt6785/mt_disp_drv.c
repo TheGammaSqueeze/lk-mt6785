@@ -991,46 +991,35 @@ void ayaneo_canvas_present(void)
  * the CPU stops re-blitting ~7 cards per frame. Straight (coverage) alpha, aen=1,
  * const alpha 0xff - the same config the bouncing-sprite milestone proved. */
 
-/* configure an upper ARGB layer (2 or 3) over a src ROI [y0, y0+h) x [0, w) */
-static void ayaneo_ovl_argb(int layer, unsigned int pa, int y0, int w, int h,
-			    unsigned int pitch_w)
+/* fill a disp_input_config for an upper ARGB layer over src ROI [y0, y0+h) x [0, w) */
+static void ayaneo_ovl_fill_argb(disp_input_config *in, int layer, unsigned int pa,
+				 int y0, int w, int h, unsigned int pitch_w)
 {
-	disp_input_config in;
-	memset(&in, 0, sizeof(in));
-	in.layer     = layer;
-	in.layer_en  = 1;
-	in.fmt       = redoffset_32bit ? eBGRA8888 : eRGBA8888;
-	in.addr      = pa;
-	in.src_x     = 0;
-	in.src_y     = y0;
-	in.src_w     = w;
-	in.src_h     = h;
-	in.src_pitch = pitch_w * 4;
-	in.dst_x     = 0;
-	in.dst_y     = y0;
-	in.dst_w     = w;
-	in.dst_h     = h;
-	in.aen       = 1;
-	in.alpha     = 0xff;
-	primary_display_config_input(&in);
+	memset(in, 0, sizeof(*in));
+	in->layer     = layer;
+	in->layer_en  = 1;
+	in->fmt       = redoffset_32bit ? eBGRA8888 : eRGBA8888;
+	in->addr      = pa;
+	in->src_y     = y0;
+	in->src_w     = w;
+	in->src_h     = h;
+	in->src_pitch = pitch_w * 4;
+	in->dst_y     = y0;
+	in->dst_w     = w;
+	in->dst_h     = h;
+	in->aen       = 1;
+	in->alpha     = 0xff;
 }
 
-static void ayaneo_ovl_disable(int layer)
-{
-	disp_input_config in;
-	memset(&in, 0, sizeof(in));
-	in.layer = layer;
-	in.layer_en = 0;
-	primary_display_config_input(&in);
-}
-
-/* Present the menu framebuffer (L0) plus, when in the layered home state, the
- * card cache (L2) and cursor (L3). A 0 addr disables that upper layer (sticky OVL
- * state, so unused layers MUST be explicitly disabled on the layered<->plain
- * transition). L2 is cleaned only when just rebuilt (l2_clean); L3 is redrawn
- * every frame so its band is always cleaned. One trigger latches all layers.
- * l2/l3 buffers are at fixed identity-mapped DRAM (VA==PA), width SNES_OVL_L3_W
- * for L3 (cursor content is left-of-centre) and full width for L2. */
+/* Present the menu framebuffer (L0) plus, when in the layered home state, the card
+ * cache (L2) and cursor (L3). A 0 addr disables that upper layer (sticky OVL state,
+ * so unused layers MUST be explicitly disabled on the layered<->plain transition).
+ * ALL three layers go through ONE primary_display_config_input_multi() so the
+ * video-mode FRAME_DONE wait is paid ONCE, not once per layer (3 separate
+ * config_input calls each stall a vsync and dropped the present to ~20fps). L2 is
+ * cleaned only when just rebuilt (l2_clean); L3 is redrawn every frame so its band
+ * is always cleaned. L2/L3 are fixed identity-mapped DRAM (VA==PA); L3 is
+ * left-of-centre width, L2 full width. */
 #define SNES_OVL_L3_W  960
 void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_y0, int l2_y1, int l2_clean,
 				  unsigned int l3_pa, int l3_y0, int l3_y1)
@@ -1038,17 +1027,16 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_y0, int l2_y1, int 
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
 	unsigned int dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
-	disp_input_config in;
+	disp_input_config in[3];
 
-	/* L0 = framebuffer: flush the back buffer, config layer 0 */
+	/* L0 = framebuffer: flush the back buffer */
 	arch_clean_cache_range((unsigned int)((unsigned char *)fb_addr +
 			       (s_fb_flip ? fb_size : 0)), fb_size);
-	memset(&in, 0, sizeof(in));
-	in.layer = FB_LAYER; in.layer_en = 1;
-	in.fmt = redoffset_32bit ? eBGRA8888 : eRGBA8888;
-	in.addr = dpa; in.src_w = W; in.src_h = H; in.src_pitch = pitch_w * 4;
-	in.dst_w = W; in.dst_h = H; in.aen = 1; in.alpha = 0xff;
-	primary_display_config_input(&in);
+	memset(&in[0], 0, sizeof(in[0]));
+	in[0].layer = FB_LAYER; in[0].layer_en = 1;
+	in[0].fmt = redoffset_32bit ? eBGRA8888 : eRGBA8888;
+	in[0].addr = dpa; in[0].src_w = W; in[0].src_h = H; in[0].src_pitch = pitch_w * 4;
+	in[0].dst_w = W; in[0].dst_h = H; in[0].aen = 1; in[0].alpha = 0xff;
 
 	/* L2 = cursorless card cache (full width, non-empty band only) */
 	if (l2_pa && l2_y1 >= l2_y0) {
@@ -1056,9 +1044,9 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_y0, int l2_y1, int 
 		if (l2_clean)
 			arch_clean_cache_range(l2_pa + (unsigned)l2_y0 * pitch_w * 4u,
 					       (unsigned)h * pitch_w * 4u);
-		ayaneo_ovl_argb(2, l2_pa, l2_y0, (int)W, h, pitch_w);
+		ayaneo_ovl_fill_argb(&in[1], 2, l2_pa, l2_y0, (int)W, h, pitch_w);
 	} else {
-		ayaneo_ovl_disable(2);
+		memset(&in[1], 0, sizeof(in[1])); in[1].layer = 2; in[1].layer_en = 0;
 	}
 
 	/* L3 = live selection cursor (left-of-centre width band, cleaned each frame) */
@@ -1066,11 +1054,13 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_y0, int l2_y1, int 
 		int h = l3_y1 - l3_y0;
 		arch_clean_cache_range(l3_pa + (unsigned)l3_y0 * pitch_w * 4u,
 				       (unsigned)h * pitch_w * 4u);
-		ayaneo_ovl_argb(3, l3_pa, l3_y0, SNES_OVL_L3_W, h, pitch_w);
+		ayaneo_ovl_fill_argb(&in[2], 3, l3_pa, l3_y0, SNES_OVL_L3_W, h, pitch_w);
 	} else {
-		ayaneo_ovl_disable(3);
+		memset(&in[2], 0, sizeof(in[2])); in[2].layer = 3; in[2].layer_en = 0;
 	}
 
+	/* one FRAME_DONE wait + one path config for all three layers, then trigger */
+	primary_display_config_input_multi(in, 3);
 	primary_display_trigger(TRUE);
 #ifdef AYANEO_DISP_KEEP_EXTRA_VSYNC
 	priamry_display_wait_for_vsync();
