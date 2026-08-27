@@ -181,6 +181,7 @@ static int s_bc_clk_set;
 static unsigned s_bc_seq;
 unsigned g_bc_wfin, g_bc_fb;   /* diagnostics: worker-finished vs fallback frames */
 static unsigned g_bc_canrb;    /* cpu0's read-back of its own canary write to 0x51000000 */
+static unsigned g_bc_cpupar;   /* cpu0's PAR-hi of the canary VA (0x04=Device 0xff=WB) */
 extern unsigned int gpt4_get_current_tick(void);
 static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 			snes_menu *menu, snes_target *tfull)
@@ -212,6 +213,14 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	 * landed (Device -> DRAM) from cpu0's view; if it is the old value the write is
 	 * being dropped/not landing even for cpu0. Pins "does cpu0's write reach DRAM". */
 	g_bc_canrb = *(volatile unsigned *)(unsigned long)0x51000000u;
+	{	/* cpu0's OWN PAR of the canary VA: confirms cpu0 really sees 0x51000000 as
+		 * Device (0x04) too, so its read-back is from DRAM not a stale WB cache line. */
+		unsigned pl, ph;
+		__asm__ volatile("mcr p15,0,%0,c7,c8,0" :: "r"(0x51000000u));
+		__asm__ volatile("isb");
+		__asm__ volatile("mrrc p15,0,%0,%1,c7" : "=r"(pl), "=r"(ph));
+		g_bc_cpupar = ph;
+	}
 	bc_dsb();                                  /* job + menu update must land before go */
 	g_bc->go = seq;                            /* publish the frame (cpu0 owns the go line) */
 	BC_CLEAN(BC_L(64), BC_LINE);               /* clean go to DRAM - the worker reads it from there */
@@ -274,8 +283,8 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 				can2 = *(volatile unsigned *)(unsigned long)0x51000040u;
 				_dprintf("BC CANARY (non-comms 0x51000000): cpu0->worker worker-read=0x%x (expect 0xCA5Axxxx) ; worker->cpu0 cpu0-read=0x%x (expect 0x7777xxxx)\n",
 					 g_bc->w_can1, can2);
-				_dprintf("BC CANARY PROBE: cpu0 self-readback=0x%x (Device write landed for cpu0?) ; worker PAR-hi of 0x51000000=0x%x (ATTR byte, 0x04=Device 0xff=WB)\n",
-					 g_bc_canrb, g_bc->w_canpar);
+				_dprintf("BC CANARY PROBE: cpu0 self-readback=0x%x ; cpu0 PAR-hi=0x%x ; worker PAR-hi of 0x51000000=0x%x (ATTR byte at bits31:24, 0x04=Device 0xff=WB)\n",
+					 g_bc_canrb, g_bc_cpupar, g_bc->w_canpar);
 			}
 		}
 		if (g_bc->fault_type && !dumped) {
