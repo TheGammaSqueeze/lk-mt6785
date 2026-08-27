@@ -131,9 +131,18 @@ extern void arch_clean_cache_range(unsigned long start, unsigned long len);
  * and everything else stay Normal-WB cacheable. EXPT only. */
 #define BC_L1_BLOCK   0x1u
 #define BC_L1_TABLE   0x3u
-#define BC_ATTR_DEVICE (0x4ull << 2)      /* AttrIndx=4 -> MAIR byte4=0x04 Device-nGnRE */
 #define BC_ATTR_MASK   (0x7ull << 2)
+#define BC_SH_MASK     (0x3ull << 8)
+/* Match the working MMU-off default EXACTLY: Device-nGnRnE (strongly-ordered,
+ * AttrIndx=0 -> MAIR byte0=0x00) + OUTER-Shareable (SH=0b10). The on-HW finding is
+ * that the worker reads cpu0's writes with the MMU OFF (endpoint-direct) but not with
+ * the MMU on and Device-nGnRE Inner-Shareable (routed through the DSU snoop fabric,
+ * which the un-admitted worker is not a read-consumer of). Reproducing the MMU-off
+ * attribute may route the reads endpoint-direct and bypass the un-admitted snoop path. */
+#define BC_ATTR_SO     (0x0ull << 2)
+#define BC_SH_OUTER    (0x2ull << 8)
 #define BC_XN          0x0040000000000000ull   /* L1/L2 block XN (bit 54) */
+#define BC_MK_NC(d)    (((d) & ~BC_ATTR_MASK & ~BC_SH_MASK) | BC_ATTR_SO | BC_SH_OUTER | BC_XN)
 static unsigned long long bc_l2_tbl[512] __attribute__((aligned(4096)));
 
 static void bc_device_map(unsigned pa, unsigned size)
@@ -165,13 +174,13 @@ static void bc_device_map(unsigned pa, unsigned size)
 	for (i = s0; i <= s1; i++) {
 		unsigned long long d = l2[i];
 		if ((d & 0x3u) == BC_L1_BLOCK) {           /* 2 MB section: type is here */
-			l2[i] = (d & ~BC_ATTR_MASK) | BC_ATTR_DEVICE | BC_XN;
+			l2[i] = BC_MK_NC(d);
 		} else if ((d & 0x3u) == BC_L1_TABLE) {    /* -> L3: type is in the 4KB pages */
 			unsigned long long *l3 = (unsigned long long *)(unsigned long)(unsigned)(d & 0xFFFFF000u);
 			unsigned p;
 			for (p = 0; p < 512u; p++)
 				if ((l3[p] & 0x3u))                /* valid page */
-					l3[p] = (l3[p] & ~BC_ATTR_MASK) | BC_ATTR_DEVICE | BC_XN;
+					l3[p] = BC_MK_NC(l3[p]);
 			arch_clean_cache_range((unsigned long)l3, 512u * 8u);
 		}
 		_dprintf("BC: device_map L2[%u]=0x%x%x (type %u)\n",
