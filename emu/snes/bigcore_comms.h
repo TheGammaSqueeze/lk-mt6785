@@ -55,6 +55,7 @@
 #define BC_O_PAR_HI     404
 #define BC_O_W_MENU     408    /* menu_ptr the worker actually READ from comms (coherency probe) */
 #define BC_O_W_MENUW0   412    /* first word the worker read THROUGH that pointer (real data vs garbage) */
+#define BC_O_W_CAN1     416    /* what the worker read for cpu0's canary in a NON-comms cacheable region */
 
 #ifndef __ASSEMBLER__
 struct bc_comms {
@@ -102,6 +103,7 @@ struct bc_comms {
 	volatile unsigned par_hi;                /* 404 */
 	volatile unsigned w_menu;                /* 408 menu_ptr the worker read */
 	volatile unsigned w_menuw0;              /* 412 first word read through it */
+	volatile unsigned w_can1;                /* 416 worker's read of cpu0's non-comms canary */
 };
 #endif
 

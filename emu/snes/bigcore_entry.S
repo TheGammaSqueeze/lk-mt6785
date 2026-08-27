@@ -43,32 +43,17 @@ bc_entry_arm2:
 	str	r1, [r0, #BC_O_MAGIC]	@ reached-the-stub (uncached, MMU off)
 	dsb
 
-	@ Invalidate the L1 D-cache by set/way BEFORE enabling it. A freshly powered
-	@ core comes up with UNDEFINED D-cache contents; if we turn the cache on
-	@ without invalidating, those stale valid lines are returned by loads and
-	@ SHADOW the coherent data (the worker read the menu pointer from the comms
-	@ block as a fixed garbage value every boot -> data abort). Clobbers r1-r9;
-	@ r0 (comms base) is preserved.
-	mov	r1, #0
-	mcr	p15, 2, r1, c0, c0, 0	@ CSSELR = 0 -> select L1 data cache
-	isb
-	mrc	p15, 1, r2, c0, c0, 0	@ CCSIDR
-	and	r3, r2, #7
-	add	r3, r3, #4		@ r3 = Log2(line bytes)
-	ubfx	r4, r2, #3, #10		@ r4 = ways - 1
-	ubfx	r5, r2, #13, #15	@ r5 = sets - 1
-	clz	r6, r4			@ r6 = way-field shift
-1:	mov	r7, r4			@ way counter
-2:	lsl	r8, r7, r6
-	lsl	r9, r5, r3
-	orr	r8, r8, r9		@ set/way argument
-	mcr	p15, 0, r8, c7, c6, 2	@ DCISW: invalidate line by set/way
-	subs	r7, r7, #1
-	bge	2b
-	subs	r5, r5, #1
-	bge	1b
-	dsb
-
+	@ DO NOT invalidate the L1 D-cache by set/way here. ATF's PSCI CPU_ON path
+	@ (pwr_domain_on_finish) already powered this core UP THROUGH the DSU and
+	@ invalidated its caches, and admitted it to the DSU cache-coherency domain
+	@ before dropping to this NS entry. A set/way (DCISW) operation is NOT broadcast
+	@ within the shareability domain and, per ARMv8-A D5.7.8, is only architecturally
+	@ safe when a core is being REMOVED from coherency (power-down). Running it here,
+	@ on a core that ATF just made a coherent snoop participant, corrupts the DSU
+	@ coherency state so the core stops seeing cpu0's cached writes - exactly the
+	@ on-HW symptom (worker read cpu0's data uncached fine, but never its CACHED
+	@ writes). We were fighting our own set/way loop. Keep the core coherent: no
+	@ set/way, just adopt cpu0's MMU snapshot and turn MMU + I/D caches on.
 	ldr	sp, [r0, #BC_O_STACK_TOP]	@ worker stack top (DRAM Normal-WB)
 
 	@ read cpu0's MMU snapshot (MMU off -> uncached DRAM read; cpu0 cache-cleaned)
@@ -102,13 +87,17 @@ bc_entry_arm2:
 	mcrr	p15, 0, r4, r5, c2	@ TTBR0 = {hi:lo}  (64-bit LPAE write)
 	isb
 
-	@ enable MMU + I/D caches; keep cpu0's other SCTLR bits (A/TRE/AFE/...) from r10
-	orr	r10, r10, #0x1		@ M
-	orr	r10, r10, #0x4		@ C
-	orr	r10, r10, #0x1000	@ I
+	@ enable MMU + I/D caches; keep cpu0's other SCTLR bits (A/TRE/AFE/...) from r10.
+	@ D-cache MUST be ON: a DSU snoop participant only sees peer cores' coherent
+	@ (cached) traffic through its own enabled, inner-shareable D-cache. With the
+	@ set/way loop above removed, enabling the caches here leaves the core coherent
+	@ as ATF handed it off, so it now reads cpu0's cached writes via the DSU.
+	orr	r10, r10, #0x1		@ M (MMU on)
+	orr	r10, r10, #0x4		@ C (D-cache on -> coherent snoop participant)
+	orr	r10, r10, #0x1000	@ I (I-cache on)
 	dsb
 	mcr	p15, 0, r10, c1, c0, 0
-	isb				@ now cached + Inner-Shareable coherent with cpu0
+	isb				@ MMU on, I/D caches on, coherent with cpu0
 
 	@ Enable VFP/NEON access on this core: snes_menu_render is full of float + NEON,
 	@ and a freshly-powered core has FP disabled (cpu0 enabled it at boot but this

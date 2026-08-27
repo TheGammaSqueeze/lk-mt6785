@@ -96,6 +96,16 @@ void bc_worker_entry(void)
 			bc_wfe();
 		}
 		last = g_bc->go;
+		/* DIAGNOSTIC: read cpu0's non-comms canary (0x51000000, pure cacheable) and
+		 * publish what we saw (w_can1, worker-owned line6). Also drop a return canary
+		 * at +0x40 for cpu0 to read - this fully characterises cpu0<->worker cacheable
+		 * coherency for a region OUTSIDE the comms block, both directions. Done first
+		 * so it is recorded even though the render below still faults on menu_ptr. */
+		BC_INVAL(0x51000000u, 64u);
+		g_bc->w_can1 = *(volatile unsigned *)(unsigned long)0x51000000u;
+		*(volatile unsigned *)(unsigned long)0x51000040u = 0x77770000u | (last & 0xffffu);
+		BC_CLEAN(0x51000040u, 64u);
+		BC_CLEAN(BC_L(384), BC_LINE);          /* publish w_can1 (worker->cpu0, known-good) */
 		BC_INVAL(BC_L(192), BC_LINE);          /* invalidate the JOB line (cpu0-owned), read fresh */
 		g_bc->stage = 0x22; BC_CLEAN(BC_L(0), BC_LINE);   /* publish stage; do NOT touch go/job lines */
 		{
@@ -180,6 +190,13 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	BC_CLEAN(BC_L(192), BC_LINE);               /* job payload (fb/menu_ptr/band...) */
 	BC_CLEAN(menu, 4096);                       /* snes_menu struct */
 	BC_CLEAN(0x50C00000u, 0x00400000u);         /* SNES_HOME_PA scene pool (first 4MB) */
+	/* DIAGNOSTIC canary in a NON-comms, pure-cacheable region (0x51000000 comp
+	 * staging, free during render, never touched uncached). Tests whether the
+	 * worker can read cpu0's cleaned cacheable writes AT ALL, vs the comms region
+	 * specifically. cpu0 writes+cleans here; the worker invalidates+reads it into
+	 * w_can1; the worker also writes a return canary at +0x40 for cpu0 to read. */
+	*(volatile unsigned *)(unsigned long)0x51000000u = 0xCA5A0000u | (seq & 0xffffu);
+	BC_CLEAN(0x51000000u, 64u);
 	bc_dsb();                                  /* job + menu update must land before go */
 	g_bc->go = seq;                            /* publish the frame (cpu0 owns the go line) */
 	BC_CLEAN(BC_L(64), BC_LINE);               /* clean go to DRAM - the worker reads it from there */
@@ -200,7 +217,12 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	for (;;) {
 		BC_INVAL(BC_L(128), BC_LINE);      /* invalidate DONE (worker-owned), read fresh */
 		if (g_bc->done == seq) { g_bc_wfin++; break; }
-		if ((gpt4_get_current_tick() - tw0) > 13u * 1500u) {   /* 1.5 ms deadline */
+		/* Fallback deadline: 20 ms for this coherency-fix bring-up (the worker is now
+		 * cached + a coherent snoop participant, so it renders its band fast). Generous
+		 * enough that a working worker finishes and wfin climbs; if it still fails the
+		 * menu degrades to ~30 fps single-core, not a hang. Tune toward ~2 ms once the
+		 * split is confirmed and the redundant explicit maintenance is removed. */
+		if ((gpt4_get_current_tick() - tw0) > 13u * 20000u) {   /* 20 ms */
 			snes_target tb = *tfull;
 			snes_target_band(&tb, sy, H);
 			snes_menu_render(menu, &tb);
@@ -228,6 +250,15 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 				 g_bc->par_hi, g_bc->par_lo);
 			_dprintf("BC COHERENCY PROBE: cpu0 menu=0x%x  worker-read menu=0x%x  worker-read *menu=0x%x\n",
 				 g_bc->menu_ptr, g_bc->w_menu, g_bc->w_menuw0);
+			{	/* non-comms canary both directions: 0xCA5A.... => cpu0->worker
+				 * cacheable read OK; 0x7777.... => worker->cpu0 OK. Garbage =>
+				 * that direction's cacheable coherency is broken (not comms-specific). */
+				unsigned can2;
+				BC_INVAL(0x51000040u, 64u);
+				can2 = *(volatile unsigned *)(unsigned long)0x51000040u;
+				_dprintf("BC CANARY (non-comms 0x51000000): cpu0->worker worker-read=0x%x (expect 0xCA5Axxxx) ; worker->cpu0 cpu0-read=0x%x (expect 0x7777xxxx)\n",
+					 g_bc->w_can1, can2);
+			}
 		}
 		if (g_bc->fault_type && !dumped) {
 			dumped = 1;
@@ -241,11 +272,14 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 				 g_bc->band_y0, g_bc->band_y1, g_bc->menu_ptr, g_bc->stack_top);
 		}
 		if ((++fc % 240u) == 0u) {  /* ~every 8s at 30fps: minimal spam */
+			unsigned can2;
 			BC_INVAL((unsigned long)BC_COMMS_PA + 384u, 64u);   /* fresh probe line */
-			_dprintf("BC split: wfin=%u fb=%u wait=%uus stage=0x%x fault=%u/pc0x%x wcnt=%u wmenu=0x%x w*menu=0x%x\n",
+			BC_INVAL(0x51000040u, 64u);
+			can2 = *(volatile unsigned *)(unsigned long)0x51000040u;
+			_dprintf("BC split: wfin=%u fb=%u wait=%uus stage=0x%x fault=%u/pc0x%x wcnt=%u wmenu=0x%x w*menu=0x%x can1=0x%x can2=0x%x\n",
 				 g_bc_wfin, g_bc_fb, waited, g_bc->stage,
 				 g_bc->fault_type, g_bc->fault_pc, g_bc->counter,
-				 g_bc->w_menu, g_bc->w_menuw0);
+				 g_bc->w_menu, g_bc->w_menuw0, g_bc->w_can1, can2);
 		}
 	}
 }
