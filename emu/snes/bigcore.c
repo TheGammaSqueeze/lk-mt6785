@@ -24,6 +24,7 @@
  */
 
 extern void arch_clean_invalidate_cache_range(void *addr, unsigned long len);
+extern void arch_invalidate_cache_range(unsigned long addr, unsigned long len);
 extern void arch_sync_cache_range(unsigned long addr, unsigned long len);
 extern int mboot_common_load_part(char *part_name, char *img_name, unsigned long addr);
 extern unsigned long mt_secure_call_all(unsigned long fn, unsigned long a0,
@@ -299,15 +300,21 @@ unsigned bigcore_counter(void)
  *   raw_magic==0        + raw_counter==0         -> nothing visible (core didn't run, OR comms not
  *                                                   visible to the NS little core -> check pwrstat bit)
  */
+/* These are polled every frame by the OSD while the worker is running the render
+ * fork/join. They must NOT clean-invalidate the whole comms block: the clean half
+ * would write cpu0's stale copies of the worker-owned lines (done/counter/cached_ok)
+ * back over the worker's fresh DRAM values (a cross-core clobber). Invalidate ONLY
+ * the specific worker-owned line, then read it fresh from DRAM. magic/stage live on
+ * line0 (offset 0); counter/cached_ok on line4 (offset 256). */
 unsigned bigcore_raw_magic(void)
 {
-	arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
+	arch_invalidate_cache_range((unsigned long)bc + 0u, 64u);
 	return bc->magic;
 }
 
 unsigned bigcore_raw_counter(void)
 {
-	arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
+	arch_invalidate_cache_range((unsigned long)bc + 256u, 64u);
 	return bc->counter;
 }
 
@@ -316,6 +323,6 @@ unsigned bigcore_raw_counter(void)
  * cached" (this) - if magic is set but this stays 0, the MMU/cache enable wedged. */
 unsigned bigcore_cached_ok(void)
 {
-	arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
+	arch_invalidate_cache_range((unsigned long)bc + 256u, 64u);
 	return bc->cached_ok;
 }

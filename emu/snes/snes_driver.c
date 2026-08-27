@@ -56,6 +56,29 @@ static volatile struct bc_comms *const g_bc =
 #define BC_CLEAN(p, n)  arch_clean_cache_range((unsigned long)(p), (unsigned long)(n))
 #define BC_INVAL(p, n)  arch_invalidate_cache_range((unsigned long)(p), (unsigned long)(n))
 
+/* One-directional cache maintenance across the two cores (HW snoop coherency is
+ * empirically not delivering cross-core writes at this pre-kernel stage, so we
+ * hand data over explicitly through DRAM = the Point of Coherency).
+ *
+ * THE RULE that the earlier code violated: for any 64B comms line, exactly ONE
+ * core ever CLEANS it (its owner) and the other only INVALIDATES before reading.
+ * The old worker did BC_CLEAN(g_bc, sizeof) which wrote the worker's OWN stale
+ * copy of cpu0-owned lines (go @64, the job payload incl menu_ptr @192) back over
+ * DRAM, stamping garbage (0xab102d01) over cpu0's freshly written pointer. Each
+ * comms line has a single owner; only the owner cleans it.
+ *   line0  @0   : stage/magic          - worker owns (cpu0 wrote the MMU snapshot
+ *                                         here ONCE pre-power-on, never again)
+ *   go     @64  : frame seq            - cpu0 owns
+ *   done   @128 : frame done           - worker owns
+ *   job    @192 : fb/menu_ptr/band...  - cpu0 owns
+ *   cnt    @256 : counter/cached_ok    - worker owns
+ *   fault  @320 : fault capture        - worker owns (cleaned in the asm handler)
+ *   diag   @384 : w_mpidr..w_menuw0    - worker owns
+ * A reader INVALIDATES the peer-owned line right before reading it; an owner
+ * CLEANS its line right after writing it. Never the reverse. */
+#define BC_L(off)       ((void *)(unsigned long)(BC_COMMS_PA + (unsigned)(off)))
+#define BC_LINE         64u
+
 static inline void bc_sev(void) { __asm__ volatile("sev" ::: "memory"); }
 static inline void bc_wfe(void) { __asm__ volatile("wfe" ::: "memory"); }
 static inline void bc_dmb(void) { __asm__ volatile("dmb ish" ::: "memory"); }
@@ -65,26 +88,26 @@ static inline void bc_dsb(void) { __asm__ volatile("dsb ish" ::: "memory"); }
 void bc_worker_entry(void)
 {
 	unsigned last = 0;
-	g_bc->stage = 0x11; bc_dsb();                  /* reached bc_worker_entry */
+	g_bc->stage = 0x11; BC_CLEAN(BC_L(0), BC_LINE); bc_dsb();  /* reached; publish stage (line0, worker-owned) */
 	for (;;) {
 		for (;;) {                             /* wait for a posted frame */
-			BC_INVAL(g_bc, 64);            /* read go fresh from DRAM (no HW coherency) */
+			BC_INVAL(BC_L(64), BC_LINE);   /* invalidate the GO line (cpu0-owned), read fresh from DRAM */
 			if (g_bc->go != last) break;
 			bc_wfe();
 		}
 		last = g_bc->go;
-		BC_INVAL(g_bc, sizeof(*g_bc));         /* read the whole job fresh */
-		g_bc->stage = 0x22; BC_CLEAN(g_bc, sizeof(*g_bc));
+		BC_INVAL(BC_L(192), BC_LINE);          /* invalidate the JOB line (cpu0-owned), read fresh */
+		g_bc->stage = 0x22; BC_CLEAN(BC_L(0), BC_LINE);   /* publish stage; do NOT touch go/job lines */
 		{
 			snes_menu *menu = (snes_menu *)(unsigned long)g_bc->menu_ptr;
 			snes_target t = {0};
 			unsigned bandlo, bandhi;
 			/* Coherency probe: record the pointer the worker actually read from
-			 * comms, and flush JUST that (line 6) to DRAM immediately - so even if
+			 * comms and flush ONLY the diag line (worker-owned) - so even if
 			 * dereferencing a garbage pointer faults below, cpu0 still sees what the
 			 * worker read (== cpu0's menu_ptr means the invalidate delivered it). */
 			g_bc->w_menu = (unsigned)(unsigned long)menu;
-			BC_CLEAN((void *)(unsigned long)(BC_COMMS_PA + 384u), 64u);
+			BC_CLEAN(BC_L(384), BC_LINE);
 			t.fb = (unsigned int *)(unsigned long)g_bc->fb;
 			t.pitch = g_bc->pitch; t.W = (int)g_bc->W; t.H = (int)g_bc->H;
 			t.offx = (int)g_bc->offx; t.offy = (int)g_bc->offy;
@@ -95,23 +118,27 @@ void bc_worker_entry(void)
 			  __asm__ volatile("mrc p15,0,%0,c0,c0,5":"=r"(v)); g_bc->w_mpidr = v;
 			  __asm__ volatile("mrc p15,0,%0,c1,c0,0":"=r"(v)); g_bc->w_sctlr = v;
 			  __asm__ volatile("mrc p15,0,%0,c1,c0,2":"=r"(v)); g_bc->w_cpacr = v; }
-			/* read the menu state + scene pool cpu0 just updated, fresh from DRAM */
+			/* read the menu state + scene pool cpu0 just updated, fresh from DRAM
+			 * (bulk data: the worker is the READER, so it invalidates before reading) */
 			BC_INVAL(menu, 4096);
 			BC_INVAL(0x50C00000u, 0x00400000u);
 			/* prove the worker can now read the menu's real data through the pointer
 			 * (non-garbage first word) - flush this datum too before the render. */
 			g_bc->w_menuw0 = *(volatile unsigned *)menu;
-			BC_CLEAN((void *)(unsigned long)(BC_COMMS_PA + 384u), 64u);
-			g_bc->stage = 0x33; BC_CLEAN(g_bc, sizeof(*g_bc));
+			BC_CLEAN(BC_L(384), BC_LINE);
+			g_bc->stage = 0x33; BC_CLEAN(BC_L(0), BC_LINE);
 			snes_menu_render(menu, &t);
 			g_bc->stage = 0x44;
-			/* clean the band we rendered out to DRAM so cpu0/display see it */
+			/* clean the band we rendered out to DRAM so cpu0/display see it
+			 * (bulk data: the worker OWNS its band, so it cleans it) */
 			BC_CLEAN((unsigned long)t.fb + (unsigned long)bandlo * t.pitch * 4u,
 				 (unsigned long)(bandhi - bandlo) * t.pitch * 4u);
 		}
 		g_bc->counter = last;                  /* heartbeat = frames rendered */
 		g_bc->done = last;
-		BC_CLEAN(g_bc, sizeof(*g_bc));         /* publish counter/done/stage to DRAM */
+		BC_CLEAN(BC_L(256), BC_LINE);          /* publish counter/cached_ok (worker-owned) */
+		BC_CLEAN(BC_L(128), BC_LINE);          /* publish done (worker-owned) */
+		BC_CLEAN(BC_L(0), BC_LINE);            /* publish final stage=0x44 (worker-owned) */
 		bc_dsb();
 		bc_sev();                              /* wake cpu0 */
 	}
@@ -139,21 +166,24 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 			snes_menu *menu, snes_target *tfull)
 {
 	int sy = (H / 2) & ~15;                    /* split on a 16px (>=64B) line */
-	unsigned seq = ++s_bc_seq, spins = 0, tw0, waited;
+	unsigned seq = ++s_bc_seq, tw0, waited;
 	g_bc->fb = (unsigned)(unsigned long)fb; g_bc->pitch = pitch;
 	g_bc->W = (unsigned)W; g_bc->H = (unsigned)H;
 	g_bc->offx = (unsigned)tfull->offx; g_bc->offy = (unsigned)tfull->offy;
 	g_bc->band_y0 = (unsigned)sy; g_bc->band_y1 = (unsigned)H;   /* worker: bottom */
 	g_bc->menu_ptr = (unsigned)(unsigned long)menu;
-	/* HW cross-core coherency is not working here, so clean the shared data cpu0
-	 * just wrote out to DRAM (Point of Coherency) - the comms job, the menu state,
-	 * and the scene node pool the render walks. The worker invalidates the same
-	 * before reading. */
-	BC_CLEAN(g_bc, sizeof(*g_bc));
+	/* HW cross-core coherency is not delivering cross-core writes here, so hand the
+	 * data over through DRAM. cpu0 OWNS the job line (@192) and the bulk menu + scene
+	 * pool the render walks: clean ONLY those to the Point of Coherency. Do NOT clean
+	 * the whole comms block - that would write cpu0's stale copies of worker-owned
+	 * lines (done/counter/diag) back over the worker's fresh values. */
+	BC_CLEAN(BC_L(192), BC_LINE);               /* job payload (fb/menu_ptr/band...) */
 	BC_CLEAN(menu, 4096);                       /* snes_menu struct */
 	BC_CLEAN(0x50C00000u, 0x00400000u);         /* SNES_HOME_PA scene pool (first 4MB) */
-	bc_dsb();                                  /* release job (+ menu update) */
-	g_bc->go = seq;
+	bc_dsb();                                  /* job + menu update must land before go */
+	g_bc->go = seq;                            /* publish the frame (cpu0 owns the go line) */
+	BC_CLEAN(BC_L(64), BC_LINE);               /* clean go to DRAM - the worker reads it from there */
+	bc_dsb();
 	bc_sev();                                  /* wake the worker */
 	{	/* cpu0 renders the top band [0, sy) meanwhile */
 		snes_target t0 = *tfull;
@@ -161,14 +191,16 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 		snes_menu_render(menu, &t0);
 	}
 	tw0 = gpt4_get_current_tick();
-	/* Join by BUSY-SPIN (not WFE): a WFE here would park cpu0 and the bounded
-	 * fallback counter would never advance, so a worker that never signals done
-	 * (crashed / missed the wakeup) would hang the menu forever. Busy-spin lets
-	 * the fallback fire and cpu0 render the worker's band itself. */
+	/* Join by BUSY-SPIN (not WFE): a WFE here would park cpu0 and the time-bounded
+	 * fallback would never fire, so a worker that never signals done (crashed / missed
+	 * the wakeup) would hang the menu forever. Busy-spin lets the fallback fire and
+	 * cpu0 render the worker's band itself. Bound by WALL CLOCK (13 MHz gpt4 tick), not
+	 * an iteration count: ~1.5 ms leaves ~31 ms of a 33 ms (30 fps) frame for cpu0 to
+	 * render the second band, so a failing worker degrades to ~30 fps, not 4 fps. */
 	for (;;) {
-		BC_INVAL((unsigned long)BC_COMMS_PA + 128u, 64u);  /* read done fresh */
+		BC_INVAL(BC_L(128), BC_LINE);      /* invalidate DONE (worker-owned), read fresh */
 		if (g_bc->done == seq) { g_bc_wfin++; break; }
-		if (++spins > 1000000u) {          /* worker missed the deadline */
+		if ((gpt4_get_current_tick() - tw0) > 13u * 1500u) {   /* 1.5 ms deadline */
 			snes_target tb = *tfull;
 			snes_target_band(&tb, sy, H);
 			snes_menu_render(menu, &tb);
@@ -186,7 +218,10 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 		 * (everything needed to diagnose: fault regs, worker CPU state, the job
 		 * it was handed), then only a light periodic line so the log is readable. */
 		static unsigned fc, dumped, parlogged;
-		BC_INVAL((unsigned long)BC_COMMS_PA + 384u, 64u);  /* fresh line 6 (par + coherency probe) */
+		BC_INVAL(BC_L(0), BC_LINE);        /* fresh stage (line0, worker-owned) */
+		BC_INVAL(BC_L(256), BC_LINE);      /* fresh counter/cached_ok (line4, worker-owned) */
+		BC_INVAL(BC_L(320), BC_LINE);      /* fresh fault capture (line5, worker-owned) */
+		BC_INVAL(BC_L(384), BC_LINE);      /* fresh diag: par + coherency probe (line6) */
 		if (!parlogged) {   /* once: the worker's mapping of the comms VA + coherency probe */
 			parlogged = 1;
 			_dprintf("BC PAR (comms VA attrs): par=0x%x:0x%x (bit0=fault; SH bits8:7; ATTR 63:56)\n",

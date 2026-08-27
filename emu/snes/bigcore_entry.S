@@ -185,6 +185,9 @@ bc_undef:
 	sub	r1, lr, #4		@ ARM undef: lr = faulting PC + 4
 	str	r1, [r0, #BC_O_FAULT_PC]
 	dsb
+	add	r1, r0, #BC_O_FAULT_TYPE	@ fault-capture line base
+	mcr	p15, 0, r1, c7, c10, 1		@ DCCMVAC: clean it to PoC so cpu0 can read the fault
+	dsb
 1:	wfe
 	b	1b
 
@@ -202,6 +205,9 @@ bc_pabt:
 	sub	r1, lr, #4		@ prefetch abort: lr = faulting PC + 4
 	str	r1, [r0, #BC_O_FAULT_PC]
 	dsb
+	add	r1, r0, #BC_O_FAULT_TYPE	@ fault-capture line base
+	mcr	p15, 0, r1, c7, c10, 1		@ DCCMVAC: clean it to PoC so cpu0 can read the fault
+	dsb
 1:	wfe
 	b	1b
 
@@ -218,6 +224,9 @@ bc_dabt:
 	str	r1, [r0, #BC_O_FAULT_FSR]
 	sub	r1, lr, #8		@ data abort: lr = faulting PC + 8
 	str	r1, [r0, #BC_O_FAULT_PC]
+	dsb
+	add	r1, r0, #BC_O_FAULT_TYPE	@ fault-capture line base
+	mcr	p15, 0, r1, c7, c10, 1		@ DCCMVAC: clean it to PoC so cpu0 can read the fault
 	dsb
 1:	wfe
 	b	1b

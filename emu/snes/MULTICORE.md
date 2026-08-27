@@ -253,3 +253,51 @@ cost that could erase the multi-core win; it is acceptable only as a correctness
 while the `PAR`/probe data tells us whether a mapping fix can restore real HW coherency
 (and let the explicit maintenance be dropped, or at least narrowed to the nodes actually
 touched).
+
+## 7. Root cause on HW: a clean/invalidate war, not a mapping bug
+
+The on-device run answered the coherency question decisively:
+- `PAR` of the comms VA on the worker = `0xff000000:0x54000b80`: F=0 (no fault),
+  `SH[8:7]=0b11` (Inner-Shareable), `ATTR[63:56]=0xff` (Normal Write-Back), `PA=0x54000000`.
+  So the worker's mapping is exactly right; shareability/attributes are NOT the problem.
+- Kernel device tree `cpu-map`: cpu0 (`reg=0x000`) and the worker (`reg=0x100`) are BOTH in
+  `cluster0` (the six A55). They share one inner-shareable domain, so Inner-Shareable is the
+  correct shareability. Do NOT switch to Outer-Shareable, and A55 has no software `SMPEN` to
+  add (DSU-managed).
+- The coherency probe showed the worker read `menu_ptr = 0xab102d01` (fixed uninitialised-DRAM
+  garbage) where cpu0 wrote `0x4c5c304c`, then data-aborted dereferencing it.
+
+The actual bug was in the explicit maintenance, not the hardware: BOTH cores were cleaning the
+WHOLE comms block. `arch_clean*_cache_range(g_bc, sizeof)` on a core writes that core's own
+cache copy of EVERY comms line back to DRAM, including lines the OTHER core owns. So the worker's
+`BC_CLEAN(g_bc, sizeof)` stamped its stale/uninitialised copy of the job line (`menu_ptr` @192)
+back over cpu0's freshly written value, and cpu0's per-frame OSD accessors
+(`bigcore_raw_magic/counter`, `bigcore_cached_ok`) did the same clean-invalidate of the whole
+block over the worker's `done`/`counter`. A clean/invalidate war: whichever core cleaned last
+won, and it was usually garbage. Two supporting scope bugs: the worker's `BC_INVAL(g_bc,64)`
+invalidated line 0, never the `go` line at offset 64; and cpu0 set `go` AFTER its block clean, so
+`go` was never actually flushed to DRAM.
+
+### The fix (all EXPT-gated; release stays single-core, host split still IDENTICAL)
+Make every 64 B comms line have exactly ONE owner that ever CLEANS it; the other core only
+INVALIDATES before reading, and never cleans a peer-owned line. Ownership:
+`stage@0`, `done@128`, `counter@256`, `fault@320`, `diag@384` = worker; `go@64`, `job@192` =
+cpu0. Concretely (`emu/snes/snes_driver.c`, `emu/snes/bigcore.c`, `emu/snes/bigcore_entry.S`):
+- cpu0 cleans ONLY `job@192` (after writing the payload) and `go@64` (after publishing the seq -
+  this was missing entirely), plus the bulk menu + scene pool it produced. It invalidates the
+  worker-owned lines (`done`, `stage`, `counter`, `fault`, `diag`) before reading them.
+- The worker cleans ONLY its owned lines (`stage`, `done`, `counter`, `diag`) and its rendered
+  framebuffer band. It invalidates the cpu0-owned `go@64` and `job@192` before reading them, and
+  invalidates the bulk menu + scene pool before reading.
+- The asm fault handlers (`bc_dabt` etc) now `DCCMVAC` the fault-capture line so cpu0 reliably
+  reads the fault (previously they only wrote it and parked in WFE).
+- The OSD accessors in `bigcore.c` switched from whole-block `arch_clean_invalidate_cache_range`
+  to invalidate-only of just the worker-owned line they read (line0 for magic, line4 for
+  counter/cached_ok) - no more cpu0-side clobber of the worker's heartbeat.
+This handoff is correct whether or not HW snoop-coherency is active, because it moves data through
+DRAM (the Point of Coherency): the owner cleans to PoC, the reader invalidates then reads PoC, and
+no core ever writes back a line it does not own.
+
+Also: the bounded-fallback that made a failing worker cost 4 fps (cpu0 spun a fixed 1,000,000
+iterations ~= 11 ms every frame) is now a wall-clock deadline of ~1.5 ms using the 13 MHz gpt4
+tick, so a worker that never signals `done` degrades the menu to ~30 fps single-core, not 4 fps.
