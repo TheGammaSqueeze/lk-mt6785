@@ -956,6 +956,22 @@ void snes_menu_build_cardcache(snes_menu *m, snes_target *t)
 	SUB_END(g_cc_us, 3);
 }
 
+/* Signature of everything that changes the SETTLED focused-card body (frame+boxart+
+ * icons at cont_shift=0). EXCLUDES cont_shift (the pan, handled by the blit shift) and
+ * m->clock (only the cursor pulses, drawn live). When unchanged the cached body is reused. */
+static uint32_t fcc_signature(snes_menu *m)
+{
+	union { float f; uint32_t u; } c;
+	uint32_t h = 2166136261u;
+#define FCC_MIX(v) do { h = (h ^ (uint32_t)(v)) * 16777619u; } while (0)
+	FCC_MIX(m->focus); FCC_MIX(m->state); FCC_MIX(m->ngames); FCC_MIX(m->aspect);
+	FCC_MIX(m->sort_rule);
+	c.f = m->sel_world;  FCC_MIX(c.u);
+	c.f = m->resume_dim; FCC_MIX(c.u);
+#undef FCC_MIX
+	return h ? h : 1u;
+}
+
 /* Clear + render the live selection cursor into the caller's panel-sized L3 buffer.
  * A fixed rect covering every cursor position (focused-card cursor + the card<->
  * menubar slide path, both aspects) is cleared each frame - so the double-buffered
@@ -1032,9 +1048,53 @@ void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t, int full_clear)
 	}
 	SUB_END(g_cur_us, 0);
 
-	/* the full blue focused card first (over the L2 dark body), then the cursor */
-	set_view(m, t, VIEW_CONTENT);
-	draw_focus_card(m, t);
+	/* Focused card body (blue frame + boxart + icons) over the L2 dark body. Re-rendering
+	 * it every frame is ~4ms on the A55; instead render the SETTLED body once into the fcc
+	 * and blit it into L3 shifted by the integer pan. Skipped mid-crossfade (the blue frame
+	 * animates) and during the menubar slide (full-rect path), where it renders live. */
+	{
+		float prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus) ? m->xfade_t / CAR_XFADE : 0.0f;
+		int cacheable = (m->fcc && prog <= 0.003f && m->state == 0 && m->ngames > 0
+				 && m->card_act && m->cur_slide_t >= CUR_SLIDE_DUR);
+		if (cacheable) {
+			float vsx = m->aspect ? ASP_CONTENT_S : 1.0f;
+			int shift_px = (int)(m->cont_shift * vsx + (m->cont_shift >= 0.0f ? 0.5f : -0.5f));
+			uint32_t sig = fcc_signature(m);
+			if (!m->fcc_ready || m->fcc_sig != sig) {
+				/* rebuild: render the SETTLED (cont_shift=0) body into the fcc at its
+				 * canonical bbox (the live bbox shifted back by the pan, + slop so the
+				 * per-frame +/-1px rounding of the blit source never reads outside it). */
+				snes_target ct = *t;
+				float save = m->cont_shift, save_xf = m->xfade_t;
+				ct.fb = m->fcc;
+				m->cont_shift = 0.0f; m->xfade_t = 0.0f;   /* fully settled body */
+				m->fcc_x0 = bx0 - shift_px - 4; m->fcc_x1 = bx1 - shift_px + 4;
+				m->fcc_y0 = by0; m->fcc_y1 = by1;
+				if (m->fcc_x0 < 0) m->fcc_x0 = 0; if (m->fcc_x1 > t->W) m->fcc_x1 = t->W;
+				for (y = m->fcc_y0; y < m->fcc_y1; y++) {
+					uint32_t *r = m->fcc + (unsigned)y * t->pitch;
+					for (x = m->fcc_x0; x < m->fcc_x1; x++) r[x] = 0;
+				}
+				set_view(m, &ct, VIEW_CONTENT);
+				draw_focus_card(m, &ct);
+				m->cont_shift = save; m->xfade_t = save_xf;
+				m->fcc_sig = sig; m->fcc_ready = 1;
+			}
+			/* blit fcc[canonical] -> L3[live], shifted by the integer pan (exact) */
+			for (y = by0; y < by1; y++) {
+				uint32_t *d = t->fb + (unsigned)y * t->pitch;
+				const uint32_t *s = m->fcc + (unsigned)y * t->pitch;
+				for (x = bx0; x < bx1; x++) {
+					int sx = x - shift_px;
+					d[x] = (sx >= m->fcc_x0 && sx < m->fcc_x1) ? s[sx] : 0u;
+				}
+			}
+		} else {
+			set_view(m, t, VIEW_CONTENT);
+			draw_focus_card(m, t);
+			m->fcc_ready = 0;   /* crossfade/slide changed the body; rebuild next time */
+		}
+	}
 	SUB_END(g_cur_us, 1);
 	if (!draw_focus_slide(m, t)) {
 		set_view(m, t, VIEW_CONTENT);

@@ -361,6 +361,9 @@ extern int mt_get_gpio_in(unsigned pin);
 #define SNES_HOME_PA  0x50C00000u   /* home rnode pool */
 #define SNES_BG_PA    0x50E00000u   /* bg rnode pool */
 #define SNES_COMP_PA  0x51000000u   /* compressed staging */
+#define SNES_FCC_PA   0x51000000u   /* focused-card body cache (panel-sized; REUSES the COMP
+                                     * staging, which is only touched during the boot-time
+                                     * pack load - free for the whole render loop after that) */
 #define SNES_WP_PA    0x52000000u   /* wallpaper cache (1536*720*4) */
 #define SNES_CHROME_PA 0x53000000u  /* static chrome cache (up to 1280*960*4 in 4:3) */
 /* OVL layer buffers (OVL_LAYERS.md). The ONLY WB DRAM mapped in LK is the SCRATCH/
@@ -630,6 +633,10 @@ static int snes_emu_thread(void *arg)
 		dbg("SNES ERR: menu init");
 		for (;;) { mtk_wdt_restart(); thread_sleep(200); }
 	}
+	/* focused-card body cache: render the settled card once, blit it (shifted) each frame
+	 * instead of re-compositing (~4ms -> ~1ms on the A55). Reuses the load-only COMP slot. */
+	s_menu.fcc = (uint32_t *)(unsigned long)SNES_FCC_PA;
+	s_menu.fcc_ready = 0;
 
 	input_init();
 	ayaneo_set_cpu_mhz(2000);

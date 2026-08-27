@@ -92,6 +92,16 @@ typedef struct {
 	uint32_t *chrome;             /* cached static home chrome, VW*VH u32 (0 alpha = uncovered) */
 	int chrome_ready;
 	int cc_y0, cc_y1;             /* L2 card-cache non-empty row band (OVL_LAYERS.md); y1<y0 = empty */
+	/* Focused-card body cache (L3 60fps path): the card body (frame+boxart+icons, PREMULT)
+	 * is expensive to re-render on the in-order A55 (~4ms/frame), but it is invariant to the
+	 * live cont_shift pan - only the focus/sel_world/aspect change it. Render it ONCE into
+	 * this caller-provided full-frame buffer at the SETTLED (cont_shift=0) position, then each
+	 * frame blit it into L3 shifted by the integer pan (exact: the pan is quantised to whole
+	 * panel px) and draw only the pulsing cursor live. fcc_sig drives rebuilds; -1 = invalid. */
+	uint32_t *fcc;                /* focused-card cache, panel-sized (VW-pitch) u32, or 0 to disable */
+	uint32_t fcc_sig;             /* signature of the cached body state */
+	int fcc_ready;                /* 1 = fcc holds a valid settled body for fcc_sig */
+	int fcc_x0, fcc_x1, fcc_y0, fcc_y1;  /* settled (canonical) body bbox in fcc (panel coords) */
 	int aspect;                   /* 0 = native 16:9 (letterboxed); 1 = 4:3 (fills the 960 panel) */
 	float scroll;
 

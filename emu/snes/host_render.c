@@ -37,6 +37,8 @@ int main(int argc, char **argv)
 	if (snes_menu_init(&menu, &pk, home_pool, 4096, bg_pool, 256, wp, chrome) != 0) {
 		fprintf(stderr, "menu init failed\n"); return 1;
 	}
+	menu.fcc = calloc((size_t)W * H, 4);   /* focused-card body cache (panel-sized) */
+	menu.fcc_ready = 0;
 	t.fb = fb; t.pitch = W; t.W = W; t.H = H;
 	t.offx = (W - SNES_VW) / 2; t.offy = (H - SNES_VH) / 2;
 	snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
