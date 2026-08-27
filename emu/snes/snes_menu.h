@@ -154,17 +154,6 @@ typedef struct {
 #define SNES_CURSOR_X1 960
 #define SNES_CURSOR_Y1 680
 
-/* L2 card-cache geometry for the OVL PAN (movement 60fps; OVL_LAYERS.md). The strip
- * is rendered SETTLED into a WIDE, band-height buffer with a margin on each side so
- * cards sliding in from the edges are pre-rendered (not clipped); the layer is then
- * panned by the live cont_shift via the OVL src_x. MARGIN 608 covers the cull's
- * off-screen reach (world [-280,1560] -> screen ~[-450,1731]); W = 1280 + 2*608. The
- * card band [BAND_Y0, BAND_Y0+BAND_H) covers 4:3 (y~316..643) and 16:9 (y~342..617). */
-#define SNES_L2_MARGIN  608
-#define SNES_L2_W       (1280 + 2 * SNES_L2_MARGIN)   /* 2496 */
-#define SNES_L2_BAND_Y0 300
-#define SNES_L2_BAND_H  384
-
 /* Initialise. home_pool/bg_pool are snes_rnode arrays of the given capacities;
  * wp is a WP_CACHE_W*WP_CACHE_H u32 buffer. Returns 0 on success. */
 int snes_menu_init(snes_menu *m, const snes_pack *pk,

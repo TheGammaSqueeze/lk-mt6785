@@ -202,54 +202,25 @@ int main(int argc, char **argv)
 	 *               output-correct before any device flash. Writes ref/comp/diff PPMs. */
 	if (argc > 5 && strcmp(argv[5], "layers") == 0) {
 		const char *outdir = argv[2];
-		uint32_t *l0 = calloc((size_t)W * H, 4), *cc = calloc((size_t)SNES_L2_W * SNES_L2_BAND_H, 4);
+		uint32_t *l0 = calloc((size_t)W * H, 4), *cc = calloc((size_t)W * H, 4);
 		uint32_t *cur = calloc((size_t)W * H, 4), *comp = calloc((size_t)W * H, 4);
 		snes_target t0 = t, t2 = t, t3 = t;
 		long diff = 0; int minx = W, miny = H, maxx = -1, maxy = -1, xx, yy;
 		char path[512]; FILE *pf;
-		/* Emulate the OVL src_x pan: the L2 layer is built SETTLED (cont_shift=0) once,
-		 * then panned by the live cont_shift. A panel pixel (x,y) reads L2 buffer pixel
-		 * (pan + x, y - BAND_Y0) with pan = MARGIN - round(cont_shift*viewscale). */
-		float vscale = menu.aspect ? 1.18519f : 1.0f;   /* ASP_CONTENT_S */
-		int pan = SNES_L2_MARGIN - (int)(menu.cont_shift * vscale + (menu.cont_shift >= 0 ? 0.5f : -0.5f));
-		fprintf(stderr, "  [pan] cont_shift=%.1f sel_world=%.1f pan=%d ngames=%d focus=%d\n", menu.cont_shift, menu.sel_world, pan, menu.ngames, menu.focus);
 		/* L0: everything except the card bodies + focus/slide cursor */
 		for (i = 0; i < W * H; i++) l0[i] = 0xFF000000u;
 		t0.fb = l0; t0.ovl_split = 1;
 		snes_menu_render(&menu, &t0);
-		/* L2: SETTLED cursorless card strip in the WIDE band buffer */
-		t2.fb = cc; t2.W = SNES_L2_W; t2.H = SNES_L2_BAND_H; t2.pitch = SNES_L2_W;
-		t2.offx = SNES_L2_MARGIN;
-		t2.offy = (menu.aspect ? 0 : (H - SNES_VH) / 2) - SNES_L2_BAND_Y0;
-		t2.cache_layer = 0;
+		/* L2: cursorless card strip (straight alpha), band in menu.cc_y0/cc_y1 */
+		t2.fb = cc; t2.cache_layer = 0;
 		snes_menu_build_cardcache(&menu, &t2);
-		{ /* L2 buffer card-center columns (buffer x) + their equivalent panel x at this pan */
-			int bx, byy, on, run0 = -1; char msg[512]; int ml = 0;
-			ml += snprintf(msg+ml, sizeof(msg)-ml, "  [L2buf] card cols(bufx->panelx):");
-			for (bx = 0; bx < SNES_L2_W; bx++) {
-				on = 0;
-				for (byy = 40; byy < 340; byy++) if (cc[(size_t)byy*SNES_L2_W+bx] >> 24) { on = 1; break; }
-				if (on && run0 < 0) run0 = bx;
-				else if (!on && run0 >= 0) {
-					if (bx - run0 > 30) { int c = (run0+bx)/2; ml += snprintf(msg+ml, sizeof(msg)-ml, " %d->%d", c, c - pan); }
-					run0 = -1;
-				}
-			}
-			fprintf(stderr, "%s\n", msg);
-		}
 		/* L3: live selection cursor (straight alpha) */
 		t3.fb = cur;
 		snes_menu_render_cursor_layer(&menu, &t3);
-		/* composite L0 + L2(panned band) + L3 with straight (coverage) source-over */
-		for (yy = 0; yy < H; yy++) for (xx = 0; xx < W; xx++) {
-			int by = yy - SNES_L2_BAND_Y0, bx = pan + xx;
-			uint32_t bs, c2 = 0, c3;
-			unsigned r, g, b, a, ia;
-			i = yy * W + xx;
-			bs = l0[i]; c3 = cur[i];
-			r = (bs >> 16) & 0xff; g = (bs >> 8) & 0xff; b = bs & 0xff;
-			if (by >= 0 && by < SNES_L2_BAND_H && bx >= 0 && bx < SNES_L2_W)
-				c2 = cc[(size_t)by * SNES_L2_W + bx];
+		/* composite L0 -> L2 -> L3 with straight (coverage) source-over */
+		for (i = 0; i < W * H; i++) {
+			uint32_t bs = l0[i], c2 = cc[i], c3 = cur[i];
+			unsigned r = (bs >> 16) & 0xff, g = (bs >> 8) & 0xff, b = bs & 0xff, a, ia;
 			a = c2 >> 24; if (a) { ia = 255 - a;
 				r = (((c2 >> 16) & 0xff) * a + r * ia + 127) / 255;
 				g = (((c2 >> 8) & 0xff) * a + g * ia + 127) / 255;

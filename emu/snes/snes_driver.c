@@ -29,9 +29,8 @@ extern unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, 
 extern void ayaneo_canvas_present(void);
 /* OVL hardware-layered present for the steady home carousel (OVL_LAYERS.md). A 0
  * addr disables that upper layer; l2_clean flushes the L2 band (only when rebuilt). */
-extern void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_pan, int l2_clean,
+extern void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_y0, int l2_y1, int l2_clean,
 					 unsigned int l3_pa, int l3_y0, int l3_y1);
-#define ASP_CONTENT_S_DRV 1.18519f   /* must match snes_menu.c ASP_CONTENT_S (4:3 x zoom) */
 /* tell the single-buffer present whether to skip its explicit post-swap vsync wait
  * (skip when this frame fit in a vsync; the wait is only needed for overrunning frames). */
 extern void ayaneo_present_skip_vsync(int skip);
@@ -371,6 +370,9 @@ extern int mt_get_gpio_in(unsigned pin);
  * 0x4B0000) double buffer (0x960000 total) inside its 16MB slot. */
 #define SNES_OVL_L2_PA 0x54000000u  /* mapped WB (was BC_COMMS); free when EXPT off */
 #define SNES_OVL_L3_PA 0x55000000u  /* mapped WB (was SPMFW staging); free when EXPT off */
+/* frames the carousel must hold still before engaging OVL layers (skips the brief
+ * inter-step settles of auto-repeat scroll so the layers do not churn on/off). */
+#define SNES_LAYER_SETTLE_FRAMES 6
 #define SNES_RAW_MAX  (32u * 1024 * 1024)
 #define SNES_COMP_MAX (16u * 1024 * 1024)
 #define HOME_CAP (16u * 1024 * 1024 / (unsigned)sizeof(snes_rnode))
@@ -439,10 +441,12 @@ static void draw_osd(unsigned int *fb, unsigned int pitch, int W)
 
 /* ---- OVL hardware-layering state (OVL_LAYERS.md) ---- */
 static uint32_t s_cc_sig;    /* card-cache signature the L2 buffer was built for */
+static uint32_t s_cc_sig_last; /* card-strip signature of the PREVIOUS frame (settle test) */
 static int s_cc_valid;       /* L2 currently holds a valid build */
 static int s_l2_flip;        /* L2 live-buffer index (flips only on rebuild) */
 static int s_l3_flip;        /* L3 live-buffer index (flips every frame) */
 static int s_was_layered;    /* previous frame presented via the OVL layers */
+static int s_settle_count;   /* consecutive frames the card strip has held still */
 
 /* ---- frame-time telemetry (top-left readout) ---- */
 extern unsigned (*g_perf_tick)(void);  /* snes_menu.c per-phase profiler hook */
@@ -652,11 +656,19 @@ static int snes_emu_thread(void *arg)
 		 * path is not NEON) and tears, so those frames render single-buffer via the fast
 		 * direct path - exactly the tear-free pre-layering carousel. Likewise every
 		 * non-home state. Layer only once the strip has settled. See OVL_LAYERS.md. */
-		/* The home carousel is ALWAYS OVL-layered now: the card strip lives on the L2
-		 * layer and is PANNED by the OVL src_x during a slide (cc_signature excludes
-		 * cont_shift, so a slide does not rebuild). No idle<->movement mode switch, so
-		 * no flicker; movement is a hardware pan. Every non-home state stays single-buffer. */
-		layered = (s_menu.state == 0 && s_menu.open_y == 0.0f && !s_menu.closing);
+		{
+			uint32_t sig = snes_menu_cardcache_sig(&s_menu);
+			/* Require the strip to hold STILL for several consecutive frames before
+			 * layering. The brief 1-frame settles BETWEEN auto-repeat scroll steps
+			 * would otherwise flip the OVL layers on for a frame then off - and rapid
+			 * enable/disable of OVL layers tears. A sustained settle (user stopped
+			 * scrolling) is the only thing that engages the layers. */
+			if (sig == s_cc_sig_last) { if (s_settle_count < 1000) s_settle_count++; }
+			else s_settle_count = 0;
+			s_cc_sig_last = sig;
+			layered = (s_menu.state == 0 && s_menu.open_y == 0.0f && !s_menu.closing
+				   && s_settle_count >= SNES_LAYER_SETTLE_FRAMES);
+		}
 		t.ovl_split = layered;
 #ifdef AYANEO_BIGCORE_EXPT
 		/* Split the render across cpu0 + the cached worker when it is up and the
@@ -698,52 +710,45 @@ static int snes_emu_thread(void *arg)
 			 * restores submenus to 60fps (their render is well under a frame). */
 			ayaneo_present_skip_vsync(((t_pre - t_frame0) / 13u) < 15000u);
 			if (layered) {
-				unsigned l2_size = (unsigned)SNES_L2_W * SNES_L2_BAND_H * 4u;
-				unsigned l3_size = pitch * H * 4u;
+				unsigned layer_size = pitch * H * 4u;
 				uint32_t sig = snes_menu_cardcache_sig(&s_menu);
 				unsigned int l2_live, l3_live;
-				int rebuilt = 0, l2_pan;
-				float vscale = s_menu.aspect ? ASP_CONTENT_S_DRV : 1.0f;
-				/* Rebuild the SETTLED wide strip only when the card ORDER changed (a
-				 * nav): cc_signature excludes cont_shift/xfade, so a slide leaves it
-				 * unchanged and is served by the src_x pan below - no per-frame rebuild. */
+				int rebuilt = 0;
+				/* Rebuild the L2 card cache into the back buffer when the strip
+				 * changed (navigation) or we just entered layered mode; otherwise
+				 * the OVL keeps scanning the live buffer (no per-frame CPU cost). */
 				if (!s_cc_valid || sig != s_cc_sig || !s_was_layered) {
 					snes_target ct = {0};
 					ct.fb = (unsigned int *)(unsigned long)
-						(SNES_OVL_L2_PA + (s_l2_flip ? 0u : l2_size));
-					ct.W = SNES_L2_W; ct.H = SNES_L2_BAND_H; ct.pitch = SNES_L2_W;
-					ct.offx = SNES_L2_MARGIN;
-					ct.offy = (s_menu.aspect ? 0 : ((int)H - SNES_VH) / 2) - SNES_L2_BAND_Y0;
+						(SNES_OVL_L2_PA + (s_l2_flip ? 0u : layer_size));
+					ct.W = (int)W; ct.H = (int)H; ct.pitch = pitch;
+					ct.offx = ((int)W - SNES_VW) / 2; ct.offy = ((int)H - SNES_VH) / 2;
 					snes_menu_build_cardcache(&s_menu, &ct);
 					s_l2_flip ^= 1; s_cc_sig = sig; s_cc_valid = 1; rebuilt = 1;
 				}
-				l2_live = SNES_OVL_L2_PA + (s_l2_flip ? l2_size : 0u);
-				/* pan the strip by the live cont_shift: screen px = cont_shift*viewscale,
-				 * src_x = MARGIN - that (reads further left in the wide buffer to shift
-				 * the cards right). settles to MARGIN (=idle cache) as cont_shift->0. */
-				l2_pan = SNES_L2_MARGIN - (int)(s_menu.cont_shift * vscale +
-						(s_menu.cont_shift >= 0.0f ? 0.5f : -0.5f));
-				/* Render the colour-pulsing selection cursor into the L3 back buffer
-				 * every frame at the LIVE focused-card position (it pans with cont_shift). */
+				l2_live = SNES_OVL_L2_PA + (s_l2_flip ? layer_size : 0u);
+				/* Render the colour-pulsing selection cursor into the L3 back
+				 * buffer every frame (cheap: a fixed rect, not the whole card). */
 				{
 					snes_target curt = {0};
 					curt.fb = (unsigned int *)(unsigned long)
-						(SNES_OVL_L3_PA + (s_l3_flip ? 0u : l3_size));
+						(SNES_OVL_L3_PA + (s_l3_flip ? 0u : layer_size));
 					curt.W = (int)W; curt.H = (int)H; curt.pitch = pitch;
 					curt.offx = ((int)W - SNES_VW) / 2; curt.offy = ((int)H - SNES_VH) / 2;
 					snes_menu_render_cursor_layer(&s_menu, &curt);
 					s_l3_flip ^= 1;
 				}
-				l3_live = SNES_OVL_L3_PA + (s_l3_flip ? l3_size : 0u);
-				ayaneo_canvas_present_layers(l2_live, l2_pan, rebuilt,
+				l3_live = SNES_OVL_L3_PA + (s_l3_flip ? layer_size : 0u);
+				ayaneo_canvas_present_layers(l2_live, s_menu.cc_y0, s_menu.cc_y1, rebuilt,
 							     l3_live, SNES_CURSOR_Y0, SNES_CURSOR_Y1);
 				s_was_layered = 1;
 			} else if (s_was_layered) {
-				/* leaving the layered state (opening a submenu): disable the upper OVL
-				 * layers ONCE, at a frame boundary, so no stale cards/cursor linger. */
-				ayaneo_canvas_present_layers(0u, 0, 0, 0u, 0, 0);
+				/* leaving the layered state (movement / opening a submenu): disable
+				 * the upper OVL layers ONCE, at a frame boundary, so no stale cards or
+				 * cursor linger over the single-buffer frame. */
+				ayaneo_canvas_present_layers(0u, 0, 0, 0, 0u, 0, 0);
 				s_was_layered = 0;
-				s_cc_valid = 0;   /* force an L2 rebuild when we re-enter layered mode */
+				s_cc_valid = 0;   /* force an L2 rebuild when the carousel next settles */
 			} else {
 				/* steady single-buffer state (moving carousel, submenu, resume): the
 				 * plain present, exactly the tear-free pre-layering path - it never

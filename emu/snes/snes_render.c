@@ -75,17 +75,14 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	}
 	x0 = ifloor(minx); x1 = ifloor(maxx) + 1;
 	y0 = ifloor(miny); y1 = ifloor(maxy) + 1;
-	/* Low clamp so buffer col/row = offx/offy + X/Y stays >= 0. The OVL card-cache
-	 * (cache_layer) is a WIDE, band-height buffer with a margin (offx>0) and a shifted
-	 * band (offy<0), so it needs the full extent [-offx .. t->W-offx); every other
-	 * target keeps the original [0 .. min(t->W-offx, SNES_VW)) behaviour bit-for-bit. */
-	{
-		int lox = t->cache_layer ? -t->offx : 0, loy = t->cache_layer ? -t->offy : 0;
-		if (x0 < lox) x0 = lox; if (y0 < loy) y0 = loy;
-	}
+	if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+	/* Clamp to the framebuffer extent (offx/offy is added below). The design is
+	 * 1280x720, so at native 16:9 (offy=120) this is exactly SNES_VW/SNES_VH and
+	 * bit-identical; in 4:3 (offy=0, H=960) it lets the view-transformed content
+	 * and the bottom-pinned bar reach panel rows 720..959 instead of clipping. */
 	{
 		int xlim = t->W - t->offx, ylim = t->H - t->offy;
-		if (!t->cache_layer && xlim > SNES_VW) xlim = SNES_VW;   /* virtual design width */
+		if (xlim > SNES_VW) xlim = SNES_VW;   /* never exceed the virtual design width */
 		if (x1 > xlim) x1 = xlim;
 		if (y1 > ylim) y1 = ylim;
 	}
