@@ -958,6 +958,15 @@ unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigne
 
 /* flush the whole back buffer and present it, then flip */
 extern int priamry_display_wait_for_vsync(void);
+
+/* The explicit post-swap vsync wait is only needed when the frame's render OVERRAN a
+ * vsync (then config_input's FRAME_DONE wait has already passed and is a no-op, so the
+ * swap would tear). For frames that fit in a vsync (submenus, GBC/GBA) it is a pure
+ * second barrier that halves the rate. The menu driver sets this each frame from the
+ * measured render time; default 0 = wait (safe for callers that do not set it). */
+static int s_present_skip_vsync;
+void ayaneo_present_skip_vsync(int skip) { s_present_skip_vsync = skip; }
+
 void ayaneo_canvas_present(void)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
@@ -979,7 +988,8 @@ void ayaneo_canvas_present(void)
 	 * redraws the still-displayed buffer -> tearing. So keep the explicit vsync wait
 	 * here to stay tear-free; the layered idle present omits it (its render is < 1
 	 * frame, so its FRAME_DONE wait already syncs, and it must stay 60fps). */
-	priamry_display_wait_for_vsync();
+	if (!s_present_skip_vsync)
+		priamry_display_wait_for_vsync();
 	s_fb_flip ^= 1;
 }
 

@@ -31,6 +31,9 @@ extern void ayaneo_canvas_present(void);
  * addr disables that upper layer; l2_clean flushes the L2 band (only when rebuilt). */
 extern void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_y0, int l2_y1, int l2_clean,
 					 unsigned int l3_pa, int l3_y0, int l3_y1);
+/* tell the single-buffer present whether to skip its explicit post-swap vsync wait
+ * (skip when this frame fit in a vsync; the wait is only needed for overrunning frames). */
+extern void ayaneo_present_skip_vsync(int skip);
 extern void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
 			int x, int y, int w, int h, unsigned int argb);
 extern int  ayaneo_text(unsigned int *buf, unsigned int pitch_w,
@@ -701,6 +704,11 @@ static int snes_emu_thread(void *arg)
 
 		{
 			unsigned t_pre = gpt4_get_current_tick();
+			/* Skip the single-buffer path's explicit post-swap vsync wait when this
+			 * frame fit in a vsync (config_input's FRAME_DONE wait then already syncs);
+			 * only overrunning frames (moving carousel, resume) need it. This is what
+			 * restores submenus to 60fps (their render is well under a frame). */
+			ayaneo_present_skip_vsync(((t_pre - t_frame0) / 13u) < 15000u);
 			if (layered) {
 				unsigned layer_size = pitch * H * 4u;
 				uint32_t sig = snes_menu_cardcache_sig(&s_menu);
