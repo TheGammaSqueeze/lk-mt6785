@@ -1049,15 +1049,12 @@ void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t, int full_clear)
 	SUB_END(g_cur_us, 0);
 
 	/* Focused card body (blue frame + boxart + icons) over the L2 dark body. Re-rendering
-	 * it every frame is ~4ms on the A55, and mid-nav it is TWO cards (the outgoing crossfade)
-	 * = ~9.7ms, which makes the between-press settle frames choppy. Instead render the SETTLED
-	 * body once into the fcc and blit it (shifted by the integer pan) - this also SNAPS the
-	 * 0.2s blue crossfade: the outgoing card drops straight to its L2 dark form and the new
-	 * focus is blue immediately, instead of a live 2-card fade. The snap is a deliberate
-	 * deviation (imperceptible under motion, barely visible on a single tap) that keeps the
-	 * settle at 60fps. Only the menubar slide (full-height cursor travel) renders live. */
+	 * it every frame is ~4ms on the A55; instead render the SETTLED body once into the fcc
+	 * and blit it into L3 shifted by the integer pan. Skipped mid-crossfade (the blue frame
+	 * animates) and during the menubar slide (full-rect path), where it renders live. */
 	{
-		int cacheable = (m->fcc && m->state == 0 && m->ngames > 0
+		float prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus) ? m->xfade_t / CAR_XFADE : 0.0f;
+		int cacheable = (m->fcc && prog <= 0.003f && m->state == 0 && m->ngames > 0
 				 && m->card_act && m->cur_slide_t >= CUR_SLIDE_DUR);
 		if (cacheable) {
 			float vsx = m->aspect ? ASP_CONTENT_S : 1.0f;

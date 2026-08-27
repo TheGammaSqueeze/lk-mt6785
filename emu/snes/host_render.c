@@ -225,13 +225,8 @@ int main(int argc, char **argv)
 		 * == single-buffer render of the SAME quantised frame" (not of the smooth
 		 * ideal, which the integer pan intentionally approximates). */
 		menu.cont_shift = (float)(SNES_L2_MARGIN - pan) / vscale;
-		/* The L3 focused-card cache SNAPS the 0.2s blue crossfade (blits the settled body,
-		 * no live 2-card fade) to keep the settle at 60fps. Snap the reference the same way
-		 * so the test is "layered == single-buffer of the SAME snapped frame"; the crossfade
-		 * itself is a separate, deliberate device deviation, not a layering error. */
-		menu.xfade_t = 0.0f;
 		for (i = 0; i < W * H; i++) fb[i] = 0xFF000000u;
-		snes_menu_render(&menu, &t);   /* re-render the reference at the quantised, snapped frame */
+		snes_menu_render(&menu, &t);   /* re-render the reference at the quantised shift */
 		/* L0: everything except the card bodies + focus/slide cursor */
 		for (i = 0; i < W * H; i++) l0[i] = 0xFF000000u;
 		t0.fb = l0; t0.ovl_split = 1;
