@@ -885,20 +885,33 @@ static void draw_focus_cursor(snes_menu *m, snes_target *t)
 }
 
 /* Un-premultiply a rect of a cache layer from premultiplied to STRAIGHT (coverage)
- * alpha, in place. Opaque (a=255) and empty (a=0) pixels are already straight. */
+ * alpha, in place. Opaque (a=255) and empty (a=0) pixels are already straight. The
+ * straight value is pr*255/a; the divide is by the PER-PIXEL alpha (variable divisor),
+ * which is a hardware divide - ~30-40 cycles on the in-order A55 and the dominant cost
+ * of the OVL builds (13.5ms in build_cardcache). Replace it with a 256-entry reciprocal
+ * table: sr = (pr * recip[a]) >> 16 where recip[a] = round(255*65536/a). Matches the
+ * exact divide within +/-1 LSB (edge rounding the layer-verify already tolerates). */
+static unsigned g_unp_recip[256];   /* recip[a] = round(255*65536/a); pr*recip[a]>>16 = pr*255/a */
+static int g_unp_ready;
 static void cache_unpremult(snes_target *t, int x0, int y0, int x1, int y1)
 {
 	int y, x;
+	if (!g_unp_ready) {   /* lazily build the reciprocal table once */
+		unsigned a;
+		for (a = 1; a < 256; a++) g_unp_recip[a] = (255u * 65536u + a / 2) / a;
+		g_unp_ready = 1;
+	}
 	if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
 	if (x1 > t->W) x1 = t->W; if (y1 > t->H) y1 = t->H;
 	for (y = y0; y < y1; y++) {
 		uint32_t *r = t->fb + (unsigned)y * t->pitch;
 		for (x = x0; x < x1; x++) {
 			uint32_t c = r[x];
-			unsigned a = c >> 24, pr, pg, pb, sr, sg, sb;
+			unsigned a = c >> 24, pr, pg, pb, sr, sg, sb, rc;
 			if (!a || a == 255) continue;
+			rc = g_unp_recip[a];
 			pr = (c >> 16) & 0xff; pg = (c >> 8) & 0xff; pb = c & 0xff;
-			sr = (pr * 255u + a / 2) / a; sg = (pg * 255u + a / 2) / a; sb = (pb * 255u + a / 2) / a;
+			sr = (pr * rc + 32768u) >> 16; sg = (pg * rc + 32768u) >> 16; sb = (pb * rc + 32768u) >> 16;
 			if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
 			r[x] = (a << 24) | (sr << 16) | (sg << 8) | sb;
 		}
