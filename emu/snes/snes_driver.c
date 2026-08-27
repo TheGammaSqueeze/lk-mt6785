@@ -367,6 +367,9 @@ extern int mt_get_gpio_in(unsigned pin);
  * 0x4B0000) double buffer (0x960000 total) inside its 16MB slot. */
 #define SNES_OVL_L2_PA 0x54000000u  /* mapped WB (was BC_COMMS); free when EXPT off */
 #define SNES_OVL_L3_PA 0x55000000u  /* mapped WB (was SPMFW staging); free when EXPT off */
+/* frames the carousel must hold still before engaging OVL layers (skips the brief
+ * inter-step settles of auto-repeat scroll so the layers do not churn on/off). */
+#define SNES_LAYER_SETTLE_FRAMES 6
 #define SNES_RAW_MAX  (32u * 1024 * 1024)
 #define SNES_COMP_MAX (16u * 1024 * 1024)
 #define HOME_CAP (16u * 1024 * 1024 / (unsigned)sizeof(snes_rnode))
@@ -440,6 +443,7 @@ static int s_cc_valid;       /* L2 currently holds a valid build */
 static int s_l2_flip;        /* L2 live-buffer index (flips only on rebuild) */
 static int s_l3_flip;        /* L3 live-buffer index (flips every frame) */
 static int s_was_layered;    /* previous frame presented via the OVL layers */
+static int s_settle_count;   /* consecutive frames the card strip has held still */
 
 /* ---- frame-time telemetry (top-left readout) ---- */
 extern unsigned (*g_perf_tick)(void);  /* snes_menu.c per-phase profiler hook */
@@ -651,9 +655,16 @@ static int snes_emu_thread(void *arg)
 		 * non-home state. Layer only once the strip has settled. See OVL_LAYERS.md. */
 		{
 			uint32_t sig = snes_menu_cardcache_sig(&s_menu);
-			int settled = (sig == s_cc_sig_last);
+			/* Require the strip to hold STILL for several consecutive frames before
+			 * layering. The brief 1-frame settles BETWEEN auto-repeat scroll steps
+			 * would otherwise flip the OVL layers on for a frame then off - and rapid
+			 * enable/disable of OVL layers tears. A sustained settle (user stopped
+			 * scrolling) is the only thing that engages the layers. */
+			if (sig == s_cc_sig_last) { if (s_settle_count < 1000) s_settle_count++; }
+			else s_settle_count = 0;
 			s_cc_sig_last = sig;
-			layered = (s_menu.state == 0 && s_menu.open_y == 0.0f && !s_menu.closing && settled);
+			layered = (s_menu.state == 0 && s_menu.open_y == 0.0f && !s_menu.closing
+				   && s_settle_count >= SNES_LAYER_SETTLE_FRAMES);
 		}
 		t.ovl_split = layered;
 #ifdef AYANEO_BIGCORE_EXPT
