@@ -117,6 +117,67 @@ static unsigned read_mpidr(void)
  * adopt the identical mappings and turn its MMU + caches on (see bc_entry_arm2).
  * Read the 64-bit TTBR0 with MRRC; the rest are 32-bit. cpu0 cache-cleans the
  * block afterwards (in bigcore_start) so the MMU-off secondary reads real DRAM. */
+extern void arch_clean_cache_range(unsigned long start, unsigned long len);
+
+/* Remap a DRAM range [pa, pa+size) as Device (non-cacheable) in cpu0's LIVE LPAE
+ * page tables, WITHOUT unmapping anything else. The MT6785 LK maps DRAM
+ * 0x40000000.. as 1 GB L1 BLOCKS; a naive page/section remap would split a block
+ * into a fresh (zeroed) L2 and unmap the rest of that GB (incl LK's own code).
+ * So we split the containing 1 GB block into a full 512-entry L2 that REPRODUCES
+ * the block's mapping for every 2 MB section (identity, same attrs), then flip
+ * only the target sections to Device+XN. The worker adopts the same TTBR0 tables,
+ * so this makes the shared region non-cacheable for BOTH cores: cpu0's writes go
+ * straight to DRAM and the (non-coherent) worker reads them from DRAM. Framebuffer
+ * and everything else stay Normal-WB cacheable. EXPT only. */
+#define BC_L1_BLOCK   0x1u
+#define BC_L1_TABLE   0x3u
+#define BC_ATTR_DEVICE (0x4ull << 2)      /* AttrIndx=4 -> MAIR byte4=0x04 Device-nGnRE */
+#define BC_ATTR_MASK   (0x7ull << 2)
+#define BC_XN          0x0040000000000000ull   /* L1/L2 block XN (bit 54) */
+static unsigned long long bc_l2_tbl[512] __attribute__((aligned(4096)));
+
+static void bc_device_map(unsigned pa, unsigned size)
+{
+	unsigned ttbr0_lo, ttbr0_hi, i;
+	unsigned long long *l1, *l2, ent;
+	unsigned l1i = pa >> 30;
+	unsigned s0 = (pa >> 21) & 0x1FFu;
+	unsigned s1 = ((pa + size - 1u) >> 21) & 0x1FFu;
+
+	__asm__ volatile("mrrc p15, 0, %0, %1, c2" : "=r"(ttbr0_lo), "=r"(ttbr0_hi));
+	l1 = (unsigned long long *)(unsigned long)(ttbr0_lo & ~0x1Fu);
+	ent = l1[l1i];
+
+	if ((ent & 0x3u) == BC_L1_BLOCK) {
+		unsigned long long attrs = ent & ~0x0000FFFFFFFFF000ull;   /* keep upper+lower attrs+type, drop PA */
+		unsigned long long gb = (unsigned long long)l1i << 30;
+		for (i = 0; i < 512; i++)
+			bc_l2_tbl[i] = ((gb + (unsigned long long)i * 0x200000ull) & 0x0000FFFFFFE00000ull) | attrs;
+		l2 = bc_l2_tbl;
+	} else if ((ent & 0x3u) == BC_L1_TABLE) {
+		l2 = (unsigned long long *)(unsigned long)(unsigned)(ent & 0xFFFFF000u);
+	} else {
+		_dprintf("BC: device_map: L1[%u]=0x%x%x not block/table, abort\n",
+			 l1i, (unsigned)(ent >> 32), (unsigned)ent);
+		return;
+	}
+
+	for (i = s0; i <= s1; i++)
+		l2[i] = (l2[i] & ~BC_ATTR_MASK) | BC_ATTR_DEVICE | BC_XN;
+	arch_clean_cache_range((unsigned long)l2, 512u * 8u);
+
+	if ((ent & 0x3u) == BC_L1_BLOCK) {
+		l1[l1i] = ((unsigned long long)(unsigned)(unsigned long)bc_l2_tbl) | BC_L1_TABLE;
+		arch_clean_cache_range((unsigned long)&l1[l1i], 8u);
+	}
+	__asm__ volatile("dsb sy");
+	__asm__ volatile("mcr p15, 0, %0, c8, c7, 0" :: "r"(0));   /* TLBIALL */
+	__asm__ volatile("dsb sy");
+	__asm__ volatile("isb");
+	_dprintf("BC: device_map pa=0x%x size=0x%x sections %u..%u of GB%u (l1 was %s)\n",
+		 pa, size, s0, s1, l1i, ((ent & 0x3u) == BC_L1_BLOCK) ? "block->split" : "table");
+}
+
 static void bc_snapshot_mmu(void)
 {
 	unsigned ttbr0_lo, ttbr0_hi, ttbcr, mair0, mair1, dacr, sctlr;
@@ -264,6 +325,11 @@ void bigcore_start(void)
 		g_bc_psci_ret = 0x7fffffff;   /* sentinel: skipped */
 	} else {
 		bc->magic = 0; bc->cached_ok = 0; bc->counter = 0;
+		/* PATH B step 1 (de-risk): make the canary's 2 MB section (0x51000000, comp
+		 * staging, free during render) Device/non-cacheable via a sibling-preserving
+		 * L2 split. If this boots AND the canary flips cpu0->worker to 0xCA5Axxxx, the
+		 * split is safe and non-cacheable is the fix; then extend to comms+menu+scene. */
+		bc_device_map(0x51000000u, 0x200000u);
 		bc_snapshot_mmu();   /* publish cpu0's LPAE MMU config for the worker to adopt */
 		/* clean the WHOLE comms block to DRAM so the MMU-off secondary reads the real
 		 * snapshot (its early reads bypass caches). */
