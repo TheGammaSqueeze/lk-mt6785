@@ -770,6 +770,57 @@ static unsigned int rd32(const unsigned char *p)
 /* Present display buffer at physical 'pa'. Alternating pa each frame forces the
  * OVL to re-latch (config_input with an unchanged address is a no-op in video
  * mode); a bare trigger alone never pushes a new frame. */
+#if defined(AYANEO_SNES) && defined(AYANEO_DEBUG_LOGGING)
+/* OVL milestone (de-risk step for a hardware-composited 60fps menu): composite a
+ * bouncing sprite on a SECOND OVL layer, on top of the menu framebuffer, using
+ * only per-frame register writes. Proves multi-layer OVL config + trigger works
+ * on HW, that a plain DRAM buffer is OVL-DMA-readable, and that the layer moves
+ * at the menu frame rate. Menu FB is layer 0 (OVL0_2L, bottom); this sprite is
+ * global layer 2 (OVL0, composited on top). Debug build only. */
+#define OVL_TST_PA   0x54000000u   /* free DRAM (former bigcore comms region) */
+#define OVL_TST_W    128u
+#define OVL_TST_H    128u
+static int      s_ovl_tst_ready;
+static unsigned s_ovl_tst_frame;
+static void ayaneo_ovl_test_sprite(void)
+{
+	disp_input_config in;
+	unsigned int *spr = (unsigned int *)(unsigned long)OVL_TST_PA;
+	unsigned tri, px, py, x, y;
+
+	if (!s_ovl_tst_ready) {
+		for (y = 0; y < OVL_TST_H; y++)
+			for (x = 0; x < OVL_TST_W; x++) {
+				int edge = (x < 6u || y < 6u || x >= OVL_TST_W - 6u || y >= OVL_TST_H - 6u);
+				/* ARGB (same convention the menu's ayaneo_fill uses): opaque
+				 * cyan border, semi-transparent magenta fill */
+				spr[y * OVL_TST_W + x] = edge ? 0xFF00FFFFu : 0xB0FF00FFu;
+			}
+		arch_clean_cache_range((addr_t)OVL_TST_PA, OVL_TST_W * OVL_TST_H * 4u);
+		s_ovl_tst_ready = 1;
+	}
+	s_ovl_tst_frame++;
+	tri = s_ovl_tst_frame % 2000u; px = (tri < 1000u) ? tri : 2000u - tri;   /* 0..1000 */
+	tri = s_ovl_tst_frame % 1000u; py = (tri < 500u)  ? tri : 1000u - tri;   /* 0..500  */
+
+	memset(&in, 0, sizeof(in));
+	in.layer     = 2;                 /* global index 2 -> OVL0, on top of the FB */
+	in.layer_en  = 1;
+	in.fmt       = redoffset_32bit ? eBGRA8888 : eRGBA8888;
+	in.addr      = OVL_TST_PA;
+	in.src_w     = OVL_TST_W;
+	in.src_h     = OVL_TST_H;
+	in.src_pitch = OVL_TST_W * 4u;
+	in.dst_x     = px;
+	in.dst_y     = py;
+	in.dst_w     = OVL_TST_W;
+	in.dst_h     = OVL_TST_H;
+	in.aen       = 1;
+	in.alpha     = 0xff;
+	primary_display_config_input(&in);
+}
+#endif
+
 static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 			   unsigned int pitch_w)
 {
@@ -788,6 +839,9 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 	input.aen       = 1;
 	input.alpha     = 0xff;
 	primary_display_config_input(&input);
+#if defined(AYANEO_SNES) && defined(AYANEO_DEBUG_LOGGING)
+	ayaneo_ovl_test_sprite();          /* OVL multi-layer milestone (debug only) */
+#endif
 	primary_display_trigger(TRUE);
 }
 
