@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "snes_menu.h"
 
 int main(int argc, char **argv)
@@ -234,6 +235,20 @@ int main(int argc, char **argv)
 		t2.offy = (menu.aspect ? 0 : (H - SNES_VH) / 2) - SNES_L2_BAND_Y0;
 		t2.cache_layer = 0;
 		snes_menu_build_cardcache(&menu, &t2);
+		if (getenv("SNES_TIMECC")) {
+			struct timespec ta, tb; int rep = 200, q;
+			t3.fb = cur;
+			clock_gettime(CLOCK_MONOTONIC, &ta);
+			for (q = 0; q < rep; q++) snes_menu_build_cardcache(&menu, &t2);
+			clock_gettime(CLOCK_MONOTONIC, &tb);
+			double us = ((tb.tv_sec-ta.tv_sec)*1e9 + (tb.tv_nsec-ta.tv_nsec))/1e3/rep;
+			fprintf(stderr, "  [TIMECC] build_cardcache = %.1f us/call (host)\n", us);
+			clock_gettime(CLOCK_MONOTONIC, &ta);
+			for (q = 0; q < rep; q++) snes_menu_render_cursor_layer(&menu, &t3);
+			clock_gettime(CLOCK_MONOTONIC, &tb);
+			us = ((tb.tv_sec-ta.tv_sec)*1e9 + (tb.tv_nsec-ta.tv_nsec))/1e3/rep;
+			fprintf(stderr, "  [TIMECC] render_cursor_layer = %.1f us/call (host)\n", us);
+		}
 		{ /* L2 buffer card-center columns (buffer x) + their equivalent panel x at this pan */
 			int bx, byy, on, run0 = -1; char msg[512]; int ml = 0;
 			ml += snprintf(msg+ml, sizeof(msg)-ml, "  [L2buf] card cols(bufx->panelx):");

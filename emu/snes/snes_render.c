@@ -113,7 +113,26 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	int axis = (b == 0.0f && c == 0.0f && a != 0.0f && dd != 0.0f);
 	float inv_a = axis ? 1.0f / a : 0, inv_d = axis ? 1.0f / dd : 0;
 	float du = axis ? inv_a / d->dw : 0;   /* u increment per X (no per-pixel divide) */
-	if (axis && !d->is_quad && !d->tile && !t->cache_layer) {
+	/* cache_layer partial-alpha pixel: PREMULTIPLIED source-over into the RGBA layer
+	 * (preserve coverage alpha for the OVL; un-premultiplied to straight later). Opaque
+	 * cache pixels premultiply to 0xff|rgb == the fast path's straight opaque store, so
+	 * only partial edges take this; this is what lets cache_layer use the fast/NEON path
+	 * instead of the ~5x slower general premult loop. Matches the general-loop premult
+	 * (snes_render.c cache_layer branch) bit-for-bit. */
+#define BLIT_CACHE_PREMULT(PX, SR, SG, SB, AF) do { \
+	uint32_t _c = (PX); int _ia = 255 - (AF); \
+	int _da=(_c>>24)&0xff,_pr=(_c>>16)&0xff,_pg=(_c>>8)&0xff,_pb=_c&0xff; \
+	int _or=((SR)*(AF)+127)/255+(_pr*_ia+127)/255; \
+	int _og=((SG)*(AF)+127)/255+(_pg*_ia+127)/255; \
+	int _ob=((SB)*(AF)+127)/255+(_pb*_ia+127)/255; \
+	int _oa=(AF)+(_da*_ia+127)/255; \
+	if(_or>255)_or=255; if(_og>255)_og=255; if(_ob>255)_ob=255; if(_oa>255)_oa=255; \
+	(PX)=((unsigned)_oa<<24)|((unsigned)_or<<16)|((unsigned)_og<<8)|(unsigned)_ob; \
+} while(0)
+	/* cache_layer joins the fast path only when plain (tint==1, no additive) - the case
+	 * the layered card-strip build always hits (dim==1). Tinted/additive cache draws
+	 * (resume dim, non-layered) stay on the general premult loop below, unchanged. */
+	if (axis && !d->is_quad && !d->tile && (!t->cache_layer || plain)) {
 		/* Fast axis-aligned path (every sprite/texture blit in the menu). v is
 		 * constant per row, so iy + the source row pointer hoist out of the pixel
 		 * loop; the source x advances by a fixed 16.16 step - no per-pixel float
@@ -180,6 +199,8 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 							if (sa == 0) continue;
 							if (sa == 255) {
 								row[X] = 0xff000000u | ((unsigned)sr << 16) | ((unsigned)sg << 8) | (unsigned)sb;
+							} else if (t->cache_layer) {
+								BLIT_CACHE_PREMULT(row[X], sr, sg, sb, sa);
 							} else {
 								uint32_t dst = row[X];
 								int dr = (dst >> 16) & 0xff, dg = (dst >> 8) & 0xff, db = dst & 0xff, ia = 255 - sa;
@@ -234,6 +255,10 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 						       | ((unsigned)sg << 8) | (unsigned)sb;
 						continue;
 					}
+				}
+				if (t->cache_layer) {   /* partial edge into the premult layer */
+					BLIT_CACHE_PREMULT(row[X], sr, sg, sb, af);
+					continue;
 				}
 				{
 					uint32_t dst = row[X];
@@ -340,6 +365,7 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 		}
 	}
 	}
+#undef BLIT_CACHE_PREMULT
 }
 
 /* ---- component resolution to a snes_draw ---- */

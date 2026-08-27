@@ -13,3 +13,4 @@ emu/snes/diag
 # GBA prebuilt objects/lib (rebuildable)
 emu/gba/obj/
 emu/gba/libgpsp.a
+emu/snes/host_render_arm
