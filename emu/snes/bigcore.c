@@ -162,8 +162,21 @@ static void bc_device_map(unsigned pa, unsigned size)
 		return;
 	}
 
-	for (i = s0; i <= s1; i++)
-		l2[i] = (l2[i] & ~BC_ATTR_MASK) | BC_ATTR_DEVICE | BC_XN;
+	for (i = s0; i <= s1; i++) {
+		unsigned long long d = l2[i];
+		if ((d & 0x3u) == BC_L1_BLOCK) {           /* 2 MB section: type is here */
+			l2[i] = (d & ~BC_ATTR_MASK) | BC_ATTR_DEVICE | BC_XN;
+		} else if ((d & 0x3u) == BC_L1_TABLE) {    /* -> L3: type is in the 4KB pages */
+			unsigned long long *l3 = (unsigned long long *)(unsigned long)(unsigned)(d & 0xFFFFF000u);
+			unsigned p;
+			for (p = 0; p < 512u; p++)
+				if ((l3[p] & 0x3u))                /* valid page */
+					l3[p] = (l3[p] & ~BC_ATTR_MASK) | BC_ATTR_DEVICE | BC_XN;
+			arch_clean_cache_range((unsigned long)l3, 512u * 8u);
+		}
+		_dprintf("BC: device_map L2[%u]=0x%x%x (type %u)\n",
+			 i, (unsigned)(l2[i] >> 32), (unsigned)l2[i], (unsigned)(l2[i] & 0x3u));
+	}
 	arch_clean_cache_range((unsigned long)l2, 512u * 8u);
 
 	if ((ent & 0x3u) == BC_L1_BLOCK) {
@@ -174,6 +187,9 @@ static void bc_device_map(unsigned pa, unsigned size)
 	__asm__ volatile("mcr p15, 0, %0, c8, c7, 0" :: "r"(0));   /* TLBIALL */
 	__asm__ volatile("dsb sy");
 	__asm__ volatile("isb");
+	/* flush any stale WB-cached lines for the now-Device region so a later eviction
+	 * cannot clobber the Device writes (mixed-attribute aliasing) */
+	arch_clean_invalidate_cache_range((void *)(unsigned long)pa, size);
 	_dprintf("BC: device_map pa=0x%x size=0x%x sections %u..%u of GB%u (l1 was %s)\n",
 		 pa, size, s0, s1, l1i, ((ent & 0x3u) == BC_L1_BLOCK) ? "block->split" : "table");
 }
