@@ -719,8 +719,11 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		}
 		/* rounded selection cursor on the focused card - only while the carousel
 		 * is the active focus (state 0 home) AND not mid-slide (the slide cursor
-		 * draws it travelling to/from the menubar). */
-		if (blue_a > 0.003f && m->state == 0 && m->cur_slide_t >= CUR_SLIDE_DUR)
+		 * draws it travelling to/from the menubar). Skipped when building the L2
+		 * card cache (cache_layer): the pulsing cursor is composited live on the
+		 * L3 OVL layer via draw_focus_cursor (see OVL_LAYERS.md). */
+		if (blue_a > 0.003f && m->state == 0 && m->cur_slide_t >= CUR_SLIDE_DUR
+		    && !t->cache_layer)
 			draw_card_cursor(m, t, cx, cy, blue_a > 1.0f ? 1.0f : blue_a,
 					 dim, frame->img);
 	} else {                                 /* fallback: plain framed boxart */
@@ -756,6 +759,129 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 	/* the selected card stays bright and keeps its blue active frame in resume
 	 * (cardColorDark dims only the OTHER cards); just its normal crossfade. */
 	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1.0f - prog, 1.0f);
+}
+
+/* ==== OVL hardware-layering support (state-0 idle home 60fps; OVL_LAYERS.md) ====
+ * The cursorless card strip is rendered once into an OVL layer (L2) and composited
+ * by the display hardware over the wallpaper/chrome framebuffer (L0), so the CPU
+ * stops re-blitting ~7 large cards every frame. The colour-pulsing selection cursor
+ * is drawn live into a small OVL layer (L3) on top. A signature of all card-strip
+ * state drives L2 rebuilds. The layers are built in PREMULTIPLIED alpha (clean
+ * source-over) then un-premultiplied to STRAIGHT (coverage) alpha, which is what
+ * the MT6785 OVL blender expects (SURFL_EN=0). */
+
+/* signature of every input that changes the cursorless card strip; unchanged
+ * frame-to-frame => the strip is static and the L2 cache can be reused as-is. */
+static uint32_t cc_signature(snes_menu *m)
+{
+	union { float f; uint32_t u; } c;
+	uint32_t h = 2166136261u;
+#define CC_MIX(v) do { h = (h ^ (uint32_t)(v)) * 16777619u; } while (0)
+	CC_MIX(m->focus); CC_MIX(m->prev_focus); CC_MIX(m->state); CC_MIX(m->sort_rule);
+	CC_MIX(m->ngames); CC_MIX(m->aspect);
+	c.f = m->xfade_t;    CC_MIX(c.u);
+	c.f = m->sel_world;  CC_MIX(c.u);
+	c.f = m->cont_shift; CC_MIX(c.u);
+	c.f = m->resume_dim; CC_MIX(c.u);
+	c.f = m->open_y;     CC_MIX(c.u);
+#undef CC_MIX
+	return h;
+}
+uint32_t snes_menu_cardcache_sig(snes_menu *m) { return cc_signature(m); }
+
+/* The focused card's rounded selection cursor(s), drawn LIVE each frame (they
+ * colour-pulse) into the L3 layer. Mirrors EXACTLY the cursor draws inside
+ * draw_carousel/draw_card: the focused card's cursor plus, during the 0.2s
+ * selection crossfade, the outgoing card's fading cursor. Only when the carousel
+ * itself is focused (state 0) and no card<->menubar slide is running. */
+static void draw_focus_cursor(snes_menu *m, snes_target *t)
+{
+	int n = m->ngames;
+	float prog, ndim, cy;
+	const snes_spr_entry *frame = m->card_norm ? m->card_norm : m->card_act;
+	if (m->state != 0 || m->cur_slide_t < CUR_SLIDE_DUR || n <= 0 || !frame) return;
+	prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus) ? m->xfade_t / CAR_XFADE : 0.0f;
+	ndim = 1.0f - 0.5f * m->resume_dim;
+	cy = CAR_CY - RESUME_CARD_DY * m->resume_dim;
+	/* outgoing card's fading cursor (mirrors draw_carousel's non-focused pass) */
+	if (prog > 0.003f) {
+		float cx = 640.0f + m->sel_world +
+			   CAR_HGAP * (float)ring_delta(m->focus, m->prev_focus, n) + m->cont_shift;
+		if (cx >= -280 && cx <= SNES_VW + 280)
+			draw_card_cursor(m, t, cx, cy, prog > 1.0f ? 1.0f : prog, ndim, frame->img);
+	}
+	/* focused card's cursor (dim = 1.0, the focused card stays bright) */
+	{
+		float cx = 640.0f + m->sel_world + m->cont_shift, blue_a = 1.0f - prog;
+		if (blue_a > 0.003f)
+			draw_card_cursor(m, t, cx, cy, blue_a > 1.0f ? 1.0f : blue_a, 1.0f, frame->img);
+	}
+}
+
+/* Un-premultiply a rect of a cache layer from premultiplied to STRAIGHT (coverage)
+ * alpha, in place. Opaque (a=255) and empty (a=0) pixels are already straight. */
+static void cache_unpremult(snes_target *t, int x0, int y0, int x1, int y1)
+{
+	int y, x;
+	if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+	if (x1 > t->W) x1 = t->W; if (y1 > t->H) y1 = t->H;
+	for (y = y0; y < y1; y++) {
+		uint32_t *r = t->fb + (unsigned)y * t->pitch;
+		for (x = x0; x < x1; x++) {
+			uint32_t c = r[x];
+			unsigned a = c >> 24, pr, pg, pb, sr, sg, sb;
+			if (!a || a == 255) continue;
+			pr = (c >> 16) & 0xff; pg = (c >> 8) & 0xff; pb = c & 0xff;
+			sr = (pr * 255u + a / 2) / a; sg = (pg * 255u + a / 2) / a; sb = (pb * 255u + a / 2) / a;
+			if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
+			r[x] = (a << 24) | (sr << 16) | (sg << 8) | sb;
+		}
+	}
+}
+
+/* Build the cursorless card strip into the caller's panel-sized L2 buffer (t->fb,
+ * t->W x t->H, pitch, offx already set to the FB's; offy the FB's letterbox). The
+ * cards are rendered position-identically to the live framebuffer (same VIEW_CONTENT
+ * transform + aspect offy handling), then un-premultiplied to straight alpha. The
+ * non-empty row band [cc_y0,cc_y1] is recorded so the OVL src ROI can be limited. */
+void snes_menu_build_cardcache(snes_menu *m, snes_target *t)
+{
+	int H = t->H, W = t->W, y, x, y0 = t->H, y1 = -1;
+	unsigned i, npix = (unsigned)W * (unsigned)H;
+	t->cache_layer = 1;
+	if (m->aspect) t->offy = 0;
+	for (i = 0; i < npix; i++) t->fb[i] = 0;
+	set_view(m, t, VIEW_CONTENT);
+	draw_carousel(m, t);
+	for (y = 0; y < H; y++) {
+		const uint32_t *r = t->fb + (unsigned)y * t->pitch;
+		for (x = 0; x < W; x++)
+			if (r[x] >> 24) { if (y < y0) y0 = y; y1 = y; break; }
+	}
+	m->cc_y0 = y0; m->cc_y1 = y1;
+	if (y1 >= y0) cache_unpremult(t, 0, y0, W, y1 + 1);
+}
+
+/* Clear + render the live selection cursor into the caller's panel-sized L3 buffer.
+ * A fixed rect covering every cursor position (focused-card cursor + the card<->
+ * menubar slide path, both aspects) is cleared each frame - so the double-buffered
+ * L3 never trails - then the slide cursor (identity view) OR the static focus
+ * cursor (content view) is drawn and un-premultiplied to straight alpha. */
+void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t)
+{
+	int y, x, x1 = SNES_CURSOR_X1, y1 = SNES_CURSOR_Y1;
+	if (x1 > t->W) x1 = t->W; if (y1 > t->H) y1 = t->H;
+	for (y = SNES_CURSOR_Y0; y < y1; y++) {
+		uint32_t *r = t->fb + (unsigned)y * t->pitch;
+		for (x = SNES_CURSOR_X0; x < x1; x++) r[x] = 0;
+	}
+	t->cache_layer = 1;
+	if (m->aspect) t->offy = 0;
+	if (!draw_focus_slide(m, t)) {
+		set_view(m, t, VIEW_CONTENT);
+		draw_focus_cursor(m, t);
+	}
+	cache_unpremult(t, SNES_CURSOR_X0, SNES_CURSOR_Y0, x1, y1);
 }
 
 /* ---- bottom thumbnail filmstrip (ports sys_thumbnail_icon: a fixed 21-icon
@@ -2336,7 +2462,9 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	else              draw_chrome(m, t);
 	PERF_END(1);
 	set_view(m, t, VIEW_CONTENT);
-	draw_carousel(m, t);
+	/* OVL layered L0 pass: the card bodies live on the L2 hardware layer, so skip
+	 * them here (draw_carousel would re-blit ~7 cards every frame). See OVL_LAYERS.md. */
+	if (!t->ovl_split) draw_carousel(m, t);
 	PERF_END(2);
 	draw_filmstrip(m, t);
 	PERF_END(3);
@@ -2361,8 +2489,9 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	}
 	/* the blue selection cursor sliding between the focused card and menubar item
 	 * on Up/Down (state 0/1); draws in its own identity view, replacing the static
-	 * card/menubar cursors which are suppressed while it runs. */
-	draw_focus_slide(m, t);
+	 * card/menubar cursors which are suppressed while it runs. In the OVL layered L0
+	 * pass it is composited on the L3 layer instead (above the L2 cards). */
+	if (!t->ovl_split) draw_focus_slide(m, t);
 
 	/* the white title bar (caption_title, 348x22 @3x = 1044x66), raised in resume;
 	 * drawn here (not in the chrome cache) so it tracks the game title. */

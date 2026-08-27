@@ -191,6 +191,88 @@ int main(int argc, char **argv)
 		return diff == 0 ? 0 : 1;
 	}
 
+	/* OVL layering verification: `host_render <pack> <outdir> N nav layers` renders
+	 * the SAME state two ways and byte-compares them:
+	 *   reference = the normal single-buffer render (already in fb, above)
+	 *   layered   = L0 (framebuffer, cards+cursor skipped) + L2 (cursorless card
+	 *               cache, straight alpha) + L3 (live cursor, straight alpha),
+	 *               software-composited with the SAME straight-alpha source-over the
+	 *               MT6785 OVL performs. Pixel-identity (modulo AA-edge rounding from
+	 *               the premult build + un-premult round-trip) proves the split is
+	 *               output-correct before any device flash. Writes ref/comp/diff PPMs. */
+	if (argc > 5 && strcmp(argv[5], "layers") == 0) {
+		const char *outdir = argv[2];
+		uint32_t *l0 = calloc((size_t)W * H, 4), *cc = calloc((size_t)W * H, 4);
+		uint32_t *cur = calloc((size_t)W * H, 4), *comp = calloc((size_t)W * H, 4);
+		snes_target t0 = t, t2 = t, t3 = t;
+		long diff = 0; int minx = W, miny = H, maxx = -1, maxy = -1, xx, yy;
+		char path[512]; FILE *pf;
+		/* L0: everything except the card bodies + focus/slide cursor */
+		for (i = 0; i < W * H; i++) l0[i] = 0xFF000000u;
+		t0.fb = l0; t0.ovl_split = 1;
+		snes_menu_render(&menu, &t0);
+		/* L2: cursorless card strip (straight alpha), band in menu.cc_y0/cc_y1 */
+		t2.fb = cc; t2.cache_layer = 0;
+		snes_menu_build_cardcache(&menu, &t2);
+		/* L3: live selection cursor (straight alpha) */
+		t3.fb = cur;
+		snes_menu_render_cursor_layer(&menu, &t3);
+		/* composite L0 -> L2 -> L3 with straight (coverage) source-over */
+		for (i = 0; i < W * H; i++) {
+			uint32_t bs = l0[i], c2 = cc[i], c3 = cur[i];
+			unsigned r = (bs >> 16) & 0xff, g = (bs >> 8) & 0xff, b = bs & 0xff, a, ia;
+			a = c2 >> 24; if (a) { ia = 255 - a;
+				r = (((c2 >> 16) & 0xff) * a + r * ia + 127) / 255;
+				g = (((c2 >> 8) & 0xff) * a + g * ia + 127) / 255;
+				b = ((c2 & 0xff) * a + b * ia + 127) / 255; }
+			a = c3 >> 24; if (a) { ia = 255 - a;
+				r = (((c3 >> 16) & 0xff) * a + r * ia + 127) / 255;
+				g = (((c3 >> 8) & 0xff) * a + g * ia + 127) / 255;
+				b = ((c3 & 0xff) * a + b * ia + 127) / 255; }
+			comp[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
+		}
+		/* diff comp vs reference fb, tracking bbox + worst 40x40 tile mean */
+		{
+			int tx, ty, wtx = -1, wty = -1; double wtmean = 0;
+			for (i = 0; i < W * H; i++) {
+				uint32_t p = comp[i], q = fb[i];
+				int dr = ((p>>16)&0xff)-((q>>16)&0xff), dg = ((p>>8)&0xff)-((q>>8)&0xff), db = (p&0xff)-(q&0xff);
+				if (dr||dg||db) { diff++; xx = i % W; yy = i / W;
+					if (xx<minx)minx=xx; if (xx>maxx)maxx=xx; if (yy<miny)miny=yy; if (yy>maxy)maxy=yy; }
+			}
+			for (ty = 0; ty < H; ty += 40) for (tx = 0; tx < W; tx += 40) {
+				double s = 0; int cnt = 0;
+				for (yy = ty; yy < ty+40 && yy < H; yy++) for (xx = tx; xx < tx+40 && xx < W; xx++) {
+					uint32_t p = comp[yy*W+xx], q = fb[yy*W+xx];
+					int dr = ((p>>16)&0xff)-((q>>16)&0xff), dg = ((p>>8)&0xff)-((q>>8)&0xff), db = (p&0xff)-(q&0xff);
+					s += (dr<0?-dr:dr) + (dg<0?-dg:dg) + (db<0?-db:db); cnt++;
+				}
+				if (cnt && s/cnt > wtmean) { wtmean = s/cnt; wtx = tx; wty = ty; }
+			}
+			/* the device only layers in the steady home state; a mismatch in any
+			 * other state is a test artifact (the device renders it single-buffer). */
+			int layerable = (menu.state == 0 && menu.open_y == 0.0f && !menu.closing);
+			fprintf(stderr, "LAYERS verify (%s) state=%d slide=%.2f%s: %ld/%d px differ  bbox x[%d..%d] y[%d..%d]  band y[%d..%d]  worstTile(%d,%d) mean=%.2f -> %s\n",
+				menu.aspect ? "4:3" : "16:9", menu.state, menu.cur_slide_t,
+				layerable ? " LAYERABLE" : " (not layered on device)",
+				diff, W*H, minx, maxx, miny, maxy,
+				menu.cc_y0, menu.cc_y1, wtx, wty, wtmean,
+				diff == 0 ? "IDENTICAL" : (!layerable ? "n/a (non-layered state)" : (wtmean < 6.0 ? "OK (edge rounding only)" : "MISMATCH")));
+			{ int shown = 0;
+			  for (i = 0; i < W*H && shown < 6; i++) if (comp[i] != fb[i]) {
+				fprintf(stderr, "  (%d,%d) ref=%08x comp=%08x  L0=%08x L2=%08x L3=%08x\n",
+					(int)(i%W), (int)(i/W), fb[i], comp[i], l0[i], cc[i], cur[i]); shown++; }
+			}
+		}
+		#define WRITE_PPM(nm, buf) do { snprintf(path, sizeof(path), "%s/%s.ppm", outdir, nm); \
+			pf = fopen(path, "wb"); if (pf) { fprintf(pf, "P6\n%d %d\n255\n", W, H); \
+			for (yy = 0; yy < H; yy++) for (xx = 0; xx < W; xx++) { uint32_t p = (buf)[yy*W+xx]; \
+			unsigned char rgb[3] = { (p>>16)&0xff, (p>>8)&0xff, p&0xff }; fwrite(rgb,1,3,pf); } fclose(pf); } } while (0)
+		WRITE_PPM("ref", fb); WRITE_PPM("comp", comp); WRITE_PPM("l0", l0); WRITE_PPM("l2", cc); WRITE_PPM("l3", cur);
+		#undef WRITE_PPM
+		return diff == 0 ? 0 : 1;
+	}
+
 	/* write PPM (P6) - fb is 0xAARRGGBB */
 	f = fopen(outf, "wb");
 	fprintf(f, "P6\n%d %d\n255\n", W, H);

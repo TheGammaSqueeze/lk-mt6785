@@ -26,6 +26,15 @@ typedef struct {
 	 * (whole framebuffer). Used by the AYANEO_BIGCORE_EXPT multicore split so N
 	 * cores partition the framebuffer into cache-line-disjoint bands. */
 	int       band_y0, band_y1;
+	/* OVL hardware-layering support (state-0 idle home 60fps path, OVL_LAYERS.md).
+	 * cache_layer: 1 = render into a PREMULTIPLIED-alpha layer buffer (source-over,
+	 * preserves alpha) instead of onto an opaque framebuffer; used to build the
+	 * cursorless card-strip cache (later un-premultiplied to straight alpha for the
+	 * OVL). ovl_split: 1 = this is the L0 (framebuffer) pass of a layered render, so
+	 * snes_menu_render SKIPS the card bodies and the focus/slide cursor (they are
+	 * composited by the OVL from the L2/L3 layers instead). */
+	int       cache_layer;
+	int       ovl_split;
 } snes_target;
 
 /* Restrict a target to an absolute framebuffer scanline band [y0, y1) (panel

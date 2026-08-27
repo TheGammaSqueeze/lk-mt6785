@@ -91,6 +91,7 @@ typedef struct {
 	int wp_ready;
 	uint32_t *chrome;             /* cached static home chrome, VW*VH u32 (0 alpha = uncovered) */
 	int chrome_ready;
+	int cc_y0, cc_y1;             /* L2 card-cache non-empty row band (OVL_LAYERS.md); y1<y0 = empty */
 	int aspect;                   /* 0 = native 16:9 (letterboxed); 1 = 4:3 (fills the 960 panel) */
 	float scroll;
 
@@ -143,6 +144,16 @@ typedef struct {
 #define WP_CACHE_W 1536
 #define WP_CACHE_H 720
 
+/* L3 (selection-cursor) OVL layer: the fixed panel-space rect that is cleared and
+ * cleaned each frame - a generous box covering every cursor position (focused-card
+ * cursor + the card<->menubar slide path, both 16:9 and 4:3). Kept a constant so
+ * the double-buffered L3 never trails without per-frame bbox tracking. */
+#define SNES_CURSOR_X0 0
+#define SNES_CURSOR_Y0 0     /* from the top: covers the menubar cursor's top corners
+                              * (screen y~13) during the menubar<->carousel slide */
+#define SNES_CURSOR_X1 960
+#define SNES_CURSOR_Y1 680
+
 /* Initialise. home_pool/bg_pool are snes_rnode arrays of the given capacities;
  * wp is a WP_CACHE_W*WP_CACHE_H u32 buffer. Returns 0 on success. */
 int snes_menu_init(snes_menu *m, const snes_pack *pk,
@@ -152,6 +163,15 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt);
 void snes_menu_render(snes_menu *m, snes_target *t);
+
+/* OVL hardware-layering (state-0 idle home 60fps path; see OVL_LAYERS.md).
+ * snes_menu_cardcache_sig: hash of all card-strip state; rebuild L2 when it changes.
+ * snes_menu_build_cardcache: render the cursorless card strip into t (panel-sized
+ *   L2 buffer, straight alpha), recording the non-empty band in m->cc_y0/cc_y1.
+ * snes_menu_render_cursor_layer: clear + draw the live selection cursor into t (L3). */
+uint32_t snes_menu_cardcache_sig(snes_menu *m);
+void snes_menu_build_cardcache(snes_menu *m, snes_target *t);
+void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t);
 
 /* Drain one queued sound (res hash) to play, or 0 if none. */
 uint32_t snes_menu_next_sound(snes_menu *m);

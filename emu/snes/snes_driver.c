@@ -27,6 +27,10 @@ extern void mtk_wdt_restart(void);
 extern void ayaneo_display_prepare(void);
 extern unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigned int *H);
 extern void ayaneo_canvas_present(void);
+/* OVL hardware-layered present for the steady home carousel (OVL_LAYERS.md). A 0
+ * addr disables that upper layer; l2_clean flushes the L2 band (only when rebuilt). */
+extern void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_y0, int l2_y1, int l2_clean,
+					 unsigned int l3_pa, int l3_y0, int l3_y1);
 extern void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
 			int x, int y, int w, int h, unsigned int argb);
 extern int  ayaneo_text(unsigned int *buf, unsigned int pitch_w,
@@ -355,6 +359,14 @@ extern int mt_get_gpio_in(unsigned pin);
 #define SNES_COMP_PA  0x51000000u   /* compressed staging */
 #define SNES_WP_PA    0x52000000u   /* wallpaper cache (1536*720*4) */
 #define SNES_CHROME_PA 0x53000000u  /* static chrome cache (up to 1280*960*4 in 4:3) */
+/* OVL layer buffers (OVL_LAYERS.md). The ONLY WB DRAM mapped in LK is the SCRATCH/
+ * download window [0x4E000000, 0x56000000) (k85v1_64 SCRATCH_ADDR + SCRATCH_SIZE);
+ * 0x56000000+ is UNMAPPED (an earlier attempt at 0x57/0x58 data-aborted). Reuse the
+ * two parked-bigcore slots, which sit inside that window and are unused whenever
+ * AYANEO_BIGCORE_EXPT is off (the default). Each is a panel-sized (1280*960*4 =
+ * 0x4B0000) double buffer (0x960000 total) inside its 16MB slot. */
+#define SNES_OVL_L2_PA 0x54000000u  /* mapped WB (was BC_COMMS); free when EXPT off */
+#define SNES_OVL_L3_PA 0x55000000u  /* mapped WB (was SPMFW staging); free when EXPT off */
 #define SNES_RAW_MAX  (32u * 1024 * 1024)
 #define SNES_COMP_MAX (16u * 1024 * 1024)
 #define HOME_CAP (16u * 1024 * 1024 / (unsigned)sizeof(snes_rnode))
@@ -420,6 +432,13 @@ static void draw_osd(unsigned int *fb, unsigned int pitch, int W)
 		    s_osd_kind == 2 ? "BRIGHTNESS" : "VOLUME");
 	s_osd_ticks--;
 }
+
+/* ---- OVL hardware-layering state (OVL_LAYERS.md) ---- */
+static uint32_t s_cc_sig;    /* card-cache signature the L2 buffer was built for */
+static int s_cc_valid;       /* L2 currently holds a valid build */
+static int s_l2_flip;        /* L2 live-buffer index (flips only on rebuild) */
+static int s_l3_flip;        /* L3 live-buffer index (flips every frame) */
+static int s_was_layered;    /* previous frame presented via the OVL layers */
 
 /* ---- frame-time telemetry (top-left readout) ---- */
 extern unsigned (*g_perf_tick)(void);  /* snes_menu.c per-phase profiler hook */
@@ -593,6 +612,7 @@ static int snes_emu_thread(void *arg)
 		unsigned int pitch, W, H;
 		unsigned int *fb = ayaneo_canvas_back(&pitch, &W, &H);
 		snes_target t = {0};   /* zero-init incl. the band clip (band_y0/y1) */
+		int layered;           /* this frame uses the OVL hardware-layered present */
 		snes_input in;
 		unsigned t_frame0 = gpt4_get_current_tick();
 		/* 13 MHz counter: dt in seconds = ticks / 13e6 (unsigned wrap-safe) */
@@ -621,6 +641,12 @@ static int snes_emu_thread(void *arg)
 
 		poll_volume();
 		snes_menu_update(&s_menu, &in, dt);
+		/* OVL hardware layering: only the steady home carousel (state 0, no submenu
+		 * slide) is composited from OVL layers - the card bodies (L2) and cursor (L3)
+		 * are skipped in the framebuffer (L0) pass. Every other state renders the whole
+		 * frame into the framebuffer as before (already 60fps). See OVL_LAYERS.md. */
+		layered = (s_menu.state == 0 && s_menu.open_y == 0.0f && !s_menu.closing);
+		t.ovl_split = layered;
 #ifdef AYANEO_BIGCORE_EXPT
 		/* Split the render across cpu0 + the cached worker when it is up and the
 		 * chrome cache is already built (so the two cores never build it at once).
@@ -655,8 +681,45 @@ static int snes_emu_thread(void *arg)
 
 		{
 			unsigned t_pre = gpt4_get_current_tick();
-			ayaneo_canvas_present();   /* blocks on FRAME_DONE = vsync, pacing
-						    * the loop to 60Hz and yielding the CPU. */
+			if (layered) {
+				unsigned layer_size = pitch * H * 4u;
+				uint32_t sig = snes_menu_cardcache_sig(&s_menu);
+				unsigned int l2_live, l3_live;
+				int rebuilt = 0;
+				/* Rebuild the L2 card cache into the back buffer when the strip
+				 * changed (navigation) or we just entered layered mode; otherwise
+				 * the OVL keeps scanning the live buffer (no per-frame CPU cost). */
+				if (!s_cc_valid || sig != s_cc_sig || !s_was_layered) {
+					snes_target ct = {0};
+					ct.fb = (unsigned int *)(unsigned long)
+						(SNES_OVL_L2_PA + (s_l2_flip ? 0u : layer_size));
+					ct.W = (int)W; ct.H = (int)H; ct.pitch = pitch;
+					ct.offx = ((int)W - SNES_VW) / 2; ct.offy = ((int)H - SNES_VH) / 2;
+					snes_menu_build_cardcache(&s_menu, &ct);
+					s_l2_flip ^= 1; s_cc_sig = sig; s_cc_valid = 1; rebuilt = 1;
+				}
+				l2_live = SNES_OVL_L2_PA + (s_l2_flip ? layer_size : 0u);
+				/* Render the colour-pulsing selection cursor into the L3 back
+				 * buffer every frame (cheap: a fixed rect, not the whole card). */
+				{
+					snes_target curt = {0};
+					curt.fb = (unsigned int *)(unsigned long)
+						(SNES_OVL_L3_PA + (s_l3_flip ? 0u : layer_size));
+					curt.W = (int)W; curt.H = (int)H; curt.pitch = pitch;
+					curt.offx = ((int)W - SNES_VW) / 2; curt.offy = ((int)H - SNES_VH) / 2;
+					snes_menu_render_cursor_layer(&s_menu, &curt);
+					s_l3_flip ^= 1;
+				}
+				l3_live = SNES_OVL_L3_PA + (s_l3_flip ? layer_size : 0u);
+				ayaneo_canvas_present_layers(l2_live, s_menu.cc_y0, s_menu.cc_y1, rebuilt,
+							     l3_live, SNES_CURSOR_Y0, SNES_CURSOR_Y1);
+				s_was_layered = 1;
+			} else {
+				/* single-buffer path: L0 only, upper layers disabled */
+				ayaneo_canvas_present_layers(0u, 0, 0, 0, 0u, 0, 0);
+				s_was_layered = 0;
+				s_cc_valid = 0;   /* force an L2 rebuild on re-entering layered mode */
+			}
 			s_perf_present_us = (gpt4_get_current_tick() - t_pre) / 13u;
 		}
 		mtk_wdt_restart();
