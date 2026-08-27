@@ -103,6 +103,15 @@ void bc_worker_entry(void)
 		 * so it is recorded even though the render below still faults on menu_ptr. */
 		BC_INVAL(0x51000000u, 64u);
 		g_bc->w_can1 = *(volatile unsigned *)(unsigned long)0x51000000u;
+		{	/* AT-translate the canary VA on the WORKER: PAR-lo ATTR[63:56 of the
+			 * 64-bit PAR is in the hi word; here we grab lo which has F/SH/PA] so we
+			 * can see if the worker's mapping of 0x51000000 is really Device. */
+			unsigned pl, ph;
+			__asm__ volatile("mcr p15,0,%0,c7,c8,0" :: "r"(0x51000000u));
+			__asm__ volatile("isb");
+			__asm__ volatile("mrrc p15,0,%0,%1,c7" : "=r"(pl), "=r"(ph));
+			g_bc->w_canpar = ph;   /* hi word carries ATTR[63:56] */
+		}
 		*(volatile unsigned *)(unsigned long)0x51000040u = 0x77770000u | (last & 0xffffu);
 		BC_CLEAN(0x51000040u, 64u);
 		BC_CLEAN(BC_L(384), BC_LINE);          /* publish w_can1 (worker->cpu0, known-good) */
@@ -171,6 +180,7 @@ static int s_bc_clk_set;
 /* cpu0: fork the bottom band to the worker, render the top band, join. */
 static unsigned s_bc_seq;
 unsigned g_bc_wfin, g_bc_fb;   /* diagnostics: worker-finished vs fallback frames */
+static unsigned g_bc_canrb;    /* cpu0's read-back of its own canary write to 0x51000000 */
 extern unsigned int gpt4_get_current_tick(void);
 static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 			snes_menu *menu, snes_target *tfull)
@@ -197,6 +207,11 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	 * w_can1; the worker also writes a return canary at +0x40 for cpu0 to read. */
 	*(volatile unsigned *)(unsigned long)0x51000000u = 0xCA5A0000u | (seq & 0xffffu);
 	BC_CLEAN(0x51000000u, 64u);
+	bc_dsb();
+	/* cpu0 reads back its OWN write to 0x51000000: if this is 0xCA5Axxxx the write
+	 * landed (Device -> DRAM) from cpu0's view; if it is the old value the write is
+	 * being dropped/not landing even for cpu0. Pins "does cpu0's write reach DRAM". */
+	g_bc_canrb = *(volatile unsigned *)(unsigned long)0x51000000u;
 	bc_dsb();                                  /* job + menu update must land before go */
 	g_bc->go = seq;                            /* publish the frame (cpu0 owns the go line) */
 	BC_CLEAN(BC_L(64), BC_LINE);               /* clean go to DRAM - the worker reads it from there */
@@ -259,6 +274,8 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 				can2 = *(volatile unsigned *)(unsigned long)0x51000040u;
 				_dprintf("BC CANARY (non-comms 0x51000000): cpu0->worker worker-read=0x%x (expect 0xCA5Axxxx) ; worker->cpu0 cpu0-read=0x%x (expect 0x7777xxxx)\n",
 					 g_bc->w_can1, can2);
+				_dprintf("BC CANARY PROBE: cpu0 self-readback=0x%x (Device write landed for cpu0?) ; worker PAR-hi of 0x51000000=0x%x (ATTR byte, 0x04=Device 0xff=WB)\n",
+					 g_bc_canrb, g_bc->w_canpar);
 			}
 		}
 		if (g_bc->fault_type && !dumped) {
