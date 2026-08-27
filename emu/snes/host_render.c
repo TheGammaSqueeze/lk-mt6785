@@ -213,6 +213,17 @@ int main(int argc, char **argv)
 		float vscale = menu.aspect ? 1.18519f : 1.0f;   /* ASP_CONTENT_S */
 		int pan = SNES_L2_MARGIN - (int)(menu.cont_shift * vscale + (menu.cont_shift >= 0 ? 0.5f : -0.5f));
 		fprintf(stderr, "  [pan] cont_shift=%.1f sel_world=%.1f pan=%d ngames=%d focus=%d\n", menu.cont_shift, menu.sel_world, pan, menu.ngames, menu.focus);
+		/* Quantise cont_shift to the INTEGER OVL src_x (mirrors the driver). The OVL
+		 * pans the strip in whole panel pixels, so an integer src_x preserves the
+		 * settled buffer's sub-pixel phase and the panned boxart stays crisp; the
+		 * carousel moves in ~1px steps (<=0.5px from the smooth ideal, imperceptible
+		 * under motion). Render the focused card (L3) AND the single-buffer REFERENCE
+		 * at this same quantised shift, so the correctness test is "layered composite
+		 * == single-buffer render of the SAME quantised frame" (not of the smooth
+		 * ideal, which the integer pan intentionally approximates). */
+		menu.cont_shift = (float)(SNES_L2_MARGIN - pan) / vscale;
+		for (i = 0; i < W * H; i++) fb[i] = 0xFF000000u;
+		snes_menu_render(&menu, &t);   /* re-render the reference at the quantised shift */
 		/* L0: everything except the card bodies + focus/slide cursor */
 		for (i = 0; i < W * H; i++) l0[i] = 0xFF000000u;
 		t0.fb = l0; t0.ovl_split = 1;

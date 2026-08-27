@@ -151,7 +151,8 @@ typedef struct {
 #define SNES_CURSOR_X0 0
 #define SNES_CURSOR_Y0 0     /* from the top: covers the menubar cursor's top corners
                               * (screen y~13) during the menubar<->carousel slide */
-#define SNES_CURSOR_X1 960
+#define SNES_CURSOR_X1 1280  /* full width: the focused card's blue frame (on L3) can
+                              * slide anywhere across the screen during a scroll */
 #define SNES_CURSOR_Y1 680
 
 /* L2 card-cache geometry for the OVL PAN (movement 60fps; OVL_LAYERS.md). The strip

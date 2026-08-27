@@ -704,6 +704,7 @@ static int snes_emu_thread(void *arg)
 				unsigned int l2_live, l3_live;
 				int rebuilt = 0, l2_pan;
 				float vscale = s_menu.aspect ? ASP_CONTENT_S_DRV : 1.0f;
+				float save_cont_shift = s_menu.cont_shift;
 				/* Rebuild the SETTLED wide strip only when the card ORDER changed (a
 				 * nav): cc_signature excludes cont_shift/xfade, so a slide leaves it
 				 * unchanged and is served by the src_x pan below - no per-frame rebuild. */
@@ -718,13 +719,23 @@ static int snes_emu_thread(void *arg)
 					s_l2_flip ^= 1; s_cc_sig = sig; s_cc_valid = 1; rebuilt = 1;
 				}
 				l2_live = SNES_OVL_L2_PA + (s_l2_flip ? l2_size : 0u);
-				/* pan the strip by the live cont_shift: screen px = cont_shift*viewscale,
-				 * src_x = MARGIN - that (reads further left in the wide buffer to shift
-				 * the cards right). settles to MARGIN (=idle cache) as cont_shift->0. */
-				l2_pan = SNES_L2_MARGIN - (int)(s_menu.cont_shift * vscale +
+				/* Pan the strip by the live cont_shift: screen px = cont_shift*viewscale,
+				 * src_x = MARGIN - that (reads further left in the wide buffer to shift the
+				 * cards right); it settles to MARGIN (= idle cache) as cont_shift -> 0. The
+				 * OVL src_x is INTEGER, so quantise the shift to whole panel pixels: an
+				 * integer src_x preserves the settled buffer's sub-pixel phase, whereas a
+				 * fractional shift would land the panned boxart on a different phase than a
+				 * fresh render (visible sampling shimmer, worst in 4:3 where the 1.185x
+				 * content zoom magnifies it). L3 is then rendered at the SAME quantised
+				 * shift (cont_shift_q) so the focused card tracks the strip exactly. */
+				{
+					int shift_px = (int)(s_menu.cont_shift * vscale +
 						(s_menu.cont_shift >= 0.0f ? 0.5f : -0.5f));
-				/* Render the colour-pulsing selection cursor into the L3 back buffer
-				 * every frame at the LIVE focused-card position (it pans with cont_shift). */
+					l2_pan = SNES_L2_MARGIN - shift_px;
+					s_menu.cont_shift = (float)shift_px / vscale;   /* quantised; restored after L3 */
+				}
+				/* Render the colour-pulsing selection cursor + focused card into the L3
+				 * back buffer every frame at the (quantised) live focused-card position. */
 				{
 					snes_target curt = {0};
 					curt.fb = (unsigned int *)(unsigned long)
@@ -734,6 +745,7 @@ static int snes_emu_thread(void *arg)
 					snes_menu_render_cursor_layer(&s_menu, &curt);
 					s_l3_flip ^= 1;
 				}
+				s_menu.cont_shift = save_cont_shift;   /* restore the true animation value */
 				l3_live = SNES_OVL_L3_PA + (s_l3_flip ? l3_size : 0u);
 				ayaneo_canvas_present_layers(l2_live, l2_pan, rebuilt,
 							     l3_live, SNES_CURSOR_Y0, SNES_CURSOR_Y1);

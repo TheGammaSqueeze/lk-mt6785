@@ -1031,7 +1031,7 @@ static void ayaneo_ovl_fill_argb(disp_input_config *in, int layer, unsigned int 
  * cleaned only when just rebuilt (l2_clean); L3 is redrawn every frame so its band
  * is always cleaned. L2/L3 are fixed identity-mapped DRAM (VA==PA); L3 is
  * left-of-centre width, L2 full width. */
-#define SNES_OVL_L3_W  960
+#define SNES_OVL_L3_W  1280   /* full width: L3 now carries the blue focus frame too */
 /* L2 pan-cache geometry - MUST match snes_menu.h SNES_L2_*. The strip is a WIDE,
  * band-height buffer; the visible 1280 window is panned by src_x (l2_pan). */
 #define SNES_L2_MARGIN_D  608

@@ -678,12 +678,32 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		/* the blue (active) frame has the same silhouette as the dark one, so
 		 * when it is fully opaque it completely covers the dark frame - skip the
 		 * redundant dark-frame blit for the focused card. */
-		if (!(blue_a >= 0.997f && m->card_act))
+		/* Frame colour, split across OVL layers so a dead-zone walk never rebuilds L2.
+		 * Ownership is by card, so every card's frame is composited exactly once:
+		 *  - L2 body cache (cache_layer, !l3_focus): DARK frame only, for every NON-
+		 *    focused card. The focused card is skipped on L2 (see draw_carousel).
+		 *  - L3 focus overlay, FOCUSED card (l3_focus, gi==focus): owns its whole body
+		 *    (not on L2), so draw it exactly like the reference - an opaque dark base
+		 *    unless fully blue, then the blue active frame crossfading in on top. This
+		 *    keeps the card's screen background opaque during the 0.2s fade-in.
+		 *  - L3 focus overlay, OUTGOING card (l3_focus, gi!=focus): its dark base IS on
+		 *    L2, so draw ONLY the fading-out blue frame over it (blue_a=prog>0.003 here).
+		 *  - reference / single-buffer (!cache_layer): dark then blue crossfade. */
+		if (t->cache_layer && !t->l3_focus) {
 			snes_blit_spr_tint(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f, dim, dim, dim);
-		if (blue_a > 0.003f && m->card_act)
-			snes_blit_spr_tint(t, m->pk, m->card_act, cx, cy,
-				      (m->card_fw / (float)m->card_act->sw) * sc,
-				      blue_a > 1.0f ? 1.0f : blue_a, dim, dim, dim);
+		} else if (t->cache_layer && t->l3_focus && gi != m->focus) {
+			if (m->card_act && blue_a > 0.003f)
+				snes_blit_spr_tint(t, m->pk, m->card_act, cx, cy,
+					      (m->card_fw / (float)m->card_act->sw) * sc,
+					      blue_a > 1.0f ? 1.0f : blue_a, dim, dim, dim);
+		} else {
+			if (!(blue_a >= 0.997f && m->card_act))
+				snes_blit_spr_tint(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f, dim, dim, dim);
+			if (blue_a > 0.003f && m->card_act)
+				snes_blit_spr_tint(t, m->pk, m->card_act, cx, cy,
+					      (m->card_fw / (float)m->card_act->sw) * sc,
+					      blue_a > 1.0f ? 1.0f : blue_a, dim, dim, dim);
+		}
 		if (im) {
 			float sf = m->screen_w / (float)im->w, sfh = m->screen_w / (float)im->h;
 			float bw, bh;
@@ -749,6 +769,14 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 	/* resume menu darkens the NON-focused cards to 0.5 (cardColorToDark), fading
 	 * in with resume_dim; the focused card stays full brightness. */
 	float ndim = 1.0f - 0.5f * m->resume_dim;
+	/* L2 body cache (cache_layer, !l3_focus): the FOCUSED card is skipped here -
+	 * it is composited by the L3 focus overlay (draw_focus_card) alone, so it is
+	 * drawn exactly ONCE. Drawing it on both L2 (dark) and L3 (blue) would double-
+	 * contribute at every non-opaque pixel (the semi-transparent card screen back-
+	 * ground and the sprite's anti-aliased edges), making the composite brighter
+	 * than the reference (OVL_LAYERS.md). The L3 overlay owns the focused card's
+	 * full opaque body, so nothing is lost by skipping it on L2. */
+	int skip_focus = (t->cache_layer && !t->l3_focus);
 	if (n <= 0) return;
 	/* painter's order: draw non-focused first, focused last (on top) */
 	for (j = 0; j < n; j++) {
@@ -763,7 +791,8 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 	}
 	/* the selected card stays bright and keeps its blue active frame in resume
 	 * (cardColorDark dims only the OTHER cards); just its normal crossfade. */
-	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1.0f - prog, 1.0f);
+	if (!skip_focus)
+		draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1.0f - prog, 1.0f);
 }
 
 /* ==== OVL hardware-layering support (state-0 idle home 60fps; OVL_LAYERS.md) ====
@@ -795,6 +824,28 @@ static uint32_t cc_signature(snes_menu *m)
 	return h;
 }
 uint32_t snes_menu_cardcache_sig(snes_menu *m) { return cc_signature(m); }
+
+/* The FULL focused card (blue active frame + boxart + icon + dots), composited LIVE
+ * on L3 over the L2 dark body. Rendering the whole card here (not just the frame)
+ * keeps z-order correct (the boxart covers the frame's opaque screen area) and keeps
+ * the focus colour off L2, so a dead-zone walk never rebuilds L2 and the 0.2s
+ * crossfade stays smooth. Reuses draw_card with t->l3_focus so the blue frame is
+ * drawn instead of the dark one. During the crossfade the outgoing card fades too. */
+static void draw_focus_card(snes_menu *m, snes_target *t)
+{
+	int n = m->ngames, save = t->l3_focus;
+	float prog, ndim;
+	if (m->state != 0 || n <= 0 || !m->card_act) return;
+	prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus) ? m->xfade_t / CAR_XFADE : 0.0f;
+	ndim = 1.0f - 0.5f * m->resume_dim;
+	t->l3_focus = 1;
+	if (prog > 0.003f)   /* outgoing card fading out */
+		draw_card(m, t, m->prev_focus,
+			  640.0f + m->sel_world + CAR_HGAP * (float)ring_delta(m->focus, m->prev_focus, n) + m->cont_shift,
+			  prog, ndim);
+	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1.0f - prog, 1.0f);
+	t->l3_focus = save;
+}
 
 /* The focused card's rounded selection cursor(s), drawn LIVE each frame (they
  * colour-pulse) into the L3 layer. Mirrors EXACTLY the cursor draws inside
@@ -894,6 +945,9 @@ void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t)
 	}
 	t->cache_layer = 1;
 	if (m->aspect) t->offy = 0;
+	/* the full blue focused card first (over the L2 dark body), then the cursor */
+	set_view(m, t, VIEW_CONTENT);
+	draw_focus_card(m, t);
 	if (!draw_focus_slide(m, t)) {
 		set_view(m, t, VIEW_CONTENT);
 		draw_focus_cursor(m, t);

@@ -35,6 +35,10 @@ typedef struct {
 	 * composited by the OVL from the L2/L3 layers instead). */
 	int       cache_layer;
 	int       ovl_split;
+	/* l3_focus: 1 = this cache_layer pass is the L3 focus overlay, so draw_card
+	 * renders the FULL focused card with the BLUE active frame (over the L2 dark
+	 * body). Keeps the focus colour off L2 so dead-zone walks never rebuild it. */
+	int       l3_focus;
 } snes_target;
 
 /* Restrict a target to an absolute framebuffer scanline band [y0, y1) (panel
