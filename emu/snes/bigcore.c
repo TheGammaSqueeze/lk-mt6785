@@ -345,6 +345,15 @@ void bigcore_start(void)
 		 g_bc_mpidr, cpc, (cpc & CPC_CTRL_ENABLE) ? "SET=armed by patched ATF" : "clear=NOT armed");
 	g_bc_target = (int)cpc;   /* OSD 't' shows CPC_FLOW so we see armed-at-boot state */
 
+	/* Lever-3 recon (A75 cluster1): read the CPC per-core SPMC status + full SPM CPU
+	 * power status at cold boot, BEFORE the arm-gate (safe reads, valid on stock tee
+	 * too). If bits 6/7 are set in CPC_SPMC_ST the A75 cluster1 cores are reset-released
+	 * and PSCI CPU_ON(0x600) is worth trying (fresh-cluster admit path, a strictly larger
+	 * ATF on-finish than the intra-cluster0 late-join); if clear, cluster1 needs a bigger
+	 * cold-boot reset-deassert patch. See MULTICORE_RESEARCH.md Lever 3. */
+	_dprintf("BC RECON: CPC_SPMC_ST(0x0C53A840)=0x%x  SPM_CPU_PWR_STATUS(0x10006160)=0x%x (cluster1=A75 cores6/7)\n",
+		 rd32(MCUCFG_CPC_SPMC_ST), rd32(SPM_CPU_PWR_STATUS));
+
 	if (!(cpc & CPC_CTRL_ENABLE)) {
 		_dprintf("BC: CPC not armed -> SKIP PSCI (safe on stock/control tee). Flash the patched tee.img.\n");
 		g_bc_psci_ret = 0x7fffffff;   /* sentinel: skipped */

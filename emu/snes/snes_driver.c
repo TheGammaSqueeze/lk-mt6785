@@ -92,6 +92,12 @@ static inline void bc_wfe(void) { __asm__ volatile("wfe" ::: "memory"); }
 static inline void bc_dmb(void) { __asm__ volatile("dmb ish" ::: "memory"); }
 static inline void bc_dsb(void) { __asm__ volatile("dsb ish" ::: "memory"); }
 
+/* Worker-private WB-cacheable scratch line for the Lever-1 self-readback probe. No
+ * other core ever touches it, so a stale readback isolates a broken worker cache/MMU
+ * path (LK-local bug) from a genuine cross-core snoop-admission wall. In LK BSS so it
+ * is guaranteed mapped Normal-WB by the page tables the worker adopts. */
+static unsigned bc_self_wb[16] __attribute__((aligned(64)));
+
 /* worker (cpu1): wait for a posted frame, render its band, signal done. */
 void bc_worker_entry(void)
 {
@@ -119,6 +125,36 @@ void bc_worker_entry(void)
 			__asm__ volatile("isb");
 			__asm__ volatile("mrrc p15,0,%0,%1,c7" : "=r"(pl), "=r"(ph));
 			g_bc->w_canpar = ph;   /* hi word carries ATTR[63:56] */
+		}
+		{	/* ============ DECISIVE PROBE (Lever 1) ============
+			 * Isolate the worker's OWN MMU-on load path from cross-core coherency.
+			 * These touch only worker-private memory, so a stale readback here means
+			 * an LK-local MMU/TLB/ordering bug, NOT a snoop-admission wall. Also grab
+			 * the FULL PAR-lo (bit0=F, +resolved PA) of the failing canary VA. */
+			unsigned pl, ph;
+			/* (A) WB-cacheable self: write -> clean-to-PoC -> invalidate -> read back.
+			 * Purely local (no peer reads bc_self_wb). Stale == broken worker cache. */
+			bc_self_wb[0] = 0x5E1F0000u | (last & 0xffffu);
+			BC_CLEAN((unsigned long)&bc_self_wb[0], 64u); bc_dsb();
+			BC_INVAL((unsigned long)&bc_self_wb[0], 64u);
+			g_bc->w_self_wb = bc_self_wb[0];
+			/* (B) Device self at 0x51000080 (Device-nGnRnE 2MB): write then read back.
+			 * Device bypasses cache; stale == the worker's Device access is not even
+			 * reaching DRAM (routing/translation), the strongest "not coherency" tell. */
+			*(volatile unsigned *)(unsigned long)0x51000080u = 0x0DE00000u | (last & 0xffffu);
+			bc_dsb();
+			g_bc->w_self_dev = *(volatile unsigned *)(unsigned long)0x51000080u;
+			/* (C) full PAR-lo of the FAILING canary VA (0x51000000): F bit + PA. */
+			__asm__ volatile("mcr p15,0,%0,c7,c8,0" :: "r"(0x51000000u));
+			__asm__ volatile("isb");
+			__asm__ volatile("mrrc p15,0,%0,%1,c7" : "=r"(pl), "=r"(ph));
+			g_bc->w_canpar_lo = pl;
+			/* (D) full PAR-lo of the WB self VA: confirms it resolves to the right PA
+			 * with F=0 (else the self-readback in (A) would be meaningless). */
+			__asm__ volatile("mcr p15,0,%0,c7,c8,0" :: "r"((unsigned)(unsigned long)&bc_self_wb[0]));
+			__asm__ volatile("isb");
+			__asm__ volatile("mrrc p15,0,%0,%1,c7" : "=r"(pl), "=r"(ph));
+			g_bc->w_selfpar_lo = pl;
 		}
 		*(volatile unsigned *)(unsigned long)0x51000040u = 0x77770000u | (last & 0xffffu);
 		BC_CLEAN(0x51000040u, 64u);
@@ -293,6 +329,14 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 					 g_bc->w_can1, can2);
 				_dprintf("BC CANARY PROBE: cpu0 self-readback=0x%x ; cpu0 PAR-hi=0x%x ; worker PAR-hi of 0x51000000=0x%x (ATTR byte at bits31:24, 0x04=Device 0xff=WB)\n",
 					 g_bc_canrb, g_bc_cpupar, g_bc->w_canpar);
+				/* Lever-1 decisive probe (worker-private, isolates worker MMU/cache from
+				 * cross-core coherency). Read the decision tree in MULTICORE_RESEARCH.md:
+				 *  self_wb==0x5E1Fxxxx & self_dev==0x0DE0xxxx & canpar_lo bit0==0 & PA==0x51000
+				 *    -> worker path SANE, failure is purely cpu0->worker visibility -> WALL.
+				 *  self_wb STALE -> worker cacheable load path BROKEN -> LK-local bug (fixable).
+				 *  self_dev STALE -> worker Device access not reaching DRAM -> translation bug. */
+				_dprintf("BC LEVER1 PROBE: w_self_wb=0x%x (exp 0x5E1Fxxxx) w_self_dev=0x%x (exp 0x0DE0xxxx) canpar_lo=0x%x selfpar_lo=0x%x (bit0=F, PA in 31:12)\n",
+					 g_bc->w_self_wb, g_bc->w_self_dev, g_bc->w_canpar_lo, g_bc->w_selfpar_lo);
 			}
 		}
 		if (g_bc->fault_type && !dumped) {
