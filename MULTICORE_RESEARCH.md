@@ -1082,3 +1082,36 @@ low (~10-15%; the DSU P-Channel should fire on cold-up too) but it is the last d
 mechanism. If BC WARMCYCLE shows cpu1 did NOT power off (timeout), PSCI CPU_OFF does not work at LK and
 the experiment is inconclusive. Two independent flashes now cover the coherent path: cpcbit29 (4 probes)
 and warmcycle; plus dvm.
+
+### NOVEL LEAD (2026-08-28): the GIC/SGI channel bypasses the DSU-snoop wall
+Fresh idea after exhausting the DRAM/coherency angles: the worker's DSU snoop-input is dead, but the GIC
+is a SEPARATE interconnect path. cpu0 can send Software Generated Interrupts (SGIs) to cpu1 via the GIC,
+which do NOT traverse the frozen DSU-snoop/DRAM path. This is a working LOW-BANDWIDTH cpu0->worker channel.
+Platform: GICv3 (DT arm,gic-v3; GICD @0x0c000000 size 0x40000, GICR @0x0c040000 size 0x200000). The worker
+stub currently ignores IRQs (bc_vectors IRQ = `b .`), so SGI receive is not set up yet.
+
+WHY THIS MATTERS - it can make the producer-offload CLEAN (unblocks its only real problem):
+The offload's blocker was that the worker needs the DYNAMIC focus (a cpu0->worker signal) to know which
+card strip to build, and that direction is dead - forcing the ugly "build ALL tiles" workaround (memory
++ skip_focus mess). With SGIs, cpu0 signals focus CHANGES (SGI#1=focus++, SGI#2=focus--, or an SGI whose
+4-bit ID encodes a small delta) and the worker maintains its own focus counter. Then the worker has
+EVERYTHING: static assets (frozen-snapshot readable, STATICPROBE-predicted), the live focus (via SGI), and
+worker->cpu0 tile output (proven). It builds the CURRENT focus-centered strip AHEAD of cpu0's need - one
+strip, minimal memory, using the EXISTING build_cardcache unchanged (correct skip_focus for that focus).
+cpu0 just consumes the pre-built strip when it would have rebuilt -> the ~30ms scroll hitch is offloaded.
+
+FEASIBILITY (needs a flash to verify SGIs reach a CPC-arm-woken core, but architecturally sound):
+- Worker (AArch32) GICv3 CPU-interface bring-up: wake its GICR (GICR_WAKER clear ProcessorSleep, poll
+  ChildrenAsleep=0), enable SGI IDs (GICR_ISENABLER0), set ICC_SRE (sysreg enable), ICC_PMR=0xff,
+  ICC_IGRPEN1=1 (all via CP15 in A32). Then POLL ICC_HPPIR1/ICC_IAR1 each frame for pending SGIs (no IRQ
+  handler needed - polling avoids the vector-table path).
+- cpu0 send: ICC_SGI1R (A32 MCRR p15,0,<lo>,<hi>,c12) targeting cpu1 affinity (MPIDR 0x81000100 ->
+  aff1=1,aff0=0, target-list bit0). 
+- KEY UNKNOWN: does cpu1's GICR (redistributor) power up with the CPC-arm bringup so it receives SGIs? The
+  GIC is a separate block from the DSU; the GICR is likely in the core's power domain and up once powered,
+  but the CPC-arm path might leave it asleep. MINIMAL TEST needed.
+
+NEXT: build a minimal SGI-channel viability experiment - worker wakes its GICR + CPU interface and polls
+for SGIs; cpu0 sends an SGI each frame; worker reports a received-SGI count into comms (via the WORKING
+worker->cpu0 direction). If the count increments, the GIC channel is LIVE and the clean offload is
+unlocked. This is a genuinely new, non-coherency path to a real 2-core win and is worth a flash.
