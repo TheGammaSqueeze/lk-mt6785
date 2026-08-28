@@ -1618,3 +1618,14 @@ routes MP1 -> MCSI -> EMI but misses cpu0's cluster-0-resident dirty lines. The 
 layer, and the staged MCSI admit remains the primary fix. Every alternative checked (SPM/CPC power regs, CPUECTLR,
 AArch32, cache set/way, SSPM/MCUPM firmware, EMI MPU) is now ruled out; MCSI cross-cluster snoop-admission stands
 as the single unrefuted mechanism.
+
+### FIX HARDENING (2026-08-28): match cci_enable_cluster_coherency's SNP_PENDING drain
+Corroboration: the mt6785 device tree is a TWO-cluster DynamIQ layout (cluster0 aff1=0 = cpu0-3 A55; cluster1
+aff1=1 = cpu4-7, 2xA55+2xA75), i.e. two DSUs bridged by MCSI - the classic cross-cluster CCI/MCSI coherency
+case, exactly matching the theory. Reviewing the ATF reference cci_enable_cluster_coherency() shows it does not
+just set SNOOP_EN|DVM_EN: it polls SNP_PENDING (central reg 0x28, bit31) to drain in-flight snoops BEFORE the
+enable and waits for it to clear AFTER, so the admit actually takes effect. My first fix skipped that wait.
+Hardened AYANEO_BC_MCSI_FIX: for each unadmitted slave iface it now (1) waits SNP_PENDING clear, (2) set_bitmask
+SNOOP_EN|DVM_EN via MCSI_NS_ACCESS, (3) waits SNP_PENDING clear again (bounded 10ms), logging the settle time.
+Rebuilt + signed + re-staged lk_a_snes_mcsifix_signed.img. Diagnostic image unchanged. This makes the on-HW
+admit faithful to the ATF sequence and less likely to appear set-but-ineffective. Still awaiting the flash.

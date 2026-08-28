@@ -505,11 +505,21 @@ void bigcore_start(void)
 				unsigned long off = 0x1000ul + 0x100ul * (unsigned)i;
 				rr1=rr2=rr3=0; v = MCSI_RD(off);
 				if ((v & (1ul<<30)) && !(v & 1ul)) {   /* SNP_SUPPORT && !SNOOP_EN */
+					int sp;
 					_dprintf("BC MCSI FIX: SLV%d supports snoop but SNOOP_EN=0 -> set SNOOP_EN|DVM_EN\n", i);
+					/* Match cci_enable_cluster_coherency (ATF mt8183): drain SNP_PENDING
+					 * (central reg 0x28, bit31) BEFORE the enable so no snoop is in flight. */
+					for (sp = 0; sp < 10000; sp++) {
+						rr1=rr2=rr3=0; if (!(MCSI_RD(0x28) >> 31)) break; udelay(1);
+					}
 					rr1=rr2=rr3=0;
 					mt_secure_call_all(MCSI_NS, 2 /*set_bitmask*/, off, 0x3ul /*SNOOP_EN|DVM_EN*/, 0, &rr1, &rr2, &rr3);
+					/* wait for the dust to settle (SNP_PENDING clears) so the admit takes effect */
+					for (sp = 0; sp < 10000; sp++) {
+						rr1=rr2=rr3=0; if (!(MCSI_RD(0x28) >> 31)) break; udelay(1);
+					}
 					rr1=rr2=rr3=0; v = MCSI_RD(off);
-					_dprintf("BC MCSI FIX: SLV%d after set SNOOP_CTRL=0x%lx SNOOP_EN=%lu DVM_EN=%lu\n", i, v, v&1ul, (v>>1)&1ul);
+					_dprintf("BC MCSI FIX: SLV%d after set SNOOP_CTRL=0x%lx SNOOP_EN=%lu DVM_EN=%lu (settled in %d us)\n", i, v, v&1ul, (v>>1)&1ul, sp);
 				}
 			}
 #endif
