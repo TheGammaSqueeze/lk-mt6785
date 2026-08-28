@@ -1695,3 +1695,22 @@ CONSEQUENCES / why this matters:
    to real, this PoC-in-L3 model is confirmed. The diagnostic already captures w_can1/w_menuw0/w_static_can and
    the comms has w_can_mmuoff for the MMU-off read.
 This closes the last conceptual paradox; the mechanism is now fully self-consistent end to end.
+
+### ATF BINARY ANALYSIS (2026-08-28): the fix's SIP IS present; corrected a false-negative liveness probe
+Analyzed the actual tee_patched_armcpc.img (our BL31/ATF, 162KB, "atf" magic header). Findings:
+ - The MediaTek SIP layer IS in this ATF: strings mediatek_sip_handler / mediatek_sip_svc / mtk_sip_svc.c /
+   plat/mediatek/mt6785/bl31_plat_setup.c, plus CCI code (cci_adb400_dcm_config). So SMCs are dispatched.
+ - SIP func-id scan (32-bit LE literals): MCSI_NS_ACCESS 0x8200028B is PRESENT (the exact SIP the fix uses to
+   set SNOOP_EN|DVM_EN and to read the ifaces). MCUSYS_ACCESS_COUNT (0x82000288), CACHE_FLUSH_BY_SF (0x82000283),
+   MCSI_A_READ/WRITE, MCUSYS_WRITE, L2_SHARING are all ABSENT as full literals. So this ATF handles MCSI_NS_ACCESS
+   but not those others. Positive indicator the fix's SMC path works; the ATF-patch contingency is likely NOT
+   needed.
+ - BUG FOUND + FIXED in the experiment: the diagnostic used MCUSYS_ACCESS_COUNT as its "SIP liveness" probe, but
+   that SIP is ABSENT here, so it would return 0xffffffff and FALSELY report "no SIP layer" - sending the user
+   to the ATF-patch contingency even though MCSI_NS_ACCESS works. Corrected: liveness is now judged from the
+   MCSI_NS_ACCESS read of CENTRAL_CTRL (0x0) itself - a real value => live, 0xffffffff => absent. Removed the
+   MCUSYS_ACCESS_COUNT call. The FLUSH_BY_SF line will return 0xffffffff (expected, harmless; TLBIALLIS still runs).
+ - Rebuilt + signed + re-staged both lk_a_snes_mcsi_signed.img and lk_a_snes_mcsifix_signed.img. Updated the
+   operator guide's decision tree (step 1) to read the new "BC MCSI SIP-LIVE:" line instead of MCUSYS_ACCESS_COUNT.
+This materially de-risks the flash: we now expect SIP-LIVE=YES, the worker-cluster iface SNOOP_EN=0, admit sets
+it, and the canary flips. Binary evidence says the SMC fix path exists in the ATF we already run.

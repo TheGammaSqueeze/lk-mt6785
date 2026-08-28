@@ -486,6 +486,13 @@ void bigcore_start(void)
 			#define MCSI_RD(off) mt_secure_call_all(MCSI_NS, 0, (off), 0, 0, &rr1, &rr2, &rr3)
 			_dprintf("BC MCSI: probing snoop-interconnect via ATF SIP MCSI_NS_ACCESS=0x8200028B\n");
 			rr1=rr2=rr3=0; v = MCSI_RD(0x0);  _dprintf("BC MCSI CENTRAL_CTRL(0x000)=0x%lx (SNOOP_DIS_b0=%lu DVM_DIS_b1=%lu SEC_ACC_b2=%lu)\n", v, v&1, (v>>1)&1, (v>>2)&1);
+			/* SIP-liveness verdict via MCSI_NS_ACCESS ITSELF (the SIP the fix uses). Binary analysis of
+			 * tee_patched_armcpc.img confirmed 0x8200028B is present but MCUSYS_ACCESS_COUNT/FLUSH_BY_SF are
+			 * NOT, so liveness must be judged from the MCSI_NS_ACCESS read above, not a different SIP. A read
+			 * of CENTRAL_CTRL returning 0xffffffff (SIP_SVC_E_NOT_SUPPORTED=-1) => SIP absent; a plausible
+			 * value (SNOOP_DIS/DVM_DIS/SEC_ACC bits sane, not all-ones) => the fix's SMC path is LIVE. */
+			_dprintf("BC MCSI SIP-LIVE: %s (CENTRAL_CTRL=0x%lx; 0xffffffff => MCSI_NS_ACCESS not implemented -> ATF-patch contingency)\n",
+				 (v == 0xfffffffful) ? "NO - SIP absent" : "YES - MCSI_NS_ACCESS handled", v);
 			rr1=rr2=rr3=0; v = MCSI_RD(0x10); _dprintf("BC MCSI SF_INIT(0x010)=0x%lx\n", v);
 			rr1=rr2=rr3=0; v = MCSI_RD(0x28); _dprintf("BC MCSI SNP_PENDING(0x028)=0x%lx\n", v);
 			for (i = 0; i < 8; i++) {
@@ -494,8 +501,8 @@ void bigcore_start(void)
 				_dprintf("BC MCSI SLV%d SNOOP_CTRL(0x%03lx)=0x%lx  SNOOP_EN=%lu DVM_EN=%lu SNP_SUP=%lu DVM_SUP=%lu\n",
 					 i, off, v, v&1ul, (v>>1)&1ul, (v>>30)&1ul, (v>>31)&1ul);
 			}
-			rr1=rr2=rr3=0; v = mt_secure_call_all(0x82000288ul, 0, 0, 0, 0, &rr1, &rr2, &rr3); /* MCUSYS_ACCESS_COUNT: SIP liveness */
-			_dprintf("BC MCSI MCUSYS_ACCESS_COUNT ret=0x%lx (nonzero => MTK SIP layer is live)\n", v);
+			/* (SIP liveness is judged from the MCSI_NS_ACCESS CENTRAL_CTRL read above; MCUSYS_ACCESS_COUNT
+			 * and CACHE_FLUSH_BY_SF are NOT in this ATF per binary analysis, so they are not used here.) */
 #ifdef AYANEO_BC_MCSI_FIX
 			/* FIX ATTEMPT: for every slave iface that SUPPORTS snoop but has SNOOP_EN==0
 			 * (a powered-but-unadmitted CPU cluster - our worker), set SNOOP_EN|DVM_EN via

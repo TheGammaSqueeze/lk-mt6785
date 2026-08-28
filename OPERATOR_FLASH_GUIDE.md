@@ -34,11 +34,13 @@ RESTORE anytime: `lk_a_snes_signed.img` (clean single-core shipping menu).
 
 ## UART decision tree (paste these lines back)
 
-1. SIP liveness:
-   `BC MCSI MCUSYS_ACCESS_COUNT ret=0x...`
-     - ret = 0xffffffff (SIP_SVC_E_NOT_SUPPORTED = -1)  => our tee.img has NO MTK SIP layer; the SMC path is
-       unavailable. Fall to the contingency: an ATF-side cci_enable patch (MCSI base 0x0c510000). Stop here.
-     - ret = a count / 0                                 => SIP layer live; the MCSI reads below are valid.
+1. SIP liveness (judged from MCSI_NS_ACCESS itself - binary analysis of tee_patched_armcpc.img confirms
+   0x8200028B IS present in the ATF while MCUSYS_ACCESS_COUNT/FLUSH_BY_SF are NOT, so we probe the fix's own SIP):
+   `BC MCSI SIP-LIVE: YES - MCSI_NS_ACCESS handled (CENTRAL_CTRL=0x...)`
+     - "YES ..."  => the fix's SMC path is live; the MCSI reads/admit below are valid (expected on this tee.img).
+     - "NO - SIP absent" (CENTRAL_CTRL=0xffffffff) => MCSI_NS_ACCESS not implemented; fall to the ATF-patch
+       contingency (cci_enable at MCSI base 0x0c510000). (Note: the FLUSH_BY_SF line returning 0xffffffff is
+       EXPECTED and harmless - that SIP is not in this ATF; the TLBIALLIS lever still runs.)
 
 2. Snoop state (the smoking gun), from FLASH 1 or 2:
    `BC MCSI SLV<n> SNOOP_CTRL(0x1n00)=0x... SNOOP_EN=? DVM_EN=? SNP_SUP=? DVM_SUP=?`  (8 lines)
