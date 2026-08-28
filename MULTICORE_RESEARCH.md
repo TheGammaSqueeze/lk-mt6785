@@ -784,3 +784,22 @@ NEXT: (1) live-diff the SSPM mailboxes (mbox0..3) across a cpu1 hotplug to catch
 IPI/command; (2) find mt6785 ATF/preloader SSPM power-enable; (3) build an LK image that issues it +
 plain PSCI and reads BC CANARY. Meanwhile the DVM long-shot (lk_a_snes_bigcore_dvm.img) and the
 producer-offload fallback both remain staged/specced.
+
+### SSPM MAILBOX HOTPLUG DIFF (2026-08-28): power-service is not a snapshottable command
+Diffed all 4 SSPM mailboxes (mbox0..3 @0x10450000/60/70/80) across cpu1 online/offline/online. ONLY one
+register changes: 0x1048001c (mbox3 slot 7 = MCDI_MBOX_AVAIL_CPU_MASK) 0xff<->0xfd (cpu1 bit). That is the
+idle-coordination AVAIL_CPU_MASK; NOTHING coherency/bringup-related appears. So the SPMC power-on + DSU
+P-Channel that a coherent bringup needs is serviced INSIDE the SSPM firmware / SPMC hardware, not via an
+AP-writable mailbox command LK could replay. The coherent-bringup enable is therefore not reachable by
+mailbox from LK; it needs the mt6785 ATF/preloader SSPM power-service init (source not local) or a blind
+flash experiment.
+
+### INVESTIGATION STATUS (honest): adb+source avenues for coherent bringup are exhausted
+Everything reachable without the mt6785 ATF/preloader source or a flash has been tried. Definitive
+conclusion: a manually-woken (CPC-arm) core at LK is powered (PWR_ON_ACK) but never joins DSU coherency
+because the SSPM-serviced SPMC->DSU P-Channel handshake does not run at LK, and that handshake is internal
+firmware/hardware with no AP/MMIO/mailbox lever LK can pull. Remaining ways to the REAL (coherent) win,
+both out of the pure-adb reach: (A) obtain mt6785 ATF/preloader source, find the SSPM CPU-power-service
+init, replay it from LK before a plain PSCI CPU_ON; (B) the staged DVM long-shot flash. The achievable win
+WITHOUT coherent bringup is the producer-offload (worker reads static pre-bringup assets + writes tiles
+out; both directions proven), a real anti-hitch perf gain needing no cpu0->worker coherence.
