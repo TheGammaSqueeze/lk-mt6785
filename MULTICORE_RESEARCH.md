@@ -2099,3 +2099,14 @@ CONCLUSION: the producer-offload via RGBA tiles does NOT improve menu perf and r
 synchronous per-nav strip rebuild - a separate menu-perf problem, not a multicore one. Honest dead-end for the
 tile offload. If movement smoothness matters, the real levers are: cheaper rebuild (clear only dirty region /
 smaller L2), or a wider strip cache that avoids per-nav rebuilds (needs >2496px L2). Not multicore.
+
+### REAL REGRESSION FOUND (2026-08-29): OVL 60fps present tears on MOVEMENT, not the tile offload
+User clarified: the single-core baseline was solid 30fps with NO tearing; the tearing/stutter began with the
+multicore/OVL 60fps work. Root cause (mt_disp_drv.c + snes_driver.c): the LAYERED (OVL) present skips the explicit
+post-swap vsync wait when the frame is FAST (<15ms) to hit 60fps. But a smooth carousel PAN frame IS fast (the OVL
+hardware does the panning), so it skipped vsync during slides, and the OVL src_x pan reconfig then latches
+MID-SCANOUT -> visible tearing on movement. Idle didn't tear (static content). FIX: never skip vsync while the
+strip is MOVING (l2_pan!=0 || rebuilt || cont_shift!=0); skip only when truly static (idle), where a mid-scanout
+latch is invisible and 60fps is free. Tradeoff: pans sync to vblank (tear-free; may cap at 60/30 depending on the
+double-barrier), idle stays 60fps. Staged lk_a_snes_notear_signed.img (clean, cardtiles OFF). This is the actual
+fix the user needs; the producer-offload tile work is a closed dead-end (reverted).
