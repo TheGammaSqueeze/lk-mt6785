@@ -1669,3 +1669,29 @@ fix might miss:
    offset would PANIC the secure world (reboot/hang). All experiment offsets used are <= 0x1700, well in-bounds.
    Recorded so no future MCSI experiment passes a large offset and bricks the boot.
 This is the last prerequisite check; the fix needs no SF-init and its offsets are safe. Verdict still = flash.
+
+### MECHANISM REFINEMENT (2026-08-28): why even UNCACHED worker reads are stale - PoC-in-L3, not DRAM
+The one part the bare "snoop-admission" story did not obviously explain (and which made the wall look
+intractable) is the corrected finding that the worker misses cpu0's stores EVEN on MMU-off/Device reads - an
+uncached read bypasses snoop and goes straight to DRAM, so why stale? Resolution:
+
+The Point of Coherency is defined RELATIVE TO THE COHERENCY DOMAIN. When cluster 1 is not snoop-admitted, the
+active coherency domain is {cluster 0 + interconnect}. cpu0's DC CVAC/DCCIMVAC "clean to PoC" only guarantees
+visibility to THAT domain; on a DynamIQ + MCSI system the effective PoC for the in-domain agents is the shared
+DSU L3 / MCSI snoop-filter level, NOT necessarily DRAM. So cpu0's freshly-cleaned data can sit in the shared
+L3/SF while the DRAM behind it stays stale. Cluster 1, being OUTSIDE the domain, cannot snoop that shared L3,
+and its uncached read hits the stale DRAM under it. Meanwhile the worker's WRITES post to the interconnect and
+are visible to cpu0 (cpu0 snoops/sees them). That reproduces the FULL observed asymmetry, including the
+puzzling "even Device/uncached" part, with a single cause: cluster 1 is not in the coherency domain.
+
+CONSEQUENCES / why this matters:
+ - It CONFIRMS the MCSI admit is the correct AND sufficient fix: admitting cluster 1 to the snoop domain lets it
+   read the shared-L3/PoC where cpu0's data actually lives, fixing BOTH cached and uncached staleness at once.
+ - It explains why the earlier DRAM-oriented workarounds (cache set/way, MMU-off reads) could never work: they
+   assumed the data was in DRAM, but it is at the in-domain PoC (shared L3) that the outsider cluster cannot see.
+ - The 2-core split WANTS the worker to snoop cpu0's L3 (that is the whole point of coherent sharing), so the
+   admit is exactly right, not a DRAM-flush hack.
+ - Empirically testable by the staged fix: if admitting cluster 1 flips even the uncached canary (w_can_mmuoff)
+   to real, this PoC-in-L3 model is confirmed. The diagnostic already captures w_can1/w_menuw0/w_static_can and
+   the comms has w_can_mmuoff for the MMU-off read.
+This closes the last conceptual paradox; the mechanism is now fully self-consistent end to end.
