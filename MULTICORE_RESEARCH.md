@@ -474,3 +474,33 @@ possible post-bringup:
 Image: /mnt/c/pairmini/lk_a_snes_bigcore_mmuoff.img (Device baseline + the worker drops SCTLR.M,
 reads 0x51000000 physically, restores M; identity map keeps PC/SP valid). Look for "BC MMUOFF PROBE:
 worker MMU-off read of 0x51000000 = 0x..".
+
+### HW MMU-OFF RESULT (2026-08-28): cpu0->worker is DEAD by every means
+Flashed lk_a_snes_bigcore_mmuoff.img. UART:
+  BC MMUOFF PROBE: worker MMU-off read of 0x51000000 = 0xa86dbdec (frozen)
+  (canary/self/lever1 all as before: worker paths sane, cpu0->worker garbage 0xa86dbdec)
+=> Even an MMU-OFF read AFTER the worker's MMU was on returns the SAME frozen value. So the freeze is
+   not the worker's own MMU/D-cache (invalidated first; Device is uncached anyway) - it is a deeper
+   DSU-level disconnect. Definitive: the worker can correctly read only (a) memory IT wrote and (b) the
+   pre-MMU-enable snapshot; cpu0's post-bringup writes are invisible through EVERY path tried
+   (MMU on/off, WB Inner-Shareable, WB Non-shareable, Device Outer-Shareable). worker->cpu0 writes
+   always work. This is the DSU snoop-admission wall in full: an un-admitted core is a write-only
+   participant with a frozen read view.
+
+CONSEQUENCE FOR THE GOAL: a per-frame 2-core render split (the low-power target) REQUIRES cpu0 to
+hand the live menu state to the worker every frame (cpu0->worker), which is impossible. So the
+per-frame split is unreachable at LK. The only multicore models that survive:
+  - STATIC-prebuild offload: the worker builds outputs from inputs cpu0 wrote+cleaned BEFORE the
+    worker enabled its MMU (frozen snapshot is correct), and writes results out. For the card strip
+    this means pre-tiling the STATIC card row into 2496px chunks the worker builds once; cpu0 reads
+    the chunk for the current focus (worker->cpu0). But cpu0 could prebuild those itself at startup,
+    so the 2nd-core benefit is only the one-time startup cost - marginal, not the per-frame goal.
+  - EXOTIC (untested): give cpu0->worker a channel on a DIFFERENT memory path than DSU-coherent DRAM
+    (on-chip SYSRAM/SRAM), which may not go through the frozen snoop path; OR have the worker read
+    input MMIO directly and run its OWN menu state machine in lockstep (fragile dt/RNG sync). Both are
+    long shots.
+
+RECOMMENDATION: the DRAM cpu0->worker wall is now proven absolute. Unless the SRAM-channel probe (a
+cheap 1-word test) works, multicore-at-LK cannot deliver the per-frame low-power split, and the clean
+single-core release build (unaffected; the fps drop is only the EXPT fork/join+fallback overhead)
+should stand. Decision point for the operator.
