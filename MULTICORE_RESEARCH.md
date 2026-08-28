@@ -965,3 +965,18 @@ FINAL STATE: coherent path = hardware wall, one long-shot flash staged. Offload 
 user risk/value decision (focus-specific L2 cache; per-system per-focus tiles = low-risk variant). Both
 resolve on the one staged diagnostic flash (BC CANARY/CPCDUMP + BC STATICPROBE). Autonomous non-flash
 investigation is complete; do not destabilize the working menu without the user's go-ahead.
+
+### FROZEN-VALUE TRACED (2026-08-28): 0xa86dbdec is boot_b staging data in the SCRATCH window
+The worker's fixed frozen read 0xa86dbdec exists in snes_boot_b.img (LE ecbd6da8 at file offset 0x40000c,
+exactly once). boot_b loads at SNES_BLOB_PA=0x50000000 inside the k85v1_64 download/SCRATCH window
+[0x4E000000,0x56000000), which also holds the canary at 0x51000000. boot_b is staged/decompressed THROUGH
+that window during load, so 0x51000000 holds leftover boot_b bytes at the moment the worker's view freezes
+(MMU-enable). => The worker is reading a FROZEN SNAPSHOT of DRAM as it was around boot_b-load time; cpu0's
+later Device/WB writes to 0x51000000 never update that frozen view. This is direct confirmation of the
+frozen-snapshot / no-snoop-input model (not a new coherent-path lever - the wall stands).
+
+IMPLICATION FOR THE OFFLOAD (positive): if the worker's view is a snapshot frozen at MMU-enable, then any
+data cpu0 writes+cleans BEFORE the worker enables its MMU is captured in that snapshot and IS readable by
+the worker. The STATICPROBE writes 0x57A70DED BEFORE PSCI (pre-bringup), so it should be in the frozen
+snapshot => STATICPROBE is predicted POSITIVE and the producer-offload (worker consumes static
+pre-bringup-cleaned assets) is predicted VIABLE. The staged flash will confirm.
