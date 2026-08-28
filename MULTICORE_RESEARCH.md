@@ -1629,3 +1629,19 @@ Hardened AYANEO_BC_MCSI_FIX: for each unadmitted slave iface it now (1) waits SN
 SNOOP_EN|DVM_EN via MCSI_NS_ACCESS, (3) waits SNP_PENDING clear again (bounded 10ms), logging the settle time.
 Rebuilt + signed + re-staged lk_a_snes_mcsifix_signed.img. Diagnostic image unchanged. This makes the on-HW
 admit faithful to the ATF sequence and less likely to appear set-but-ineffective. Still awaiting the flash.
+
+### SMC ABI VERIFIED (2026-08-28): the MCSI fix pokes the right registers; -1 = SIP-absent sentinel
+De-risked a silent-failure mode by verifying the SMC argument mapping against the LK implementation
+(app/mt_boot/mt_secure_call.c + mtk_secure_api.h):
+  mt_secure_call_all(function_id, arg0, arg1, arg2, arg3, *r1,*r2,*r3) puts function_id->r0, arg0->r1,
+  arg1->r2, arg2->r3, arg3->r4, and returns r0 (plus r1..r3 out).
+The kernel MTK MCSI ABI is mcsi_reg_read(off)=mt_secure_call(NS_ACCESS,0,off,0,0) and
+mcsi_reg_set_bitmask(val,off)=mt_secure_call(NS_ACCESS,2,off,val,0), i.e. r1=op, r2=offset, r3=val.
+My experiment calls mt_secure_call_all(MCSI_NS, op, offset, val, 0, ...) -> r1=op, r2=offset, r3=val. EXACT MATCH
+for both the reads (op=0) and the admit set_bitmask (op=2, val=0x3). So the fix targets the correct MCSI regs.
+Also: mtk_secure_api.h defines SIP_SVC_E_NOT_SUPPORTED = -1. So in the flashed UART, a return of 0xffffffff on
+the MCSI reads or on MCUSYS_ACCESS_COUNT means our tee.img does NOT implement the MTK SIP layer -> the SMC path
+is unavailable and we fall to the ATF-patch contingency (cci_enable at MCSI base 0x0c510000). A return of 0x0 /
+a real SNOOP_CTRL value (SNP_SUPPORT/SNOOP_EN bits sane) means the SIP is live and the diagnosis/fix are valid.
+Nothing left to verify offline: mechanism isolated (MCSI cross-cluster snoop-admission), fix correct-by-ABI and
+ATF-faithful (SNP_PENDING drained), 2-core split wired with fallback, all alternatives refuted. Verdict = flash.
