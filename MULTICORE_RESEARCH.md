@@ -900,3 +900,25 @@ the original per-frame-coherent-split dream (which the DSU wall blocks), but rea
 GATE: implement only after STATICPROBE (in the staged lk_a_snes_bigcore_cpcbit29.img) confirms the worker
 reads pre-bringup static data (0x57A70DED). Both paths (coherent CPC-diff + offload viability) resolve on
 that one flash.
+
+### OFFLOAD FEASIBILITY, quantified (2026-08-28) - viable for moderate game counts
+Corrected the memory assumption: the WB DRAM window is [0x4E000000,0x56000000) = 128MB (not 32MB).
+Numbers: one card-strip tile = SNES_L2_W(2496) x SNES_L2_BAND_H(384) x 4 = 3.66MB. The strip is positioned
+by m->sel_world (snes_menu.c:641 `cardx = 640 + sel_world + cont_shift`), and is pannable +/-608px (margin)
+before rebuild, i.e. one tile covers ~2496px of card row and any ~1280px sub-window. Tiles stepped by
+1280px of sel_world cover the whole row; tile count ~= row_px/1280 ~= ngames/5 (visible ~5 cards/1280px).
+=> For a moderate list (say <=50 games) that is ~10 tiles ~= 37MB - fits the 128MB window (minus LK/pack/fb).
+So PREBUILD-ALL-TILES is memory-feasible for moderate ngames, needing NO dynamic cpu0->worker focus signal
+(worker builds every tile, cpu0 selects the focus tile). For very large lists it would exceed the window
+and need focus-relative tiling (blocked) - acceptable limitation; can cap to the current system's games.
+
+TILE-BUILDER approach: snes_menu_build_cardcache_tile(m,t,sel_world) = save m->sel_world; set it to the
+tile center; snes_menu_build_cardcache(m,t) (already renders by sel_world); restore. OPEN QUESTION to
+resolve before coding: does draw_carousel load/decode boxart focus-relative (lazy around the focused
+card)? If so, a tile far from the live focus may miss boxart and the builder must force-load the tile's
+games first. Check draw_carousel boxart handling. This is the only non-trivial part; the rest is a thin
+wrapper + host-validation (tiles composited == focus-centered strip at each focus, like the vsplit check).
+
+STATUS: offload confirmed memory-feasible + implementation approach identified; the tile-builder is the
+first host-validatable component. Still gated on the staged STATICPROBE (worker reads pre-bringup static
+0x57A70DED) before committing to the device path. Everything hinges on that one flash.
