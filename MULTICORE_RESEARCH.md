@@ -189,15 +189,35 @@ and they are separable by a single never-run experiment:
    comms fields w_self / w_self_noinv / w_canpar_lo / w_selfpar_lo). Ready to flash.
 
 2. **Producer offload on cpu1 (the pragmatic WIN; sidesteps the wall entirely).** Give cpu1
-   a job whose inputs are snapshotted ONCE (MMU-off, at bring-up) from STATIC DRAM and that
-   only ever WRITES results - the two directions proven working in ~17 flashes (worker
-   MMU-off read of static data; worker->cpu0 clean+publish). For the SNES menu the natural
-   fit is: cpu1 continuously (re)builds the per-card boxart caches round-robin from the
-   static asset blob into fixed DRAM slots; cpu0 invalidate+reads whichever slot it needs.
-   Zero per-frame cpu0->worker coherent read, so it works regardless of the wall. Directly
-   attacks the scroll-time card-cache-rebuild bottleneck. Gate the design on Lever 1's
-   result (if only cross-core CACHEABLE reads fail but Device reads work, a 1-word
-   non-cacheable "current index" mailbox lets cpu1 prioritise; else round-robin all cards).
+   a job whose inputs are static + a tiny control word, that only ever WRITES bulk results -
+   the directions proven working in ~17 flashes (worker read of static/cleaned DRAM; worker
+   ->cpu0 clean+publish). CONCRETE DESIGN grounded in the actual code (corrected 2026-08-28):
+   the home carousel is NOT per-card round-robin. snes_menu_build_cardcache (snes_menu.c:926)
+   renders ONE cursorless card strip into a panel-sized L2 buffer (SNES_L2_W=2496 x
+   SNES_L2_BAND_H=384, ~30 ms: g_cc_us = {clear, draw, band-scan, unpremult}); it is built
+   ONCE when snes_menu_cardcache_sig (snes_menu.c:834) changes, then panned every frame via
+   the OVL src_x (snes_driver.c:803-829, s_cc_valid/s_cc_sig). So the ~30 ms cost lands only
+   on the frame the signature changes (scroll crosses a card, selection changes), which is
+   exactly the scroll-time hitch. Offload = move that single strip build off cpu0's critical
+   path:
+     - cpu0 writes the small carousel state (sel index, cont_shift bucket, aspect) into a
+       one-line control mailbox each frame, and the cardcache_sig it wants.
+     - cpu1 loops: read the control mailbox, compute cardcache_sig; if it differs from the
+       strip it last built, rebuild the full 2496-wide strip into a DRAM slot cpu1 owns,
+       clean it to PoC, publish {ready_sig, slot}. It can also SPECULATIVELY prebuild the
+       strip for sel+1 / sel-1 so the next scroll step is already done.
+     - cpu0 each frame: if the strip it needs (by sig) is published, invalidate+read that slot
+       and composite via OVL (worker->cpu0, proven); else build it itself (current path) as
+       the fallback. No correctness dependency on cpu1.
+   Coherency needs: bulk strip is worker->cpu0 (proven). The only cpu0->worker traffic is the
+   one control line; route it through whichever channel Lever 1 shows works (Device mailbox if
+   Device cpu0->worker reads succeed, or the Non-shareable-WB region if candidate fix #1 works,
+   or - if both fail - have cpu1 round-robin-build strips for all plausible sel positions from
+   the fully static card list with NO cpu0->worker signal at all). The static inputs cpu1
+   needs (boxart textures, card list, chrome) are all built at menu init and never change, so
+   cpu1 snapshots their base once at bring-up. Win: the ~30 ms scroll hitch moves off cpu0, so
+   scrolling holds 60 fps; and the whole-strip build can itself be X-split across the two cores
+   for a lower-clock steady state once coherency is available.
 
 3. **A75 cluster1 core 0x600 (fresh-cluster admit).** Target the powered-off cluster1
    instead of a 7th core into live cluster0. A first-core-in-cluster power-on takes the
@@ -261,9 +281,9 @@ spm_poweron_cpu 0x126dc, PWR_CON table 0x20c70, ack read 0x12574, ack-bit 0x125b
    implies the wall is PTW-visibility, not data-visibility, and a non-shareable-private
    cacheable data mapping would then give full-speed cached compute (best case).
 2. bc_l2_tbl PA: bc_device_map writes l1[l1i] = (u32)bc_l2_tbl | TABLE (bigcore.c:192). This
-   assumes bc_l2_tbl VA==PA (LK identity map). Verify bc_l2_tbl actually sits in the
-   identity-mapped LK region; if LK ever maps BSS non-identity, the L2 base is wrong and the
-   worker (and cpu0) mistranslate 0x51000000. Check with the probe's PAR-lo PA field.
+   assumes bc_l2_tbl VA==PA (LK identity map). VERIFIED REFUTED 2026-08-28: k85 MEMBASE=
+   0x4C400000 and platform.c identity-maps [MEMBASE,+MEMSIZE) Normal-WB, so BSS is identity
+   mapped and the L2 base is correct. Not the bug. (Probe PAR-lo PA still cross-checks it.)
 3. Worker TLB: bigcore_entry.S:77 TLBIALL runs BEFORE the TTBR0/TTBCR writes (83-87). A stale
    walk-cache entry could survive. Move a TLBIALL + DSB + ISB to AFTER the TTBR0/TTBCR/MAIR
    writes and retest.
@@ -274,10 +294,9 @@ spm_poweron_cpu 0x126dc, PWR_CON table 0x20c70, ack read 0x12574, ack-bit 0x125b
 
 ### Next-experiment plan (deterministic, gated on the probe UART)
 - If probe => "wall confirmed" (worker paths sane, only cpu0->worker fails): implement Lever 4
-  (producer offload: cpu1 rebuilds per-card boxart caches round-robin from the static asset
-  blob into DRAM slots, cpu0 invalidate+reads; zero per-frame coherent cpu0->worker read) as
-  the pragmatic 2-core win; in parallel, if RECON shows CPC_SPMC_ST bits 6/7 set, try Lever 3
-  (PSCI CPU_ON 0x600, A75) reusing the harness.
+  (producer offload; see the corrected single-strip design in Lever 2 above) as the pragmatic
+  2-core win; in parallel, if RECON shows CPC_SPMC_ST bits 6/7 set, try Lever 3 (PSCI CPU_ON
+  0x600, A75) reusing the harness.
 - If probe => "LK bug": apply candidate 1 (Non-cacheable/Non-shareable worker walk) first, it
   is the highest-value fix and could reopen a FULL coherent 2-core split.
 
@@ -285,3 +304,18 @@ spm_poweron_cpu 0x126dc, PWR_CON table 0x20c70, ack read 0x12574, ack-bit 0x125b
 Decisive probe BUILT + SIGNED + STAGED at /mnt/c/pairmini/lk_a_snes_bigcore_probe.img. Blocked
 on one HW flash (operator asleep). All levers ranked and gated. Continuing research on Lever
 3/4 mechanics and candidate-bug fixes so the post-probe step is immediate.
+
+### STATUS after cycle 2 (2026-08-28, no HW input)
+- Candidate-bug #2 (bc_l2_tbl VA==PA) VERIFIED REFUTED from sources: k85v1_64 MEMBASE=0x4C400000
+  and platform.c mmu_initial_mappings identity-map [MEMBASE, +MEMSIZE) Normal-WB, so LK BSS
+  (where bc_l2_tbl + bc_worker_stack live) is identity-mapped -> the L2 table PA is correct.
+- Verified the Non-shareable image is well-formed: LK MAIR (mair0=0xeeaa4400, mair1=0xff000004)
+  has AttrIndx 7 = 0xff = Normal Inner+Outer Write-Back, so BC_ATTR_WB=(0x7<<2) maps genuine
+  cached WB; AttrIndx 0 = 0x00 = Device (matches the baseline). Both staged images are valid.
+- Lever 4 design CORRECTED against the real code: the carousel card strip is a SINGLE
+  panel-sized build (snes_menu_build_cardcache, ~30 ms on signature change), panned via OVL
+  src_x, NOT per-card round-robin. Rewrote the offload plan accordingly (single-strip producer
+  with a one-line control mailbox + speculative sel+/-1 prebuild). See Lever 2 section.
+- No new flashable image this cycle (the two staged images remain the decisive gate; further
+  images are gated on the probe UART). Next HW-independent readiness task when resumed: begin
+  the Lever 4 producer skeleton behind a flag (host-validatable), or Lever 3 0x600 prep.
