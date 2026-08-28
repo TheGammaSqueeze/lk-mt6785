@@ -117,6 +117,10 @@ void bc_worker_entry(void)
 		 * so it is recorded even though the render below still faults on menu_ptr. */
 		BC_INVAL(0x51000000u, 64u);
 		g_bc->w_can1 = *(volatile unsigned *)(unsigned long)0x51000000u;
+		/* PRODUCER-OFFLOAD VIABILITY: read the PRE-bringup static value at 0x51000024
+		 * MMU-on, WITHOUT invalidate (how a worker reads static, pre-cleaned assets). If
+		 * this is 0x57A70DED, the worker can read pre-bringup static data -> offload viable. */
+		g_bc->w_static_can = *(volatile unsigned *)(unsigned long)0x51000024u;
 		{	/* AT-translate the canary VA on the WORKER: PAR-lo ATTR[63:56 of the
 			 * 64-bit PAR is in the hi word; here we grab lo which has F/SH/PA] so we
 			 * can see if the worker's mapping of 0x51000000 is really Device. */
@@ -271,6 +275,16 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	*(volatile unsigned *)(unsigned long)0x51000000u = 0xCA5A0000u | (seq & 0xffffu);
 	BC_CLEAN(0x51000000u, 64u);
 	bc_dsb();
+	{	/* LEVER (DVM): force inner-shareable Distributed Virtual Memory traffic after
+		 * publishing the canary. TLBI ...IS broadcasts a DVM Sync to every PE in the
+		 * inner-shareable domain; a late-woken worker that is powered + PWR_ON_ACK'd but
+		 * not yet actively RECEIVING snoops may get its snoop-input wired by a DVM
+		 * round-trip. If the worker's canary read flips 0xa86dbdec -> 0xCA5Axxxx, this is
+		 * the missing step. Harmless otherwise (a TLB maintenance op). */
+		__asm__ volatile("mcr p15,0,%0,c8,c3,0" :: "r"(0u));   /* TLBIALLIS (Inner-Shareable) */
+		__asm__ volatile("dsb ish");
+		__asm__ volatile("isb");
+	}
 	/* cpu0 reads back its OWN write to 0x51000000: if this is 0xCA5Axxxx the write
 	 * landed (Device -> DRAM) from cpu0's view; if it is the old value the write is
 	 * being dropped/not landing even for cpu0. Pins "does cpu0's write reach DRAM". */
@@ -347,6 +361,8 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 					 g_bc->w_can1, can2);
 				_dprintf("BC CANARY PROBE: cpu0 self-readback=0x%x ; cpu0 PAR-hi=0x%x ; worker PAR-hi of 0x51000000=0x%x (ATTR byte at bits31:24, 0x04=Device 0xff=WB)\n",
 					 g_bc_canrb, g_bc_cpupar, g_bc->w_canpar);
+				_dprintf("BC STATICPROBE: worker read of PRE-bringup static 0x51000024 = 0x%x (0x57A70DED => worker CAN read static pre-cleaned data => producer-offload VIABLE)\n",
+					 g_bc->w_static_can);
 				/* Lever-1 decisive probe (worker-private, isolates worker MMU/cache from
 				 * cross-core coherency). Read the decision tree in MULTICORE_RESEARCH.md:
 				 *  self_wb==0x5E1Fxxxx & self_dev==0x0DE0xxxx & canpar_lo bit0==0 & PA==0x51000

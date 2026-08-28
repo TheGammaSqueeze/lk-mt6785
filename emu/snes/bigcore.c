@@ -395,6 +395,14 @@ void bigcore_start(void)
 		 * L2 split. If this boots AND the canary flips cpu0->worker to 0xCA5Axxxx, the
 		 * split is safe and non-cacheable is the fix; then extend to comms+menu+scene. */
 		bc_device_map(0x51000000u, 0x200000u);
+		/* PRODUCER-OFFLOAD VIABILITY PROBE: write a STATIC value here, BEFORE the worker is
+		 * powered (pre-bringup), and clean it to DRAM. The worker reads it MMU-on WITHOUT
+		 * invalidate - exactly how a producer-offload worker would read static, pre-cleaned
+		 * assets. If the worker reads back 0x57A7xxxx while the per-frame canary stays frozen,
+		 * the worker CAN read pre-bringup static data, so the producer-offload fallback is
+		 * viable even with cross-core coherency dead. */
+		*(volatile unsigned *)(unsigned long)0x51000024u = 0x57A70DEDu;
+		arch_clean_invalidate_cache_range((void *)(unsigned long)0x51000024u, 64u);
 #ifdef AYANEO_BC_NONSHARE
 		_dprintf("BC MODE: shared region 0x51000000 mapped Normal-WB NON-shareable (candidate fix #1; cached worker + sw coherency)\n");
 #else

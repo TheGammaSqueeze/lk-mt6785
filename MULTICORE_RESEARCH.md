@@ -859,3 +859,15 @@ HONEST STANDING: power-on is proven pure-HW and identical to the live core; no M
 bit29 is likely status. If the CPCDUMP diff shows no real control-register difference either, the
 coherent-bringup wall is confirmed DSU-internal with no software lever, and the achievable deliverable is
 the producer-offload (worker reads static pre-bringup assets + writes tiles out; both directions proven).
+
+### PRODUCER-OFFLOAD VIABILITY PROBE folded into the diagnostic (2026-08-28)
+Since the coherent-bringup path is looking like a hardware wall, added a test that de-risks the fallback
+(producer-offload) in the SAME flash. cpu0 writes a STATIC value 0x57A70DED to 0x51000024 BEFORE PSCI
+(pre-bringup) and cleans it; the worker reads it MMU-on WITHOUT invalidate (exactly how an offload worker
+reads static, pre-cleaned assets). New log line "BC STATICPROBE: worker read of PRE-bringup static
+0x51000024 = 0x..". Interpretation: 0x57A70DED => the worker CAN read pre-bringup static data even though
+the per-frame canary stays frozen => the producer-offload (worker builds card-strip tiles from static
+assets into fixed DRAM slots, cpu0 reads them via the proven worker->cpu0 direction) is VIABLE with zero
+cross-core coherency. Garbage => even static pre-bringup reads fail and the offload is blocked too.
+The lk_a_snes_bigcore_cpcbit29.img now yields THREE datapoints per flash: BC CANARY (bit29 coherent test),
+BC CPCDUMP (full CPC coherent-vs-live diff), BC STATICPROBE (producer-offload viability).
