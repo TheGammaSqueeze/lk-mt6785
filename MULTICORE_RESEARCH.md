@@ -1300,3 +1300,25 @@ So the pending SPM-unlock flash is still the right viability test via CPU_SPARE_
 a poor channel pick (now understood). Once viability is confirmed on a NON-firmware register, the 23-word
 split channel will use that register family (e.g. stream through CPU_SPARE_CON with a seq handshake, or a
 GICR-based scheme) rather than SW_RSV.
+
+### DEFINITIVE (2026-08-28): worker's ENTIRE read path is frozen - per-frame split DEAD, offload VIABLE
+SPM-unlock flash, decisive via the GICR write-back:
+  BC WRITEBACK: SPM 0x10006250=0x0 (cpu0 write DROPPED even post-unlock), SW_RSV 0x10006600=0x0 (PCM-owned),
+    GICR 0x0c070200=0x813f0002 (cpu0's write LANDED - bit1 SGI#1 set, + 0x813f0000 existing GIC state).
+  BC SGIPROBE=0: the worker reads that SAME GICR register and sees bit1=0.
+=> cpu0's GICR write demonstrably LANDS and PERSISTS, yet the worker's read of it does not reflect it. So
+   the worker's reads are a FROZEN SNAPSHOT of the whole physical address space (DRAM + MMIO) at MMU-enable;
+   cpu0's post-bringup writes to ANY address are invisible to the worker. Only pre-bringup data is readable
+   (STATICPROBE=0x57a70ded confirms). This is the complete, final characterization.
+CONSEQUENCES:
+- There is NO dynamic cpu0->worker channel at LK (DRAM, all MMIO, GIC all frozen for the worker's reads).
+  The per-frame render split (the "60fps at lower power" dream) is IMPOSSIBLE - it needs the ~20 dynamic
+  words per frame and no channel can deliver them. This closes the per-frame split for good.
+- The PRODUCER-OFFLOAD with STATIC-ONLY inputs is the sole viable 2-core model, and it is CONFIRMED: the
+  worker reads static pre-bringup assets (card list, boxart, the home scene @0x50C00000 built pre-bringup)
+  from its frozen snapshot, builds deterministic per-focus card-strip tiles (each tile is fixed given the
+  static card list - no dynamic input needed), writes them out (worker->cpu0, proven), and cpu0 selects the
+  tile for the live focus. Eliminates the ~30ms scroll-rebuild hitch. Modest vs the per-frame dream but
+  real and coherency/channel-free. Constraints remain: memory (N tiles) and the focus-specific L2 skip
+  (build tiles WITHOUT skip_focus + draw the focus decorations live on cpu0, or per-system scoping).
+DECISION: the coherent/dynamic dream is exhausted and closed. The deliverable is the static-input offload.
