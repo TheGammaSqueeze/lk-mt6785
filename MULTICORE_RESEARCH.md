@@ -2082,3 +2082,20 @@ worker independently renders tile[0] into a scratch buffer + publishes its check
 MATCH/MISMATCH vs its own. Proves the worker can execute the render tree (the real risk) WITHOUT the menu
 depending on it. Needs the tee_patched_armcpc.img prereq (bringup). Gate: AYANEO_CARDTILES_WORKER (implies
 BIGCORE_EXPT+CARDTILES). Perf value is modest (one-time ~20ms off cpu0) but it is the stated goal realized.
+
+### ON-DEVICE RESULT: PRODUCER-OFFLOAD TILES ARE SLOWER (2026-08-28) - REVERT
+User flashed lk_a_snes_cardtiles_signed.img: 60fps idle (OVL path unchanged, good) but 30/sub-30 + flicker/
+tearing on MOVEMENT. Root cause (confirmed in snes_render.c): the fast blit NEON path (line 162) is RGB565-ONLY;
+the pack card frames/boxart ARE rgb565, so the original draw_card renders cards via NEON (8px/iter). The
+pre-rendered tiles carry an alpha channel (needed for cache_layer source-over) so they are RGBA8888 -> the blit
+falls to the SCALAR path (~8x slower/pixel). So build_cardcache_tiled is ~slower than build_cardcache, and the
+per-nav strip rebuild misses the vsync window -> 30fps + tearing on held movement.
+DEEPER: even fixing the NEON format would only reach PARITY, not a win - the card render is memory-bandwidth-
+bound (writing ~the same pixels either way); the only thing offloaded was the boxart scale-COMPUTE, which is
+negligible vs the pixel writes. And Phase 2b (worker) cannot help the per-nav rebuild either: that rebuild is
+SYNCHRONOUS (cpu0 needs the strip immediately on a nav), so an async cpu1 can only do the ONE-TIME initial build.
+CONCLUSION: the producer-offload via RGBA tiles does NOT improve menu perf and regresses movement. REVERTED
+(AYANEO_CARDTILES defaults off; ship image lk_a_snes_signed.img is clean). The movement hitch is the inherent
+synchronous per-nav strip rebuild - a separate menu-perf problem, not a multicore one. Honest dead-end for the
+tile offload. If movement smoothness matters, the real levers are: cheaper rebuild (clear only dirty region /
+smaller L2), or a wider strip cache that avoids per-nav rebuilds (needs >2496px L2). Not multicore.
