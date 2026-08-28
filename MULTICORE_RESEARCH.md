@@ -1475,3 +1475,20 @@ NOTE (device hygiene): the adb serial a28c0e0e seen this session is NOT our MT67
 GammaOS/Lineage device); our modules failed to load there (wrong kernel) so nothing ran on it. All live MCSI
 probing must target 0123456789ABCDEF only. The live smcpoke path additionally needs a matching Module.symvers
 (current out-of-tree build has none -> insmod ENOENT); the on-HW LK experiment above sidesteps that entirely.
+
+### TOPOLOGY CONFIRMATION (2026-08-28): cpu0 and the worker are in DIFFERENT clusters -> MCSI is the right layer
+From the SoC's own device tree (mt6785_kernel_source arch/arm64/boot/dts/mediatek/mt6785.dts):
+  cpu0 cpu@000 A55 | cpu1 cpu@001 A55 | cpu2 cpu@002 A55 | cpu3 cpu@003 A55   -> CLUSTER 0 (aff1=0)
+  cpu4 cpu@100 A55 | cpu5 cpu@101 A55 | cpu6 cpu@102 A75 | cpu7 cpu@103 A75   -> CLUSTER 1 (aff1=1)
+cpu0 (the LK boot core) is mpidr 0x000 = CLUSTER 0. The LK worker is brought up at mpidr 0x100 = cpu4 =
+CLUSTER 1. So producer (cpu0) and consumer (worker) sit in TWO DIFFERENT DynamIQ/MCSI clusters, NOT one.
+
+This retires the earlier "single DSU, intra-cluster auto-coherency" assumption that made the wall look
+intractable. Cross-CLUSTER coherency on MTK is mediated by MCSI: each cluster is its own coherent ACE slave
+interface whose SNOOP_EN/DVM_EN must be set for that cluster to participate. During LK only cpu0 (cluster 0)
+ever runs, so cluster 1 sat fully powered-off and its MCSI slave iface still has SNOOP_EN=0 (cleared by its
+last cci_disable_cluster_coherency at power-off). ATF-at-LK powers cpu4 (rail/SPMC ack bit31 set, as measured)
+but does not run cci_enable_cluster_coherency for cluster 1 -> the worker is powered but snoop-unadmitted, so
+its loads bypass cluster 0's dirty lines exactly as observed. The staged AYANEO_BC_MCSI / _FIX images test and
+(candidate) fix precisely this. Bonus: cpu4 is an A55, same core type as cpu0, so no big/little ISA surprises
+for the render-split code. Confidence in the MCSI root-cause is now high; awaiting the diagnostic UART dump.
