@@ -401,6 +401,17 @@ void bigcore_start(void)
 		g_bc_seen = (bc->magic == BC_MAGIC) ? bc->counter : 0;
 		_dprintf("BC: after PSCI magic=0x%x cached_ok=0x%x counter=%u\n",
 			 bc->magic, bc->cached_ok, bc->counter);
+		{	/* Per-CPU SPMC handshake-complete probe. SPM+0x160 (g_bc_pwrstat) is only
+			 * the aggregate RAIL-power status; the coherent ATF/kernel path completes on
+			 * the PER-CPU SPM_CPU_PWR_CON(cpu) bit31 (MP0_SPMC_PWR_ON_ACK) and the
+			 * CPC_SPMC_ST per-cpu bit. If bit31 is 0 here, the SPMC snoop-admission
+			 * handshake never finished -> powered but non-coherent, even though the rail
+			 * ack (0x160) set. This distinguishes "wrong ack polled" from "SSPM mandatory". */
+			unsigned pcon = rd32(SPM_CPU_PWR_CON(1));
+			unsigned spmcst = rd32(MCUCFG_CPC_SPMC_ST);
+			_dprintf("BC ACKPROBE cpu1: SPM_CPU_PWR_CON(1)=0x%x PWR_ON_ACK_b31=%u ; CPC_SPMC_ST=0x%x bit1=%u ; railstat0x160=0x%x\n",
+				 pcon, (pcon >> 31) & 1u, spmcst, (spmcst >> 1) & 1u, rd32(SPM_CPU_PWR_STATUS));
+		}
 	}
 	g_bc_pwrstat = rd32(SPM_CPU_PWR_STATUS);
 #endif
