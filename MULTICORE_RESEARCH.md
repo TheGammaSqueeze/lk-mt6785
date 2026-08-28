@@ -1403,3 +1403,37 @@ compatible win for this menu. RECOMMENDATION: BANK. The dynamic 60fps-lower-powe
 the salvageable static offload is marginal AND cannot meet the bit-exact standard the rest of the menu holds.
 The full toolchain (tools/live_regpoke, band-split code, state-pack, host harness) is preserved so a future
 non-exact "good enough" attempt is a small step, not a restart. Clean single-core build stands as shipping.
+
+### BREAKTHROUGH LEAD (2026-08-28): MCSI (Mediatek Cache Snoop Interconnect) + secure-write-protect
+Re-examined the kernel (/work/mt6785_kernel_source) for the DSU late-join snoop hypothesis. Two findings:
+
+1. mcusys/mcucfg registers are SECURE-WRITE-PROTECTED. drivers/misc/mediatek/include/mt-plat/mtk_secure_api.h
+   defines CONFIG_MCUSYS_WRITE_PROTECT and routes ALL mcusys writes through ATF via SMC
+   MTK_SIP_KERNEL_MCUSYS_WRITE (0x82000287). CONSEQUENCE: the earlier plan to hotplug-diff mcucfg(0x0c530000)
+   with a raw ioremap+readl is FLAWED - a NS-EL1 read of a secure mcusys reg returns 0 (read-protect), which
+   is exactly the "SPM 0x768 phantom 0x0" pattern we already hit. The diff must go through the ATF READ SMC.
+   It also means LK at NS-EL1 (AArch32) CANNOT poke a DSU/snoop reg in mcusys directly; it must call an ATF SIP.
+
+2. MCSI is the snoop interconnect and has dedicated secure SMC accessors (same header):
+   - MTK_SIP_KERNEL_MCSI_A_WRITE   = 0x82000289  (phys addr write)
+   - MTK_SIP_KERNEL_MCSI_A_READ    = 0x8200028A  (phys addr read; returns value in r0)
+   - MTK_SIP_KERNEL_MCSI_NS_ACCESS = 0x8200028B  (sub: 0=read,1=write,2=set_bitmask,3=clr_bitmask, by offset)
+   - MTK_SIP_KERNEL_CACHE_FLUSH_BY_SF = 0x82000283  (flush caches BY SNOOP FILTER - proves a walkable SF exists)
+   - MTK_SIP_KERNEL_L2_SHARING     = 0x82000286
+   The MCSI REGISTER MAP is NOT in kernel source (no mcsi_reg_read callers compiled for mt6785) - MCSI is
+   managed entirely in ATF/BL31 firmware. So the per-core snoop-admission bit lives in ATF, invisible here,
+   but is READ/WRITE-reachable from NS via the SMCs above IF our ATF-at-LK implements those SIP handlers.
+
+WHY THIS FITS THE SYMPTOM: a late-joined core that ATF powered but did NOT admit into the MCSI snoop filter
+would have its LOADS bypass cpu0's dirty cache lines (read stale) while its coherent STORES still drain to the
+domain - the exact asymmetry observed (worker stores seen by cpu0; cpu0 stores unseen by worker).
+
+NEXT EXPERIMENTS (both now concretely buildable; LK already has mt_secure_call_all() for arbitrary SMCs):
+ - LIVE (needs device): kernel module that calls mt_secure_call(MCSI_A_READ=0x8200028A, off) to DUMP the MCSI
+   register file with the worker core hotplug-OFFLINE vs ONLINE. The bit(s) that toggle = the snoop-admission
+   control. This is the CORRECT (secure) version of the mcucfg hotplug-diff (raw readl reads 0).
+ - LK ON-HW (this cycle): AYANEO_BC_MCSI build - after PSCI CPU_ON, cpu0 issues MCSI_A_READ over a sweep of
+   offsets and CACHE_FLUSH_BY_SF, logging every SMC return to UART. Tells us (1) whether ATF-at-LK exposes the
+   MCSI SIPs at all, and (2) the live MCSI snoop-filter state at LK time. If the worker shows as not-admitted,
+   MCSI_A_WRITE/set_bitmask to admit it becomes the candidate fix. Diagnostic-first, read-only + benign flush,
+   low risk (user away). SMC32 IDs used directly (LK is AArch32, AARCH bit = 0).
