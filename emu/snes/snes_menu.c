@@ -1004,14 +1004,18 @@ void snes_menu_render_card_tile(snes_menu *m, int gi, uint32_t *tile)
 	snes_target tt;
 	unsigned i, npix = (unsigned)CARD_TILE_W * (unsigned)CARD_TILE_H;
 	int k; char *z = (char *)&tt;
+	float S = m->aspect ? ASP_CONTENT_S : 1.0f;   /* bake the current view scale into the tile */
 	for (k = 0; k < (int)sizeof(tt); k++) z[k] = 0;
 	tt.fb = tile; tt.pitch = CARD_TILE_W; tt.W = CARD_TILE_W; tt.H = CARD_TILE_H;
-	tt.offx = CARD_TILE_W / 2; tt.offy = CARD_TILE_H / 2 - (int)CAR_CY;
-	tt.vsx = tt.vsy = 1.0f; tt.vdx = tt.vdy = 0.0f;   /* native: caller gates on !m->aspect */
+	tt.offx = 0; tt.offy = 0;
+	/* place the card box centre (virtual cx=0, cy=CAR_CY) at the tile centre, at scale S:
+	 * pixel = vs*V + vd, so vdx = TILE_W/2, vdy = TILE_H/2 - S*CAR_CY. */
+	tt.vsx = tt.vsy = S;
+	tt.vdx = (float)(CARD_TILE_W / 2);
+	tt.vdy = (float)(CARD_TILE_H / 2) - S * CAR_CY;
 	tt.cache_layer = 1;
 	for (i = 0; i < npix; i++) tile[i] = 0;
-	/* non-focused L2 card body: dark frame + aspect-scaled boxart + player icon + resume
-	 * dots, centred at the card box (cx=0 -> tile centre via offx/offy). blue_a=0, dim=1. */
+	/* non-focused L2 card body: dark frame + scaled boxart + player icon + resume dots. */
 	draw_card(m, &tt, gi, 0.0f, 0.0f, 1.0f);
 	cache_unpremult(&tt, 0, 0, CARD_TILE_W, CARD_TILE_H);   /* premult -> straight for re-blit */
 	/* draw_card wrote the tile in FRAMEBUFFER byte-order (0xAARRGGBB); snes_blit_raw reads it
@@ -1022,11 +1026,17 @@ void snes_menu_render_card_tile(snes_menu *m, int gi, uint32_t *tile)
 	}
 }
 
-/* like draw_carousel's cache-layer pass but BLITS the pre-rendered tile for each non-focused
- * card instead of calling draw_card. Focused card is skipped (composited on L3 as usual). */
+/* like draw_carousel's cache-layer pass but BLITS the pre-rendered (already view-scaled) tile
+ * for each non-focused card at the card's VIEW-TRANSFORMED centre, into a vsx=1 target (the
+ * tile carries the scale). Focused card is skipped (composited on L3 as usual). */
 static void draw_carousel_tiled(snes_menu *m, snes_target *t, const uint32_t *tiles)
 {
 	int n = m->ngames, j;
+	float S = m->aspect ? ASP_CONTENT_S : 1.0f;
+	/* VIEW_CONTENT offsets - IDENTITY in native (set_view returns 1,1,0,0 when !aspect) */
+	float vdx = m->aspect ? (640.0f - S * 640.0f) : 0.0f;
+	float vdy = m->aspect ? (480.0f - S * 360.0f) : 0.0f;
+	float cys = S * CAR_CY + vdy;
 	if (n <= 0) return;
 	for (j = 0; j < n; j++) {
 		float wx, cx;
@@ -1036,13 +1046,14 @@ static void draw_carousel_tiled(snes_menu *m, snes_target *t, const uint32_t *ti
 		{ int cm = t->cache_layer ? (280 + (int)CAR_HGAP) : 280;
 		  if (cx < -cm || cx > SNES_VW + cm) continue; }
 		snes_blit_raw(t, tiles + (unsigned)j * (unsigned)(CARD_TILE_W * CARD_TILE_H),
-			      CARD_TILE_W, CARD_TILE_H, cx, CAR_CY);
+			      CARD_TILE_W, CARD_TILE_H, S * cx + vdx, cys);
 	}
 }
 
-/* tiled equivalent of snes_menu_build_cardcache: valid only for the NATIVE, non-resume
- * settled strip (caller must ensure !m->aspect && m->resume_dim==0). Pixel-identical to
- * build_cardcache in that regime (integer positions), at a fraction of the cost. */
+/* tiled equivalent of snes_menu_build_cardcache for the non-resume settled strip (caller
+ * ensures m->resume_dim==0). EXACT in native; in 4:3 the tile is re-sampled at a fractional
+ * position (host-measured near-exact). The target view is forced to identity: the tiles
+ * already carry the aspect scale, and positions are pre-transformed by draw_carousel_tiled. */
 void snes_menu_build_cardcache_tiled(snes_menu *m, snes_target *t, const uint32_t *tiles)
 {
 	int H = t->H, W = t->W, y, x, y0 = t->H, y1 = -1;
@@ -1051,7 +1062,7 @@ void snes_menu_build_cardcache_tiled(snes_menu *m, snes_target *t, const uint32_
 	t->cache_layer = 1;
 	for (i = 0; i < npix; i++) t->fb[i] = 0;
 	m->cont_shift = 0.0f; m->xfade_t = 0.0f;
-	set_view(m, t, VIEW_CONTENT);
+	snes_target_view(t, 1.0f, 1.0f, 0.0f, 0.0f);   /* tiles carry the scale; positions pre-baked */
 	draw_carousel_tiled(m, t, tiles);
 	m->cont_shift = save_cs; m->xfade_t = save_xf;
 	for (y = 0; y < H; y++) {

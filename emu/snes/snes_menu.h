@@ -200,8 +200,8 @@ void snes_menu_build_cardcache_band(snes_menu *m, snes_target *t, int r0, int r1
  * RGBA. The worker fills tiles[gi*CARD_TILE_W*CARD_TILE_H] from static pack data at boot;
  * snes_menu_build_cardcache_tiled blits them instead of re-rendering (NATIVE, non-resume
  * regime only - pixel-identical to build_cardcache there). See PRODUCER_OFFLOAD.md. */
-#define CARD_TILE_W 300
-#define CARD_TILE_H 340
+#define CARD_TILE_W 320
+#define CARD_TILE_H 360
 void snes_menu_render_card_tile(snes_menu *m, int gi, uint32_t *tile);
 void snes_menu_build_cardcache_tiled(snes_menu *m, snes_target *t, const uint32_t *tiles);
 void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t, int full_clear);

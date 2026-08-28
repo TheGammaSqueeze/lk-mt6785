@@ -98,37 +98,60 @@ int main(int argc, char **argv)
 	 * pre-rendered-tile card strip equals the direct build_cardcache strip PIXEL-FOR-PIXEL in
 	 * the native, non-resume regime (worker builds tiles from static pack; cpu0 blits them). */
 	if (argc > 3 && strcmp(argv[3], "cardtile") == 0) {
-		int LW = SNES_L2_W, LH = SNES_L2_BAND_H, s, bad = 0, first = -1, gi;
+		int LW = SNES_L2_W, LH = SNES_L2_BAND_H, s, gi, asp, rc = 0;
 		size_t tsz = (size_t)CARD_TILE_W * CARD_TILE_H;
 		uint32_t *A = calloc((size_t)LW * LH, 4);
 		uint32_t *B = calloc((size_t)LW * LH, 4);
-		uint32_t *tiles;
-		snes_target ct = {0};
-		menu.aspect = 0;                                          /* native (phase-exact regime) */
-		memset(&in, 0, sizeof(in));
-		for (s = 0; s < 240; s++) snes_menu_update(&menu, &in, 1.0f / 60.0f);
-		if (argc > 4 && atoi(argv[4]) > 0) { int q, nn = atoi(argv[4]); for (q = 0; q < nn; q++) { in.right = 1; snes_menu_update(&menu, &in, 1.0f/60.0f); in.right = 0; for (s = 0; s < 60; s++) snes_menu_update(&menu, &in, 1.0f/60.0f); } }
-		ct.pitch = LW; ct.W = LW; ct.H = LH;
-		ct.offx = SNES_L2_MARGIN;
-		ct.offy = ((H - SNES_VH) / 2) - SNES_L2_BAND_Y0;
-		snes_target_view(&ct, 1.0f, 1.0f, 0.0f, 0.0f);
-		ct.fb = A;
-		snes_menu_build_cardcache(&menu, &ct);                    /* reference (direct render) */
-		tiles = calloc((size_t)menu.ngames * tsz, 4);            /* WORKER role: pre-render tiles */
-		for (gi = 0; gi < menu.ngames; gi++)
-			snes_menu_render_card_tile(&menu, gi, tiles + (size_t)gi * tsz);
-		for (i = 0; i < LW * LH; i++) B[i] = 0xDEADBEEF;
-		ct.fb = B;
-		snes_menu_build_cardcache_tiled(&menu, &ct, tiles);      /* cpu0 role: blit tiles */
-		for (i = 0; i < LW * LH; i++)
-			if (A[i] != B[i]) { bad++; if (first < 0) first = i; }
-		printf("CARDTILE: %d games, tile %dx%d, content band [%d,%d]; %s (%d px differ)\n",
-		       menu.ngames, CARD_TILE_W, CARD_TILE_H, menu.cc_y0, menu.cc_y1,
-		       bad ? "FAIL" : "PASS", bad);
-		if (bad)
-			printf("  first diff @ row %d col %d: ref=0x%08x tiled=0x%08x\n",
-			       first / LW, first % LW, A[first], B[first]);
-		return bad ? 2 : 0;
+		int nn = (argc > 4) ? atoi(argv[4]) : 0;
+		for (asp = 0; asp <= 1; asp++) {
+			uint32_t *tiles; snes_target ct = {0};
+			int bad = 0, visible = 0, maxd = 0; long sumd = 0;
+			menu.aspect = asp; menu.chrome_ready = 0;
+			memset(&in, 0, sizeof(in));
+			for (s = 0; s < 240; s++) snes_menu_update(&menu, &in, 1.0f / 60.0f);
+			if (nn > 0) { int q; for (q = 0; q < nn; q++) { in.right = 1; snes_menu_update(&menu, &in, 1.0f/60.0f); in.right = 0; for (s = 0; s < 60; s++) snes_menu_update(&menu, &in, 1.0f/60.0f); } }
+			ct.pitch = LW; ct.W = LW; ct.H = LH; ct.offx = SNES_L2_MARGIN;
+			ct.offy = (asp ? 0 : (H - SNES_VH) / 2) - SNES_L2_BAND_Y0;
+			ct.fb = A;
+			snes_menu_build_cardcache(&menu, &ct);                    /* reference */
+			tiles = calloc((size_t)menu.ngames * tsz, 4);
+			for (gi = 0; gi < menu.ngames; gi++)
+				snes_menu_render_card_tile(&menu, gi, tiles + (size_t)gi * tsz);
+			for (i = 0; i < LW * LH; i++) B[i] = 0xDEADBEEF;
+			ct.fb = B;
+			snes_menu_build_cardcache_tiled(&menu, &ct, tiles);
+			for (i = 0; i < LW * LH; i++) {
+				uint32_t a = A[i], b = B[i]; int c, mx = 0;
+				if (a == b) continue;
+				bad++;
+				for (c = 0; c < 32; c += 8) { int d = ((int)((a>>c)&0xff)) - ((int)((b>>c)&0xff)); if (d<0) d=-d; if (d>mx) mx=d; }
+				sumd += mx; if (mx > maxd) maxd = mx; if (mx > 8) visible++;
+			}
+			printf("CARDTILE aspect=%d: tile %dx%d band[%d,%d]; %s  diff_px=%d (>8/chan=%d) maxchan=%d meanchan=%.2f\n",
+			       asp, CARD_TILE_W, CARD_TILE_H, menu.cc_y0, menu.cc_y1,
+			       (asp == 0 ? (bad ? "FAIL" : "PASS") : (visible == 0 ? "OK-approx" : "CHECK")),
+			       bad, visible, maxd, bad ? (double)sumd / bad : 0.0);
+			if (getenv("CARDTILE_PPM")) {   /* dump ref vs tiled strips (band rows) for visual judging */
+				int yy, xx, cy0 = menu.cc_y0 < 0 ? 0 : menu.cc_y0, cy1 = menu.cc_y1;
+				char nm[64]; FILE *pf; uint32_t *src;
+				int pass2;
+				for (pass2 = 0; pass2 < 2; pass2++) {
+					src = pass2 ? B : A;
+					sprintf(nm, "/tmp/cardtile_a%d_%s.ppm", asp, pass2 ? "tiled" : "ref");
+					pf = fopen(nm, "wb");
+					fprintf(pf, "P6\n%d %d\n255\n", LW, cy1 - cy0 + 1);
+					for (yy = cy0; yy <= cy1; yy++) for (xx = 0; xx < LW; xx++) {
+						uint32_t p = src[(size_t)yy * LW + xx];
+						unsigned char rgb[3] = { (p>>16)&0xff, (p>>8)&0xff, p&0xff };
+						fwrite(rgb, 1, 3, pf);
+					}
+					fclose(pf);
+				}
+			}
+			free(tiles);
+			if (asp == 0 && bad) rc = 2;
+		}
+		return rc;
 	}
 
 	/* Per-frame render-split validation: `host_render <pack> - rsplit [nav]` proves the

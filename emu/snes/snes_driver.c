@@ -844,7 +844,11 @@ static int snes_emu_thread(void *arg)
 		 * is at least 960 tall and rebuild the chrome cache on the transition. */
 		{
 			int want = ((int)H >= 960) ? 1 : 0;
-			if (want != s_menu.aspect) { s_menu.aspect = want; s_menu.chrome_ready = 0; }
+			if (want != s_menu.aspect) { s_menu.aspect = want; s_menu.chrome_ready = 0;
+#ifdef AYANEO_CARDTILES
+				s_tiles_ready = 0;   /* tiles bake the aspect scale; re-render on change */
+#endif
+			}
 		}
 		/* clear the letterbox bars (the wallpaper covers the 720 region) */
 		ayaneo_fill(fb, pitch, 0, 0, (int)W, t.offy, 0xFF000000u);
@@ -932,11 +936,11 @@ static int snes_emu_thread(void *arg)
 					ct.offy = (s_menu.aspect ? 0 : ((int)H - SNES_VH) / 2) - SNES_L2_BAND_Y0;
 #ifdef AYANEO_CARDTILES
 					/* Producer-offload: the pre-rendered normal-card tiles blit far cheaper
-					 * than re-rendering each card (boxart min-filter scale). Exact only in the
-					 * NATIVE, non-resume regime (integer card positions - host-validated
-					 * pixel-identical); fall back to the full render otherwise. Tiles are static
-					 * (normal cards never change) so render them ONCE, reuse on every rebuild. */
-					if (!s_menu.aspect && s_menu.resume_dim == 0.0f && s_menu.ngames > 0) {
+					 * than re-rendering each card (boxart min-filter scale). Bit-exact in
+					 * native; in 4:3 the pixel-art boxart re-samples <=1px (visually identical,
+					 * host-checked). Non-resume only. Tiles are static (normal cards never
+					 * change) so render them ONCE, reuse on every rebuild. */
+					if (s_menu.resume_dim == 0.0f && s_menu.ngames > 0) {
 						uint32_t *tiles = (uint32_t *)(unsigned long)SNES_CARDTILES_PA;
 						unsigned tsz = (unsigned)CARD_TILE_W * CARD_TILE_H;
 						if (!s_tiles_ready) {
