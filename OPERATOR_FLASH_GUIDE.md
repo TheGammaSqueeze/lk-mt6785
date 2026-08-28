@@ -1,50 +1,72 @@
 # Operator flash guide (multicore-at-LK research)
 
-The autonomous non-flash investigation is complete. The coherent-bringup path is an exhaustively
-characterized DSU hardware wall; the remaining questions need ONE flash. All older diagnostic images are
-superseded by a single comprehensive one.
+The offline investigation is complete and points to a SPECIFIC, FIXABLE root cause with a candidate fix
+already built. This supersedes the older "DSU hardware wall / CPC bit29 / warmcycle" guide (that framing was
+retired once the real mechanism was found). Full reasoning: MULTICORE_RESEARCH.md.
 
-## Flash order (two images cover everything; prereq applies to both)
+## The one-paragraph why
 
-Prereq (once): `tee_patched_armcpc.img` on the `tee` partition (arms the CPC so PSCI CPU_ON completes).
+cpu0 (the LK boot core) is mpidr 0x000 = CLUSTER 0. The worker is brought up at mpidr 0x100 = cpu4 =
+CLUSTER 1. MT6785 is a TWO-cluster DynamIQ SoC; the clusters are kept coherent by MCSI (Mediatek Cache Snoop
+Interconnect). MCSI cross-cluster coherency is enabled in ATF's PSCI on_finish ONLY when it believes the
+cluster transitioned from OFF, and is normally SSPM/MCUPM-driven. At LK there is no SSPM runtime and LK's PSCI
+is minimal, so cluster 1's MCSI snoop-enable is SKIPPED: the worker is powered (SPM ack bit31 set) but NOT
+admitted to the snoop domain, so its loads miss cpu0's dirty lines while its stores still drain. Every other
+candidate (SPM/CPC power regs, CPUECTLR, AArch32, cache set/way, SSPM/MCUPM firmware, EMI MPU) has been ruled
+out. The fix: from LK, cpu0 sets SNOOP_EN|DVM_EN on cluster 1's MCSI slave interface via the ATF SIP
+MCSI_NS_ACCESS (SMC 0x8200028B). This is reachable, ABI-verified, and matches ATF's cci_enable_cluster_coherency.
 
-FLASH 1 (primary, decides most): `lk_a_snes_bigcore_cpcbit29.img` -> 4 datapoints (below).
-FLASH 2 (only if FLASH 1's canary stays frozen): `lk_a_snes_bigcore_warmcycle.img` -> the last
-  coherent-path mechanism (warm PSCI power-cycle of the worker). Look for two lines:
-    `BC WARMCYCLE: cpu1 powered off after N us ...`  (if N=1000000 / timeout, PSCI CPU_OFF does not work
-       at LK and the test is inconclusive; otherwise the warm re-join happened)
-    `BC CANARY ... worker-read=0x...`  (0xCA5A => the warm cycle established coherency = the win)
-(The separate `dvm` image is an optional third long-shot.)
+## Prereq (once)
 
-For FLASH 1, boot into the SNES menu, capture UART, and paste these lines back:
+`tee_patched_armcpc.img` on the `tee` partition (arms the CPC so PSCI CPU_ON completes; without it LK skips the
+worker bringup and is safe on stock too).
 
-1. `BC CANARY (non-comms 0x51000000): cpu0->worker worker-read=0x...`
-   - `0xCA5Axxxx` => CPC_FLOW bit29 fixed coherency! (unlikely, but if so the whole 2-core split unlocks)
-   - `0xa86dbdec` => still frozen (expected); go to the CPCDUMP diff.
+## Flash order (two images; both keep the shipping menu behind a flag)
 
-2. `BC CPCDUMP 0x0c53a??? = 0x...` (several lines)
-   - I diff these against the live coherent reference (tools/live_regpoke/live_cpc_reference.txt). Any CPC
-     register that differs coherent-vs-LK beyond bit29 is a fresh coherency-fix candidate.
+FLASH 1 - DIAGNOSIS: `lk_a_snes_mcsi_signed.img`
+  Read-only. Confirms the mechanism and that the ATF SIP layer exists. Boot into the SNES menu, capture UART.
 
-3. `BC STATICPROBE: worker read of PRE-bringup static 0x51000024 = 0x...`
-   - `0x57A70DED` => the worker CAN read static pre-cleaned data => the producer-offload fallback is
-     VIABLE (worker builds card tiles from static assets, cpu0 reads them via the proven worker->cpu0
-     direction; no cross-core coherency needed).
-   - garbage => the offload is blocked too; the worker can only use data it wrote itself.
+FLASH 2 - FIX:       `lk_a_snes_mcsifix_signed.img`
+  Same diagnosis, then ADMITS the worker cluster (SNOOP_EN|DVM_EN, with SNP_PENDING drain) + a DVM/TLBI lever,
+  then re-checks coherency, then the per-frame 2-core split runs and self-reports.
 
-## What I do with the results
+RESTORE anytime: `lk_a_snes_signed.img` (clean single-core shipping menu).
 
-- CANARY flips or CPCDUMP shows a real coherency-control difference -> wire the already-host-validated
-  2-core render + cardcache splits (the real "60fps at lower power" win).
-- Only STATICPROBE is green -> if you want it, I implement the low-risk producer-offload (per-system
-  per-focus card tiles; removes the ~30ms scroll-rebuild hitch). Note: this is a real feature build with
-  some visual-correctness care (the L2 card cache is focus-specific), so it is your call, not automatic.
-- Nothing green -> multicore-at-LK is a hardware wall for this workload; restore the clean single-core
-  build (lk_a_snes_signed.img) and close the effort. The whole investigation is in MULTICORE_RESEARCH.md.
+## UART decision tree (paste these lines back)
+
+1. SIP liveness:
+   `BC MCSI MCUSYS_ACCESS_COUNT ret=0x...`
+     - ret = 0xffffffff (SIP_SVC_E_NOT_SUPPORTED = -1)  => our tee.img has NO MTK SIP layer; the SMC path is
+       unavailable. Fall to the contingency: an ATF-side cci_enable patch (MCSI base 0x0c510000). Stop here.
+     - ret = a count / 0                                 => SIP layer live; the MCSI reads below are valid.
+
+2. Snoop state (the smoking gun), from FLASH 1 or 2:
+   `BC MCSI SLV<n> SNOOP_CTRL(0x1n00)=0x... SNOOP_EN=? DVM_EN=? SNP_SUP=? DVM_SUP=?`  (8 lines)
+     - EXPECT: cpu0's cluster iface shows SNOOP_EN=1; the worker cluster iface shows SNP_SUP=1, SNOOP_EN=0.
+       That difference CONFIRMS snoop-admission is the wall.
+     - If ALL snoop-capable ifaces already show SNOOP_EN=1 => MCSI is NOT the wall; pivot (see log tail).
+
+3. Fix took (FLASH 2 only):
+   `BC MCSI FIX: SLV<n> after set SNOOP_CTRL=0x... SNOOP_EN=1 DVM_EN=1 (settled in N us)`
+
+4. Coherency verdict (FLASH 2):
+   `BC MCSI post: w_can1=0x... w_menuw0=0x... w_static_can=0x...`
+     - flips to real values / 0xCA5A  => the worker now reads cpu0's data = COHERENT = wall broken.
+   `BC MCSI post-DVM(TLBIALLIS): ...`
+     - if it flips only HERE (not after the MCSI set) => the wall was DVM-sync, not admission.
+
+5. The payoff, in the running menu (FLASH 2):
+   `... full split channel LIVE`  => the 2-core render split is genuinely live (the 60fps-lower-power goal).
+   `... mismatch/frozen`          => fix insufficient; capture all of the above and I will iterate.
+
+## What to paste back
+
+The MCUSYS_ACCESS_COUNT line, all 8 `BC MCSI SLV<n>` lines, the `BC MCSI FIX` lines, both `BC MCSI post` /
+`post-DVM` lines, and whether the menu logged `full split channel LIVE`. That fully determines the next step.
 
 ## Notes
-- The EXPT builds intentionally run the menu slower (fork/join + fallback spin every frame). The clean
-  release build lk_a_snes_signed.img is unaffected; reflash it to get the normal menu back.
-- Live register-poke module + build steps: tools/live_regpoke/README.md.
-- Other staged images (probe/nonshare/mmuoff/ackprobe/dvm) are superseded; ignore them. The dvm image is
-  the only separate experiment worth a second flash IF you want to try the DVM-broadcast long shot.
+- The EXPT builds intentionally add the bringup + per-frame fork/join; the clean release `lk_a_snes_signed.img`
+  is unaffected, reflash it for the normal menu.
+- Live register-poke / secure-SMC tooling + build steps: tools/live_regpoke/ (regpoke.ko, smcpoke.ko,
+  run_mcsi_diff.sh). MCSI reference source: tools/mcsi_ref/ (ARM ATF mt8183 mcsi.c/.h).
+- Older staged images (probe/nonshare/mmuoff/ackprobe/cpcbit29/warmcycle/sgi) are superseded; ignore them.

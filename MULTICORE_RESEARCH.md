@@ -1645,3 +1645,12 @@ is unavailable and we fall to the ATF-patch contingency (cci_enable at MCSI base
 a real SNOOP_CTRL value (SNP_SUPPORT/SNOOP_EN bits sane) means the SIP is live and the diagnosis/fix are valid.
 Nothing left to verify offline: mechanism isolated (MCSI cross-cluster snoop-admission), fix correct-by-ABI and
 ATF-faithful (SNP_PENDING drained), 2-core split wired with fallback, all alternatives refuted. Verdict = flash.
+
+### OPERATOR GUIDE REWRITTEN (2026-08-28): now reflects the MCSI diagnosis/fix, old guide was misleading
+Rewrote OPERATOR_FLASH_GUIDE.md - it still described the retired "DSU hardware wall / CPC bit29 / warmcycle"
+framing and pointed at superseded images. New guide: the one-paragraph why (cpu0=cluster0, worker=cluster1,
+MCSI cross-cluster snoop-enable skipped at LK), prereq (tee_patched_armcpc.img), FLASH 1 diagnostic
+(lk_a_snes_mcsi_signed.img) then FLASH 2 fix (lk_a_snes_mcsifix_signed.img), restore (lk_a_snes_signed.img),
+and a full UART decision tree (SIP liveness via MCUSYS_ACCESS_COUNT, the 8 SLV SNOOP_EN lines, the FIX settle
+line, the post/post-DVM canary flip, and the "full split channel LIVE" payoff), with the -1=SIP-absent branch
+to the ATF-patch contingency. This is what the user reads first on waking; it now routes them correctly.
