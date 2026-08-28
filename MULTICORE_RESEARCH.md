@@ -730,3 +730,28 @@ is the one coherency-fabric interaction not yet tried, and cheap. If it fails to
 that coherent snoop-input for a manually-woken core at LK requires the SSPM CPU-power service to be running
 (which it is not at LK), and that is the fundamental wall - the offload must then use only the proven
 directions (worker reads static pre-bringup data + worker->cpu0 writes).
+
+### MECHANISM PINNED (2026-08-28): CPC-arm bypass skips the DSU coherency P-Channel
+Three independent sources converge:
+1. ARM DynamIQ DSU TRM (web): the DSU enables/disables coherency with the interconnect AUTOMATICALLY
+   during core power up/down "without software intervention", via the power-controller P-Channel. A
+   properly-powered core is auto-coherent; there is no software snoop-enable (matches our MMIO sweep).
+2. MTK MCSI snoop-filter code (mt8183 mcsi.c: cci_init_sf / cci_enable_cluster_coherency / per-slave-
+   interface config) shows the lineage concept, but on mt6785/DSU that is absorbed into the DSU (only
+   MCSI_DCM clock bits remain), i.e. handled by the P-Channel, not software.
+3. mt6785 SSPM MCDI mailbox is idle power-off coordination only (no bringup/coherency slot).
+=> The coherent-bringup chain is: ATF PSCI CPU_ON -> SPMC power request (SSPM_ALL_PWR_CTRL_EN) -> SSPM
+   services it -> SPMC drives the DSU P-Channel -> DSU auto-enables coherency for the core. At LK, SSPM
+   does NOT service the request (a plain PSCI CPU_ON HANGS - no ack), so we use the CPC-arm bypass, which
+   makes the CPC hardware power the core + set PWR_ON_ACK, but WITHOUT the SSPM-driven SPMC->DSU P-Channel
+   coherency handshake. Result: identical power registers, but the DSU never auto-joined the core to
+   coherency -> writes drain out (seen by cpu0) but the core never receives snoops (frozen reads). This
+   is exactly consistent with every probe.
+
+CONSEQUENCE: the fix requires the DSU coherency P-Channel to fire for the core, which only the full
+SSPM-serviced SPMC sequence does. No MMIO/firmware lever at LK triggers it (verified). Two theoretical
+paths remain, both needing a flash and both hard: (1) get SSPM to service SPMC CPU-power at LK so a plain
+PSCI CPU_ON completes the P-Channel (requires starting SSPM's CPU-power service, which is NOT the MCDI
+idle mailbox and may not be reachable/loaded at LK); (2) the staged DVM lever (lk_a_snes_bigcore_dvm.img)
+- a long shot that DVM traffic nudges the DSU to include the core. If both fail, the wall is fundamental
+for a manually-woken LK core, and the win is the producer-offload using only proven directions.
