@@ -700,3 +700,33 @@ power handshake), not an MMIO register write. Our LK core completes that handsha
 frozen-read is NOT a missing register write of any kind. The cause is DSU-internal late-join state or a
 memory-path effect, not software-visible via MMIO. Next: SSPM/MCUPM firmware RE (does it do a post-power
 L3/snoop-filter sync a late core needs) and the cpu0-side DVM/TLBI-ISH broadcast LK experiment.
+
+### RIGOROUS ELIMINATION + DVM LEVER (2026-08-28, continuous adb session)
+The entire hypothesis space is now empirically eliminated:
+- POWER: PWR_ON_ACK(bit31) SET at LK, MP0_CPU1_PWR_CON=0x80000005 IDENTICAL to the live coherent core.
+- MMIO SNOOP REGISTER: hotplug-diffed SPM(0x10006200), CPC(0x0c53a700), mcucci(0x0c510000),
+  mcucfg(0x0c530000) on the live device - only power-gating/counter bits change; NO snoop-admission reg.
+- CACHE INIT: git history (17247f4 add, a9434f0 remove) shows a CORRECT DCISW-by-CCSIDR-geometry invalidate
+  before cache-enable was present through multiple failing runs; removing it did not fix it either. Both
+  directions frozen. Cache-init is not the cause.
+- AArch32: cpu0/LK is itself AArch32 (has DACR) and coherent, so execution state is not the wall.
+- SHAREABILITY/ATTR: Device, WB-inner-shareable, WB-non-shareable all frozen.
+- FIRMWARE MAILBOX: mt6785 SSPM MCDI mailbox (MCDI_MBOX slot map) is pure idle power-off coordination
+  (CLUSTER_CAN_POWER_OFF/ATF_ACTION_DONE/AVAIL_CPU_MASK) - no L3/coherency/snoop slot. mt8192 MCUPM
+  L3_CACHE_MODE is a different-gen mechanism (its mbox at 0x0c55fce0 reads 0xdeaddead = unmapped on mt6785).
+- 0xa86dbdec is WORKER-GENERATED (live read of 0x51000000/0x54000000 = 0, normal DRAM), not a decode artifact.
+
+CONVERGED MECHANISM: the worker's WRITES reach shared DRAM (cpu0 reads them; worker->cpu0 canary works) and
+it reads back its OWN writes, but it NEVER observes cpu0's writes even after DC IVAC. That is a core that is
+powered + PWR_ON_ACK'd but is NOT RECEIVING SNOOPS (snoop-input side of DSU not wired). The SSPM-controlled
+kernel bringup establishes this; our CPC-arm + PSCI path completes PWR_ON_ACK with identical registers but
+apparently leaves the snoop-input unwired. No MMIO/firmware/cache lever closes it.
+
+LAST UNTRIED MECHANISM (staged): lk_a_snes_bigcore_dvm.img - cpu0 issues TLBIALLIS (Inner-Shareable) + DSB
+ISH after publishing the canary, forcing a DVM Sync round-trip across the inner-shareable domain. If a DVM
+transaction is what finally wires the late core's snoop-input, the worker canary flips 0xa86dbdec ->
+0xCA5Axxxx. Flash lk_a_snes_bigcore_dvm.img + tee_patched_armcpc.img; read BC CANARY. Low-probability but it
+is the one coherency-fabric interaction not yet tried, and cheap. If it fails too, the honest conclusion is
+that coherent snoop-input for a manually-woken core at LK requires the SSPM CPU-power service to be running
+(which it is not at LK), and that is the fundamental wall - the offload must then use only the proven
+directions (worker reads static pre-bringup data + worker->cpu0 writes).
