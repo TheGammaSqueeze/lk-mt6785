@@ -567,3 +567,26 @@ TWO teed-up experiments (next cycle):
    instead of SPM+0x160 before releasing the worker. If bit31 sets at LK -> the FSM is HW-autonomous
    and correct polling yields a coherent core (win). If bit31 never sets -> SSPM servicing is truly
    mandatory (then RE the minimal MCDI-enable IPI).
+
+### HW ACKPROBE v2 (2026-08-28): power-on is COMPLETE - reframes the whole problem
+Corrected offset (MP0_CPU1_PWR_CON = SPM+0x20C). After PSCI CPU_ON:
+  SPM_CPU_PWR_CON(1)=0x80000005 = PWR_ON_ACK(b31) | PWR_ON(b2) | PWR_RST_B(b0)  => PWR_ON_ACK SET
+  CPC_SPMC_ST=0xc003 (cpu1 bit1 set) ; railstat 0x160=0x474c (cpu1 bit10 set)
+=> The per-CPU SPMC PWR_ON_ACK is SET. The core is powered EXACTLY as a kernel cpu_up leaves it
+   (same PSCI CPU_ON path, same completed handshake). So the frozen-read is NOT a power-sequencing or
+   ack-polling bug (that hypothesis is refuted), and it is not "the SPMC never admitted the core" at the
+   power-controller level (it did: PWR_ON_ACK + CPC_SPMC_ST + rail all set).
+
+WHAT THIS LEAVES: the core is fully powered/acked yet its reads of cpu0's writes are frozen even for
+Device/non-shareable/MMU-off. Since Device+non-shareable reads don't need coherency-domain membership
+and STILL return stale, this is not (only) a snoop-domain issue - it looks like the worker's memory
+READ path does not observe the same DRAM/point-of-coherency cpu0 writes, while its WRITES do reach
+cpu0. Remaining suspects (need live ground truth): DSU L3 / mcucci coherent-interconnect config;
+EMI/memory routing that the full SSPM kernel sequence programs but ATF-at-LK does not; or the AArch32
+secondary's post-reset cache/coherency state. NOTE the prior "un-admitted snoop participant" framing is
+now only partially right: power admission IS complete; the read-visibility gap is a separate mechanism.
+
+NEXT (decisive): build the register-poke kernel module (task 28) and read, on the LIVE coherent cpu1,
+the DSU/mcucci (0x0c510000) + mcucfg (0x0c530000) coherency config + L3 control, and hotplug-diff
+(offline/online cpu1) to capture what the kernel path programs that ATF-at-LK does not. Compare to the
+LK register state. That difference is the fix target.
