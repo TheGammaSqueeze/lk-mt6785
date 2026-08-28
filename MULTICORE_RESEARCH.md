@@ -1877,3 +1877,17 @@ STATE (unchanged, saturated): mechanism = cross-DSU interconnect snoop admission
 refuted; fix = a CPC/mcucfg interconnect register (identify via hotplug-diff) or an ATF patch (needs HW to test).
 Every remaining step requires the MTK target online. Diagnostics + the decisive runner are staged and pushed.
 Holding for a flash UART dump or the device to reconnect; no productive hardware-independent step remains.
+
+### ATF mcucfg-WRITE ENUMERATION (2026-08-28): the ATF's software mcucfg writes are DCM/clock, not coherency
+Enumerated the mcucfg (0x0c53xxxx) register offsets the ATF writes (77 movk-0xc53 sites). The identifiable
+add-#offset targets cluster in 0x7eb..0xc70 (e.g. 0x7eb,0x811,0x831,0x842,0xa09,0xa33,0xc70). Per the ATF's own
+debug strings (cci_adb400_dcm_config, sync_dcm_config) these are DCM / clock-management registers, NOT snoop/
+coherency control. (Parse caveat: the base low-half comes from an uncaptured preceding movz, so exact addresses
+are approximate - but the DCM nature is clear from the strings.) USEFUL NEGATIVE: the cross-DSU coherency
+admission register is NOT in the ATF's software-written mcucfg set. Combined with the ATF having no software MCSI
+driver, this means the DSU1<->DSU0 snoop admission is CPC/interconnect HARDWARE-automatic (driven by the CPC
+power sequence, no software register poke in the boot ATF). Consequence: it will NOT be found by reading what
+the ATF writes; it is only visible as a hardware-driven state change, i.e. exactly what the whole-DSU1
+hotplug-diff (run_mcucfg_diff.sh) captures (a register that flips when the CPC powers DSU1 into the domain).
+This is why the offline ATF RE cannot pin it and the on-device diff is mandatory. No further offline ATF parsing
+is warranted. State unchanged: saturated, awaiting HW.
