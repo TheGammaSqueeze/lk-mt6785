@@ -822,6 +822,25 @@ void snes_blit_tex_tint(snes_target *t, const snes_pack *pk, const snes_img_entr
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
 }
+/* Composite a pre-rendered STRAIGHT-alpha RGBA tile (0xAARRGGBB) at virtual centre
+ * (cx,cy), 1:1 (no scale). Uses the same draw path as a texture, so onto a cache_layer
+ * target it premultiplies-on-the-fly for correct source-over. Used by the producer-
+ * offload: the worker pre-renders each normal card into a tile, cpu0 blits the tile
+ * into the card strip instead of re-rendering the card (snes_menu build_cardcache_tiled). */
+void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, float cy)
+{
+	snes_draw d;
+	float S[6];
+	if (!pix || w <= 0 || h <= 0) return;
+	d.pix = (const uint8_t *)pix; d.rgb565 = 0; d.img_w = w; d.img_h = h;
+	d.sx = 0; d.sy = 0; d.sw = w; d.sh = h;
+	d.dw = (float)w; d.dh = (float)h; d.px = (float)w / 2.0f; d.py = (float)h / 2.0f;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.uvx = d.uvy = d.uvrx = d.uvry = 0;
+	d.tr = d.tg = d.tb = d.ta = 1.0f;
+	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
+	blit(t, S, &d);
+}
 void snes_blit_spr(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp,
 		   float cx, float cy, float scale, float alpha)
 {

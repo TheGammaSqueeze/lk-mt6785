@@ -990,6 +990,79 @@ void snes_menu_build_cardcache(snes_menu *m, snes_target *t)
 	SUB_END(g_cc_us, 3);
 }
 
+/* ===== Producer-offload: pre-rendered normal-card tiles (PRODUCER_OFFLOAD.md) =====
+ * The dynamic 2-core coherency wall is a HW limit (cpu0->worker stores invisible), but the
+ * worker CAN read static pre-bringup data and its writes ARE seen by cpu0. So the worker
+ * pre-renders each NORMAL (non-focused) game card into a tile ONCE at boot from the static
+ * pack, and cpu0's build_cardcache blits the tiles instead of re-rendering each card (the
+ * expensive boxart min-filter scale + several blits) on every nav/settle rebuild.
+ * Phase-exact ONLY in NATIVE view (vsx=1) where the settled strip places cards at integer
+ * positions; the caller gates on !m->aspect (4:3 bakes a fractional scale). Tile is
+ * STRAIGHT-alpha; blit onto the cache_layer strip premultiplies on the fly (source-over). */
+void snes_menu_render_card_tile(snes_menu *m, int gi, uint32_t *tile)
+{
+	snes_target tt;
+	unsigned i, npix = (unsigned)CARD_TILE_W * (unsigned)CARD_TILE_H;
+	int k; char *z = (char *)&tt;
+	for (k = 0; k < (int)sizeof(tt); k++) z[k] = 0;
+	tt.fb = tile; tt.pitch = CARD_TILE_W; tt.W = CARD_TILE_W; tt.H = CARD_TILE_H;
+	tt.offx = CARD_TILE_W / 2; tt.offy = CARD_TILE_H / 2 - (int)CAR_CY;
+	tt.vsx = tt.vsy = 1.0f; tt.vdx = tt.vdy = 0.0f;   /* native: caller gates on !m->aspect */
+	tt.cache_layer = 1;
+	for (i = 0; i < npix; i++) tile[i] = 0;
+	/* non-focused L2 card body: dark frame + aspect-scaled boxart + player icon + resume
+	 * dots, centred at the card box (cx=0 -> tile centre via offx/offy). blue_a=0, dim=1. */
+	draw_card(m, &tt, gi, 0.0f, 0.0f, 1.0f);
+	cache_unpremult(&tt, 0, 0, CARD_TILE_W, CARD_TILE_H);   /* premult -> straight for re-blit */
+	/* draw_card wrote the tile in FRAMEBUFFER byte-order (0xAARRGGBB); snes_blit_raw reads it
+	 * back through the texture path which expects RGBA byte-order, so swap R<->B once now. */
+	for (i = 0; i < npix; i++) {
+		uint32_t p = tile[i];
+		tile[i] = (p & 0xff00ff00u) | ((p >> 16) & 0xffu) | ((p & 0xffu) << 16);
+	}
+}
+
+/* like draw_carousel's cache-layer pass but BLITS the pre-rendered tile for each non-focused
+ * card instead of calling draw_card. Focused card is skipped (composited on L3 as usual). */
+static void draw_carousel_tiled(snes_menu *m, snes_target *t, const uint32_t *tiles)
+{
+	int n = m->ngames, j;
+	if (n <= 0) return;
+	for (j = 0; j < n; j++) {
+		float wx, cx;
+		if (j == m->focus) continue;
+		wx = m->sel_world + CAR_HGAP * (float)ring_delta(m->focus, j, n) + m->cont_shift;
+		cx = 640.0f + wx;
+		{ int cm = t->cache_layer ? (280 + (int)CAR_HGAP) : 280;
+		  if (cx < -cm || cx > SNES_VW + cm) continue; }
+		snes_blit_raw(t, tiles + (unsigned)j * (unsigned)(CARD_TILE_W * CARD_TILE_H),
+			      CARD_TILE_W, CARD_TILE_H, cx, CAR_CY);
+	}
+}
+
+/* tiled equivalent of snes_menu_build_cardcache: valid only for the NATIVE, non-resume
+ * settled strip (caller must ensure !m->aspect && m->resume_dim==0). Pixel-identical to
+ * build_cardcache in that regime (integer positions), at a fraction of the cost. */
+void snes_menu_build_cardcache_tiled(snes_menu *m, snes_target *t, const uint32_t *tiles)
+{
+	int H = t->H, W = t->W, y, x, y0 = t->H, y1 = -1;
+	unsigned i, npix = (unsigned)W * (unsigned)H;
+	float save_cs = m->cont_shift, save_xf = m->xfade_t;
+	t->cache_layer = 1;
+	for (i = 0; i < npix; i++) t->fb[i] = 0;
+	m->cont_shift = 0.0f; m->xfade_t = 0.0f;
+	set_view(m, t, VIEW_CONTENT);
+	draw_carousel_tiled(m, t, tiles);
+	m->cont_shift = save_cs; m->xfade_t = save_xf;
+	for (y = 0; y < H; y++) {
+		const uint32_t *r = t->fb + (unsigned)y * t->pitch;
+		for (x = 0; x < W; x++)
+			if (r[x] >> 24) { if (y < y0) y0 = y; y1 = y; break; }
+	}
+	m->cc_y0 = y0; m->cc_y1 = y1;
+	if (y1 >= y0) cache_unpremult(t, 0, y0, W, y1 + 1);
+}
+
 /* Band-limited variant for the 2-core split: build ONLY buffer rows [r0, r1) of the
  * strip - clear, draw (clipped to the scanline band so draw_carousel writes only those
  * rows), non-empty scan, and un-premultiply, all limited to [r0, r1). Two disjoint calls

@@ -88,6 +88,8 @@ void snes_blit_spr_wh_tint(snes_target *t, const snes_pack *pk, const snes_spr_e
 void snes_blit_tex_tint(snes_target *t, const snes_pack *pk, const snes_img_entry *im,
 			float cx, float cy, float w, float h, float alpha,
 			float tr, float tg, float tb);
+/* composite a pre-rendered STRAIGHT-alpha RGBA tile at virtual centre (cx,cy), 1:1 */
+void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, float cy);
 void snes_fill_quad(snes_target *t, float cx, float cy, float w, float h,
 		    float r, float g, float b, float a);
 /* draw text with a pack font (by font-name hash); align 0 left/1 centre/2 right. */

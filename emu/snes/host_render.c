@@ -94,6 +94,43 @@ int main(int argc, char **argv)
 		return allbad ? 2 : 0;
 	}
 
+	/* Producer-offload validation: `host_render <pack> - cardtile [nav]` proves the
+	 * pre-rendered-tile card strip equals the direct build_cardcache strip PIXEL-FOR-PIXEL in
+	 * the native, non-resume regime (worker builds tiles from static pack; cpu0 blits them). */
+	if (argc > 3 && strcmp(argv[3], "cardtile") == 0) {
+		int LW = SNES_L2_W, LH = SNES_L2_BAND_H, s, bad = 0, first = -1, gi;
+		size_t tsz = (size_t)CARD_TILE_W * CARD_TILE_H;
+		uint32_t *A = calloc((size_t)LW * LH, 4);
+		uint32_t *B = calloc((size_t)LW * LH, 4);
+		uint32_t *tiles;
+		snes_target ct = {0};
+		menu.aspect = 0;                                          /* native (phase-exact regime) */
+		memset(&in, 0, sizeof(in));
+		for (s = 0; s < 240; s++) snes_menu_update(&menu, &in, 1.0f / 60.0f);
+		if (argc > 4 && atoi(argv[4]) > 0) { int q, nn = atoi(argv[4]); for (q = 0; q < nn; q++) { in.right = 1; snes_menu_update(&menu, &in, 1.0f/60.0f); in.right = 0; for (s = 0; s < 60; s++) snes_menu_update(&menu, &in, 1.0f/60.0f); } }
+		ct.pitch = LW; ct.W = LW; ct.H = LH;
+		ct.offx = SNES_L2_MARGIN;
+		ct.offy = ((H - SNES_VH) / 2) - SNES_L2_BAND_Y0;
+		snes_target_view(&ct, 1.0f, 1.0f, 0.0f, 0.0f);
+		ct.fb = A;
+		snes_menu_build_cardcache(&menu, &ct);                    /* reference (direct render) */
+		tiles = calloc((size_t)menu.ngames * tsz, 4);            /* WORKER role: pre-render tiles */
+		for (gi = 0; gi < menu.ngames; gi++)
+			snes_menu_render_card_tile(&menu, gi, tiles + (size_t)gi * tsz);
+		for (i = 0; i < LW * LH; i++) B[i] = 0xDEADBEEF;
+		ct.fb = B;
+		snes_menu_build_cardcache_tiled(&menu, &ct, tiles);      /* cpu0 role: blit tiles */
+		for (i = 0; i < LW * LH; i++)
+			if (A[i] != B[i]) { bad++; if (first < 0) first = i; }
+		printf("CARDTILE: %d games, tile %dx%d, content band [%d,%d]; %s (%d px differ)\n",
+		       menu.ngames, CARD_TILE_W, CARD_TILE_H, menu.cc_y0, menu.cc_y1,
+		       bad ? "FAIL" : "PASS", bad);
+		if (bad)
+			printf("  first diff @ row %d col %d: ref=0x%08x tiled=0x%08x\n",
+			       first / LW, first % LW, A[first], B[first]);
+		return bad ? 2 : 0;
+	}
+
 	/* Per-frame render-split validation: `host_render <pack> - rsplit [nav]` proves the
 	 * PRIMARY low-power lever - the band split of snes_menu_render that bc_dispatch runs every
 	 * frame - is pixel-exact vs a single full render, at several settled states along a nav
