@@ -409,6 +409,9 @@ void bigcore_start(void)
 		_dprintf("BC MODE: shared region 0x51000000 mapped Device-nGnRnE Outer-shareable (baseline probe)\n");
 #endif
 		bc_snapshot_mmu();   /* publish cpu0's LPAE MMU config for the worker to adopt */
+#ifdef AYANEO_BC_WARMCYCLE
+		bc->warm_cycle = 1;  /* worker self-powers-off on this first bringup */
+#endif
 		/* clean the WHOLE comms block to DRAM so the MMU-off secondary reads the real
 		 * snapshot (its early reads bypass caches). */
 		arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
@@ -418,6 +421,29 @@ void bigcore_start(void)
 		ret = mt_secure_call_all(PSCI_CPU_ON_SMC32, 0x100u, entry, 0, 0, &r1, &r2, &r3);
 		_dprintf("BC: PSCI CPU_ON ret=0x%lx\n", (unsigned long)ret);
 		g_bc_psci_ret = (int)(unsigned)ret;
+
+#ifdef AYANEO_BC_WARMCYCLE
+		{	/* WARM-CYCLE: the worker read warm_cycle=1 (MMU off) and self-issued PSCI
+			 * CPU_OFF. Wait for it to power down (rail ack bit for cpu1 clears), then
+			 * clear the flag and re-power it - the 2nd bringup is a WARM DSU re-join.
+			 * The existing per-frame BC CANARY then shows if the warm-cycled worker is
+			 * coherent (worker-read=0xCA5A). Timeout -> skip (worker never offed). */
+			int i; unsigned st;
+			for (i = 0; i < 200000; i++) {
+				st = rd32(SPM_CPU_PWR_STATUS);
+				if (!(st & ACK_BIT(1))) break;
+				udelay(5);
+			}
+			_dprintf("BC WARMCYCLE: cpu1 powered off after %d us (status=0x%x)\n", i * 5, st);
+			bc->warm_cycle = 0;
+			arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
+			bc->magic = 0; bc->cached_ok = 0;
+			arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
+			ret = mt_secure_call_all(PSCI_CPU_ON_SMC32, 0x100u, entry, 0, 0, &r1, &r2, &r3);
+			_dprintf("BC WARMCYCLE: 2nd (warm) PSCI CPU_ON ret=0x%lx\n", (unsigned long)ret);
+			g_bc_psci_ret = (int)(unsigned)ret;
+		}
+#endif
 
 		udelay(3000);
 		arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));

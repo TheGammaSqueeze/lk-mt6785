@@ -1064,3 +1064,21 @@ staged and NONE has been flashed yet. Staging a 7th speculative experiment befor
 premature - the bottleneck is the flash, and the CPCDUMP/STATICPROBE results will redirect what is worth
 building. Build the warm-cycle only if the staged diagnostic comes back fully negative AND the user wants
 the last coherent-path shot taken. Until a flash happens, further experiment-staging is not productive.
+
+### WARM-CYCLE EXPERIMENT BUILT (2026-08-28): lk_a_snes_bigcore_warmcycle.img staged
+Built the last untested coherent-path mechanism (deferred last cycle, now built since the user is away
+and relentlessly wants the coherent win). Clean implementation avoiding the frozen-view trap:
+- bc_entry_arm2 (MMU OFF, before caches enable): reads comms.warm_cycle UNCACHED (gets cpu0's fresh
+  value, not the frozen snapshot); if nonzero, issues PSCI CPU_OFF (SMC 0x84000002) from a clean
+  caches-off state.
+- bigcore_start (cpu0): sets warm_cycle=1 before bringup1; after PSCI CPU_ON returns, polls SPM 0x160
+  until cpu1's rail ack bit clears (worker powered off), logs "BC WARMCYCLE: cpu1 powered off after N us",
+  clears warm_cycle + resets magic, then PSCI CPU_ON again (bringup2 = WARM DSU re-join). The existing
+  per-frame BC CANARY then reports whether the warm-cycled worker is coherent.
+Build flag AYANEO_BC_WARMCYCLE (project/k85v1_64.mk). Interpretation on flash: if BC CANARY worker-read
+flips to 0xCA5Axxxx (was 0xa86dbdec on the cold-join builds), the warm PSCI down->up cycle established the
+DSU coherency the cold CPC-arm join did not -> the coherent win, and the 2-core split unlocks. Confidence
+low (~10-15%; the DSU P-Channel should fire on cold-up too) but it is the last distinct coherent-path
+mechanism. If BC WARMCYCLE shows cpu1 did NOT power off (timeout), PSCI CPU_OFF does not work at LK and
+the experiment is inconclusive. Two independent flashes now cover the coherent path: cpcbit29 (4 probes)
+and warmcycle; plus dvm.

@@ -65,6 +65,7 @@
 #define BC_O_W_SELFPAR_LO 436  /* worker PAR-lo of the WB self VA */
 #define BC_O_W_CAN_MMUOFF 440  /* worker read of 0x51000000 with MMU turned OFF (post MMU-on) */
 #define BC_O_W_STATIC_CAN 444  /* worker read of a PRE-bringup static value (producer-offload viability) */
+#define BC_O_WARM_CYCLE   448  /* cpu0->worker: nonzero = self PSCI CPU_OFF on first bringup (warm-cycle expt) */
 
 #ifndef __ASSEMBLER__
 struct bc_comms {
@@ -120,6 +121,7 @@ struct bc_comms {
 	volatile unsigned w_selfpar_lo;          /* 436 worker PAR-lo of the WB self VA (F+PA) */
 	volatile unsigned w_can_mmuoff;          /* 440 worker read of canary with MMU OFF (post MMU-on) */
 	volatile unsigned w_static_can;          /* 444 worker read of a pre-bringup static value */
+	volatile unsigned warm_cycle;            /* 448 cpu0->worker: self PSCI CPU_OFF request (warm-cycle) */
 };
 #endif
 

@@ -65,6 +65,16 @@ DEFINES += AYANEO_BC_NONSHARE
 DEFINES += AYANEO_BIGCORE_EXPT
 DEFINES += AYANEO_DEBUG_LOGGING
 endif
+
+# Sub-experiment: warm-cycle the worker (self PSCI CPU_OFF on first bringup, cpu0
+# re-powers it) to test whether a warm DSU re-join establishes coherency the cold
+# first-join did not (MULTICORE_RESEARCH.md warm-cycle experiment).
+AYANEO_BC_WARMCYCLE ?= no
+ifeq ($(AYANEO_BC_WARMCYCLE),yes)
+DEFINES += AYANEO_BC_WARMCYCLE
+DEFINES += AYANEO_BIGCORE_EXPT
+DEFINES += AYANEO_DEBUG_LOGGING
+endif
 # AYANEO experiment (animated-boot-logo branch): paint a scrolling rainbow
 # gradient over the whole panel during LK instead of the static eMMC boot logo.
 # Set to no to restore the normal boot logo.

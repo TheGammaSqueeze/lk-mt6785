@@ -43,6 +43,23 @@ bc_entry_arm2:
 	str	r1, [r0, #BC_O_MAGIC]	@ reached-the-stub (uncached, MMU off)
 	dsb
 
+#ifdef AYANEO_BC_WARMCYCLE
+	@ Warm-cycle experiment: if cpu0 requested it (comms.warm_cycle != 0), self
+	@ power-OFF via PSCI CPU_OFF here - MMU still OFF so this read is UNCACHED and sees
+	@ cpu0's fresh value (not our frozen view), and caches are off so the core is in a
+	@ clean state for power-down. cpu0 polls for our power-off, clears warm_cycle, then
+	@ re-PSCI-CPU_ONs us for a WARM DSU re-join; the 2nd bringup reads warm_cycle==0 and
+	@ falls through. r0 (comms base) is only clobbered on the never-returning off path.
+	ldr	r1, [r0, #BC_O_WARM_CYCLE]
+	cmp	r1, #0
+	beq	3f
+	movw	r0, #0x0002		@ PSCI_CPU_OFF = 0x84000002
+	movt	r0, #0x8400
+	smc	#0
+	b	.			@ CPU_OFF should not return
+3:
+#endif
+
 	@ DO NOT invalidate the L1 D-cache by set/way here. ATF's PSCI CPU_ON path
 	@ (pwr_domain_on_finish) already powered this core UP THROUGH the DSU and
 	@ invalidated its caches, and admitted it to the DSU cache-coherency domain
