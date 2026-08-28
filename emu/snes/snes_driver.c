@@ -1025,7 +1025,7 @@ static int snes_emu_thread(void *arg)
 				snes_present_log(rebuilt, (t_ph1 - t_ph0)/13u, (t_ph2 - t_ph1)/13u,
 						 (t_ph3 - t_ph2)/13u);
 #endif
-				s_was_layered = 1;
+				s_was_layered = 1; s_leave_pending = 0;   /* re-entered: cancel any pending leave-disable */
 			} else if (s_was_layered) {
 				/* LEAVING layered - CLEAN HANDOFF. No CMDQ => the L0-update and L2/L3-disable
 				 * in one config are NOT atomic, so disabling L2 the same frame L0 first gains
