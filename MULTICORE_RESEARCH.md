@@ -423,3 +423,25 @@ SHARPENED PLAN (this changes the nonshare odds UPWARD):
   cpu0->worker signal must be avoided (round-robin) or carried some other way.
 - Lever 3 (A75 0x600): CPC_SPMC_ST=0xc001 has bits 6/7 CLEAR, so cluster1 is not reset-released at cold
   boot; it would need a larger cold-boot patch. Lower priority than the nonshare test.
+
+### IF the nonshare canary works (0xCA5A): the concrete extension plan
+The staged nonshare image only remaps the CANARY 2MB (0x51000000) non-shareable; the real render
+reads three more cross-core regions that are still Inner-Shareable, so a canary win is necessary but
+not sufficient. To make the full 2-core render work, every region cpu0 hands to the worker must be
+non-shareable. Regions (from the probe run + bc_dispatch):
+  - comms block 0x54000000 (job/menu_ptr/go/done) - in the SNES scratch window, safe to remap via
+    the existing bc_device_map L2-split (add a second call for the 0x54000000 2MB).
+  - scene pool 0x50C00000 (4MB, the rnode list the render walks) - also scratch, safe to remap.
+  - the menu struct itself: menu_ptr=0x4c5d5584 is in LK's OWN region (MEMBASE 0x4C400000), NOT a
+    scratch page. Remapping LK BSS non-shareable is risky (LK/allocator may rely on coherency there).
+    CLEANER: relocate the cross-core payload into a dedicated non-shareable ARENA in the scratch
+    window - cpu0 copies the 4KB menu struct (and points menu_ptr) into the arena each frame (cheap),
+    and builds/points the scene pool inside the arena; the worker reads only the arena. The framebuffer
+    band the worker writes needs no remap (worker->cpu0 writes are proven to work).
+So the follow-up build = bc_nonshare of {0x51000000 canary, 0x54000000 comms, 0x50C00000 scene} + a
+menu-struct copy into a non-shareable arena, then re-enable the bc_dispatch band split (both render
+splits are already host-validated exact). Do NOT pre-build this until the canary confirms non-shareable
+fixes the basic cross-core read - it is gated on that one datapoint. If the canary FAILS, skip all of
+this and go to Lever 4 (producer offload) using the proven MMU-off-static-read + worker->cpu0-write
+directions, with the dynamic selection carried by a brief MMU-off read window (the one cross-core read
+path that worked on HW).
