@@ -133,7 +133,8 @@ void bc_worker_entry(void)
 				*(volatile unsigned *)(unsigned long)0x0c070280u = 0x2u;   /* GICR_ICPENDR0 clear */
 			}
 			g_bc->w_sgi_count = sgi_seen;
-			BC_CLEAN((unsigned long)&g_bc->w_sgi_count, 4u); bc_dsb();
+			g_bc->w_spm_scratch = *(volatile unsigned *)(unsigned long)0x10006250u;  /* SPM scratch MMIO */
+			BC_CLEAN((unsigned long)&g_bc->w_sgi_count, 8u); bc_dsb();
 		}
 #endif
 		{	/* AT-translate the canary VA on the WORKER: PAR-lo ATTR[63:56 of the
@@ -294,6 +295,11 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	 * MMIO poll of GICR_ISPENDR0 sees it (w_sgi_count increments), MMIO is a live cpu0->worker
 	 * channel bypassing the dead DRAM snoop. GICR SGI frame for cpu1 = 0x0c070000; ISPENDR0 +0x200. */
 	*(volatile unsigned *)(unsigned long)0x0c070200u = 0x2u;   /* GICR_ISPENDR0: SGI#1 pending */
+	/* GENERIC MMIO channel (disambiguates a GIC-specific block from a general MMIO freeze):
+	 * cpu0 writes a rolling value to SPM CPU_SPARE_CON (0x10006250, unused scratch); the worker
+	 * reads it MMU-on via MMIO. If w_spm_scratch tracks 0x5A5Axxxx, MMIO is a live cpu0->worker
+	 * channel regardless of the GIC's NS-write permission. */
+	*(volatile unsigned *)(unsigned long)0x10006250u = 0x5A5A0000u | (seq & 0xffffu);
 #endif
 	/* EXPERIMENT (shared-L3 evict): if the worker shares the DSU L3 but gets no snoop
 	 * invalidations, it holds a stale (boot_b-era) L3 line for the canary that cpu0's
@@ -392,8 +398,10 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 				_dprintf("BC STATICPROBE: worker read of PRE-bringup static 0x51000024 = 0x%x (0x57A70DED => worker CAN read static pre-cleaned data => producer-offload VIABLE)\n",
 					 g_bc->w_static_can);
 #ifdef AYANEO_BC_SGI
-				_dprintf("BC SGIPROBE: worker saw %u GIC SGI-pending signals via MMIO (increments => MMIO is a live cpu0->worker channel; clean offload unlocked)\n",
+				_dprintf("BC SGIPROBE: worker saw %u GIC SGI-pending signals via MMIO (increments => GIC/MMIO is a live cpu0->worker channel; clean offload unlocked)\n",
 					 g_bc->w_sgi_count);
+				_dprintf("BC MMIOPROBE: worker read SPM scratch 0x10006250 = 0x%x (0x5A5Axxxx tracking seq => MMIO is a live cpu0->worker channel regardless of GIC)\n",
+					 g_bc->w_spm_scratch);
 #endif
 				/* Lever-1 decisive probe (worker-private, isolates worker MMU/cache from
 				 * cross-core coherency). Read the decision tree in MULTICORE_RESEARCH.md:

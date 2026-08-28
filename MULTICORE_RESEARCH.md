@@ -1152,3 +1152,16 @@ memory, no skip_focus mess). If N stays 0, either the worker's MMIO reads are al
 dead, not just DRAM) or cpu0's NS write to cpu1's GICR is blocked - both close this path. This is the
 highest-value untested experiment: a positive result is a real 2-core win with NO coherency needed.
 Flash lk_a_snes_bigcore_sgi.img + tee_patched_armcpc.img; read the BC SGIPROBE line.
+
+### GIC/SGI experiment STRENGTHENED (2026-08-28): + generic SPM-MMIO channel to disambiguate
+Added a second, generic MMIO channel to lk_a_snes_bigcore_sgi.img so a null result is not ambiguous:
+- cpu0 also writes a rolling 0x5A5A|seq to SPM CPU_SPARE_CON (0x10006250, confirmed unused=0 on live, safe
+  scratch, and SPM is definitely LK-mapped since bigcore writes it); the worker reads it MMU-on via MMIO
+  into w_spm_scratch. New log "BC MMIOPROBE: worker read SPM scratch 0x10006250 = 0x..".
+DECISION TABLE on flash:
+- BC MMIOPROBE tracks 0x5A5Axxxx (any channel) => MMIO is a LIVE cpu0->worker path despite the dead DRAM
+  snoop => clean producer-offload unlocked (feed the worker the focus via an MMIO word). REAL 2-core win.
+- BC SGIPROBE increments too => the GIC path specifically works (nicer: real interrupt semantics).
+- Both frozen/zero => the worker's ENTIRE read path is frozen (not just DRAM) - closes the MMIO idea; the
+  only channel left would be the worker reading a peripheral it can independently poll (e.g. the gamepad).
+So one flash of lk_a_snes_bigcore_sgi.img now cleanly answers "is there ANY cpu0->worker channel".
