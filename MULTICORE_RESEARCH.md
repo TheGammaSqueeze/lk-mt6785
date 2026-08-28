@@ -1739,3 +1739,27 @@ has CCI code - string cci_adb400_dcm_config) to force cci_enable_cluster_coheren
 locating cci_enable + the afflvl1 gate in the disasm; the ATF is already rebuilt/re-signed for the CPC-arm bit,
 so an added binary patch ships the same way. First though: flash the diagnostic and read the RAW lines - if the
 raw read shows cluster-1 SNOOP_EN=0, the whole theory is confirmed on-metal and the ATF patch is well-targeted.
+
+### HONEST REFRAMING (2026-08-28): this ATF has NO software MCSI - coherency is CPC/DSU-hardware, not MCSI regs
+Disassembly of tee_patched_armcpc.img shows: ZERO references to the MCSI base 0x0c510000 (mcucci), and many to
+the mcucfg region 0x0c53xxxx - but the identifiable 0x0c53 accesses are DCM/clock config (strings
+"cci_adb400_dcm_config", "sync_dcm_config" are debug prints about DCM addresses, not snoop control). So:
+ - This BL31 build has NO software MCSI driver (consistent with the absent MCSI SIP block). The mt8183 MCSI
+   model I used as the reference (SNOOP_EN|DVM_EN on a slave iface at 0x0c510000+0x1000+0x100*n) likely does
+   NOT apply to MT6785's ATF - MT6785 uses the CPC (Cluster Power Controller) / DSU-integrated coherency, where
+   the DSU snoop is admitted as part of the CPC hardware power-on handshake, not a software register write.
+ - CONSEQUENCE for the staged diagnostic: the raw read of mcucci 0x0c510000 will probably return 0s (the MCSI
+   block is inactive/unused on this SoC), which is itself the confirmation that MCSI is not the layer here.
+ - This partially walks back the MCSI-specific fix (SNOOP_EN via SIP or direct write). What STANDS unchanged:
+   the diagnosis that cpu0 and worker are in different clusters and the cluster-1 coherency-enable is skipped at
+   LK. What CHANGES: the enable is a CPC/DSU-hardware step (mcucfg/CPC region 0x0c53xxxx), not an MCSI reg.
+
+WHERE THIS POINTS (the pointed next experiment, needs the live device): task (a) done RIGHT - hotplug-diff the
+FULL mcucfg 0x0c530000..0x0c540000 (64KB) with cluster 1 offline vs online. The earlier diff only covered the
+CPC power block near 0x0c53a700 and found only power-gating bits. The broader mcucfg (0x0c530000..0x0c53a000)
+includes the DSU/mcusys coherency + ADB400 bridge control the ATF touches; the register that toggles when
+cluster 1 goes coherent (online) but is NOT set at LK is the true snoop-admission control and the real fix
+target. The staged mcucci raw-read is a cheap first check (expected 0s => MCSI ruled out on-metal); the mcucfg
+hotplug-diff is the decisive one. Both need the MTK target (0123456789ABCDEF) back online.
+Integrity note: several prior cycles over-committed to the mt8183 MCSI model; this ATF disasm corrects the fix
+target to CPC/mcucfg. The 2-core split wiring and the cross-cluster diagnosis are unaffected.
