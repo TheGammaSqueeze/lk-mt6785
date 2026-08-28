@@ -1839,3 +1839,18 @@ being set). Therefore:
    CPC/mcucfg interconnect register, found on-device, not a DSU sysreg and not an MCSI SIP.
 This further narrows the search and retires the DSU-sysreg alternative. The cross-DSU interconnect admission is
 the single remaining unknown, and the whole-DSU1-off-vs-on mcucfg diff is the way to pin it.
+
+### ATF POWER-PATH TRACE - diminishing returns (2026-08-28)
+Traced the caller of the DSU cluster-setup (CLUSTERPWRCTLR) code: it is 0xc5fc, called UNCONDITIONALLY from an
+init function at 0x92d8 (no mpidr/afflvl1 gate at that call site). No clear conditional interconnect/snoop write
+surfaced at this level. Continuing to hand-trace the stripped BL31 to find a possibly-skipped cross-DSU snoop
+register is unvalidatable without the device and hitting diminishing returns - each step exposes more untyped
+functions and any conclusion is a guess until tested on metal. DECISION: stop the offline BL31 tracing here. The
+structural facts are established (ATF programs DSU cluster power/L3 via c3_5/c3_6 sysregs at EL3; no software
+MCSI; cross-DSU interconnect admission is the gap) and the RELIABLE way to identify the exact register is the
+on-device whole-DSU1 hotplug-diff (run_mcucfg_diff.sh), not more stripped-binary guesswork.
+
+STATE (unchanged, saturated): mechanism = cross-DSU interconnect snoop admission skipped at LK; alternatives all
+refuted; fix = a CPC/mcucfg interconnect register (identify via hotplug-diff) or an ATF patch (needs HW to test).
+Every remaining step requires the MTK target online. Diagnostics + the decisive runner are staged and pushed.
+Holding for a flash UART dump or the device to reconnect; no productive hardware-independent step remains.
