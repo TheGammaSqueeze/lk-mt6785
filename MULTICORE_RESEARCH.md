@@ -1530,3 +1530,20 @@ implemented in ATF-at-LK. Attribution: canary flips after the MCSI set => snoop-
 only after TLBIALLIS => DVM-sync was the wall; flips after neither => pivot (SCU/DSU-level or PSCI-state path).
 Rebuilt + signed + staged both lk_a_snes_mcsi_signed.img (diagnostic + DVM) and lk_a_snes_mcsifix_signed.img
 (diagnostic + MCSI admit + DVM). Shipping menu untouched (flag-gated). Awaiting the MTK target to flash.
+
+### SSPM/MCUPM MCDI RE (2026-08-28, task b): rules OUT a firmware coherency step; reinforces the ATF/MCSI fix
+Examined the kernel MCUPM/MCDI driver (drivers/misc/mediatek/mcupm/v2 + mt68xx headers). Findings:
+ - MCUPM IPI channels are exactly: CH_S_PLATFORM, CH_S_CPU_DVFS, CH_S_FHCTL, CH_S_MCDI, CH_S_SUSPEND,
+   CH_S_EEMSN. That is DVFS / frequency-hopping / multi-core deep-idle / suspend / thermal. There is NO
+   coherency, snoop, L3, or cluster-coherent-on channel. Grep for coher/snoop/l3/dsu across mcupm + mcdi +
+   cpuhotplug returns nothing (done a prior cycle too). So the firmware does POWER/DVFS/idle, not snoop-admit.
+ - MCUPM firmware lives in reserved memory and is brought up by a KERNEL driver (RESERVEDMEM_OF_DECLARE +
+   platform probe), i.e. at kernel stage - it is NOT running during LK. So at LK the ATF mcdi_hotplug ->
+   SSPM/MCUPM path is inert; ATF necessarily uses its direct spm_poweron_cpu/cluster branch.
+CONCLUSION: the "SSPM/MCUPM post-power DSU/L3 coherency-sync step" hypothesis (from the corrected findings) is
+retired. Coherency-enable is ATF-software only (plat_mtk_cci_enable == cci_enable_cluster_coherency, i.e. MCSI
+SNOOP_EN|DVM_EN on the cluster slave iface), and it is reached in on_finish ONLY when PSCI passes afflvl1==OFF.
+At LK, with MCUPM absent, whether that fires hinges entirely on LK's thin PSCI CPU_ON coordinating the cluster
+affinity state - which a bootloader typically does not. That is the single remaining software gap, and it is
+exactly what the staged AYANEO_BC_MCSI_FIX bypasses by setting SNOOP_EN|DVM_EN directly via MCSI_NS_ACCESS.
+Three independent angles (device-tree topology, ATF on_finish path, MCUPM IPI map) now agree on the mechanism.
