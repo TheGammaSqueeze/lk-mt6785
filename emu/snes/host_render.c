@@ -94,6 +94,54 @@ int main(int argc, char **argv)
 		return allbad ? 2 : 0;
 	}
 
+	/* Per-frame render-split validation: `host_render <pack> - rsplit [nav]` proves the
+	 * PRIMARY low-power lever - the band split of snes_menu_render that bc_dispatch runs every
+	 * frame - is pixel-exact vs a single full render, at several settled states along a nav
+	 * path. snes_menu_render is more complex than the strip build (background + cards + cursor +
+	 * transitions), so a seam bug here is both more likely and more visible; catch it on host
+	 * before the coherency work enables the real 2-core render. Also checks render determinism. */
+	if (argc > 3 && strcmp(argv[3], "rsplit") == 0) {
+		const char *rnav = argc > 4 ? argv[4] : "RRRLLDDUU";
+		int mid = (H / 2) & ~15, s, ni, det = 0, allbad = 0, checks = 0;
+		uint32_t *A = calloc((size_t)W * H, 4);
+		uint32_t *A2 = calloc((size_t)W * H, 4);
+		uint32_t *B = calloc((size_t)W * H, 4);
+		memset(&in, 0, sizeof(in));
+		for (s = 0; s < 240; s++) snes_menu_update(&menu, &in, 1.0f / 60.0f);   /* settle attract */
+		for (ni = 0; ni <= (int)strlen(rnav); ni++) {
+			int bad = 0, first = -1, d2 = 0;
+			/* full render twice (determinism), then two band halves */
+			t.fb = A;  for (i = 0; i < W * H; i++) A[i]  = 0xFF000000u; snes_target_band(&t, 0, 0); snes_menu_render(&menu, &t);
+			t.fb = A2; for (i = 0; i < W * H; i++) A2[i] = 0xFF000000u; snes_target_band(&t, 0, 0); snes_menu_render(&menu, &t);
+			for (i = 0; i < W * H; i++) if (A[i] != A2[i]) d2++;
+			t.fb = B;  for (i = 0; i < W * H; i++) B[i]  = 0xFF000000u;
+			snes_target_band(&t, 0, mid); snes_menu_render(&menu, &t);
+			snes_target_band(&t, mid, H); snes_menu_render(&menu, &t);
+			snes_target_band(&t, 0, 0);
+			for (i = 0; i < W * H; i++) if (A[i] != B[i]) { bad++; if (first < 0) first = i; }
+			checks++; if (bad) allbad++; if (d2) det++;
+			printf("  state %2d (after '%.*s'): split %s (%d diff), determinism %s (%d diff)%s\n",
+			       ni, ni, rnav, bad ? "FAIL" : "PASS", bad, d2 ? "FAIL" : "OK", d2,
+			       bad ? "" : "");
+			if (bad)
+				printf("    first diff @ row %d col %d: full=0x%08x split=0x%08x\n",
+				       first / W, first % W, A[first], B[first]);
+			/* advance to the next state by pressing the next nav key (like real HW) */
+			if (ni < (int)strlen(rnav)) {
+				char c = rnav[ni];
+				memset(&in, 0, sizeof(in));
+				in.right = (c == 'R'); in.left = (c == 'L'); in.up = (c == 'U'); in.down = (c == 'D');
+				in.a = (c == 'A'); in.b = (c == 'B');
+				snes_menu_update(&menu, &in, 1.0f / 60.0f);
+				memset(&in, 0, sizeof(in));
+				for (s = 0; s < 40; s++) snes_menu_update(&menu, &in, 1.0f / 60.0f);   /* settle */
+			}
+		}
+		printf("RSPLIT: %s (%d states, mid=%d; %d split-fail, %d nondeterministic)\n",
+		       (allbad || det) ? "FAIL" : "PASS", checks, mid, allbad, det);
+		return (allbad || det) ? 2 : 0;
+	}
+
 	/* Transition-capture mode: `host_render <pack> <outdir> seq <prefixNav> <transKeys> <nframes>`
 	 * mirrors the web frame-stepper (tools/_web_car_right_mid.mjs). It settles the
 	 * attract, walks <prefixNav> to reach the starting state, then steps at
