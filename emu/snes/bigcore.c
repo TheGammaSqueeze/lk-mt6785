@@ -375,6 +375,15 @@ void bigcore_start(void)
 	 * cold-boot reset-deassert patch. See MULTICORE_RESEARCH.md Lever 3. */
 	_dprintf("BC RECON: CPC_SPMC_ST(0x0C53A840)=0x%x  SPM_CPU_PWR_STATUS(0x10006160)=0x%x (cluster1=A75 cores6/7)\n",
 		 rd32(MCUCFG_CPC_SPMC_ST), rd32(SPM_CPU_PWR_STATUS));
+	{	/* CPC block dump (0x0c53a700..0x0c53a8fc) for a full coherent-vs-LK diff against
+		 * the live reference (tools/live_regpoke/live_cpc_reference.txt). Any register that
+		 * differs beyond CPC_FLOW bit29 is another candidate for the missing coherency setup. */
+		unsigned off;
+		for (off = 0x700u; off < 0x900u; off += 4u) {
+			unsigned v = rd32(MCUCFG_BASE + off);
+			if (v) _dprintf("BC CPCDUMP 0x0c53a%03x = 0x%x\n", off, v);
+		}
+	}
 
 	if (!(cpc & CPC_CTRL_ENABLE)) {
 		_dprintf("BC: CPC not armed -> SKIP PSCI (safe on stock/control tee). Flash the patched tee.img.\n");
