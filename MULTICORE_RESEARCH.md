@@ -619,3 +619,29 @@ NEXT: add a full L1 D-cache invalidate-by-set/way loop at the very top of bigcor
 MMU+cache enable), rebuild the ackprobe/EXPT image, stage for flash. (adb cannot test the LK worker's
 internal cache directly, but the hotplug diff rules out every shared-register alternative, so this is
 the highest-probability fix.)
+
+### CORRECTION (2026-08-28, same cycle): the D-cache set/way dimension is ALREADY exhausted
+Reading bigcore_entry.S:46-56 in full: a PRIOR version of the stub HAD an L1 D-cache invalidate-by-set/way
+loop and the author REMOVED it, concluding DCISW corrupts DSU coherency (set/way is not snoop-broadcast;
+ARMv8 D5.7.8 makes it safe only when a core is being REMOVED from coherency). The comment claims the
+no-set/way version reads cpu0's cached writes. BUT all our HW probes (canary/nonshare/mmuoff) show the
+CURRENT no-set/way build is STILL frozen. So: WITH set/way -> frozen (author); WITHOUT set/way -> frozen
+(our probes). The cache-invalidate dimension is exhausted and is NOT the fix. (My prior "add the invalidate
+loop" conclusion is withdrawn.)
+
+WHERE THIS LEAVES US (all shared registers match live; power handshake complete; cache set/way tried
+both ways): the remaining suspects are CORE-INTERNAL to the AArch32 worker and specific to how we bring
+it up vs a real AArch64 kernel/ATF secondary:
+- CPUECTLR/CPUACTLR coherency bits not set on our AArch32 worker (a real kernel secondary gets them via
+  the ATF reset handler / cpu errata init). Need the coherent-core values - but reading CPUECTLR_EL1 /
+  CLUSTERECTLR_EL1 live risks an EL1 UNDEF -> kernel oops, and the user is asleep with no reflash, so do
+  NOT read trapping sysregs on the live device tonight. Get the values from kernel/ATF SOURCE instead.
+- The worker runs AArch32 while every coherent secondary on this SoC runs AArch64; a 32-bit PE in this
+  DSU may not participate in inner-shareable coherency the same way (worth checking if AArch64 worker
+  bring-up changes the result - but that is an LK flash, deferred).
+- cpu0-side: are cpu0's shared writes actually reaching the point the coherent worker snoops from
+  (shareability of cpu0's mapping / clean-to-PoC timing)? Re-examine with the worker assumed coherent.
+
+The LIVE MODULE remains the key tool (tools/live_regpoke) for any non-trapping register question. Next
+safe adb step: read CPUECTLR setup from kernel SOURCE (arch/arm64 errata + MTK) to learn the exact
+coherency bits a coherent core carries, and check whether our AArch32 worker can/should set them.
