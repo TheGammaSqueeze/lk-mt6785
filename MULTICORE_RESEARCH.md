@@ -1322,3 +1322,19 @@ CONSEQUENCES:
   real and coherency/channel-free. Constraints remain: memory (N tiles) and the focus-specific L2 skip
   (build tiles WITHOUT skip_focus + draw the focus decorations live on cpu0, or per-system scoping).
 DECISION: the coherent/dynamic dream is exhausted and closed. The deliverable is the static-input offload.
+
+### OFFLOAD SIZING (2026-08-28): 21 games -> memory-tight or needs the render refactor
+Measured the actual pack: game_count = 21 (snespack.h hdr @byte 0x64). Offload memory analysis:
+- PER-FOCUS tiles (reuse build_cardcache as-is, correct skip_focus, cpu0 selects tile[focus]): 21 tiles.
+  Each ~2.5-3.66MB (2496 x [~250..384] x 4) => ~52-76MB. The 128MB WB window holds LK + the 14.6MB pack +
+  4MB scene + framebuffers + OVL L2/L3, leaving ~50-90MB - so 52-76MB is TIGHT-to-OVER. Risky/borderline.
+- RANGE tiles (cover the card row in ~5 wide tiles = ~18MB, fits easily) require FOCUS-INDEPENDENT tiles
+  (no skip_focus) => the L2/L3 render refactor (draw all cards on L2, focus decorations live) - real visual
+  risk on the working menu.
+- "Offload only the on-demand rebuild" (cheapest) is IMPOSSIBLE: it needs the CURRENT focus, which is the
+  now-dead dynamic cpu0->worker channel.
+So even the surviving offload is NOT a free win: per-focus tiles are memory-tight for 21 games, and the
+memory-efficient variant needs the render refactor. This is the concrete tradeoff for the go/no-go call.
+FINAL STATE: dynamic 2-core (per-frame split) is definitively dead (worker read path fully frozen). The
+static-input offload is viable but constrained (21 games => ~52-76MB per-focus, or an L2/L3 refactor).
+Awaiting the user's decision: build the offload (accept the memory/refactor cost) or bank the research.
