@@ -1547,3 +1547,26 @@ At LK, with MCUPM absent, whether that fires hinges entirely on LK's thin PSCI C
 affinity state - which a bootloader typically does not. That is the single remaining software gap, and it is
 exactly what the staged AYANEO_BC_MCSI_FIX bypasses by setting SNOOP_EN|DVM_EN directly via MCSI_NS_ACCESS.
 Three independent angles (device-tree topology, ATF on_finish path, MCUPM IPI map) now agree on the mechanism.
+
+### MT6785 CPU-SUBSYS PHYSICAL MAP + SIP-absent contingency (2026-08-28)
+From mt6785.dts, the coherence-relevant blocks:
+  mcucci  (MCU Cache-Coherent Interconnect = MCSI) @ 0x0c510000
+  mcusys_par_wrap / mcucfg                          @ 0x0c530000 (0x10000, 64KB, secure-write-protected)
+  mp_cpusys_top                                     @ 0x0c538000
+  cpccfg_reg (the CPC-arm patch target)             @ 0x0c53a800 ; cpcdbg_reg @ 0x0c53ab00
+  mcdi                                              @ 0x0011b000 + 0x0c53a000
+So the MCSI base on MT6785 is 0x0c510000 ("mcucci"). Applying the standard ARM MCSI/CCI-550 layout (mt8183
+mcsi.h: central regs 0x0..0x500, slave ifaces 0x1000 + 0x100*N), the cluster-1 coherent slave iface SNOOP_CTRL
+would sit near 0x0c510000 + (0x1000 + 0x100*N). NOTE: the staged AYANEO_BC_MCSI diagnostic does NOT need this
+base - MCSI_NS_ACCESS takes an OFFSET and ATF applies its own base - it reads offsets 0x0/0x10/0x28 (central)
+and 0x1000..0x1700 (all 8 slave ifaces), so it self-identifies the real iface region from the SNP_SUPPORT bits.
+
+CONTINGENCY if our tee.img does NOT implement the MCSI SIPs (the diagnostic's MCUSYS_ACCESS_COUNT probe returns
+error/0 => MTK SIP layer absent): a raw NS write to 0x0c510000 will NOT work (mcusys/mcucci is secure-firewalled
+from NS, which is the whole reason the SIP exists). The only remaining path would then be an ATF-side patch that
+calls cci_enable_cluster_coherency(0x100) in the PSCI on_finish - anchored at MCSI base 0x0c510000 - added to the
+same tee.img we already rebuild/re-sign for the CPC-arm bit. That is a much larger change than the SIP poke, so
+the SIP path stays strongly preferred; this records the fallback anchor in case the diagnostic shows no SIP layer.
+This closes the offline analysis: mechanism (cross-cluster MCSI snoop-admission skipped at LK) is confirmed from
+device-tree topology + ATF on_finish path + MCUPM IPI map; fix (MCSI_NS_ACCESS set SNOOP_EN|DVM_EN) and an
+independent DVM lever are staged; the empirical verdict now waits solely on a flash of the offline MTK target.
