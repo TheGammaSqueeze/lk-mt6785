@@ -945,3 +945,23 @@ modest upside (removing ~30ms scroll-rebuild hitches) vs the refactor risk, the 
 DELIBERATE user decision, not an autonomous build. Recommend: get the STATICPROBE datapoint first, and if
 the user wants the offload, do variant (1) scoped to per-system games (low risk, bounded memory) rather
 than the (2) refactor. Until then, do not destabilize the working single-core menu.
+
+### ATF DSU SYSREG RE (2026-08-28): all power/clock, no missed coherency step - RE CLOSED
+Examined every DSU/cluster sysreg + coherency-fabric write in the mt6785 BL31:
+- s3_0_c15_c2_7 (0x4ce09b00): `mrs; orr #1; msr; isb; dsb; wfi; b .-4` = a CORE POWER-DOWN stub (set the
+  powerdown bit then WFI-loop), the pwr_domain_off leaf. Not coherency.
+- 0x0c533308 / 0x0c533b08 (0x4ce09b1c, called from boot setup 0x4ce0971c): mcusys DCM/clock config bits,
+  set once at boot (cluster-wide). "cci_adb400_dcm_config" = CCI ADB400 async-bridge DYNAMIC CLOCK mgmt.
+  All clock/DCM, not snoop/coherency.
+- s3_0_c15_c1_4 (CPUECTLR) / c1_1 (0x4ce1a940): the per-core Cortex-A55 errata/reset function (runs per
+  core via reset, so cpu1 gets it too). Not a coherency-enable (matches ARM: A55 has no software SMPEN).
+=> No missed cluster-coherency init anywhere in the mt6785 ATF. Combined with: power-on is pure-HW and
+completes (PWR_ON_ACK), no MMIO snoop register (SPM/CPC/mcucci/mcucfg swept), coherency is automatic via
+the DSU P-Channel (ARM TRM), and the CPC-arm bypass fires the power rail but not that P-Channel handshake.
+The coherent-bringup RE is now EXHAUSTIVELY CLOSED: there is no AP/MMIO/sysreg/mailbox lever at LK. The
+only untried items are hardware experiments needing a flash (the staged cpcbit29+DVM images).
+
+FINAL STATE: coherent path = hardware wall, one long-shot flash staged. Offload path = viable but needs a
+user risk/value decision (focus-specific L2 cache; per-system per-focus tiles = low-risk variant). Both
+resolve on the one staged diagnostic flash (BC CANARY/CPCDUMP + BC STATICPROBE). Autonomous non-flash
+investigation is complete; do not destabilize the working menu without the user's go-ahead.
