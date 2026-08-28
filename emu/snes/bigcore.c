@@ -45,7 +45,7 @@ static inline void clrb(unsigned a, unsigned m) { wr32(a, rd32(a) & ~m); }
 #define MCUCFG_BASE            0x0C530000u
 #define SPM_BASE               0x10006000u
 #define SPM_CPU_PWR_STATUS     (SPM_BASE + 0x160u)   /* ack (ATF reads SPM+0x160) */
-#define SPM_CPU_PWR_CON(n)     (SPM_BASE + 0x768u + ((n) << 2))  /* per-CPU, base from ATF rodata table */
+#define SPM_CPU_PWR_CON(n)     (SPM_BASE + 0x208u + ((n) << 2))  /* MP0_CPUn_PWR_CON (mt6785 mtk_spm_reg.h): PWR_RST_B b0, PWR_ON b2, PWR_ON_ACK b31. Was wrongly 0x768 (phantom bank, read 0x0); same reg as the "RSTCON" 0x208 bank. */
 #define MCUCFG_BOOTADDR(n)     (MCUCFG_BASE + 0xc900u + ((n) << 3))  /* per-CPU reset vector (0x0C53C900) */
 #define MCUCFG_INITARCH        (MCUCFG_BASE + 0xc8e4u)               /* bit(16+cpu): 1=AArch64 */
 #define MCUCFG_CPC_FLOW_CTRL   (MCUCFG_BASE + 0xa814u)
