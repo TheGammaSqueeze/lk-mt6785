@@ -1763,3 +1763,17 @@ target. The staged mcucci raw-read is a cheap first check (expected 0s => MCSI r
 hotplug-diff is the decisive one. Both need the MTK target (0123456789ABCDEF) back online.
 Integrity note: several prior cycles over-committed to the mt8183 MCSI model; this ATF disasm corrects the fix
 target to CPC/mcucfg. The 2-core split wiring and the cross-cluster diagnosis are unaffected.
+
+### TOPOLOGY DISAMBIGUATION (2026-08-28): two PHYSICAL DSUs (by MPIDR aff1), distinct from the DVFS cpu-map
+Resolved a trap: MT6785 has TWO different core groupings that must not be confused.
+ - PHYSICAL DSU / coherency (authoritative, from MPIDR): aff1=0 = {cpu0,1,2,3} (4x A55), aff1=1 = {cpu4,5,6,7}
+   (2x A55 + 2x A75). A55/A75 are DynamIQ cores; two distinct aff1 values = TWO separate DSU instances, bridged
+   by a coherent interconnect. cpu0 (boot core) is in DSU0; the LK worker (mpidr 0x100 = cpu4) is in DSU1.
+ - DVFS / scheduler (cpu-map node): cluster0 = {cpu0..cpu5} (all 6 A55), cluster1 = {cpu6,cpu7} (2 A75). This is
+   a FREQUENCY-DOMAIN view (the 6 A55 share an OPP table), NOT the coherency boundary. Reading the cpu-map
+   naively would wrongly suggest a 6/2 split; the coherency/DSU split is 4/4 by aff1.
+CONCLUSION: the cross-cluster (cross-DSU) diagnosis is CONFIRMED - it is not a single-DSU red herring. cpu0 and
+the worker are in different physical DSUs, so cross-DSU snoop admission (managed by CPC/SPMC hardware on this
+SoC, since the ATF has no software MCSI/CCI driver) is genuinely required and is the layer being skipped at LK.
+This is the stable foundation under all the register-target uncertainty: WHERE (cross-DSU coherency admission)
+is settled; only the exact CPC/mcucfg register that performs it is open, to be found by the mcucfg hotplug-diff.
