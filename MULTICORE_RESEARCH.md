@@ -269,6 +269,18 @@ spm_poweron_cpu 0x126dc, PWR_CON table 0x20c70, ack read 0x12574, ack-bit 0x125b
   Consequence: there is genuinely no missing software snoop-admit call for LK to make. The
   only open question is whether our CPC-arm bypass powers the core in a way the DSU treats
   as a full coherency-connect (Lever 1 will tell us empirically via the self-readback).
+- (cycle 2 search) ARM DynamIQ material states the DSU does "automatic enabling and disabling
+  of coherency with the interconnect... without software intervention" on power up/down. So
+  coherency-connect is hardware-automatic and there is NO software register to force it (this
+  closes "force a coherency-enable bit" as a lever for good). It also means: if the core were
+  powered through the genuine DSU/CPC sequence it WOULD be coherent automatically; if the probe
+  shows it is not, the CPC-arm bypass is powering it in a way that skips the DSU auto-connect,
+  and since we cannot force the connect, the sanctioned workaround is candidate fix #1.
+- (cycle 2 search) ARM documents non-shareable memory + explicit clean/invalidate as the
+  correct method for accesses with mismatched shareability / a non-coherent agent (ARMv8
+  cache-maintenance rules; TF-A boot paths do exactly this with caches off). This is direct
+  support that candidate fix #1 (shared region Normal-WB NON-shareable + sw clean/invalidate)
+  is architecturally sound, raising its confidence as the top post-probe lever.
 
 ### Candidate LK-local bugs to check IF the probe returns "worker path broken / mistranslate"
 (pre-staged so the fix is immediate; do NOT pre-apply, they would confound the probe)
