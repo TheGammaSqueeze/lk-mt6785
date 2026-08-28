@@ -1820,3 +1820,22 @@ live rooted device's kernel image (the /work/557/extract-symvers.py approach ove
 NET this cycle: confirmed the only two remaining enablers (live device for run_mcucfg_diff.sh; module load) both
 depend on the MTK target being connected. Offline research remains saturated; no productive offline step left
 that does not require the hardware. Standing by for a flash UART dump or the device to reconnect.
+
+### ATF DSU-SYSREG RE (2026-08-28): ATF does the DSU cluster setup at EL3; the gap is cross-DSU interconnect
+Disassembly shows this ATF DOES manage the DynamIQ DSU cluster power/coherency via EL3 IMP-DEF sysregs on the
+target core:
+  0xc624: mrs x0, s3_0_c15_c3_5 (CLUSTERPWRCTLR_EL1); orr x0,x0,#0xf0 (set [7:4]); msr back; then poll
+          s3_0_c15_c3_7 (CLUSTERPWRSTAT) in a wait loop.
+  0x1abf8: msr s3_0_c15_c3_6 (CLUSTERPWRDN_EL1), value = x0 & 0x3 (PWRDN/MEMRET bits).
+  Also reads s3_0_c15_c3_0/c3_1 (cluster config/id). These are the standard A75/A55 DSU cluster registers.
+KEY IMPLICATION: this cluster setup runs at EL3 during PSCI CPU_ON of cpu4, INDEPENDENT of the AArch32 state the
+worker later adopts - so DSU1's OWN cluster power + L3 config DOES happen on bringup (consistent with the SPMC ack
+being set). Therefore:
+ - The wall is NOT the DSU cluster registers and NOT the (previously parked) IMP_CLUSTERECTLR lever: the ATF
+   already programs those correctly at EL3. So bringing the worker up in AArch64 to poke them would not help.
+ - The remaining gap is specifically the CROSS-DSU INTERCONNECT snoop routing (admitting DSU1 into the coherent
+   domain so DSU0<->DSU1 snoops flow). This ATF does that with no software MCSI, so it is CPC/interconnect
+   hardware - exactly the register the mcucfg hotplug-diff (run_mcucfg_diff.sh) targets. Reinforces: the fix is a
+   CPC/mcucfg interconnect register, found on-device, not a DSU sysreg and not an MCSI SIP.
+This further narrows the search and retires the DSU-sysreg alternative. The cross-DSU interconnect admission is
+the single remaining unknown, and the whole-DSU1-off-vs-on mcucfg diff is the way to pin it.
