@@ -2006,3 +2006,24 @@ hotplug). Remaining options: (A) ATF patch (EL3 can write the protected regs, bu
 target register - the staged hotplug found none - so this is a low-odds gamble on a464/718/748 being coherency),
 or (B) the PRODUCER-OFFLOAD, which is fully consistent with the measured hardware behavior (worker reads static
 pack data + worker->cpu0 writes both work) and needs NO coherency fix. Recommending B as the shippable win.
+
+### PIVOT TO PRODUCER-OFFLOAD (2026-08-28): user chose it; design validated
+Hardware verdict accepted: dynamic cross-DSU coherency is NS-unfixable. Building the producer-offload instead.
+DESIGN (phase-validated):
+ - build_cardcache renders the SETTLED strip (cont_shift=0). Card j position: cx = 640 + sel_world + CAR_HGAP*
+   ring_delta(focus,j,n), CAR_HGAP=262 (int), ring_delta int. sel_world rests at CAR_SLOT_X=-393 and moves in
+   262-steps -> sel_world is always INTEGER at settle -> every card sits at an INTEGER cx (sub-pixel phase 0).
+   => per-card pre-rendered tiles blit EXACTLY (the earlier nearest-neighbor phase worry does NOT bite here).
+ - WORKER (once at boot, static input only - which the HW confirms it can read): render each of the N game cards
+   in NORMAL (non-focused) state - card frame + aspect-scaled boxart + player icon + resume dots (the draw_card
+   body, minus focus/cursor) - into its own fixed tile buffer at canonical origin. Write tiles to DRAM, clean
+   (worker->cpu0 direction WORKS on HW). Worker reads pack boxart from the static pre-bringup snapshot (proven:
+   w_static_can=0x57A70DED).
+ - cpu0 build_cardcache: for each non-focused card, BLIT its pre-rendered tile at (cx, CAR_CY) instead of calling
+   draw_card (which does the expensive boxart min-filter scale + several blits). Focused card stays on L3
+   (draw_focus_card) unchanged. Tiles are static (normal cards never change) -> rendered ONCE, reused on EVERY
+   rebuild -> removes the per-card render cost from every nav/settle rebuild (~the 13-30ms build hitch).
+ - SAFETY/FALLBACK: gate on a worker-tiles-ready flag; until ready (or if bringup is skipped on stock tee), cpu0
+   uses the existing draw_card path -> shipping menu unchanged. Host-validate: pre-rendered-tile strip must equal
+   the draw_card strip pixel-for-pixel (integer phase => should be exact).
+NEXT: implement worker tile-render entry + cpu0 blit path + host validation, behind a flag. Multi-cycle build.
