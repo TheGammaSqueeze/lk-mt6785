@@ -1214,3 +1214,22 @@ split targets ONLY the sustained-60fps home carousel; other states fall back to 
 channel viability (lk_a_snes_bigcore_sgi.img BC MMIOPROBE). On a positive MMIOPROBE the split is ready to
 wire with confidence: cpu0 packs 23 words + publishes over MMIO each home frame; the worker unpacks into
 its snapshot m and renders its band; framebuffer out via worker->cpu0. All host-validated; no coherency.
+
+### MMIO STATE CHANNEL LOCATED (2026-08-28): SPM SW_RSV block @ 0x10006600 (the last prerequisite)
+The 23-word state channel needs contiguous safe MMIO scratch. Found it: the SPM SW-reserved block -
+SPM_SW_FLAG_0/1 + SPM_SW_RSV_0..19 span 0x10006600..0x1000663C (16 defined words), and a live scan of the
+whole 0x10006600..0x100066FF range (64 words) reads ALL ZERO = unused/safe. So 23 words at 0x10006600 is
+plenty. These are software-scratch (suspend/resume comm with the PCM firmware, idle at LK where no suspend
+runs), safe to write pre-kernel. It is the SAME SPM MMIO path the MMIOPROBE (0x10006250) already tests, so
+a positive BC MMIOPROBE validates this channel too.
+=> The MMIO 2-core home-carousel split is now FULLY UNBLOCKED and specified end-to-end:
+   1. CHANNEL: 0x10006600, 23 u32 words (SNES_STATE_NWORDS). [located, safe]
+   2. STATE PACK: snes_menu_pack_state -> the 23 words; completeness host-validated (statepack PASS). [done]
+   3. BAND SPLIT: snes_menu_render top/bottom bands, pixel-exact host-validated (rsplit PASS). [done]
+   4. cpu0 (home frames): pack 23 words to 0x10006600; render band [0,mid); signal worker.
+   5. worker: memcpy cpu0's frozen-snapshot menu -> local m (static fields correct), unpack the 23 MMIO
+      words over it, render band [mid,H) into the framebuffer (worker->cpu0 DRAM write - proven direction).
+   6. non-home states: single-core fallback.
+Everything is host-validated or located; the ONLY remaining unknown is MMIO read viability (BC MMIOPROBE).
+On a positive result the wiring is mechanical and low-risk (all pieces proven). This is a real, complete,
+coherency-free path to the original 60fps-lower-power 2-core win.
