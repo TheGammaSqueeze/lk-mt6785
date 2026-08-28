@@ -388,3 +388,38 @@ genuinely blocked: Lever 4 producer wiring and Lever 3 0x600 bringup both need t
 refinement is low-value (the worker PTW already works). The split-build lever is now DONE, proven
 exact at any row, and its balance requirement is known. On HW input, execute the OPERATOR NOTES
 decision tree.
+
+### HW PROBE RESULT (2026-08-28, decisive) - WALL CONFIRMED
+Flashed tee_patched_armcpc.img + lk_a_snes_bigcore_probe.img. UART (putty.log):
+  CPC_FLOW=0xb0000 (CPC_CTRL_ENABLE set); PSCI CPU_ON ret=0; magic+cached_ok=0xb16c0de5, cpu1 up.
+  BC RECON: CPC_SPMC_ST=0xc001  SPM_CPU_PWR_STATUS=0x434c (cpu1 ack bit10 set = powered).
+  BC LEVER1 PROBE: w_self_wb=0x5e1f3012  w_self_dev=0x0de03012  canpar_lo=0x51000b00  selfpar_lo=0x4c5d5b80
+  BC CANARY: cpu0->worker worker-read=0xa86dbdec (want 0xCA5A) ; worker->cpu0 cpu0-read=0x77773012 (OK)
+  BC WORKER FAULT: dabt far=0xab102d00 (deref of garbage menu_ptr 0xab102d01), stage=0x22.
+
+CLASSIFICATION (Lever 1 decision tree):
+- w_self_wb == 0x5E1F.. AND w_self_dev == 0x0DE0.. -> the worker's OWN WB-cached and Device paths
+  are SANE (it reads back its own writes with the MMU on).
+- canpar_lo bit0=0, PA=0x51000, selfpar_lo bit0=0 -> the worker's TRANSLATION of the failing VA is
+  CORRECT (right PA, no fault). So no TTBR0/TLB bug.
+- cross-core: worker->cpu0 WORKS (0x77773012); cpu0->worker FAILS with FIXED garbage (0xa86dbdec,
+  identical every frame), even though the region is Device-nGnRnE (the most endpoint-direct type).
+=> The failure is PURELY cpu0->worker cross-core read visibility. The intra-cluster DSU snoop
+   admission wall is CONFIRMED on HW. It is NOT a fixable LK bug. (Candidate bugs #1-4 all refuted:
+   translation correct, worker cache/Device sane.)
+
+SHARPENED PLAN (this changes the nonshare odds UPWARD):
+- The failing baseline is Device-nGnRnE OUTER-SHAREABLE. A key ARM detail: with the MMU OFF the worker
+  READ cpu0's data fine (it adopted the MMU snapshot MMU-off), but MMU-ON outer-shareable reads fail.
+  The un-admitted worker issuing SHAREABLE-domain transactions is exactly what the DSU will not service.
+- Candidate fix #1 (lk_a_snes_bigcore_nonshare.img) maps the region NON-shareable (SH=0b00), so the
+  worker issues NON-shareable transactions that need no shareability-domain membership -> endpoint-direct
+  to DRAM. This is precisely the axis the baseline failed on, so it is the RIGHT next test and its odds
+  are better than the Device-outer-shareable baseline suggested. FLASH IT NEXT; look for
+  "BC CANARY ... worker-read=0xCA5Axxxx".
+- If nonshare ALSO fails: the wall is total for post-bringup cross-core reads -> go to Lever 4 (producer
+  offload). Note the proven-good directions from THIS run: worker reads STATIC pre-bringup-cleaned DRAM
+  (the MMU snapshot read worked) and worker->cpu0 writes work; Lever 4 uses only those. The one dynamic
+  cpu0->worker signal must be avoided (round-robin) or carried some other way.
+- Lever 3 (A75 0x600): CPC_SPMC_ST=0xc001 has bits 6/7 CLEAR, so cluster1 is not reset-released at cold
+  boot; it would need a larger cold-boot patch. Lower priority than the nonshare test.
