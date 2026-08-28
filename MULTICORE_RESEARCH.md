@@ -1986,3 +1986,23 @@ REFINED CPCFIX: write ONLY the 7 global-config regs (a048,a658,a65c,a664,a668,a7
 these are the sole legitimate MMIO levers (one could be a global snoop/coherency enable). Dropped the status
 regs. If writing all 7 lands but does NOT yield "full split channel LIVE", the coherency admission is proven not
 MMIO-accessible from NS -> pivot to ATF patch or the confirmed-viable producer-offload.
+
+### ON-METAL RESULT #3 (2026-08-28, lk_a_snes_cpcfix_signed.img): NS MMIO cannot fix coherency
+CPCFIX writes: a658,a65c,a664,a668 LANDED; a048,a718,a748 DROPPED (readback unchanged = NS WRITE-PROTECTED).
+So MTK firewalls the coherency-sensitive mcusys registers from NS (CONFIG_MCUSYS_WRITE_PROTECT), and the ones
+that DID land are non-coherency config. Split verdict: FROZEN (BC split: wfin=0, wcnt=0, can1=0xa86dbdec). The
+MMIO writes did NOT admit DSU1 to the snoop domain.
+Full wall characterization from this boot's probes:
+ - cpu0->worker BROKEN: worker reads menu ptr = 0xab102d01 (cpu0 wrote 0x4c5d655c) -> then DATA-ABORTs
+   (fault type3, far=0xab102d00) dereferencing the garbage; canary 0x51000000 reads 0xa86dbdec (cpu0 wrote
+   0xca5a0001); even MMU-off read = 0xa86dbdec.
+ - worker->cpu0 WORKS: cpu0 reads the worker's canary2 = 0x77773012 (0x7777 pattern OK).
+ - worker SELF-coherent: w_self_wb=0x5e1f..., w_self_dev=0x0de0... both match -> worker's own cached/device
+   accesses are fine; the problem is purely CROSS-DSU cpu0->worker visibility.
+ - static pre-bringup data OK: 0x51000024=0x57a70ded (producer-offload viable).
+CONCLUSION (hardware-proven): the dynamic cross-DSU coherency fix is NOT achievable from NS - the critical
+registers are write-protected and the writable ones are not it; no clean coherency MMIO bit exists (staged
+hotplug). Remaining options: (A) ATF patch (EL3 can write the protected regs, but we have NO confirmed coherency
+target register - the staged hotplug found none - so this is a low-odds gamble on a464/718/748 being coherency),
+or (B) the PRODUCER-OFFLOAD, which is fully consistent with the measured hardware behavior (worker reads static
+pack data + worker->cpu0 writes both work) and needs NO coherency fix. Recommending B as the shippable win.
