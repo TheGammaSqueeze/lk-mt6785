@@ -461,6 +461,43 @@ void bigcore_start(void)
 			_dprintf("BC ACKPROBE cpu1: SPM_CPU_PWR_CON(1)=0x%x PWR_ON_ACK_b31=%u ; CPC_SPMC_ST=0x%x bit1=%u ; railstat0x160=0x%x\n",
 				 pcon, (pcon >> 31) & 1u, spmcst, (spmcst >> 1) & 1u, rd32(SPM_CPU_PWR_STATUS));
 		}
+#ifdef AYANEO_BC_MCSI
+		{	/* MCSI (Mediatek Cache Snoop Interconnect) diagnostic. The kernel keeps NO
+			 * MCSI register map (managed in ATF/BL31); it is reachable from NS only via
+			 * MTK SIP SMCs. mcusys/mcucfg are secure-write-protected, so a raw NS readl of
+			 * them returns 0 - the snoop-admission state must be read through ATF. Here cpu0
+			 * (after the worker joined) asks ATF to READ the live MCSI register file and to
+			 * flush caches BY SNOOP FILTER, logging every SMC return. This tells us (a) does
+			 * our ATF-at-LK even implement these SIPs, and (b) the live snoop-filter state at
+			 * LK time. Read-only + benign maintenance flush -> safe with the user away.
+			 * SMC32 IDs used verbatim (LK is AArch32, MTK_SIP_SMC_AARCH_BIT = 0). */
+			unsigned long rr1, rr2, rr3, v; int off;
+			_dprintf("BC MCSI: probing via ATF SIP (MCSI_A_READ=0x8200028A, FLUSH_BY_SF=0x82000283)\n");
+			for (off = 0; off <= 0x40; off += 4) {
+				rr1 = rr2 = rr3 = 0;
+				v = mt_secure_call_all(0x8200028Aul, (unsigned long)off, 0, 0, 0, &rr1, &rr2, &rr3);
+				_dprintf("BC MCSI RD off=0x%03x ret=0x%lx r1=0x%lx\n", off, v, rr1);
+			}
+			/* a couple of higher offsets where per-cluster snoop-enable / config often sit */
+			{ unsigned hoff[] = {0x100u, 0x200u, 0x400u, 0x600u, 0x800u}; int hi;
+			  for (hi = 0; hi < (int)(sizeof(hoff)/sizeof(hoff[0])); hi++) {
+				rr1 = rr2 = rr3 = 0;
+				v = mt_secure_call_all(0x8200028Aul, hoff[hi], 0, 0, 0, &rr1, &rr2, &rr3);
+				_dprintf("BC MCSI RD off=0x%03lx ret=0x%lx r1=0x%lx\n", (unsigned long)hoff[hi], v, rr1);
+			  }
+			}
+			rr1 = rr2 = rr3 = 0;
+			v = mt_secure_call_all(0x82000288ul, 0, 0, 0, 0, &rr1, &rr2, &rr3); /* MCUSYS_ACCESS_COUNT: is the SIP live? */
+			_dprintf("BC MCSI MCUSYS_ACCESS_COUNT ret=0x%lx r1=0x%lx\n", v, rr1);
+			rr1 = rr2 = rr3 = 0;
+			v = mt_secure_call_all(0x82000283ul, 0, 0, 0, 0, &rr1, &rr2, &rr3); /* CACHE_FLUSH_BY_SF */
+			_dprintf("BC MCSI FLUSH_BY_SF ret=0x%lx r1=0x%lx\n", v, rr1);
+			/* re-read whatever the worker last saw through the cpu0 canary AFTER the SF flush */
+			arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
+			_dprintf("BC MCSI post-flush: w_can1=0x%x w_menuw0=0x%x w_static_can=0x%x\n",
+				 bc->w_can1, bc->w_menuw0, bc->w_static_can);
+		}
+#endif
 	}
 	g_bc_pwrstat = rd32(SPM_CPU_PWR_STATUS);
 #endif

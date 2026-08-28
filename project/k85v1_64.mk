@@ -86,6 +86,17 @@ DEFINES += AYANEO_BC_SGI
 DEFINES += AYANEO_BIGCORE_EXPT
 DEFINES += AYANEO_DEBUG_LOGGING
 endif
+# Sub-experiment: after the worker joins, cpu0 asks ATF (secure SIP SMCs) to READ the
+# MCSI (Mediatek Cache Snoop Interconnect) register file and to flush caches BY SNOOP
+# FILTER, logging every SMC return over UART. Diagnoses whether ATF-at-LK exposes the
+# MCSI SIPs and what the live snoop-admission state of the late core is (mcucfg is
+# secure-write-protected, so raw NS reads see 0 - must go through ATF).
+AYANEO_BC_MCSI ?= no
+ifeq ($(AYANEO_BC_MCSI),yes)
+DEFINES += AYANEO_BC_MCSI
+DEFINES += AYANEO_BIGCORE_EXPT
+DEFINES += AYANEO_DEBUG_LOGGING
+endif
 # AYANEO experiment (animated-boot-logo branch): paint a scrolling rainbow
 # gradient over the whole panel during LK instead of the static eMMC boot logo.
 # Set to no to restore the normal boot logo.
