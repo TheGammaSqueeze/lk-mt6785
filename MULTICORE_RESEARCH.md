@@ -1,5 +1,28 @@
 # MT6785 multi-core-at-LK revival research
 
+## === TL;DR (authoritative current understanding; read this first) ===
+Some EARLY entries below are SUPERSEDED - the investigation evolved. Current definitive picture:
+- SYMPTOM: an LK-brought-up worker core (PSCI CPU_ON of mpidr 0x100) is fully powered (SPM/SPMC ack bit31 set)
+  but non-coherent: its LOADS miss cpu0's STORES (even uncached), while its STORES are seen by cpu0.
+- MECHANISM (settled): MT6785 is TWO physical DSU clusters by MPIDR aff1 - DSU0={cpu0-3}, DSU1={cpu4-7} (the
+  6/2 cpu-map is a DVFS view, not coherency). cpu0=DSU0, worker cpu4=DSU1. Cross-DSU coherency is admitted by
+  CPC/interconnect HARDWARE at cluster power-on; at LK that cross-DSU snoop admission does not complete for DSU1.
+  cpu0's cleaned data sits at the in-domain PoC (shared L3), which the un-admitted DSU1 cannot snoop and is not
+  in DRAM - hence even uncached worker reads are stale.
+- RULED OUT (all): SPM/CPC power regs, CPUECTLR/SMPEN, AArch32, cache set/way, SSPM/MCUPM firmware (no coherency
+  IPI; loads at kernel stage), EMI MPU (symmetric AP-domain), software MCSI (this ATF has NO MCSI driver and does
+  NOT implement the MCSI SIP block 0x28x - verified by disasm), and the DSU cluster sysregs (ATF DOES set
+  CLUSTERPWRCTLR/PWRDN s3_0_c15_c3_5/6 at EL3 on bringup). So the gap is the cross-DSU INTERCONNECT snoop route.
+- FIX (open, needs HW): a CPC/mcucfg interconnect register (identify via the whole-DSU1 hotplug-diff) that LK
+  pokes, or an ATF patch. The SMC-based MCSI fix CANNOT work on this tee.img (SIP absent).
+- DELIVERABLES (staged /mnt/c/pairmini, pushed): lk_a_snes_mcsi_signed.img (diagnostic incl. raw mcucci read),
+  lk_a_snes_mcsifix_signed.img (MCSI-admit attempt, diagnostic-only here), lk_a_snes_signed.img (clean restore),
+  tee_patched_armcpc.img (prereq). DECISIVE on-device test: tools/live_regpoke/run_mcucfg_diff.sh. The 2-core
+  render split is already wired (bc_dispatch, wall-clock fallback, "full split channel LIVE" self-verdict) so a
+  working coherency fix immediately yields the speedup. See OPERATOR_FLASH_GUIDE.md.
+- STATUS: offline analysis saturated; every remaining step needs the MTK target (0123456789ABCDEF) online.
+## === end TL;DR ===
+
 Live research log. Goal: get a 2nd (or more) CPU core doing useful work during the LK-stage
 SNES menu (2 cores at a lower clock -> 60fps at lower power, or just more compute). This
 revisits a path previously concluded a "dead end" with fresh eyes and a specific new lever.
