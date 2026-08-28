@@ -2133,3 +2133,15 @@ margin before the next SOF - tear-free AND 60fps (one barrier). Not built yet: h
 variants 1/2 to avoid flooding untested images. If both still tear -> build variant 3 (pre-config vblank wait in
 ayaneo_canvas_present_layers). NOTE: this display-tearing work is the user's actual priority now, distinct from
 the (closed) multicore coherency research.
+
+### TEARING FIXED / TRANSITION FLICKER REMAINS (2026-08-29, user tested)
+User: notear + safe variants BOTH fix carousel-movement tearing (idle 60fps, movement 30fps, no tear). Remaining:
+slight FLICKER on the layered<->single-buffer transition - moving the cursor from the game list to the TOP
+(menubar/Display) or BOTTOM (suspend-point list), enter AND exit. It survives always-vsync => NOT a timing issue;
+it is a CONTENT/ORDERING glitch on the OVL-layered <-> single-buffer switch (present_layers disables L2/L3 vs the
+single-buffer L0; the card strip and the cursor hand off between the OVL layers and the full L0 render during the
+slide). Likely the L3-cursor <-> L0-cursor handoff or an L2-still-enabled 1-frame overlap. Built
+lk_a_snes_notear_debug.img (no-tear fix + AYANEO_DEBUG_LOGGING) which emits, for 8 frames around each transition,
+"SNESX lay=%d st=%d openy=%d rend=..us pres=..us tot=..us" + the present phase breakdown. Ask the user to trigger
+the flicker and paste those lines - the per-frame rend/present timing + lay/state across the boundary pinpoints
+whether a frame overruns or a layer toggles a frame late. Then fix the handoff directly.
