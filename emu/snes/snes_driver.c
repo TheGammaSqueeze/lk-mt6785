@@ -993,13 +993,19 @@ static int snes_emu_thread(void *arg)
 				t_ph2 = gpt4_get_current_tick();
 #endif
 				l3_live = SNES_OVL_L3_PA + (s_l3_flip ? l3_size : 0u);
-				/* Decide the layered present vsync sync from the WHOLE frame CPU cost (render
-				 * + L2 build + L3 cursor), measured just before the swap. Fit a vsync (steady
-				 * idle/pan) -> skip the explicit wait, config_input FRAME_DONE syncs it (60fps);
-				 * overran (L2 rebuild OR a live crossfade render in movement) -> wait so the swap
-				 * lands on vblank not mid-scanout. The old render-only skip missed the cursor +
-				 * build cost, so overrunning movement pan frames tore (the flicker). */
-				ayaneo_present_skip_vsync(((gpt4_get_current_tick() - t_frame0) / 13u) < 15000u);
+				/* vsync sync for the layered present. TEARING FIX: a smooth pan frame is FAST
+				 * (<15ms, the OVL does the panning), so the old "skip when fast" skipped the
+				 * vsync wait DURING a slide - and then the OVL src_x pan reconfig latches
+				 * mid-scanout -> visible tearing on movement (the regression the OVL 60fps work
+				 * introduced vs the old single-core 30fps). So NEVER skip while the strip is
+				 * moving (panning / rebuilt) or the cursor is animating a slide: sync those to
+				 * vblank (tear-free). Only skip when the frame is STATIC (true idle), where a
+				 * mid-scanout latch is invisible and 60fps is free. */
+				{
+					int moving = l2_pan != 0 || rebuilt || save_cont_shift != 0.0f;
+					ayaneo_present_skip_vsync(!moving &&
+						((gpt4_get_current_tick() - t_frame0) / 13u) < 15000u);
+				}
 				ayaneo_canvas_present_layers(l2_live, l2_pan, rebuilt,
 							     l3_live, SNES_CURSOR_Y0, SNES_CURSOR_Y1);
 #ifdef AYANEO_DEBUG_LOGGING
