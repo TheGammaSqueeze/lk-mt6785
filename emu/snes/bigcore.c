@@ -536,12 +536,14 @@ void bigcore_start(void)
 			 * read back (mcusys may write-protect NS -> dropped write reveals the ATF path is needed), and let
 			 * the per-frame bc_dispatch report "full split channel LIVE" if this admits DSU1 to the snoop domain. */
 			{
+				/* GLOBAL config regs only (constant across live hotplug incl DSU1-down = not per-core status).
+				 * The status regs a230/a814/a840/a844 were dropped: their LK-vs-live delta was confounded by
+				 * LK having a different online-core set, not by coherency. These 7 are the sole clean MMIO levers. */
 				static const unsigned cpcfix[][2] = {
-					{0x0c53a048u, 0x0000000bu}, {0x0c53a230u, 0x00000040u},
-					{0x0c53a658u, 0x00000900u}, {0x0c53a65cu, 0x0007fe71u},
-					{0x0c53a664u, 0xfb030500u}, {0x0c53a668u, 0x0020091fu},
-					{0x0c53a718u, 0x00910069u}, {0x0c53a748u, 0x00060721u},
-					{0x0c53a814u, 0x200b0000u}, {0x0c53a844u, 0x00100000u},
+					{0x0c53a048u, 0x0000000bu}, {0x0c53a658u, 0x00000900u},
+					{0x0c53a65cu, 0x0007fe71u}, {0x0c53a664u, 0xfb030500u},
+					{0x0c53a668u, 0x0020091fu}, {0x0c53a718u, 0x00910069u},
+					{0x0c53a748u, 0x00060721u},
 				};
 				int fi;
 				_dprintf("BC CPCFIX: writing %d CPC candidate regs to live-coherent values\n",

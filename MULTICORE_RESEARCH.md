@@ -1970,3 +1970,19 @@ lk_a_snes_cpcfix_signed.img writes ALL of these to their coherent values and rea
 DID NOT write CPC regs on the LIVE running kernel (crash risk, user away) - the isolated LK flash tests writes
 safely. Awaiting the CPCFIX flash: LANDED+"full split channel LIVE" => solved (then bisect); DROPPED => NS
 write-protected, fix must be an ATF patch (I have the ATF + exact target values now).
+
+### STAGED-HOTPLUG ISOLATION (2026-08-28, live): status regs were CONFOUNDED; only globals are clean signals
+Read the candidates across all-online / cpu4-off / cpu4,5,6-off / cpu4,5,6,7-off (DSU1 down):
+ - GLOBAL (constant across ALL states, incl DSU1-down): 0c53a048, a658, a65c, a664, a668, a718, a748. These are
+   config Linux sets at boot and LK does not (a048: LK=0x3 vs 0xb, etc). Clean "LK is missing this config" signal.
+ - STATUS/STATE (vary continuously with which cores are online): 0c53a230, a814, a840(SPMC_ST), a844. My earlier
+   "prime suspects (a230/a844/a814)" were CONFOUNDED - LK differs from live on these only because LK has a
+   different set of cores online (cpu0 + worker) than live (all 8), NOT because of coherency. Writing them is
+   pointless (they reflect state) and potentially harmful.
+ - NO register showed the clean cluster-coherency signature (constant while DSU1 has >=1 core, changing only when
+   the last DSU1 core leaves). So there is no obvious CPC MMIO bit that means "DSU1 in the snoop domain" - the
+   coherency admission is likely DSU-internal (snoop filter), not a CPC MMIO register.
+REFINED CPCFIX: write ONLY the 7 global-config regs (a048,a658,a65c,a664,a668,a718,a748) to their live values -
+these are the sole legitimate MMIO levers (one could be a global snoop/coherency enable). Dropped the status
+regs. If writing all 7 lands but does NOT yield "full split channel LIVE", the coherency admission is proven not
+MMIO-accessible from NS -> pivot to ATF patch or the confirmed-viable producer-offload.
