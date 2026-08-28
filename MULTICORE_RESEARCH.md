@@ -1777,3 +1777,15 @@ the worker are in different physical DSUs, so cross-DSU snoop admission (managed
 SoC, since the ATF has no software MCSI/CCI driver) is genuinely required and is the layer being skipped at LK.
 This is the stable foundation under all the register-target uncertainty: WHERE (cross-DSU coherency admission)
 is settled; only the exact CPC/mcucfg register that performs it is open, to be found by the mcucfg hotplug-diff.
+
+### DECISIVE EXPERIMENT PREPARED (2026-08-28): cross-DSU mcucfg hotplug-diff runner (task a, done right)
+Wrote tools/live_regpoke/run_mcucfg_diff.sh so the decisive test runs cleanly the moment the MTK target returns.
+Design corrects the earlier partial diff: because DSU1 = {cpu4,5,6,7}, catching the DSU-cluster coherency
+register requires powering the WHOLE DSU1 off (offline cpu4-7) vs on - offlining only cpu4 leaves DSU1 powered
+and moves just that core's power bit. The script dumps mcucfg (0x0c530000, 64KB) and mcucci (0x0c510000, 4KB)
+nonzero-only via regpoke (nz=1) with DSU1 fully OFF vs ON, then diffs. Any register that differs BEYOND the
+per-cpu power-gating bits (which the earlier CPC 0x0c53a700 diff already characterized) is the cross-DSU snoop/
+coherency-admission control that the ATF/CPC sets when DSU1 joins the domain but LK does not - the true fix
+target and the register an ATF patch (or a direct CPC/mcucfg poke, if NS-writable) must set. Needs regpoke.ko
+loadable (matching Module.symvers) and the device online. This is the single most informative remaining step;
+everything offline points here. cpu4 = mpidr 0x100 confirmed from the DTS.
