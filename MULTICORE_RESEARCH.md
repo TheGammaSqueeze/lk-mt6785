@@ -1008,3 +1008,22 @@ coherency/power-relevant subset compared to known LK values:
 coherent core and our LK core. This is further confirmation (now across ALL four MMIO power/CPC/mcusys
 blocks) that the incoherence is not any software-visible register - it is the DSU-internal snoop-input
 (P-Channel) the CPC-arm bypass never fires. The coherent-path MMIO investigation is complete and negative.
+
+### KERNEL SMP BRINGUP RE (2026-08-28): standard PSCI, no coherency hook - FINAL CLOSURE
+Checked the last unexamined software layer: the kernel SMP secondary-bringup path (arch/arm64/kernel/smp.c
+smp_prepare_cpus / cpu_up) is STANDARD PSCI with NO DSU/CCI/L3/coherency hook. The only MTK-specific
+mcusys code (base/power/dcm) is DCM = dynamic CLOCK management, not coherency. So the kernel does nothing
+special for secondary-core coherency that LK omits - it relies on the SAME automatic hardware coherency
+our LK PSCI path already invokes (same ATF pure-HW power-on). Preloader is before BOTH LK and kernel, so
+it cannot be the LK-vs-kernel difference either.
+
+=> EVERY software layer is now examined and negative: ATF power-on (pure HW, replicated), kernel SMP
+bringup (standard PSCI, no hook), MCDI/SSPM firmware (idle-only), all four MMIO blocks (SPM/CPC/mcucci/
+mcucfg, no coherency register), no CPUECTLR coherency bit, and the frozen read traces to a boot_b DRAM
+snapshot. There is NO software lever at ANY level (bootloader, ATF, kernel, firmware, MMIO, sysreg) that
+LK is missing. The CPC-arm-woken core's incoherence is a DSU-internal hardware behavior: the same PSCI
+power-on that yields a coherent core at kernel time yields an incoherent one at LK, with byte-identical
+software state, so the difference is DSU-internal (snoop-input P-Channel) and NOT software-addressable at
+LK. The coherent-bringup investigation is DEFINITIVELY and EXHAUSTIVELY closed. Only the staged hardware
+experiments (cpcbit29 4-probe + DVM) can add anything, and only by luck. The realistic deliverable is the
+producer-offload (predicted viable) pending the user's flash + risk/value decision.
