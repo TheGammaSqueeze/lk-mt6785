@@ -1165,3 +1165,22 @@ DECISION TABLE on flash:
 - Both frozen/zero => the worker's ENTIRE read path is frozen (not just DRAM) - closes the MMIO idea; the
   only channel left would be the worker reading a peripheral it can independently poll (e.g. the gamepad).
 So one flash of lk_a_snes_bigcore_sgi.img now cleanly answers "is there ANY cpu0->worker channel".
+
+### KEY FRAMING (2026-08-28): a live MMIO channel unlocks the ORIGINAL per-frame split, not just offload
+The dynamic menu state that the render depends on is SMALL. cc_signature (snes_menu.c:817) enumerates the
+strip's dynamic inputs: focus, state, sort_rule, ngames, aspect, sel_world, resume_dim, open_y (8 fields);
+the full snes_menu_render adds cont_shift, xfade_t, prev_focus, m->clock (cursor pulse) and a few slide
+timers (cur_slide_t, screen_oy) - roughly ~20 words total. The rest of the ~4KB menu struct is STATIC
+(loaded once at init, in the worker's frozen snapshot -> readable). So if the SGI/MMIO experiment shows
+MMIO is a live cpu0->worker channel, cpu0 can PUBLISH those ~20 dynamic words each frame via MMIO (through
+SPM scratch regs with a tiny streaming protocol, or a wider MMIO scratch window), and BOTH cores render
+their band via snes_menu_render (the split is host-validated pixel-exact - host_render.c rsplit). That is
+the ORIGINAL "60fps at lower power" per-frame render split - achievable with NO cache coherency, purely on
+the MMIO peripheral path + the proven worker->cpu0 framebuffer writes.
+So the SGI/MMIO flash (lk_a_snes_bigcore_sgi.img) is the single most important test in the whole effort:
+- BC MMIOPROBE tracks 0x5A5Axxxx => MMIO channel live => the per-frame render split (the real goal) is
+  reachable: cpu0 publishes ~20 dynamic words/frame, worker renders its band. Wire it.
+- both channels frozen => the worker's whole read path is dead, and the only remaining model is a fully
+  INDEPENDENT worker (reads the gamepad MMIO itself, runs its own menu state machine in lockstep) - which
+  ALSO needs MMIO reads to work, so a frozen MMIOPROBE likely closes even that.
+This is why MMIO viability is the crux: it is the difference between the full original win and a hard wall.
