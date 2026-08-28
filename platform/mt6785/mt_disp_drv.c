@@ -965,7 +965,13 @@ extern int priamry_display_wait_for_vsync(void);
  * second barrier that halves the rate. The menu driver sets this each frame from the
  * measured render time; default 0 = wait (safe for callers that do not set it). */
 static int s_present_skip_vsync;
+#ifdef AYANEO_ALWAYS_VSYNC
+/* Guaranteed tear-free: ignore the skip hint and ALWAYS wait for vblank after the swap
+ * (matches the old single-core no-tear behaviour). May cap movement at 30fps. */
+void ayaneo_present_skip_vsync(int skip) { (void)skip; s_present_skip_vsync = 0; }
+#else
 void ayaneo_present_skip_vsync(int skip) { s_present_skip_vsync = skip; }
+#endif
 
 void ayaneo_canvas_present(void)
 {

@@ -191,3 +191,9 @@ AYANEO_CARDTILES ?= no
 ifeq ($(AYANEO_CARDTILES),yes)
 DEFINES += AYANEO_CARDTILES
 endif
+# Guaranteed tear-free display: ignore the vsync-skip hint and always wait for vblank
+# after every swap (matches the old single-core no-tear behaviour; may cap movement at 30fps).
+AYANEO_ALWAYS_VSYNC ?= no
+ifeq ($(AYANEO_ALWAYS_VSYNC),yes)
+DEFINES += AYANEO_ALWAYS_VSYNC
+endif
