@@ -507,6 +507,28 @@ void bigcore_start(void)
 						 k, sc, sc&1u, (sc>>1)&1u, (sc>>30)&1u, (sc>>31)&1u);
 				}
 			}
+			/* mcucci reads all-zero (MCSI unused here). The real coherency controller on MT6785 is the CPC
+			 * in mcucfg. Dump the CPC block + DSU-top config nonzero so we can compare DSU0 (cpu0, coherent)
+			 * vs DSU1 (worker, powered-not-coherent) and find the per-cluster coherency/snoop bit. Also dump
+			 * the per-cpu SPM power-con for all 8 cores. NS reads of mcucfg return real values (the earlier
+			 * CPC 0x0c53a700 diff did), unlike mcucci. */
+			{
+				unsigned a; int shown;
+				_dprintf("BC CPCDUMP: per-cpu SPM_CPU_PWR_CON 0..7:\n");
+				for (a = 0; a < 8; a++)
+					_dprintf("BC CPCDUMP SPM_CPU_PWR_CON(%u)=0x%x\n", a, rd32(0x10006200u + 0x208u + (a<<2)));
+				_dprintf("BC CPCDUMP: mcucfg CPC block 0x0c53a000..0x0c53ac00 (nonzero):\n");
+				shown = 0;
+				for (a = 0x0c53a000u; a < 0x0c53ac00u; a += 4) {
+					unsigned v2 = rd32(a);
+					if (v2) { _dprintf("BC CPCDUMP 0x%x=0x%x\n", a, v2); if (++shown > 200) break; }
+				}
+				_dprintf("BC CPCDUMP: mp_cpusys_top/DSU 0x0c538000..0x0c538200 (nonzero):\n");
+				for (a = 0x0c538000u; a < 0x0c538200u; a += 4) {
+					unsigned v2 = rd32(a);
+					if (v2) _dprintf("BC CPCDUMP 0x%x=0x%x\n", a, v2);
+				}
+			}
 			rr1=rr2=rr3=0; v = MCSI_RD(0x10); _dprintf("BC MCSI SF_INIT(0x010)=0x%lx\n", v);
 			rr1=rr2=rr3=0; v = MCSI_RD(0x28); _dprintf("BC MCSI SNP_PENDING(0x028)=0x%lx\n", v);
 			for (i = 0; i < 8; i++) {

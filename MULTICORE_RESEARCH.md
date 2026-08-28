@@ -1891,3 +1891,25 @@ the ATF writes; it is only visible as a hardware-driven state change, i.e. exact
 hotplug-diff (run_mcucfg_diff.sh) captures (a register that flips when the CPC powers DSU1 into the domain).
 This is why the offline ATF RE cannot pin it and the on-device diff is mandatory. No further offline ATF parsing
 is warranted. State unchanged: saturated, awaiting HW.
+
+### ON-METAL RESULT #1 (2026-08-28, user flashed lk_a_snes_mcsi_signed.img): MCSI ruled out on hardware
+UART (BC MCSI lines) from the real MT6785:
+ - BC ACKPROBE cpu1: SPM_CPU_PWR_CON(1)=0x80000005 (PWR_ON_ACK=1), CPC_SPMC_ST=0xc003 - worker fully powered.
+ - BC MCSI SIP-LIVE: NO - SIP absent (CENTRAL_CTRL via SMC = 0xffffffff). Confirms MCSI_NS_ACCESS not in this ATF.
+ - BC MCSI RAW @0x0c510000: CENTRAL=0x0, SF_INIT=0x0, SNP_PEND=0x0, and ALL 8 SLV SNOOP_CTRL=0x0. So the mcucci/
+   MCSI block reads ALL ZERO from NS - it is unused/inactive (or NS-zeroed) on this SoC. MCSI at 0x0c510000 is
+   DEFINITIVELY NOT the coherency layer here, on metal. (The SMC-path SLV lines reading 0xffffffff are just the
+   absent SIP returning -1; ignore.)
+ - BC MCSI post: w_static_can=0x57A70DED (worker CORRECTLY reads pre-bringup STATIC data -> producer-offload is
+   VIABLE on metal), but w_can1=0xa86dbdec (NOT 0xCA5A -> worker does NOT see cpu0's post-bringup store). The
+   DVM/TLBIALLIS lever did NOT change it (post-DVM identical). So the dynamic coherency wall is CONFIRMED on
+   hardware, and it is NOT MCSI and NOT fixable by DVM broadcast.
+CONCLUSION: two facts nailed on metal - (1) the wall is real and MCSI/DVM are not it; (2) static-input producer-
+offload works (worker reads pre-cleaned static data). The remaining coherency-fix hunt moves to the CPC.
+
+### ON-METAL RESULT #2 PROBE BUILT: lk_a_snes_cpcdump_signed.img (CPC/DSU register dump)
+Next image staged to /mnt/c/pairmini: extends the diagnostic to raw-dump (NS reads of mcucfg return real values,
+unlike mcucci) - per-cpu SPM_CPU_PWR_CON[0..7], the CPC block 0x0c53a000..0x0c53ac00 (nonzero), and the
+mp_cpusys_top/DSU config 0x0c538000..0x0c538200 (nonzero). Goal: compare DSU0 (cpu0, coherent) vs DSU1 (worker,
+powered-not-coherent) CPC state to find the per-cluster coherency/snoop bit that differs. FLASH THIS NEXT and
+send the BC CPCDUMP lines.
