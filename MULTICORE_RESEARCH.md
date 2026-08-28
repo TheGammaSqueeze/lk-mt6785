@@ -1044,3 +1044,23 @@ system-state (the snoop-input P-Channel), the ONLY remaining variable being the 
 time the system has been running with SSPM/MCDI active and cores cycled through the full power FSM; at LK
 cpu1 is a first-ever cold join). Not reproducible or fixable by any software means at LK. Investigation
 remains definitively closed; deliverable is the producer-offload pending the user's flash + decision.
+
+### WARM-CYCLE EXPERIMENT: designed, build-ready, DEFERRED (2026-08-28)
+Last untested coherent-path mechanism: does a warm PSCI CPU_OFF->CPU_ON cycle of the worker establish
+coherency the cold first-join did not (runtime-context hypothesis)? Design (build-ready):
+- Worker (bc_worker_entry, per-frame after the canary read ~line 119): if job.cmd==WARM_OFF, read the
+  canary into w_can_cold, then issue PSCI CPU_OFF via SMC (AArch32: r0=0x84000002, smc #0) instead of
+  rendering.
+- cpu0 (bigcore_start, self-contained, driving the go/done handshake manually): bringup1 (PSCI CPU_ON) ->
+  post go cmd=READ (worker reads canary1->w_can_cold) -> post go cmd=WARM_OFF (worker self-powers-off) ->
+  poll SPM 0x160 for cpu1 bit clear -> write canary2 -> bringup2 (PSCI CPU_ON, WARM) -> post go cmd=READ
+  (worker reads canary2->w_can_warm) -> log "BC WARMCYCLE: cold=0x.. warm=0x..". warm==0xCA5A while
+  cold!=0xCA5A => the warm cycle fired coherency (the win).
+- ~50 lines across bigcore_comms.h + snes_driver.c (worker cmd path + SMC) + bigcore.c (double bringup).
+CONFIDENCE: LOW (~10-15%) - the DSU coherency P-Channel is specified to fire on a cold power-up too, so a
+warm cycle is unlikely to differ; our first bringup is already full-ATF PSCI.
+DECISION: DEFERRED, not built. Rationale: 6 diagnostic images + the 4-probe cpcbit29 + DVM are already
+staged and NONE has been flashed yet. Staging a 7th speculative experiment before any datapoint exists is
+premature - the bottleneck is the flash, and the CPCDUMP/STATICPROBE results will redirect what is worth
+building. Build the warm-cycle only if the staged diagnostic comes back fully negative AND the user wants
+the last coherent-path shot taken. Until a flash happens, further experiment-staging is not productive.
