@@ -1027,3 +1027,20 @@ software state, so the difference is DSU-internal (snoop-input P-Channel) and NO
 LK. The coherent-bringup investigation is DEFINITIVELY and EXHAUSTIVELY closed. Only the staged hardware
 experiments (cpcbit29 4-probe + DVM) can add anything, and only by luck. The realistic deliverable is the
 producer-offload (predicted viable) pending the user's flash + risk/value decision.
+
+### BRINGUP-PATH VERIFICATION (2026-08-28): worker uses full ATF path, refutes reset-skip
+Checked whether the worker might skip ATF's EL3 reset (which would make the software state NOT identical
+to a kernel-context core). REFUTED by the code: bc_manual_poweron is dead (`(void)&bc_manual_poweron`),
+so LK does NOT set MCUCFG_BOOTADDR/INITARCH; the bringup is PURE PSCI CPU_ON(0x100, entry=bc_entry_arm2).
+Additionally MCUCFG (0x0C53xxxx) is NS WRITE-LOCKED (boot-addr/initarch writes silently drop), so LK
+CANNOT redirect the core's boot to bypass ATF. Therefore cpu1 boots at ATF's RVBAR -> runs ATF's full EL3
+warm-boot + per-core reset handler (Cortex-A55 CPUECTLR/errata setup) -> ATF PSCI-finish ERETs to our
+AArch32 NS EL1 entry - EXACTLY the path a kernel-context secondary takes. So the worker's core config
+(CPUECTLR etc.) is ATF-set, identical to a coherent kernel core. The bringup PATH is byte-identical too.
+
+This removes the last "maybe the software differs" doubt: same PSCI, same ATF EL3 reset, same core config,
+same MMIO state - yet coherent at kernel, incoherent at LK. The difference is conclusively DSU-internal
+system-state (the snoop-input P-Channel), the ONLY remaining variable being the runtime CONTEXT (at kernel
+time the system has been running with SSPM/MCDI active and cores cycled through the full power FSM; at LK
+cpu1 is a first-ever cold join). Not reproducible or fixable by any software means at LK. Investigation
+remains definitively closed; deliverable is the producer-offload pending the user's flash + decision.
