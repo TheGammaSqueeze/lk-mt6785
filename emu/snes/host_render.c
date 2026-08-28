@@ -45,14 +45,17 @@ int main(int argc, char **argv)
 	if (getenv("SNES_ASPECT43")) { menu.aspect = 1; menu.chrome_ready = 0; }  /* rebuild chrome for 4:3 */
 
 	/* Split-build validation: `host_render <pack> - vsplit` proves the 2-core card-strip
-	 * split is exact - a full snes_menu_build_cardcache must equal two disjoint band builds
-	 * ([0,mid)+[mid,H)) pixel for pixel. This de-risks the split-build lever (halve the
-	 * ~30ms strip build across cpu0/cpu1) entirely on the host. */
+	 * split is exact at ARBITRARY split rows - a full snes_menu_build_cardcache must equal two
+	 * disjoint band builds ([0,mid)+[mid,H)) pixel for pixel for every mid. Exactness at any
+	 * mid is what lets the driver pick a CONTENT-BALANCED split (mid at the middle of the
+	 * non-empty band) so cpu0 and cpu1 do equal work, which is what actually lets the clock
+	 * drop for the low-power 2-core steady state. Reports the content band + per-split balance. */
 	if (argc > 3 && strcmp(argv[3], "vsplit") == 0) {
-		int LW = SNES_L2_W, LH = SNES_L2_BAND_H, mid = LH / 2, s, bad = 0, first = -1;
+		int LW = SNES_L2_W, LH = SNES_L2_BAND_H, s, allbad = 0, cy0, cy1, cmid, si;
 		uint32_t *A = calloc((size_t)LW * LH, 4);
 		uint32_t *B = calloc((size_t)LW * LH, 4);
 		snes_target ct = {0};
+		int splits[5];
 		memset(&in, 0, sizeof(in));
 		for (s = 0; s < 240; s++) snes_menu_update(&menu, &in, 1.0f / 60.0f);   /* settle attract */
 		ct.pitch = LW; ct.W = LW; ct.H = LH;
@@ -61,17 +64,34 @@ int main(int argc, char **argv)
 		snes_target_view(&ct, 1.0f, 1.0f, 0.0f, 0.0f);
 		ct.fb = A;
 		snes_menu_build_cardcache(&menu, &ct);                    /* full (untouched path) */
-		ct.fb = B;
-		snes_menu_build_cardcache_band(&menu, &ct, 0, mid);       /* cpu0 half */
-		snes_menu_build_cardcache_band(&menu, &ct, mid, LH);      /* cpu1 half */
-		for (i = 0; i < LW * LH; i++)
-			if (A[i] != B[i]) { bad++; if (first < 0) first = i; }
-		if (bad == 0)
-			printf("VSPLIT: PASS (full == [0,%d)+[%d,%d); %d px identical)\n", mid, mid, LH, LW * LH);
-		else
-			printf("VSPLIT: FAIL (%d/%d px differ; first @ row %d col %d: full=0x%08x split=0x%08x)\n",
-			       bad, LW * LH, first / LW, first % LW, A[first], B[first]);
-		return bad ? 2 : 0;
+		cy0 = menu.cc_y0; cy1 = menu.cc_y1;                       /* non-empty content band */
+		cmid = (cy0 + cy1) / 2;                                   /* content-balanced split row */
+		printf("VSPLIT: content band rows [%d,%d] (%d non-empty of %d); buffer-mid=%d content-mid=%d\n",
+		       cy0, cy1, cy1 - cy0 + 1, LH, LH / 2, cmid);
+		/* test exactness at buffer-mid, content-mid, and asymmetric points */
+		splits[0] = LH / 2; splits[1] = cmid; splits[2] = LH / 4; splits[3] = (3 * LH) / 4; splits[4] = 1;
+		for (si = 0; si < 5; si++) {
+			int mid = splits[si], bad = 0, first = -1, top, bot;
+			for (i = 0; i < LW * LH; i++) B[i] = 0xDEADBEEF;      /* poison to catch unwritten rows */
+			ct.fb = B;
+			snes_menu_build_cardcache_band(&menu, &ct, 0, mid);
+			snes_menu_build_cardcache_band(&menu, &ct, mid, LH);
+			for (i = 0; i < LW * LH; i++)
+				if (A[i] != B[i]) { bad++; if (first < 0) first = i; }
+			if (bad) allbad++;
+			/* per-core balance = non-empty rows each side of the split */
+			top = (cy1 < mid ? cy1 : mid - 1) - cy0 + 1; if (top < 0) top = 0;
+			bot = cy1 - (cy0 > mid ? cy0 : mid) + 1;     if (bot < 0) bot = 0;
+			printf("  mid=%4d: %s  (cpu0 rows=%d, cpu1 rows=%d)%s\n",
+			       mid, bad ? "FAIL" : "PASS", top, bot,
+			       bad ? "" : (si == 1 ? "  <- content-balanced" : ""));
+			if (bad)
+				printf("    first diff @ row %d col %d: full=0x%08x split=0x%08x\n",
+				       first / LW, first % LW, A[first], B[first]);
+		}
+		printf("VSPLIT: %s\n", allbad ? "FAIL (split is NOT exact at some point)"
+		                              : "PASS (split exact at every point; content-balanced split is safe)");
+		return allbad ? 2 : 0;
 	}
 
 	/* Transition-capture mode: `host_render <pack> <outdir> seq <prefixNav> <transKeys> <nframes>`

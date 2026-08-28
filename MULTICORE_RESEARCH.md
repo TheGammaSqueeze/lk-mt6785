@@ -366,9 +366,25 @@ on one HW flash (operator asleep). All levers ranked and gated. Continuing resea
   (a cpu1-miss strip can be X/Y-split to ~15ms). Net: the split-build lever is now DONE and proven,
   not just designed.
 
+### STATUS after cycle 6 (2026-08-28, no HW input): split MUST be content-balanced
+Generalised the vsplit host test to prove the split is exact at ARBITRARY rows (buffer-mid,
+content-mid, quarter, three-quarter, and row 1), with a 0xDEADBEEF poison-fill confirming the two
+bands together cover every pixel. All PASS. But the balance data is the real finding:
+  - native aspect: content band rows [42,317]; buffer-mid (192) => cpu0 150 / cpu1 126 rows
+    (~54/46, tolerable); content-mid (179) => 137 / 139 (balanced).
+  - 4:3 aspect:    content band rows [136,383]; buffer-mid (192) => cpu0 56 / cpu1 192 rows
+    (23/77, BADLY unbalanced -> ~1.3x not 2x); content-mid (259) => 123 / 125 (balanced).
+So the 2-core split MUST cut at the CONTENT-band midpoint (cc_y0+cc_y1)/2, NOT the buffer midpoint,
+or the low-power win mostly evaporates in 4:3 mode. Since the vertical card layout is stable during
+a horizontal scroll, cc_y0/cc_y1 from the previous build is a safe split point for the next (first
+build falls back to buffer-mid). build_cardcache_band already accepts arbitrary r0/r1, so this is a
+pure caller-side choice when the split is wired in; no engine change needed. This is exactly the
+kind of thing that would have silently halved the expected speedup on HW; caught it on the host.
+
 ### HOLDING STATE
 The decisive gate remains one HW flash of the two staged images. Remaining readiness tasks are
 genuinely blocked: Lever 4 producer wiring and Lever 3 0x600 bringup both need the probe result
 (coherency mechanism + CPC_SPMC_ST) before they can be built correctly; the non-shareable-walk
-refinement is low-value (the worker PTW already works). Further no-HW cycles will hold rather than
-churn. On HW input, execute the OPERATOR NOTES decision tree.
+refinement is low-value (the worker PTW already works). The split-build lever is now DONE, proven
+exact at any row, and its balance requirement is known. On HW input, execute the OPERATOR NOTES
+decision tree.
