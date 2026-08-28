@@ -1598,3 +1598,23 @@ UART INTERPRETATION GUIDE for the flashed fix image (lk_a_snes_mcsifix_signed.im
     is genuinely live (the original 60fps-lower-power goal achieved). "mismatch/frozen" => fix insufficient,
     fall back to the SIP-absent / ATF-patch contingency (MCSI base 0x0c510000).
 Offline work is fully closed across (b)(c)(d)(e)+topology+physical-map; the empirical verdict waits on a flash.
+
+### PLAN-B ELIMINATED (2026-08-28): EMI MPU is symmetric across clusters, cannot be the wall
+Checked whether the MT6785 EMI MPU (memory protection unit at the DRAM controller, BELOW caches - would affect
+even uncached/Device reads) could asymmetrically block the worker cluster from cpu0's DRAM. Findings from
+drivers/misc/mediatek/emi/mt6785 (mpu_platform.c/.h, mt_emi_api.h):
+ - The two CPU clusters ARE separate EMI AXI masters: MT6785_M0_AXI_MST_MP0 (cluster 0, port 0) and
+   MT6785_M1_AXI_MST_MP1 (cluster 1). So EMI can distinguish them by master ID - initially a plausible Plan B.
+ - BUT MPU permissions are applied per DOMAIN, and domain is transaction-driven: domain_id = (axi_id>>21)&0xF.
+   MP0 and MP1 both issue AP-domain traffic (the modem-domain check is_md_master only special-cases domains 1
+   and 7 for MDMCU/MD masters). EMI_MPU_DOMAIN_NUM=16 but CPU/AP uses the AP domain for both clusters.
+ - set_ap_region_permission gives the AP domain NO_PROTECTION on the general DRAM regions (where the LK
+   framebuffer/comms/pack at 0x50000000-0x56000000 live), identically for anything in the AP domain.
+CONCLUSION: the EMI MPU treats cluster 0 and cluster 1 the same (same AP-domain permissions), so it cannot
+produce the observed asymmetry (worker loads miss cpu0 stores while worker stores are seen). Plan B (EMI MPU
+per-cluster firewall) is eliminated. The separate MP0/MP1 master ports do confirm the clusters have independent
+paths to memory, consistent with the MCSI-mediated cross-cluster coherency model: a non-snoop-admitted MP1 read
+routes MP1 -> MCSI -> EMI but misses cpu0's cluster-0-resident dirty lines. The wall stays in the MCSI/DSU snoop
+layer, and the staged MCSI admit remains the primary fix. Every alternative checked (SPM/CPC power regs, CPUECTLR,
+AArch32, cache set/way, SSPM/MCUPM firmware, EMI MPU) is now ruled out; MCSI cross-cluster snoop-admission stands
+as the single unrefuted mechanism.
