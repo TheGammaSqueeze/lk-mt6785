@@ -542,3 +542,28 @@ websearch/obtain). NEXT LK IMAGE: replace the CPC-arm bypass with the real PWR_O
 
 ### CRON: switched to RESEARCH MODE v2 (adb-enabled), 15-min. Priorities: build register-poke module,
 hotplug-diff snoop bits, determine SSPM-free HW-mode feasibility, then drive real PWR_ON+ACK at LK.
+
+### REFINED LEVER (2026-08-28): the ack-register distinction (new, actionable)
+Read bigcore.c bc_manual_poweron (250-294). It already does the spm_poweron_cpu shape: set
+SSPM_ALL_PWR_CTRL_EN (MCUCFG+0xa814 bit13), set SPM_CPU_PWR_CON(cpu)=SPM+0x768+(n<<2) PWR_ON bit2,
+then POLL `SPM_CPU_PWR_STATUS (SPM+0x160) & ACK_BIT(cpu)` where ACK_BIT = 1<<(cpu+9). That ack DID set
+on HW (RECON SPM_CPU_PWR_STATUS=0x434c, bit10 for cpu1). BUT SPM+0x160 is the aggregate RAIL-power
+status; the ATF/kernel coherent model completes the handshake on the PER-CPU register
+SPM_CPU_PWR_CON(cpu) bit31 = MP0_SPMC_PWR_ON_ACK (see mt6873/85 spm_reg.h: SPM_CPUn_PWR_CON ...
+PWR_ON_ACK_CPUn = 1U<<31). These are DIFFERENT registers. Polling rail-power-on instead of the per-CPU
+SPMC PWR_ON_ACK could mean LK proceeds after the rail is up but BEFORE the SPMC FSM finishes the
+snoop-admission handshake -> powered but non-coherent core, exactly what we see. This is a fresh,
+testable hypothesis distinct from "SSPM mandatory".
+
+TWO teed-up experiments (next cycle):
+1. LIVE (kernel module, no flash): build a register-poke .ko (vermagic "4.14.186 SMP preempt mod_unload
+   modversions aarch64"; MODVERSIONS=y so lift symbol CRCs from a shipped vendor .ko e.g.
+   /vendor/lib/modules/*.ko, or patch __versions). Read on a KNOWN-coherent online cpu1: SPM+0x160,
+   SPM_CPU_PWR_CON(1) (bit31), MCUCFG_CPC_SPMC_ST(+0xA840), mcucci@0x0c510000 head. That gives the
+   TRUE coherent-core ack signature to compare against LK. Also confirms the mt6785 SPM_CPU_PWR_CON
+   offset (LK uses 0x768+(n<<2), "base from ATF rodata" - unverified for mt6785).
+2. LK IMAGE: add a probe that, after bringup, reads+logs SPM_CPU_PWR_CON(cpu) bit31 (per-CPU
+   PWR_ON_ACK) and each MCUCFG_CPC_SPMC_ST bit, and (gated behind a flag) POLLS the per-CPU bit31
+   instead of SPM+0x160 before releasing the worker. If bit31 sets at LK -> the FSM is HW-autonomous
+   and correct polling yields a coherent core (win). If bit31 never sets -> SSPM servicing is truly
+   mandatory (then RE the minimal MCDI-enable IPI).
