@@ -2170,3 +2170,13 @@ require cont_shift==0 so only true idle uses the OVL; scrolling uses the pre-OVL
 30fps tear-free originally), relying on the transition-handoff fix for the idle<->scroll layer toggles. That is
 the most reliable route to the user's known-good 30fps-no-tear scroll, at the cost of dropping the OVL 60fps
 scroll ambition. Decide based on the v2 result.
+
+### TWO IMAGES STAGED FOR ONE TEST SESSION (2026-08-29)
+To save a round-trip, staged BOTH:
+ - lk_a_snes_notear2_signed.img: presync single-barrier (targets 30fps tear-free scroll) + transition handoff.
+ - lk_a_snes_sbscroll_signed.img (AYANEO_SB_SCROLL): OVL only for true idle; SCROLL uses the original
+   single-buffer full render (the known-good 30fps tear-free path before OVL). Idle 60fps. + transition handoff.
+Test v2 first. If v2 scroll is 30fps tear-free -> ship v2 (keeps the OVL scroll path). If v2 is still 15fps or
+tears -> flash sbscroll (guaranteed-original scroll behaviour). Both include the enter/exit flicker handoff fix.
+Fallback risk: sbscroll toggles layered<->single on every scroll start/stop, so it leans harder on the handoff
+fix; if the toggle itself flickers, we keep the OVL scroll and instead chase the presync tearing directly.
