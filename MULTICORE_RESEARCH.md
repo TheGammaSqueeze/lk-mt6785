@@ -2027,3 +2027,14 @@ DESIGN (phase-validated):
    uses the existing draw_card path -> shipping menu unchanged. Host-validate: pre-rendered-tile strip must equal
    the draw_card strip pixel-for-pixel (integer phase => should be exact).
 NEXT: implement worker tile-render entry + cpu0 blit path + host validation, behind a flag. Multi-cycle build.
+
+### PRODUCER-OFFLOAD PHASE 1 DONE (2026-08-28): tile decomposition host-validated PIXEL-EXACT
+Implemented + host-validated the correctness-critical piece: snes_menu_render_card_tile (renders one normal card
+into a straight-alpha tile) + snes_menu_build_cardcache_tiled (blits tiles instead of draw_card) + snes_blit_raw
+(composite a raw RGBA tile via the cache premult path). host_render "cardtile" mode compares the tiled strip vs
+the direct build_cardcache strip: PASS 0 px differ at settled + nav=1,3,5,10 (native, non-resume). One bug found
++ fixed: the tile is written framebuffer-order (0xAARRGGBB) but snes_blit_raw reads it as an RGBA-byte texture,
+so R/B were swapped - fixed by swapping R<->B in the tile once after cache_unpremult. So the decomposition is a
+proven correctness no-op: once the worker fills the tiles, cpu0's tiled build is bit-identical to today's menu.
+NEXT (phase 2): wire the worker to render the 21 tiles at boot from the static pack (worker->cpu0 writes work on
+HW), cpu0 uses build_cardcache_tiled gated on tiles-ready && native && !resume, fallback to draw_card otherwise.
