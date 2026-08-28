@@ -645,3 +645,19 @@ it up vs a real AArch64 kernel/ATF secondary:
 The LIVE MODULE remains the key tool (tools/live_regpoke) for any non-trapping register question. Next
 safe adb step: read CPUECTLR setup from kernel SOURCE (arch/arm64 errata + MTK) to learn the exact
 coherency bits a coherent core carries, and check whether our AArch32 worker can/should set them.
+
+### SOURCE: no coherency-enable CPUECTLR bit exists (2026-08-28)
+ATF cortex_a55.S/a75.S reset funcs set only ERRATA/perf bits in CPUACTLR/CPUECTLR (disable dual-issue,
+disable write-streaming, L1WSCTL, disable-L1-pagewalks - all errata workarounds). No SMPEN/coherency
+-enable bit (DynamIQ A55/A75 are coherent by default once DSU-powered). Kernel arch/arm64 touches
+CPUECTLR nowhere for coherency. So there is NO missing coherency register/sysreg bit anywhere: power
+(PWR_ON_ACK), CPC, SPM all match the live coherent core; hotplug shows no admission register; no CPUECTLR
+coherency bit. The worker SHOULD be coherent, yet its reads are frozen even MMU-off/Device.
+
+STANDING PUZZLE + TOP NEXT LK TEST (deferred, needs a flash): the single remaining difference is that our
+worker runs AArch32 while every coherent secondary on this SoC runs AArch64. The next decisive LK image
+should bring the worker up in AArch64 (leave the INITARCH AArch64 bit set, provide an A64 entry stub that
+adopts cpu0's TTBR1/TTBR0 64-bit MMU) and re-run the canary. If an A64 worker reads coherently, AArch32
+participation in this DSU was the wall. Errata bits (write-streaming disable etc.) are a secondary thing
+the A32 worker could also mirror via CP15. The live-regpoke module stays available for any further
+non-trapping register question.
