@@ -4,12 +4,19 @@ The autonomous non-flash investigation is complete. The coherent-bringup path is
 characterized DSU hardware wall; the remaining questions need ONE flash. All older diagnostic images are
 superseded by a single comprehensive one.
 
-## Flash THIS (one image, decides everything)
+## Flash order (two images cover everything; prereq applies to both)
 
 Prereq (once): `tee_patched_armcpc.img` on the `tee` partition (arms the CPC so PSCI CPU_ON completes).
 
-Then flash `lk_a_snes_bigcore_cpcbit29.img` to `lk_a`, boot into the SNES menu, capture UART, and paste
-these lines back:
+FLASH 1 (primary, decides most): `lk_a_snes_bigcore_cpcbit29.img` -> 4 datapoints (below).
+FLASH 2 (only if FLASH 1's canary stays frozen): `lk_a_snes_bigcore_warmcycle.img` -> the last
+  coherent-path mechanism (warm PSCI power-cycle of the worker). Look for two lines:
+    `BC WARMCYCLE: cpu1 powered off after N us ...`  (if N=1000000 / timeout, PSCI CPU_OFF does not work
+       at LK and the test is inconclusive; otherwise the warm re-join happened)
+    `BC CANARY ... worker-read=0x...`  (0xCA5A => the warm cycle established coherency = the win)
+(The separate `dvm` image is an optional third long-shot.)
+
+For FLASH 1, boot into the SNES menu, capture UART, and paste these lines back:
 
 1. `BC CANARY (non-comms 0x51000000): cpu0->worker worker-read=0x...`
    - `0xCA5Axxxx` => CPC_FLOW bit29 fixed coherency! (unlikely, but if so the whole 2-core split unlocks)
