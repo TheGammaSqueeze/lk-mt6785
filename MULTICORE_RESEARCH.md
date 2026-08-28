@@ -219,6 +219,20 @@ and they are separable by a single never-run experiment:
    scrolling holds 60 fps; and the whole-strip build can itself be X-split across the two cores
    for a lower-clock steady state once coherency is available.
 
+   QUANTITATIVE FEASIBILITY (cycle 4, grounded in the real constants): held-scroll advances one
+   card every CAR_REPEAT_RATE = 0.06 s = 60 ms (snes_menu.c:517; first step after
+   CAR_REPEAT_DELAY = 0.22 s). A full strip build is ~30 ms (snes_menu.c:14,890; the 13.5 ms
+   unpremult already cut by the reciprocal table). So build time (~30 ms) is HALF the held-repeat
+   interval (60 ms): during sustained scrolling cpu1 can build the next-in-direction strip and
+   have it ready before the next step fires, with ~2x margin. Held scroll is unidirectional so
+   cpu1 only needs to prebuild the single next strip (not sel +/-1); on first-press or direction
+   change there is at most one ~30 ms latency, i.e. exactly today's behaviour, so the offload is
+   a STRICT improvement (removes the steady-scroll hitch, never worse than current). If both
+   cores are coherent (probe/nonshare pass), the fallback build can additionally be X-split so
+   even a cpu1-miss strip costs ~15 ms. Conclusion: the producer-offload holds 60 fps for all
+   realistic scrolling and degrades gracefully; it is the safe delivery path once Lever 1 says
+   how the one control line reaches cpu1.
+
 3. **A75 cluster1 core 0x600 (fresh-cluster admit).** Target the powered-off cluster1
    instead of a 7th core into live cluster0. A first-core-in-cluster power-on takes the
    CLUSTER-level on-finish path (larger admit incl 0x16b64 mcusys/DSU init that never runs
