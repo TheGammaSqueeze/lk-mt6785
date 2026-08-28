@@ -183,3 +183,11 @@ MTK_ILDO_SUPPORT = yes
 MTK_AB_OTA_UPDATER=yes
 MTK_DYNAMIC_CCB_BUFFER_GEAR_ID=
 MTK_MINIMUM_SCP_DRAM_SIZE = yes
+# Producer-offload: pre-rendered normal-card tiles. cpu0 renders the N game cards once from
+# the static pack, then build_cardcache_tiled blits them on native/non-resume rebuilds instead
+# of re-rendering each card (boxart min-filter scale) - removes the per-card render from the nav
+# hitch. Host-validated pixel-identical to the direct build. Falls back to draw_card for 4:3/resume.
+AYANEO_CARDTILES ?= no
+ifeq ($(AYANEO_CARDTILES),yes)
+DEFINES += AYANEO_CARDTILES
+endif

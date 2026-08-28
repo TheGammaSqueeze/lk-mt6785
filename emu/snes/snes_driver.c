@@ -533,6 +533,11 @@ extern int mt_get_gpio_in(unsigned pin);
  * 0x4B0000) double buffer (0x960000 total) inside its 16MB slot. */
 #define SNES_OVL_L2_PA 0x54000000u  /* mapped WB (was BC_COMMS); free when EXPT off */
 #define SNES_OVL_L3_PA 0x55000000u  /* mapped WB (was SPMFW staging); free when EXPT off */
+/* Producer-offload: pre-rendered normal-card tiles, in the free gap after the wallpaper
+ * (0x52435000..0x53000000, ~12MB). 21 tiles * 300*340*4 = ~8.17MB. Rendered ONCE (from the
+ * static pack) then blitted by build_cardcache_tiled on every native, non-resume rebuild -
+ * removes the per-card boxart-scale render from the nav hitch. See PRODUCER_OFFLOAD.md. */
+#define SNES_CARDTILES_PA 0x52500000u
 #define SNES_RAW_MAX  (32u * 1024 * 1024)
 #define SNES_COMP_MAX (16u * 1024 * 1024)
 #define HOME_CAP (16u * 1024 * 1024 / (unsigned)sizeof(snes_rnode))
@@ -603,6 +608,9 @@ static void draw_osd(unsigned int *fb, unsigned int pitch, int W)
 static uint32_t s_cc_sig;    /* card-cache signature the L2 buffer was built for */
 static int s_cc_valid;       /* L2 currently holds a valid build */
 static int s_l2_flip;        /* L2 live-buffer index (flips only on rebuild) */
+#ifdef AYANEO_CARDTILES
+static int s_tiles_ready;    /* the pre-rendered normal-card tiles have been built once */
+#endif
 static int s_l3_flip;        /* L3 live-buffer index (flips every frame) */
 static int s_was_layered;    /* previous frame presented via the OVL layers */
 
@@ -922,6 +930,27 @@ static int snes_emu_thread(void *arg)
 					ct.W = SNES_L2_W; ct.H = SNES_L2_BAND_H; ct.pitch = SNES_L2_W;
 					ct.offx = SNES_L2_MARGIN;
 					ct.offy = (s_menu.aspect ? 0 : ((int)H - SNES_VH) / 2) - SNES_L2_BAND_Y0;
+#ifdef AYANEO_CARDTILES
+					/* Producer-offload: the pre-rendered normal-card tiles blit far cheaper
+					 * than re-rendering each card (boxart min-filter scale). Exact only in the
+					 * NATIVE, non-resume regime (integer card positions - host-validated
+					 * pixel-identical); fall back to the full render otherwise. Tiles are static
+					 * (normal cards never change) so render them ONCE, reuse on every rebuild. */
+					if (!s_menu.aspect && s_menu.resume_dim == 0.0f && s_menu.ngames > 0) {
+						uint32_t *tiles = (uint32_t *)(unsigned long)SNES_CARDTILES_PA;
+						unsigned tsz = (unsigned)CARD_TILE_W * CARD_TILE_H;
+						if (!s_tiles_ready) {
+							int gi;
+							for (gi = 0; gi < s_menu.ngames; gi++)
+								snes_menu_render_card_tile(&s_menu, gi,
+									tiles + (unsigned)gi * tsz);
+							arch_clean_cache_range((unsigned long)SNES_CARDTILES_PA,
+								 (unsigned long)((unsigned)s_menu.ngames * tsz * 4u));
+							s_tiles_ready = 1;
+						}
+						snes_menu_build_cardcache_tiled(&s_menu, &ct, tiles);
+					} else
+#endif
 					snes_menu_build_cardcache(&s_menu, &ct);
 					s_l2_flip ^= 1; s_cc_sig = sig; s_cc_valid = 1; rebuilt = 1;
 				}
