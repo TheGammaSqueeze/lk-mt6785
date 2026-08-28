@@ -345,3 +345,30 @@ on one HW flash (operator asleep). All levers ranked and gated. Continuing resea
 - No new flashable image this cycle (the two staged images remain the decisive gate; further
   images are gated on the probe UART). Next HW-independent readiness task when resumed: begin
   the Lever 4 producer skeleton behind a flag (host-validatable), or Lever 3 0x600 prep.
+
+### STATUS after cycles 3-5 (2026-08-28, no HW input)
+- Cycle 3: external RE. ARM DynamIQ docs confirm the DSU does coherency-connect AUTOMATICALLY in
+  hardware on power-up (no software register to force it) and that non-shareable + clean/invalidate
+  is the sanctioned non-coherent-access method (boosts confidence in candidate fix #1). Recorded in
+  the External corroboration section.
+- Cycle 4: quantitative Lever 4 feasibility. Held-scroll steps every CAR_REPEAT_RATE=60ms vs a
+  ~30ms strip build, so cpu1 stays ~2x ahead; the producer offload holds 60fps and degrades to
+  today's behaviour. Recorded in the Lever 2/4 section.
+- Cycle 5: IMPLEMENTED + HOST-VALIDATED the 2-core strip split (the mechanism for the low-power
+  steady state: halve the ~30ms build to ~15ms across cpu0/cpu1). Added snes_menu_build_cardcache_band
+  (snes_menu.c) using the proven scanline band-clip that bc_dispatch already uses for
+  snes_menu_render; left snes_menu_build_cardcache UNTOUCHED so the single-core menu is byte-identical
+  and cannot regress. New host_render.c "vsplit" mode proves full == [0,mid)+[mid,H) pixel for pixel:
+  "VSPLIT: PASS (958464 px identical)" in both 4:3 and native aspect. Device release build clean
+  (rc=0); the function is available but not yet called (its on-device use needs cpu1 running the
+  build, gated on the probe/coherency result). This is reusable regardless of which coherency path
+  wins: with a coherent cpu1 it halves every strip build; it also composes with the producer offload
+  (a cpu1-miss strip can be X/Y-split to ~15ms). Net: the split-build lever is now DONE and proven,
+  not just designed.
+
+### HOLDING STATE
+The decisive gate remains one HW flash of the two staged images. Remaining readiness tasks are
+genuinely blocked: Lever 4 producer wiring and Lever 3 0x600 bringup both need the probe result
+(coherency mechanism + CPC_SPMC_ST) before they can be built correctly; the non-shareable-walk
+refinement is low-value (the worker PTW already works). Further no-HW cycles will hold rather than
+churn. On HW input, execute the OPERATOR NOTES decision tree.

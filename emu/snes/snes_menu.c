@@ -956,6 +956,46 @@ void snes_menu_build_cardcache(snes_menu *m, snes_target *t)
 	SUB_END(g_cc_us, 3);
 }
 
+/* Band-limited variant for the 2-core split: build ONLY buffer rows [r0, r1) of the
+ * strip - clear, draw (clipped to the scanline band so draw_carousel writes only those
+ * rows), non-empty scan, and un-premultiply, all limited to [r0, r1). Two disjoint calls
+ * (e.g. [0, H/2) on cpu0 and [H/2, H) on cpu1) produce a strip pixel-identical to
+ * snes_menu_build_cardcache, halving the ~30ms build. Each call records its band's
+ * non-empty sub-range into cc_y0/cc_y1; the caller unions the two for the OVL src ROI.
+ * Leaves snes_menu_build_cardcache untouched so the single-core menu is unaffected.
+ * Host-validated exact (host_render.c "vsplit" mode). */
+void snes_menu_build_cardcache_band(snes_menu *m, snes_target *t, int r0, int r1)
+{
+	int W = t->W, y, x, y0, y1;
+	int save_b0 = t->band_y0, save_b1 = t->band_y1;
+	float save_cs = m->cont_shift, save_xf = m->xfade_t;
+	if (r0 < 0) r0 = 0;
+	if (r1 > t->H) r1 = t->H;
+	y0 = r1; y1 = r0 - 1;
+	t->cache_layer = 1;
+	/* clear only this band's rows */
+	for (y = r0; y < r1; y++) {
+		uint32_t *r = t->fb + (unsigned)y * t->pitch;
+		for (x = 0; x < W; x++) r[x] = 0;
+	}
+	/* scanline band clip: band_y0/band_y1 are absolute fb rows (here == buffer rows),
+	 * so draw_carousel writes only rows [r0, r1). set_view does not touch the band. */
+	t->band_y0 = r0; t->band_y1 = r1;
+	m->cont_shift = 0.0f; m->xfade_t = 0.0f;
+	set_view(m, t, VIEW_CONTENT);
+	draw_carousel(m, t);
+	m->cont_shift = save_cs; m->xfade_t = save_xf;
+	t->band_y0 = save_b0; t->band_y1 = save_b1;
+	/* non-empty scan within this band */
+	for (y = r0; y < r1; y++) {
+		const uint32_t *r = t->fb + (unsigned)y * t->pitch;
+		for (x = 0; x < W; x++)
+			if (r[x] >> 24) { if (y < y0) y0 = y; y1 = y; break; }
+	}
+	m->cc_y0 = y0; m->cc_y1 = y1;
+	if (y1 >= y0) cache_unpremult(t, 0, y0, W, y1 + 1);
+}
+
 /* Signature of everything that changes the SETTLED focused-card body (frame+boxart+
  * icons at cont_shift=0). EXCLUDES cont_shift (the pan, handled by the blit shift) and
  * m->clock (only the cursor pulses, drawn live). When unchanged the cached body is reused. */

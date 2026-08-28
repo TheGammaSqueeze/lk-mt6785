@@ -44,6 +44,36 @@ int main(int argc, char **argv)
 	snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
 	if (getenv("SNES_ASPECT43")) { menu.aspect = 1; menu.chrome_ready = 0; }  /* rebuild chrome for 4:3 */
 
+	/* Split-build validation: `host_render <pack> - vsplit` proves the 2-core card-strip
+	 * split is exact - a full snes_menu_build_cardcache must equal two disjoint band builds
+	 * ([0,mid)+[mid,H)) pixel for pixel. This de-risks the split-build lever (halve the
+	 * ~30ms strip build across cpu0/cpu1) entirely on the host. */
+	if (argc > 3 && strcmp(argv[3], "vsplit") == 0) {
+		int LW = SNES_L2_W, LH = SNES_L2_BAND_H, mid = LH / 2, s, bad = 0, first = -1;
+		uint32_t *A = calloc((size_t)LW * LH, 4);
+		uint32_t *B = calloc((size_t)LW * LH, 4);
+		snes_target ct = {0};
+		memset(&in, 0, sizeof(in));
+		for (s = 0; s < 240; s++) snes_menu_update(&menu, &in, 1.0f / 60.0f);   /* settle attract */
+		ct.pitch = LW; ct.W = LW; ct.H = LH;
+		ct.offx = SNES_L2_MARGIN;
+		ct.offy = ((H - SNES_VH) / 2) - SNES_L2_BAND_Y0;
+		snes_target_view(&ct, 1.0f, 1.0f, 0.0f, 0.0f);
+		ct.fb = A;
+		snes_menu_build_cardcache(&menu, &ct);                    /* full (untouched path) */
+		ct.fb = B;
+		snes_menu_build_cardcache_band(&menu, &ct, 0, mid);       /* cpu0 half */
+		snes_menu_build_cardcache_band(&menu, &ct, mid, LH);      /* cpu1 half */
+		for (i = 0; i < LW * LH; i++)
+			if (A[i] != B[i]) { bad++; if (first < 0) first = i; }
+		if (bad == 0)
+			printf("VSPLIT: PASS (full == [0,%d)+[%d,%d); %d px identical)\n", mid, mid, LH, LW * LH);
+		else
+			printf("VSPLIT: FAIL (%d/%d px differ; first @ row %d col %d: full=0x%08x split=0x%08x)\n",
+			       bad, LW * LH, first / LW, first % LW, A[first], B[first]);
+		return bad ? 2 : 0;
+	}
+
 	/* Transition-capture mode: `host_render <pack> <outdir> seq <prefixNav> <transKeys> <nframes>`
 	 * mirrors the web frame-stepper (tools/_web_car_right_mid.mjs). It settles the
 	 * attract, walks <prefixNav> to reach the starting state, then steps at
