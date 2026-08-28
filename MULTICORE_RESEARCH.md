@@ -1184,3 +1184,20 @@ So the SGI/MMIO flash (lk_a_snes_bigcore_sgi.img) is the single most important t
   INDEPENDENT worker (reads the gamepad MMIO itself, runs its own menu state machine in lockstep) - which
   ALSO needs MMIO reads to work, so a frozen MMIOPROBE likely closes even that.
 This is why MMIO viability is the crux: it is the difference between the full original win and a hard wall.
+
+### MMIO STATE-PUBLISH SPEC (2026-08-28), refined: home-carousel split needs ~15-20 words
+Enumerated snes_menu_update's per-frame writes: ~48 fields across ALL states (home, menubar, submenu,
+resume, dialogs, options, language, sort). That is more than a single small MMIO scratch window - BUT the
+perf-critical target is the HOME carousel (state==0), the only SUSTAINED 60fps case (idle scroll). Its
+render depends on ~15-20 dynamic fields: focus, prev_focus, sel_world, cont_shift, xfade_t, clock,
+cur_slide_t, car_x, car_navd, scroll, scr_speed, scr_dir, cur_scroll_time, cur_scroll_spd, disp_cur,
+disp_sel, state, sort_rule, ngames, aspect. The rest of the ~4KB menu struct is static (in the worker's
+frozen snapshot). Submenu/resume/dialog states are transient (not sustained load) -> the split can be
+GATED to state==0 and fall back to single-core elsewhere (no visual/perf cost).
+PUBLISH PLAN (on a positive BC MMIOPROBE): cpu0, after snes_menu_update, writes those ~20 words to an MMIO
+scratch window each frame (SPM has SPM_SW_FLAG_0/1 + SPM_SW_RSV_0..5 + CPU_SPARE_CON ~= 9 words; extend
+with more SPM SW_RSV or a small SSPM-SRAM/mcusys scratch to reach ~20, or stream via an index+value
+handshake through 2 regs). The worker patches those fields into its frozen-snapshot copy of m, then renders
+its band via snes_menu_render (host-validated exact). Framebuffer band goes out via the proven
+worker->cpu0 direction. That is the full home-carousel per-frame split with NO coherency. Ready to wire the
+moment MMIO viability is confirmed by lk_a_snes_bigcore_sgi.img.
