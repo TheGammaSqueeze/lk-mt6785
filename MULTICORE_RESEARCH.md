@@ -803,3 +803,23 @@ both out of the pure-adb reach: (A) obtain mt6785 ATF/preloader source, find the
 init, replay it from LK before a plain PSCI CPU_ON; (B) the staged DVM long-shot flash. The achievable win
 WITHOUT coherent bringup is the producer-offload (worker reads static pre-bringup assets + writes tiles
 out; both directions proven), a real anti-hitch perf gain needing no cpu0->worker coherence.
+
+### BREAKTHROUGH: the mt6785 ATF (mtspmc.c) IS recoverable from tee.img - RE started
+The mt6785-specific ATF (the source the earlier RE lacked) is the BL31 inside tee.img, which we have.
+Regenerate the disasm anytime:
+  aarch64-linux-gnu-objdump -D -b binary -m aarch64 --adjust-vma=0x4ce00000 \
+    --start-address=0x4ce00400 /mnt/c/pairmini/tee_STOCK_rollback.img > /tmp/bl31_dis.txt
+Confirmed strings: "plat/mediatek/mt6785/drivers/spmc/mtspmc.c", "spmc: power on core %d.%d [successfully]",
+"mp0_spmc: 0x%x", "save_pwr_ctrl"/"load_pwr_ctrl", "[RGU-ATF] SSPM". Located functions:
+- 0x4ce014ec: save/load_pwr_ctrl - reads CPC_FLOW_CTRL (0xc53a814), clears bit17 (0x20000), writes back,
+  logs. (bit17, NOT SSPM_ALL_PWR_CTRL_EN bit13 - a distinct control bit worth understanding.)
+- 0x4ce02084 / 0x4ce0210c: per-core helpers using mpidr->linear-id (bl 0x4ce0488c) with spinlocks.
+- 0x4ce01590: SPM unlock+write pattern (writes 0x1000d000 with a 0x22000000 project-code key).
+The actual spm_poweron_cpu (PWR_ON write to MP0_CPUn_PWR_CON 0x1000620c + PWR_ON_ACK bit31 poll, and any
+SSPM handshake) is in this binary and is the RE target: determine whether it waits on an SSPM ack (hangs
+at LK) or has an SSPM-service ENABLE we can replay from LK before a plain PSCI CPU_ON.
+
+STATUS: this is the concrete path to the REAL coherent-bringup win. Next phase = finish the mtspmc.c RE
+in the BL31 disasm (find the SSPM power-service enable / the ack-wait), then build an LK image that does
+the enable + plain PSCI + reads BC CANARY. This is a focused RE sub-project; the DVM long-shot flash and
+the producer-offload fallback remain staged/specced in the meantime.
