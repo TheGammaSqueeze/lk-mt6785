@@ -1115,3 +1115,24 @@ NEXT: build a minimal SGI-channel viability experiment - worker wakes its GICR +
 for SGIs; cpu0 sends an SGI each frame; worker reports a received-SGI count into comms (via the WORKING
 worker->cpu0 direction). If the count increments, the GIC channel is LIVE and the clean offload is
 unlocked. This is a genuinely new, non-coherency path to a real 2-core win and is worth a flash.
+
+### GIC/SGI EXPERIMENT - mapped + simplified to MMIO-poll (2026-08-28), build-ready
+Live-mapped the GICv3 redistributors (module reads of GICR TYPER/WAKER, stride 0x20000):
+  frame n @ 0x0c040000 + n*0x20000 = cpu_n. TYPER.hi = Affinity. cpu1 (Aff1=1,Aff0=0, TYPER.hi=0x100) is
+  frame1 @ 0x0c060000 (RD_base); its SGI frame is +0x10000 = 0x0c070000. frame7 has TYPER.Last set. All
+  WAKER=0 (awake) on live.
+KEY SIMPLIFICATION: an SGI sets a PENDING bit in the target redistributor readable via MMIO
+GICR_ISPENDR0 (SGI frame + 0x0200). So the worker does NOT need the ICC_* CPU interface or an IRQ handler
+- it just POLLS MMIO. Minimal viability experiment:
+- cpu0 (per frame): send SGI#1 to cpu1 via ICC_SGI1R (A32 mcrr p15,0,<lo=0x01010001>,<hi=0>,c12):
+  INTID=1[27:24], Aff1=1[23:16], TargetList=0x1[0] -> 0x01010001. (cpu0/LK is the boot core; ATF enabled
+  ICC_SRE for it, so the sysreg send should work.)
+- worker (per frame, MMIO only): read GICR_ISPENDR0 @ 0x0c070000+0x0200; if SGI#1 pending bit set,
+  increment a comms counter w_sgi_count and clear it via GICR_ICPENDR0 (0x0c070000+0x0280). Report
+  w_sgi_count via the WORKING worker->cpu0 direction. (May first need to wake cpu1 GICR: clear WAKER
+  ProcessorSleep bit1 @ 0x0c060000+0x14, poll ChildrenAsleep bit2 clear; and enable SGI#1 in
+  GICR_ISENABLER0 @ 0x0c070000+0x0100.)
+If w_sgi_count increments on HW, the GIC channel is LIVE despite the dead DSU snoop -> cpu0 can feed the
+worker the dynamic focus (focus-delta SGIs) -> CLEAN producer-offload (worker builds the current
+focus-centered strip ahead via build_cardcache unchanged; one strip, minimal memory, no skip_focus mess).
+This is the first realistic non-coherency route to a real 2-core win. NEXT: build this experiment image.
