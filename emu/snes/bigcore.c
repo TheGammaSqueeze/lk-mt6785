@@ -471,31 +471,57 @@ void bigcore_start(void)
 			 * our ATF-at-LK even implement these SIPs, and (b) the live snoop-filter state at
 			 * LK time. Read-only + benign maintenance flush -> safe with the user away.
 			 * SMC32 IDs used verbatim (LK is AArch32, MTK_SIP_SMC_AARCH_BIT = 0). */
-			unsigned long rr1, rr2, rr3, v; int off;
-			_dprintf("BC MCSI: probing via ATF SIP (MCSI_A_READ=0x8200028A, FLUSH_BY_SF=0x82000283)\n");
-			for (off = 0; off <= 0x40; off += 4) {
-				rr1 = rr2 = rr3 = 0;
-				v = mt_secure_call_all(0x8200028Aul, (unsigned long)off, 0, 0, 0, &rr1, &rr2, &rr3);
-				_dprintf("BC MCSI RD off=0x%03x ret=0x%lx r1=0x%lx\n", off, v, rr1);
+			/* MCSI register map from ARM ATF mt8183 mcsi.h (same MCSI generation as MT6785):
+			 *  central CENTRAL_CTRL=0x0, SF_INIT=0x10, SF_CTRL=0x14, SNP_PENDING=0x28.
+			 *  Per-slave-interface base = 0x1000 + 0x100*i (i=0..7); SNOOP_CTRL_REG = base+0x0.
+			 *  SNOOP_CTRL bits: SNOOP_EN(0), DVM_EN(1), SNP_SUPPORT(30), DVM_SUPPORT(31).
+			 *  The CPU CLUSTERS are the coherent ACE slave ifaces (mt8183: iface 3 and 4).
+			 *  Our worker mpidr=0x100 is aff1=1 => CLUSTER 1. If its slave iface shows
+			 *  SNP_SUPPORT=1 but SNOOP_EN=0 while cpu0's cluster iface has SNOOP_EN=1, the
+			 *  worker cluster is powered-but-NOT-snoop-admitted -> the exact observed wall.
+			 * Access via MCSI_NS_ACCESS (0x8200028B): a0=op(0 rd,1 wr,2 set,3 clr), a1=offset,
+			 * a2=val; ATF holds the MCSI base so we pass OFFSETS, not physical addresses. */
+			unsigned long rr1, rr2, rr3, v; int i;
+			#define MCSI_NS 0x8200028Bul
+			#define MCSI_RD(off) mt_secure_call_all(MCSI_NS, 0, (off), 0, 0, &rr1, &rr2, &rr3)
+			_dprintf("BC MCSI: probing snoop-interconnect via ATF SIP MCSI_NS_ACCESS=0x8200028B\n");
+			rr1=rr2=rr3=0; v = MCSI_RD(0x0);  _dprintf("BC MCSI CENTRAL_CTRL(0x000)=0x%lx (SNOOP_DIS_b0=%lu DVM_DIS_b1=%lu SEC_ACC_b2=%lu)\n", v, v&1, (v>>1)&1, (v>>2)&1);
+			rr1=rr2=rr3=0; v = MCSI_RD(0x10); _dprintf("BC MCSI SF_INIT(0x010)=0x%lx\n", v);
+			rr1=rr2=rr3=0; v = MCSI_RD(0x28); _dprintf("BC MCSI SNP_PENDING(0x028)=0x%lx\n", v);
+			for (i = 0; i < 8; i++) {
+				unsigned long off = 0x1000ul + 0x100ul * (unsigned)i;   /* SNOOP_CTRL_REG of slave iface i */
+				rr1=rr2=rr3=0; v = MCSI_RD(off);
+				_dprintf("BC MCSI SLV%d SNOOP_CTRL(0x%03lx)=0x%lx  SNOOP_EN=%lu DVM_EN=%lu SNP_SUP=%lu DVM_SUP=%lu\n",
+					 i, off, v, v&1ul, (v>>1)&1ul, (v>>30)&1ul, (v>>31)&1ul);
 			}
-			/* a couple of higher offsets where per-cluster snoop-enable / config often sit */
-			{ unsigned hoff[] = {0x100u, 0x200u, 0x400u, 0x600u, 0x800u}; int hi;
-			  for (hi = 0; hi < (int)(sizeof(hoff)/sizeof(hoff[0])); hi++) {
-				rr1 = rr2 = rr3 = 0;
-				v = mt_secure_call_all(0x8200028Aul, hoff[hi], 0, 0, 0, &rr1, &rr2, &rr3);
-				_dprintf("BC MCSI RD off=0x%03lx ret=0x%lx r1=0x%lx\n", (unsigned long)hoff[hi], v, rr1);
-			  }
+			rr1=rr2=rr3=0; v = mt_secure_call_all(0x82000288ul, 0, 0, 0, 0, &rr1, &rr2, &rr3); /* MCUSYS_ACCESS_COUNT: SIP liveness */
+			_dprintf("BC MCSI MCUSYS_ACCESS_COUNT ret=0x%lx (nonzero => MTK SIP layer is live)\n", v);
+#ifdef AYANEO_BC_MCSI_FIX
+			/* FIX ATTEMPT: for every slave iface that SUPPORTS snoop but has SNOOP_EN==0
+			 * (a powered-but-unadmitted CPU cluster - our worker), set SNOOP_EN|DVM_EN via
+			 * set_bitmask, then re-read and re-check the worker coherency canary. This is the
+			 * candidate root-cause fix: admit the late-joined cluster into the snoop domain. */
+			for (i = 0; i < 8; i++) {
+				unsigned long off = 0x1000ul + 0x100ul * (unsigned)i;
+				rr1=rr2=rr3=0; v = MCSI_RD(off);
+				if ((v & (1ul<<30)) && !(v & 1ul)) {   /* SNP_SUPPORT && !SNOOP_EN */
+					_dprintf("BC MCSI FIX: SLV%d supports snoop but SNOOP_EN=0 -> set SNOOP_EN|DVM_EN\n", i);
+					rr1=rr2=rr3=0;
+					mt_secure_call_all(MCSI_NS, 2 /*set_bitmask*/, off, 0x3ul /*SNOOP_EN|DVM_EN*/, 0, &rr1, &rr2, &rr3);
+					rr1=rr2=rr3=0; v = MCSI_RD(off);
+					_dprintf("BC MCSI FIX: SLV%d after set SNOOP_CTRL=0x%lx SNOOP_EN=%lu DVM_EN=%lu\n", i, v, v&1ul, (v>>1)&1ul);
+				}
 			}
-			rr1 = rr2 = rr3 = 0;
-			v = mt_secure_call_all(0x82000288ul, 0, 0, 0, 0, &rr1, &rr2, &rr3); /* MCUSYS_ACCESS_COUNT: is the SIP live? */
-			_dprintf("BC MCSI MCUSYS_ACCESS_COUNT ret=0x%lx r1=0x%lx\n", v, rr1);
-			rr1 = rr2 = rr3 = 0;
+#endif
+			rr1=rr2=rr3=0;
 			v = mt_secure_call_all(0x82000283ul, 0, 0, 0, 0, &rr1, &rr2, &rr3); /* CACHE_FLUSH_BY_SF */
-			_dprintf("BC MCSI FLUSH_BY_SF ret=0x%lx r1=0x%lx\n", v, rr1);
-			/* re-read whatever the worker last saw through the cpu0 canary AFTER the SF flush */
+			_dprintf("BC MCSI FLUSH_BY_SF ret=0x%lx\n", v);
+			/* re-read what the worker last saw through the cpu0 canary AFTER admit+flush */
 			arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
-			_dprintf("BC MCSI post-flush: w_can1=0x%x w_menuw0=0x%x w_static_can=0x%x\n",
+			_dprintf("BC MCSI post: w_can1=0x%x w_menuw0=0x%x w_static_can=0x%x (0xCA5A/real => coherent!)\n",
 				 bc->w_can1, bc->w_menuw0, bc->w_static_can);
+			#undef MCSI_RD
+			#undef MCSI_NS
 		}
 #endif
 	}

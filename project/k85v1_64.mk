@@ -97,6 +97,17 @@ DEFINES += AYANEO_BC_MCSI
 DEFINES += AYANEO_BIGCORE_EXPT
 DEFINES += AYANEO_DEBUG_LOGGING
 endif
+# Follow-up to AYANEO_BC_MCSI: not just READ the MCSI snoop-interconnect but ADMIT the
+# powered-but-unadmitted worker cluster - set SNOOP_EN|DVM_EN on any coherent slave iface
+# that supports snoop yet has SNOOP_EN=0 - then re-check the worker coherency canary. This
+# is the candidate root-cause FIX for the late-join snoop wall.
+AYANEO_BC_MCSI_FIX ?= no
+ifeq ($(AYANEO_BC_MCSI_FIX),yes)
+DEFINES += AYANEO_BC_MCSI_FIX
+DEFINES += AYANEO_BC_MCSI
+DEFINES += AYANEO_BIGCORE_EXPT
+DEFINES += AYANEO_DEBUG_LOGGING
+endif
 # AYANEO experiment (animated-boot-logo branch): paint a scrolling rainbow
 # gradient over the whole panel during LK instead of the static eMMC boot logo.
 # Set to no to restore the normal boot logo.

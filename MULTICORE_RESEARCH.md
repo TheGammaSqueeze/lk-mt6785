@@ -1437,3 +1437,41 @@ NEXT EXPERIMENTS (both now concretely buildable; LK already has mt_secure_call_a
    MCSI SIPs at all, and (2) the live MCSI snoop-filter state at LK time. If the worker shows as not-admitted,
    MCSI_A_WRITE/set_bitmask to admit it becomes the candidate fix. Diagnostic-first, read-only + benign flush,
    low risk (user away). SMC32 IDs used directly (LK is AArch32, AARCH bit = 0).
+
+### ROOT-CAUSE CANDIDATE (2026-08-28): MCSI per-cluster snoop-admission, with exact register map + a FIX build
+Pulled the ARM ATF mt8183 MCSI driver (plat/mediatek/mt8183/drivers/mcsi, saved to tools/mcsi_ref/) - same
+MCSI generation as MT6785. This is the mechanism behind the "late core loads don't see cpu0 stores" wall:
+
+MCSI register map (mcsi.h): CENTRAL_CTRL=0x0, SF_INIT=0x10, SF_CTRL=0x14, SNP_PENDING=0x28, FLUSH_SF=0x500.
+Per-slave-interface base = 0x1000 + 0x100*i (i=0..7); SNOOP_CTRL_REG = base+0x0.
+SNOOP_CTRL bits: SNOOP_EN(0), DVM_EN(1), SNP_SUPPORT(30), DVM_SUPPORT(31). The CPU CLUSTERS are the
+coherent ACE slave ifaces (mt8183 uses iface 3 and 4). cci_enable_cluster_coherency(mpidr) picks the iface
+by aff1 (cluster_id) and sets SNOOP_EN|DVM_EN; cci_disable (called on power-OFF) CLEARS them.
+
+WHY IT FITS: our LK worker is mpidr=0x100 (aff1=1) = CLUSTER 1. If both big cores were off at LK time, cluster
+1's MCSI slave iface has SNOOP_EN=0 (cleared by the last power-off). ATF's PSCI on_finish is supposed to call
+cci_enable_cluster_coherency for the first core of a cluster; if our ATF-at-LK defers that to the SSPM/MCUPM
+runtime path (absent pre-kernel), the worker cluster comes up POWERED (SPM ack bit31 set, as observed) but
+NOT snoop-admitted. Then: cpu0's dirty lines sit in cluster-0 caches, never snooped by cluster 1 -> worker
+LOADS read stale DRAM (miss cpu0 stores), while the worker's writes still drain to DRAM where cpu0 reads them.
+That is EXACTLY the observed asymmetry. This supersedes the earlier "frozen snapshot, dead" conclusion.
+
+REACHABLE FROM LK: mcusys/MCSI is secure, but MCSI_NS_ACCESS (SMC 0x8200028B: a0=op 0rd/1wr/2set/3clr,
+a1=offset, a2=val; ATF holds the base so we pass OFFSETS) exposes read AND write to NS. LK already has
+mt_secure_call_all() for SMCs, so cpu0 can both diagnose and FIX the snoop-admission from NS-EL1 AArch32.
+
+TWO IMAGES BUILT + SIGNED + STAGED to /mnt/c/pairmini (flag-gated, shipping menu untouched):
+ - lk_a_snes_mcsi_signed.img (AYANEO_BC_MCSI): after worker join, cpu0 reads CENTRAL_CTRL, SF_INIT,
+   SNP_PENDING and SNOOP_CTRL for all 8 slave ifaces, logging SNOOP_EN/DVM_EN/SNP_SUPPORT/DVM_SUPPORT per
+   iface, plus MCUSYS_ACCESS_COUNT (SIP liveness) and FLUSH_BY_SF. Pure diagnosis (read-only + benign flush).
+ - lk_a_snes_mcsifix_signed.img (AYANEO_BC_MCSI_FIX): same diagnosis, THEN for every iface that SUPPORTS
+   snoop but has SNOOP_EN=0 it set_bitmask SNOOP_EN|DVM_EN (admits the worker cluster), re-reads, flushes by
+   SF, and re-checks the worker coherency canary (w_can1/w_menuw0/w_static_can). If those flip to real/0xCA5A
+   after admission, the multicore wall is BROKEN and the host-validated 2-core render/cardcache splits go live.
+FLASH ORDER when the MTK device (0123456789ABCDEF) is back: diagnostic first (confirm SNOOP_EN=0 on the worker
+cluster iface + SIP liveness), then the FIX. Both are experiment images; restore lk_a_snes_signed.img after.
+
+NOTE (device hygiene): the adb serial a28c0e0e seen this session is NOT our MT6785 target (it is a
+GammaOS/Lineage device); our modules failed to load there (wrong kernel) so nothing ran on it. All live MCSI
+probing must target 0123456789ABCDEF only. The live smcpoke path additionally needs a matching Module.symvers
+(current out-of-tree build has none -> insmod ENOENT); the on-HW LK experiment above sidesteps that entirely.
