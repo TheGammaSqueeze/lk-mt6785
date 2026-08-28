@@ -260,6 +260,12 @@ static void bc_spmc_init(void)
 	clrb(SPM_CPUTOP_RSTCON, RESETPWRON_CONFIG);                   /* 0x10006204 */
 	clrb(SPM_CPU_RSTCON(0), RESETPWRON_CONFIG);                   /* cpu0 0x10006208 */
 	setb(MCUCFG_CPC_FLOW_CTRL, CPC_CTRL_ENABLE);
+	/* EXPERIMENT: the live COHERENT system holds CPC_FLOW_CTRL bit29 (0x20000000) SET
+	 * (read 0x200b0000, stable), while our incoherent LK core has it CLEAR (0xb0000).
+	 * ATF does not set it (its 0x20000000 writes target 0x10001f9c, not CPC_FLOW), so it
+	 * is set by the kernel CPC config. It is the ONLY persistent CPC_FLOW difference
+	 * between coherent and incoherent - set it here and see if the worker canary flips. */
+	setb(MCUCFG_CPC_FLOW_CTRL, 1u << 29);
 }
 
 /* Direct SPMC power-on of core `cpu` (1..7), booting it AArch32 into `entry`. */

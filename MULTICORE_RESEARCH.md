@@ -823,3 +823,23 @@ STATUS: this is the concrete path to the REAL coherent-bringup win. Next phase =
 in the BL31 disasm (find the SSPM power-service enable / the ack-wait), then build an LK image that does
 the enable + plain PSCI + reads BC CANARY. This is a focused RE sub-project; the DVM long-shot flash and
 the producer-offload fallback remain staged/specced in the meantime.
+
+### ATF RE RESULT (2026-08-28): power-on is PURE HARDWARE - SSPM-enable path REFUTED
+Full RE of mt6785 BL31 spm_poweron_cpu (VA 0x4ce12adc, logs "spmc: power on core"): it is a pure
+SPM/MCUCFG hardware handshake with ZERO SSPM references (confirmed: no movk of any 0x1040..0x1048 SSPM
+mbox/SRAM base exists anywhere in BL31). Sequence: set CPC_FLOW_CTRL(0x0c53a814) bit13 (0x2000); set
+PWR_ON bit2 on MP0_CPUn_PWR_CON (0x10006208+n*4); SPIN reading SPM 0x10006160 masked by 1<<(n<4?n+9:n+11)
+until set; clear bit13. spmc_init (0x4ce129f4, once at boot): SPM unlock 0x0B160001, set RST_B bit0 on
+per-cpu PWR_CON, clear bit5, set CPC_CTRL_ENABLE bit16. save/load_pwr_ctrl (0x4ce014ec, bit17 toggle) is
+NOT called on the power-on path.
+=> The coherent power-on needs NO SSPM servicing; it is fully AP-register-driven, and our LK PSCI CPU_ON
+   already runs this exact ATF code and completes (PWR_ON_ACK set). So "enable SSPM CPU-power service at
+   LK" is a DEAD path (there is nothing to enable). The earlier "plain PSCI hangs because SSPM never acks"
+   was really the poll on 0x10006160 spinning because CPC_CTRL_ENABLE (bit16) was not armed; once armed
+   (our CPC-arm), it completes. This is why the register state is identical to the live coherent core.
+
+PARADOX + remaining lead: identical pure-hardware power-on, yet incoherent at LK. The ONE persistent
+register difference found is CPC_FLOW_CTRL bit29 (0x20000000): live=0x200b0000 (bit29 SET, stable over 3
+reads), LK=0xb0000 (bit29 CLEAR). ATF does not set it (the 0x20000000 writes in BL31 target 0x10001f9c,
+not CPC_FLOW); it is likely set by the kernel MCDI CPC-config SMC or is a CPC status/mode bit. Cheap
+direct test staged: set CPC_FLOW_CTRL bit29 at LK bring-up and re-run the canary.
