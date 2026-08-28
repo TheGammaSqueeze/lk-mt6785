@@ -964,6 +964,12 @@ extern int priamry_display_wait_for_vsync(void);
  * swap would tear). For frames that fit in a vsync (submenus, GBC/GBA) it is a pure
  * second barrier that halves the rate. The menu driver sets this each frame from the
  * measured render time; default 0 = wait (safe for callers that do not set it). */
+/* PRE-config vsync: wait for vblank BEFORE writing the OVL layer config (so the direct,
+ * non-CMDQ config latches right at vblank = tear-free) and do NOT wait again after the swap.
+ * That is ONE barrier, vs the old post-swap wait which stacked on config_input's FRAME_DONE
+ * wait = TWO barriers and halved the moving rate (30fps -> 15fps). Used for moving/pan frames. */
+static int s_present_presync;
+void ayaneo_present_presync_vsync(int p) { s_present_presync = p; }
 static int s_present_skip_vsync;
 #ifdef AYANEO_ALWAYS_VSYNC
 /* Guaranteed tear-free: ignore the skip hint and ALWAYS wait for vblank after the swap
@@ -1120,6 +1126,12 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_pan, int l2_clean,
 	tk1 = gpt4_get_current_tick(); DPH(2, tk0, tk1); tk0 = tk1;
 #endif
 
+	/* PRE-config vblank sync (moving/pan frames): the cache cleans above are done, so wait
+	 * for vblank NOW and write the config right at the frame boundary. config_input_multi's
+	 * own FRAME_DONE wait is then a near-no-op (path just entered vblank), so this is ONE
+	 * barrier - tear-free WITHOUT the extra post-swap wait that halved the rate to 15fps. */
+	if (s_present_presync)
+		priamry_display_wait_for_vsync();
 	/* one FRAME_DONE wait + one path config for all three layers, then trigger */
 	primary_display_config_input_multi(in, 3);
 #ifdef AYANEO_DEBUG_LOGGING
@@ -1137,7 +1149,7 @@ void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_pan, int l2_clean,
 	 * is a no-op, so the swap would land mid-scanout and TEAR - do the explicit wait. Keying
 	 * on the measured overrun (not just l2_clean) is what stops the movement/idle flicker:
 	 * overrunning pan frames used to skip this wait and tear. */
-	if (!s_present_skip_vsync || !l2_pa)
+	if (!s_present_presync && (!s_present_skip_vsync || !l2_pa))
 		priamry_display_wait_for_vsync();
 #ifdef AYANEO_DEBUG_LOGGING
 	tk1 = gpt4_get_current_tick(); DPH(5, tk0, tk1);
