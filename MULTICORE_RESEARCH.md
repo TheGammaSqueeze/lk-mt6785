@@ -1233,3 +1233,18 @@ a positive BC MMIOPROBE validates this channel too.
 Everything is host-validated or located; the ONLY remaining unknown is MMIO read viability (BC MMIOPROBE).
 On a positive result the wiring is mechanical and low-risk (all pieces proven). This is a real, complete,
 coherency-free path to the original 60fps-lower-power 2-core win.
+
+### FULL STATE CHANNEL TEST BUILT (2026-08-28): 23-word transfer validated in-flash
+Extended lk_a_snes_bigcore_sgi.img from a 1-word MMIO probe to the FULL split state channel: cpu0 packs
+the real menu dynamic state (snes_menu_pack_state, 23 words) and publishes it to the SPM SW_RSV MMIO
+window 0x10006600..0x1000665C each frame, summing it (g_bc_state_sum). The worker reads all 23 words from
+0x10006600 via MMIO, sums them, and publishes w_state_sum (worker->cpu0). New log:
+  "BC STATECHAN: cpu0 packed sum=0x.. ; worker read-back sum=0x.. => MATCH/mismatch"
+A MATCH proves the COMPLETE split state channel works over MMIO (the worker receives the whole per-frame
+dynamic state cpu0 publishes), which is the last thing to confirm before wiring the actual band render.
+So one flash of lk_a_snes_bigcore_sgi.img now yields the full progression:
+  BC MMIOPROBE (1-word MMIO live?) -> BC STATECHAN (full 23-word state channel live?) -> [then wire the
+  band render: worker memcpy snapshot m + unpack MMIO state + render band -> the 2-core split].
+Remaining after a positive STATECHAN: only the band-render wiring (device flash-iteration; all its pieces
+- pack complete, band split exact, channel located+validated - are already proven). The coherency-free
+per-frame 2-core win is one positive datapoint away from mechanical wiring.

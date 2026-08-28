@@ -68,6 +68,7 @@
 #define BC_O_WARM_CYCLE   448  /* cpu0->worker: nonzero = self PSCI CPU_OFF on first bringup (warm-cycle expt) */
 #define BC_O_W_SGI_COUNT  452  /* worker->cpu0: count of GIC SGI-pending signals the worker saw via MMIO */
 #define BC_O_W_SPM_SCRATCH 456 /* worker->cpu0: worker MMIO read of an SPM scratch reg cpu0 writes each frame */
+#define BC_O_W_STATE_SUM  460  /* worker->cpu0: checksum of the 23-word menu state it read from MMIO @0x10006600 */
 
 #ifndef __ASSEMBLER__
 struct bc_comms {
@@ -126,6 +127,7 @@ struct bc_comms {
 	volatile unsigned warm_cycle;            /* 448 cpu0->worker: self PSCI CPU_OFF request (warm-cycle) */
 	volatile unsigned w_sgi_count;           /* 452 worker->cpu0: GIC SGI-pending signals seen via MMIO */
 	volatile unsigned w_spm_scratch;         /* 456 worker->cpu0: worker MMIO read of SPM scratch cpu0 wrote */
+	volatile unsigned w_state_sum;           /* 460 worker->cpu0: checksum of the 23-word state read via MMIO */
 };
 #endif
 

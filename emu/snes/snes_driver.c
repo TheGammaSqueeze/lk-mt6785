@@ -134,7 +134,14 @@ void bc_worker_entry(void)
 			}
 			g_bc->w_sgi_count = sgi_seen;
 			g_bc->w_spm_scratch = *(volatile unsigned *)(unsigned long)0x10006250u;  /* SPM scratch MMIO */
-			BC_CLEAN((unsigned long)&g_bc->w_sgi_count, 8u); bc_dsb();
+			{	/* read the FULL 23-word packed menu state from the MMIO window and checksum it;
+				 * a match with cpu0's sum proves the complete split state channel works. */
+				unsigned si, ssum = 0;
+				for (si = 0; si < SNES_STATE_NWORDS; si++)
+					ssum += *(volatile unsigned *)(unsigned long)(0x10006600u + si * 4u);
+				g_bc->w_state_sum = ssum;
+			}
+			BC_CLEAN((unsigned long)&g_bc->w_sgi_count, 12u); bc_dsb();
 		}
 #endif
 		{	/* AT-translate the canary VA on the WORKER: PAR-lo ATTR[63:56 of the
@@ -262,6 +269,7 @@ static int s_bc_clk_set;
 /* cpu0: fork the bottom band to the worker, render the top band, join. */
 static unsigned s_bc_seq;
 unsigned g_bc_wfin, g_bc_fb;   /* diagnostics: worker-finished vs fallback frames */
+static unsigned g_bc_state_sum; /* cpu0's checksum of the 23-word menu state it packed to MMIO */
 static unsigned g_bc_canrb;    /* cpu0's read-back of its own canary write to 0x51000000 */
 static unsigned g_bc_cpupar;   /* cpu0's PAR-hi of the canary VA (0x04=Device 0xff=WB) */
 extern unsigned int gpt4_get_current_tick(void);
@@ -300,6 +308,19 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	 * reads it MMU-on via MMIO. If w_spm_scratch tracks 0x5A5Axxxx, MMIO is a live cpu0->worker
 	 * channel regardless of the GIC's NS-write permission. */
 	*(volatile unsigned *)(unsigned long)0x10006250u = 0x5A5A0000u | (seq & 0xffffu);
+	{	/* FULL 23-word state channel: pack the real menu dynamic state and publish it to the
+		 * SPM SW_RSV MMIO window (0x10006600, confirmed unused/safe). The worker reads all 23
+		 * words and checksums them; a matching sum proves the COMPLETE split state channel
+		 * works over MMIO (not just 1 word) - the last thing to validate before wiring the
+		 * actual band render. */
+		uint32_t sbuf[SNES_STATE_NWORDS]; unsigned si, ssum = 0;
+		snes_menu_pack_state(menu, sbuf);
+		for (si = 0; si < SNES_STATE_NWORDS; si++) {
+			*(volatile unsigned *)(unsigned long)(0x10006600u + si * 4u) = sbuf[si];
+			ssum += sbuf[si];
+		}
+		g_bc_state_sum = ssum;
+	}
 #endif
 	/* EXPERIMENT (shared-L3 evict): if the worker shares the DSU L3 but gets no snoop
 	 * invalidations, it holds a stale (boot_b-era) L3 line for the canary that cpu0's
@@ -402,6 +423,9 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 					 g_bc->w_sgi_count);
 				_dprintf("BC MMIOPROBE: worker read SPM scratch 0x10006250 = 0x%x (0x5A5Axxxx tracking seq => MMIO is a live cpu0->worker channel regardless of GIC)\n",
 					 g_bc->w_spm_scratch);
+				_dprintf("BC STATECHAN: cpu0 packed sum=0x%x ; worker read-back sum=0x%x => %s (23-word menu-state channel over MMIO @0x10006600)\n",
+					 g_bc_state_sum, g_bc->w_state_sum,
+					 (g_bc_state_sum == g_bc->w_state_sum && g_bc_state_sum) ? "MATCH - full split channel LIVE" : "mismatch/frozen");
 #endif
 				/* Lever-1 decisive probe (worker-private, isolates worker MMU/cache from
 				 * cross-core coherency). Read the decision tree in MULTICORE_RESEARCH.md:
