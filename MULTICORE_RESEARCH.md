@@ -980,3 +980,15 @@ data cpu0 writes+cleans BEFORE the worker enables its MMU is captured in that sn
 the worker. The STATICPROBE writes 0x57A70DED BEFORE PSCI (pre-bringup), so it should be in the frozen
 snapshot => STATICPROBE is predicted POSITIVE and the producer-offload (worker consumes static
 pre-bringup-cleaned assets) is predicted VIABLE. The staged flash will confirm.
+
+### SHARED-L3-EVICT hypothesis + probe (2026-08-28)
+Model that fits worker->cpu0 working + the frozen boot_b-era reads: the worker SHARES the DSU L3 (its
+reads hit L3, its writes allocate L3 which cpu0 snoops - so worker->cpu0 works) but receives NO snoop
+INVALIDATIONS. It cached the canary's boot_b-era line at first read; cpu0's per-frame clean-only never
+evicts it, so the worker reads the stale L3 copy forever. Test: cpu0 now does clean+INVALIDATE (BC_INVAL,
+DC IVAC to PoC) on the canary each frame - DC to PoC reaches the shared L3, evicting the stale line so the
+worker re-fills from DRAM. CAVEAT (why low-probability): the Device-mode canary bypasses ALL caches yet
+still reads stale (a memory-path symptom, not cache), and the worker's PRIVATE L1/L2 copy (WB mode) is
+unreachable by cpu0 maintenance without a snoop broadcast the worker ignores. So this only helps if the
+stale copy is specifically in the SHARED L3 and the worker mis-hits it. Cheap + harmless, folded into the
+lk_a_snes_bigcore_cpcbit29.img canary path. If BC CANARY now reads 0xCA5Axxxx, shared-L3-stale was it.

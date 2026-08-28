@@ -274,6 +274,13 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	 * w_can1; the worker also writes a return canary at +0x40 for cpu0 to read. */
 	*(volatile unsigned *)(unsigned long)0x51000000u = 0xCA5A0000u | (seq & 0xffffu);
 	BC_CLEAN(0x51000000u, 64u);
+	/* EXPERIMENT (shared-L3 evict): if the worker shares the DSU L3 but gets no snoop
+	 * invalidations, it holds a stale (boot_b-era) L3 line for the canary that cpu0's
+	 * clean-only never evicts. A clean+INVALIDATE to PoC from cpu0 evicts that shared L3
+	 * line so the worker re-fills from DRAM. Low probability (the Device canary bypasses
+	 * caches, and the worker's PRIVATE L1/L2 copy is unreachable without snoop broadcast),
+	 * but cheap and harmless - fold it in for an extra chance. */
+	BC_INVAL(0x51000000u, 64u);
 	bc_dsb();
 	{	/* LEVER (DVM): force inner-shareable Distributed Virtual Memory traffic after
 		 * publishing the canary. TLBI ...IS broadcasts a DVM Sync to every PE in the
