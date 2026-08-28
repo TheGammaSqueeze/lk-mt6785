@@ -833,6 +833,40 @@ static uint32_t cc_signature(snes_menu *m)
 }
 uint32_t snes_menu_cardcache_sig(snes_menu *m) { return cc_signature(m); }
 
+/* ---- home-carousel dynamic-state pack/unpack (2-core split over an MMIO channel) ----
+ * The per-frame render of the HOME carousel (state==0) depends on exactly these fields;
+ * the rest of snes_menu is static after init. cpu0 packs them, publishes over MMIO, and
+ * the worker unpacks them into its (static, frozen-snapshot) menu copy before rendering
+ * its band. The X-macro keeps pack and unpack in perfect sync. Ints copied raw, floats
+ * bit-reinterpreted. See SNES_STATE_NWORDS. */
+#define SNES_STATE_FIELDS(Fi, Ff) \
+	Fi(state) Fi(disp_cur) Fi(disp_sel) Fi(ngames) Fi(sort_rule) Fi(aspect) \
+	Fi(car_navd) Fi(focus) Fi(prev_focus) \
+	Ff(open_y) Ff(clock) Ff(cur_slide_t) Ff(scroll) Ff(scr_speed) Ff(scr_dir) \
+	Ff(cur_scroll_time) Ff(cur_scroll_spd) Ff(car_x) Ff(sel_world) Ff(cont_shift) \
+	Ff(xfade_t) Ff(resume_dim) Ff(screen_oy)
+
+void snes_menu_pack_state(const snes_menu *m, uint32_t *b)
+{
+	unsigned k = 0;
+	union { float f; uint32_t u; } c;
+#define PI(name) b[k++] = (uint32_t)m->name;
+#define PF(name) c.f = m->name; b[k++] = c.u;
+	SNES_STATE_FIELDS(PI, PF)
+#undef PI
+#undef PF
+}
+void snes_menu_unpack_state(snes_menu *m, const uint32_t *b)
+{
+	unsigned k = 0;
+	union { float f; uint32_t u; } c;
+#define UI(name) m->name = (int)b[k++];
+#define UF(name) c.u = b[k++]; m->name = c.f;
+	SNES_STATE_FIELDS(UI, UF)
+#undef UI
+#undef UF
+}
+
 /* The FULL focused card (blue active frame + boxart + icon + dots), composited LIVE
  * on L3 over the L2 dark body. Rendering the whole card here (not just the frame)
  * keeps z-order correct (the boxart covers the frame's opaque screen area) and keeps

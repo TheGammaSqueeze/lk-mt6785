@@ -1201,3 +1201,16 @@ handshake through 2 regs). The worker patches those fields into its frozen-snaps
 its band via snes_menu_render (host-validated exact). Framebuffer band goes out via the proven
 worker->cpu0 direction. That is the full home-carousel per-frame split with NO coherency. Ready to wire the
 moment MMIO viability is confirmed by lk_a_snes_bigcore_sgi.img.
+
+### STATE-PACK VALIDATED (2026-08-28): the 23-field pack fully determines the home render
+Built snes_menu_pack_state/unpack_state (X-macro, SNES_STATE_NWORDS=23: 9 int + 14 float home-carousel
+dynamic fields) and a host_render "statepack" completeness test: render S1 -> A, pack; navigate to S2
+(perturb); unpack S1 back; re-render -> B; A==B proves the pack captured every render-relevant dynamic
+field. RESULT: PASS - all 6 home-state (state==0) checks show 0 px difference (23 words/frame fully
+determine the render). The non-home states (menubar=1, resume=3) FAIL as expected and are ignored - the
+split targets ONLY the sustained-60fps home carousel; other states fall back to single-core.
+=> The MMIO 2-core split is now CORRECTNESS-COMPLETE on the host side: the band split is pixel-exact
+(rsplit) AND the 23-field state channel is complete (statepack). The ONLY remaining unknown is the MMIO
+channel viability (lk_a_snes_bigcore_sgi.img BC MMIOPROBE). On a positive MMIOPROBE the split is ready to
+wire with confidence: cpu0 packs 23 words + publishes over MMIO each home frame; the worker unpacks into
+its snapshot m and renders its band; framebuffer out via worker->cpu0. All host-validated; no coherency.

@@ -142,6 +142,56 @@ int main(int argc, char **argv)
 		return (allbad || det) ? 2 : 0;
 	}
 
+	/* State-pack completeness: `host_render <pack> - statepack [nav]` proves the
+	 * SNES_STATE_NWORDS packed fields FULLY determine the home-carousel (state==0) render -
+	 * the correctness prerequisite for the MMIO 2-core split (cpu0 packs+publishes these
+	 * words, the worker unpacks into its snapshot and renders its band). Method per state:
+	 * render S1 -> A, pack S1; navigate to S2 (perturbs the dynamic fields); unpack S1 back;
+	 * re-render -> B. A==B means the pack captured every render-relevant dynamic field; a
+	 * diff means a field is MISSING from SNES_STATE_FIELDS (the pixel points at which). */
+	if (argc > 3 && strcmp(argv[3], "statepack") == 0) {
+		const char *rnav = argc > 4 ? argv[4] : "RRLLDDUURRL";
+		int s, ni, allbad = 0, checks = 0, skipped = 0;
+		uint32_t *A = calloc((size_t)W * H, 4);
+		uint32_t *B = calloc((size_t)W * H, 4);
+		uint32_t buf[SNES_STATE_NWORDS];
+		memset(&in, 0, sizeof(in));
+		for (s = 0; s < 240; s++) snes_menu_update(&menu, &in, 1.0f / 60.0f);   /* settle attract */
+		for (ni = 0; ni < (int)strlen(rnav); ni++) {
+			char c = rnav[ni];
+			int bad = 0, first = -1;
+			if (menu.state != 0) { skipped++; }   /* split only targets the home carousel */
+			t.fb = A; for (i = 0; i < W * H; i++) A[i] = 0xFF000000u; snes_target_band(&t, 0, 0); snes_menu_render(&menu, &t);
+			snes_menu_pack_state(&menu, buf);      /* capture S1 dynamic state */
+			/* perturb to S2 */
+			memset(&in, 0, sizeof(in));
+			in.right = (c == 'R'); in.left = (c == 'L'); in.up = (c == 'U'); in.down = (c == 'D'); in.a = (c == 'A'); in.b = (c == 'B');
+			snes_menu_update(&menu, &in, 1.0f / 60.0f);
+			memset(&in, 0, sizeof(in));
+			for (s = 0; s < 40; s++) snes_menu_update(&menu, &in, 1.0f / 60.0f);
+			snes_menu_unpack_state(&menu, buf);    /* restore S1 dynamic (over S2) */
+			t.fb = B; for (i = 0; i < W * H; i++) B[i] = 0xFF000000u; snes_target_band(&t, 0, 0); snes_menu_render(&menu, &t);
+			for (i = 0; i < W * H; i++) if (A[i] != B[i]) { bad++; if (first < 0) first = i; }
+			checks++; if (bad && menu.state == 0) allbad++;
+			printf("  state %2d (nav '%c', state=%d): restore %s (%d px differ)%s\n",
+			       ni, c, menu.state, bad ? "FAIL" : "PASS", bad,
+			       (bad && menu.state != 0) ? " [non-home; ignored]" : "");
+			if (bad && first >= 0)
+				printf("    first diff @ row %d col %d: A=0x%08x B=0x%08x\n", first / W, first % W, A[first], B[first]);
+			/* advance to S2 for the next iteration */
+			memset(&in, 0, sizeof(in));
+			in.right = (c == 'R'); in.left = (c == 'L'); in.up = (c == 'U'); in.down = (c == 'D'); in.a = (c == 'A'); in.b = (c == 'B');
+			snes_menu_update(&menu, &in, 1.0f / 60.0f);
+			memset(&in, 0, sizeof(in));
+			for (s = 0; s < 40; s++) snes_menu_update(&menu, &in, 1.0f / 60.0f);
+		}
+		printf("STATEPACK: %s (%d home-state checks, %d words/frame, %d non-home skipped)\n",
+		       allbad ? "FAIL - a render-relevant dynamic field is MISSING from SNES_STATE_FIELDS"
+		              : "PASS - the packed fields fully determine the home-carousel render (split is correct)",
+		       checks - skipped, SNES_STATE_NWORDS, skipped);
+		return allbad ? 2 : 0;
+	}
+
 	/* Transition-capture mode: `host_render <pack> <outdir> seq <prefixNav> <transKeys> <nframes>`
 	 * mirrors the web frame-stepper (tools/_web_car_right_mid.mjs). It settles the
 	 * attract, walks <prefixNav> to reach the starting state, then steps at

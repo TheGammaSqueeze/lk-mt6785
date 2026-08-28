@@ -198,6 +198,14 @@ void snes_menu_build_cardcache(snes_menu *m, snes_target *t);
 void snes_menu_build_cardcache_band(snes_menu *m, snes_target *t, int r0, int r1);
 void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t, int full_clear);
 
+/* Home-carousel dynamic-state pack/unpack for the MMIO 2-core split: cpu0 packs the
+ * per-frame dynamic fields (the state==0 render depends only on these; the rest of the
+ * struct is static after init), publishes SNES_STATE_NWORDS u32 over an MMIO channel,
+ * and the worker unpacks them into its frozen-snapshot menu copy before rendering. */
+#define SNES_STATE_NWORDS 23
+void snes_menu_pack_state(const snes_menu *m, uint32_t *buf);
+void snes_menu_unpack_state(snes_menu *m, const uint32_t *buf);
+
 /* Drain one queued sound (res hash) to play, or 0 if none. */
 uint32_t snes_menu_next_sound(snes_menu *m);
 
