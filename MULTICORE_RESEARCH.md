@@ -661,3 +661,27 @@ adopts cpu0's TTBR1/TTBR0 64-bit MMU) and re-run the canary. If an A64 worker re
 participation in this DSU was the wall. Errata bits (write-streaming disable etc.) are a secondary thing
 the A32 worker could also mirror via CP15. The live-regpoke module stays available for any further
 non-trapping register question.
+
+### CORRECTION 2 (2026-08-28): AArch32 is NOT the wall (cpu0 is AArch32 + coherent)
+The comms MMU snapshot includes DACR (an AArch32-only register) and all MMU programming is CP15/p15, so
+LK/cpu0 itself executes AArch32 and IS coherent. So AArch32 execution state cannot be the coherence wall,
+and the "bring the worker up AArch64" test is both weak (cpu0 disproves it) and impractical (an A64 core
+cannot adopt cpu0's AArch32 LPAE snapshot). Deprioritized.
+
+TRUE REMAINING DIFFERENCE (honest state): cpu0 and the worker are both AArch32, same cluster0/DSU, same
+adopted MMU, and every power/CPC/SPM register matches. The ONLY real difference is TIMING: cpu0 is the
+COLD-BOOT core that joined the DSU coherency domain when the cluster/L3 was first powered and clean; the
+worker is a LATE-powered core that joins an already-running L3/snoop domain. The frozen-even-MMU-off/Device
+symptom means the worker's LOADS do not observe cpu0's stores at the point of coherence, while its STORES
+are seen by cpu0. This is a DSU late-join / snoop-filter-sync behavior, not a register we have found. Hard
+to probe further without risky live writes (deferred while user is away) or LK flashes.
+
+CANDIDATE NEXT DIRECTIONS (for future cycles):
+- SSPM firmware angle: at kernel time SSPM runs the MCDI service that performs CPU power AND may do the
+  DSU/L3 sync for late-joined cores. Even though PWR_ON_ACK completes without it, the SNOOP-FILTER
+  inclusion of a late core might be an SSPM/MCUPM step. RE the SSPM MCDI firmware bringup (mbox1) for any
+  post-power "coherency sync" step, and whether LK can invoke it.
+- DSU CLUSTERECTLR/ACP/L3 config: read via a CAREFULLY-guarded module (avoid EL3-only regs) or from
+  kernel source, to see if late cores need an L3/snoop-filter action.
+- cpu0-side: have cpu0 issue a DVM/TLBI+DSB ISH broadcast or a dummy coherent transaction after the worker
+  joins, to force the DSU to include it, then re-test (LK experiment).
