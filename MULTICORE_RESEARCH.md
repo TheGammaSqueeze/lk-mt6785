@@ -843,3 +843,19 @@ register difference found is CPC_FLOW_CTRL bit29 (0x20000000): live=0x200b0000 (
 reads), LK=0xb0000 (bit29 CLEAR). ATF does not set it (the 0x20000000 writes in BL31 target 0x10001f9c,
 not CPC_FLOW); it is likely set by the kernel MCDI CPC-config SMC or is a CPC status/mode bit. Cheap
 direct test staged: set CPC_FLOW_CTRL bit29 at LK bring-up and re-run the canary.
+
+### bit29 RE (2026-08-28): likely status/DCM, not a control bit - CPC full-diff is the real value
+Ran the ATF CPC-config SMC handler (0x4ce0e4d4, jump-table): it toggles CPC_FLOW bit5 (auto-off), 0x0c53ab00
+bit0, 0x0c53ab74=3, per config sub-cmd - NOT bit29. 0x4ce09ba4 clears CPC_FLOW bit20 (dormant read path).
+Kernel: no direct 0x0c53a814/bit29 write anywhere; no CPC_FLOW bit-field named for bit29. Nearby concepts
+are GIC_WAKEUP / GIC_SYNC_DCM. => CPC_FLOW bit29 is most likely a CPC hardware STATUS or DCM bit, not a
+coherency control, so setting it at LK (the staged cpcbit29 image) is a LONG SHOT. Kept the experiment
+anyway (cheap) but the REAL value of that flash is the BC CPCDUMP: live coherent has 14 non-zero CPC regs
+(0x704,708,70c,710,714,718,740,748,808,814,840,844,848,898 - see tools/live_regpoke/live_cpc_reference.txt)
+and we currently know the LK value for only 2 of them (CPC_SPMC_ST, CPC_FLOW). The dump exposes the other
+12; any that differ coherent-vs-LK is a fresh, concrete candidate for the missing setup.
+
+HONEST STANDING: power-on is proven pure-HW and identical to the live core; no MMIO snoop register exists;
+bit29 is likely status. If the CPCDUMP diff shows no real control-register difference either, the
+coherent-bringup wall is confirmed DSU-internal with no software lever, and the achievable deliverable is
+the producer-offload (worker reads static pre-bringup assets + writes tiles out; both directions proven).
