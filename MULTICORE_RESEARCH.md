@@ -1338,3 +1338,27 @@ memory-efficient variant needs the render refactor. This is the concrete tradeof
 FINAL STATE: dynamic 2-core (per-frame split) is definitively dead (worker read path fully frozen). The
 static-input offload is viable but constrained (21 games => ~52-76MB per-focus, or an L2/L3 refactor).
 Awaiting the user's decision: build the offload (accept the memory/refactor cost) or bank the research.
+
+### LK MEMORY MAP (2026-08-28) - confirms per-focus tiles are fragmented/tight
+Window [0x4E000000,0x56000000) = 128MB (only WB DRAM mapped in LK; 0x56000000+ faults). Allocations:
+  0x4E000000-0x50000000 (32MB): display framebuffers (~10MB double-buffered 1280x960x4) + slack
+  0x50000000 (14.6MB pack blob) ; 0x50C00000 (16MB home scene pool, HOME_CAP; the EXPT canary 0x51000000
+    sits inside it) ; 0x53000000 (~4.7MB chrome cache) ; 0x54000000 (3.66MB OVL L2) ; 0x55000000 (OVL L3)
+Free gaps are FRAGMENTED (largest ~20-32MB): ~0x51C00000-0x53000000 (20MB), 0x53480000-0x54000000 (12MB),
+0x55xxxxxx-0x56000000 (~15MB), plus framebuffer slack. Total free maybe ~50-79MB but NO single large
+contiguous block. So 21 per-focus tiles (~76MB) do NOT fit contiguously and barely fit even spread across
+gaps - genuinely tight/fragmented. The memory-efficient path (one ~7.5MB focus-independent card-row
+texture) fits easily but needs the L2/L3 render refactor.
+
+### FINAL STATE (2026-08-28) - investigation complete, decision is the user's
+- DYNAMIC 2-core (per-frame split, the 60fps-lower-power goal): DEFINITIVELY DEAD. The worker's entire
+  read path (DRAM + all MMIO + GIC) is a frozen snapshot at MMU-enable; no dynamic cpu0->worker channel
+  exists at LK (proven decisively by the GICR write-lands-but-worker-cannot-read test).
+- STATIC-INPUT OFFLOAD: viable (STATICPROBE positive) but CONSTRAINED for this 21-game pack: per-focus
+  tiles are memory-tight/fragmented (~76MB in ~50-79MB fragmented free), and the memory-efficient variant
+  needs the L2/L3 render refactor (visual risk on the working menu). Modest gain (removes ~30ms scroll
+  rebuild). The cheapest "offload the on-demand rebuild" is impossible (needs the dead dynamic focus).
+Awaiting the user's go/no-go. All host-validated pieces (pack, band split, state-pack) and the full live-
+register toolchain (tools/live_regpoke) are preserved. If "build": start with the refactor path (fits
+memory) and host-validate focus-independent-row + windowed-blit == single-core. If "bank": restore the
+clean single-core build (lk_a_snes_signed.img).
