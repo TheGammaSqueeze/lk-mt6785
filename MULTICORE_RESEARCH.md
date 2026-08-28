@@ -590,3 +590,32 @@ NEXT (decisive): build the register-poke kernel module (task 28) and read, on th
 the DSU/mcucci (0x0c510000) + mcucfg (0x0c530000) coherency config + L3 control, and hotplug-diff
 (offline/online cpu1) to capture what the kernel path programs that ATF-at-LK does not. Compare to the
 LK register state. That difference is the fix target.
+
+### LIVE MODULE + HOTPLUG DIFF (2026-08-28): coherency admission is NOT a register - it is cache init
+Built a MODVERSIONS-matching register-poke kernel module (tools/live_regpoke/, vermagic
+"4.14.186 SMP preempt mod_unload modversions aarch64") and loaded it on the live rooted device.
+Arbitrary physical reads work. Findings:
+- MP0_CPU1_PWR_CON (0x1000620c) on the LIVE coherent system = 0x80000005, IDENTICAL to our LK core.
+  So the per-CPU power/ack state is not the difference.
+- CPC_FLOW_CTRL (0x0c53a814) live=0x200b0000 vs LK 0xb0000 (bit29 set live) - investigated, transient.
+- Hotplug diff (cpu1 online -> offline -> online, reading SPM 0x200-0x224 + CPC 0x0c53a700..+0x140):
+  the ONLY registers that change are the per-CPU MP0_CPUn_PWR_CON power bits (PWR_ON b2 / PWR_ON_ACK
+  b31 toggling) and a transient CPC_FLOW status bit - and the SAME toggles appear on cpu3/6/7
+  (MCDI idle power-gating noise). There is NO distinct snoop/coherency-admission register that flips on
+  bring-up. => coherency admission is performed automatically by the DSU power handshake, which our LK
+  core ALREADY completes (PWR_ON_ACK set). Confirms the ATF-RE conclusion empirically.
+
+CONCLUSION BY ELIMINATION: the LK read-incoherence is NOT a missing shared register write (power, CPC,
+SPM all match live). It is CORE-INTERNAL state. The worker entry stub (bigcore_entry.S:46-49) DELIBERATELY
+skips L1 D-cache invalidation, on the assumption ATF already did it. But a freshly SPMC-powered core's
+L1 D-cache is in an UNKNOWN state and MUST be invalidated by set/way before SCTLR.C is set. If it is not,
+the worker's reads hit stale/garbage cache lines (the fixed 0xa86dbdec) while its writes allocate fresh
+lines that drain to DRAM (cpu0 sees them) - which reproduces write-works / read-frozen EXACTLY, and the
+fixed value = deterministic power-on cache content. The stub's own comment ("DCISW is not broadcast") is
+a misunderstanding: set/way invalidation is LOCAL cache init, which is precisely what a powered-on core
+needs; it is not meant to be broadcast. This is the leading root cause and a cheap LK fix.
+
+NEXT: add a full L1 D-cache invalidate-by-set/way loop at the very top of bigcore_entry.S (before the
+MMU+cache enable), rebuild the ackprobe/EXPT image, stage for flash. (adb cannot test the LK worker's
+internal cache directly, but the hotplug diff rules out every shared-register alternative, so this is
+the highest-probability fix.)
