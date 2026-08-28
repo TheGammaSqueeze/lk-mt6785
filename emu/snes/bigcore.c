@@ -491,8 +491,22 @@ void bigcore_start(void)
 			 * NOT, so liveness must be judged from the MCSI_NS_ACCESS read above, not a different SIP. A read
 			 * of CENTRAL_CTRL returning 0xffffffff (SIP_SVC_E_NOT_SUPPORTED=-1) => SIP absent; a plausible
 			 * value (SNOOP_DIS/DVM_DIS/SEC_ACC bits sane, not all-ones) => the fix's SMC path is LIVE. */
-			_dprintf("BC MCSI SIP-LIVE: %s (CENTRAL_CTRL=0x%lx; 0xffffffff => MCSI_NS_ACCESS not implemented -> ATF-patch contingency)\n",
-				 (v == 0xfffffffful) ? "NO - SIP absent" : "YES - MCSI_NS_ACCESS handled", v);
+			_dprintf("BC MCSI SIP-LIVE: %s (CENTRAL_CTRL=0x%lx; 0xffffffff => MCSI_NS_ACCESS not in this ATF -> use ATF-patch path)\n",
+				 (v == 0xfffffffful) ? "NO - SIP absent (expected on stock/CPC tee per disasm)" : "YES - MCSI_NS_ACCESS handled", v);
+			/* RAW-READ fallback: MCUSYS write-protect firewalls WRITES from NS; READS of mcucci may still
+			 * return real data (earlier mcusys NS reads returned 0, not an abort). Read the MCSI snoop-control
+			 * regs DIRECTLY at phys base 0x0c510000 so we see the cluster-1 SNOOP_EN state even with no SIP.
+			 * base+0x0 central, base+0x28 SNP_PENDING, base+0x1000+0x100*n = slave-iface SNOOP_CTRL. */
+			{
+				unsigned long mb = 0x0c510000ul; int k;
+				_dprintf("BC MCSI RAW @0x0c510000: CENTRAL=0x%x SF_INIT=0x%x SNP_PEND=0x%x\n",
+					 rd32((unsigned)mb + 0x0), rd32((unsigned)mb + 0x10), rd32((unsigned)mb + 0x28));
+				for (k = 0; k < 8; k++) {
+					unsigned sc = rd32((unsigned)(mb + 0x1000ul + 0x100ul * (unsigned)k));
+					_dprintf("BC MCSI RAW SLV%d SNOOP_CTRL=0x%x SNOOP_EN=%u DVM_EN=%u SNP_SUP=%u DVM_SUP=%u\n",
+						 k, sc, sc&1u, (sc>>1)&1u, (sc>>30)&1u, (sc>>31)&1u);
+				}
+			}
 			rr1=rr2=rr3=0; v = MCSI_RD(0x10); _dprintf("BC MCSI SF_INIT(0x010)=0x%lx\n", v);
 			rr1=rr2=rr3=0; v = MCSI_RD(0x28); _dprintf("BC MCSI SNP_PENDING(0x028)=0x%lx\n", v);
 			for (i = 0; i < 8; i++) {

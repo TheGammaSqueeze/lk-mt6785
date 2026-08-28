@@ -1714,3 +1714,28 @@ Analyzed the actual tee_patched_armcpc.img (our BL31/ATF, 162KB, "atf" magic hea
    operator guide's decision tree (step 1) to read the new "BC MCSI SIP-LIVE:" line instead of MCUSYS_ACCESS_COUNT.
 This materially de-risks the flash: we now expect SIP-LIVE=YES, the worker-cluster iface SNOOP_EN=0, admit sets
 it, and the canary flips. Binary evidence says the SMC fix path exists in the ATF we already run.
+
+### DISASM CORRECTION (2026-08-28): the MCSI SIP is NOT in this ATF - SMC fix cannot work, raw-read added
+Corrects the previous cycle. Properly disassembled tee_patched_armcpc.img (aarch64 objdump) instead of scanning
+for 32-bit literals (which gave a FALSE positive: 0x8200028b appeared only as coincidental UNALIGNED bytes
+spanning an ADD+MOVZ, not a real reference). The real SIP dispatch is a binary-search of 236 `movk w0,#0x8200/
+#0xc200 lsl16` + `cmp w20,w0`. Enumerating every handled low-half: the 0x2xx block runs ...0x272 0x273 0x274
+0x275 0x276 then JUMPS to 0x2a0 0x2b0 0x2b1. The ENTIRE 0x28x range is ABSENT: MCSI_NS_ACCESS(0x28b),
+MCUSYS_WRITE(0x287), MCUSYS_ACCESS_COUNT(0x288), MCSI_A_READ/WRITE(0x28a/0x289), CACHE_FLUSH_BY_SF(0x283),
+L2_SHARING(0x286) - none dispatched. (The `mov w1,#0x289/#0x28a` hits are __assert line numbers 649/650, not
+SIP ids.) So this BL31 build was compiled WITHOUT the MCSI/mcusys SIP feature.
+
+CONSEQUENCES:
+ - The SMC-based fix (MCSI_NS_ACCESS set_bitmask) will return SIP_SVC_E_NOT_SUPPORTED(-1) on this tee.img and
+   CANNOT enable snoop. The SIP path is out; the ATF binary patch is now the REQUIRED path, not a fallback.
+ - Even the SIP-based diagnostic reads return -1, so they cannot show the SNOOP_EN state. FIX: added a RAW-READ
+   probe - LK reads mcucci directly at phys 0x0c510000 (CENTRAL 0x0, SNP_PENDING 0x28, slave SNOOP_CTRL
+   0x1000+0x100*n). MCUSYS write-protect firewalls WRITES; NS READS of mcusys previously returned 0 (not an
+   abort), so a direct read likely reveals the real snoop-control state without any SIP. Rebuilt+staged both
+   images; "BC MCSI RAW ..." lines now report the cluster ifaces regardless of SIP.
+NEXT (real fix path): patch the ATF. Either (a) add an MCSI_NS_ACCESS/mcusys-write SIP handler into a free slot
+of the dispatch, or (b) simpler, patch the existing PSCI on_finish / plat_mtk_cci_enable path (the ATF already
+has CCI code - string cci_adb400_dcm_config) to force cci_enable_cluster_coherency for cluster 1. Requires
+locating cci_enable + the afflvl1 gate in the disasm; the ATF is already rebuilt/re-signed for the CPC-arm bit,
+so an added binary patch ships the same way. First though: flash the diagnostic and read the RAW lines - if the
+raw read shows cluster-1 SNOOP_EN=0, the whole theory is confirmed on-metal and the ATF patch is well-targeted.
