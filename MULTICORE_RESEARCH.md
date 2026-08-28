@@ -1266,3 +1266,22 @@ BC WRITEBACK (cpu0 reads back its own 0x10006250 / 0x10006600 writes). Nonzero =
 is frozen (MMIO dead, conclusion stands). Zero => cpu0's SPM-scratch write dropped and MMIO may still be
 alive via a different cpu0-writable scratch (would REOPEN the per-frame split). Flash the rebuilt
 lk_a_snes_bigcore_sgi.img and read BC WRITEBACK + BC MMIOPROBE.
+
+### SPLIT DATA-MODEL VERIFIED (2026-08-28): only the 23 dynamic words need the channel
+Confirmed the per-frame split's data dependencies are all satisfiable from (frozen snapshot + 23 MMIO
+words), no hidden dynamic dependency:
+- INIT ORDER: bigcore_start (worker bringup, snes_driver.c:802) runs AFTER snes_pack_open (725) and
+  snes_menu_init (789). So the worker's frozen MMU snapshot captures a FULLY-INITIALIZED menu struct and a
+  fully-built home scene (m->home at SNES_HOME_PA=0x50C00000). Static pointers/scene are valid in the
+  snapshot.
+- HOME SCENE IS STATIC: snes_menu_render state==0 (line 205-207) does snes_render_scene(&m->home) then
+  draw_carousel. snes_menu_update does NOT rebuild the home scene (only submenu/dialog scenes at line 186).
+  So m->home is built once at init and never rebuilt - the worker's frozen copy is correct. The
+  per-frame animation (wallpaper scroll, card positions, cursor) is computed at RENDER time from m fields,
+  all of which are in the 23-word pack (statepack PASS confirmed completeness).
+=> The worker needs ONLY: (a) its frozen snapshot (valid static menu + scene, since bringup is post-init),
+   and (b) the 23 dynamic words per frame. Both are available if the MMIO channel is live. The scene-pool
+   clean in bc_dispatch (line 296) is defensive/legacy - the home scene does not actually change per frame.
+So the ONLY remaining gate for the full per-frame split is MMIO channel viability (pending the SPM-unlock
+flash: BC WRITEBACK/MMIOPROBE/STATECHAN). If that goes green, the split wiring is fully de-risked end to
+end - every data dependency verified satisfiable.
