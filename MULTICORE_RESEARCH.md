@@ -2120,3 +2120,16 @@ Awaiting user test. Two images for the OVL-present tearing regression:
     Fallback if #1 still shows any tearing.
 If #1 is clean -> ship it (best of both). If #1 still tears in some case -> #2 is the guaranteed hammer, then the
 proper 60fps-tear-free path is a hardware vblank-latched OVL layer reconfig (config at vblank, single barrier).
+
+### TEARING MECHANISM RE (2026-08-29): CMDQ disabled -> OVL config is DIRECT, timing-sensitive
+Studied the present path. primary_display_use_cmdq = CMDQ_DISABLE in LK, so OVL layer config is written DIRECTLY
+to hardware (not SOF-latched via CMDQ). config_input_multi waits DISP_PATH_EVENT_FRAME_DONE (current frame's
+scanout end) then writes the OVL registers during the back-porch. Tear-free requires that write to finish before
+the next SOF. The two staged variants pace the LOOP via a post-swap vsync wait (variant1: only when moving;
+variant2 AYANEO_ALWAYS_VSYNC: every swap) - they reduce tearing by slowing the cadence but do not directly time
+the config to vblank. THEORETICALLY-CORRECT variant 3 (if 1/2 are insufficient): wait for vsync/FRAME_DONE
+BEFORE config_input_multi so the OVL reconfig lands right at the start of the back-porch with a full frame of
+margin before the next SOF - tear-free AND 60fps (one barrier). Not built yet: holding for the user's test of
+variants 1/2 to avoid flooding untested images. If both still tear -> build variant 3 (pre-config vblank wait in
+ayaneo_canvas_present_layers). NOTE: this display-tearing work is the user's actual priority now, distinct from
+the (closed) multicore coherency research.
