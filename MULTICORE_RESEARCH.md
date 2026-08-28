@@ -1519,3 +1519,14 @@ Caveat: enable_scu(mpidr) (the core/DSU-level snoop, ~CPUECTLR.SMPEN) is the WOR
 runs on the worker; on DynamIQ A55 the core auto-joins the DSU at reset, so the cpu0-side MCSI enable is the
 actionable missing piece. If the diagnostic shows SNOOP_EN already 1, MCSI is not the layer and we pivot to the
 SCU/DSU-level or the PSCI-state-coordination angle.
+
+### INDEPENDENT LEVER ADDED (2026-08-28, task d): broadcast DVM/TLBI-IS coherent barrier from cpu0
+Added a second, SIP-independent lever to the AYANEO_BC_MCSI path so a single flash triangulates the wall.
+After the MCSI snoop-admission read/set + FLUSH_BY_SF + canary readback, cpu0 now also issues a broadcast
+inner-shareable DVM/TLBI and coherent barrier (AArch32: DSB ISH; TLBIALLIS = mcr p15,0,Rt,c8,c3,0; DSB ISH;
+ISB), then re-reads the worker canary. Rationale: if cluster 1's DSU/MCSI snoop filter is merely STALE rather
+than snoop-DISABLED, a cross-cluster DVM sync can force a resync; this does not rely on the MCSI SIP being
+implemented in ATF-at-LK. Attribution: canary flips after the MCSI set => snoop-admission was the wall; flips
+only after TLBIALLIS => DVM-sync was the wall; flips after neither => pivot (SCU/DSU-level or PSCI-state path).
+Rebuilt + signed + staged both lk_a_snes_mcsi_signed.img (diagnostic + DVM) and lk_a_snes_mcsifix_signed.img
+(diagnostic + MCSI admit + DVM). Shipping menu untouched (flag-gated). Awaiting the MTK target to flash.

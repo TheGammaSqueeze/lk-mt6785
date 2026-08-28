@@ -520,6 +520,21 @@ void bigcore_start(void)
 			arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
 			_dprintf("BC MCSI post: w_can1=0x%x w_menuw0=0x%x w_static_can=0x%x (0xCA5A/real => coherent!)\n",
 				 bc->w_can1, bc->w_menuw0, bc->w_static_can);
+			/* INDEPENDENT LEVER (task d): a broadcast inner-shareable DVM/TLBI + coherent
+			 * barrier from cpu0. If the DSU/MCSI snoop filter for cluster 1 is merely stale
+			 * rather than disabled, a cross-cluster DVM sync can force a resync. AArch32:
+			 * DSB ISH; TLBIALLIS (mcr p15,0,Rt,c8,c3,0); DSB ISH; ISB. This does NOT depend
+			 * on the MCSI SIP, so it triangulates: if the canary flips here but not after the
+			 * MCSI set, the wall was DVM-sync, not snoop-admission. Cheap + safe. */
+			__asm__ __volatile__(
+				"dsb ish\n\t"
+				"mcr p15, 0, %0, c8, c3, 0\n\t"   /* TLBIALLIS - broadcast TLB invalidate */
+				"dsb ish\n\t"
+				"isb\n\t"
+				: : "r"(0) : "memory");
+			arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
+			_dprintf("BC MCSI post-DVM(TLBIALLIS): w_can1=0x%x w_menuw0=0x%x w_static_can=0x%x\n",
+				 bc->w_can1, bc->w_menuw0, bc->w_static_can);
 			#undef MCSI_RD
 			#undef MCSI_NS
 		}
