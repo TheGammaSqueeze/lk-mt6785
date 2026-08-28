@@ -1806,3 +1806,17 @@ AArch32 is not itself the wall). Parked as a future alternative if the CPC/mcucf
 STATE: offline analysis is saturated. WHERE is settled (cross-DSU snoop admission, CPC-managed). The exact
 register is the ONE open unknown and needs the prepared run_mcucfg_diff.sh on the live target. Everything that
 can be determined without hardware has been determined; the next real progress is a flash or the hotplug-diff.
+
+### LIVE-MODULE ENABLER ASSESSED (2026-08-28): Module.symvers via full build is non-trivial; fallbacks noted
+Tried to unblock the live hotplug-diff by generating Module.symvers (so regpoke.ko/smcpoke.ko load reliably on a
+CONFIG_MODVERSIONS kernel). Result: a full kernel build is NOT a quick offline win - it is not a toolchain issue
+(GCC 11.4 compiled fine into the MTK-specific includes) but MTK's build wiring (e.g. kernel/sched/core.c pulls
+mtk_mcdi_api.h which is not on the default include path), so producing Module.symvers needs the full MTK build
+harness set up. Deferred: low ROI because this only affects the SECONDARY live-adb hotplug-diff; the PRIMARY path
+(flash lk_a_snes_mcsi_signed.img and read UART, incl. the raw mcucci read) needs NO module. Fallbacks when the
+target returns: (1) the module may load as-is on the CORRECT device (cron notes a prior session's regpoke WORKED;
+the earlier ENOENT was on the wrong device a28c0e0e); (2) if CRCs are enforced, extract Module.symvers from the
+live rooted device's kernel image (the /work/557/extract-symvers.py approach over the on-device kernel/__ksymtab).
+NET this cycle: confirmed the only two remaining enablers (live device for run_mcucfg_diff.sh; module load) both
+depend on the MTK target being connected. Offline research remains saturated; no productive offline step left
+that does not require the hardware. Standing by for a flash UART dump or the device to reconnect.
