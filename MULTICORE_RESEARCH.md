@@ -685,3 +685,18 @@ CANDIDATE NEXT DIRECTIONS (for future cycles):
   kernel source, to see if late cores need an L3/snoop-filter action.
 - cpu0-side: have cpu0 issue a DVM/TLBI+DSB ISH broadcast or a dummy coherent transaction after the worker
   joins, to force the DSU to include it, then re-test (LK experiment).
+
+### MMIO SWEEP COMPLETE (2026-08-28): no snoop-admission register anywhere
+Hotplug-diffed (cpu1 online/offline/online) the remaining mcusys MMIO blocks with the live module:
+- mcucci (0x0c510000, first 4KB): only 4 non-zero words, all at 0xff0-0xffc = component-ID bytes
+  0x43 0x42 0x49 0x55 ("CBIU"), constant across hotplug. No config, no change.
+- mcucfg (0x0c530000, first 4KB): 29 non-zero words; the ones that change (0x530224 ticking 5b3a->5b38,
+  and 0x530700/0a00/0f00 groups going non-zero<->0 with cpu1 on/off) are PER-CPU PERFORMANCE COUNTERS
+  (DT node mcucfg_mp0_counter@0c530000), not coherency config.
+So across SPM (0x10006200), CPC (0x0c53a700), mcucci (0x0c510000) and mcucfg (0x0c530000) there is NO
+memory-mapped snoop/coherency-admission register that toggles when a core joins/leaves coherency. This
+definitively confirms: DSU snoop admission is INTERNAL to the DSU hardware (driven by the PACTIVE/PDENY
+power handshake), not an MMIO register write. Our LK core completes that handshake (PWR_ON_ACK=1), so the
+frozen-read is NOT a missing register write of any kind. The cause is DSU-internal late-join state or a
+memory-path effect, not software-visible via MMIO. Next: SSPM/MCUPM firmware RE (does it do a post-power
+L3/snoop-filter sync a late core needs) and the cpu0-side DVM/TLBI-ISH broadcast LK experiment.
