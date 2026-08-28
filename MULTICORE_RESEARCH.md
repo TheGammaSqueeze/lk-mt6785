@@ -871,3 +871,32 @@ assets into fixed DRAM slots, cpu0 reads them via the proven worker->cpu0 direct
 cross-core coherency. Garbage => even static pre-bringup reads fail and the offload is blocked too.
 The lk_a_snes_bigcore_cpcbit29.img now yields THREE datapoints per flash: BC CANARY (bit29 coherent test),
 BC CPCDUMP (full CPC coherent-vs-live diff), BC STATICPROBE (producer-offload viability).
+
+### PRODUCER-OFFLOAD DESIGN (2026-08-28) - implementable, gated on STATICPROBE viability
+Web search confirmed no documented software fix for the snoop-input asymmetry (writes-out work,
+reads-in stale) - consistent with the DSU-internal wall. So the realistic deliverable is the
+producer-offload, which needs ZERO cross-core coherency. Concrete design against the existing engine:
+
+REUSE SURFACE (emu/snes/snes_menu.c):
+- snes_menu_build_cardcache(m,t) @926: builds the SNES_L2_W(2496)px card strip, focus-CENTERED, panned
+  via OVL src_x, rebuilt when cc_signature(m) @817 changes (scroll past the +/-608 margin) = the ~30ms
+  hitch we want to offload.
+- snes_menu_build_cardcache_band(m,t,r0,r1) @967: host-validated band split (row range) - reusable.
+
+DESIGN:
+1. Add snes_menu_build_cardcache_tile(m,t,tile_x): same draw path but ABSOLUTE row offset tile_x instead
+   of focus-centered, so tiles are fixed windows of the infinite card row (row width = N_cards*pitch).
+   Tiles at tile_x = 0, 2496, 4992, ... cover the whole row; each built ONCE.
+2. cpu0 (before worker bringup) finalizes the static card list + boxart and CLEANS them to DRAM (the
+   worker's inputs must be pre-bringup-cleaned - STATICPROBE confirms the worker can read them).
+3. Worker builds every tile round-robin into fixed DRAM slots (0x54/0x55 window), writes done-flags.
+   cpu0 reads the tile covering the current focus via the PROVEN worker->cpu0 direction (invalidate+read),
+   composites it with OVL src_x. No dynamic cpu0->worker signal needed (worker builds ALL tiles; cpu0
+   selects). Result: the scroll-rebuild hitch never runs on cpu0.
+4. HOST-VALIDATE (no flash): tiles composited == focus-centered strip at every focus (diff, like the
+   earlier band-split validation). Then device integration + the coherent worker->cpu0 tile handoff.
+VALUE: eliminates the ~30ms card-strip rebuild stalls during scrolling (steady 60fps scroll). Modest vs
+the original per-frame-coherent-split dream (which the DSU wall blocks), but real and coherency-free.
+GATE: implement only after STATICPROBE (in the staged lk_a_snes_bigcore_cpcbit29.img) confirms the worker
+reads pre-bringup static data (0x57A70DED). Both paths (coherent CPC-diff + offload viability) resolve on
+that one flash.
