@@ -1789,3 +1789,20 @@ coherency-admission control that the ATF/CPC sets when DSU1 joins the domain but
 target and the register an ATF patch (or a direct CPC/mcucfg poke, if NS-writable) must set. Needs regpoke.ko
 loadable (matching Module.symvers) and the device online. This is the single most informative remaining step;
 everything offline points here. cpu4 = mpidr 0x100 confirmed from the DTS.
+
+### ARM DSU MODEL + a NEW (blocked) lever (2026-08-28, WebSearch)
+Web (ARM DynamIQ DSU TRM, DSU PMU docs, DynamIQ hotchips) confirms the model but gives NO MediaTek-public CPC
+register: a DSU integrates its cores with an L3 + Snoop Filter + async bridges; the cluster power domain
+(PDCLUSTER) is PPU-controlled; and TWO DSUs are made coherent by an EXTERNAL coherent interconnect. So MT6785's
+cross-DSU coherency admission is an interconnect/CPC action, matching our finding (no software MCSI in the ATF ->
+CPC hardware does it). No vendor doc exposes the exact CPC/mcucfg bit; the hotplug-diff must find it empirically.
+NEW LEVER surfaced (recorded for completeness, currently BLOCKED): the DSU exposes per-cluster IMP-DEF sysregs
+IMP_CLUSTERECTLR_EL1 / IMP_CLUSTERPWRDN_EL1 that a core in that cluster can program to influence its cluster
+coherency/power state. In principle the WORKER (cpu4) could set its own DSU cluster register to join the snoop
+domain - a lever independent of both the (absent) MCSI SIP and the CPC/mcucfg register. BLOCKER: these are
+AArch64-only sysreg encodings, but our worker runs in AArch32 (it adopts cpu0's AArch32 state), so it cannot
+access them. It would require bringing the worker up in AArch64 (a large change; and the corrected findings say
+AArch32 is not itself the wall). Parked as a future alternative if the CPC/mcucfg-register path does not pan out.
+STATE: offline analysis is saturated. WHERE is settled (cross-DSU snoop admission, CPC-managed). The exact
+register is the ONE open unknown and needs the prepared run_mcucfg_diff.sh on the live target. Everything that
+can be determined without hardware has been determined; the next real progress is a flash or the hotplug-diff.
