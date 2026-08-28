@@ -1248,3 +1248,21 @@ So one flash of lk_a_snes_bigcore_sgi.img now yields the full progression:
 Remaining after a positive STATECHAN: only the band-render wiring (device flash-iteration; all its pieces
 - pack complete, band split exact, channel located+validated - are already proven). The coherency-free
 per-frame 2-core win is one positive datapoint away from mechanical wiring.
+
+### HW SGI/MMIO/STATE RESULT (2026-08-28): STATICPROBE POSITIVE; MMIO reads frozen
+Flashed lk_a_snes_bigcore_sgi.img. Results:
+  BC STATICPROBE: 0x57a70ded  => POSITIVE. The worker CAN read PRE-bringup static data (the frozen
+     snapshot includes data cpu0 wrote+cleaned before the worker enabled its MMU). PRODUCER-OFFLOAD VIABLE.
+  BC SGIPROBE: 0              => GIC SGI channel dead (worker saw no pending signals).
+  BC MMIOPROBE: 0x0           => worker read 0 (the bringup value of unused SPM scratch), NOT cpu0's
+     per-frame 0x5A5A write.
+  BC STATECHAN: cpu0 sum=0x3ff229c6, worker sum=0 => full 23-word channel dead (worker read all zeros).
+=> The worker's FROZEN SNAPSHOT covers MMIO peripherals too, not just DRAM: it reads the physical address
+   space as of MMU-enable and never sees cpu0's later writes to ANY address (DRAM or MMIO). This kills the
+   per-frame MMIO split and every dynamic cpu0->worker channel. CONFIRMED positive: static pre-bringup
+   data is readable (STATICPROBE) - so the ONLY viable 2-core model is STATIC-INPUT producer-offload.
+ONE ambiguity to close first (staged): did cpu0's MMIO WRITES even land, or drop? Rebuilt sgi image adds
+BC WRITEBACK (cpu0 reads back its own 0x10006250 / 0x10006600 writes). Nonzero => writes land, worker read
+is frozen (MMIO dead, conclusion stands). Zero => cpu0's SPM-scratch write dropped and MMIO may still be
+alive via a different cpu0-writable scratch (would REOPEN the per-frame split). Flash the rebuilt
+lk_a_snes_bigcore_sgi.img and read BC WRITEBACK + BC MMIOPROBE.
