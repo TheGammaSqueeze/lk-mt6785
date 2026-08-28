@@ -922,3 +922,26 @@ wrapper + host-validation (tiles composited == focus-centered strip at each focu
 STATUS: offload confirmed memory-feasible + implementation approach identified; the tile-builder is the
 first host-validatable component. Still gated on the staged STATICPROBE (worker reads pre-bringup static
 0x57A70DED) before committing to the device path. Everything hinges on that one flash.
+
+### OFFLOAD OBSTACLE (2026-08-28): the L2 card cache is FOCUS-SPECIFIC (skip_focus)
+Studied draw_carousel (snes_menu.c:770): it is a RING carousel centered on m->focus (wx = sel_world +
+CAR_HGAP*ring_delta(focus,j,n) + cont_shift), and the L2 cache SKIPS the focused card (skip_focus @787)
+because that card's bright, blue-framed body is composited LIVE on the L3 overlay (draw_focus_card);
+drawing it on both L2 and L3 double-contributes at the semi-transparent card background + AA edges
+(OVL_LAYERS.md). Consequences for the offload:
+- A prebuilt tile centered on focus K has a HOLE where card K is (skipped). It is only valid while the
+  live focus == K (L3 fills the hole). Panning that tile to show focus K+/-1 exposes the missing card K.
+  So tiles are NOT reusable across focuses by panning - the clean "prebuild tiles + OVL pan" idea breaks.
+- Workable variants, both with real cost:
+  (1) One tile PER focus (N tiles). Memory: N*3.66MB. OK only for small N (N<=10 ~= 37MB; N=50 ~= 183MB
+      > 128MB window). Could cap to the current system's games (systems have few titles).
+  (2) Re-architect the L2/L3 split so L2 holds ALL cards plain (focus-independent) and L3 draws only the
+      focus DECORATIONS (blue frame + pulsing cursor), not the card body. Then one focus-independent tile
+      set is reusable/pannable. But this is a real render refactor with visual-correctness risk (the exact
+      double-contribute the current split was built to avoid) on a menu that currently works well.
+HONEST REASSESSMENT: the offload is NOT the easy consolation it looked. The real win (per-frame coherent
+split) is a hardware wall; the offload needs either small-N-only prebuild or an L2/L3 refactor. Given the
+modest upside (removing ~30ms scroll-rebuild hitches) vs the refactor risk, the offload should be a
+DELIBERATE user decision, not an autonomous build. Recommend: get the STATICPROBE datapoint first, and if
+the user wants the offload, do variant (1) scoped to per-system games (low risk, bounded memory) rather
+than the (2) refactor. Until then, do not destabilize the working single-core menu.
