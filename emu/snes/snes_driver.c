@@ -872,6 +872,12 @@ static int snes_emu_thread(void *arg)
 		 * cont_shift, so a slide does not rebuild). No idle<->movement mode switch, so
 		 * no flicker; movement is a hardware pan. Every non-home state stays single-buffer. */
 		layered = (s_menu.state == 0 && s_menu.open_y == 0.0f && !s_menu.closing);
+#ifdef AYANEO_SB_SCROLL
+		/* Fallback path: use the OVL only for TRUE idle; a scroll (cont_shift animating)
+		 * falls back to the original single-buffer full-render carousel, which was the
+		 * known-good 30fps tear-free scroll before the OVL work. Idle stays 60fps. */
+		if (s_menu.cont_shift != 0.0f) layered = 0;
+#endif
 		/* ovl_split (skip cards+cursor in L0) ONLY in STEADY layered. On the ENTERING frame
 		 * (was !layered) draw them in L0 too, so during the non-atomic layer-enable the cards
 		 * are in BOTH L0 and L2 (matching) - nothing flashes. Settles to L2-only next frame. */

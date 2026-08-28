@@ -197,3 +197,9 @@ AYANEO_ALWAYS_VSYNC ?= no
 ifeq ($(AYANEO_ALWAYS_VSYNC),yes)
 DEFINES += AYANEO_ALWAYS_VSYNC
 endif
+# Fallback: OVL layers only for true idle; scrolling uses the original single-buffer full
+# render (known-good 30fps tear-free before the OVL work). Idle stays 60fps OVL.
+AYANEO_SB_SCROLL ?= no
+ifeq ($(AYANEO_SB_SCROLL),yes)
+DEFINES += AYANEO_SB_SCROLL
+endif
