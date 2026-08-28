@@ -2038,3 +2038,14 @@ so R/B were swapped - fixed by swapping R<->B in the tile once after cache_unpre
 proven correctness no-op: once the worker fills the tiles, cpu0's tiled build is bit-identical to today's menu.
 NEXT (phase 2): wire the worker to render the 21 tiles at boot from the static pack (worker->cpu0 writes work on
 HW), cpu0 uses build_cardcache_tiled gated on tiles-ready && native && !resume, fallback to draw_card otherwise.
+
+### PRODUCER-OFFLOAD PHASE 2a (2026-08-28): cpu0-pre-render tiles wired, on-device image staged
+Wired the tiled path into the live driver behind AYANEO_CARDTILES (snes_driver.c build_cardcache call site):
+on a native, non-resume strip rebuild, cpu0 renders the N normal-card tiles ONCE (SNES_CARDTILES_PA=0x52500000,
+~8.17MB in the free gap after the wallpaper) then uses snes_menu_build_cardcache_tiled (cheap tile blits) instead
+of build_cardcache (per-card boxart min-filter render). Static tiles -> rendered once, reused on every later nav
+=> removes the per-card render from the nav-rebuild hitch. 4:3/resume fall back to draw_card (exactness only holds
+at integer positions). This is SINGLE-CORE (no worker yet) but already the real win, and it de-risks the whole
+path on-device. Staged lk_a_snes_cardtiles_signed.img. NEXT phase 2b: move the one-time tile render to the WORKER
+(cpu1) so cpu0 pays nothing (worker->cpu0 writes proven on HW); until then cpu0 pays the ~one-time render on the
+first native nav. Host-validated pixel-exact (cardtile mode, 0 px differ at settle + nav 1/3/5/10).
