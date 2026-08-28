@@ -2145,3 +2145,17 @@ lk_a_snes_notear_debug.img (no-tear fix + AYANEO_DEBUG_LOGGING) which emits, for
 "SNESX lay=%d st=%d openy=%d rend=..us pres=..us tot=..us" + the present phase breakdown. Ask the user to trigger
 the flicker and paste those lines - the per-frame rend/present timing + lay/state across the boundary pinpoints
 whether a frame overruns or a layer toggles a frame late. Then fix the handoff directly.
+
+### PRESENT FPS + FLICKER FIX v2 (2026-08-29): single-barrier vsync + symmetric transition handoff
+User on the no-tear image: carousel tearing gone, BUT scrolling the games list dropped to 15fps (was 30) and the
+suspend list to 20 - because the no-tear fix waited vsync AFTER the swap, stacking on config_input_multi's
+FRAME_DONE wait = TWO barriers = half rate. FIX: single barrier. Added ayaneo_present_presync_vsync() - for
+moving/pan frames, wait vblank BEFORE writing the OVL config (config latches at the frame boundary, tear-free)
+and DO NOT post-wait; config_input_multi's FRAME_DONE is then a near-no-op. One barrier -> ~30fps tear-free scroll
+(restores the original) while idle stays 60fps (skip both, static = invisible latch).
+Also fixed the transition flicker symmetrically (CMDQ disabled -> layer writes non-atomic): ENTER - ovl_split now
+gated on steady layered (layered && s_was_layered), so the entering frame draws cards+cursor in L0 too, matching
+L2 (invisible overlap) - nothing flashes as L2 enables; LEAVE - keep the L2 card layer up ONE extra frame (L0
+already carries the cards) then disable, so nothing vanishes. Staged lk_a_snes_notear2_signed.img. Awaiting test:
+expect scroll ~30fps tear-free + no enter/exit flicker. (Suspend-list 20fps is the single-buffer resume render
+cost - separate, revisit if still an issue.)
