@@ -504,3 +504,41 @@ RECOMMENDATION: the DRAM cpu0->worker wall is now proven absolute. Unless the SR
 cheap 1-word test) works, multicore-at-LK cannot deliver the per-frame low-power split, and the clean
 single-core release build (unaffected; the fps drop is only the EXPT fork/join+fallback overhead)
 should stand. Decision point for the operator.
+
+### LIVE-SYSTEM RECON (2026-08-28): adb rooted device attached, big new leverage
+Device 0123456789ABCDEF, Android on kernel 4.14.186, root ok. Findings:
+- NO /dev/mem (CONFIG_DEVMEM off), mknod gives ENODEV. BUT CONFIG_MODULES=y and CONFIG_MODULE_SIG is
+  NOT set, and out-of-tree drivers already load (wlan_drv_gen4m etc). => a custom register-poke kernel
+  module (ioremap) can read/write ANY physical register on the live coherent system. This is the tool
+  that replaces /dev/mem for the hotplug snoop-admission register diff.
+- Topology confirmed: cpu0-5 A55 (0xd05), cpu6-7 A75 (0xd0b), single DSU. All 8 online; cpuN/online
+  writable (hotplug works) -> can diff coherent-core register state on/off.
+- MTK power surface live: /proc/mcdi/{cpc,info,state}, /proc/mtk_lpm/cpuidle/spm, /proc/cpuhvfs.
+  MCDI (SSPM-driven) actively power-manages both clusters. IPI_ID_MCDI=6 over mbox1; spmfw loaded
+  (pcm_suspend_v02.05). No ftrace function tracer (available_filter_functions absent), so use the module
+  + hotplug diff, not function_graph.
+- Register blocks (from DT): mcucci@0x0c510000 (CCI/coherency, 64KB), mcucfg@0x0c530000 (64KB),
+  cpcspmc_reg@0x0c53a700, cpccfg_reg@0x0c53a800, sspm@0x10400000 + mbox0..3 @0x10450000/60/70/80,
+  psmcu_misc@0x80200000. SPM base 0x10006000.
+
+### ATF RE VERDICT (mt8192 same-gen source): the coherent on-path, and why our bypass fails
+plat_power_domain_on -> spm_poweron_cpu (mtspmc.c): the ENTIRE on-side hw sequence is
+  set  MCUCFG_CPC_FLOW_CTRL_CFG(0x0c530000+0xa814) |= SSPM_ALL_PWR_CTRL_EN (bit13, "for cpu-hotplug")
+  set  SPM_MP0_CPUx_PWR_CON |= PWR_ON (bit2)
+  poll SPM_MP0_CPUx_PWR_CON & PWR_ON_ACK (bit31)      <-- the SPMC/DSU snoop-admission handshake
+  clear SSPM_ALL_PWR_CTRL_EN
+No CCI/DSU snoop sysreg is written; DynamIQ A55/A75 have NO software SMPEN/ACINACTM (that was the
+legacy CCI mt8173 path). So snoop admission is performed by the SPMC/CPC hardware FSM while it services
+PWR_ON, and the ATF hands the flow to SSPM via bit13. Our LK "CPC-arm bypass" powers the core but never
+completes the PWR_ON->PWR_ON_ACK handshake, which is precisely the snoop admission => write-only,
+frozen-read core. CONSISTENT with every HW probe.
+
+OPEN QUESTION (decisive): does the SPMC FSM complete PWR_ON_ACK WITHOUT SSPM firmware servicing (pure
+HW mode), or is SSPM mandatory? If HW mode exists, LK can drive the exact spm_poweron_cpu sequence
+(bit13/PWR_ON/poll ACK) directly instead of the CPC-arm bypass and get a COHERENT core -> the whole
+2-core split becomes reachable. Resolve with: (1) the register-poke module reading SPM_MP0_CPUx_PWR_CON
++ cpcspmc on live coherent cores and across hotplug; (2) mt6785-specific ATF spmc source (not local yet;
+websearch/obtain). NEXT LK IMAGE: replace the CPC-arm bypass with the real PWR_ON+ACK-poll sequence.
+
+### CRON: switched to RESEARCH MODE v2 (adb-enabled), 15-min. Priorities: build register-poke module,
+hotplug-diff snoop bits, determine SSPM-free HW-mode feasibility, then drive real PWR_ON+ACK at LK.
