@@ -1382,3 +1382,24 @@ frozen worker. This is the recommended offload path if the user says "build".
 GO/NO-GO now: the offload is memory-FEASIBLE and lower-risk than earlier thought (per-card, ~5.6MB,
 moderate refactor). Trade: real engineering effort + a build_cardcache change, for a reduced (not
 eliminated) scroll hitch. Awaiting the user's decision.
+
+### CLOSING FINDING (2026-08-28): blit is nearest-neighbor + phase-sensitive - the per-card offload cannot be bit-exact
+Traced the actual pixel path (snes_render.c blit(), lines 135-156). The fast axis-aligned path samples the
+source with a 16.16 FIXED-POINT nearest-neighbor walk: su = (int)(su0f*65536), ix = su>>16, where the start
+phase su0f = sx + u0*sw and u0 = ((x0+0.5 - e)*inv_a + px)/dw. e carries the card's FRACTIONAL cx. So the
+source texel picked for each dest pixel depends on cx's SUB-PIXEL phase. Consequence for the per-card offload:
+pre-rendering a card into a tile at a canonical phase and re-blitting that tile at a different fractional cx
+does NOT reproduce draw_card(...,cx,...) pixel-for-pixel - nearest-neighbor sampling shifts by a texel at the
+edges whenever the phase differs. It would "fail" the bit-exact worst-tile host validation (and could show a
+faint 1-texel edge shimmer vs the reference on a panning carousel), even though the boxart interior is fine.
+
+This closes the last frozen-snapshot-compatible variant:
+ - Band split (build_cardcache_band, already prototyped): pixel-exact, but needs cpu0 to tell the worker the
+   CURRENT focus each nav -> a dynamic per-nav channel -> DEAD (frozen snapshot).
+ - Per-card tiles (focus-independent, survives freezing): re-blit at live cx is nearest-neighbor phase-shifted
+   -> NOT bit-exact -> fails the project's exactness bar; only acceptable if the user accepts a visual delta.
+So every offload is either dynamic-and-dead or static-and-not-bit-exact. There is no clean, exact, frozen-
+compatible win for this menu. RECOMMENDATION: BANK. The dynamic 60fps-lower-power dream is definitively dead;
+the salvageable static offload is marginal AND cannot meet the bit-exact standard the rest of the menu holds.
+The full toolchain (tools/live_regpoke, band-split code, state-pack, host harness) is preserved so a future
+non-exact "good enough" attempt is a small step, not a restart. Clean single-core build stands as shipping.
