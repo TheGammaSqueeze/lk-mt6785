@@ -2110,3 +2110,13 @@ strip is MOVING (l2_pan!=0 || rebuilt || cont_shift!=0); skip only when truly st
 latch is invisible and 60fps is free. Tradeoff: pans sync to vblank (tear-free; may cap at 60/30 depending on the
 double-barrier), idle stays 60fps. Staged lk_a_snes_notear_signed.img (clean, cardtiles OFF). This is the actual
 fix the user needs; the producer-offload tile work is a closed dead-end (reverted).
+
+### TEARING FIX - TWO STAGED VARIANTS (2026-08-29)
+Awaiting user test. Two images for the OVL-present tearing regression:
+ 1. lk_a_snes_notear_signed.img (targeted): skip vsync ONLY at true idle; sync during movement (l2_pan/rebuilt/
+    cont_shift). Keeps 60fps idle, tear-free movement (movement may cap 60/30 via the double barrier). Try first.
+ 2. lk_a_snes_notear_safe_signed.img (AYANEO_ALWAYS_VSYNC): ignore the skip hint, ALWAYS wait vblank after every
+    swap. Guaranteed tear-free (exactly the old single-core no-tear behaviour); may cap movement at 30fps.
+    Fallback if #1 still shows any tearing.
+If #1 is clean -> ship it (best of both). If #1 still tears in some case -> #2 is the guaranteed hammer, then the
+proper 60fps-tear-free path is a hardware vblank-latched OVL layer reconfig (config at vblank, single barrier).
