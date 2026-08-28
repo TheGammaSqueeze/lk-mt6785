@@ -445,3 +445,32 @@ fixes the basic cross-core read - it is gated on that one datapoint. If the cana
 this and go to Lever 4 (producer offload) using the proven MMU-off-static-read + worker->cpu0-write
 directions, with the dynamic selection carried by a brief MMU-off read window (the one cross-core read
 path that worked on HW).
+
+### HW NONSHARE RESULT (2026-08-28): candidate fix #1 REFUTED
+Flashed lk_a_snes_bigcore_nonshare.img. UART:
+  BC MODE: shared region 0x51000000 mapped Normal-WB NON-shareable
+  worker PAR-hi of 0x51000000 = 0xff000000 (ATTR 0xff = Normal-WB, so the remap took)
+  w_self_wb=0x5e1f3052  w_self_dev=0x0de03052  canpar_lo=0x51000a00 (worker paths still SANE)
+  BC CANARY: cpu0->worker worker-read=0xa86dbdec (want 0xCA5A) ; worker->cpu0=0x77773052 (OK)
+  cpu0 self-readback=0xca5a0001
+=> Non-shareable WB fails IDENTICALLY to Device-Outer-Shareable, returning the SAME frozen value
+   0xa86dbdec. The wall is total and ATTRIBUTE-INDEPENDENT: once the worker's MMU is on it reads a
+   frozen view and never observes cpu0's post-bringup writes, for any memory type or shareability.
+   Candidate fix #1 is dead. The identical fixed garbage across Device and WB-nonshare runs supports
+   a "frozen shadow" (the worker's read view of shared DRAM is fixed at MMU-enable time; cpu0's later
+   writes + cache maintenance never reach it because the worker is not a snoop participant).
+
+### NEXT: the decisive MMU-OFF-readback probe (built + staged)
+The one cross-core read path that WORKED on HW was the MMU-OFF snapshot read at bringup. Never tested:
+does an MMU-OFF read AFTER the worker's MMU has been on still see cpu0's fresh writes (i.e. does
+dropping the MMU un-freeze the view)? This is the hinge for whether ANY cpu0->worker data flow is
+possible post-bringup:
+  - if the MMU-off read returns 0xCA5Axxxx -> a per-frame MMU-off window can carry cpu0->worker data
+    (the dynamic selection for Lever 4), so producer-offload is viable.
+  - if it also returns 0xa86dbdec (frozen) -> cpu0->worker is dead by every means; the only multicore
+    model left is worker doing work from inputs cpu0 wrote+cleaned BEFORE the worker enabled its MMU
+    (fully static), and even then the dynamic per-frame selection cannot reach it -> the card-strip
+    offload is not achievable and multicore-at-LK is effectively closed for this workload.
+Image: /mnt/c/pairmini/lk_a_snes_bigcore_mmuoff.img (Device baseline + the worker drops SCTLR.M,
+reads 0x51000000 physically, restores M; identity map keeps PC/SP valid). Look for "BC MMUOFF PROBE:
+worker MMU-off read of 0x51000000 = 0x..".

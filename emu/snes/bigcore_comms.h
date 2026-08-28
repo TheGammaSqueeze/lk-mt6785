@@ -63,6 +63,7 @@
 #define BC_O_W_SELF_DEV   428  /* worker Device self write->readback at 0x51000080 */
 #define BC_O_W_CANPAR_LO  432  /* worker PAR-lo (bit0=F, +PA) of failing canary VA 0x51000000 */
 #define BC_O_W_SELFPAR_LO 436  /* worker PAR-lo of the WB self VA */
+#define BC_O_W_CAN_MMUOFF 440  /* worker read of 0x51000000 with MMU turned OFF (post MMU-on) */
 
 #ifndef __ASSEMBLER__
 struct bc_comms {
@@ -116,6 +117,7 @@ struct bc_comms {
 	volatile unsigned w_self_dev;            /* 428 worker Device self readback (Lever1) */
 	volatile unsigned w_canpar_lo;           /* 432 worker PAR-lo of failing canary VA (F+PA) */
 	volatile unsigned w_selfpar_lo;          /* 436 worker PAR-lo of the WB self VA (F+PA) */
+	volatile unsigned w_can_mmuoff;          /* 440 worker read of canary with MMU OFF (post MMU-on) */
 };
 #endif
 

@@ -156,6 +156,24 @@ void bc_worker_entry(void)
 			__asm__ volatile("mrrc p15,0,%0,%1,c7" : "=r"(pl), "=r"(ph));
 			g_bc->w_selfpar_lo = pl;
 		}
+		{	/* CRITICAL PROBE: does an MMU-OFF read (AFTER the MMU was on) see cpu0's
+			 * fresh write? The MMU-off snapshot read worked at bringup; if MMU-off reads
+			 * still see cpu0 here, a per-frame MMU-off window can carry cpu0->worker data
+			 * and Lever 4 lives. If this too is 0xa86dbdec (frozen garbage), cpu0->worker
+			 * is dead by every means. LK is identity-mapped (VA==PA) so PC/SP stay valid
+			 * across the toggle; invalidate the line first so no worker-cached copy shadows
+			 * the physical read. */
+			unsigned v, sc;
+			BC_INVAL(0x51000000u, 64u);
+			bc_dsb();
+			__asm__ volatile("mrc p15,0,%0,c1,c0,0" : "=r"(sc));
+			__asm__ volatile("mcr p15,0,%0,c1,c0,0" :: "r"(sc & ~1u));   /* SCTLR.M=0: MMU off */
+			__asm__ volatile("isb");
+			v = *(volatile unsigned *)(unsigned long)0x51000000u;       /* physical read, MMU off */
+			__asm__ volatile("mcr p15,0,%0,c1,c0,0" :: "r"(sc));        /* MMU back on */
+			__asm__ volatile("isb");
+			g_bc->w_can_mmuoff = v;
+		}
 		*(volatile unsigned *)(unsigned long)0x51000040u = 0x77770000u | (last & 0xffffu);
 		BC_CLEAN(0x51000040u, 64u);
 		BC_CLEAN(BC_L(384), BC_LINE);          /* publish w_can1 (worker->cpu0, known-good) */
@@ -337,6 +355,8 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 				 *  self_dev STALE -> worker Device access not reaching DRAM -> translation bug. */
 				_dprintf("BC LEVER1 PROBE: w_self_wb=0x%x (exp 0x5E1Fxxxx) w_self_dev=0x%x (exp 0x0DE0xxxx) canpar_lo=0x%x selfpar_lo=0x%x (bit0=F, PA in 31:12)\n",
 					 g_bc->w_self_wb, g_bc->w_self_dev, g_bc->w_canpar_lo, g_bc->w_selfpar_lo);
+				_dprintf("BC MMUOFF PROBE: worker MMU-off read of 0x51000000 = 0x%x (0xCA5Axxxx => MMU-off carries cpu0->worker; 0xa86dbdec => frozen, dead)\n",
+					 g_bc->w_can_mmuoff);
 			}
 		}
 		if (g_bc->fault_type && !dumped) {
