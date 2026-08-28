@@ -2049,3 +2049,17 @@ at integer positions). This is SINGLE-CORE (no worker yet) but already the real 
 path on-device. Staged lk_a_snes_cardtiles_signed.img. NEXT phase 2b: move the one-time tile render to the WORKER
 (cpu1) so cpu0 pays nothing (worker->cpu0 writes proven on HW); until then cpu0 pays the ~one-time render on the
 first native nav. Host-validated pixel-exact (cardtile mode, 0 px differ at settle + nav 1/3/5/10).
+
+### PRODUCER-OFFLOAD 4:3 GENERALIZED (2026-08-28): device runs 4:3, offload now covers it
+CRITICAL: the panel is 1280x960 so the menu is ALWAYS in 4:3 (s_menu.aspect=1, want=(H>=960)) - the native-only
+offload would have done NOTHING on-device. Generalized the tile path to 4:3: render_card_tile bakes the current
+view scale (S=ASP_CONTENT_S) into the tile centred; draw_carousel_tiled composites at the VIEW_CONTENT-transformed
+positions (S*cx+vdx, S*CAR_CY+vdy) into a vsx=1 target (tile carries the scale). Fixed a native regression (used
+VIEW_CONTENT's vdy=480-S*360=120 for native, but set_view is identity when !aspect -> gate vdx/vdy on aspect).
+Host results (cardtile mode, both aspects, nav 0/3/7): native aspect=0 = PASS 0 px differ (bit-exact); 4:3
+aspect=1 = ~53k px differ but that is pixel-art boxart texels shifted <=1px - PPM dump (ref vs tiled, sent to
+user) shows the two strips VISUALLY IDENTICAL. So enabled the offload in 4:3 (removed the !aspect gate; keep
+non-resume; tiles invalidated on aspect change). Tile bumped to 320x360 to fit the 1.185x-scaled card; buffer
+21*320*360*4 = 9.68MB at 0x52500000 (fits the gap). Restaged lk_a_snes_cardtiles_signed.img - now actually
+active on the 4:3 device. NEXT: user flashes to confirm smoother nav + visual parity; then phase 2b (worker
+renders the tiles) to move the one-time cost off cpu0.
