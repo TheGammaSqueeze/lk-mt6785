@@ -1654,3 +1654,18 @@ MCSI cross-cluster snoop-enable skipped at LK), prereq (tee_patched_armcpc.img),
 and a full UART decision tree (SIP liveness via MCUSYS_ACCESS_COUNT, the 8 SLV SNOOP_EN lines, the FIX settle
 line, the post/post-DVM canary flip, and the "full split channel LIVE" payoff), with the -1=SIP-absent branch
 to the ATF-patch contingency. This is what the user reads first on waking; it now routes them correctly.
+
+### SF-INIT GAP CLOSED + SIP SAFETY BOUND (2026-08-28)
+Checked the mt8183 mcsi.c cci_init_sf() and cci_reg_access() (the MCSI_NS_ACCESS backend) for prerequisites my
+fix might miss:
+ - cci_init_sf() initializes the GLOBAL snoop filters SF1/SF2 (SF_INIT_REG 0x10: write TRIG_SF1_INIT/TRIG_SF2_INIT
+   bits 0/1, wait SF1_INIT_DONE/SF2_INIT_DONE bits 16/17). This is a ONE-TIME, non-per-cluster init run at boot
+   mcsi_init. cpu0 already runs coherently, so the SFs are initialized; admitting cluster 1 needs ONLY SNOOP_EN,
+   no SF re-init. The diagnostic already READS SF_INIT_REG (0x10) and logs it, so if (unexpectedly) SF1/SF2_INIT
+   _DONE are clear we will see it and add the TRIG_SF init. Gap closed: no SF-init step required by the fix.
+ - cci_reg_access confirms SET_BITMASK (op=2) == mmio_setbits_32(base+offset,val)+dsb, i.e. my admit set is a
+   read-modify-write OR of SNOOP_EN|DVM_EN with a barrier - exactly right, and the reads are plain mmio_read_32.
+ - SAFETY: the SIP handler does `if (offset > MSCI_MEMORY_SZ /*0x10000*/) panic();`. Passing an out-of-range
+   offset would PANIC the secure world (reboot/hang). All experiment offsets used are <= 0x1700, well in-bounds.
+   Recorded so no future MCSI experiment passes a large offset and bricks the boot.
+This is the last prerequisite check; the fix needs no SF-init and its offsets are safe. Verdict still = flash.
