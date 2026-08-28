@@ -270,6 +270,8 @@ static int s_bc_clk_set;
 static unsigned s_bc_seq;
 unsigned g_bc_wfin, g_bc_fb;   /* diagnostics: worker-finished vs fallback frames */
 static unsigned g_bc_state_sum; /* cpu0's checksum of the 23-word menu state it packed to MMIO */
+static unsigned g_bc_spm_rb;    /* cpu0's read-back of its own write to SPM 0x10006250 (write-landed test) */
+static unsigned g_bc_swrsv_rb;  /* cpu0's read-back of its own write to SPM SW_RSV 0x10006600 */
 static unsigned g_bc_canrb;    /* cpu0's read-back of its own canary write to 0x51000000 */
 static unsigned g_bc_cpupar;   /* cpu0's PAR-hi of the canary VA (0x04=Device 0xff=WB) */
 extern unsigned int gpt4_get_current_tick(void);
@@ -320,6 +322,12 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 			ssum += sbuf[si];
 		}
 		g_bc_state_sum = ssum;
+		/* DISAMBIGUATE frozen-read vs dropped-write: cpu0 reads back its own MMIO writes. If
+		 * these show 0x5A5A/the packed word, cpu0's writes LAND and the worker's 0 is a frozen
+		 * READ (MMIO snapshot). If these read 0 too, cpu0's SPM scratch write DROPPED (pick a
+		 * different, cpu0-writable MMIO scratch). */
+		g_bc_spm_rb  = *(volatile unsigned *)(unsigned long)0x10006250u;
+		g_bc_swrsv_rb = *(volatile unsigned *)(unsigned long)0x10006600u;
 	}
 #endif
 	/* EXPERIMENT (shared-L3 evict): if the worker shares the DSU L3 but gets no snoop
@@ -426,6 +434,8 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 				_dprintf("BC STATECHAN: cpu0 packed sum=0x%x ; worker read-back sum=0x%x => %s (23-word menu-state channel over MMIO @0x10006600)\n",
 					 g_bc_state_sum, g_bc->w_state_sum,
 					 (g_bc_state_sum == g_bc->w_state_sum && g_bc_state_sum) ? "MATCH - full split channel LIVE" : "mismatch/frozen");
+				_dprintf("BC WRITEBACK: cpu0 readback SPM 0x10006250=0x%x SW_RSV 0x10006600=0x%x (nonzero => cpu0 writes LAND, worker 0 = frozen READ; zero => cpu0 write DROPPED)\n",
+					 g_bc_spm_rb, g_bc_swrsv_rb);
 #endif
 				/* Lever-1 decisive probe (worker-private, isolates worker MMU/cache from
 				 * cross-core coherency). Read the decision tree in MULTICORE_RESEARCH.md:
