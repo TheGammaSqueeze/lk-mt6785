@@ -1136,3 +1136,19 @@ If w_sgi_count increments on HW, the GIC channel is LIVE despite the dead DSU sn
 worker the dynamic focus (focus-delta SGIs) -> CLEAN producer-offload (worker builds the current
 focus-centered strip ahead via build_cardcache unchanged; one strip, minimal memory, no skip_focus mess).
 This is the first realistic non-coherency route to a real 2-core win. NEXT: build this experiment image.
+
+### GIC/SGI CHANNEL EXPERIMENT BUILT (2026-08-28): lk_a_snes_bigcore_sgi.img staged
+Built the MMIO-channel viability test (safer than sysreg SGI - no ICC_SRE trap risk):
+- cpu0 (bc_dispatch, per frame): MMIO write GICR_ISPENDR0 (cpu1 SGI frame 0x0c070000+0x200) = 0x2, setting
+  SGI#1 pending in cpu1's redistributor.
+- worker (bc_worker_entry, per frame): MMIO read 0x0c070200; if bit1 set, increment sgi_seen, clear via
+  GICR_ICPENDR0 (0x0c070280), publish sgi_seen to comms w_sgi_count (worker->cpu0, the WORKING direction).
+- cpu0 logs "BC SGIPROBE: worker saw N GIC SGI-pending signals via MMIO".
+Gated AYANEO_BC_SGI. Interpretation: if N INCREMENTS across frames, the worker's MMIO reads observe cpu0's
+MMIO writes -> MMIO (the GIC peripheral path) is a LIVE cpu0->worker channel despite the dead DRAM/DSU
+snoop -> the clean producer-offload is unlocked (cpu0 feeds the worker the dynamic focus via SGIs/MMIO,
+worker builds the current focus-centered strip ahead using build_cardcache unchanged - one strip, minimal
+memory, no skip_focus mess). If N stays 0, either the worker's MMIO reads are also frozen (whole read path
+dead, not just DRAM) or cpu0's NS write to cpu1's GICR is blocked - both close this path. This is the
+highest-value untested experiment: a positive result is a real 2-core win with NO coherency needed.
+Flash lk_a_snes_bigcore_sgi.img + tee_patched_armcpc.img; read the BC SGIPROBE line.

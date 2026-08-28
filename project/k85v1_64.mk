@@ -75,6 +75,17 @@ DEFINES += AYANEO_BC_WARMCYCLE
 DEFINES += AYANEO_BIGCORE_EXPT
 DEFINES += AYANEO_DEBUG_LOGGING
 endif
+
+# Sub-experiment: GIC/SGI channel viability. cpu0 sets SGI#1 pending in cpu1's
+# GICR via MMIO each frame; the worker polls GICR_ISPENDR0 via MMIO and counts.
+# Tests whether MMIO (peripheral path) is a working cpu0->worker channel despite
+# the dead DSU-snoop DRAM path (MULTICORE_RESEARCH.md GIC/SGI lead).
+AYANEO_BC_SGI ?= no
+ifeq ($(AYANEO_BC_SGI),yes)
+DEFINES += AYANEO_BC_SGI
+DEFINES += AYANEO_BIGCORE_EXPT
+DEFINES += AYANEO_DEBUG_LOGGING
+endif
 # AYANEO experiment (animated-boot-logo branch): paint a scrolling rainbow
 # gradient over the whole panel during LK instead of the static eMMC boot logo.
 # Set to no to restore the normal boot logo.

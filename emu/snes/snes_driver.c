@@ -121,6 +121,21 @@ void bc_worker_entry(void)
 		 * MMU-on, WITHOUT invalidate (how a worker reads static, pre-cleaned assets). If
 		 * this is 0x57A70DED, the worker can read pre-bringup static data -> offload viable. */
 		g_bc->w_static_can = *(volatile unsigned *)(unsigned long)0x51000024u;
+#ifdef AYANEO_BC_SGI
+		{	/* GIC CHANNEL TEST: cpu0 sets SGI#1 pending in cpu1's GICR via MMIO each frame.
+			 * The worker POLLS GICR_ISPENDR0 (cpu1 SGI frame 0x0c070000+0x200) via MMIO. MMIO
+			 * goes to the GIC peripheral, NOT the frozen DRAM/DSU-snoop path - so if the worker
+			 * sees cpu0's pending bit, the GIC/MMIO is a working cpu0->worker channel and the
+			 * clean producer-offload (worker tracks focus via SGI) is unlocked. */
+			static unsigned sgi_seen = 0;
+			if (*(volatile unsigned *)(unsigned long)0x0c070200u & 0x2u) {
+				sgi_seen++;
+				*(volatile unsigned *)(unsigned long)0x0c070280u = 0x2u;   /* GICR_ICPENDR0 clear */
+			}
+			g_bc->w_sgi_count = sgi_seen;
+			BC_CLEAN((unsigned long)&g_bc->w_sgi_count, 4u); bc_dsb();
+		}
+#endif
 		{	/* AT-translate the canary VA on the WORKER: PAR-lo ATTR[63:56 of the
 			 * 64-bit PAR is in the hi word; here we grab lo which has F/SH/PA] so we
 			 * can see if the worker's mapping of 0x51000000 is really Device. */
@@ -274,6 +289,12 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 	 * w_can1; the worker also writes a return canary at +0x40 for cpu0 to read. */
 	*(volatile unsigned *)(unsigned long)0x51000000u = 0xCA5A0000u | (seq & 0xffffu);
 	BC_CLEAN(0x51000000u, 64u);
+#ifdef AYANEO_BC_SGI
+	/* GIC CHANNEL TEST (cpu0 side): set SGI#1 pending in cpu1's GICR via MMIO. If the worker's
+	 * MMIO poll of GICR_ISPENDR0 sees it (w_sgi_count increments), MMIO is a live cpu0->worker
+	 * channel bypassing the dead DRAM snoop. GICR SGI frame for cpu1 = 0x0c070000; ISPENDR0 +0x200. */
+	*(volatile unsigned *)(unsigned long)0x0c070200u = 0x2u;   /* GICR_ISPENDR0: SGI#1 pending */
+#endif
 	/* EXPERIMENT (shared-L3 evict): if the worker shares the DSU L3 but gets no snoop
 	 * invalidations, it holds a stale (boot_b-era) L3 line for the canary that cpu0's
 	 * clean-only never evicts. A clean+INVALIDATE to PoC from cpu0 evicts that shared L3
@@ -370,6 +391,10 @@ static void bc_dispatch(unsigned int *fb, unsigned pitch, int W, int H,
 					 g_bc_canrb, g_bc_cpupar, g_bc->w_canpar);
 				_dprintf("BC STATICPROBE: worker read of PRE-bringup static 0x51000024 = 0x%x (0x57A70DED => worker CAN read static pre-cleaned data => producer-offload VIABLE)\n",
 					 g_bc->w_static_can);
+#ifdef AYANEO_BC_SGI
+				_dprintf("BC SGIPROBE: worker saw %u GIC SGI-pending signals via MMIO (increments => MMIO is a live cpu0->worker channel; clean offload unlocked)\n",
+					 g_bc->w_sgi_count);
+#endif
 				/* Lever-1 decisive probe (worker-private, isolates worker MMU/cache from
 				 * cross-core coherency). Read the decision tree in MULTICORE_RESEARCH.md:
 				 *  self_wb==0x5E1Fxxxx & self_dev==0x0DE0xxxx & canpar_lo bit0==0 & PA==0x51000
