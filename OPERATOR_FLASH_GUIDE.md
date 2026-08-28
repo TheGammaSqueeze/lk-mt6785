@@ -34,22 +34,24 @@ RESTORE anytime: `lk_a_snes_signed.img` (clean single-core shipping menu).
 
 ## UART decision tree (paste these lines back)
 
-1. SIP liveness (judged from MCSI_NS_ACCESS itself - binary analysis of tee_patched_armcpc.img confirms
-   0x8200028B IS present in the ATF while MCUSYS_ACCESS_COUNT/FLUSH_BY_SF are NOT, so we probe the fix's own SIP):
-   `BC MCSI SIP-LIVE: YES - MCSI_NS_ACCESS handled (CENTRAL_CTRL=0x...)`
-     - "YES ..."  => the fix's SMC path is live; the MCSI reads/admit below are valid (expected on this tee.img).
-     - "NO - SIP absent" (CENTRAL_CTRL=0xffffffff) => MCSI_NS_ACCESS not implemented; fall to the ATF-patch
-       contingency (cci_enable at MCSI base 0x0c510000). (Note: the FLUSH_BY_SF line returning 0xffffffff is
-       EXPECTED and harmless - that SIP is not in this ATF; the TLBIALLIS lever still runs.)
+1. SIP liveness (DISASM of tee_patched_armcpc.img shows the 0x28x SIP block is NOT compiled into this ATF):
+   `BC MCSI SIP-LIVE: NO - SIP absent (expected on stock/CPC tee per disasm) (CENTRAL_CTRL=0xffffffff)`
+     - "NO ..." is EXPECTED on the current tee.img. It means the SMC-based admit cannot work here; the real fix
+       is an ATF binary patch (see below). Do NOT conclude the theory is wrong from this line - use the RAW read.
+     - "YES ..." would only appear on a future MCSI-enabled ATF (then the SMC fix path is live too).
 
-2. Snoop state (the smoking gun), from FLASH 1 or 2:
-   `BC MCSI SLV<n> SNOOP_CTRL(0x1n00)=0x... SNOOP_EN=? DVM_EN=? SNP_SUP=? DVM_SUP=?`  (8 lines)
-     - EXPECT: cpu0's cluster iface shows SNOOP_EN=1; the worker cluster iface shows SNP_SUP=1, SNOOP_EN=0.
-       That difference CONFIRMS snoop-admission is the wall.
-     - If ALL snoop-capable ifaces already show SNOOP_EN=1 => MCSI is NOT the wall; pivot (see log tail).
+2. Snoop state (the smoking gun) - RAW direct read of mcucci @0x0c510000 (works without the SIP):
+   `BC MCSI RAW SLV<n> SNOOP_CTRL=0x... SNOOP_EN=? DVM_EN=? SNP_SUP=? DVM_SUP=?`  (8 lines) + the RAW CENTRAL line
+     - If the RAW reads return real values (not 0x00000000 / 0xffffffff): EXPECT cpu0's cluster iface SNOOP_EN=1
+       and the worker cluster iface SNP_SUP=1, SNOOP_EN=0. That difference CONFIRMS snoop-admission is the wall,
+       ON METAL, and tells us exactly which slave-iface index the ATF patch must enable.
+     - If the RAW reads are all 0x00000000 => NS reads of mcucci are also firewalled; we then rely purely on the
+       ATF patch + the coherency canary to judge success.
+     - The `BC MCSI SLV<n>` (SIP) lines will read 0xffffffff on this tee.img - ignore them; use the RAW lines.
 
-3. Fix took (FLASH 2 only):
-   `BC MCSI FIX: SLV<n> after set SNOOP_CTRL=0x... SNOOP_EN=1 DVM_EN=1 (settled in N us)`
+3. Fix took (FLASH 2 only) - only meaningful on an MCSI-enabled ATF:
+   `BC MCSI FIX: SLV<n> after set SNOOP_CTRL=0x... SNOOP_EN=1 DVM_EN=1 (settled in N us)`  (on this tee.img the
+   set returns -1 and this will not change SNOOP_EN; that is expected - the fix belongs in the ATF patch).
 
 4. Coherency verdict (FLASH 2):
    `BC MCSI post: w_can1=0x... w_menuw0=0x... w_static_can=0x...`
