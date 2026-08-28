@@ -1913,3 +1913,20 @@ unlike mcucci) - per-cpu SPM_CPU_PWR_CON[0..7], the CPC block 0x0c53a000..0x0c53
 mp_cpusys_top/DSU config 0x0c538000..0x0c538200 (nonzero). Goal: compare DSU0 (cpu0, coherent) vs DSU1 (worker,
 powered-not-coherent) CPC state to find the per-cluster coherency/snoop bit that differs. FLASH THIS NEXT and
 send the BC CPCDUMP lines.
+
+### ON-METAL RESULT #2 (2026-08-28, lk_a_snes_cpcdump_signed.img): CPC sees the worker as fully up
+CPC block dump (0x0c53a000..0x0c53ac00) key regs: 0x0c53a840=0xc003 (CPC_SPMC_ST, matches ACKPROBE);
+per-cluster-looking pairs are IDENTICAL for both clusters (0x0c53a2a0=0x0c53a2a4=0x3110aff; 0x0c53a440=
+0x0c53a444=0xffff); address-map regs at a260..a278 (incl. 0xc510000 mcucci ptr). mp_cpusys_top (0x0c538000)
+shows DSU config (0x538114..130 = 4x {0x1f01,0xfffff}, 538008..01c = 3x {0x2,0x1}) - all reading normal.
+(Note: my CPCDUMP per-cpu SPM read used base 0x10006200 not 0x10006000, so those 8 lines read 0x0 - bug, ignore;
+ACKPROBE already gave the correct SPM_CPU_PWR_CON(1)=0x80000005.) w_can1 still 0xa86dbdec (wall persists).
+INTERPRETATION: every NS-visible CPC/DSU register shows the worker/DSU1 as fully powered + handshaked and the
+per-cluster banks that ARE visible read IDENTICAL to cluster0. So the coherency gap is BELOW the CPC's visible
+power state - it is the DSU's actual snoop-domain participation, which no NS-visible MMIO register exposes. A
+static dump therefore cannot isolate the bit (confirmed: nothing anomalous, no cluster0-vs-cluster1 difference).
+The only mechanical way left to catch it is the hotplug-diff (DSU1 coherent-on vs off) on the LIVE kernel, which
+requires the phone booted to Android + adb (not the LK menu). ALTERNATIVELY, the static-input PRODUCER-OFFLOAD is
+CONFIRMED viable on metal (w_static_can=0x57A70DED) and needs NO coherency fix - a real shippable speedup that
+sidesteps the wall. Decision point put to the user: (A) boot Android+adb -> I run run_mcucfg_diff.sh for one more
+shot at the coherency register; or (B) I build the producer-offload now.
