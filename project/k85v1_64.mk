@@ -97,6 +97,16 @@ DEFINES += AYANEO_BC_MCSI
 DEFINES += AYANEO_BIGCORE_EXPT
 DEFINES += AYANEO_DEBUG_LOGGING
 endif
+# Write-test: cpu0 writes the CPC-region registers (found by the on-device hotplug-diff + LK-vs-live cross-ref)
+# to their live-coherent values after worker bringup, reads back (detects NS write-protect), and lets the
+# per-frame split report whether DSU1 became coherent. Implies the MCSI diagnostic (includes the CPC dump).
+AYANEO_BC_CPCFIX ?= no
+ifeq ($(AYANEO_BC_CPCFIX),yes)
+DEFINES += AYANEO_BC_CPCFIX
+DEFINES += AYANEO_BC_MCSI
+DEFINES += AYANEO_BIGCORE_EXPT
+DEFINES += AYANEO_DEBUG_LOGGING
+endif
 # Follow-up to AYANEO_BC_MCSI: not just READ the MCSI snoop-interconnect but ADMIT the
 # powered-but-unadmitted worker cluster - set SNOOP_EN|DVM_EN on any coherent slave iface
 # that supports snoop yet has SNOOP_EN=0 - then re-check the worker coherency canary. This

@@ -529,6 +529,37 @@ void bigcore_start(void)
 					if (v2) _dprintf("BC CPCDUMP 0x%x=0x%x\n", a, v2);
 				}
 			}
+#ifdef AYANEO_BC_CPCFIX
+			/* WRITE-TEST: the on-device hotplug-diff + LK-vs-live cross-ref found CPC-region registers whose
+			 * LK value differs from the live-coherent value (isolating coherency because the LK worker is
+			 * powered-but-not-coherent, a state normal hotplug can't produce). Write each to its live value,
+			 * read back (mcusys may write-protect NS -> dropped write reveals the ATF path is needed), and let
+			 * the per-frame bc_dispatch report "full split channel LIVE" if this admits DSU1 to the snoop domain. */
+			{
+				static const unsigned cpcfix[][2] = {
+					{0x0c53a048u, 0x0000000bu}, {0x0c53a230u, 0x00000040u},
+					{0x0c53a658u, 0x00000900u}, {0x0c53a65cu, 0x0007fe71u},
+					{0x0c53a664u, 0xfb030500u}, {0x0c53a668u, 0x0020091fu},
+					{0x0c53a718u, 0x00910069u}, {0x0c53a748u, 0x00060721u},
+					{0x0c53a814u, 0x200b0000u}, {0x0c53a844u, 0x00100000u},
+				};
+				int fi;
+				_dprintf("BC CPCFIX: writing %d CPC candidate regs to live-coherent values\n",
+					 (int)(sizeof(cpcfix)/sizeof(cpcfix[0])));
+				for (fi = 0; fi < (int)(sizeof(cpcfix)/sizeof(cpcfix[0])); fi++) {
+					unsigned before = rd32(cpcfix[fi][0]);
+					wr32(cpcfix[fi][0], cpcfix[fi][1]);
+					{ unsigned rb = rd32(cpcfix[fi][0]);
+					  _dprintf("BC CPCFIX 0x%x before=0x%x wrote=0x%x readback=0x%x %s\n",
+						 cpcfix[fi][0], before, cpcfix[fi][1], rb,
+						 (rb == cpcfix[fi][1]) ? "LANDED" : "DROPPED(write-protected)"); }
+				}
+				__asm__ __volatile__("dsb sy\n\tisb\n\t" ::: "memory");
+				arch_clean_invalidate_cache_range((void *)bc, sizeof(*bc));
+				_dprintf("BC CPCFIX post: w_can1=0x%x w_static_can=0x%x (watch the menu for 'full split channel LIVE')\n",
+					 bc->w_can1, bc->w_static_can);
+			}
+#endif
 			rr1=rr2=rr3=0; v = MCSI_RD(0x10); _dprintf("BC MCSI SF_INIT(0x010)=0x%lx\n", v);
 			rr1=rr2=rr3=0; v = MCSI_RD(0x28); _dprintf("BC MCSI SNP_PENDING(0x028)=0x%lx\n", v);
 			for (i = 0; i < 8; i++) {

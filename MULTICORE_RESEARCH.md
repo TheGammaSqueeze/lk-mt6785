@@ -1930,3 +1930,27 @@ requires the phone booted to Android + adb (not the LK menu). ALTERNATIVELY, the
 CONFIRMED viable on metal (w_static_can=0x57A70DED) and needs NO coherency fix - a real shippable speedup that
 sidesteps the wall. Decision point put to the user: (A) boot Android+adb -> I run run_mcucfg_diff.sh for one more
 shot at the coherency register; or (B) I build the producer-offload now.
+
+### ON-DEVICE HOTPLUG-DIFF + LK-vs-LIVE CROSS-REF (2026-08-28): coherency-register candidates found
+Ran the hotplug-diff on the live target (regpoke.ko loaded fine). CRUCIAL METHOD: normal hotplug couples power
+and coherency (offline = DSU1 fully off), so on-vs-off cannot separate them. But the LK worker state is UNIQUE
+(DSU1 POWERED, ack set, but NOT coherent) - so comparing LK-CPC-dump vs live-DSU1-ON (both powered; differ only
+in coherency + kernel config) isolates the candidates. Registers where LK differs from live-coherent, in the
+CPC/cpccfg region (0x0c53a000):
+  0c53a048  LK=0x3    live=0xb     (on==off, power-independent)  <- cleanest: bit3(0x8)
+  0c53a658  LK=0x100  live=0x900   (on==off)                     <- bit11(0x800)
+  0c53a748  LK=0x50721 live=0x60721 (on==off)                    <- bits[20:16]
+  0c53a65c/664/668/718  LK small, live large config (on==off)
+  0c53a230  LK=0x1 on=0x40 off=0x02 ; 0c53a844 LK=0x24 on=0x100000 off=0x20 ; 0c53a814 LK=0xb0000 on/off have
+    bit29 set, LK clear  (these track power too; LK ~ off, coherent-ON has extra bits: a230 bit6, a844 bit20)
+  (0c53ab80-90 are perf counters; ignore. 0c53806c differs too, mp_cpusys_top region.)
+CAVEAT: the diff also includes general kernel mcusys config (DVFS/DCM/thermal/credit all base at 0x0c530000), so
+not every diff is coherency. But the CPC-region (0x0c53a0xx) set is the power+coherency controller and is the
+right candidate pool.
+
+### PROBE BUILT: lk_a_snes_cpcfix_signed.img - write CPC candidates from LK, test coherency
+cpu0 writes each CPC candidate register to its live-coherent value after worker bringup, READS BACK (to detect
+NS write-protect: mcusys may firewall writes, in which case the write is dropped = confirms ATF/secure path is
+needed), and the existing per-frame bc_dispatch then reports "full split channel LIVE" if coherency is achieved.
+FLASH THIS NEXT. Key UART: "BC CPCFIX <addr> wrote=0x.. readback=0x.." (did the write land?) and later
+"full split channel LIVE" vs "mismatch/frozen".
