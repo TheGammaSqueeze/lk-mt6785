@@ -1492,3 +1492,30 @@ but does not run cci_enable_cluster_coherency for cluster 1 -> the worker is pow
 its loads bypass cluster 0's dirty lines exactly as observed. The staged AYANEO_BC_MCSI / _FIX images test and
 (candidate) fix precisely this. Bonus: cpu4 is an A55, same core type as cpu0, so no big/little ISA surprises
 for the render-split code. Confidence in the MCSI root-cause is now high; awaiting the diagnostic UART dump.
+
+### ATF POWER-PATH RE (2026-08-28): the coherency-enable is CONDITIONAL and SSPM-gated - matches the wall
+Pulled the ARM ATF mt8183 plat_pm.c (nearest public MTK PSCI power path; saved analysis, not committed as it
+is a different plat). The cross-cluster coherency enable lives in pwr_domain_on_finish:
+  plat_mtk_power_domain_on_finish():
+     if (afflvl1 == OFF) plat_cluster_pwron_common(mpidr, cluster);  // <-- the ONLY caller
+     ...
+  plat_cluster_pwron_common():  enable_scu(mpidr); plat_mtk_cci_enable();   // SCU + MCSI cluster snoop-enable
+     (for cluster>0 also: l2c_parity_check_setup, mp1_L2_desel_config, mt_gic_sync_dcm_disable)
+  plat_cluster_pwrdwn_common(): plat_mtk_cci_disable(); disable_scu(mpidr);  // clears it on cluster-off
+
+Two facts explain why the worker cluster comes up snoop-DISABLED at LK:
+ 1. plat_mtk_cci_enable() runs ONLY when the PSCI framework passes afflvl1 == LOCAL_STATE_OFF (i.e. it believes
+    the whole cluster was off and is now powering on). LK's minimal PSCI CPU_ON path / power-state coordination
+    may not present that transition, so on_finish skips plat_cluster_pwron_common entirely.
+ 2. Normal hotplug is SSPM/MCDI driven by default (HP_SSPM_CTRL=true, MCDI_SSPM=true): cluster/cpu power and the
+    coherency choreography go through mcdi_hotplug_* -> SSPM firmware. At LK there is NO SSPM/MCUPM runtime, so
+    that path is inert and the software cci_enable fallback only fires on the afflvl1==OFF condition above.
+Net: at LK the cross-cluster MCSI snoop-enable (plat_mtk_cci_enable == cci_enable_cluster_coherency, which sets
+SNOOP_EN|DVM_EN on the cluster's MCSI slave iface) is skipped -> worker (cluster 1) powered but not admitted ->
+its loads miss cpu0 (cluster 0) dirty lines. This is the same mechanism the staged AYANEO_BC_MCSI_FIX forces by
+directly set_bitmask-ing SNOOP_EN|DVM_EN on the unadmitted slave iface via MCSI_NS_ACCESS. The staged diagnostic
+will confirm empirically (expect cluster-1 iface: SNP_SUPPORT=1, SNOOP_EN=0; cluster-0 iface: SNOOP_EN=1).
+Caveat: enable_scu(mpidr) (the core/DSU-level snoop, ~CPUECTLR.SMPEN) is the WORKER's own on_finish step and
+runs on the worker; on DynamIQ A55 the core auto-joins the DSU at reset, so the cpu0-side MCSI enable is the
+actionable missing piece. If the diagnostic shows SNOOP_EN already 1, MCSI is not the layer and we pivot to the
+SCU/DSU-level or the PSCI-state-coordination angle.
