@@ -1285,3 +1285,18 @@ words), no hidden dynamic dependency:
 So the ONLY remaining gate for the full per-frame split is MMIO channel viability (pending the SPM-unlock
 flash: BC WRITEBACK/MMIOPROBE/STATECHAN). If that goes green, the split wiring is fully de-risked end to
 end - every data dependency verified satisfiable.
+
+### CHANNEL FINDING (2026-08-28): SPM SW_RSV is PCM-firmware-owned - bad channel
+Source: SPM_SW_RSV_0..8 are the SPM PCM firmware's wakeup-status registers (mt6785 mtk_spm_internal.c:
+wakesta->r12 = spm_read(SPM_SW_RSV_0); wake_misc = SW_RSV_5; SW_RSV_6=timer_out; 7/8=b_sw_flag). The
+running PCM firmware CONTINUOUSLY writes them, so cpu0's writes to 0x10006600 are overwritten - the unlock
+cannot fix that. => SW_RSV (0x10006600) is NOT a usable cpu0->worker channel; the STATECHAN word will stay
+0 regardless. Viable channel candidates instead:
+- CPU_SPARE_CON (0x10006250): not referenced by any driver = likely free SW scratch; the SPM unlock may
+  make cpu0's write land (MMIOPROBE tests it).
+- GICR_ISPENDR0 (0x0c070200): GIC redistributor, NS-writable (kernel uses the GIC), NOT SPM-firmware-owned
+  - the cleanest peripheral-path channel (SGIPROBE + the new GICR write-back test it).
+So the pending SPM-unlock flash is still the right viability test via CPU_SPARE_CON + the GICR; SW_RSV was
+a poor channel pick (now understood). Once viability is confirmed on a NON-firmware register, the 23-word
+split channel will use that register family (e.g. stream through CPU_SPARE_CON with a seq handshake, or a
+GICR-based scheme) rather than SW_RSV.
