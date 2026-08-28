@@ -992,3 +992,19 @@ still reads stale (a memory-path symptom, not cache), and the worker's PRIVATE L
 unreachable by cpu0 maintenance without a snoop broadcast the worker ignores. So this only helps if the
 stale copy is specifically in the SHARED L3 and the worker mis-hits it. Cheap + harmless, folded into the
 lk_a_snes_bigcore_cpcbit29.img canary path. If BC CANARY now reads 0xCA5Axxxx, shared-L3-stale was it.
+
+### LIVE SPM BLOCK BASELINE + comparison (2026-08-28): no coherency-relevant difference
+Captured the full live coherent SPM block (0x10006000..0x100063fc, 166 non-zero regs;
+tools/live_regpoke/live_spm_reference.txt). Most is runtime state (PCM data 0x76543210 patterns at
+0x6030+, masks, wakeup/timer state) that naturally differs live-vs-LK regardless of coherency. The
+coherency/power-relevant subset compared to known LK values:
+- MP0_CPUn_PWR_CON (0x208..0x224): live shows 0x00000005 for RUNNING cores (PWR_ON+RST_B, bit31 ACK
+  CLEAR) and 0x80000005 transiently; LK cpu1 = 0x80000005 (ACK set STABLE). The bit31 ACK is TRANSIENT
+  runtime state (set at power-on, toggled by MCDI idle) - LK just has no MCDI cycling the core, so it
+  stays set. NOT a coherency indicator (matches the earlier hotplug-diff finding).
+- SPM_CPU_PWR_STATUS (0x160): live 0x24146 vs LK 0x474c - differs only in which cores are on/idle
+  (runtime power state), not coherency.
+=> The SPM block, like CPC/mcucci/mcucfg, has NO stable coherency-relevant difference between the live
+coherent core and our LK core. This is further confirmation (now across ALL four MMIO power/CPC/mcusys
+blocks) that the incoherence is not any software-visible register - it is the DSU-internal snoop-input
+(P-Channel) the CPC-arm bypass never fires. The coherent-path MMIO investigation is complete and negative.
