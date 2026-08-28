@@ -1362,3 +1362,23 @@ Awaiting the user's go/no-go. All host-validated pieces (pack, band split, state
 register toolchain (tools/live_regpoke) are preserved. If "build": start with the refactor path (fits
 memory) and host-validate focus-independent-row + windowed-blit == single-core. If "bank": restore the
 clean single-core build (lk_a_snes_signed.img).
+
+### BETTER OFFLOAD DECOMPOSITION (2026-08-28): per-CARD pre-render (~5.6MB) - memory problem solved
+The per-FOCUS-strip tiling (76MB, fragmented, or full render refactor) was the wrong granularity. Better:
+- WORKER (static, once at startup): pre-render each of the 21 GAME CARDS in its NORMAL (non-focused) state -
+  boxart scaled + framed + icons - into 21 small buffers (~246x270x4 ~= 265KB each => ~5.6MB total). Each
+  card is deterministic from the static pack (no dynamic input) - exactly what the frozen-snapshot worker
+  can read/build. Writes them out via the proven worker->cpu0 direction.
+- cpu0 (per rebuild): build the card strip by BLITTING the pre-rendered cards at focus-computed positions,
+  instead of calling draw_card (full render + boxart scale) per card. The blit is far cheaper than the
+  render that dominates the ~30ms build, so the scroll-rebuild hitch shrinks a lot. The focused card's
+  bright/blue decoration stays on the existing L3 overlay (draw_focus_card) - no skip_focus / L2-L3
+  refactor needed, because the L2 strip now holds pre-rendered NORMAL cards (focus handled on L3 as today).
+WHY THIS IS BETTER: memory ~5.6MB (fits the fragmented window trivially, no per-focus 76MB); it OFFLOADS
+the expensive part (per-card boxart render) to the worker while cpu0 keeps the cheap compositing; and it
+needs only a MODERATE change (build_cardcache blits cached cards vs draw_card) rather than a
+focus-independent-render refactor. Still static-input only (no dynamic channel), so it works with the
+frozen worker. This is the recommended offload path if the user says "build".
+GO/NO-GO now: the offload is memory-FEASIBLE and lower-risk than earlier thought (per-card, ~5.6MB,
+moderate refactor). Trade: real engineering effort + a build_cardcache change, for a reduced (not
+eliminated) scroll hitch. Awaiting the user's decision.
