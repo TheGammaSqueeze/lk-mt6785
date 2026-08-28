@@ -755,3 +755,32 @@ PSCI CPU_ON completes the P-Channel (requires starting SSPM's CPU-power service,
 idle mailbox and may not be reachable/loaded at LK); (2) the staged DVM lever (lk_a_snes_bigcore_dvm.img)
 - a long shot that DVM traffic nudges the DSU to include the core. If both fail, the wall is fundamental
 for a manually-woken LK core, and the win is the producer-offload using only proven directions.
+
+### REFRAME (2026-08-28): SSPM is RUNNING at LK - the wall may be surmountable
+Established via source + live: the kernel does NOT load SSPM firmware (no request_firmware; it only
+interfaces with an already-running SSPM via is_sspm_ready / sspm_mbox_read/write). So SSPM is
+PRELOADER-loaded and running BEFORE LK. Live SSPM mbox3 (0x10480000) has active data (0x1c=0xff,
+0x24=2, 0x44=1, 0x50/54/58/5c populated), confirming SSPM alive. So coherent bringup is NOT
+fundamentally impossible at LK - SSPM is present; it simply is not SERVICING SPMC CPU-power at LK (why a
+plain PSCI CPU_ON hangs), which is why the DSU coherency P-Channel never fires and the CPC-arm bypass is
+needed (and skips coherency).
+
+THE ENABLE MECHANISM (mt8192 mt_mcdi.c mcdi_init_1, the concrete model): a coprocessor is switched into
+CPU-power control by: wait TASK_STA==INIT, then mcdi_mbox_write(PWR_CTRL_EN, MCUSYS_CTRL|BUCK_CTRL|
+ARMPLL_CTRL) then mcdi_mbox_write(AP_READY, 1). This is done by ATF (mcdi_try_init), and on a system that
+never idles/hotplugs at LK it is never triggered - matching "SSPM does not service power at LK".
+
+FIX HYPOTHESIS (the real win, needs a flash): from LK, perform the mt6785 SSPM CPU-power-control ENABLE
+(the SSPM equivalent of PWR_CTRL_EN + AP_READY), THEN do a PLAIN PSCI CPU_ON (no CPC-arm bypass). If
+SSPM then services the SPMC power request, it drives the DSU P-Channel -> the core is auto-coherent ->
+frozen-read solved and the whole 2-core split opens. CAVEATS: mt6785 uses SSPM (older) not mt8192 MCUPM;
+its MCDI mailbox (SSPM mbox3, slots CLUSTER_CAN_POWER_OFF/AVAIL_CPU_MASK...) is idle-only with NO
+PWR_CTRL_EN slot, so the mt6785 power-control enable is a DIFFERENT SSPM IPI/command not in the kernel
+MCDI driver (likely an ATF-side or SSPM-init step). mt6785 ATF source is not local (only mt8192) and the
+SSPM firmware is a blob, so the exact mt6785 enable command needs either the mt6785 ATF/preloader source,
+a WebSearch, or a careful live-system RE of the SSPM mbox0/1 IPI channels during a CPU hotplug.
+
+NEXT: (1) live-diff the SSPM mailboxes (mbox0..3) across a cpu1 hotplug to catch the power-service
+IPI/command; (2) find mt6785 ATF/preloader SSPM power-enable; (3) build an LK image that issues it +
+plain PSCI and reads BC CANARY. Meanwhile the DVM long-shot (lk_a_snes_bigcore_dvm.img) and the
+producer-offload fallback both remain staged/specced.
