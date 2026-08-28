@@ -2159,3 +2159,14 @@ L2 (invisible overlap) - nothing flashes as L2 enables; LEAVE - keep the L2 card
 already carries the cards) then disable, so nothing vanishes. Staged lk_a_snes_notear2_signed.img. Awaiting test:
 expect scroll ~30fps tear-free + no enter/exit flicker. (Suspend-list 20fps is the single-buffer resume render
 cost - separate, revisit if still an issue.)
+
+### PRESENT v2 HARDENED + FALLBACK PLAN (2026-08-29)
+Hardened lk_a_snes_notear2_signed.img (clear s_leave_pending on re-enter). Awaiting user test.
+RISK on the presync (single-barrier) FPS fix: it waits vblank before config, but if config_input_multi's own
+FRAME_DONE wait still fires (path busy at that instant) it could still double-barrier (15fps), OR if the OVL
+config write still crosses SOF it could still tear. It is a reasoned bet, not certain. FALLBACK if v2 is still
+15fps or still tears on scroll: revert the SCROLL to the original single-buffer full-render path (make `layered`
+require cont_shift==0 so only true idle uses the OVL; scrolling uses the pre-OVL single-buffer path that was
+30fps tear-free originally), relying on the transition-handoff fix for the idle<->scroll layer toggles. That is
+the most reliable route to the user's known-good 30fps-no-tear scroll, at the cost of dropping the OVL 60fps
+scroll ambition. Decide based on the v2 result.
