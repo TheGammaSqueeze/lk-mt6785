@@ -1,0 +1,1 @@
+cmd_/work/svoboda_lk/tools/live_regpoke/smcpoke.ko := aarch64-linux-gnu-ld -EL -r -maarch64linux -O2 -T ./scripts/module-common.lds -T ./arch/arm64/kernel/module.lds --build-id  -o /work/svoboda_lk/tools/live_regpoke/smcpoke.ko /work/svoboda_lk/tools/live_regpoke/smcpoke.o /work/svoboda_lk/tools/live_regpoke/smcpoke.mod.o ;  true

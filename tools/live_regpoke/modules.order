@@ -1,1 +1,2 @@
 kernel//work/svoboda_lk/tools/live_regpoke/regpoke.ko
+kernel//work/svoboda_lk/tools/live_regpoke/smcpoke.ko
