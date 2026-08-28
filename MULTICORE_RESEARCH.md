@@ -2063,3 +2063,22 @@ non-resume; tiles invalidated on aspect change). Tile bumped to 320x360 to fit t
 21*320*360*4 = 9.68MB at 0x52500000 (fits the gap). Restaged lk_a_snes_cardtiles_signed.img - now actually
 active on the 4:3 device. NEXT: user flashes to confirm smoother nav + visual parity; then phase 2b (worker
 renders the tiles) to move the one-time cost off cpu0.
+
+### PHASE 2b PLAN (2026-08-28): worker renders the tiles (the literal goal - cpu1 works during LK)
+Phase 2a is complete + on-device (cpu0 renders tiles once, tiled builds thereafter; 4:3-active, host-validated).
+Phase 2b moves the one-time tile render to cpu1, fulfilling the original objective. It reuses the proven-on-HW
+facts: worker reads STATIC pre-bringup data (w_static_can=0x57A70DED) + worker->cpu0 writes work (canary2 0x7777).
+DESIGN (careful, fallback-safe):
+ 1. cpu0 BEFORE bringup: clean the whole render input to DRAM - s_menu struct, the pack (already in DRAM at
+    0x50000000), and publish the menu pointer + tiles base + ngames at a STATIC comms location (line 0, cleaned
+    pre-MMU) so the worker reads them as static data (not the dynamic menu_ptr that faults).
+ 2. worker (new TILE job in bc_worker_entry, gated): read the static menu ptr; for gi in ngames render
+    snes_menu_render_card_tile(menu, gi, tiles+gi*tsz); clean each tile; publish a done counter + a checksum.
+ 3. cpu0: bounded-wait for done; verify the checksum (or tile non-zero); if good -> s_tiles_ready=1 (use worker's
+    tiles); if timeout/bad -> cpu0 renders them itself (Phase 2a fallback). So a worker crash/hang just boots the
+    normal menu.
+DE-RISK FIRST (recommended next build): a NON-critical variant - cpu0 always renders its own tiles (2a), AND the
+worker independently renders tile[0] into a scratch buffer + publishes its checksum; cpu0 logs WORKER-TILE
+MATCH/MISMATCH vs its own. Proves the worker can execute the render tree (the real risk) WITHOUT the menu
+depending on it. Needs the tee_patched_armcpc.img prereq (bringup). Gate: AYANEO_CARDTILES_WORKER (implies
+BIGCORE_EXPT+CARDTILES). Perf value is modest (one-time ~20ms off cpu0) but it is the stated goal realized.
