@@ -1570,3 +1570,31 @@ the SIP path stays strongly preferred; this records the fallback anchor in case 
 This closes the offline analysis: mechanism (cross-cluster MCSI snoop-admission skipped at LK) is confirmed from
 device-tree topology + ATF on_finish path + MCUPM IPI map; fix (MCSI_NS_ACCESS set SNOOP_EN|DVM_EN) and an
 independent DVM lever are staged; the empirical verdict now waits solely on a flash of the offline MTK target.
+
+### INTEGRATION CONFIRMED (2026-08-28, task e): the 2-core split is ALREADY WIRED - MCSI fix is the sole keystone
+Task (e) needs no new code: the full 2-core pipeline already exists and is flag-gated behind AYANEO_BIGCORE_EXPT
+(which AYANEO_BC_MCSI/_FIX imply), so the staged fix image exercises it end-to-end:
+ - bringup: bigcore_start() runs the worker PSCI CPU_ON + (in the fix build) the MCSI SNOOP_EN|DVM_EN admit +
+   DVM/TLBI lever, ONCE, before the render loop.
+ - per frame (snes_driver.c:864): `if (bc_worker_ready() && s_menu.chrome_ready) bc_dispatch(...); else
+   snes_menu_render(...)`. bc_dispatch (line 279) forks the BOTTOM scanline band to the worker, cpu0 renders the
+   TOP band, then joins with a WALL-CLOCK-bounded fallback (line 382): if the worker misses its deadline cpu0
+   renders the worker's band too, so a non-coherent worker degrades to ~30fps, never breaks the menu.
+ - self-verdict (line 440): cpu0 checksums the state it published vs g_bc->w_state_sum and prints
+   "full split channel LIVE" (match) or "mismatch/frozen". The worker cleans its band to DRAM; cpu0 invalidates
+   its stale copy so the display picks up the worker's rows.
+So the ordering is exactly: coherency-fix-at-bringup THEN per-frame split. If the MCSI admit works, bc_dispatch's
+worker band renders correctly, the state-sum MATCHES, and the menu genuinely runs on two cores with the wall-clock
+fallback idle. No worker cache-invalidate is needed post-fix: once SNOOP_EN is on the worker is in the snoop
+domain (cpu0's per-frame writes snoop-invalidate the worker's copies), and the static pack/menu input was
+published+cleaned before bringup so the worker's read-only cached copies already equal DRAM.
+
+UART INTERPRETATION GUIDE for the flashed fix image (lk_a_snes_mcsifix_signed.img):
+ 1. "BC MCSI SLV<n> ... SNP_SUP=1 ... SNOOP_EN=0" on the worker cluster iface, SNOOP_EN=1 on cpu0's  => wall
+    confirmed = snoop-admission. "BC MCSI FIX: SLV<n> after set ... SNOOP_EN=1" => admit succeeded.
+ 2. Then "BC MCSI post: w_can1/w_menuw0/w_static_can" flip to real/0xCA5A                             => coherent
+    (if they flip only after "post-DVM(TLBIALLIS)" instead, the wall was DVM-sync, not admission).
+ 3. Then in the running menu: "... full split channel LIVE"                                    => 2-core render
+    is genuinely live (the original 60fps-lower-power goal achieved). "mismatch/frozen" => fix insufficient,
+    fall back to the SIP-absent / ATF-patch contingency (MCSI base 0x0c510000).
+Offline work is fully closed across (b)(c)(d)(e)+topology+physical-map; the empirical verdict waits on a flash.
