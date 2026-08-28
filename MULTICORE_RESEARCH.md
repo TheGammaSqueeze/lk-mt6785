@@ -1954,3 +1954,19 @@ NS write-protect: mcusys may firewall writes, in which case the write is dropped
 needed), and the existing per-frame bc_dispatch then reports "full split channel LIVE" if coherency is achieved.
 FLASH THIS NEXT. Key UART: "BC CPCFIX <addr> wrote=0x.. readback=0x.." (did the write land?) and later
 "full split channel LIVE" vs "mismatch/frozen".
+
+### REFINED CANDIDATE ANALYSIS + coherent reference saved (2026-08-28, device live on adb)
+Saved a full live-coherent CPC/DSU reference: tools/live_regpoke/live_cpc_coherent.txt (1536 regs, exact target
+values for the CPCFIX bisect and any ATF patch). Refined the candidates by their on-vs-off behavior:
+ - PRIME suspects (track DSU1 coherency: live_ON != live_OFF, and LK reads the non-coherent OFF-like value even
+   though DSU1 is POWERED with ack set - the exact anomaly of "powered but not snoop-admitted"):
+     0c53a230: coherent=0x40(bit6), off=0x02, LK=0x01   -> coherent needs bit6
+     0c53a844: coherent=0x100000(bit20), off=0x20, LK=0x24 -> coherent needs bit20
+     0c53a814: coherent has bit29 set, LK=0x000b0000 (bit29 clear)
+   These read the powered-DOWN coherency value in LK despite power being on = the snoop-admission state stuck off.
+ - Power-independent globals Linux sets but LK doesn't (possible prerequisites): 0c53a048 (0x3->0xb bit3),
+   0c53a658 (0x100->0x900 bit11), 0c53a748 (0x50721->0x60721).
+lk_a_snes_cpcfix_signed.img writes ALL of these to their coherent values and reads back (write-protect test).
+DID NOT write CPC regs on the LIVE running kernel (crash risk, user away) - the isolated LK flash tests writes
+safely. Awaiting the CPCFIX flash: LANDED+"full split channel LIVE" => solved (then bisect); DROPPED => NS
+write-protected, fix must be an ATF patch (I have the ATF + exact target values now).
