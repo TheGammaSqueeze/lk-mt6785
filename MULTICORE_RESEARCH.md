@@ -2205,3 +2205,14 @@ tore): during a PURE PAN (cont_shift animating, focus unchanged) the focused car
 except the slow cursor pulse; skip/throttle the draw_focus_card re-render + unpremult on pan frames (reuse the L3
 buffer, or update the pulse less often), cutting the moving frame ~17ms->~13ms so render+one-barrier can approach
 30fps. Deferred until the user confirms notear3 is tear-free; will implement carefully + measure, not blind.
+
+### PRESENT v4 - REVERT HANDOFF (2026-08-29): handoff caused a BLACK BLANK, worse than the flicker
+User on notear3: tearing FIXED, idle 60fps GOOD, but movement back to 15fps (the tear-free ceiling), and the
+transition now shows a single BLACK-FRAME blank (carousel<->menu items, and submenu<->submenu). My enter-overlap
++ leave-2-step handoff turned the original "slight flicker" into a black blank -> net worse. REVERTED the handoff
+(ovl_split back to =layered; leave back to single present_layers(0,...) disable; dropped s_leave_pending). Kept
+the tear-free post-swap vsync (moving + transition frames). notear4 = tear-free + 60fps idle + ~15fps movement +
+the milder original transition flicker (no black blank). Lesson: the OVL layer toggle (no CMDQ, non-atomic) is
+finicky; do NOT fix the transition flicker blind - it needs the debug SNESX capture across the exact frames.
+REMAINING (user to prioritise): (1) 15fps movement -> cut the L3 focused-card re-render+unpremult on pure-pan
+frames (render-cost, safe); (2) the slight transition flicker -> needs debug capture to fix without regressing.
