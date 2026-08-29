@@ -1108,7 +1108,10 @@ void msdc_ext_sd_power_on(void)
 	 * command; a too-short ramp leaves the card unresponsive (RESP timeout). */
 	mt6360_ldo_config_interface(0x05, 0x00, 0x40, 0); /* VMC  disable */
 	mt6360_ldo_config_interface(0x0b, 0x00, 0x40, 0); /* VMCH disable */
-	mdelay(20);
+	/* Long off so the card VDD fully collapses and the card does a clean
+	 * power-on reset. A short off leaves a card that was interrupted mid-read
+	 * stuck in the data state, which hangs the next read (no data-done IRQ). */
+	mdelay(250);
 	/* set voltages first (VOSEL) */
 	mt6360_ldo_config_interface(0x0f, 0x2a, 0x7f, 0); /* VMCH (LDO5) = 3.0V */
 	mt6360_ldo_config_interface(0x09, 0xaa, 0xff, 0); /* VMC  (LDO3) = 3.0V */

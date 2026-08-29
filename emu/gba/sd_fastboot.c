@@ -165,7 +165,17 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 	snprintf(lbuf, sizeof lbuf, "sd: read(dev1,lba0)=%lu sig=%02x%02x b0=%02x",
 		 n, s0[510], s0[511], s0[0]);
 	fastboot_info(lbuf);
-	if (n != 1) { fastboot_fail("sd: sector0 read failed on the microSD"); return; }
+	if (n != 1) {
+		extern int gba_sd_trace_get(unsigned idx, unsigned *op, unsigned *app,
+					    unsigned *err, unsigned *r0);
+		unsigned idx, op, app, err, r0;
+		for (idx = 0; gba_sd_trace_get(idx, &op, &app, &err, &r0); idx++) {
+			snprintf(lbuf, sizeof lbuf, "sd: RTRACE[%u] %sCMD%u err=%u resp0=0x%08x",
+				 idx, app ? "A" : "", op, err, r0);
+			fastboot_info(lbuf);
+		}
+		fastboot_fail("sd: sector0 read failed on the microSD"); return;
+	}
 
 	rc = gba_sd_mount(&v);
 	snprintf(lbuf, sizeof lbuf, "sd: fat_mount rc=%d fat32=%d spc=%u clusters=%u",

@@ -985,7 +985,23 @@ int msdc_wait_rsp(struct mmc_host *host, struct mmc_command *cmd)
 end:
 
 	if (rsptyp == RESP_R1B) {
+#if defined(AYANEO_GBA_SD)
+		/* NEVER-BRICK: a stuck removable microSD can hold DAT0 (busy) low
+		 * forever, which would hang this poll and hang boot. Bound the wait so
+		 * the SD path always returns and the boot flow can fall through. */
+		u32 r1b_tmo = 2000000;
+		while ((MSDC_READ32(MSDC_PS) & 0x10000) != 0x10000) {
+			if (--r1b_tmo == 0) {
+				msdc_pr_err("[SD%d] R1B busy timeout - reset\n", host->id);
+				MSDC_RESET();
+				error = MMC_ERR_TIMEOUT;
+				cmd->error = error;
+				break;
+			}
+		}
+#else
 		while ((MSDC_READ32(MSDC_PS) & 0x10000) != 0x10000);
+#endif
 	}
 
 #if MSDC_DEBUG
@@ -1345,7 +1361,21 @@ int msdc_pio_read(struct mmc_host *host, u32 *ptr, u32 size)
 	ints |= MSDC_INT_SDIOIRQ;
   #endif
 
+#if defined(AYANEO_GBA_SD)
+	/* NEVER-BRICK: this loop otherwise relies on the hardware DAT-timeout IRQ to
+	 * escape. A stuck removable microSD can send no data and never raise
+	 * XFER_COMPL or DATTMO, spinning here forever and hanging boot. Bound it. */
+	u32 pio_spin = 20000000;
+#endif
 	while (1) {
+#if defined(AYANEO_GBA_SD)
+		if (--pio_spin == 0) {
+			msdc_pr_err("[SD%d] PIO read spin timeout - reset\n", host->id);
+			MSDC_RESET();
+			err = MMC_ERR_TIMEOUT;
+			break;
+		}
+#endif
   #if defined(MSDC_USE_IRQ)
 		//For CTP only
 		DisableIRQ();
