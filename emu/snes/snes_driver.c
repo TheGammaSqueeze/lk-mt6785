@@ -271,7 +271,9 @@ static int snes_emu_thread(void *arg)
 	ayaneo_gbc_audio_init();
 	if (s_menu.bgm) play_sound(s_menu.bgm, 1, 1);
 
-	g_perf_tick = perf_tick;      /* enable the render per-phase profiler */
+#ifdef AYANEO_DEBUG_LOGGING
+	g_perf_tick = perf_tick;      /* enable the render per-phase profiler (debug only) */
+#endif
 	last = gpt4_get_current_tick();
 
 	for (;;) {
@@ -309,7 +311,9 @@ static int snes_emu_thread(void *arg)
 		snes_menu_render(&s_menu, &t);
 		s_perf_render_us = (gpt4_get_current_tick() - t_frame0) / 13u;
 		draw_osd(fb, pitch, (int)W);
-		draw_perf(fb, pitch);
+#ifdef AYANEO_DEBUG_LOGGING
+		draw_perf(fb, pitch);   /* on-screen fps + per-phase readout (debug only) */
+#endif
 
 		/* start any queued one-shot SFX, then mix a frame's worth of audio
 		 * and push it to the AFE ring (keeps the ring fed ahead of the DMA) */
