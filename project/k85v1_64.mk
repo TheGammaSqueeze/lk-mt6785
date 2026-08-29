@@ -209,3 +209,9 @@ AYANEO_FASTPAN_L3 ?= no
 ifeq ($(AYANEO_FASTPAN_L3),yes)
 DEFINES += AYANEO_FASTPAN_L3
 endif
+# held-scroll fps: while auto-repeating (holding a direction) use the single-buffer full render
+# (~30fps original) instead of the OVL rebuild+L0+L3 (~sub-20fps). Individual presses stay OVL.
+AYANEO_SB_HELDSCROLL ?= no
+ifeq ($(AYANEO_SB_HELDSCROLL),yes)
+DEFINES += AYANEO_SB_HELDSCROLL
+endif

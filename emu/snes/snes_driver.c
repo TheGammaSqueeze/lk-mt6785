@@ -877,6 +877,15 @@ static int snes_emu_thread(void *arg)
 		 * known-good 30fps tear-free scroll before the OVL work. Idle stays 60fps. */
 		if (s_menu.cont_shift != 0.0f) layered = 0;
 #endif
+#ifdef AYANEO_SB_HELDSCROLL
+		/* HELD-SCROLL fps: while auto-repeating (holding a direction), the strip rebuilds
+		 * EVERY step, and the OVL then pays build_cardcache (~30ms) + L0 + L3 - MORE than a
+		 * single full render (~30ms). So during a held scroll use the single-buffer full
+		 * render (the original ~30fps path). rep_primed = held past the 0.22s repeat delay,
+		 * so INDIVIDUAL presses (45fps on the OVL path) are unaffected; only a sustained hold
+		 * switches. Idle and single presses stay 60/45fps OVL. */
+		if (s_menu.rep_primed) layered = 0;
+#endif
 		t.ovl_split = layered;
 #ifdef AYANEO_BIGCORE_EXPT
 		/* Split the render across cpu0 + the cached worker when it is up and the
