@@ -1009,6 +1009,19 @@ end:
 #endif
 
 	cmd->error = error;
+
+#if defined(AYANEO_GBA_SD)
+	/* AYANEO GBA-SD: trace every command on the external microSD (host 1) so the
+	 * fastboot sd-probe can show exactly where identification fails and with what
+	 * response. Ring buffer, no UART needed. */
+	if (host->id == 1) {
+		extern void gba_sd_cmdtrace(unsigned op, unsigned app, unsigned err, unsigned r0);
+		gba_sd_cmdtrace((unsigned)(cmd->opcode & ~(SD_CMD_BIT | SD_CMD_APP_BIT)),
+				(unsigned)((cmd->opcode & SD_CMD_APP_BIT) ? 1 : 0),
+				(unsigned)error, (unsigned)cmd->resp[0]);
+	}
+#endif
+
 	if (cmd->opcode == MMC_CMD_APP_CMD && error == MMC_ERR_NONE) {
 		host->app_cmd = 1;
 		host->app_cmd_arg = cmd->arg;

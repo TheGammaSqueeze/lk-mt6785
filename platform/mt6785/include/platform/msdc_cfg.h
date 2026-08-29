@@ -171,6 +171,14 @@
 #ifdef MTK_POWER_ON_WP
 #define FEATURE_MMC_POWER_ON_WP
 #endif
+/* AYANEO GBA-SD: the stock LK build compiles only the eMMC identification path
+ * (CMD1). The removable microSD is an SD card, so the driver must run the SD
+ * identification sequence (CMD8 SEND_IF_COND + ACMD41 SD_SEND_OP_COND). Enabling
+ * FEATURE_MMC_SDCARD turns those on in mmc_init_card(); without it the SD card
+ * only ever gets CMD1, which it does not answer, so init fails as "no card". */
+#if defined(AYANEO_GBA_SD)
+#define FEATURE_MMC_SDCARD
+#endif
 #endif
 
 #define MTK_HS400_USED_800M       (0)

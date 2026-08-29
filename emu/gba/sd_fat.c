@@ -31,6 +31,31 @@ extern void msdc_ext_sd_power_on(void);
 /* verbose arg to mmc_legacy_init that maps to SD_DEV_NUM (id = verbose - 1). */
 #define SD_MMC_VERBOSE (SD_DEV_NUM + 1)
 
+/* Command trace ring: msdc.c (host 1) records every command here so the fastboot
+ * sd-probe can show the exact identification sequence and where it fails. */
+#define GBA_SD_TRACE_N 24
+struct gba_sd_trace_ent { unsigned op, app, err, r0; };
+static struct gba_sd_trace_ent s_trace[GBA_SD_TRACE_N];
+static unsigned s_trace_cnt;
+void gba_sd_cmdtrace(unsigned op, unsigned app, unsigned err, unsigned r0)
+{
+	unsigned i = s_trace_cnt % GBA_SD_TRACE_N;
+	s_trace[i].op = op; s_trace[i].app = app;
+	s_trace[i].err = err; s_trace[i].r0 = r0;
+	s_trace_cnt++;
+}
+/* Read back trace entry #idx (0 = oldest kept). Returns 0 if out of range. */
+int gba_sd_trace_get(unsigned idx, unsigned *op, unsigned *app, unsigned *err, unsigned *r0)
+{
+	unsigned n = s_trace_cnt < GBA_SD_TRACE_N ? s_trace_cnt : GBA_SD_TRACE_N;
+	unsigned base = s_trace_cnt < GBA_SD_TRACE_N ? 0 : s_trace_cnt % GBA_SD_TRACE_N;
+	if (idx >= n) return 0;
+	{ unsigned i = (base + idx) % GBA_SD_TRACE_N;
+	  *op = s_trace[i].op; *app = s_trace[i].app;
+	  *err = s_trace[i].err; *r0 = s_trace[i].r0; }
+	return 1;
+}
+
 static unsigned sd_read(void *ctx, uint32_t lba, uint32_t count, void *buf)
 {
 	(void)ctx;

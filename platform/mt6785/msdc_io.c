@@ -1092,15 +1092,35 @@ extern void mdelay(unsigned long msec);
  * SD returned nothing (RESP0=0, bad-CRC even at 130kHz). */
 extern int mt6360_ldo_config_interface(unsigned char addr, unsigned char data,
 				       unsigned char mask, unsigned char shift);
+extern int mt6360_ldo_read_interface(unsigned char addr, unsigned char *data,
+				     unsigned char mask, unsigned char shift);
+extern int mt6360_ldo_i2c_probe(void);
 void msdc_ext_sd_power_on(void)
 {
-	/* set voltages first (VOSEL), then assert enable bit6 of each EN register */
+	unsigned char en5 = 0, en3 = 0;
+	/* MUST probe first: it populates the CRC8 table used to frame every I2C
+	 * write/read. Without it the MT6360 rejects the packet (bad CRC) and the
+	 * rails never come up. */
+	mt6360_ldo_i2c_probe();
+	/* Cold power cycle so the card starts from a known-off state. Drop both
+	 * rails, let the card fully discharge, then bring VMCH (card VDD) up first,
+	 * let it settle, then VMC (IO). SD cards require stable VDD before the first
+	 * command; a too-short ramp leaves the card unresponsive (RESP timeout). */
+	mt6360_ldo_config_interface(0x05, 0x00, 0x40, 0); /* VMC  disable */
+	mt6360_ldo_config_interface(0x0b, 0x00, 0x40, 0); /* VMCH disable */
+	mdelay(20);
+	/* set voltages first (VOSEL) */
 	mt6360_ldo_config_interface(0x0f, 0x2a, 0x7f, 0); /* VMCH (LDO5) = 3.0V */
 	mt6360_ldo_config_interface(0x09, 0xaa, 0xff, 0); /* VMC  (LDO3) = 3.0V */
-	mt6360_ldo_config_interface(0x0b, 0x40, 0x40, 0); /* VMCH enable */
-	mdelay(2);
-	mt6360_ldo_config_interface(0x05, 0x40, 0x40, 0); /* VMC enable */
+	mt6360_ldo_config_interface(0x0b, 0x40, 0x40, 0); /* VMCH (card VDD) enable */
 	mdelay(10);
+	mt6360_ldo_config_interface(0x05, 0x40, 0x40, 0); /* VMC (IO) enable */
+	mdelay(30);
+	/* readback so the fastboot probe can confirm the rails asserted */
+	mt6360_ldo_read_interface(0x0b, &en5, 0xff, 0);
+	mt6360_ldo_read_interface(0x05, &en3, 0xff, 0);
+	dprintf(CRITICAL, "sd: MT6360 VMCH EN[0x0b]=0x%02x VMC EN[0x05]=0x%02x\n",
+		(unsigned)en5, (unsigned)en3);
 }
 
 /* Safe READ-ONLY dump of a PMIC register (16-bit) via the real pmic_read_interface.
@@ -1124,5 +1144,16 @@ unsigned msdc1_reg_read(unsigned off)
 unsigned msdc_mmio_read(unsigned addr)
 {
 	return (unsigned)MSDC_READ32(addr);
+}
+
+/* Read a MT6360 sub-PMIC LDO register over I2C (probe first to build the CRC
+ * table). Used by the fastboot sd-probe to confirm the SD rails are enabled. */
+unsigned msdc_mt6360_read(unsigned reg)
+{
+	unsigned char v = 0;
+	mt6360_ldo_i2c_probe();
+	if (mt6360_ldo_read_interface((unsigned char)reg, &v, 0xff, 0) < 0)
+		return 0xffffu; /* I2C/CRC failure sentinel */
+	return (unsigned)v;
 }
 #endif

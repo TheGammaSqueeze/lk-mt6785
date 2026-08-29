@@ -111,6 +111,19 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 				 ldo[k].nm, ldo[k].reg, rv, rv & 1u);
 			fastboot_info(lbuf);
 		}
+		{
+			/* MT6360 sub-PMIC: the real SD rails. bit6 (0x40) = enabled. */
+			extern unsigned msdc_mt6360_read(unsigned reg);
+			unsigned vmch_en = msdc_mt6360_read(0x0b);
+			unsigned vmc_en  = msdc_mt6360_read(0x05);
+			unsigned vmch_v  = msdc_mt6360_read(0x0f);
+			unsigned vmc_v   = msdc_mt6360_read(0x09);
+			snprintf(lbuf, sizeof lbuf,
+				 "sd: MT6360 VMCH EN[0b]=0x%02x(on=%u) VMC EN[05]=0x%02x(on=%u) VMCHv[0f]=0x%02x VMCv[09]=0x%02x",
+				 vmch_en, (vmch_en & 0x40) ? 1u : 0u,
+				 vmc_en, (vmc_en & 0x40) ? 1u : 0u, vmch_v, vmc_v);
+			fastboot_info(lbuf);
+		}
 	}
 
 	if (gba_sd_hw_init() != 0) {
@@ -129,6 +142,19 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 				 msdc1_reg_read(0x34), msdc1_reg_read(0x34) & 0x3f,
 				 msdc1_reg_read(0x3c), msdc1_reg_read(0x40));
 			fastboot_info(lbuf);
+		}
+		{
+			/* dump the command trace: which CMD failed and with what response.
+			 * err codes: 0=OK 1=?(FAIL) look at MMC_ERR_*; op is the raw opcode,
+			 * app=1 means it was an ACMD (preceded by CMD55). */
+			extern int gba_sd_trace_get(unsigned idx, unsigned *op, unsigned *app,
+						    unsigned *err, unsigned *r0);
+			unsigned idx, op, app, err, r0;
+			for (idx = 0; gba_sd_trace_get(idx, &op, &app, &err, &r0); idx++) {
+				snprintf(lbuf, sizeof lbuf, "sd: TRACE[%u] %sCMD%u err=%u resp0=0x%08x",
+					 idx, app ? "A" : "", op, err, r0);
+				fastboot_info(lbuf);
+			}
 		}
 		snprintf(lbuf, sizeof lbuf, "sd: msdc1 init FAILED, mmc rc=%d (no card / power / pinmux)", gba_sd_hw_rc());
 		fastboot_fail(lbuf);
