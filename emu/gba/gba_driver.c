@@ -869,10 +869,16 @@ static int gba_sd_rom_select(void)
 		ayaneo_fill(buf, pitch, 0, 0, (int)W, 6, 0xFF5090F0u);
 		ayaneo_text(buf, pitch, x, 28, 3, 0xFFFFFFFFu, "Select a GBA game");
 		for (i = 0; i < rows && top + i < s_nrom; i++) {
-			int idx = top + i, y = y0 + i * rowh;
+			int idx = top + i, y = y0 + i * rowh, L = 0;
 			unsigned int fg = 0xFFC8D0E0u;
+			char dn[128];
+			const char *nm = s_roms[idx].name;
+			while (nm[L] && L < 127) { dn[L] = nm[L]; L++; }   /* strip a trailing .gba */
+			dn[L] = 0;
+			if (L >= 4 && dn[L-4] == '.' && (dn[L-3]|32) == 'g' && (dn[L-2]|32) == 'b' && (dn[L-1]|32) == 'a')
+				dn[L-4] = 0;
 			if (idx == sel) { ayaneo_fill(buf, pitch, x - 12, y - 4, (int)W - 2 * (x - 12), rowh, 0xFF5090F0u); fg = 0xFF102030u; }
-			ayaneo_text(buf, pitch, x, y, 2, fg, s_roms[idx].name);
+			ayaneo_text(buf, pitch, x, y, 2, fg, dn);
 		}
 		ayaneo_text(buf, pitch, x, (int)H - 28, 2, 0xFF80E080u, "Up/Down: move    A: play");
 		ayaneo_canvas_present();
@@ -951,9 +957,15 @@ static int emu_thread(void *arg)
 			gba_dbg("GBA ERR: SD core_start failed");
 			return 0;
 		}
-		if (romsz)                           /* inject the cartridge battery save (.sav) */
+		if (romsz) {
+			/* inject the cartridge battery save (.sav) */
 			gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
 					(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
+			/* auto-resume the last save state (states/gba/<rom>.st0) unless B is
+			 * held at launch - a no-op if there is no state file. */
+			if (!PRESSED(GPIO_B))
+				state_read(scratch);
+		}
 	} else
 #endif
 	{
