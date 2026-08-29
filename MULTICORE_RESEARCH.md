@@ -2228,3 +2228,14 @@ the blue highlight settles the instant scrolling stops. Cuts the moving frame ~1
 the double barrier can reach ~30fps. Render-cost change only - NO vsync/tearing risk (host cardtile still PASS).
 Awaiting user test: expect scroll ~30fps tear-free; visual tradeoff = the focused card loses its blue highlight
 DURING a fast scroll (dark like the others), popping back on settle - user to judge if acceptable.
+
+### L0 COST ANALYSIS (2026-08-29): fast-pan should suffice; L0 cut is the harder fallback
+The moving-frame L0 render (~8ms) = draw_wp (wallpaper, which PARALLAX-SCROLLS so it cannot be a static cached
+layer) + draw_chrome (static chrome cache blit), both blitted into the framebuffer each frame. Hard to cut
+without restructuring the wallpaper/chrome into additional OVL layers (big, risky). BUT the fast-pan L3 skip cuts
+the OTHER ~9ms (focused-card body) to ~1ms, so the moving frame drops ~17ms -> ~9ms, under one 16.6ms vsync ->
+the tear-free double-barrier should then reach ~30fps WITHOUT needing the L0 cut. So fast-pan alone is the bet.
+IF fast-pan is tested and still ~15fps (frame still >1 vsync from the 8ms L0 + barriers), the next lever is the
+L0: make the static chrome (and/or the slow wallpaper) a persistent OVL layer so the CPU stops re-blitting the
+full 1280x960 background each frame - a larger OVL-layer restructure, deferred until proven necessary. Holding
+for the fast-pan result; no speculative L0 build.
