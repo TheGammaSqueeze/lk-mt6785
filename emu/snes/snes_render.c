@@ -231,6 +231,62 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 				}
 				continue;
 			}
+			/* NEON: unscaled 1:1 straight-RGBA re-blit (card-tile cache -> strip via
+			 * snes_blit_raw). Store 8 fully-opaque source pixels at once; partial/edge
+			 * pixels take the scalar tail (cache_layer premult or source-over blend).
+			 * Only entered for plain, non-565, sustep==65536 - pixel-identical to scalar. */
+			if (plain && !d->rgb565 && sustep == 65536) {
+				const uint32x4_t A = vdupq_n_u32(0xff000000u);
+				X = x0;
+				while (X < x1 && su < sxlo) { su += sustep; X++; }
+				while (X + 8 <= x1) {
+					int ix, k, allop = 1;
+					const uint8_t *sp;
+					if (su + 7 * 65536 >= sxhi) break;
+					ix = su >> 16; sp = srow + (unsigned)ix * 4;
+					for (k = 0; k < 8; k++)
+						if (sp[k * 4 + 3] != 255) { allop = 0; break; }
+					if (!allop) break;
+					{
+						uint8x8x4_t v = vld4_u8(sp);
+						uint16x8_t r16 = vmovl_u8(v.val[0]);
+						uint16x8_t g16 = vmovl_u8(v.val[1]);
+						uint16x8_t b16 = vmovl_u8(v.val[2]);
+						uint32x4_t lo = vorrq_u32(
+							vorrq_u32(A, vshll_n_u16(vget_low_u16(r16), 16)),
+							vorrq_u32(vshll_n_u16(vget_low_u16(g16), 8),
+								  vmovl_u16(vget_low_u16(b16))));
+						uint32x4_t hi = vorrq_u32(
+							vorrq_u32(A, vshll_n_u16(vget_high_u16(r16), 16)),
+							vorrq_u32(vshll_n_u16(vget_high_u16(g16), 8),
+								  vmovl_u16(vget_high_u16(b16))));
+						vst1q_u32(&row[X], lo); vst1q_u32(&row[X + 4], hi);
+					}
+					X += 8; su += 8 * 65536;
+				}
+				for (; X < x1; X++, su += sustep) {
+					int ix, sr, sg, sb, sa;
+					const uint8_t *sp;
+					if (su < sxlo || su >= sxhi) continue;
+					ix = su >> 16; if (ix >= d->img_w) ix = d->img_w - 1;
+					sp = srow + (unsigned)ix * 4;
+					sr = sp[0]; sg = sp[1]; sb = sp[2]; sa = sp[3];
+					if (sa == 0) continue;
+					if (sa == 255) {
+						row[X] = 0xff000000u | ((unsigned)sr << 16)
+						       | ((unsigned)sg << 8) | (unsigned)sb;
+					} else if (t->cache_layer) {
+						BLIT_CACHE_PREMULT(row[X], sr, sg, sb, sa);
+					} else {
+						uint32_t dst = row[X];
+						int dr = (dst >> 16) & 0xff, dg = (dst >> 8) & 0xff, db = dst & 0xff, ia = 255 - sa;
+						dr = (sr * sa + dr * ia + 127) / 255; dg = (sg * sa + dg * ia + 127) / 255; db = (sb * sa + db * ia + 127) / 255;
+						if (dr > 255) dr = 255; if (dg > 255) dg = 255; if (db > 255) db = 255;
+						row[X] = 0xff000000u | ((unsigned)dr << 16) | ((unsigned)dg << 8) | (unsigned)db;
+					}
+				}
+				continue;
+			}
 #endif
 			for (X = x0; X < x1; X++, su += sustep) {
 				int sr, sg, sb, sa, af, ix;

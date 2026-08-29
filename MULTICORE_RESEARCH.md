@@ -2263,3 +2263,34 @@ flicker: (1) get the SNESX debug capture (lk_a_snes_fastpan2_debug.img) and do a
 regress (my blind handoff made a black blank); (2) accept the slight residual flicker (it is minor; fps was the
 priority and is addressed by fastpan2). Deferred to the user's fps confirmation + flicker capture. No blind
 change this cycle - the display present is finicky and blind edits have backfired repeatedly.
+
+### NAV-REBUILD ATTACK: RGBA NEON tile re-blit (2026-08-29, user target = "Nav rebuild 35ms")
+User picked the nav rebuild as the next target: every focus change rebuilds the whole L2 card strip via
+build_cardcache (drw ~30ms drawing ~7 cards), which caps press latency and held-scroll. The pre-rendered-tile
+path (AYANEO_CARDTILES: render each normal card ONCE, blit the tile on every rebuild instead of re-rendering
+boxart) already exists and is host-exact, but was slow on device because its tile re-blit (snes_blit_raw, RGBA8888,
+unscaled) fell to the SCALAR blit loop - the NEON fast path was rgb565-only. So the tiled rebuild was not actually
+cheaper than a full re-render. FIX: added an unscaled 1:1 straight-RGBA NEON fast path in blit() (snes_render.c),
+mirroring the existing 565 block - 8 fully-opaque source pixels stored per iteration (vld4_u8 -> 0xAARRGGBB),
+partial/edge pixels take the scalar tail (cache_layer premult or source-over). Entered only for plain, non-565,
+sustep==65536 (exactly what snes_blit_raw emits), so it is pixel-identical to the scalar path for every caller.
+
+VALIDATION (qemu-arm-static, cortex-a55 NEON = the device little core, build_host_arm.sh + host_render cardtile):
+- With the new path ON vs OFF: byte-identical (aspect0 diff_px=138 in both cases) => the NEON block reproduces the
+  scalar output exactly. It is not the source of any diff.
+- x86 scalar baseline: aspect0 (native) PASS diff_px=0; aspect1 (4:3) CHECK diff_px~53k (the known <=1px resample
+  the tiled path bakes into 4:3 - pre-existing, NOT from this change).
+- The aspect0 ARM 138px diff is a PRE-EXISTING NEON rounding difference between draw_carousel and the tiled path
+  (present with the new code disabled); small but visible. So even native cardtile is not bit-exact under NEON.
+
+IMPLICATION / DECISION NEEDED: this makes the CARDTILES rebuild genuinely cheap (blit instead of re-render), which
+is the nav-rebuild win - but only in NATIVE aspect, and even there with a ~138px rounding diff; in 4:3 (the likely
+default) the tiles resample visibly. So CARDTILES is NOT flipped on by default (shipped release unchanged & safe).
+Built TWO signed images this cycle:
+  - lk_a_snes_signed.img     : default (my blit change compiled in but UNUSED - CARDTILES off; behaviour identical
+                               to the last release, safe to flash).
+  - lk_a_snes_cardtiles.img  : AYANEO_CARDTILES=yes - fast native nav rebuild, for the user to A/B the press/scroll
+                               latency. Expect faster rebuild; watch for boxart shimmer in 4:3.
+Both staged to /mnt/c/pairmini. A fully 4:3-exact default-path nav-rebuild win needs the bigger "wide-strip anchor"
+refactor (render a fixed-world window, pan by src_x, rebuild only on window exit) which must solve the focus-hole
+double-contribution - higher risk, deferred for the user's go-ahead given repeated blind-display backfires.
