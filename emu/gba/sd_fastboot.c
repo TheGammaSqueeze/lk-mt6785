@@ -80,6 +80,15 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 				fastboot_info(lbuf);
 			}
 		}
+		/* verify the msdc1 clock mux took (CLK_CFG_4=0x10000080, msdc1=[18:16];
+		 * my fix writes 4 = MSDC1_CLKSRC_200MHZ). Also CLK_CFG_UPDATE=0x10000004. */
+		{
+			extern unsigned msdc_mmio_read(unsigned addr);
+			unsigned cc4 = msdc_mmio_read(0x10000080);
+			snprintf(lbuf, sizeof lbuf, "sd: TOPCK CLK_CFG_4=0x%08x msdc1mux=%u (want 4)",
+				 cc4, (cc4 >> 16) & 0x7);
+			fastboot_info(lbuf);
+		}
 		msdc_ext_sd_power_on();   /* attempt to enable VMCH(0x1cd8)+VMC(0x1cc4) */
 		for (k = 0; k < (int)(sizeof ldo / sizeof ldo[0]); k++) {
 			unsigned rv = msdc_pmic_read(ldo[k].reg);

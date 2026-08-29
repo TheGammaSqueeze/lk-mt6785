@@ -1100,4 +1100,10 @@ unsigned msdc1_reg_read(unsigned off)
 {
 	return (unsigned)MSDC_READ32(0x11240000u + off);
 }
+
+/* Generic safe MMIO read (e.g. TOPCKGEN clock-mux registers). Read-only. */
+unsigned msdc_mmio_read(unsigned addr)
+{
+	return (unsigned)MSDC_READ32(addr);
+}
 #endif
