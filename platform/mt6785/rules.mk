@@ -609,6 +609,12 @@ ifeq ($(MTK_MT6360_PMIC_SUPPORT),yes)
 	DEFINES += MTK_MT6360_PMIC_SUPPORT
 endif
 
+# AYANEO GBA-SD: the external microSD power rails (VMC/LDO3, VMCH/LDO5) live on the
+# MT6360 sub-PMIC, so msdc_ext_sd_power_on() needs the MT6360 LDO I2C driver linked.
+ifeq ($(AYANEO_GBA_SD),yes)
+	MTK_MT6360_LDO_SUPPORT := yes
+endif
+
 ifeq ($(MTK_MT6360_LDO_SUPPORT),yes)
 	OBJS += $(LOCAL_DIR)/mt6360_ldo.o
 	DEFINES += MTK_MT6360_LDO_SUPPORT

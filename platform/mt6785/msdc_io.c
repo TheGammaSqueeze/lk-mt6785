@@ -1079,20 +1079,27 @@ extern U32 pmic_read_interface(U32 RegNum, U32 *val, U32 MASK, U32 SHIFT);
 extern U32 pmic_config_interface(U32 RegNum, U32 val, U32 MASK, U32 SHIFT);
 extern void mdelay(unsigned long msec);
 
-/* The external microSD is powered by VMCH (card) + VMC (IO). Registers taken from
- * the RUNNING kernel's mt6358-regulator (which powers this board's SD and reports
- * VMCH=3.0V, VMC=1.86V enabled): VMCH_CON0=0x1cd8 bit0, VMC_CON0=0x1cc4 bit0.
- * The LK MT6359 header mislabels 0x1cd8 as VSIM2, but the kernel proves 0x1cd8 is
- * the SD card rail on this hardware. Enable both (leave VOSEL at the power-up
- * default; add explicit voltage only if the card needs it). Verified via the
- * fastboot sd-probe PMIC dump (0x1cd8/0x1cc4 read back enabled after this). */
+/* ROOT CAUSE FIX: the external microSD power rails are NOT on the main MT6359
+ * PMIC - they are on the MT6360 sub-PMIC (I2C), which LK probes at boot but LK's
+ * pmic_config_interface (MT6359/pwrap) never touches. Confirmed from the running
+ * kernel: mt6360.dtsi ldo3 = "VMC" (SD IO), ldo5 = "VMCH" (SD card VDD, 2.7-3.6V).
+ * From drivers/.../mt6360/ldo/mt6360_ldo_i2c.c:
+ *   LDO3 (VMC):  vsel_reg=0x09 mask=0xff (range1), enable_reg=0x05 bit6 (0x40)
+ *   LDO5 (VMCH): vsel_reg=0x0f mask=0x7f (range2), enable_reg=0x0b bit6 (0x40)
+ * Non-UHS SDR bus => both rails at 3.0V:
+ *   range1 3.00V => vsel 0xaa (VMC/LDO3), range2 3.00V => vsel 0x2a (VMCH/LDO5).
+ * Previously this wrote MT6359 0x1cd8 (VSIM2) which never powered the card, so the
+ * SD returned nothing (RESP0=0, bad-CRC even at 130kHz). */
+extern int mt6360_ldo_config_interface(unsigned char addr, unsigned char data,
+				       unsigned char mask, unsigned char shift);
 void msdc_ext_sd_power_on(void)
 {
-	/* NOTE: 0x1cd8 is likely VSIM2 on this MT6359 (LK header), not VMCH - the card
-	 * is powered externally regardless. Kept as a harmless no-op-ish enable; a
-	 * VMCH power-cycle experiment did not change the bad-CRC, so power is not the
-	 * lever. The card responds; the open issue is response-CRC/signal. */
-	pmic_config_interface(0x1cd8, 1, 0x1, 0);
+	/* set voltages first (VOSEL), then assert enable bit6 of each EN register */
+	mt6360_ldo_config_interface(0x0f, 0x2a, 0x7f, 0); /* VMCH (LDO5) = 3.0V */
+	mt6360_ldo_config_interface(0x09, 0xaa, 0xff, 0); /* VMC  (LDO3) = 3.0V */
+	mt6360_ldo_config_interface(0x0b, 0x40, 0x40, 0); /* VMCH enable */
+	mdelay(2);
+	mt6360_ldo_config_interface(0x05, 0x40, 0x40, 0); /* VMC enable */
 	mdelay(10);
 }
 
