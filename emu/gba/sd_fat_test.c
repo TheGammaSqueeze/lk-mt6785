@@ -31,6 +31,7 @@ unsigned long mmc_wrap_bwrite(int d, unsigned long b, unsigned long c, const voi
 }
 /* the SD host is "always up" in the host test (the image file is the card) */
 int mmc_legacy_init(int verbose) { (void)verbose; return 0; }
+void msdc_ext_sd_power_on(void) { }
 
 int main(int argc, char **argv)
 {

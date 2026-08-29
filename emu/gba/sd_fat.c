@@ -13,6 +13,10 @@ extern unsigned long mmc_wrap_bwrite(int dev_num, unsigned long blknr,
  * a separate host (msdc1) that nothing else initializes, so we must do it here.
  * verbose=2 -> id=1 = msdc1 (the removable SD slot). Returns 0 (MMC_ERR_NONE) ok. */
 extern int mmc_legacy_init(int verbose);
+/* Enable the external microSD LDOs (VMCH card power + VMC IO) - the LK build does
+ * not power them otherwise (only the eMMC boot rail is left on by the preloader),
+ * so mmc_init(1) would find no card. Defined in platform/mt6785/msdc_io.c. */
+extern void msdc_ext_sd_power_on(void);
 
 /* mmc_legacy_init(1) in platform.c -> id = verbose-1 = 0, so the external microSD
  * (MMC_SLOT=1 hardware; UFS is the boot device, so this MMC slot is the card) is
@@ -48,6 +52,7 @@ static int s_sd_hw_rc = 999;      /* last mmc_legacy_init return code (for diagn
 int gba_sd_hw_init(void)
 {
 	if (s_sd_hw_inited) return 0;
+	msdc_ext_sd_power_on();                  /* power the SD LDOs first (LK leaves them off) */
 	s_sd_hw_rc = mmc_legacy_init(SD_MMC_VERBOSE);
 	if (s_sd_hw_rc != 0) return -1;   /* no card / init failed */
 	s_sd_hw_inited = 1;

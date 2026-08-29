@@ -1029,3 +1029,30 @@ void msdc_apply_timing(unsigned int id)
 	}
 }
 #endif
+
+/* ---------------------------------------------------------------------------
+ * External microSD (msdc1) LDO power-on for the LK build.
+ *
+ * The stock msdc power path (msdc_card_power/msdc_host_power/hwPowerOn) is
+ * compiled ONLY for MMC_MSDC_DRV_CTP - the comment there says "LK need not touch
+ * power since it is default on". That holds for the eMMC boot rail (msdc0) which
+ * the preloader leaves powered, but the EXTERNAL microSD LDOs (VMCH = card power,
+ * VMC = IO power) are never enabled by the preloader because the SD is not the
+ * boot device. So on an LK build the microSD gets no power and mmc_init(1) fails
+ * to identify any card. Enable VMCH + VMC at 3.0V here before bringing up msdc1.
+ * ------------------------------------------------------------------------- */
+#if defined(MMC_MSDC_DRV_LK) && !defined(FPGA_PLATFORM)
+extern U32 pmic_config_interface(U32 RegNum, U32 val, U32 MASK, U32 SHIFT);
+extern void mdelay(unsigned long msec);
+
+void msdc_ext_sd_power_on(void)
+{
+	/* VMCH = card power rail -> 3.0V, enable */
+	pmic_config_interface(REG_VMCH_VOSEL, VMCH_VOSEL_3V, MASK_VMCH_VOSEL, SHIFT_VMCH_VOSEL);
+	pmic_config_interface(REG_VMCH_EN, 1, MASK_VMCH_EN, SHIFT_VMCH_EN);
+	/* VMC = IO rail -> 3.0V, enable */
+	pmic_config_interface(REG_VMC_VOSEL, VMC_VOSEL_3V, MASK_VMC_VOSEL, SHIFT_VMC_VOSEL);
+	pmic_config_interface(REG_VMC_EN, 1, MASK_VMC_EN, SHIFT_VMC_EN);
+	mdelay(10);   /* let the rails settle before card identification */
+}
+#endif
