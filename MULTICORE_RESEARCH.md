@@ -2192,3 +2192,16 @@ tear-free + no enter/exit flicker, 60fps idle, ~15fps scroll (the tear-free pric
 The 15fps scroll is the honest ceiling of this approach; getting to 30fps tear-free requires cutting the moving-
 frame CPU cost (the L3 cursor re-render is ~9ms/frame) so render+one-barrier fits 2 vsyncs - a later optimization,
 NOT another vsync-timing change (those tore). notear2/sbscroll are superseded; use notear3.
+
+### FPS-CEILING ANALYSIS (2026-08-29): the moving-frame cost is the L3 cursor layer, not vsync
+notear3 flashed (release, silent boot log clean, no errors) - awaiting the user's visual tear-free confirmation.
+For the scroll fps (stuck ~15fps tear-free): from the debug present breakdown the moving frame = L0 render (~8ms)
++ L3 cursor layer (~9ms) + double-barrier present. The L3 layer (snes_menu_render_cursor_layer) is ALREADY
+band-limited (bbox clear+unpremult over the card band, not full panel), and breaks down as: focused-CARD render
+(draw_focus_card) ~4.4ms + unpremult ~4ms + cursor ~0.3ms. So the ~9ms is the pulsing focused card re-rendered
+every frame + its unpremult.
+FUTURE FPS LEVER (do only after tear-free is locked, and it is a RENDER-COST cut, NOT a vsync change - those all
+tore): during a PURE PAN (cont_shift animating, focus unchanged) the focused card is identical frame-to-frame
+except the slow cursor pulse; skip/throttle the draw_focus_card re-render + unpremult on pan frames (reuse the L3
+buffer, or update the pulse less often), cutting the moving frame ~17ms->~13ms so render+one-barrier can approach
+30fps. Deferred until the user confirms notear3 is tear-free; will implement carefully + measure, not blind.
