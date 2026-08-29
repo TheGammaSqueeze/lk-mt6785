@@ -46,6 +46,25 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 	int rc, i, nr;
 	(void)arg; (void)data; (void)sz;
 
+	/* Safe (read-only) PMIC LDO dump so we can see which rails are powered at LK
+	 * time BEFORE the msdc1 bring-up. VEMC feeds the eMMC (boots) so it must read
+	 * enabled = a known-good reference; the external SD rail should be identifiable
+	 * by comparison. bit0 of each *_CON0 is the SW enable. Raw MT6359 offsets. */
+	{
+		extern unsigned msdc_pmic_read(unsigned reg);
+		static const struct { const char *nm; unsigned reg; } ldo[] = {
+			{ "VEMC(eMMC)", 0x1cb8 }, { "VSIM1", 0x1cc8 }, { "VSIM2", 0x1cd8 },
+			{ "VIO18", 0x1ca8 }, { "VIO28", 0x1d5a }, { "VUSB", 0x1d08 },
+		};
+		int k;
+		for (k = 0; k < (int)(sizeof ldo / sizeof ldo[0]); k++) {
+			unsigned rv = msdc_pmic_read(ldo[k].reg);
+			snprintf(lbuf, sizeof lbuf, "sd: PMIC %-10s CON0[%04x]=0x%04x en=%u",
+				 ldo[k].nm, ldo[k].reg, rv, rv & 1u);
+			fastboot_info(lbuf);
+		}
+	}
+
 	if (gba_sd_hw_init() != 0) {
 		snprintf(lbuf, sizeof lbuf, "sd: msdc1 init FAILED, mmc rc=%d (no card / power / pinmux)", gba_sd_hw_rc());
 		fastboot_fail(lbuf);

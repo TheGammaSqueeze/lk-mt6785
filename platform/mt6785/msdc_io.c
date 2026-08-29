@@ -1049,4 +1049,19 @@ void msdc_ext_sd_power_on(void)
 {
 	/* intentional no-op for now - see the note above (empirical step first) */
 }
+
+/* Safe READ-ONLY dump of a PMIC register (16-bit) via the real pmic_read_interface
+ * (this file otherwise #defines it to an empty macro for the non-CTP build). Reads
+ * never change PMIC state, so this is safe to call from the fastboot probe to see
+ * which LDOs are enabled at LK time (e.g. compare the SD rails against VEMC, which
+ * must be on because the eMMC boots). RegNum is the raw MT6359 register offset
+ * (MT6359_PMIC_REG_BASE == 0). */
+#undef pmic_read_interface
+extern U32 pmic_read_interface(U32 RegNum, U32 *val, U32 MASK, U32 SHIFT);
+unsigned msdc_pmic_read(unsigned reg)
+{
+	U32 v = 0;
+	pmic_read_interface((U32)reg, &v, 0xFFFF, 0);
+	return (unsigned)v;
+}
 #endif
