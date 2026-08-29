@@ -616,7 +616,6 @@ static int s_tiles_ready;    /* the pre-rendered normal-card tiles have been bui
 #endif
 static int s_l3_flip;        /* L3 live-buffer index (flips every frame) */
 static int s_was_layered;    /* previous frame presented via the OVL layers */
-static int s_leave_pending;  /* leaving layered: L2 kept 1 extra frame, disabled next (flicker fix) */
 
 /* ---- frame-time telemetry (top-left readout) ---- */
 extern unsigned (*g_perf_tick)(void);  /* snes_menu.c per-phase profiler hook */
@@ -878,10 +877,7 @@ static int snes_emu_thread(void *arg)
 		 * known-good 30fps tear-free scroll before the OVL work. Idle stays 60fps. */
 		if (s_menu.cont_shift != 0.0f) layered = 0;
 #endif
-		/* ovl_split (skip cards+cursor in L0) ONLY in STEADY layered. On the ENTERING frame
-		 * (was !layered) draw them in L0 too, so during the non-atomic layer-enable the cards
-		 * are in BOTH L0 and L2 (matching) - nothing flashes. Settles to L2-only next frame. */
-		t.ovl_split = layered && s_was_layered;
+		t.ovl_split = layered;
 #ifdef AYANEO_BIGCORE_EXPT
 		/* Split the render across cpu0 + the cached worker when it is up and the
 		 * chrome cache is already built (so the two cores never build it at once).
@@ -1036,23 +1032,12 @@ static int snes_emu_thread(void *arg)
 				snes_present_log(rebuilt, (t_ph1 - t_ph0)/13u, (t_ph2 - t_ph1)/13u,
 						 (t_ph3 - t_ph2)/13u);
 #endif
-				s_was_layered = 1; s_leave_pending = 0;   /* re-entered: cancel any pending leave-disable */
+				s_was_layered = 1;
 			} else if (s_was_layered) {
-				/* LEAVING layered - CLEAN HANDOFF. No CMDQ => the L0-update and L2/L3-disable
-				 * in one config are NOT atomic, so disabling L2 the same frame L0 first gains
-				 * the cards can flash. This frame the full L0 render (ovl_split forced off, see
-				 * the ovl_split assignment) already carries the cards + cursor at the settled
-				 * position, so KEEP the L2 card layer up ONE more frame (its cards match L0's ->
-				 * invisible double) and disable only L3 (cursor now in L0). Nothing vanishes. */
-				ayaneo_canvas_present_layers(
-					SNES_OVL_L2_PA + (s_l2_flip ? l2_size : 0u),
-					SNES_L2_MARGIN, 0, 0u, 0, 0);
-				s_was_layered = 0; s_leave_pending = 1;
-			} else if (s_leave_pending) {
-				/* second leave frame: L0 solidly holds the cards now, so drop L2. Keeps
-				 * s_cc_valid (L2 untouched in single-buffer states -> reuse on return). */
+				/* leaving the layered state: disable the upper OVL layers ONCE, forced to a
+				 * vblank boundary (see the transition skip_vsync above), so no stale linger. */
 				ayaneo_canvas_present_layers(0u, 0, 0, 0u, 0, 0);
-				s_leave_pending = 0;
+				s_was_layered = 0;
 			} else {
 				/* steady single-buffer state (moving carousel, submenu, resume): the
 				 * plain present, exactly the tear-free pre-layering path - it never
