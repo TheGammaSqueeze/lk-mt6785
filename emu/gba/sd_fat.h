@@ -25,4 +25,8 @@ typedef struct {
  * by name. Returns the count (<= max). */
 int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max);
 
+/* Read a ROM (identified by its cached first_clus/size) into dst, up to cap bytes.
+ * Returns the number of bytes read (== min(size,cap) on success). */
+uint32_t gba_sd_load_rom(fat_vol *v, const gba_rom_entry *r, unsigned char *dst, uint32_t cap);
+
 #endif

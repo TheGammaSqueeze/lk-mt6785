@@ -73,3 +73,12 @@ int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max)
 	}
 	return n;
 }
+
+uint32_t gba_sd_load_rom(fat_vol *v, const gba_rom_entry *r, unsigned char *dst, uint32_t cap)
+{
+	fat_file f;
+	uint32_t n = r->size;
+	f.v = v; f.first_clus = r->first_clus; f.size = r->size;   /* reuse the cached chain head */
+	if (n > cap) n = cap;
+	return fat_read(&f, 0, dst, n);
+}
