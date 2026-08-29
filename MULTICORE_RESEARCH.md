@@ -2180,3 +2180,15 @@ Test v2 first. If v2 scroll is 30fps tear-free -> ship v2 (keeps the OVL scroll 
 tears -> flash sbscroll (guaranteed-original scroll behaviour). Both include the enter/exit flicker handoff fix.
 Fallback risk: sbscroll toggles layered<->single on every scroll start/stop, so it leans harder on the handoff
 fix; if the toggle itself flickers, we keep the OVL scroll and instead chase the presync tearing directly.
+
+### PRESENT v3 - BACK TO TEAR-FREE (2026-08-29): presync + sb-scroll both tore, reverted
+User: both notear2 (presync) and sbscroll TORE a lot on menu movement. Diagnosis: (1) presync (pre-config vblank
+wait) does NOT prevent tearing on this HW - only the POST-swap vblank wait does; (2) my enter-overlap
+(ovl_split = layered && s_was_layered) made the ENTER transition frame do a heavy full-L0 render + OVL layer
+enable, but it was not forced to vsync -> tore on every carousel enter (= "lots of tearing on menu movements").
+FIX (v3, lk_a_snes_notear3_signed.img): presync disabled; post-swap vblank sync on moving (pan/rebuild) AND on
+every enter/leave TRANSITION frame; skip only steady idle. Keeps the enter/leave flicker handoff. Expected:
+tear-free + no enter/exit flicker, 60fps idle, ~15fps scroll (the tear-free price of the OVL double-barrier).
+The 15fps scroll is the honest ceiling of this approach; getting to 30fps tear-free requires cutting the moving-
+frame CPU cost (the L3 cursor re-render is ~9ms/frame) so render+one-barrier fits 2 vsyncs - a later optimization,
+NOT another vsync-timing change (those tore). notear2/sbscroll are superseded; use notear3.
