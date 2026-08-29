@@ -88,8 +88,8 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 			snprintf(lbuf, sizeof lbuf, "sd: msdc1 MODE16=0x%08x MODE17=0x%08x",
 				 msdc_mmio_read(0x10005400), msdc_mmio_read(0x10005410));
 			fastboot_info(lbuf);
-			snprintf(lbuf, sizeof lbuf, "sd: msdc1 PUPD0=0x%08x R0=0x%08x R1=0x%08x",
-				 msdc_mmio_read(0x11C20060), msdc_mmio_read(0x11C20080), msdc_mmio_read(0x11C20090));
+			snprintf(lbuf, sizeof lbuf, "sd: msdc1 IES=0x%08x (want 3f) SMT=0x%08x",
+				 msdc_mmio_read(0x11C20030), msdc_mmio_read(0x11C200B0));
 			fastboot_info(lbuf);
 		}
 		/* verify the msdc1 clock mux took (CLK_CFG_4=0x10000080, msdc1=[18:16];
@@ -97,8 +97,11 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 		{
 			extern unsigned msdc_mmio_read(unsigned addr);
 			unsigned cc4 = msdc_mmio_read(0x10000080);
-			snprintf(lbuf, sizeof lbuf, "sd: TOPCK CLK_CFG_4=0x%08x msdc1mux=%u (want 4)",
+			snprintf(lbuf, sizeof lbuf, "sd: TOPCK CLK_CFG_4=0x%08x msdc1mux=%u",
 				 cc4, (cc4 >> 16) & 0x7);
+			fastboot_info(lbuf);
+			snprintf(lbuf, sizeof lbuf, "sd: msdc1 PB0=0x%08x PB1=0x%08x (want 403c0006/fffa4340)",
+				 msdc_mmio_read(0x112400b0), msdc_mmio_read(0x112400b4));
 			fastboot_info(lbuf);
 		}
 		msdc_ext_sd_power_on();   /* attempt to enable VMCH(0x1cd8)+VMC(0x1cc4) */

@@ -2989,6 +2989,15 @@ int msdc_init(int id, struct mmc_host *host, int clksrc, int mode)
 		MSDC_SET_FIELD(SDC_CFG, SDC_CFG_INSWKUP, 0);
 	}
 
+	/* AYANEO GBA-SD: LK's default PATCH_BIT config makes every msdc1 command
+	 * response fail CRC (rc=6). Force the values the running kernel uses on this
+	 * exact hardware (read live via /proc/msdc_debug) at the very END of init so
+	 * nothing overwrites them before card identification. host 1 = the SD only. */
+	if (host->id == 1) {
+		MSDC_WRITE32(host->base + 0xb0, 0x403c0006u);   /* MSDC_PATCH_BIT0 */
+		MSDC_WRITE32(host->base + 0xb4, 0xfffa4340u);   /* MSDC_PATCH_BIT1 */
+	}
+
 	msdc_pr_info("[SD%d] Host controller intialization done\n", id);
 	return 0;
 }

@@ -534,13 +534,8 @@ void msdc_config_clksrc(struct mmc_host *host, int clksrc)
 		if (host->id == 1) {
 			MSDC_SET_FIELD((TOPCKGEN_BASE + 0x080), 0x7 << 16, host->pll_mux_clk);
 			MSDC_WRITE32(TOPCKGEN_BASE + 0x04, 0x07FFFFFF);
-			/* AYANEO GBA-SD: LK sets msdc1 PATCH_BIT0/1 to values that make every
-			 * command response fail CRC (rc=6). The running kernel uses these on
-			 * this exact hardware (read via /proc/msdc_debug). Force them here,
-			 * before card identification, so the SD actually talks. 0x11240000 =
-			 * msdc1 base, +0xb0=PATCH_BIT0, +0xb4=PATCH_BIT1. */
-			MSDC_WRITE32(0x11240000u + 0xb0, 0x403c0006u);
-			MSDC_WRITE32(0x11240000u + 0xb4, 0xfffa4340u);
+			/* PATCH_BIT override moved to end of msdc_init (msdc.c) so it is not
+			 * clobbered by later init config. */
 		}
 	#endif
 	}
@@ -917,6 +912,13 @@ void msdc_gpio_and_pad_init(struct mmc_host *host)
 {
 	/* set smt enable */
 	msdc_set_smt(host, 1);
+
+	/* AYANEO GBA-SD: enable the pad INPUT (IES) too. Stock LK sets SMT but never
+	 * IES here, and msdc_apply_timing (which sets IES) only runs for the eMMC
+	 * (host 0). So msdc1's CMD/DAT input buffers stayed disabled and the
+	 * controller could not read the card's responses -> every response bad-CRC
+	 * (rc=6). Enabling IES is idempotent for the already-working eMMC. */
+	msdc_set_ies(host, 1);
 
 	/* set pull enable */
 	msdc_pin_config(host, MSDC_PIN_PULL_UP);
