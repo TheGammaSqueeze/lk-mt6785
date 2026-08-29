@@ -2534,3 +2534,12 @@ Target 0123456789ABCDEF still off ADB (only a28c0e0e). putty.log unchanged since
 Software paths CLOSED; all buildable experiments already staged (mcucfg-diff script, nosspm img, dvm img). Open
 items a (mcucci/mcucfg hotplug diff) and d (test the staged DVM/TLBI-ISH lever) need the live device. Nothing new
 to build. Idle-waiting; the 3 staged HW-gated actions run in runbook order on return.
+
+### HOLD (2026-08-29, cycles 16+, no HW): research parked pending device return
+No state change across recent cycles: target 0123456789ABCDEF off ADB, putty.log unchanged since 14:41, no new
+UART BC lines. Software-side is CLOSED (all paths enumerated + closed or HW-gated; see CLOSURE + ROOT CAUSE). The
+only remaining actions need the live device (regpoke + hotplug): (a) whole-aff1=1 mcucci/mcucfg hotplug diff and
+(d) testing the staged DVM/TLBI-ISH lever. All buildable experiments are already staged (mcucfg-diff script,
+nosspm img, dvm img). To avoid churning identical heartbeats, this thread is PARKED: it resumes on real input -
+new UART BC lines to classify, or the device returning to ADB to run the 3 staged HW-gated actions in runbook
+order. No further no-op heartbeat commits will be added while the state is unchanged.
