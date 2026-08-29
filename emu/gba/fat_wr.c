@@ -245,43 +245,6 @@ int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
 		}
 	}
 
-	/* Replace: delete any existing entry (long or short) with the same name. */
-	{
-		dir_iter it; uint32_t lba, o; uint8_t *rec;
-		uint32_t g_lba[24], g_off[24]; int gn = 0;
-		char lfnacc[300]; int lfnlen = 0;
-		static const int lo[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
-		di_init(&it, v, cluster, root_sec, root_left);
-		while (di_next(&it, &lba, &o, &rec)) {
-			if (rec[0] == 0x00) break;
-			if (rec[0] == 0xE5) { gn = 0; lfnlen = 0; continue; }
-			if (rec[11] == 0x0F) {                       /* LFN part */
-				int seq = rec[0] & 0x1F, cb = (seq - 1) * 13, k;
-				if (gn < 24) { g_lba[gn] = lba; g_off[gn] = o; gn++; }
-				for (k = 0; k < 13; k++) {
-					unsigned u = rec[lo[k]] | (rec[lo[k] + 1] << 8);
-					if (cb + k < 299) lfnacc[cb + k] = (u && u != 0xFFFF) ? (char)(u & 0x7f) : 0;
-				}
-				if (cb + 13 > lfnlen) lfnlen = cb + 13;
-				continue;
-			}
-			if (rec[11] & 0x08) { gn = 0; lfnlen = 0; continue; }   /* volume label */
-			{
-				char eff[300]; int k, match;
-				if (gn > 0) { for (k = 0; k < lfnlen && lfnacc[k]; k++) eff[k] = lfnacc[k]; eff[k] = 0; }
-				else n11_to_name(rec, eff);
-				match = ci_eq(eff, name);
-				if (match) {
-					uint32_t of = ((uint32_t)rd16(rec + 20) << 16) | rd16(rec + 26);
-					for (k = 0; k < gn; k++) slot_del(v, g_lba[k], g_off[k]);
-					slot_del(v, lba, o);
-					if (of >= 2) free_chain(v, of);
-				}
-				gn = 0; lfnlen = 0;
-			}
-		}
-	}
-
 	/* Find need_slots consecutive free slots and write LFN entries + short entry. */
 	{
 		dir_iter it; uint32_t lba, o; uint8_t *rec;
@@ -340,6 +303,48 @@ int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
 			wr16(r + 26, (uint16_t)(first & 0xFFFF));
 			wr32(r + 28, len);
 			if (wsec(v, rl[idx], db) != 0) { free_chain(v, first); return -9; }
+		}
+	}
+
+	/* Replace: NOW that the new entry is fully on disk, delete any OLD entry
+	 * (long or short) with the same name and free its chain. Doing this AFTER
+	 * the new write means a power loss at any point leaves the old file intact
+	 * (before the new dirent lands) or both entries valid (after) - the save is
+	 * never lost to a mid-write crash. The just-written entry is identified by
+	 * its data chain head `first` and skipped so we do not delete ourselves. */
+	{
+		dir_iter it; uint32_t lba, o; uint8_t *rec;
+		uint32_t g_lba[24], g_off[24]; int gn = 0;
+		char lfnacc[300]; int lfnlen = 0;
+		static const int lo[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
+		di_init(&it, v, cluster, root_sec, root_left);
+		while (di_next(&it, &lba, &o, &rec)) {
+			if (rec[0] == 0x00) break;
+			if (rec[0] == 0xE5) { gn = 0; lfnlen = 0; continue; }
+			if (rec[11] == 0x0F) {                       /* LFN part */
+				int seq = rec[0] & 0x1F, cb = (seq - 1) * 13, k;
+				if (gn < 24) { g_lba[gn] = lba; g_off[gn] = o; gn++; }
+				for (k = 0; k < 13; k++) {
+					unsigned u = rec[lo[k]] | (rec[lo[k] + 1] << 8);
+					if (cb + k < 299) lfnacc[cb + k] = (u && u != 0xFFFF) ? (char)(u & 0x7f) : 0;
+				}
+				if (cb + 13 > lfnlen) lfnlen = cb + 13;
+				continue;
+			}
+			if (rec[11] & 0x08) { gn = 0; lfnlen = 0; continue; }   /* volume label */
+			{
+				char eff[300]; int k, match;
+				uint32_t of = ((uint32_t)rd16(rec + 20) << 16) | rd16(rec + 26);
+				if (gn > 0) { for (k = 0; k < lfnlen && lfnacc[k]; k++) eff[k] = lfnacc[k]; eff[k] = 0; }
+				else n11_to_name(rec, eff);
+				match = ci_eq(eff, name);
+				if (match && of != first) {          /* never delete the entry we just wrote */
+					for (k = 0; k < gn; k++) slot_del(v, g_lba[k], g_off[k]);
+					slot_del(v, lba, o);
+					if (of >= 2) free_chain(v, of);
+				}
+				gn = 0; lfnlen = 0;
+			}
 		}
 	}
 
