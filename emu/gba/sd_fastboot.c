@@ -47,7 +47,8 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 	(void)arg; (void)data; (void)sz;
 
 	if (gba_sd_hw_init() != 0) {
-		fastboot_fail("sd: microSD host (msdc1) init failed - no card in slot, or slot init error");
+		snprintf(lbuf, sizeof lbuf, "sd: msdc1 init FAILED, mmc rc=%d (no card / power / pinmux)", gba_sd_hw_rc());
+		fastboot_fail(lbuf);
 		return;
 	}
 	fastboot_info("sd: msdc1 (external microSD) init OK");

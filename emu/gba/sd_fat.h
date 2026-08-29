@@ -14,6 +14,8 @@
 int gba_sd_mount(fat_vol *v);
 /* Bring up the external microSD host (msdc1) once; 0 = card present + identified. */
 int gba_sd_hw_init(void);
+/* Raw return code of the last microSD host init (mmc error code) - diagnostics. */
+int gba_sd_hw_rc(void);
 /* Raw sector read from the microSD (call gba_sd_hw_init first). */
 unsigned gba_sd_bread(uint32_t lba, uint32_t count, void *buf);
 int gba_sd_load_bios(fat_vol *v, unsigned char *dst);

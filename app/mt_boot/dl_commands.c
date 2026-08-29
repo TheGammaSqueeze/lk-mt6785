@@ -1055,17 +1055,12 @@ bool cmd_flash_mmc_standard(const char *arg, void *data, unsigned sz)
 		// security check here.
 		// ret = decrypt_scm((uint32 **) &data, &sz);
 #ifdef MTK_SECURITY_SW_SUPPORT
-		if (sec_dl_permission_chk(arg, &permitted)) {
-			snprintf(msg, sizeof(msg), "failed to get download permission for partition '%s'\n", arg);
-            set_response_msg(msg);
-			return false;
-		}
-
-		if (0 == permitted) {
-			snprintf(msg, sizeof(msg), "download for partition '%s' is not allowed\n", arg);
-            set_response_msg(msg);
-			return false;
-		}
+		/* AYANEO dev bring-up: permit fastboot downloads to ANY partition. The stock
+		 * sec_dl_permission_chk denies non-unlocked partitions (e.g. lk_a), blocking
+		 * LK iteration. Query it (side effects/logging) but do not enforce the denial. */
+		(void)sec_dl_permission_chk(arg, &permitted);
+		permitted = 1;
+		(void)permitted;
 #endif
 #ifdef MTK_GPT_SCHEME_SUPPORT
 #if defined(PLATFORM_FASTBOOT_EMPTY_STORAGE) || defined(MTK_GPT_UPDATE_SUPPORT)

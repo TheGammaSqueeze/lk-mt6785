@@ -44,13 +44,18 @@ static unsigned sd_write(void *ctx, uint32_t lba, uint32_t count, const void *bu
 /* Bring up the microSD host (msdc1) once. Returns 0 on success (card present +
  * identified), negative if the slot is empty / init fails. */
 static int s_sd_hw_inited;
+static int s_sd_hw_rc = 999;      /* last mmc_legacy_init return code (for diagnostics) */
 int gba_sd_hw_init(void)
 {
 	if (s_sd_hw_inited) return 0;
-	if (mmc_legacy_init(SD_MMC_VERBOSE) != 0) return -1;   /* no card / init failed */
+	s_sd_hw_rc = mmc_legacy_init(SD_MMC_VERBOSE);
+	if (s_sd_hw_rc != 0) return -1;   /* no card / init failed */
 	s_sd_hw_inited = 1;
 	return 0;
 }
+
+/* Raw return code of the last microSD host init attempt (mmc error code). */
+int gba_sd_hw_rc(void) { return s_sd_hw_rc; }
 
 /* Raw sector read from the microSD (post hw-init), for the fastboot debug probe. */
 unsigned gba_sd_bread(uint32_t lba, uint32_t count, void *buf)
