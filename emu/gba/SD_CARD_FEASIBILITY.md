@@ -86,3 +86,19 @@ DMA transfer with msdc_flush_membuf() -> arch_clean_invalidate_cache_range() on 
 fat_wr's unflushed stack sector buffers are safe on device by construction; adding arch_clean_cache_range around
 mmc_wrap_bwrite would be redundant (the boot_b clean is for the separate UFS/partition path). No code change
 needed - this is a negative result recorded so the on-device bring-up does not chase a non-bug.
+
+## Standalone BIOS-intro-BEFORE-select: why it is device-gated (verified 2026-08-29, source analysis)
+The GOAL asks for the BIOS intro to run, THEN the ROM-select screen, THEN the game. The current build instead lets
+the BIOS boot animation play at game start (authentic GBA BIOS-then-cart behaviour, one continuous session). The
+strict "intro, stop, select, game" ordering needs the emulation to STOP after the intro and restart for the game.
+That is not cleanly implementable from our source: gba_core_cpu_loop() (gba_wrap.c:136) is a thin wrapper whose
+body is execute_arm(execute_cycles) / execute_arm_translate(), and execute_arm lives in the PREBUILT libgpsp.a
+(no source in-tree). It never returns - it runs the emulated CPU forever and yields once per frame from inside the
+library via switch_to_main_thread -> gba_yield_to_main. So there is no place in our code to add a clean "return
+from the loop" stop flag. The only alternatives are (1) calling reset_gba()/gba_core_start() while the cpu thread
+is parked mid-yield - which resumes execute_arm with stale host-side dynarec block + cycle-accounting state (very
+likely desync/crash), or (2) forcibly killing and recreating the LK cpu thread mid-execute_arm (unsafe). Both are
+unverifiable offline (no gpSP core on host) and risk the one path that must not regress: the working game loop.
+Decision: keep the current BIOS-at-game-start behaviour; revisit the strict ordering ONLY on-device where the
+reset-mid-yield approach can be tried and visually validated with the device in hand. This closes repeated
+re-investigation of the intro reorder.
