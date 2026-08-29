@@ -2239,3 +2239,15 @@ IF fast-pan is tested and still ~15fps (frame still >1 vsync from the 8ms L0 + b
 L0: make the static chrome (and/or the slow wallpaper) a persistent OVL layer so the CPU stops re-blitting the
 full 1280x960 background each frame - a larger OVL-layer restructure, deferred until proven necessary. Holding
 for the fast-pan result; no speculative L0 build.
+
+### FPS v2: HELD-SCROLL SINGLE-BUFFER (2026-08-29, user data)
+User on fastpan: individual presses ~45fps (good), but HOLDING right (fast browse) drops sub-20fps; transition
+flicker still present. Root cause of held-scroll: each auto-repeat step changes focus -> full L2 strip rebuild
+(build_cardcache ~30ms via drw=29918us); the OVL pays that PLUS L0 (8ms) + L3 - MORE than a single full render
+(~30ms), so held-scroll is slower than the original single-core 30fps. FIX (AYANEO_SB_HELDSCROLL): when
+rep_primed (holding past the 0.22s repeat delay = auto-repeating), use the single-buffer full-render path (the
+original ~30fps), leaving individual presses on the 45fps OVL path. Combined w/ fast-pan: lk_a_snes_fastpan2_
+signed.img. Expected: presses ~45fps, held-scroll ~30fps, idle 60fps, tear-free. Tradeoff: 2 OVL<->single
+transitions per held-scroll (start/stop) - may add brief flicker moments (the transition flicker is still
+unfixed - reverted the handoff that made it a black blank; it needs a debug capture to fix properly).
+STILL OPEN: the transition flicker (carousel<->menu/submenu) - separate from fps, needs the SNESX debug capture.
