@@ -2522,3 +2522,9 @@ Target 0123456789ABCDEF still off ADB (only a28c0e0e). putty.log unchanged since
 Software paths remain CLOSED (b MCDI + c ATF RE done, no snoop step). Open items a (mcucci/mcucfg hotplug diff)
 and d (post-join DVM/TLBI-ISH lever) both need the live device. No new source-buildable experiment. Idle-waiting;
 3 staged HW-gated actions run in runbook order on return.
+
+### HEARTBEAT (2026-08-29, cycle 14, no HW): unchanged, idle-waiting
+Target 0123456789ABCDEF still off ADB (only a28c0e0e). putty.log unchanged since 14:41 - no new UART BC lines.
+Software paths CLOSED (b MCDI + c ATF done, no snoop step; DSU join is P-Channel-automatic per TRM). Open items
+a (mcucci/mcucfg hotplug diff) and d (post-join DVM/TLBI-ISH lever) need the live device. Source not ambiguous,
+no new WebSearch warranted. Idle-waiting; 3 staged HW-gated actions run in runbook order on return.
