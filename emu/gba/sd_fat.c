@@ -6,6 +6,8 @@
  * to avoid pulling the whole MTK storage header set into the emu module. */
 extern unsigned long mmc_wrap_bread(int dev_num, unsigned long blknr,
 				    unsigned long blkcnt, void *dst, unsigned int part_id);
+extern unsigned long mmc_wrap_bwrite(int dev_num, unsigned long blknr,
+				     unsigned long blkcnt, const void *src, unsigned int part_id);
 
 /* mmc_legacy_init(1) in platform.c -> id = verbose-1 = 0, so the external microSD
  * (MMC_SLOT=1 hardware; UFS is the boot device, so this MMC slot is the card) is
@@ -25,9 +27,20 @@ static unsigned sd_read(void *ctx, uint32_t lba, uint32_t count, void *buf)
 					(unsigned long)count, buf, SD_PART_USER);
 }
 
+static unsigned sd_write(void *ctx, uint32_t lba, uint32_t count, const void *buf)
+{
+	(void)ctx;
+	return (unsigned)mmc_wrap_bwrite(SD_DEV_NUM, (unsigned long)lba,
+					 (unsigned long)count, buf, SD_PART_USER);
+}
+
 int gba_sd_mount(fat_vol *v)
 {
-	return fat_mount(v, sd_read, 0);
+	int rc = fat_mount(v, sd_read, 0);
+	/* Attach the writer so save/state persistence (fat_wr_put) works on device.
+	 * Without this v->wr stays 0 and every write silently returns -1. */
+	if (rc == 0) fat_set_writer(v, sd_write);
+	return rc;
 }
 
 /* Load /gba_bios.bin (must be exactly 16384 bytes) into dst[16384]. Returns 0 on

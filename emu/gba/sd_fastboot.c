@@ -5,12 +5,16 @@
  *
  *   fastboot oem sd-probe        - read sector 0, mount FAT, report bios + rom list
  *   fastboot oem sd-read:<lba>   - hex-dump one 512B sector at decimal <lba>
+ *   fastboot oem sd-wtest        - write a temp file to /saves/gba, read it back,
+ *                                  verify byte-for-byte (validates the write engine
+ *                                  on real hardware without playing a game)
  *
  * Results come back as fastboot INFO lines ("(bootloader) ..."). Runs in FASTBOOT
  * mode, where mmc_legacy_init(1) (platform init) has already brought up the card.
  */
 #include "fat_ro.h"
 #include "sd_fat.h"
+#include "fat_wr.h"
 
 extern void fastboot_register(const char *prefix,
 			      void (*handle)(const char *arg, void *data, unsigned sz),
@@ -95,8 +99,39 @@ static void cmd_sd_read(const char *arg, void *data, unsigned sz)
 	fastboot_okay("sd-read done");
 }
 
+static void cmd_sd_wtest(const char *arg, void *data, unsigned sz)
+{
+	static unsigned char wbuf[512], rbuf[512];
+	fat_vol v;
+	fat_file f;
+	int rc, i, bad = 0;
+	uint32_t got;
+	(void)arg; (void)data; (void)sz;
+
+	rc = gba_sd_mount(&v);
+	if (rc != 0) { fastboot_fail("sd-wtest: mount failed"); return; }
+	if (!v.wr) { fastboot_fail("sd-wtest: no writer attached (BUG)"); return; }
+
+	for (i = 0; i < 512; i++) wbuf[i] = (unsigned char)(i * 7 + 3);
+	rc = fat_wr_put(&v, "/saves/gba", "wtest.bin", wbuf, sizeof wbuf);
+	snprintf(lbuf, sizeof lbuf, "sd-wtest: fat_wr_put rc=%d", rc);
+	fastboot_info(lbuf);
+	if (rc != 0) { fastboot_fail("sd-wtest: write failed (is /saves/gba present?)"); return; }
+
+	/* re-mount so nothing is served from a stale cache, then read back */
+	if (gba_sd_mount(&v) != 0) { fastboot_fail("sd-wtest: remount failed"); return; }
+	if (fat_open(&v, "/saves/gba/wtest.bin", &f) != 0) { fastboot_fail("sd-wtest: readback open failed"); return; }
+	got = fat_read(&f, 0, rbuf, sizeof rbuf);
+	for (i = 0; i < 512; i++) if (rbuf[i] != wbuf[i]) { bad++; }
+	snprintf(lbuf, sizeof lbuf, "sd-wtest: readback size=%u mismatches=%d", got, bad);
+	fastboot_info(lbuf);
+	if (got != sizeof wbuf || bad) { fastboot_fail("sd-wtest: verify FAILED"); return; }
+	fastboot_okay("sd-wtest: write+verify OK");
+}
+
 void gba_sd_fastboot_register(void)
 {
 	fastboot_register("oem sd-probe", cmd_sd_probe, 1, 0);
 	fastboot_register("oem sd-read:", cmd_sd_read, 1, 0);
+	fastboot_register("oem sd-wtest", cmd_sd_wtest, 1, 0);
 }

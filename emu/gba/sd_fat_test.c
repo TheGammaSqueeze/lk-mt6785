@@ -1,27 +1,33 @@
-/* Host test for sd_fat.c list/load robustness: an empty (0-byte) .gba is skipped
- * by the enumerator, and gba_sd_load_rom refuses a ROM larger than the arena
- * (no silent truncation) as well as an empty one, while a normal ROM loads whole.
+/* Host test for sd_fat.c list/load robustness AND the on-device mount wiring:
+ *  - an empty (0-byte) .gba is skipped by the enumerator;
+ *  - gba_sd_load_rom refuses a ROM larger than the arena (no silent truncation)
+ *    and an empty one, while a normal ROM loads whole;
+ *  - gba_sd_mount() attaches BOTH a reader and a WRITER (regression guard: the
+ *    on-device save/state path silently no-ops if v->wr is left 0), verified by
+ *    a real write+readback through the gba_sd_mount path.
  *
- * Runs against a real mkfs.fat image with /roms/gba populated by the harness:
- *   good.gba  = 4096 bytes of a known pattern
- *   empty.gba = 0 bytes
- * The mmc_wrap_bread extern is stubbed (list/load only touch the fat_vol rd cb). */
+ * The mmc_wrap_bread/bwrite externs that sd_fat.c calls are backed here by the
+ * image file, so gba_sd_mount() itself is exercised (not just fat_mount). */
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include "fat_ro.h"
 #include "sd_fat.h"
-
-/* sd_fat.c references this for the on-device path; unused here. */
-unsigned long mmc_wrap_bread(int d, unsigned long b, unsigned long c, void *p, unsigned int pt)
-{ (void)d; (void)b; (void)c; (void)p; (void)pt; return 0; }
+#include "fat_wr.h"
 
 static FILE *g_img;
-static unsigned img_read(void *ctx, uint32_t lba, uint32_t count, void *buf)
+
+/* sd_fat.c's device block ops, redirected to the loop image for the host test. */
+unsigned long mmc_wrap_bread(int d, unsigned long b, unsigned long c, void *p, unsigned int pt)
 {
-	(void)ctx;
-	if (fseek(g_img, (long)lba * 512, SEEK_SET) != 0) return 0;
-	return (unsigned)fread(buf, 512, count, g_img);
+	(void)d; (void)pt;
+	if (fseek(g_img, (long)b * 512, SEEK_SET) != 0) return 0;
+	return (unsigned long)fread(p, 512, c, g_img);
+}
+unsigned long mmc_wrap_bwrite(int d, unsigned long b, unsigned long c, const void *p, unsigned int pt)
+{
+	(void)d; (void)pt;
+	if (fseek(g_img, (long)b * 512, SEEK_SET) != 0) return 0;
+	return (unsigned long)fwrite(p, 512, c, g_img);
 }
 
 int main(int argc, char **argv)
@@ -32,9 +38,12 @@ int main(int argc, char **argv)
 	int n, i, fails = 0, gi = -1;
 	static unsigned char buf[8192];
 
-	g_img = fopen(imgf, "rb");
+	g_img = fopen(imgf, "r+b");
 	if (!g_img) { fprintf(stderr, "open %s failed\n", imgf); return 1; }
-	if (fat_mount(&v, img_read, 0) != 0) { fprintf(stderr, "MOUNT FAILED\n"); return 1; }
+
+	if (gba_sd_mount(&v) != 0) { fprintf(stderr, "MOUNT FAILED\n"); return 1; }
+	/* regression: the on-device mount MUST attach a writer, else saves no-op */
+	if (!v.wr) { printf("  FAIL: gba_sd_mount left v.wr=0 (saves would silently fail)\n"); fails++; }
 
 	n = gba_sd_list_roms(&v, roms, 16);
 	printf("list_roms n=%d\n", n);
@@ -49,11 +58,29 @@ int main(int argc, char **argv)
 		uint32_t got = gba_sd_load_rom(&v, &roms[gi], buf, sizeof buf);
 		printf("load good (cap=%u): got=%u\n", (unsigned)sizeof buf, got);
 		if (got != roms[gi].size) { printf("  FAIL: short load\n"); fails++; }
-
-		/* oversize: cap smaller than the ROM must be REFUSED (return 0), not truncated */
 		got = gba_sd_load_rom(&v, &roms[gi], buf, roms[gi].size - 1);
 		printf("load oversize (cap=size-1): got=%u (want 0)\n", got);
-		if (got != 0) { printf("  FAIL: oversize not refused (silent truncation)\n"); fails++; }
+		if (got != 0) { printf("  FAIL: oversize not refused\n"); fails++; }
+	}
+
+	/* write+readback through the gba_sd_mount path (validates the wired writer) */
+	{
+		static unsigned char wb[600], rb[600];
+		fat_file f; uint32_t got; int bad = 0, rc;
+		for (i = 0; i < 600; i++) wb[i] = (unsigned char)(i * 5 + 1);
+		rc = fat_wr_put(&v, "/saves/gba", "wtest.bin", wb, sizeof wb);
+		printf("write via mount path: rc=%d\n", rc);
+		if (rc != 0) { printf("  FAIL: fat_wr_put rc=%d\n", rc); fails++; }
+		else {
+			if (gba_sd_mount(&v) != 0 || fat_open(&v, "/saves/gba/wtest.bin", &f) != 0) {
+				printf("  FAIL: readback open\n"); fails++;
+			} else {
+				got = fat_read(&f, 0, rb, sizeof rb);
+				for (i = 0; i < 600; i++) if (rb[i] != wb[i]) bad++;
+				printf("readback size=%u mismatches=%d\n", got, bad);
+				if (got != sizeof wb || bad) { printf("  FAIL: write verify\n"); fails++; }
+			}
+		}
 	}
 
 	printf(fails ? "SD_FAT TEST: %d FAIL\n" : "SD_FAT TEST: PASS\n", fails);
