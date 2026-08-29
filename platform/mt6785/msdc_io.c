@@ -534,6 +534,13 @@ void msdc_config_clksrc(struct mmc_host *host, int clksrc)
 		if (host->id == 1) {
 			MSDC_SET_FIELD((TOPCKGEN_BASE + 0x080), 0x7 << 16, host->pll_mux_clk);
 			MSDC_WRITE32(TOPCKGEN_BASE + 0x04, 0x07FFFFFF);
+			/* AYANEO GBA-SD: LK sets msdc1 PATCH_BIT0/1 to values that make every
+			 * command response fail CRC (rc=6). The running kernel uses these on
+			 * this exact hardware (read via /proc/msdc_debug). Force them here,
+			 * before card identification, so the SD actually talks. 0x11240000 =
+			 * msdc1 base, +0xb0=PATCH_BIT0, +0xb4=PATCH_BIT1. */
+			MSDC_WRITE32(0x11240000u + 0xb0, 0x403c0006u);
+			MSDC_WRITE32(0x11240000u + 0xb4, 0xfffa4340u);
 		}
 	#endif
 	}
