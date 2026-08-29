@@ -66,6 +66,20 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 				 ldo[k].nm, ldo[k].reg, rv, rv & 1u);
 			fastboot_info(lbuf);
 		}
+		/* msdc1 controller registers (MMIO reads, safe): CFG/IOCON/PS/INT/
+		 * SDC_CFG/SDC_STS + clock, to see the actual hardware state. */
+		{
+			extern unsigned msdc1_reg_read(unsigned off);
+			static const struct { const char *nm; unsigned off; } r[] = {
+				{ "MSDC_CFG", 0x00 }, { "IOCON", 0x04 }, { "MSDC_PS", 0x08 },
+				{ "SDC_CFG", 0x30 }, { "SDC_STS", 0x34 },
+			};
+			for (k = 0; k < (int)(sizeof r / sizeof r[0]); k++) {
+				snprintf(lbuf, sizeof lbuf, "sd: msdc1 %-8s[%02x]=0x%08x",
+					 r[k].nm, r[k].off, msdc1_reg_read(r[k].off));
+				fastboot_info(lbuf);
+			}
+		}
 		msdc_ext_sd_power_on();   /* attempt to enable VMCH(0x1cd8)+VMC(0x1cc4) */
 		for (k = 0; k < (int)(sizeof ldo / sizeof ldo[0]); k++) {
 			unsigned rv = msdc_pmic_read(ldo[k].reg);

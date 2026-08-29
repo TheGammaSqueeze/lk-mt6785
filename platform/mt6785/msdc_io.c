@@ -518,8 +518,25 @@ void msdc_config_clksrc(struct mmc_host *host, int clksrc)
 {
 #if !defined(FPGA_PLATFORM)
 	#if defined(MMC_MSDC_DRV_PRELOADER) || defined(MMC_MSDC_DRV_LK)
-	host->pll_mux_clk = MSDC0_CLKSRC_DEFAULT;
-	host->src_clk = msdc_get_hclk(host->id, MSDC0_CLKSRC_DEFAULT);
+	{
+		/* AYANEO GBA-SD: use the HOST-appropriate clock source (stock LK wrongly
+		 * used MSDC0's 400MHz source for every host, incl. msdc1). */
+		int lk_src = (host->id == 1) ? MSDC1_CLKSRC_DEFAULT : MSDC0_CLKSRC_DEFAULT;
+		host->pll_mux_clk = lk_src;
+		host->src_clk = msdc_get_hclk(host->id, lk_src);
+	#if defined(MMC_MSDC_DRV_LK)
+		/* The preloader programs msdc0's clock mux (boot eMMC) but NOT msdc1's,
+		 * and stock LK never programs it (the TOPCKGEN write is CTP-only). So
+		 * msdc1 ran on an unconfigured clock and every command response came back
+		 * bad-CRC (mmc rc=6 CMDTUNEFAIL). Program the msdc1 clock mux here, host 1
+		 * ONLY (leave msdc0 to the preloader so the running boot device is not
+		 * disturbed). CLK_CFG_4[18:16] selects the msdc1 source. */
+		if (host->id == 1) {
+			MSDC_SET_FIELD((TOPCKGEN_BASE + 0x080), 0x7 << 16, host->pll_mux_clk);
+			MSDC_WRITE32(TOPCKGEN_BASE + 0x04, 0x07FFFFFF);
+		}
+	#endif
+	}
 	#endif
 
 	#if defined(MMC_MSDC_DRV_CTP)
@@ -1074,5 +1091,13 @@ unsigned msdc_pmic_read(unsigned reg)
 	U32 v = 0;
 	pmic_read_interface((U32)reg, &v, 0xFFFF, 0);
 	return (unsigned)v;
+}
+
+/* Safe READ-ONLY of an msdc1 controller register (base 0x11240000 + off). MMIO
+ * reads do not change state; used by the fastboot probe to inspect the actual
+ * msdc1 hardware (clock, config, status) while debugging the SD bring-up. */
+unsigned msdc1_reg_read(unsigned off)
+{
+	return (unsigned)MSDC_READ32(0x11240000u + off);
 }
 #endif
