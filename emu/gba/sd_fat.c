@@ -29,3 +29,14 @@ int gba_sd_mount(fat_vol *v)
 {
 	return fat_mount(v, sd_read, 0);
 }
+
+/* Load /gba_bios.bin (must be exactly 16384 bytes) into dst[16384]. Returns 0 on
+ * success, negative if missing / wrong size / short read. */
+int gba_sd_load_bios(fat_vol *v, unsigned char *dst)
+{
+	fat_file f;
+	if (fat_open(v, "/gba_bios.bin", &f) != 0) return -1;
+	if (f.size != 16384u) return -2;
+	if (fat_read(&f, 0, dst, 16384u) != 16384u) return -3;
+	return 0;
+}

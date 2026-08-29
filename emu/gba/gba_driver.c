@@ -814,6 +814,15 @@ void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsign
 	}
 }
 
+#ifdef AYANEO_GBA_SD
+#include "sd_fat.h"
+/* SD flow state, shared between the boot gate and emu_thread. s_sd_mode=1 makes
+ * emu_thread run the BIOS-from-SD intro (no cartridge) instead of the boot_b ROM. */
+static int s_sd_mode;
+static unsigned char s_sd_bios[16384];
+static fat_vol s_sd_vol;
+#endif
+
 /* ===================== emulator thread ===================== */
 static int emu_thread(void *arg)
 {
@@ -835,23 +844,46 @@ static int emu_thread(void *arg)
 		gba_dbg("GBA ERR: arena too small");
 		return 0;
 	}
-	gba_dbg("GBA 2: core_init ok, loading ROM");
-	romsz = load_rom();
-	if (!romsz) {
-		gba_dbg("GBA ERR: ROM load/decompress failed");
-		return 0;
-	}
-	gba_dbg("GBA 3: ROM decompressed, core_start");
-	if (gba_core_start(romsz, gba_bios_data) != 0) {
-		gba_dbg("GBA ERR: core_start failed");
-		return 0;
+#ifdef AYANEO_GBA_SD
+	if (s_sd_mode) {
+		/* BIOS intro: empty cartridge so the SD BIOS plays its boot logo and then
+		 * halts at the Nintendo-logo cart check. gamepak_size=0 is safe. The ROM
+		 * header area is zeroed so the cart check deterministically fails. */
+		unsigned char *rp = gba_core_rom_ptr();
+		int i;
+		for (i = 0; i < 0x200; i++) rp[i] = 0;
+		romsz = 0;
+		gba_dbg("GBA SD: BIOS intro (no ROM), core_start");
+		if (gba_core_start(0, s_sd_bios) != 0) {
+			gba_dbg("GBA ERR: core_start (bios intro) failed");
+			return 0;
+		}
+	} else
+#endif
+	{
+		gba_dbg("GBA 2: core_init ok, loading ROM");
+		romsz = load_rom();
+		if (!romsz) {
+			gba_dbg("GBA ERR: ROM load/decompress failed");
+			return 0;
+		}
+		gba_dbg("GBA 3: ROM decompressed, core_start");
+		if (gba_core_start(romsz, gba_bios_data) != 0) {
+			gba_dbg("GBA ERR: core_start failed");
+			return 0;
+		}
 	}
 	gba_dbg("GBA 4: reset_gba ok");
 
 	input_init();
 	ayaneo_settings_load();
-	sav_load(scratch);		/* inject cartridge battery save */
-	try_load_state(scratch);	/* resume unless Start held */
+#ifdef AYANEO_GBA_SD
+	if (!s_sd_mode)
+#endif
+	{
+		sav_load(scratch);		/* inject cartridge battery save (boot_b) */
+		try_load_state(scratch);	/* resume unless Start held */
+	}
 	s_ready = 1;
 
 	mtk_wdt_disable();
@@ -1052,7 +1084,7 @@ void ayaneo_gbc_charging_screen(void)
 }
 
 #ifdef AYANEO_GBA_SD
-#include "sd_fat.h"
+void ayaneo_gbc_start(void);   /* defined just below; spawns emu_thread */
 /* Assets present on the microSD? Requires /gba_bios.bin (the intro) plus >=1 file
  * in /roms/gba (something to select). Mirrors the host-validated probe in
  * fat_ro_test.c. */
@@ -1067,26 +1099,30 @@ static int gba_sd_assets_ok(fat_vol *v)
 
 /*
  * SD boot gate. Returns < 0 to tell the boot hook to FALL THROUGH to the normal
- * kernel boot (no card / not FAT / assets missing) - the always-safe default. On
- * success (card + assets) it will run the SD emu flow (bios intro -> ROM select ->
- * game) and never return. That flow is wired incrementally (tasks c-e); until it is
- * complete this logs and still returns < 0 so the device always boots normally.
+ * kernel boot (no card / not FAT / assets missing / BIOS unreadable) - the always
+ * safe default. On success (card + assets) it loads the SD BIOS, spawns the emu in
+ * SD mode (BIOS intro; ROM select + game are tasks d-e), and returns 0 so the boot
+ * hook loops forever. The intro runs the BIOS boot logo from /gba_bios.bin.
  */
 int ayaneo_gba_sd_boot(void)
 {
-	static fat_vol vol;
-	int rc = gba_sd_mount(&vol);
+	int rc = gba_sd_mount(&s_sd_vol);
 	if (rc != 0) {
 		GBA_LOG("gba-sd: no FAT microSD (rc=%d) -> normal boot\n", rc);
 		return -1;
 	}
-	if (!gba_sd_assets_ok(&vol)) {
+	if (!gba_sd_assets_ok(&s_sd_vol)) {
 		GBA_LOG("gba-sd: microSD present but /gba_bios.bin + /roms/gba missing -> normal boot\n");
 		return -2;
 	}
-	GBA_LOG("gba-sd: microSD + assets found (fat32=%d) - emu-from-SD not yet wired, normal boot for now\n",
-		vol.is_fat32);
-	return -3;   /* TODO(c-e): run bios intro + ROM select + game; never returns on success */
+	if (gba_sd_load_bios(&s_sd_vol, s_sd_bios) != 0) {
+		GBA_LOG("gba-sd: /gba_bios.bin present but not a 16KB readable BIOS -> normal boot\n");
+		return -3;
+	}
+	GBA_LOG("gba-sd: microSD + assets OK (fat32=%d) - running BIOS intro from SD\n", s_sd_vol.is_fat32);
+	s_sd_mode = 1;
+	ayaneo_gbc_start();   /* spawns emu_thread, which runs the SD intro (s_sd_mode) */
+	return 0;
 }
 #endif /* AYANEO_GBA_SD */
 

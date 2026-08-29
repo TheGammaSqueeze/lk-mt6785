@@ -12,5 +12,6 @@
  * negative if the card is absent / unreadable / not FAT16-32. On failure the
  * caller falls through to the normal kernel boot. */
 int gba_sd_mount(fat_vol *v);
+int gba_sd_load_bios(fat_vol *v, unsigned char *dst);
 
 #endif
