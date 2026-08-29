@@ -2484,3 +2484,11 @@ REMAINING (all HW-gated, need target 0123456789ABCDEF on ADB - see the device-re
   (3) staged dvm lever. If all three fail, the wall is fundamental and the win is the producer-offload (worker
   reads static data + worker->cpu0 writes, both PROVEN; tile re-blit now cheap via the RGBA NEON path).
 No further software experiment can be advanced without the device. Target still off ADB (only a28c0e0e).
+
+### HEARTBEAT (2026-08-29, cycle 9, no HW): research COMPLETE + idle-waiting on device
+Target 0123456789ABCDEF still off ADB (only a28c0e0e, the non-target GammaOS box). No new UART BC lines
+(putty.log unchanged since 05:47). Software-side research is CLOSED (see the CLOSURE section above): no
+source-buildable experiment remains. The loop is now idle-waiting for the device to return so the 3 staged
+HW-gated actions can run, in runbook order: (1) flash-free run_mcucfg_diff.sh 0123456789ABCDEF (whole-aff1=1
+group off-vs-on MMIO diff), (2) lk_a_snes_bigcore_nosspm.img, (3) lk_a_snes_bigcore_dvm.img. No code/build change
+this cycle - nothing new is correct to build while every SW path is closed and the device is absent.
