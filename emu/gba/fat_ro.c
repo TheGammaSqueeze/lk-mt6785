@@ -83,6 +83,17 @@ static int parse_bpb(fat_vol *v, const uint8_t *b, uint32_t part_lba)
 
 void fat_set_writer(fat_vol *v, fat_write_fn wr) { v->wr = wr; }
 
+/* "EXFAT   " (8 bytes at VBR offset 3) marks an exFAT volume - which SDXC cards
+ * ship with by default and this reader does not support. Detect it so the caller
+ * can tell the user to reformat FAT32 instead of failing with a generic error. */
+static int is_exfat_vbr(const uint8_t *s)
+{
+	static const char sig[8] = { 'E','X','F','A','T',' ',' ',' ' };
+	int i;
+	for (i = 0; i < 8; i++) if (s[3 + i] != (uint8_t)sig[i]) return 0;
+	return 1;
+}
+
 int fat_mount(fat_vol *v, fat_read_fn rd, void *ctx)
 {
 	v->wr = 0;
@@ -93,6 +104,7 @@ int fat_mount(fat_vol *v, fat_read_fn rd, void *ctx)
 	if (s0[510] != 0x55 || s0[511] != 0xAA) return -2;
 	/* Bare VBR ("superfloppy")? A VBR starts with a jump (0xEB/0xE9) and has a
 	 * plausible BPB. Try it first; else walk the MBR partition table. */
+	if (is_exfat_vbr(s0)) return -4;                  /* bare exFAT superfloppy */
 	if ((s0[0] == 0xEB || s0[0] == 0xE9) && parse_bpb(v, s0, 0) == 0) {
 		v->mounted = 1; return 0;
 	}
@@ -102,7 +114,11 @@ int fat_mount(fat_vol *v, fat_read_fn rd, void *ctx)
 		uint32_t lba = rd32(e + 8);
 		uint8_t vbr[512];
 		if (type == 0 || lba == 0) continue;
-		/* FAT16: 0x04/0x06/0x0E ; FAT32: 0x0B/0x0C ; (0x07 = exFAT/NTFS, skip) */
+		/* FAT16: 0x04/0x06/0x0E ; FAT32: 0x0B/0x0C ; 0x07 = exFAT/NTFS */
+		if (type == 0x07) {                       /* likely exFAT - confirm + report */
+			if (rd(ctx, lba, 1, vbr) == 1 && is_exfat_vbr(vbr)) return -4;
+			continue;
+		}
 		if (type != 0x04 && type != 0x06 && type != 0x0E &&
 		    type != 0x0B && type != 0x0C) continue;
 		if (rd(ctx, lba, 1, vbr) != 1) continue;

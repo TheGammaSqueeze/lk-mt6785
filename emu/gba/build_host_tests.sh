@@ -22,7 +22,9 @@ gcc -O2 -I. -o /tmp/dirext_test fat_dirext_test.c fat_ro.c fat_wr.c
 gcc -O2 -I. -o /tmp/sdfat_test  sd_fat_test.c      fat_ro.c sd_fat.c fat_wr.c
 gcc -O2 -I. -o /tmp/nav_test    rom_select_nav_test.c
 gcc -O2 -I. -o /tmp/mkdir_test  fat_mkdir_test.c   fat_ro.c fat_wr.c
+gcc -O2 -I. -o /tmp/exfat_test  fat_exfat_test.c   fat_ro.c
 echo "== ROM-select nav math =="; /tmp/nav_test
+echo "== exFAT detection =="; /tmp/exfat_test
 
 mkimg() { # <img> <mkfs-args...>  - fresh image with the SD dir layout (no roms needed)
 	local img="$1"; shift

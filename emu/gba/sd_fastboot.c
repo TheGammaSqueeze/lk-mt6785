@@ -56,6 +56,7 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 	snprintf(lbuf, sizeof lbuf, "sd: fat_mount rc=%d fat32=%d spc=%u clusters=%u",
 		 rc, v.is_fat32, v.sec_per_clus, v.total_clusters);
 	fastboot_info(lbuf);
+	if (rc == -4) { fastboot_fail("sd: exFAT card not supported - reformat as FAT32"); return; }
 	if (rc != 0) { fastboot_fail("sd: not a FAT16/32 volume"); return; }
 
 	i = (fat_open(&v, "/gba_bios.bin", &f) == 0);

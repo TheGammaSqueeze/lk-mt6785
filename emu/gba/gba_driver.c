@@ -1220,7 +1220,10 @@ int ayaneo_gba_sd_boot(void)
 {
 	int rc = gba_sd_mount(&s_sd_vol);
 	if (rc != 0) {
-		GBA_LOG("gba-sd: no FAT microSD (rc=%d) -> normal boot\n", rc);
+		if (rc == -4)
+			GBA_LOG("gba-sd: microSD is exFAT (unsupported) - reformat FAT32 -> normal boot\n");
+		else
+			GBA_LOG("gba-sd: no FAT microSD (rc=%d) -> normal boot\n", rc);
 		return -1;
 	}
 	if (!gba_sd_assets_ok(&s_sd_vol)) {
