@@ -2433,3 +2433,23 @@ coherency-admission domain (a second spm_poweron_cluster-equivalent) that the si
 skipped cluster-level admit is a live candidate the whole-group ON-vs-OFF diff will expose (any aff1=1
 CPUTOP/coherency reg that is SET only when the group is up). No new buildable+testable experiment without the
 device; the whole-group diff remains the #1 flash-free action. Target still off ADB (only a28c0e0e).
+
+### CYCLE (2026-08-29, no HW): MP1_CPUTOP cluster-power hypothesis CLOSED (single CPUTOP domain)
+Followed last cycle's device-return sub-check as a source question first: does the aff1=1 group have its OWN
+CPUTOP power domain the single-core LK bypass skips? Checked the mt6785 spm_v4 + the representative mt6873
+spm_reg.h SPM power-con map:
+- SPM_MCUSYS_PWR_CON = SPM_BASE+0x200; SPM_CPUTOP_PWR_CON = SPM_BASE+0x204 (SINGLE, bit31 = MP0_SPMC_PWR_ON_ACK
+  _CPUTOP); SPM_CPU0..CPU7_PWR_CON = +0x208..+0x224. There is NO second (MP1) CPUTOP power-con anywhere in the
+  SPM map - grep for MP1_CPUTOP_PWR_CON / CPUSYS_PWR_CON returns nothing.
+- The "mp1_cputop_idle_mask" seen in spm_v4 (mtk_spm_fs.c) is a SODI/deep-IDLE masking FIELD (which cores block
+  idle), NOT a power-on gate. So it does not imply a separate power domain.
+=> There is a SINGLE CPUTOP power domain (0x204) covering all 8 cores across both aff1 groups, and bc_spmc_init
+   ALREADY drives it (clrb SPM_CPUTOP_RSTCON 0x204). So the LK bypass does NOT skip any cluster-level power-on
+   for the aff1=1 worker; consistent with the worker getting PWR_ON_ACK identical to a live coherent core (an
+   unpowered CPUTOP would block the ACK). The MP1_CPUTOP cluster-power hypothesis is CLOSED - the wall is not a
+   missing power-domain write.
+This retires the only remaining buildable-from-source lead. Net standing: the DSU snoop admission is the
+SSPM-serviced power-P-Channel step (firmware-internal, no software MMIO), triangulated 3 ways; all power domains
+are confirmed driven; no software snoop-admit register exists. The remaining actions are all HW-gated (the
+flash-free whole-aff1=1-group mcucfg diff, then the staged nosspm/dvm levers) or the large LK-SSPM-mailbox
+subproject. Target still off ADB (only a28c0e0e). No new buildable+testable experiment this cycle.
