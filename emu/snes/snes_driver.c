@@ -920,8 +920,12 @@ static int snes_emu_thread(void *arg)
 			 * frame fit in a vsync (config_input's FRAME_DONE wait then already syncs);
 			 * only overrunning frames (moving carousel, resume) need it. This is what
 			 * restores submenus to 60fps (their render is well under a frame). */
-			ayaneo_present_skip_vsync(((t_pre - t_frame0) / 13u) < 15000u);
-			ayaneo_present_presync_vsync(0);   /* default off; the layered moving case re-enables it */
+			/* Force a post-swap vblank sync on any layered<->single TRANSITION frame (enter or
+			 * leave): those do a heavy full-L0 render + an OVL layer enable/disable that must
+			 * not latch mid-scanout. Otherwise skip when the frame fit a vsync (60fps idle/submenu). */
+			ayaneo_present_skip_vsync((layered == s_was_layered) &&
+						  ((t_pre - t_frame0) / 13u) < 15000u);
+			ayaneo_present_presync_vsync(0);   /* presync tears on HW - keep disabled */
 			{ unsigned l2_size = (unsigned)SNES_L2_W * SNES_L2_BAND_H * 4u;
 			  unsigned l3_size = pitch * H * 4u;
 			if (layered) {
@@ -1016,13 +1020,14 @@ static int snes_emu_thread(void *arg)
 				 * vblank (tear-free). Only skip when the frame is STATIC (true idle), where a
 				 * mid-scanout latch is invisible and 60fps is free. */
 				{
+					/* Post-swap vblank sync is the ONLY tear-free config (presync/single-
+					 * buffer both TORE on HW). Sync on moving (pan/rebuild) AND on the ENTER
+					 * transition frame (was !layered -> heavy full-L0 render + layer-enable,
+					 * must not latch mid-scanout). Skip only STEADY idle (static -> 60fps). */
 					int moving = l2_pan != 0 || rebuilt || save_cont_shift != 0.0f;
-					/* moving: ONE barrier - pre-config vblank wait inside present_layers,
-					 * no post-swap wait (tear-free, ~30fps). The old post-swap wait stacked
-					 * on config_input's FRAME_DONE = 2 barriers = 15fps. idle: skip both
-					 * (static content, 60fps, invisible latch). */
-					ayaneo_present_presync_vsync(moving);
-					ayaneo_present_skip_vsync(!moving);
+					int trans  = (layered != s_was_layered);   /* entering the OVL state */
+					ayaneo_present_presync_vsync(0);            /* presync tears - disabled */
+					ayaneo_present_skip_vsync(!(moving || trans));
 				}
 				ayaneo_canvas_present_layers(l2_live, l2_pan, rebuilt,
 							     l3_live, SNES_CURSOR_Y0, SNES_CURSOR_Y1);
