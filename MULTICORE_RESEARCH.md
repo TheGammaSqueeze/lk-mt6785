@@ -2501,3 +2501,11 @@ SSPM-serviced SPMC power-P-Channel, no bootloader-reachable MMIO/sysreg/mailbox 
 duplicate result. Loop stays idle-waiting for the device to return so the 3 staged HW-gated actions run in runbook
 order: (1) run_mcucfg_diff.sh whole-aff1=1 group off-vs-on diff, (2) lk_a_snes_bigcore_nosspm.img, (3)
 lk_a_snes_bigcore_dvm.img. If those fail the wall is fundamental; the shipped win is the proven producer-offload.
+
+### HEARTBEAT (2026-08-29, cycle 11, no HW): unchanged, idle-waiting
+Target 0123456789ABCDEF still off ADB (only a28c0e0e attached). putty.log unchanged since 14:41 - no new UART BC
+lines to classify. Software-side research remains CLOSED (see CLOSURE + ROOT CAUSE above): tasks (b) MCDI and
+(c) ATF RE are done and found no software snoop step; the only not-yet-run items - (a) whole-aff1=1 mcucci/mcucfg
+hotplug diff and (d) the post-join DVM/TLBI-ISH lever - both REQUIRE the live device (regpoke + hotplug), which
+is absent. No new source-buildable experiment exists. Loop stays idle-waiting; the 3 staged HW-gated actions run
+in runbook order the moment the device returns.
