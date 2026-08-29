@@ -417,7 +417,11 @@ again:
 			extern unsigned int seclib_sec_boot_enabled(unsigned int);
 			//if security boot enable, check cmd allowed
 			if ( !(sec_usbdl_enabled() || seclib_sec_boot_enabled(1)) || cmd->allowed_when_security_on )
-				if ((!cmd->forbidden_when_lock_on) || (0 != get_unlocked_status()))
+				/* AYANEO dev bring-up: allow flash/erase regardless of lock state so
+				 * LK can be iterated over fastboot without SP Flash Tool each time.
+				 * get_unlocked_status() itself is untouched, so boot verification is
+				 * unchanged; only this command-dispatch lock gate is bypassed. */
+				if ((!cmd->forbidden_when_lock_on) || (0 != get_unlocked_status()) || 1)
 #endif
 				{
 					cmd->handle((const char*) buffer + cmd->prefix_len, (void*) download_base, download_size);
