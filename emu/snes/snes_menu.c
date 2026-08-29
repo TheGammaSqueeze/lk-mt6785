@@ -781,13 +781,19 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 		cx = 640.0f + wx;
 		if (cx < -280 || cx > SNES_VW + 280) continue;
 		blue_a = (j == m->prev_focus) ? prog : 0.0f;   /* outgoing card fades out */
-		/* Cache fast path: a plain non-focused card (no blue crossfade, no resume
-		 * dim) is identical to its pre-rendered tile - blit it instead of ~6 live
-		 * sprite blits. The outgoing crossfade card (blue_a>0) and resume-dimmed
-		 * cards fall through to the exact live render. */
-		if (blue_a <= 0.003f && m->resume_dim == 0.0f) {
+		/* Cache fast path: a non-focused card with no blue crossfade is identical to
+		 * its pre-rendered tile - blit it instead of ~6 live sprite blits. In the
+		 * resume/suspend-list state the card is DIMMED (ndim) and RAISED (cy), both
+		 * handled at blit time (dim is an exact uniform tint, cy is a translation), so
+		 * the cache serves that state too. Only the outgoing crossfade card (blue_a>0)
+		 * falls through to the live draw_card. */
+		if (blue_a <= 0.003f) {
 			const uint32_t *tile = ctile_get(m, j);
-			if (tile) { snes_blit_raw(t, tile, SNES_CT_W, SNES_CT_H, cx, CAR_CY); continue; }
+			if (tile) {
+				float cyr = CAR_CY - RESUME_CARD_DY * m->resume_dim;
+				snes_blit_raw(t, tile, SNES_CT_W, SNES_CT_H, cx, cyr, ndim);
+				continue;
+			}
 		}
 		draw_card(m, t, j, cx, blue_a, ndim);
 	}

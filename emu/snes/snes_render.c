@@ -682,7 +682,7 @@ int snes_render_count(void) { return g_ndr; }
  * instead of re-rendering ~6 sprites. Exact when the transformed centre is integer
  * (settled cards); at most 1px sampling difference at fractional (mid-scroll)
  * positions, which is imperceptible while the strip is moving. */
-void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, float cy)
+void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, float cy, float dim)
 {
 	float scx = t->vsx * cx + t->vdx, scy = t->vsy * cy + t->vdy;
 	int cxp = (int)(scx + (scx >= 0 ? 0.5f : -0.5f));
@@ -690,6 +690,8 @@ void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, 
 	int x0 = cxp - w / 2, y0 = cyp - h / 2;      /* virtual-space top-left */
 	int sx0 = 0, sy0 = 0, sx1 = w, sy1 = h, X, Y;
 	int xlim = t->W - t->offx, ylim = t->H - t->offy;
+	int idim = (int)(dim * 256.0f + 0.5f);       /* 256 = 1.0 (no dim = exact copy) */
+	if (idim > 256) idim = 256; if (idim < 0) idim = 0;
 	if (!pix || w <= 0 || h <= 0) return;
 	if (xlim > SNES_VW) xlim = SNES_VW;          /* never exceed the design width */
 	/* clip source rect to [0,xlim)x[0,ylim) in virtual space */
@@ -702,6 +704,25 @@ void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, 
 		uint32_t *drow = t->fb + (unsigned)(t->offy + y0 + (Y - sy0)) * t->pitch
 			       + t->offx + x0;
 		X = sx0;
+		if (idim < 256) {
+			/* dimmed re-blit (resume/suspend-list): multiply source RGB by idim/256
+			 * then source-over. Exact vs the live dimmed card: compositing is linear
+			 * under a uniform tint, so dim(A over B) == (dim A) over (dim B). */
+			for (; X < sx1; X++) {
+				uint32_t s = srow[X]; unsigned sa = s >> 24;
+				unsigned sr, sg, sb; uint32_t *dp = &drow[X - sx0];
+				if (!sa) continue;
+				sr = (((s >> 16) & 0xff) * idim) >> 8;
+				sg = (((s >> 8) & 0xff) * idim) >> 8;
+				sb = ((s & 0xff) * idim) >> 8;
+				if (sa == 255) { *dp = 0xff000000u | (sr << 16) | (sg << 8) | sb; continue; }
+				{ uint32_t dv = *dp; unsigned ia = 255 - sa;
+				  unsigned dr = (dv >> 16) & 0xff, dg = (dv >> 8) & 0xff, db = dv & 0xff;
+				  dr = (sr * sa + dr * ia + 127) / 255; dg = (sg * sa + dg * ia + 127) / 255; db = (sb * sa + db * ia + 127) / 255;
+				  *dp = 0xff000000u | (dr << 16) | (dg << 8) | db; }
+			}
+			continue;
+		}
 #ifdef __ARM_NEON
 		/* NEON: classify each aligned run of 8 tile pixels - all opaque -> straight
 		 * 8-wide store (card body), all transparent -> skip (tile margin), mixed ->

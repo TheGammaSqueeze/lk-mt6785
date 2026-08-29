@@ -96,9 +96,15 @@ int main(int argc, char **argv)
 			if (ni < (int)strlen(rnav)) {
 				char c=rnav[ni]; memset(&in,0,sizeof(in));
 				in.right=(c=='R'); in.left=(c=='L'); in.up=(c=='U'); in.down=(c=='D');
+				in.a=(c=='A'); in.b=(c=='B');
 				snes_menu_update(&menu,&in,1.0f/60.0f);
 			}
 		}
+		{ FILE *pa=fopen("/tmp/ct_live.ppm","wb"), *pb=fopen("/tmp/ct_cache.ppm","wb");
+		  int yy,xx; fprintf(pa,"P6\n%d %d\n255\n",W,H); fprintf(pb,"P6\n%d %d\n255\n",W,H);
+		  for(yy=0;yy<H;yy++)for(xx=0;xx<W;xx++){uint32_t p=A[yy*W+xx];unsigned char c[3]={(p>>16)&0xff,(p>>8)&0xff,p&0xff};fwrite(c,1,3,pa);
+		    p=B[yy*W+xx];{unsigned char d[3]={(p>>16)&0xff,(p>>8)&0xff,p&0xff};fwrite(d,1,3,pb);}}
+		  fclose(pa);fclose(pb); fprintf(stderr,"  (wrote /tmp/ct_live.ppm + /tmp/ct_cache.ppm for the last state)\n"); }
 		fprintf(stderr, "CTCHECK aspect=%d states=%d WORST diff_px=%d maxchan=%d  (%s)\n",
 			menu.aspect, nstates, worstpx, worst,
 			worst==0 ? "PIXEL-EXACT" : worst<=16 ? "within <=1px resample" : "REGRESSION");
