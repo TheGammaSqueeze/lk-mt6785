@@ -8,17 +8,24 @@ extern unsigned long mmc_wrap_bread(int dev_num, unsigned long blknr,
 				    unsigned long blkcnt, void *dst, unsigned int part_id);
 extern unsigned long mmc_wrap_bwrite(int dev_num, unsigned long blknr,
 				     unsigned long blkcnt, const void *src, unsigned int part_id);
+/* Bring up an MMC host: verbose-1 = host id. platform.c only inits the boot
+ * storage (msdc0 = internal eMMC via mmc_legacy_init(1)); the external microSD is
+ * a separate host (msdc1) that nothing else initializes, so we must do it here.
+ * verbose=2 -> id=1 = msdc1 (the removable SD slot). Returns 0 (MMC_ERR_NONE) ok. */
+extern int mmc_legacy_init(int verbose);
 
 /* mmc_legacy_init(1) in platform.c -> id = verbose-1 = 0, so the external microSD
  * (MMC_SLOT=1 hardware; UFS is the boot device, so this MMC slot is the card) is
  * device 0. part_id 0 = the user data area (SD cards have no boot partitions).
  * These are compile-time so they are trivial to retarget once verified on HW. */
 #ifndef SD_DEV_NUM
-#define SD_DEV_NUM 0
+#define SD_DEV_NUM 1          /* msdc1 = external microSD (msdc0 = internal eMMC) */
 #endif
 #ifndef SD_PART_USER
 #define SD_PART_USER 0
 #endif
+/* verbose arg to mmc_legacy_init that maps to SD_DEV_NUM (id = verbose - 1). */
+#define SD_MMC_VERBOSE (SD_DEV_NUM + 1)
 
 static unsigned sd_read(void *ctx, uint32_t lba, uint32_t count, void *buf)
 {
@@ -34,9 +41,29 @@ static unsigned sd_write(void *ctx, uint32_t lba, uint32_t count, const void *bu
 					 (unsigned long)count, buf, SD_PART_USER);
 }
 
+/* Bring up the microSD host (msdc1) once. Returns 0 on success (card present +
+ * identified), negative if the slot is empty / init fails. */
+static int s_sd_hw_inited;
+int gba_sd_hw_init(void)
+{
+	if (s_sd_hw_inited) return 0;
+	if (mmc_legacy_init(SD_MMC_VERBOSE) != 0) return -1;   /* no card / init failed */
+	s_sd_hw_inited = 1;
+	return 0;
+}
+
+/* Raw sector read from the microSD (post hw-init), for the fastboot debug probe. */
+unsigned gba_sd_bread(uint32_t lba, uint32_t count, void *buf)
+{
+	return (unsigned)mmc_wrap_bread(SD_DEV_NUM, (unsigned long)lba,
+					(unsigned long)count, buf, SD_PART_USER);
+}
+
 int gba_sd_mount(fat_vol *v)
 {
-	int rc = fat_mount(v, sd_read, 0);
+	int rc;
+	if (gba_sd_hw_init() != 0) return -5;   /* microSD slot could not be brought up */
+	rc = fat_mount(v, sd_read, 0);
 	/* Attach the writer so save/state persistence (fat_wr_put) works on device.
 	 * Without this v->wr stays 0 and every write silently returns -1. */
 	if (rc == 0) fat_set_writer(v, sd_write);

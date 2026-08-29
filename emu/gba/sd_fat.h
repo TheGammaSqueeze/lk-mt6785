@@ -12,6 +12,10 @@
  * negative if the card is absent / unreadable / not FAT16-32. On failure the
  * caller falls through to the normal kernel boot. */
 int gba_sd_mount(fat_vol *v);
+/* Bring up the external microSD host (msdc1) once; 0 = card present + identified. */
+int gba_sd_hw_init(void);
+/* Raw sector read from the microSD (call gba_sd_hw_init first). */
+unsigned gba_sd_bread(uint32_t lba, uint32_t count, void *buf);
 int gba_sd_load_bios(fat_vol *v, unsigned char *dst);
 
 /* One ROM in /roms/gba (name kept for display + save/state matching). */

@@ -46,11 +46,16 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 	int rc, i, nr;
 	(void)arg; (void)data; (void)sz;
 
-	n = mmc_wrap_bread(0, 0, 1, s0, 0);
-	snprintf(lbuf, sizeof lbuf, "sd: mmc_wrap_bread(dev0,lba0)=%lu sig=%02x%02x b0=%02x",
+	if (gba_sd_hw_init() != 0) {
+		fastboot_fail("sd: microSD host (msdc1) init failed - no card in slot, or slot init error");
+		return;
+	}
+	fastboot_info("sd: msdc1 (external microSD) init OK");
+	n = gba_sd_bread(0, 1, s0);
+	snprintf(lbuf, sizeof lbuf, "sd: read(dev1,lba0)=%lu sig=%02x%02x b0=%02x",
 		 n, s0[510], s0[511], s0[0]);
 	fastboot_info(lbuf);
-	if (n != 1) { fastboot_fail("sd: sector0 read failed - card not enumerated at dev0"); return; }
+	if (n != 1) { fastboot_fail("sd: sector0 read failed on the microSD"); return; }
 
 	rc = gba_sd_mount(&v);
 	snprintf(lbuf, sizeof lbuf, "sd: fat_mount rc=%d fat32=%d spc=%u clusters=%u",
@@ -84,7 +89,8 @@ static void cmd_sd_read(const char *arg, void *data, unsigned sz)
 	unsigned long n;
 	int r, c;
 	(void)data; (void)sz;
-	n = mmc_wrap_bread(0, lba, 1, sec, 0);
+	if (gba_sd_hw_init() != 0) { fastboot_fail("sd-read: microSD host init failed"); return; }
+	n = gba_sd_bread((uint32_t)lba, 1, sec);
 	snprintf(lbuf, sizeof lbuf, "sd-read: lba=%lu read=%lu", lba, n);
 	fastboot_info(lbuf);
 	if (n != 1) { fastboot_fail("sd-read: read failed"); return; }

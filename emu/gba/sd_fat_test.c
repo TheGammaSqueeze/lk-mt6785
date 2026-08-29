@@ -29,6 +29,8 @@ unsigned long mmc_wrap_bwrite(int d, unsigned long b, unsigned long c, const voi
 	if (fseek(g_img, (long)b * 512, SEEK_SET) != 0) return 0;
 	return (unsigned long)fwrite(p, 512, c, g_img);
 }
+/* the SD host is "always up" in the host test (the image file is the card) */
+int mmc_legacy_init(int verbose) { (void)verbose; return 0; }
 
 int main(int argc, char **argv)
 {
