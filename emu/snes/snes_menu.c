@@ -10,14 +10,6 @@ static unsigned g_perf_last;
 #define PERF_BEGIN() do { if (g_perf_tick) g_perf_last = g_perf_tick(); } while (0)
 #define PERF_END(i)  do { if (g_perf_tick) { unsigned n_ = g_perf_tick(); \
 	g_perf[i] = n_ - g_perf_last; g_perf_last = n_; } } while (0)
-/* sub-phase timers (us) for the two slow OVL-buffer builds, so the device UART log can
- * split them: g_cc_us = build_cardcache {clear, draw, band-scan, unpremult};
- * g_cur_us = render_cursor_layer {clear, focus-card, cursor, unpremult}. */
-unsigned g_cc_us[4], g_cur_us[4];
-static unsigned g_sub_last;
-#define SUB_BEGIN() do { if (g_perf_tick) g_sub_last = g_perf_tick(); } while (0)
-#define SUB_END(arr, i) do { if (g_perf_tick) { unsigned n_ = g_perf_tick(); \
-	(arr)[i] = (n_ - g_sub_last) / 13u; g_sub_last = n_; } } while (0)
 
 /* ---- 4:3 aspect adaptation (ports static renderer.js setAspect + paint) ----
  * The panel is 1280x960 = 4:3; native design is 1280x720 (16:9). In 4:3 mode
@@ -275,37 +267,19 @@ static void build_wp(snes_menu *m)
 /* 4:3: the neon wallpaper zooms by ASP_WALL_S to fill the whole 960 panel (no
  * black gaps). Inverse-map each of the 960 fb rows + 1280 cols back into the wp
  * cache (x map precomputed once/frame). vdx=640-s*640, vdy=480-s*360. */
-/* Intersect a direct-composite (non-blit) row loop [*lo,*hi) with the target's
- * optional multicore scanline band. `abs0` is the absolute panel row of local
- * row 0 (t->offy for offy-relative loops, 0 for panel-absolute). No-op when no
- * band is set (band_y1==0, single-core), so these composites are unchanged on
- * the release path. Needed because these loops bypass blit()'s band clip; under
- * the AYANEO_BIGCORE_EXPT split each core must only touch its own rows or the
- * full-frame wallpaper/chrome would be redrawn in both passes and clobber the
- * other core's band. */
-static void band_rows(const snes_target *t, int abs0, int *lo, int *hi)
-{
-	if (t->band_y1 > t->band_y0) {
-		int b0 = t->band_y0 - abs0, b1 = t->band_y1 - abs0;
-		if (*lo < b0) *lo = b0;
-		if (*hi > b1) *hi = b1;
-	}
-}
 static void draw_wp_43(snes_menu *m, snes_target *t, int scroll_px)
 {
 	static int xmap[SNES_VW];
 	int Y, X, off = ((scroll_px % WP_CACHE_W) + WP_CACHE_W) % WP_CACHE_W;
 	float inv = 1.0f / ASP_WALL_S;
 	float vdx = 640.0f - ASP_WALL_S * 640.0f, vdy = 480.0f - ASP_WALL_S * 360.0f;
-	int Ylo = 0, Yhi = (t->H < 960) ? t->H : 960;
 	if (!m->wp_ready) return;
 	for (X = 0; X < SNES_VW; X++) {
 		int wx = (int)(((float)X - vdx) * inv) + off;
 		wx %= WP_CACHE_W; if (wx < 0) wx += WP_CACHE_W;
 		xmap[X] = wx;
 	}
-	band_rows(t, 0, &Ylo, &Yhi);   /* 4:3 wallpaper fills panel-absolute rows */
-	for (Y = Ylo; Y < Yhi; Y++) {
+	for (Y = 0; Y < t->H && Y < 960; Y++) {
 		int wy = (int)(((float)Y - vdy) * inv);
 		uint32_t *src, *dst = t->fb + (unsigned)Y * t->pitch + t->offx;
 		if (wy < 0) wy = 0; if (wy >= WP_CACHE_H) wy = WP_CACHE_H - 1;
@@ -316,11 +290,9 @@ static void draw_wp_43(snes_menu *m, snes_target *t, int scroll_px)
 static void draw_wp(snes_menu *m, snes_target *t, int scroll_px)
 {
 	int cy, off = ((scroll_px % WP_CACHE_W) + WP_CACHE_W) % WP_CACHE_W;
-	int cylo = 0, cyhi = WP_CACHE_H;
 	if (m->aspect) { draw_wp_43(m, t, scroll_px); return; }
 	if (!m->wp_ready) return;
-	band_rows(t, t->offy, &cylo, &cyhi);   /* rows written are offy+cy */
-	for (cy = cylo; cy < cyhi; cy++) {
+	for (cy = 0; cy < WP_CACHE_H; cy++) {
 		uint32_t *src = m->wp + cy * WP_CACHE_W;
 		uint32_t *dst = t->fb + (unsigned)(t->offy + cy) * t->pitch + t->offx;
 		int first = WP_CACHE_W - off;
@@ -402,7 +374,7 @@ static uint16_t s_chrome_run[CHROME_H * CHROME_MAXRUN * 2];  /* (x0,x1) opaque r
 static uint16_t s_chrome_nrun[CHROME_H];
 static void build_chrome(snes_menu *m)
 {
-	snes_target ct = {0};   /* zero-init incl. the band clip */
+	snes_target ct;
 	int H = m->aspect ? CHROME_H : SNES_VH;
 	unsigned i, n = (unsigned)SNES_VW * (unsigned)H;
 	if (!m->chrome || !m->homemenu) return;
@@ -462,10 +434,8 @@ static void build_chrome(snes_menu *m)
 static void draw_chrome(snes_menu *m, snes_target *t)
 {
 	int y, i, H = m->aspect ? CHROME_H : SNES_VH;
-	int ylo = 0, yhi = H;
 	if (!m->chrome_ready) { snes_render_node(t, &m->home, m->homemenu); return; }
-	band_rows(t, t->offy, &ylo, &yhi);   /* rows written are offy+y */
-	for (y = ylo; y < yhi; y++) {
+	for (y = 0; y < H; y++) {
 		const uint32_t *src = m->chrome + (unsigned)y * SNES_VW;
 		uint32_t *dst = t->fb + (unsigned)(t->offy + y) * t->pitch + t->offx;
 		const uint16_t *r = &s_chrome_run[(unsigned)y * CHROME_MAXRUN * 2];
@@ -670,11 +640,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 	const snes_spr_entry *frame = m->card_norm ? m->card_norm : m->card_act;
 	cy -= RESUME_CARD_DY * m->resume_dim;   /* raised behind the Suspend List */
 	const snes_img_entry *im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
-	/* widen the cull when building the pan cache (cache_layer) by one card-slide so
-	 * the SETTLED strip is a superset of every card visible at any cont_shift during
-	 * the slide - the OVL pan can then show cards that slide in from the edges. */
-	{ int cm = t->cache_layer ? (280 + (int)CAR_HGAP) : 280;
-	  if (cx < -cm || cx > SNES_VW + cm) return; }
+	if (cx < -280 || cx > SNES_VW + 280) return;
 	if (frame) {
 		/* the `card` sprite is the screen BACKGROUND (blue when active, dark when
 		 * not); draw it first, then the boxart on top. The boxart is scaled
@@ -686,32 +652,12 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		/* the blue (active) frame has the same silhouette as the dark one, so
 		 * when it is fully opaque it completely covers the dark frame - skip the
 		 * redundant dark-frame blit for the focused card. */
-		/* Frame colour, split across OVL layers so a dead-zone walk never rebuilds L2.
-		 * Ownership is by card, so every card's frame is composited exactly once:
-		 *  - L2 body cache (cache_layer, !l3_focus): DARK frame only, for every NON-
-		 *    focused card. The focused card is skipped on L2 (see draw_carousel).
-		 *  - L3 focus overlay, FOCUSED card (l3_focus, gi==focus): owns its whole body
-		 *    (not on L2), so draw it exactly like the reference - an opaque dark base
-		 *    unless fully blue, then the blue active frame crossfading in on top. This
-		 *    keeps the card's screen background opaque during the 0.2s fade-in.
-		 *  - L3 focus overlay, OUTGOING card (l3_focus, gi!=focus): its dark base IS on
-		 *    L2, so draw ONLY the fading-out blue frame over it (blue_a=prog>0.003 here).
-		 *  - reference / single-buffer (!cache_layer): dark then blue crossfade. */
-		if (t->cache_layer && !t->l3_focus) {
+		if (!(blue_a >= 0.997f && m->card_act))
 			snes_blit_spr_tint(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f, dim, dim, dim);
-		} else if (t->cache_layer && t->l3_focus && gi != m->focus) {
-			if (m->card_act && blue_a > 0.003f)
-				snes_blit_spr_tint(t, m->pk, m->card_act, cx, cy,
-					      (m->card_fw / (float)m->card_act->sw) * sc,
-					      blue_a > 1.0f ? 1.0f : blue_a, dim, dim, dim);
-		} else {
-			if (!(blue_a >= 0.997f && m->card_act))
-				snes_blit_spr_tint(t, m->pk, frame, cx, cy, (m->card_fw / (float)frame->sw) * sc, 1.0f, dim, dim, dim);
-			if (blue_a > 0.003f && m->card_act)
-				snes_blit_spr_tint(t, m->pk, m->card_act, cx, cy,
-					      (m->card_fw / (float)m->card_act->sw) * sc,
-					      blue_a > 1.0f ? 1.0f : blue_a, dim, dim, dim);
-		}
+		if (blue_a > 0.003f && m->card_act)
+			snes_blit_spr_tint(t, m->pk, m->card_act, cx, cy,
+				      (m->card_fw / (float)m->card_act->sw) * sc,
+				      blue_a > 1.0f ? 1.0f : blue_a, dim, dim, dim);
 		if (im) {
 			float sf = m->screen_w / (float)im->w, sfh = m->screen_w / (float)im->h;
 			float bw, bh;
@@ -751,11 +697,8 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		}
 		/* rounded selection cursor on the focused card - only while the carousel
 		 * is the active focus (state 0 home) AND not mid-slide (the slide cursor
-		 * draws it travelling to/from the menubar). Skipped when building the L2
-		 * card cache (cache_layer): the pulsing cursor is composited live on the
-		 * L3 OVL layer via draw_focus_cursor (see OVL_LAYERS.md). */
-		if (blue_a > 0.003f && m->state == 0 && m->cur_slide_t >= CUR_SLIDE_DUR
-		    && !t->cache_layer)
+		 * draws it travelling to/from the menubar). */
+		if (blue_a > 0.003f && m->state == 0 && m->cur_slide_t >= CUR_SLIDE_DUR)
 			draw_card_cursor(m, t, cx, cy, blue_a > 1.0f ? 1.0f : blue_a,
 					 dim, frame->img);
 	} else {                                 /* fallback: plain framed boxart */
@@ -777,14 +720,6 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 	/* resume menu darkens the NON-focused cards to 0.5 (cardColorToDark), fading
 	 * in with resume_dim; the focused card stays full brightness. */
 	float ndim = 1.0f - 0.5f * m->resume_dim;
-	/* L2 body cache (cache_layer, !l3_focus): the FOCUSED card is skipped here -
-	 * it is composited by the L3 focus overlay (draw_focus_card) alone, so it is
-	 * drawn exactly ONCE. Drawing it on both L2 (dark) and L3 (blue) would double-
-	 * contribute at every non-opaque pixel (the semi-transparent card screen back-
-	 * ground and the sprite's anti-aliased edges), making the composite brighter
-	 * than the reference (OVL_LAYERS.md). The L3 overlay owns the focused card's
-	 * full opaque body, so nothing is lost by skipping it on L2. */
-	int skip_focus = (t->cache_layer && !t->l3_focus);
 	if (n <= 0) return;
 	/* painter's order: draw non-focused first, focused last (on top) */
 	for (j = 0; j < n; j++) {
@@ -792,489 +727,13 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 		if (j == m->focus) continue;
 		wx = m->sel_world + CAR_HGAP * (float)ring_delta(m->focus, j, n) + m->cont_shift;
 		cx = 640.0f + wx;
-		{ int cm = t->cache_layer ? (280 + (int)CAR_HGAP) : 280;   /* wider for the pan cache */
-		  if (cx < -cm || cx > SNES_VW + cm) continue; }
+		if (cx < -280 || cx > SNES_VW + 280) continue;
 		blue_a = (j == m->prev_focus) ? prog : 0.0f;   /* outgoing card fades out */
 		draw_card(m, t, j, cx, blue_a, ndim);
 	}
 	/* the selected card stays bright and keeps its blue active frame in resume
 	 * (cardColorDark dims only the OTHER cards); just its normal crossfade. */
-	if (!skip_focus)
-		draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1.0f - prog, 1.0f);
-}
-
-/* ==== OVL hardware-layering support (state-0 idle home 60fps; OVL_LAYERS.md) ====
- * The cursorless card strip is rendered once into an OVL layer (L2) and composited
- * by the display hardware over the wallpaper/chrome framebuffer (L0), so the CPU
- * stops re-blitting ~7 large cards every frame. The colour-pulsing selection cursor
- * is drawn live into a small OVL layer (L3) on top. A signature of all card-strip
- * state drives L2 rebuilds. The layers are built in PREMULTIPLIED alpha (clean
- * source-over) then un-premultiplied to STRAIGHT (coverage) alpha, which is what
- * the MT6785 OVL blender expects (SURFL_EN=0). */
-
-/* signature of every input that changes the cursorless card strip; unchanged
- * frame-to-frame => the strip is static and the L2 cache can be reused as-is. */
-static uint32_t cc_signature(snes_menu *m)
-{
-	union { float f; uint32_t u; } c;
-	uint32_t h = 2166136261u;
-#define CC_MIX(v) do { h = (h ^ (uint32_t)(v)) * 16777619u; } while (0)
-	/* SETTLED signature: what the cont_shift=0, xfade=0 cached strip looks like.
-	 * Deliberately EXCLUDES cont_shift and xfade_t/prev_focus - those animate during a
-	 * slide but are handled by the OVL dst_x pan + the crossfade snap, so they must NOT
-	 * trigger a rebuild (that is what lets a scroll pan instead of re-render). */
-	CC_MIX(m->focus); CC_MIX(m->state); CC_MIX(m->sort_rule);
-	CC_MIX(m->ngames); CC_MIX(m->aspect);
-	c.f = m->sel_world;  CC_MIX(c.u);
-	c.f = m->resume_dim; CC_MIX(c.u);
-	c.f = m->open_y;     CC_MIX(c.u);
-#undef CC_MIX
-	return h;
-}
-uint32_t snes_menu_cardcache_sig(snes_menu *m) { return cc_signature(m); }
-
-/* ---- home-carousel dynamic-state pack/unpack (2-core split over an MMIO channel) ----
- * The per-frame render of the HOME carousel (state==0) depends on exactly these fields;
- * the rest of snes_menu is static after init. cpu0 packs them, publishes over MMIO, and
- * the worker unpacks them into its (static, frozen-snapshot) menu copy before rendering
- * its band. The X-macro keeps pack and unpack in perfect sync. Ints copied raw, floats
- * bit-reinterpreted. See SNES_STATE_NWORDS. */
-#define SNES_STATE_FIELDS(Fi, Ff) \
-	Fi(state) Fi(disp_cur) Fi(disp_sel) Fi(ngames) Fi(sort_rule) Fi(aspect) \
-	Fi(car_navd) Fi(focus) Fi(prev_focus) \
-	Ff(open_y) Ff(clock) Ff(cur_slide_t) Ff(scroll) Ff(scr_speed) Ff(scr_dir) \
-	Ff(cur_scroll_time) Ff(cur_scroll_spd) Ff(car_x) Ff(sel_world) Ff(cont_shift) \
-	Ff(xfade_t) Ff(resume_dim) Ff(screen_oy)
-
-void snes_menu_pack_state(const snes_menu *m, uint32_t *b)
-{
-	unsigned k = 0;
-	union { float f; uint32_t u; } c;
-#define PI(name) b[k++] = (uint32_t)m->name;
-#define PF(name) c.f = m->name; b[k++] = c.u;
-	SNES_STATE_FIELDS(PI, PF)
-#undef PI
-#undef PF
-}
-void snes_menu_unpack_state(snes_menu *m, const uint32_t *b)
-{
-	unsigned k = 0;
-	union { float f; uint32_t u; } c;
-#define UI(name) m->name = (int)b[k++];
-#define UF(name) c.u = b[k++]; m->name = c.f;
-	SNES_STATE_FIELDS(UI, UF)
-#undef UI
-#undef UF
-}
-
-/* The FULL focused card (blue active frame + boxart + icon + dots), composited LIVE
- * on L3 over the L2 dark body. Rendering the whole card here (not just the frame)
- * keeps z-order correct (the boxart covers the frame's opaque screen area) and keeps
- * the focus colour off L2, so a dead-zone walk never rebuilds L2 and the 0.2s
- * crossfade stays smooth. Reuses draw_card with t->l3_focus so the blue frame is
- * drawn instead of the dark one. During the crossfade the outgoing card fades too. */
-static void draw_focus_card(snes_menu *m, snes_target *t)
-{
-	int n = m->ngames, save = t->l3_focus;
-	float prog, ndim;
-	if (m->state != 0 || n <= 0 || !m->card_act) return;
-	prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus) ? m->xfade_t / CAR_XFADE : 0.0f;
-	ndim = 1.0f - 0.5f * m->resume_dim;
-	t->l3_focus = 1;
-	if (prog > 0.003f)   /* outgoing card fading out */
-		draw_card(m, t, m->prev_focus,
-			  640.0f + m->sel_world + CAR_HGAP * (float)ring_delta(m->focus, m->prev_focus, n) + m->cont_shift,
-			  prog, ndim);
 	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1.0f - prog, 1.0f);
-	t->l3_focus = save;
-}
-
-/* The focused card's rounded selection cursor(s), drawn LIVE each frame (they
- * colour-pulse) into the L3 layer. Mirrors EXACTLY the cursor draws inside
- * draw_carousel/draw_card: the focused card's cursor plus, during the 0.2s
- * selection crossfade, the outgoing card's fading cursor. Only when the carousel
- * itself is focused (state 0) and no card<->menubar slide is running. */
-static void draw_focus_cursor(snes_menu *m, snes_target *t)
-{
-	int n = m->ngames;
-	float prog, ndim, cy;
-	const snes_spr_entry *frame = m->card_norm ? m->card_norm : m->card_act;
-	if (m->state != 0 || m->cur_slide_t < CUR_SLIDE_DUR || n <= 0 || !frame) return;
-	prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus) ? m->xfade_t / CAR_XFADE : 0.0f;
-	ndim = 1.0f - 0.5f * m->resume_dim;
-	cy = CAR_CY - RESUME_CARD_DY * m->resume_dim;
-	/* outgoing card's fading cursor (mirrors draw_carousel's non-focused pass) */
-	if (prog > 0.003f) {
-		float cx = 640.0f + m->sel_world +
-			   CAR_HGAP * (float)ring_delta(m->focus, m->prev_focus, n) + m->cont_shift;
-		if (cx >= -280 && cx <= SNES_VW + 280)
-			draw_card_cursor(m, t, cx, cy, prog > 1.0f ? 1.0f : prog, ndim, frame->img);
-	}
-	/* focused card's cursor (dim = 1.0, the focused card stays bright) */
-	{
-		float cx = 640.0f + m->sel_world + m->cont_shift, blue_a = 1.0f - prog;
-		if (blue_a > 0.003f)
-			draw_card_cursor(m, t, cx, cy, blue_a > 1.0f ? 1.0f : blue_a, 1.0f, frame->img);
-	}
-}
-
-/* Un-premultiply a rect of a cache layer from premultiplied to STRAIGHT (coverage)
- * alpha, in place. Opaque (a=255) and empty (a=0) pixels are already straight. The
- * straight value is pr*255/a; the divide is by the PER-PIXEL alpha (variable divisor),
- * which is a hardware divide - ~30-40 cycles on the in-order A55 and the dominant cost
- * of the OVL builds (13.5ms in build_cardcache). Replace it with a 256-entry reciprocal
- * table: sr = (pr * recip[a]) >> 16 where recip[a] = round(255*65536/a). Matches the
- * exact divide within +/-1 LSB (edge rounding the layer-verify already tolerates). */
-static unsigned g_unp_recip[256];   /* recip[a] = round(255*65536/a); pr*recip[a]>>16 = pr*255/a */
-static int g_unp_ready;
-static void cache_unpremult(snes_target *t, int x0, int y0, int x1, int y1)
-{
-	int y, x;
-	if (!g_unp_ready) {   /* lazily build the reciprocal table once */
-		unsigned a;
-		for (a = 1; a < 256; a++) g_unp_recip[a] = (255u * 65536u + a / 2) / a;
-		g_unp_ready = 1;
-	}
-	if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
-	if (x1 > t->W) x1 = t->W; if (y1 > t->H) y1 = t->H;
-	for (y = y0; y < y1; y++) {
-		uint32_t *r = t->fb + (unsigned)y * t->pitch;
-		for (x = x0; x < x1; x++) {
-			uint32_t c = r[x];
-			unsigned a = c >> 24, pr, pg, pb, sr, sg, sb, rc;
-			if (!a || a == 255) continue;
-			rc = g_unp_recip[a];
-			pr = (c >> 16) & 0xff; pg = (c >> 8) & 0xff; pb = c & 0xff;
-			sr = (pr * rc + 32768u) >> 16; sg = (pg * rc + 32768u) >> 16; sb = (pb * rc + 32768u) >> 16;
-			if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
-			r[x] = (a << 24) | (sr << 16) | (sg << 8) | sb;
-		}
-	}
-}
-
-/* Build the cursorless card strip into the caller's panel-sized L2 buffer (t->fb,
- * t->W x t->H, pitch, offx already set to the FB's; offy the FB's letterbox). The
- * cards are rendered position-identically to the live framebuffer (same VIEW_CONTENT
- * transform + aspect offy handling), then un-premultiplied to straight alpha. The
- * non-empty row band [cc_y0,cc_y1] is recorded so the OVL src ROI can be limited. */
-void snes_menu_build_cardcache(snes_menu *m, snes_target *t)
-{
-	int H = t->H, W = t->W, y, x, y0 = t->H, y1 = -1;
-	unsigned i, npix = (unsigned)W * (unsigned)H;
-	float save_cs = m->cont_shift, save_xf = m->xfade_t;
-	t->cache_layer = 1;
-	/* The caller controls the target geometry (offx/offy/W/H/pitch). For the OVL pan
-	 * this is a WIDE, band-height buffer with offx=margin so cards that slide in from
-	 * the edges are pre-rendered (not clipped) and the layer is panned via src_x; the
-	 * caller sets offy to place the card band, so we do NOT override it here. */
-	SUB_BEGIN();
-	for (i = 0; i < npix; i++) t->fb[i] = 0;
-	SUB_END(g_cc_us, 0);
-	/* Render the SETTLED strip: cont_shift=0 (the OVL pans the live cont_shift via
-	 * dst_x, so the cache is position-independent and only rebuilds when the focus/
-	 * order changes, not every frame during a slide) and xfade_t=0 (the 0.2s blue
-	 * crossfade is snapped, so a held scroll does not force a rebuild every frame). */
-	m->cont_shift = 0.0f; m->xfade_t = 0.0f;
-	set_view(m, t, VIEW_CONTENT);
-	draw_carousel(m, t);
-	m->cont_shift = save_cs; m->xfade_t = save_xf;
-	SUB_END(g_cc_us, 1);
-	for (y = 0; y < H; y++) {
-		const uint32_t *r = t->fb + (unsigned)y * t->pitch;
-		for (x = 0; x < W; x++)
-			if (r[x] >> 24) { if (y < y0) y0 = y; y1 = y; break; }
-	}
-	m->cc_y0 = y0; m->cc_y1 = y1;
-	SUB_END(g_cc_us, 2);
-	if (y1 >= y0) cache_unpremult(t, 0, y0, W, y1 + 1);
-	SUB_END(g_cc_us, 3);
-}
-
-/* ===== Producer-offload: pre-rendered normal-card tiles (PRODUCER_OFFLOAD.md) =====
- * The dynamic 2-core coherency wall is a HW limit (cpu0->worker stores invisible), but the
- * worker CAN read static pre-bringup data and its writes ARE seen by cpu0. So the worker
- * pre-renders each NORMAL (non-focused) game card into a tile ONCE at boot from the static
- * pack, and cpu0's build_cardcache blits the tiles instead of re-rendering each card (the
- * expensive boxart min-filter scale + several blits) on every nav/settle rebuild.
- * Phase-exact ONLY in NATIVE view (vsx=1) where the settled strip places cards at integer
- * positions; the caller gates on !m->aspect (4:3 bakes a fractional scale). Tile is
- * STRAIGHT-alpha; blit onto the cache_layer strip premultiplies on the fly (source-over). */
-void snes_menu_render_card_tile(snes_menu *m, int gi, uint32_t *tile)
-{
-	snes_target tt;
-	unsigned i, npix = (unsigned)CARD_TILE_W * (unsigned)CARD_TILE_H;
-	int k; char *z = (char *)&tt;
-	float S = m->aspect ? ASP_CONTENT_S : 1.0f;   /* bake the current view scale into the tile */
-	for (k = 0; k < (int)sizeof(tt); k++) z[k] = 0;
-	tt.fb = tile; tt.pitch = CARD_TILE_W; tt.W = CARD_TILE_W; tt.H = CARD_TILE_H;
-	tt.offx = 0; tt.offy = 0;
-	/* place the card box centre (virtual cx=0, cy=CAR_CY) at the tile centre, at scale S:
-	 * pixel = vs*V + vd, so vdx = TILE_W/2, vdy = TILE_H/2 - S*CAR_CY. */
-	tt.vsx = tt.vsy = S;
-	tt.vdx = (float)(CARD_TILE_W / 2);
-	tt.vdy = (float)(CARD_TILE_H / 2) - S * CAR_CY;
-	tt.cache_layer = 1;
-	for (i = 0; i < npix; i++) tile[i] = 0;
-	/* non-focused L2 card body: dark frame + scaled boxart + player icon + resume dots. */
-	draw_card(m, &tt, gi, 0.0f, 0.0f, 1.0f);
-	cache_unpremult(&tt, 0, 0, CARD_TILE_W, CARD_TILE_H);   /* premult -> straight for re-blit */
-	/* draw_card wrote the tile in FRAMEBUFFER byte-order (0xAARRGGBB); snes_blit_raw reads it
-	 * back through the texture path which expects RGBA byte-order, so swap R<->B once now. */
-	for (i = 0; i < npix; i++) {
-		uint32_t p = tile[i];
-		tile[i] = (p & 0xff00ff00u) | ((p >> 16) & 0xffu) | ((p & 0xffu) << 16);
-	}
-}
-
-/* like draw_carousel's cache-layer pass but BLITS the pre-rendered (already view-scaled) tile
- * for each non-focused card at the card's VIEW-TRANSFORMED centre, into a vsx=1 target (the
- * tile carries the scale). Focused card is skipped (composited on L3 as usual). */
-static void draw_carousel_tiled(snes_menu *m, snes_target *t, const uint32_t *tiles)
-{
-	int n = m->ngames, j;
-	float S = m->aspect ? ASP_CONTENT_S : 1.0f;
-	/* VIEW_CONTENT offsets - IDENTITY in native (set_view returns 1,1,0,0 when !aspect) */
-	float vdx = m->aspect ? (640.0f - S * 640.0f) : 0.0f;
-	float vdy = m->aspect ? (480.0f - S * 360.0f) : 0.0f;
-	float cys = S * CAR_CY + vdy;
-	if (n <= 0) return;
-	for (j = 0; j < n; j++) {
-		float wx, cx;
-		if (j == m->focus) continue;
-		wx = m->sel_world + CAR_HGAP * (float)ring_delta(m->focus, j, n) + m->cont_shift;
-		cx = 640.0f + wx;
-		{ int cm = t->cache_layer ? (280 + (int)CAR_HGAP) : 280;
-		  if (cx < -cm || cx > SNES_VW + cm) continue; }
-		snes_blit_raw(t, tiles + (unsigned)j * (unsigned)(CARD_TILE_W * CARD_TILE_H),
-			      CARD_TILE_W, CARD_TILE_H, S * cx + vdx, cys);
-	}
-}
-
-/* tiled equivalent of snes_menu_build_cardcache for the non-resume settled strip (caller
- * ensures m->resume_dim==0). EXACT in native; in 4:3 the tile is re-sampled at a fractional
- * position (host-measured near-exact). The target view is forced to identity: the tiles
- * already carry the aspect scale, and positions are pre-transformed by draw_carousel_tiled. */
-void snes_menu_build_cardcache_tiled(snes_menu *m, snes_target *t, const uint32_t *tiles)
-{
-	int H = t->H, W = t->W, y, x, y0 = t->H, y1 = -1;
-	unsigned i, npix = (unsigned)W * (unsigned)H;
-	float save_cs = m->cont_shift, save_xf = m->xfade_t;
-	t->cache_layer = 1;
-	for (i = 0; i < npix; i++) t->fb[i] = 0;
-	m->cont_shift = 0.0f; m->xfade_t = 0.0f;
-	snes_target_view(t, 1.0f, 1.0f, 0.0f, 0.0f);   /* tiles carry the scale; positions pre-baked */
-	draw_carousel_tiled(m, t, tiles);
-	m->cont_shift = save_cs; m->xfade_t = save_xf;
-	for (y = 0; y < H; y++) {
-		const uint32_t *r = t->fb + (unsigned)y * t->pitch;
-		for (x = 0; x < W; x++)
-			if (r[x] >> 24) { if (y < y0) y0 = y; y1 = y; break; }
-	}
-	m->cc_y0 = y0; m->cc_y1 = y1;
-	if (y1 >= y0) cache_unpremult(t, 0, y0, W, y1 + 1);
-}
-
-/* Band-limited variant for the 2-core split: build ONLY buffer rows [r0, r1) of the
- * strip - clear, draw (clipped to the scanline band so draw_carousel writes only those
- * rows), non-empty scan, and un-premultiply, all limited to [r0, r1). Two disjoint calls
- * (e.g. [0, H/2) on cpu0 and [H/2, H) on cpu1) produce a strip pixel-identical to
- * snes_menu_build_cardcache, halving the ~30ms build. Each call records its band's
- * non-empty sub-range into cc_y0/cc_y1; the caller unions the two for the OVL src ROI.
- * Leaves snes_menu_build_cardcache untouched so the single-core menu is unaffected.
- * Host-validated exact (host_render.c "vsplit" mode). */
-void snes_menu_build_cardcache_band(snes_menu *m, snes_target *t, int r0, int r1)
-{
-	int W = t->W, y, x, y0, y1;
-	int save_b0 = t->band_y0, save_b1 = t->band_y1;
-	float save_cs = m->cont_shift, save_xf = m->xfade_t;
-	if (r0 < 0) r0 = 0;
-	if (r1 > t->H) r1 = t->H;
-	y0 = r1; y1 = r0 - 1;
-	t->cache_layer = 1;
-	/* clear only this band's rows */
-	for (y = r0; y < r1; y++) {
-		uint32_t *r = t->fb + (unsigned)y * t->pitch;
-		for (x = 0; x < W; x++) r[x] = 0;
-	}
-	/* scanline band clip: band_y0/band_y1 are absolute fb rows (here == buffer rows),
-	 * so draw_carousel writes only rows [r0, r1). set_view does not touch the band. */
-	t->band_y0 = r0; t->band_y1 = r1;
-	m->cont_shift = 0.0f; m->xfade_t = 0.0f;
-	set_view(m, t, VIEW_CONTENT);
-	draw_carousel(m, t);
-	m->cont_shift = save_cs; m->xfade_t = save_xf;
-	t->band_y0 = save_b0; t->band_y1 = save_b1;
-	/* non-empty scan within this band */
-	for (y = r0; y < r1; y++) {
-		const uint32_t *r = t->fb + (unsigned)y * t->pitch;
-		for (x = 0; x < W; x++)
-			if (r[x] >> 24) { if (y < y0) y0 = y; y1 = y; break; }
-	}
-	m->cc_y0 = y0; m->cc_y1 = y1;
-	if (y1 >= y0) cache_unpremult(t, 0, y0, W, y1 + 1);
-}
-
-/* Signature of everything that changes the SETTLED focused-card body (frame+boxart+
- * icons at cont_shift=0). EXCLUDES cont_shift (the pan, handled by the blit shift) and
- * m->clock (only the cursor pulses, drawn live). When unchanged the cached body is reused. */
-static uint32_t fcc_signature(snes_menu *m)
-{
-	union { float f; uint32_t u; } c;
-	uint32_t h = 2166136261u;
-#define FCC_MIX(v) do { h = (h ^ (uint32_t)(v)) * 16777619u; } while (0)
-	FCC_MIX(m->focus); FCC_MIX(m->state); FCC_MIX(m->ngames); FCC_MIX(m->aspect);
-	FCC_MIX(m->sort_rule);
-	c.f = m->sel_world;  FCC_MIX(c.u);
-	c.f = m->resume_dim; FCC_MIX(c.u);
-#undef FCC_MIX
-	return h ? h : 1u;
-}
-
-/* Clear + render the live selection cursor into the caller's panel-sized L3 buffer.
- * A fixed rect covering every cursor position (focused-card cursor + the card<->
- * menubar slide path, both aspects) is cleared each frame - so the double-buffered
- * L3 never trails - then the slide cursor (identity view) OR the static focus
- * cursor (content view) is drawn and un-premultiplied to straight alpha. */
-void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t, int full_clear)
-{
-	/* L3 lives in a DRAM-bandwidth-bound region, so touching the whole 1280x680 cursor
-	 * rect every frame (clear + un-premult scan) costs ~13ms on device and blows the
-	 * frame budget. Instead touch only the focused (and, mid-crossfade, outgoing) card's
-	 * bounding box. Per-L3-buffer previous bbox (pv*) lets the clear also erase where the
-	 * card was up to 2 frames ago in THIS double-buffer, so the fading outgoing card
-	 * leaves no trail. flip pairs each call with one physical buffer (the driver flips
-	 * its L3 buffer once per call, in lockstep). */
-	static int pv0x[2], pv0y[2], pv1x[2] = {-1, -1}, pv1y[2] = {-1, -1};
-	static int flip;
-	int buf = flip & 1, y, x;
-	int bx0, by0, bx1, by1;   /* this frame's draw bbox (panel coords) */
-	int cx0, cy0, cx1, cy1;   /* clear + un-premult bbox = union(prev[buf], current) */
-	flip ^= 1;
-
-	t->cache_layer = 1;
-	if (m->aspect) t->offy = 0;
-
-	/* Re-entering the layered state: both L3 buffers hold stale content from before the
-	 * excursion, so force a full clear of both by seeding their previous bbox to full. */
-	if (full_clear) {
-		pv0x[0] = pv0x[1] = SNES_CURSOR_X0; pv0y[0] = pv0y[1] = SNES_CURSOR_Y0;
-		pv1x[0] = pv1x[1] = SNES_CURSOR_X1; pv1y[0] = pv1y[1] = SNES_CURSOR_Y1;
-	}
-
-	/* This frame's draw bbox. During the menubar<->carousel slide the cursor travels the
-	 * full height, so fall back to the whole rect; otherwise it is just the card band. */
-	if (m->cur_slide_t < CUR_SLIDE_DUR || m->state != 0 || m->ngames <= 0 || !m->card_act) {
-		bx0 = SNES_CURSOR_X0; by0 = SNES_CURSOR_Y0;
-		bx1 = SNES_CURSOR_X1; by1 = SNES_CURSOR_Y1;
-	} else {
-		float vsx = m->aspect ? ASP_CONTENT_S : 1.0f;
-		float vdx = m->aspect ? (640.0f - ASP_CONTENT_S * 640.0f) : 0.0f;
-		float vdy = m->aspect ? (480.0f - ASP_CONTENT_S * 360.0f) : 0.0f;
-		float cyv = CAR_CY - RESUME_CARD_DY * m->resume_dim;
-		float hw = m->card_fw * 0.5f * CAR_SC + 40.0f;   /* + cursor/icon/dot slop */
-		float hh = m->card_fh * 0.5f * CAR_SC + 40.0f;
-		float prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus) ? m->xfade_t / CAR_XFADE : 0.0f;
-		float cxc = 640.0f + m->sel_world + m->cont_shift;   /* focused card centre (virtual) */
-		int px0 = t->offx + (int)(vsx * (cxc - hw) + vdx);
-		int px1 = t->offx + (int)(vsx * (cxc + hw) + vdx) + 1;
-		bx0 = px0; bx1 = px1;
-		if (prog > 0.003f) {   /* outgoing card, one slot away */
-			float cxo = cxc + CAR_HGAP * (float)ring_delta(m->focus, m->prev_focus, m->ngames);
-			px0 = t->offx + (int)(vsx * (cxo - hw) + vdx);
-			px1 = t->offx + (int)(vsx * (cxo + hw) + vdx) + 1;
-			if (px0 < bx0) bx0 = px0; if (px1 > bx1) bx1 = px1;
-		}
-		by0 = t->offy + (int)(vsx * (cyv - hh) + vdy);
-		by1 = t->offy + (int)(vsx * (cyv + hh) + vdy) + 1;
-		if (bx0 < 0) bx0 = 0; if (by0 < 0) by0 = 0;
-		if (bx1 > t->W) bx1 = t->W; if (by1 > t->H) by1 = t->H;
-		if (bx1 < bx0) bx1 = bx0; if (by1 < by0) by1 = by0;
-	}
-
-	/* clear region = union(this buffer's previous draw bbox, this frame's bbox) */
-	cx0 = bx0; cy0 = by0; cx1 = bx1; cy1 = by1;
-	if (pv1x[buf] >= pv0x[buf]) {
-		if (pv0x[buf] < cx0) cx0 = pv0x[buf]; if (pv0y[buf] < cy0) cy0 = pv0y[buf];
-		if (pv1x[buf] > cx1) cx1 = pv1x[buf]; if (pv1y[buf] > cy1) cy1 = pv1y[buf];
-	}
-	if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0;
-	if (cx1 > t->W) cx1 = t->W; if (cy1 > t->H) cy1 = t->H;
-	SUB_BEGIN();
-	for (y = cy0; y < cy1; y++) {
-		uint32_t *r = t->fb + (unsigned)y * t->pitch;
-		for (x = cx0; x < cx1; x++) r[x] = 0;
-	}
-	SUB_END(g_cur_us, 0);
-
-	/* Focused card body (blue frame + boxart + icons) over the L2 dark body. Re-rendering
-	 * it every frame is ~4ms on the A55; instead render the SETTLED body once into the fcc
-	 * and blit it into L3 shifted by the integer pan. Skipped mid-crossfade (the blue frame
-	 * animates) and during the menubar slide (full-rect path), where it renders live. */
-	{
-		float prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus) ? m->xfade_t / CAR_XFADE : 0.0f;
-		int cacheable = (m->fcc && prog <= 0.003f && m->state == 0 && m->ngames > 0
-				 && m->card_act && m->cur_slide_t >= CUR_SLIDE_DUR);
-#ifdef AYANEO_FASTPAN_L3
-		/* FAST-PAN fps cut: while actively scrolling (cont_shift well off centre) the crossfade
-		 * would force a ~4.4ms live focused-card body render EVERY frame (fcc not usable mid-
-		 * xfade) -> frame overruns a vsync -> the tear-free double-barrier halves it to 15fps.
-		 * The moving cards already read clearly from the L2 dark strip, so SKIP the L3 focused
-		 * body during a fast pan (draw only the cursor below); the blue highlight settles back
-		 * in the instant the scroll stops. Render-cost only - no tearing risk. */
-		if ((m->cont_shift > 40.0f || m->cont_shift < -40.0f) && m->state == 0
-		    && m->cur_slide_t >= CUR_SLIDE_DUR) {
-			m->fcc_ready = 0;   /* body was not drawn; force a rebuild when it settles */
-		} else
-#endif
-		if (cacheable) {
-			float vsx = m->aspect ? ASP_CONTENT_S : 1.0f;
-			int shift_px = (int)(m->cont_shift * vsx + (m->cont_shift >= 0.0f ? 0.5f : -0.5f));
-			uint32_t sig = fcc_signature(m);
-			if (!m->fcc_ready || m->fcc_sig != sig) {
-				/* rebuild: render the SETTLED (cont_shift=0) body into the fcc at its
-				 * canonical bbox (the live bbox shifted back by the pan, + slop so the
-				 * per-frame +/-1px rounding of the blit source never reads outside it). */
-				snes_target ct = *t;
-				float save = m->cont_shift, save_xf = m->xfade_t;
-				ct.fb = m->fcc;
-				m->cont_shift = 0.0f; m->xfade_t = 0.0f;   /* fully settled body */
-				m->fcc_x0 = bx0 - shift_px - 4; m->fcc_x1 = bx1 - shift_px + 4;
-				m->fcc_y0 = by0; m->fcc_y1 = by1;
-				if (m->fcc_x0 < 0) m->fcc_x0 = 0; if (m->fcc_x1 > t->W) m->fcc_x1 = t->W;
-				for (y = m->fcc_y0; y < m->fcc_y1; y++) {
-					uint32_t *r = m->fcc + (unsigned)y * t->pitch;
-					for (x = m->fcc_x0; x < m->fcc_x1; x++) r[x] = 0;
-				}
-				set_view(m, &ct, VIEW_CONTENT);
-				draw_focus_card(m, &ct);
-				m->cont_shift = save; m->xfade_t = save_xf;
-				m->fcc_sig = sig; m->fcc_ready = 1;
-			}
-			/* blit fcc[canonical] -> L3[live], shifted by the integer pan (exact) */
-			for (y = by0; y < by1; y++) {
-				uint32_t *d = t->fb + (unsigned)y * t->pitch;
-				const uint32_t *s = m->fcc + (unsigned)y * t->pitch;
-				for (x = bx0; x < bx1; x++) {
-					int sx = x - shift_px;
-					d[x] = (sx >= m->fcc_x0 && sx < m->fcc_x1) ? s[sx] : 0u;
-				}
-			}
-		} else {
-			set_view(m, t, VIEW_CONTENT);
-			draw_focus_card(m, t);
-			m->fcc_ready = 0;   /* crossfade/slide changed the body; rebuild next time */
-		}
-	}
-	SUB_END(g_cur_us, 1);
-	if (!draw_focus_slide(m, t)) {
-		set_view(m, t, VIEW_CONTENT);
-		draw_focus_cursor(m, t);
-	}
-	SUB_END(g_cur_us, 2);
-	cache_unpremult(t, cx0, cy0, cx1, cy1);
-	SUB_END(g_cur_us, 3);
-
-	pv0x[buf] = bx0; pv0y[buf] = by0; pv1x[buf] = bx1; pv1y[buf] = by1;
 }
 
 /* ---- bottom thumbnail filmstrip (ports sys_thumbnail_icon: a fixed 21-icon
@@ -1309,11 +768,7 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 	if (m->card_act) {
 		static const uint16_t seq[13] = { 0,1,1,1,1,2,2,2,1,1,0,0,0 };
 		static const uint16_t sx[3] = { 145, 159, 173 };
-		/* positive modulo: m->clock can be transiently negative during a
-		 * transition, and C's % keeps the sign, so a bare %13 would index
-		 * seq[] with a negative subscript (out-of-bounds read). */
-		int ti = (int)(m->clock / 0.03333f);
-		int fr = seq[((ti % 13) + 13) % 13];
+		int fr = seq[((int)(m->clock / 0.03333f)) % 13];
 		snes_spr_entry cur = { m->card_act->img, sx[fr], 881, 12, 8, 6, 4 };
 		/* sit in the gap between the focused card's bottom (~y498) and the
 		 * filmstrip top (~y537): centred ~517 clears the card yet stays above
@@ -2855,9 +2310,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	else              draw_chrome(m, t);
 	PERF_END(1);
 	set_view(m, t, VIEW_CONTENT);
-	/* OVL layered L0 pass: the card bodies live on the L2 hardware layer, so skip
-	 * them here (draw_carousel would re-blit ~7 cards every frame). See OVL_LAYERS.md. */
-	if (!t->ovl_split) draw_carousel(m, t);
+	draw_carousel(m, t);
 	PERF_END(2);
 	draw_filmstrip(m, t);
 	PERF_END(3);
@@ -2882,9 +2335,8 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	}
 	/* the blue selection cursor sliding between the focused card and menubar item
 	 * on Up/Down (state 0/1); draws in its own identity view, replacing the static
-	 * card/menubar cursors which are suppressed while it runs. In the OVL layered L0
-	 * pass it is composited on the L3 layer instead (above the L2 cards). */
-	if (!t->ovl_split) draw_focus_slide(m, t);
+	 * card/menubar cursors which are suppressed while it runs. */
+	draw_focus_slide(m, t);
 
 	/* the white title bar (caption_title, 348x22 @3x = 1044x66), raised in resume;
 	 * drawn here (not in the chrome cache) so it tracks the game title. */

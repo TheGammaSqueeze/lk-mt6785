@@ -770,57 +770,6 @@ static unsigned int rd32(const unsigned char *p)
 /* Present display buffer at physical 'pa'. Alternating pa each frame forces the
  * OVL to re-latch (config_input with an unchanged address is a no-op in video
  * mode); a bare trigger alone never pushes a new frame. */
-#if defined(AYANEO_SNES) && defined(AYANEO_DEBUG_LOGGING)
-/* OVL milestone (de-risk step for a hardware-composited 60fps menu): composite a
- * bouncing sprite on a SECOND OVL layer, on top of the menu framebuffer, using
- * only per-frame register writes. Proves multi-layer OVL config + trigger works
- * on HW, that a plain DRAM buffer is OVL-DMA-readable, and that the layer moves
- * at the menu frame rate. Menu FB is layer 0 (OVL0_2L, bottom); this sprite is
- * global layer 2 (OVL0, composited on top). Debug build only. */
-#define OVL_TST_PA   0x54000000u   /* free DRAM (former bigcore comms region) */
-#define OVL_TST_W    128u
-#define OVL_TST_H    128u
-static int      s_ovl_tst_ready;
-static unsigned s_ovl_tst_frame;
-static void ayaneo_ovl_test_sprite(void)
-{
-	disp_input_config in;
-	unsigned int *spr = (unsigned int *)(unsigned long)OVL_TST_PA;
-	unsigned tri, px, py, x, y;
-
-	if (!s_ovl_tst_ready) {
-		for (y = 0; y < OVL_TST_H; y++)
-			for (x = 0; x < OVL_TST_W; x++) {
-				int edge = (x < 6u || y < 6u || x >= OVL_TST_W - 6u || y >= OVL_TST_H - 6u);
-				/* ARGB (same convention the menu's ayaneo_fill uses): opaque
-				 * cyan border, semi-transparent magenta fill */
-				spr[y * OVL_TST_W + x] = edge ? 0xFF00FFFFu : 0xB0FF00FFu;
-			}
-		arch_clean_cache_range((addr_t)OVL_TST_PA, OVL_TST_W * OVL_TST_H * 4u);
-		s_ovl_tst_ready = 1;
-	}
-	s_ovl_tst_frame++;
-	tri = s_ovl_tst_frame % 2000u; px = (tri < 1000u) ? tri : 2000u - tri;   /* 0..1000 */
-	tri = s_ovl_tst_frame % 1000u; py = (tri < 500u)  ? tri : 1000u - tri;   /* 0..500  */
-
-	memset(&in, 0, sizeof(in));
-	in.layer     = 2;                 /* global index 2 -> OVL0, on top of the FB */
-	in.layer_en  = 1;
-	in.fmt       = redoffset_32bit ? eBGRA8888 : eRGBA8888;
-	in.addr      = OVL_TST_PA;
-	in.src_w     = OVL_TST_W;
-	in.src_h     = OVL_TST_H;
-	in.src_pitch = OVL_TST_W * 4u;
-	in.dst_x     = px;
-	in.dst_y     = py;
-	in.dst_w     = OVL_TST_W;
-	in.dst_h     = OVL_TST_H;
-	in.aen       = 1;
-	in.alpha     = 0xff;
-	primary_display_config_input(&in);
-}
-#endif
-
 static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
 			   unsigned int pitch_w)
 {
@@ -958,27 +907,6 @@ unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigne
 
 /* flush the whole back buffer and present it, then flip */
 extern int priamry_display_wait_for_vsync(void);
-
-/* The explicit post-swap vsync wait is only needed when the frame's render OVERRAN a
- * vsync (then config_input's FRAME_DONE wait has already passed and is a no-op, so the
- * swap would tear). For frames that fit in a vsync (submenus, GBC/GBA) it is a pure
- * second barrier that halves the rate. The menu driver sets this each frame from the
- * measured render time; default 0 = wait (safe for callers that do not set it). */
-/* PRE-config vsync: wait for vblank BEFORE writing the OVL layer config (so the direct,
- * non-CMDQ config latches right at vblank = tear-free) and do NOT wait again after the swap.
- * That is ONE barrier, vs the old post-swap wait which stacked on config_input's FRAME_DONE
- * wait = TWO barriers and halved the moving rate (30fps -> 15fps). Used for moving/pan frames. */
-static int s_present_presync;
-void ayaneo_present_presync_vsync(int p) { s_present_presync = p; }
-static int s_present_skip_vsync;
-#ifdef AYANEO_ALWAYS_VSYNC
-/* Guaranteed tear-free: ignore the skip hint and ALWAYS wait for vblank after the swap
- * (matches the old single-core no-tear behaviour). May cap movement at 30fps. */
-void ayaneo_present_skip_vsync(int skip) { (void)skip; s_present_skip_vsync = 0; }
-#else
-void ayaneo_present_skip_vsync(int skip) { s_present_skip_vsync = skip; }
-#endif
-
 void ayaneo_canvas_present(void)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
@@ -988,176 +916,15 @@ void ayaneo_canvas_present(void)
 	arch_clean_cache_range((unsigned int)((unsigned char *)fb_addr +
 			       (s_fb_flip ? fb_size : 0)), fb_size);
 	ayaneo_present(dpa, W, H, pitch_w);
-	/* NOTE (perf): primary_display_config_input() inside ayaneo_present ALREADY blocks
-	 * on DISP_PATH_EVENT_FRAME_DONE when the video path is busy, i.e. it waits for the
-	 * currently-scanned frame to finish before reconfiguring the OVL to this new buffer.
-	 * That is the same safety the explicit vsync wait provided, so the two are redundant
-	 * and cost ~2 vsyncs of present time (~27ms measured -> 20fps instead of the
-	 * render-bound rate) - BUT that only holds when the render fits in a frame. This is
-	 * the single-buffer present (moving carousel, submenus, GBC/GBA), whose render can
-	 * EXCEED a frame (the scrolling carousel is ~31ms). Then config_input's FRAME_DONE
-	 * wait has already passed and is a no-op, the swap lands mid-scanout, and the loop
-	 * redraws the still-displayed buffer -> tearing. So keep the explicit vsync wait
-	 * here to stay tear-free; the layered idle present omits it (its render is < 1
-	 * frame, so its FRAME_DONE wait already syncs, and it must stay 60fps). */
-	if (!s_present_skip_vsync)
-		priamry_display_wait_for_vsync();
+	/* Video mode: the OVL latches the new buffer address at the NEXT vsync, but
+	 * primary_display_trigger returns immediately. Without waiting, the loop
+	 * starts redrawing the OTHER buffer while this one is still being scanned out
+	 * -> tearing + partial-black. Block for one vsync so the swap is live before
+	 * we hand the old buffer back to the renderer. This also paces to the panel
+	 * (clean 60/N fps) instead of racing it. */
+	priamry_display_wait_for_vsync();
 	s_fb_flip ^= 1;
 }
-
-#ifdef AYANEO_SNES
-/* ==== OVL hardware layering for the SNES home menu (see OVL_LAYERS.md) ====
- * The menu driver renders the framebuffer (L0) with the card bodies + selection
- * cursor skipped, builds the cursorless card strip into an ARGB buffer (L2, only
- * on navigation), and renders the pulsing cursor into another ARGB buffer (L3,
- * every frame). This presents them as three OVL layers composited in hardware, so
- * the CPU stops re-blitting ~7 cards per frame. Straight (coverage) alpha, aen=1,
- * const alpha 0xff - the same config the bouncing-sprite milestone proved. */
-
-/* fill a disp_input_config for an upper ARGB layer over src ROI [y0, y0+h) x [0, w) */
-static void ayaneo_ovl_fill_argb(disp_input_config *in, int layer, unsigned int pa,
-				 int y0, int w, int h, unsigned int pitch_w)
-{
-	memset(in, 0, sizeof(*in));
-	in->layer     = layer;
-	in->layer_en  = 1;
-	in->fmt       = redoffset_32bit ? eBGRA8888 : eRGBA8888;
-	in->addr      = pa;
-	in->src_y     = y0;
-	in->src_w     = w;
-	in->src_h     = h;
-	in->src_pitch = pitch_w * 4;
-	in->dst_y     = y0;
-	in->dst_w     = w;
-	in->dst_h     = h;
-	in->aen       = 1;
-	in->alpha     = 0xff;
-}
-
-/* Present the menu framebuffer (L0) plus, when in the layered home state, the card
- * cache (L2) and cursor (L3). A 0 addr disables that upper layer (sticky OVL state,
- * so unused layers MUST be explicitly disabled on the layered<->plain transition).
- * ALL three layers go through ONE primary_display_config_input_multi() so the
- * video-mode FRAME_DONE wait is paid ONCE, not once per layer (3 separate
- * config_input calls each stall a vsync and dropped the present to ~20fps). L2 is
- * cleaned only when just rebuilt (l2_clean); L3 is redrawn every frame so its band
- * is always cleaned. L2/L3 are fixed identity-mapped DRAM (VA==PA); L3 is
- * left-of-centre width, L2 full width. */
-#define SNES_OVL_L3_W  1280   /* full width: L3 now carries the blue focus frame too */
-/* L2 pan-cache geometry - MUST match snes_menu.h SNES_L2_*. The strip is a WIDE,
- * band-height buffer; the visible 1280 window is panned by src_x (l2_pan). */
-#define SNES_L2_MARGIN_D  608
-#define SNES_L2_W_D       (1280 + 2 * SNES_L2_MARGIN_D)
-#define SNES_L2_BAND_Y0_D 300
-#define SNES_L2_BAND_H_D  384
-/* Per-phase present timing (debug build only) so the UART log can break a slow
- * present down into its cache-flush / config / vsync parts. Filled every call;
- * the driver logs a throttled summary. us = ticks / 13 (13 MHz gpt4). */
-#ifdef AYANEO_DEBUG_LOGGING
-extern unsigned gpt4_get_current_tick(void);
-unsigned g_snes_disp_us[6];   /* [0]L0clean [1]L2clean [2]L3clean [3]config [4]trigger [5]vsync */
-#define DPH(idx, a, b) do { g_snes_disp_us[idx] = ((b) - (a)) / 13u; } while (0)
-#else
-#define DPH(idx, a, b) do { } while (0)
-#endif
-
-void ayaneo_canvas_present_layers(unsigned int l2_pa, int l2_pan, int l2_clean,
-				  unsigned int l3_pa, int l3_y0, int l3_y1)
-{
-	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
-	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
-	unsigned int dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
-	disp_input_config in[3];
-#ifdef AYANEO_DEBUG_LOGGING
-	unsigned tk0, tk1;
-	tk0 = gpt4_get_current_tick();
-#endif
-
-	/* L0 = framebuffer: flush the back buffer */
-	arch_clean_cache_range((unsigned int)((unsigned char *)fb_addr +
-			       (s_fb_flip ? fb_size : 0)), fb_size);
-#ifdef AYANEO_DEBUG_LOGGING
-	tk1 = gpt4_get_current_tick(); DPH(0, tk0, tk1); tk0 = tk1;
-	g_snes_disp_us[1] = 0;   /* L2 clean: 0 unless rebuilt below */
-#endif
-	memset(&in[0], 0, sizeof(in[0]));
-	in[0].layer = FB_LAYER; in[0].layer_en = 1;
-	in[0].fmt = redoffset_32bit ? eBGRA8888 : eRGBA8888;
-	in[0].addr = dpa; in[0].src_w = W; in[0].src_h = H; in[0].src_pitch = pitch_w * 4;
-	in[0].dst_w = W; in[0].dst_h = H; in[0].aen = 1; in[0].alpha = 0xff;
-
-	/* L2 = cursorless card cache: a WIDE band-height buffer PANNED by src_x=l2_pan.
-	 * The 1280-wide visible window reads columns [l2_pan, l2_pan+1280) of the wide
-	 * buffer and lands at panel rows [BAND_Y0, BAND_Y0+BAND_H). On a rebuild the whole
-	 * band buffer is flushed (any column may be read as the pan sweeps). */
-	if (l2_pa) {
-		int pan = l2_pan;
-		if (pan < 0) pan = 0;
-		else if (pan > SNES_L2_W_D - (int)W) pan = SNES_L2_W_D - (int)W;
-		if (l2_clean)
-			arch_clean_cache_range(l2_pa, (unsigned)SNES_L2_W_D * SNES_L2_BAND_H_D * 4u);
-#ifdef AYANEO_DEBUG_LOGGING
-		tk1 = gpt4_get_current_tick(); DPH(1, tk0, tk1); tk0 = tk1;
-#endif
-		memset(&in[1], 0, sizeof(in[1]));
-		in[1].layer = 2; in[1].layer_en = 1;
-		in[1].fmt = redoffset_32bit ? eBGRA8888 : eRGBA8888;
-		in[1].addr = l2_pa;
-		in[1].src_x = pan; in[1].src_y = 0;
-		in[1].src_w = W; in[1].src_h = SNES_L2_BAND_H_D;
-		in[1].src_pitch = SNES_L2_W_D * 4;
-		in[1].dst_x = 0; in[1].dst_y = SNES_L2_BAND_Y0_D;
-		in[1].dst_w = W; in[1].dst_h = SNES_L2_BAND_H_D;
-		in[1].aen = 1; in[1].alpha = 0xff;
-	} else {
-		memset(&in[1], 0, sizeof(in[1])); in[1].layer = 2; in[1].layer_en = 0;
-	}
-
-	/* L3 = live selection cursor (left-of-centre width band, cleaned each frame) */
-	if (l3_pa && l3_y1 > l3_y0) {
-		int h = l3_y1 - l3_y0;
-		arch_clean_cache_range(l3_pa + (unsigned)l3_y0 * pitch_w * 4u,
-				       (unsigned)h * pitch_w * 4u);
-		ayaneo_ovl_fill_argb(&in[2], 3, l3_pa, l3_y0, SNES_OVL_L3_W, h, pitch_w);
-	} else {
-		memset(&in[2], 0, sizeof(in[2])); in[2].layer = 3; in[2].layer_en = 0;
-	}
-#ifdef AYANEO_DEBUG_LOGGING
-	tk1 = gpt4_get_current_tick(); DPH(2, tk0, tk1); tk0 = tk1;
-#endif
-
-	/* PRE-config vblank sync (moving/pan frames): the cache cleans above are done, so wait
-	 * for vblank NOW and write the config right at the frame boundary. config_input_multi's
-	 * own FRAME_DONE wait is then a near-no-op (path just entered vblank), so this is ONE
-	 * barrier - tear-free WITHOUT the extra post-swap wait that halved the rate to 15fps. */
-	if (s_present_presync)
-		priamry_display_wait_for_vsync();
-	/* one FRAME_DONE wait + one path config for all three layers, then trigger */
-	primary_display_config_input_multi(in, 3);
-#ifdef AYANEO_DEBUG_LOGGING
-	tk1 = gpt4_get_current_tick(); DPH(3, tk0, tk1); tk0 = tk1;
-#endif
-	primary_display_trigger(TRUE);
-#ifdef AYANEO_DEBUG_LOGGING
-	tk1 = gpt4_get_current_tick(); DPH(4, tk0, tk1); tk0 = tk1;
-#endif
-	/* Sync the swap to vblank on any frame that OVERRAN a vsync. A frame that fits (steady
-	 * idle) is synced by config_input's FRAME_DONE wait and must NOT wait again (that would
-	 * halve it to 30fps), so the driver sets ayaneo_present_skip_vsync(1) when the whole
-	 * frame's CPU work was under a vsync. When it overran (an L2 rebuild, the layer-disable
-	 * frame, OR a live crossfade render during movement), FRAME_DONE has already passed and
-	 * is a no-op, so the swap would land mid-scanout and TEAR - do the explicit wait. Keying
-	 * on the measured overrun (not just l2_clean) is what stops the movement/idle flicker:
-	 * overrunning pan frames used to skip this wait and tear. */
-	if (!s_present_presync && (!s_present_skip_vsync || !l2_pa))
-		priamry_display_wait_for_vsync();
-#ifdef AYANEO_DEBUG_LOGGING
-	tk1 = gpt4_get_current_tick(); DPH(5, tk0, tk1);
-#endif
-	s_fb_flip ^= 1;
-}
-#undef DPH
-#endif /* AYANEO_SNES */
 
 #ifdef AYANEO_GBC   /* GBC-specific overlay/OSD/show_frame (uses GBC geometry + menu) */
 /*

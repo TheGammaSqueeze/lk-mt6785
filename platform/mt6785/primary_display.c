@@ -1105,46 +1105,6 @@ int primary_display_config_input(disp_input_config* input)
 	return ret;
 }
 
-/* Configure SEVERAL OVL input layers with a SINGLE video-mode FRAME_DONE wait and
- * one dpmgr_path_config, instead of one wait PER layer. Calling
- * primary_display_config_input() N times stalls N vsyncs (each call waits
- * FRAME_DONE when the video path is busy), which drops a 3-layer present to ~20fps.
- * Same effect as configuring each layer then triggering, but the busy wait is paid
- * once. Layers are applied in array order; ovl_config[input->layer] selects the slot. */
-int primary_display_config_input_multi(disp_input_config *inputs, int n)
-{
-	int ret = 0, i;
-	disp_ddp_path_config data_config;
-
-	if (!inputs || n <= 0)
-		return -1;
-
-	memcpy((void*)&data_config, (void*)dpmgr_path_get_last_config(pgc->dpmgr_handle),
-	       sizeof(disp_ddp_path_config));
-	data_config.dst_dirty = 0;
-	data_config.ovl_dirty = 0;
-	data_config.rdma_dirty = 0;
-	data_config.wdma_dirty = 0;
-
-	_primary_path_lock();
-
-	if (pgc->mode == DIRECT_LINK_MODE || pgc->mode == DECOUPLE_MODE) {
-		if (dpmgr_path_is_busy(pgc->dpmgr_handle) && primary_display_is_video_mode())
-			dpmgr_wait_event_timeout(pgc->dpmgr_handle, DISP_PATH_EVENT_FRAME_DONE, HZ*1);
-		for (i = 0; i < n; i++)
-			_convert_disp_input_to_ovl(&(data_config.ovl_config[inputs[i].layer]), &inputs[i]);
-		data_config.ovl_dirty = 1;
-		ret = dpmgr_path_config(pgc->dpmgr_handle, &data_config, primary_display_use_cmdq);
-		pgc->need_trigger_overlay = 1;
-	} else {
-		DISPCHECK("config_input_multi: unsupported primary mode(%d)\n", (unsigned int)pgc->mode);
-	}
-
-	_primary_path_unlock();
-
-	return ret;
-}
-
 int primary_display_is_video_mode(void)
 {
 	//we should store the video/cmd mode in runtime, because  will support cmd/vdo dynamic switch

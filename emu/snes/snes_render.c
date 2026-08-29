@@ -38,16 +38,7 @@ static inline int ifloor(float x) { int i = (int)x; return (x < 0 && (float)i !=
  *   X = a*lx + c*ly + e ;  Y = b*lx + d*ly + f  (lx,ly local dest pixels) */
 void snes_target_view(snes_target *t, float sx, float sy, float dx, float dy)
 {
-	/* NB: this is called per view-group DURING a render; it must NOT touch the
-	 * band clip (band_y0/band_y1), or a multicore core's band would be reset
-	 * mid-frame. The band is zero-initialised at target creation instead. */
 	t->vsx = sx; t->vsy = sy; t->vdx = dx; t->vdy = dy;
-}
-
-/* Absolute-framebuffer scanline band clip (see snes_render.h). */
-void snes_target_band(snes_target *t, int y0, int y1)
-{
-	t->band_y0 = y0; t->band_y1 = y1;
 }
 
 static void blit(snes_target *t, const float M[6], const snes_draw *d)
@@ -75,33 +66,17 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	}
 	x0 = ifloor(minx); x1 = ifloor(maxx) + 1;
 	y0 = ifloor(miny); y1 = ifloor(maxy) + 1;
-	/* Low clamp so buffer col/row = offx/offy + X/Y stays >= 0. The OVL card-cache
-	 * (cache_layer) is a WIDE, band-height buffer with a margin (offx>0) and a shifted
-	 * band (offy<0), so it needs the full extent [-offx .. t->W-offx); every other
-	 * target keeps the original [0 .. min(t->W-offx, SNES_VW)) behaviour bit-for-bit. */
-	{
-		int lox = t->cache_layer ? -t->offx : 0, loy = t->cache_layer ? -t->offy : 0;
-		if (x0 < lox) x0 = lox; if (y0 < loy) y0 = loy;
-	}
+	if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+	/* Clamp to the framebuffer extent (offx/offy is added below). The design is
+	 * 1280x720, so at native 16:9 (offy=120) this is exactly SNES_VW/SNES_VH and
+	 * bit-identical; in 4:3 (offy=0, H=960) it lets the view-transformed content
+	 * and the bottom-pinned bar reach panel rows 720..959 instead of clipping. */
 	{
 		int xlim = t->W - t->offx, ylim = t->H - t->offy;
-		if (!t->cache_layer && xlim > SNES_VW) xlim = SNES_VW;   /* virtual design width */
+		if (xlim > SNES_VW) xlim = SNES_VW;   /* never exceed the virtual design width */
 		if (x1 > xlim) x1 = xlim;
 		if (y1 > ylim) y1 = ylim;
 	}
-	/* Multicore band clip: intersect the destination row range with this core's
-	 * absolute scanline band. Rows are written to fb[(offy+Y)*pitch]; convert the
-	 * band's absolute panel rows [band_y0, band_y1) into virtual Y and tighten
-	 * [y0, y1). band_y1==0 disables (single-core / default). The bands are chosen
-	 * cache-line disjoint by the caller, so no two cores ever touch the same 64B
-	 * framebuffer line and there is no write-write false sharing. */
-	if (t->band_y1 > t->band_y0) {
-		int by0 = t->band_y0 - t->offy;   /* band low  in virtual Y */
-		int by1 = t->band_y1 - t->offy;   /* band high in virtual Y */
-		if (y0 < by0) y0 = by0;
-		if (y1 > by1) y1 = by1;
-	}
-	if (y0 >= y1 || x0 >= x1) return;
 	{
 	/* Integer tint (0..256) and source stride, hoisted out of the pixel loop. */
 	int tr = (int)(d->tr * 256.0f), tg = (int)(d->tg * 256.0f);
@@ -113,26 +88,7 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	int axis = (b == 0.0f && c == 0.0f && a != 0.0f && dd != 0.0f);
 	float inv_a = axis ? 1.0f / a : 0, inv_d = axis ? 1.0f / dd : 0;
 	float du = axis ? inv_a / d->dw : 0;   /* u increment per X (no per-pixel divide) */
-	/* cache_layer partial-alpha pixel: PREMULTIPLIED source-over into the RGBA layer
-	 * (preserve coverage alpha for the OVL; un-premultiplied to straight later). Opaque
-	 * cache pixels premultiply to 0xff|rgb == the fast path's straight opaque store, so
-	 * only partial edges take this; this is what lets cache_layer use the fast/NEON path
-	 * instead of the ~5x slower general premult loop. Matches the general-loop premult
-	 * (snes_render.c cache_layer branch) bit-for-bit. */
-#define BLIT_CACHE_PREMULT(PX, SR, SG, SB, AF) do { \
-	uint32_t _c = (PX); int _ia = 255 - (AF); \
-	int _da=(_c>>24)&0xff,_pr=(_c>>16)&0xff,_pg=(_c>>8)&0xff,_pb=_c&0xff; \
-	int _or=((SR)*(AF)+127)/255+(_pr*_ia+127)/255; \
-	int _og=((SG)*(AF)+127)/255+(_pg*_ia+127)/255; \
-	int _ob=((SB)*(AF)+127)/255+(_pb*_ia+127)/255; \
-	int _oa=(AF)+(_da*_ia+127)/255; \
-	if(_or>255)_or=255; if(_og>255)_og=255; if(_ob>255)_ob=255; if(_oa>255)_oa=255; \
-	(PX)=((unsigned)_oa<<24)|((unsigned)_or<<16)|((unsigned)_og<<8)|(unsigned)_ob; \
-} while(0)
-	/* cache_layer joins the fast path only when plain (tint==1, no additive) - the case
-	 * the layered card-strip build always hits (dim==1). Tinted/additive cache draws
-	 * (resume dim, non-layered) stay on the general premult loop below, unchanged. */
-	if (axis && !d->is_quad && !d->tile && (!t->cache_layer || plain)) {
+	if (axis && !d->is_quad && !d->tile) {
 		/* Fast axis-aligned path (every sprite/texture blit in the menu). v is
 		 * constant per row, so iy + the source row pointer hoist out of the pixel
 		 * loop; the source x advances by a fixed 16.16 step - no per-pixel float
@@ -199,8 +155,6 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 							if (sa == 0) continue;
 							if (sa == 255) {
 								row[X] = 0xff000000u | ((unsigned)sr << 16) | ((unsigned)sg << 8) | (unsigned)sb;
-							} else if (t->cache_layer) {
-								BLIT_CACHE_PREMULT(row[X], sr, sg, sb, sa);
 							} else {
 								uint32_t dst = row[X];
 								int dr = (dst >> 16) & 0xff, dg = (dst >> 8) & 0xff, db = dst & 0xff, ia = 255 - sa;
@@ -221,62 +175,6 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 					if (sa == 0) continue;
 					if (sa == 255) {
 						row[X] = 0xff000000u | ((unsigned)sr << 16) | ((unsigned)sg << 8) | (unsigned)sb;
-					} else {
-						uint32_t dst = row[X];
-						int dr = (dst >> 16) & 0xff, dg = (dst >> 8) & 0xff, db = dst & 0xff, ia = 255 - sa;
-						dr = (sr * sa + dr * ia + 127) / 255; dg = (sg * sa + dg * ia + 127) / 255; db = (sb * sa + db * ia + 127) / 255;
-						if (dr > 255) dr = 255; if (dg > 255) dg = 255; if (db > 255) db = 255;
-						row[X] = 0xff000000u | ((unsigned)dr << 16) | ((unsigned)dg << 8) | (unsigned)db;
-					}
-				}
-				continue;
-			}
-			/* NEON: unscaled 1:1 straight-RGBA re-blit (card-tile cache -> strip via
-			 * snes_blit_raw). Store 8 fully-opaque source pixels at once; partial/edge
-			 * pixels take the scalar tail (cache_layer premult or source-over blend).
-			 * Only entered for plain, non-565, sustep==65536 - pixel-identical to scalar. */
-			if (plain && !d->rgb565 && sustep == 65536) {
-				const uint32x4_t A = vdupq_n_u32(0xff000000u);
-				X = x0;
-				while (X < x1 && su < sxlo) { su += sustep; X++; }
-				while (X + 8 <= x1) {
-					int ix, k, allop = 1;
-					const uint8_t *sp;
-					if (su + 7 * 65536 >= sxhi) break;
-					ix = su >> 16; sp = srow + (unsigned)ix * 4;
-					for (k = 0; k < 8; k++)
-						if (sp[k * 4 + 3] != 255) { allop = 0; break; }
-					if (!allop) break;
-					{
-						uint8x8x4_t v = vld4_u8(sp);
-						uint16x8_t r16 = vmovl_u8(v.val[0]);
-						uint16x8_t g16 = vmovl_u8(v.val[1]);
-						uint16x8_t b16 = vmovl_u8(v.val[2]);
-						uint32x4_t lo = vorrq_u32(
-							vorrq_u32(A, vshll_n_u16(vget_low_u16(r16), 16)),
-							vorrq_u32(vshll_n_u16(vget_low_u16(g16), 8),
-								  vmovl_u16(vget_low_u16(b16))));
-						uint32x4_t hi = vorrq_u32(
-							vorrq_u32(A, vshll_n_u16(vget_high_u16(r16), 16)),
-							vorrq_u32(vshll_n_u16(vget_high_u16(g16), 8),
-								  vmovl_u16(vget_high_u16(b16))));
-						vst1q_u32(&row[X], lo); vst1q_u32(&row[X + 4], hi);
-					}
-					X += 8; su += 8 * 65536;
-				}
-				for (; X < x1; X++, su += sustep) {
-					int ix, sr, sg, sb, sa;
-					const uint8_t *sp;
-					if (su < sxlo || su >= sxhi) continue;
-					ix = su >> 16; if (ix >= d->img_w) ix = d->img_w - 1;
-					sp = srow + (unsigned)ix * 4;
-					sr = sp[0]; sg = sp[1]; sb = sp[2]; sa = sp[3];
-					if (sa == 0) continue;
-					if (sa == 255) {
-						row[X] = 0xff000000u | ((unsigned)sr << 16)
-						       | ((unsigned)sg << 8) | (unsigned)sb;
-					} else if (t->cache_layer) {
-						BLIT_CACHE_PREMULT(row[X], sr, sg, sb, sa);
 					} else {
 						uint32_t dst = row[X];
 						int dr = (dst >> 16) & 0xff, dg = (dst >> 8) & 0xff, db = dst & 0xff, ia = 255 - sa;
@@ -311,10 +209,6 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 						       | ((unsigned)sg << 8) | (unsigned)sb;
 						continue;
 					}
-				}
-				if (t->cache_layer) {   /* partial edge into the premult layer */
-					BLIT_CACHE_PREMULT(row[X], sr, sg, sb, af);
-					continue;
 				}
 				{
 					uint32_t dst = row[X];
@@ -381,23 +275,6 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 			af = (sa * ta) >> 8;
 			if (af <= 0) continue;
 			if (af > 255) af = 255;
-			/* cache-layer mode: premultiplied source-over into an RGBA layer
-			 * (preserves alpha so the card strip composites correctly over the
-			 * live wallpaper/lower OVL layers later). Used to build the card cache;
-			 * the result is un-premultiplied to straight alpha before it is handed
-			 * to the OVL (which blends with coverage alpha). */
-			if (t->cache_layer) {
-				uint32_t c = row[X];
-				int da = (c >> 24) & 0xff, dpr = (c >> 16) & 0xff, dpg = (c >> 8) & 0xff, dpb = c & 0xff;
-				int ia = 255 - af;
-				int opr = (sr * af + 127) / 255 + (dpr * ia + 127) / 255;
-				int opg = (sg * af + 127) / 255 + (dpg * ia + 127) / 255;
-				int opb = (sb * af + 127) / 255 + (dpb * ia + 127) / 255;
-				int oa  = af + (da * ia + 127) / 255;
-				if (opr > 255) opr = 255; if (opg > 255) opg = 255; if (opb > 255) opb = 255; if (oa > 255) oa = 255;
-				row[X] = ((unsigned)oa << 24) | ((unsigned)opr << 16) | ((unsigned)opg << 8) | (unsigned)opb;
-				continue;
-			}
 			/* opaque fast path: fully-covered, non-additive pixels (the bulk of
 			 * the card frames + box art) need no destination read or blend -
 			 * just write. Avoids a framebuffer read + the blend math per pixel. */
@@ -421,7 +298,6 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 		}
 	}
 	}
-#undef BLIT_CACHE_PREMULT
 }
 
 /* ---- component resolution to a snes_draw ---- */
@@ -666,50 +542,16 @@ typedef struct { const snes_comp *comp; snes_rnode *node; float m[6]; float col[
 		 int layer; int seq; } snes_dr;
 
 #define SNES_MAXDR 2048
+static snes_dr g_dr[SNES_MAXDR];
+static int g_ndr;
 
-/* item for per-node z ordering. Kept in a bump scratch (not the C stack) so a
- * deep tree does not overflow the thread stack: each collect frame reserves its
- * items on entry and rewinds on exit; children allocate beyond. */
+/* item for per-node z ordering. Kept in a global bump scratch (not the C stack)
+ * so a deep tree does not overflow the thread stack: each collect frame reserves
+ * its items on entry and rewinds on exit; children allocate beyond. */
 typedef struct { int z, layer, g, i; const snes_comp *comp; snes_rnode *child; } zitem;
 #define SNES_MAXZ 4096
-
-/* Per-core render scratch. Single-core (release + default debug) uses exactly
- * one instance, g_ctx0, so the g_dr/g_zs arrays and g_ndr/g_zt bookkeeping are
- * byte-identical to the old file-scope globals - no behaviour change. Under the
- * AYANEO_BIGCORE_EXPT multicore split each core owns its OWN context (its own
- * z-sort + draw list), so collect()/sort_and_paint() never share mutable state
- * across cores; the only shared object is the framebuffer, into which each core
- * writes a disjoint scanline band (see the band clip in blit()). */
-struct snes_render_ctx {
-	snes_dr dr[SNES_MAXDR];
-	int     ndr;
-	zitem   zs[SNES_MAXZ];
-	int     zt;
-};
-
-/* Per-core render contexts. Release/host: exactly one (index 0), byte-identical
- * to the old single g_ctx0. The AYANEO_BIGCORE_EXPT multicore build adds a second
- * so the boot core and the worker core each collect+sort into private scratch;
- * bc_render_ctx() picks the caller's by MPIDR Aff1 (0 = boot core, else worker),
- * so snes_menu_render can be entered by both cores concurrently without sharing
- * mutable state. The band clip keeps their framebuffer writes disjoint. */
-#ifdef AYANEO_BIGCORE_EXPT
-#define BC_NCTX 2
-#else
-#define BC_NCTX 1
-#endif
-static snes_render_ctx g_ctx[BC_NCTX];
-
-static snes_render_ctx *bc_render_ctx(void)
-{
-#if defined(__arm__) && defined(AYANEO_BIGCORE_EXPT)
-	unsigned m;
-	__asm__ volatile("mrc p15, 0, %0, c0, c0, 5" : "=r"(m));   /* MPIDR */
-	return &g_ctx[((m >> 8) & 0xffu) ? 1 : 0];                 /* Aff1: 0=boot */
-#else
-	return &g_ctx[0];   /* single-core release + host: one context */
-#endif
-}
+static zitem g_zs[SNES_MAXZ];
+static int g_zt;
 
 static int is_drawable(int type)
 {
@@ -717,12 +559,12 @@ static int is_drawable(int type)
 	       type == COMP_ANIMATED_SPRITE || type == COMP_LABEL;
 }
 
-static void collect(snes_render_ctx *ctx, snes_scene *s, snes_rnode *n,
-		    const float pm[6], const float pcol[4], int base_layer)
+static void collect(snes_scene *s, snes_rnode *n, const float pm[6],
+		    const float pcol[4], int base_layer)
 {
 	float m[6], col[4];
-	int base = ctx->zt;
-	zitem *items = &ctx->zs[base];
+	int base = g_zt;
+	zitem *items = &g_zs[base];
 	int ni = 0, k, kk;
 	unsigned ci;
 	if (!n->enabled || !n->visible) return;
@@ -745,7 +587,7 @@ static void collect(snes_render_ctx *ctx, snes_scene *s, snes_rnode *n,
 			items[ni].child = ch; ni++;
 		}
 	}
-	ctx->zt = base + ni;   /* reserve; children collect() allocate beyond */
+	g_zt = base + ni;   /* reserve; children collect() allocate beyond */
 	/* stable insertion sort by (z, g, layer, i) */
 	for (k = 1; k < ni; k++) {
 		zitem key = items[k];
@@ -762,19 +604,19 @@ static void collect(snes_render_ctx *ctx, snes_scene *s, snes_rnode *n,
 	}
 	for (k = 0; k < ni; k++) {
 		if (items[k].comp) {
-			if (ctx->ndr < SNES_MAXDR) {
-				snes_dr *dr = &ctx->dr[ctx->ndr++];
+			if (g_ndr < SNES_MAXDR) {
+				snes_dr *dr = &g_dr[g_ndr++];
 				dr->comp = items[k].comp; dr->node = n;
 				for (kk = 0; kk < 6; kk++) dr->m[kk] = m[kk];
 				dr->col[0] = col[0]; dr->col[1] = col[1];
 				dr->col[2] = col[2]; dr->col[3] = col[3];
-				dr->layer = base_layer; dr->seq = ctx->ndr;
+				dr->layer = base_layer; dr->seq = g_ndr;
 			}
 		} else {
-			collect(ctx, s, items[k].child, m, col, base_layer);
+			collect(s, items[k].child, m, col, base_layer);
 		}
 	}
-	ctx->zt = base;   /* rewind this frame's reservation */
+	g_zt = base;   /* rewind this frame's reservation */
 }
 
 static void paint(snes_target *t, snes_scene *s, snes_dr *dr)
@@ -791,64 +633,46 @@ static void paint(snes_target *t, snes_scene *s, snes_dr *dr)
 	}
 }
 
-/* Stable-sort a context's draw list by (layer, seq), then paint every drawable.
- * The z-sort is identical on every core (the collect result is deterministic and
- * core-independent); only the framebuffer WRITE differs, gated by t->band_y*. So
- * splitting is "same list, disjoint output rows": no core reorders differently. */
-static void sort_and_paint_ctx(snes_render_ctx *ctx, snes_target *t, snes_scene *s)
+static void sort_and_paint(snes_target *t, snes_scene *s)
 {
 	int i, k;
-	for (i = 1; i < ctx->ndr; i++) {
-		snes_dr key = ctx->dr[i];
+	for (i = 1; i < g_ndr; i++) {
+		snes_dr key = g_dr[i];
 		k = i - 1;
-		while (k >= 0 && ((ctx->dr[k].layer != key.layer) ? ctx->dr[k].layer > key.layer
-								  : ctx->dr[k].seq > key.seq)) {
-			ctx->dr[k + 1] = ctx->dr[k]; k--;
+		while (k >= 0 && ((g_dr[k].layer != key.layer) ? g_dr[k].layer > key.layer
+							       : g_dr[k].seq > key.seq)) {
+			g_dr[k + 1] = g_dr[k]; k--;
 		}
-		ctx->dr[k + 1] = key;
+		g_dr[k + 1] = key;
 	}
-	for (i = 0; i < ctx->ndr; i++)
-		paint(t, s, &ctx->dr[i]);
-}
-
-/* Collect (+ z-sort) a scene into an explicit context, then paint into the
- * target honouring the target's band clip. This is the multicore work unit: two
- * cores call it with the SAME scene and DIFFERENT (ctx, band) so each collects
- * its own list (private scratch) and paints only its own rows. */
-void snes_render_scene_ctx(snes_render_ctx *ctx, snes_target *t, snes_scene *s)
-{
-	static const float I[6] = {1,0,0,0,1,0};
-	static const float W[4] = {1,1,1,1};
-	ctx->ndr = 0; ctx->zt = 0;
-	if (!s->root) return;
-	collect(ctx, s, s->root, I, W, 0);
-	sort_and_paint_ctx(ctx, t, s);
+	for (i = 0; i < g_ndr; i++)
+		paint(t, s, &g_dr[i]);
 }
 
 void snes_render_scene(snes_target *t, snes_scene *s)
 {
-	snes_render_scene_ctx(bc_render_ctx(), t, s);
-}
-
-void snes_render_node_ctx(snes_render_ctx *ctx, snes_target *t, snes_scene *s, snes_rnode *n)
-{
+	static const float I[6] = {1,0,0,0,1,0};
 	static const float W[4] = {1,1,1,1};
-	float pm[6] = {1,0,0,0,1,0};
-	ctx->ndr = 0; ctx->zt = 0;
-	if (!n) return;
-	if (n->parent) snes_node_world(n->parent, pm);
-	collect(ctx, s, n, pm, W, 0);
-	sort_and_paint_ctx(ctx, t, s);
+	g_ndr = 0; g_zt = 0;
+	if (!s->root) return;
+	collect(s, s->root, I, W, 0);
+	sort_and_paint(t, s);
 }
 
 /* Render the subtree rooted at n at its authored world position (n's own
  * transform is applied on top of its parent's world matrix). */
 void snes_render_node(snes_target *t, snes_scene *s, snes_rnode *n)
 {
-	snes_render_node_ctx(bc_render_ctx(), t, s, n);
+	static const float W[4] = {1,1,1,1};
+	float pm[6] = {1,0,0,0,1,0};
+	g_ndr = 0; g_zt = 0;
+	if (!n) return;
+	if (n->parent) snes_node_world(n->parent, pm);
+	collect(s, n, pm, W, 0);
+	sort_and_paint(t, s);
 }
 
-int snes_render_count(void) { return g_ctx[0].ndr; }
+int snes_render_count(void) { return g_ndr; }
 
 /* ---- direct-draw helpers (screen space; cx,cy = centre in the 1280x720 space) --- */
 void snes_blit_tex(snes_target *t, const snes_pack *pk, const snes_img_entry *im,
@@ -875,25 +699,6 @@ void snes_blit_tex_tint(snes_target *t, const snes_pack *pk, const snes_img_entr
 	d.dw = w; d.dh = h; d.px = w / 2; d.py = h / 2;
 	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
 	d.tr = tr; d.tg = tg; d.tb = tb; d.ta = alpha;
-	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
-	blit(t, S, &d);
-}
-/* Composite a pre-rendered STRAIGHT-alpha RGBA tile (0xAARRGGBB) at virtual centre
- * (cx,cy), 1:1 (no scale). Uses the same draw path as a texture, so onto a cache_layer
- * target it premultiplies-on-the-fly for correct source-over. Used by the producer-
- * offload: the worker pre-renders each normal card into a tile, cpu0 blits the tile
- * into the card strip instead of re-rendering the card (snes_menu build_cardcache_tiled). */
-void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, float cy)
-{
-	snes_draw d;
-	float S[6];
-	if (!pix || w <= 0 || h <= 0) return;
-	d.pix = (const uint8_t *)pix; d.rgb565 = 0; d.img_w = w; d.img_h = h;
-	d.sx = 0; d.sy = 0; d.sw = w; d.sh = h;
-	d.dw = (float)w; d.dh = (float)h; d.px = (float)w / 2.0f; d.py = (float)h / 2.0f;
-	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
-	d.uvx = d.uvy = d.uvrx = d.uvry = 0;
-	d.tr = d.tg = d.tb = d.ta = 1.0f;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
 }
