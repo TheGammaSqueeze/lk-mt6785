@@ -362,6 +362,7 @@ OBJS += emu/gba/gba_driver.o
 OBJS += emu/gba/fat_ro.o
 OBJS += emu/gba/sd_fat.o
 OBJS += emu/gba/fat_wr.o
+OBJS += emu/gba/gba_sd_save.o
 ifeq ($(AYANEO_GBA_SD),yes)
 OBJS += emu/gba/sd_fastboot.o
 endif
