@@ -2370,3 +2370,23 @@ awaiting the target on ADB: lk_a_snes_bigcore_nosspm.img (SSPM-out-of-loop) and 
 (post-join DVM/TLBIALLIS). The only remaining un-built SW path is a full LK-side SSPM IPI mailbox implementation
 (large, speculative). No further buildable+testable multicore experiment can be advanced without the device
 (0123456789ABCDEF), which is not attached (only a28c0e0e, the non-target GammaOS box, is present).
+
+### WEBSEARCH TRIANGULATION (2026-08-29, no HW): third independent confirmation of the wall
+Source-RE being exhausted, used WebSearch (per cron) for any documented software mechanism to admit a
+late-joined, already-powered core into a DynamIQ DSU snoop domain without the power-controller P-Channel.
+Authoritative source = Arm DynamIQ Shared Unit TRM (developer.arm.com/documentation/100453). Confirms:
+- On DynamIQ (Cortex-A55/A76, the mt6785 cluster), coherency with the DSU SCU is enabled/disabled
+  AUTOMATICALLY during core power up/down via the power-controller P-Channel - "without software intervention".
+- There is NO legacy ACTLR.SMPEN / ACINACTM software coherency-join bit on A55/A76 (that existed only on
+  A53/A72 + CCI). So there is genuinely no self-executed register write a core (or cpu0) can issue to add a
+  powered core to the snoop domain post-hoc.
+This is the THIRD independent confirmation of the same wall, now fully triangulated:
+  (1) full mt8192 ATF power-on RE  -> no software snoop-admission MMIO step anywhere;
+  (2) mt6785 is SSPM-only (no MCUPM) -> the SPMC/SSPM P-Channel is the sole servicer;
+  (3) Arm DSU TRM -> DSU coherency join is P-Channel-automatic, no software bit exists.
+=> A manually-woken LK core that did not go through the SSPM-serviced SPMC power-up P-Channel is powered but
+   never snoop-admitted, and NO software lever (MMIO, sysreg, DVM, cache-maint) can retrofit it. The two staged
+   images (nosspm = SSPM-out-of-loop hardware FSM; dvm = post-join DVM nudge) are the last cheap empirical tests;
+   the only remaining un-built SW path is a full LK-side SSPM IPI mailbox to drive a real serviced power-up
+   (large, speculative). Multicore probe is HW-blocked: target 0123456789ABCDEF is not on ADB (only a28c0e0e,
+   the non-target GammaOS box). No further buildable+testable experiment remains this cycle.
