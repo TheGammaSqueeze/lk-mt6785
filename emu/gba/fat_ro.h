@@ -56,6 +56,7 @@ typedef struct {
 	uint32_t ent_in_sec;      /* dir-entry index within the sector (0..15) */
 	uint32_t root_sec;        /* FAT16 root: absolute sector cursor */
 	uint32_t root_left;       /* FAT16 root: sectors remaining */
+	uint32_t hops;            /* cluster hops taken (loop guard vs a corrupt chain) */
 	uint8_t  end;
 } fat_dir;
 

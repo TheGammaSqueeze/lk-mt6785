@@ -115,7 +115,7 @@ int fat_mount(fat_vol *v, fat_read_fn rd, void *ctx)
 /* ---- directory iteration ---- */
 static void dir_init(fat_vol *v, fat_dir *d, uint32_t first_clus)
 {
-	d->v = v; d->end = 0;
+	d->v = v; d->end = 0; d->hops = 0;
 	d->ent_in_sec = 0; d->sec_in_clus = 0;
 	if (first_clus == 0 && !v->is_fat32) {            /* FAT16 fixed root */
 		d->cluster = 0;
@@ -152,7 +152,7 @@ static int next_raw(fat_dir *d, uint8_t out[32])
 					if (d->sec_in_clus >= v->sec_per_clus) {
 						d->sec_in_clus = 0;
 						d->cluster = next_cluster(v, d->cluster);
-						if (d->cluster == 0) d->end = 1;
+						if (d->cluster == 0 || ++d->hops > v->total_clusters) d->end = 1;
 					}
 				}
 			}

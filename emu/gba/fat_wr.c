@@ -97,13 +97,14 @@ typedef struct {
 	int e;                    /* 0..15 within the current sector */
 	int have;                 /* sbuf holds cur_lba */
 	uint32_t cur_lba;
+	uint32_t hops;            /* cluster hops taken (loop guard vs a corrupt chain) */
 	uint8_t sbuf[512];
 } dir_iter;
 
 static void di_init(dir_iter *it, fat_vol *v, uint32_t cluster, uint32_t root_sec, uint32_t root_left)
 {
 	it->v = v; it->cluster = cluster; it->root_sec = root_sec; it->root_left = root_left;
-	it->sec_in_clus = 0; it->e = 16; it->have = 0; it->cur_lba = 0;
+	it->sec_in_clus = 0; it->e = 16; it->have = 0; it->cur_lba = 0; it->hops = 0;
 }
 
 /* fetch the next physical slot; returns 1 with (lba,off,rec) or 0 at end of dir */
@@ -122,6 +123,7 @@ static int di_next(dir_iter *it, uint32_t *lba, uint32_t *off, uint8_t **rec)
 			if (it->sec_in_clus >= v->sec_per_clus) {
 				it->sec_in_clus = 0;
 				it->cluster = get_fat(v, it->cluster);
+				if (++it->hops > v->total_clusters) return 0;
 			}
 		}
 		if (rsec(v, nl, it->sbuf) != 0) return 0;
