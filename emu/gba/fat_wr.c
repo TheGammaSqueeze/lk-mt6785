@@ -88,37 +88,151 @@ static int dir_head(fat_vol *v, const char *dirpath, uint32_t *cluster,
 	return 0;
 }
 
+/* ---- directory slot iterator (walks every physical 32B slot in the dir) ---- */
+typedef struct {
+	fat_vol *v;
+	uint32_t cluster;         /* 0 = FAT16 fixed root */
+	uint32_t root_sec, root_left;
+	uint32_t sec_in_clus;
+	int e;                    /* 0..15 within the current sector */
+	int have;                 /* sbuf holds cur_lba */
+	uint32_t cur_lba;
+	uint8_t sbuf[512];
+} dir_iter;
+
+static void di_init(dir_iter *it, fat_vol *v, uint32_t cluster, uint32_t root_sec, uint32_t root_left)
+{
+	it->v = v; it->cluster = cluster; it->root_sec = root_sec; it->root_left = root_left;
+	it->sec_in_clus = 0; it->e = 16; it->have = 0; it->cur_lba = 0;
+}
+
+/* fetch the next physical slot; returns 1 with (lba,off,rec) or 0 at end of dir */
+static int di_next(dir_iter *it, uint32_t *lba, uint32_t *off, uint8_t **rec)
+{
+	fat_vol *v = it->v;
+	if (it->e >= 16) {                        /* advance to the next sector */
+		uint32_t nl;
+		if (it->cluster == 0) {
+			if (it->root_left == 0) return 0;
+			nl = it->root_sec; it->root_sec++; it->root_left--;
+		} else {
+			if (it->cluster < 2 || it->cluster >= v->total_clusters + 2u) return 0;
+			nl = clus_lba(v, it->cluster) + it->sec_in_clus;
+			it->sec_in_clus++;
+			if (it->sec_in_clus >= v->sec_per_clus) {
+				it->sec_in_clus = 0;
+				it->cluster = get_fat(v, it->cluster);
+			}
+		}
+		if (rsec(v, nl, it->sbuf) != 0) return 0;
+		it->cur_lba = nl; it->e = 0; it->have = 1;
+	}
+	*lba = it->cur_lba; *off = (uint32_t)it->e * 32u; *rec = it->sbuf + it->e * 32;
+	it->e++;
+	return 1;
+}
+
+static uint8_t lfn_checksum(const uint8_t n11[11])
+{
+	uint8_t s = 0; int i;
+	for (i = 0; i < 11; i++) s = (uint8_t)(((s & 1) ? 0x80 : 0) + (s >> 1) + n11[i]);
+	return s;
+}
+
+/* mark a single slot's first byte = 0xE5 (deleted) */
+static int slot_del(fat_vol *v, uint32_t lba, uint32_t off)
+{
+	uint8_t b[512];
+	if (rsec(v, lba, b) != 0) return -1;
+	b[off] = 0xE5;
+	return wsec(v, lba, b);
+}
+
+/* case-insensitive compare of an ascii name vs a reconstructed name */
+static int ci_eq(const char *a, const char *b)
+{ while (*a && *b) { if (up(*a) != up(*b)) return 0; a++; b++; } return *a == *b; }
+
+/* 8.3 field -> dotted ascii name (for comparing short-only entries) */
+static void n11_to_name(const uint8_t n11[11], char *out)
+{
+	int i, k = 0;
+	for (i = 0; i < 8 && n11[i] != ' '; i++) out[k++] = (char)n11[i];
+	if (n11[8] != ' ') { out[k++] = '.'; for (i = 8; i < 11 && n11[i] != ' '; i++) out[k++] = (char)n11[i]; }
+	out[k] = 0;
+}
+
+/* Build a unique short 8.3 (BASE~N.EXT) for a long name, avoiding existing shorts. */
+static void mangle_short(fat_vol *v, uint32_t cluster, uint32_t root_sec, uint32_t root_left,
+			 const char *name, uint8_t out[11])
+{
+	int i, dot = -1, L = 0, bl = 0;
+	uint8_t base[8], ext[3]; int el = 0;
+	int n;
+	while (name[L]) L++;
+	for (i = L - 1; i >= 0; i--) if (name[i] == '.') { dot = i; break; }
+	for (i = 0; (dot < 0 ? i < L : i < dot) && bl < 6; i++) {           /* up to 6 base chars */
+		char c = up(name[i]);
+		if (c == ' ' || c == '.') continue;
+		base[bl++] = (uint8_t)c;
+	}
+	if (bl == 0) base[bl++] = 'S';
+	if (dot >= 0) for (i = dot + 1; name[i] && el < 3; i++) { char c = up(name[i]); if (c != ' ') ext[el++] = (uint8_t)c; }
+	for (n = 1; n <= 999; n++) {                                        /* try BASE~n */
+		dir_iter it; uint32_t lba, off; uint8_t *rec; int taken = 0, p;
+		char tail[6]; int tl = 0, k;
+		/* build the 11-byte field */
+		for (i = 0; i < 11; i++) out[i] = ' ';
+		{ int t = n, digs[4], nd = 0; if (t == 0) digs[nd++] = 0; while (t) { digs[nd++] = t % 10; t /= 10; }
+		  tail[tl++] = '~'; for (k = nd - 1; k >= 0; k--) tail[tl++] = (char)('0' + digs[k]); }
+		p = bl; if (p + tl > 8) p = 8 - tl;                        /* fit base+~n in 8 */
+		for (i = 0; i < p; i++) out[i] = base[i];
+		for (i = 0; i < tl; i++) out[p + i] = (uint8_t)tail[i];
+		for (i = 0; i < el; i++) out[8 + i] = ext[i];
+		/* unique? scan dir shorts */
+		di_init(&it, v, cluster, root_sec, root_left);
+		while (di_next(&it, &lba, &off, &rec)) {
+			if (rec[0] == 0x00) break;
+			if (rec[0] == 0xE5 || rec[11] == 0x0F || (rec[11] & 0x08)) continue;
+			{ int m = 1, j; for (j = 0; j < 11; j++) if (rec[j] != out[j]) { m = 0; break; } if (m) { taken = 1; break; } }
+		}
+		if (!taken) return;
+	}
+}
+
 int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
 	       const void *buf, uint32_t len)
 {
 	const uint8_t *src = buf;
-	uint8_t name11[11], sec[512];
+	uint8_t short11[11], sec[512];
 	uint32_t cluster, root_sec, root_left, cbytes;
-	uint32_t need, first = 0, prev = 0, i, off;
-	uint32_t slot_lba = 0, slot_off = 0, old_first = 0;
-	int have_slot = 0, replaced = 0;
+	uint32_t need_clus, first = 0, prev = 0, i, off, nlen = 0;
+	int is83, nlfn, need_slots, s;
 
 	if (!v->wr) return -1;
-	if (make_8_3(name, name11) != 0) return -2;
 	if (dir_head(v, dirpath, &cluster, &root_sec, &root_left) != 0) return -3;
 	cbytes = (uint32_t)v->sec_per_clus * 512u;
+	while (name[nlen]) nlen++;
+	if (nlen == 0 || nlen > 255) return -2;
 
-	/* allocate a fresh chain for the new contents */
-	need = len ? (len + cbytes - 1u) / cbytes : 0u;
-	for (i = 0; i < need; i++) {
+	is83 = (make_8_3(name, short11) == 0);
+	nlfn = is83 ? 0 : (int)((nlen + 12u) / 13u);          /* 13 chars per LFN entry */
+	need_slots = nlfn + 1;
+	if (!is83) mangle_short(v, cluster, root_sec, root_left, name, short11);
+
+	/* allocate + write the data chain */
+	need_clus = len ? (len + cbytes - 1u) / cbytes : 0u;
+	for (i = 0; i < need_clus; i++) {
 		uint32_t c = alloc_clus(v, prev);
 		if (!c) { if (first) free_chain(v, first); return -4; }   /* disk full */
 		if (!first) first = c;
 		prev = c;
 	}
-
-	/* write the data into the chain */
 	off = 0;
 	{
 		uint32_t c = first;
 		while (off < len && c >= 2) {
-			uint32_t base = clus_lba(v, c), s;
-			for (s = 0; s < v->sec_per_clus && off < len; s++) {
+			uint32_t base = clus_lba(v, c);
+			for (s = 0; s < (int)v->sec_per_clus && off < len; s++) {
 				uint32_t n = len - off; if (n > 512u) n = 512u;
 				for (i = 0; i < n; i++) sec[i] = src[off + i];
 				for (; i < 512u; i++) sec[i] = 0;
@@ -129,63 +243,87 @@ int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
 		}
 	}
 
-	/* find an existing entry with this 8.3 name (to replace) or a free slot */
+	/* Replace: delete any existing entry (long or short) with the same name. */
 	{
-		uint32_t c = cluster, rsec_cur = root_sec, rleft = root_left;
-		int done = 0;
-		while (!done) {
-			uint32_t lba, secs, si;
-			if (c == 0) {                       /* FAT16 fixed root */
-				if (rleft == 0) break;
-				lba = rsec_cur; secs = 1;
-			} else {
-				if (c < 2 || c >= v->total_clusters + 2u) break;
-				lba = clus_lba(v, c); secs = v->sec_per_clus;
-			}
-			for (si = 0; si < secs; si++) {
-				uint8_t db[512]; int e;
-				if (rsec(v, lba + si, db) != 0) { free_chain(v, first); return -6; }
-				for (e = 0; e < 16; e++) {
-					uint8_t *rec = db + e * 32;
-					if (rec[0] == 0x00) {       /* end of dir -> free slot here */
-						slot_lba = lba + si; slot_off = (uint32_t)e * 32; have_slot = 1; done = 1; break;
-					}
-					if (rec[0] == 0xE5) {       /* deleted -> reusable */
-						if (!have_slot) { slot_lba = lba + si; slot_off = (uint32_t)e * 32; have_slot = 1; }
-						continue;
-					}
-					if (rec[11] == 0x0F) continue;                 /* LFN part */
-					{ int m = 1, k; for (k = 0; k < 11; k++) if (rec[k] != name11[k]) { m = 0; break; }
-					  if (m) {                  /* existing entry: replace in place */
-						slot_lba = lba + si; slot_off = (uint32_t)e * 32; have_slot = 1;
-						old_first = ((uint32_t)rd16(rec + 20) << 16) | rd16(rec + 26);
-						replaced = 1; done = 1; break;
-					  } }
+		dir_iter it; uint32_t lba, o; uint8_t *rec;
+		uint32_t g_lba[24], g_off[24]; int gn = 0;
+		char lfnacc[300]; int lfnlen = 0;
+		static const int lo[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
+		di_init(&it, v, cluster, root_sec, root_left);
+		while (di_next(&it, &lba, &o, &rec)) {
+			if (rec[0] == 0x00) break;
+			if (rec[0] == 0xE5) { gn = 0; lfnlen = 0; continue; }
+			if (rec[11] == 0x0F) {                       /* LFN part */
+				int seq = rec[0] & 0x1F, cb = (seq - 1) * 13, k;
+				if (gn < 24) { g_lba[gn] = lba; g_off[gn] = o; gn++; }
+				for (k = 0; k < 13; k++) {
+					unsigned u = rec[lo[k]] | (rec[lo[k] + 1] << 8);
+					if (cb + k < 299) lfnacc[cb + k] = (u && u != 0xFFFF) ? (char)(u & 0x7f) : 0;
 				}
-				if (done) break;
+				if (cb + 13 > lfnlen) lfnlen = cb + 13;
+				continue;
 			}
-			if (done) break;
-			if (c == 0) { rsec_cur++; rleft--; }
-			else c = get_fat(v, c);
+			if (rec[11] & 0x08) { gn = 0; lfnlen = 0; continue; }   /* volume label */
+			{
+				char eff[300]; int k, match;
+				if (gn > 0) { for (k = 0; k < lfnlen && lfnacc[k]; k++) eff[k] = lfnacc[k]; eff[k] = 0; }
+				else n11_to_name(rec, eff);
+				match = ci_eq(eff, name);
+				if (match) {
+					uint32_t of = ((uint32_t)rd16(rec + 20) << 16) | rd16(rec + 26);
+					for (k = 0; k < gn; k++) slot_del(v, g_lba[k], g_off[k]);
+					slot_del(v, lba, o);
+					if (of >= 2) free_chain(v, of);
+				}
+				gn = 0; lfnlen = 0;
+			}
 		}
 	}
-	if (!have_slot) { free_chain(v, first); return -7; }   /* dir full (no slot) */
 
-	/* write the directory entry */
+	/* Find need_slots consecutive free slots and write LFN entries + short entry. */
 	{
-		uint8_t db[512]; uint8_t *rec;
-		if (rsec(v, slot_lba, db) != 0) { free_chain(v, first); return -8; }
-		rec = db + slot_off;
-		for (i = 0; i < 11; i++) rec[i] = name11[i];
-		rec[11] = 0x20;                      /* archive */
-		for (i = 12; i < 32; i++) rec[i] = 0;
-		wr16(rec + 20, (uint16_t)(first >> 16));   /* first cluster hi */
-		wr16(rec + 26, (uint16_t)(first & 0xFFFF));/* first cluster lo */
-		wr32(rec + 28, len);
-		if (wsec(v, slot_lba, db) != 0) { free_chain(v, first); return -9; }
-	}
+		dir_iter it; uint32_t lba, o; uint8_t *rec;
+		uint32_t rl[24], ro[24]; int run = 0, found = 0, idx = 0, k;
+		uint8_t cks = lfn_checksum(short11);
+		static const int lo[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
+		di_init(&it, v, cluster, root_sec, root_left);
+		while (di_next(&it, &lba, &o, &rec)) {
+			if (rec[0] == 0x00 || rec[0] == 0xE5) {
+				if (run < 24) { rl[run] = lba; ro[run] = o; }
+				if (++run >= need_slots) { found = 1; break; }
+			} else run = 0;
+		}
+		if (!found || need_slots > 24) { free_chain(v, first); return -7; }   /* dir full */
 
-	if (replaced && old_first >= 2) free_chain(v, old_first);   /* release old data */
+		for (s = nlfn; s >= 1; s--) {                 /* LFN entries, highest seq first */
+			uint8_t db[512], *r; int cb = (s - 1) * 13;
+			if (rsec(v, rl[idx], db) != 0) { free_chain(v, first); return -8; }
+			r = db + ro[idx];
+			for (k = 0; k < 32; k++) r[k] = 0;
+			r[0] = (uint8_t)(s | (s == nlfn ? 0x40 : 0));
+			r[11] = 0x0F; r[13] = cks;
+			for (k = 0; k < 13; k++) {
+				unsigned u; int ci = cb + k;
+				if (ci < (int)nlen) u = (unsigned char)name[ci];
+				else if (ci == (int)nlen) u = 0x0000; else u = 0xFFFF;
+				r[lo[k]] = (uint8_t)(u & 0xff); r[lo[k] + 1] = (uint8_t)(u >> 8);
+			}
+			if (wsec(v, rl[idx], db) != 0) { free_chain(v, first); return -8; }
+			idx++;
+		}
+		{                                             /* the short 8.3 entry */
+			uint8_t db[512], *r;
+			if (rsec(v, rl[idx], db) != 0) { free_chain(v, first); return -9; }
+			r = db + ro[idx];
+			for (k = 0; k < 32; k++) r[k] = 0;
+			for (k = 0; k < 11; k++) r[k] = short11[k];
+			r[11] = 0x20;                         /* archive */
+			wr16(r + 20, (uint16_t)(first >> 16));
+			wr16(r + 26, (uint16_t)(first & 0xFFFF));
+			wr32(r + 28, len);
+			if (wsec(v, rl[idx], db) != 0) { free_chain(v, first); return -9; }
+		}
+	}
 
 	/* FAT32: the FSINFO free-cluster count is now stale - mark it "unknown"
 	 * (0xFFFFFFFF) so the OS recomputes it rather than trusting a wrong value. */
