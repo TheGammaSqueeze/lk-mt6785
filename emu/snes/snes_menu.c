@@ -639,6 +639,19 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 	float cy = CAR_CY, sc = CAR_SC;
 	const snes_spr_entry *frame = m->card_norm ? m->card_norm : m->card_act;
 	cy -= RESUME_CARD_DY * m->resume_dim;   /* raised behind the Suspend List */
+	/* Snap the card CENTRE to a whole panel pixel (both axes) so the pre-rendered
+	 * tile - blitted at an integer screen position by snes_blit_raw - is pixel-EXACT
+	 * vs this live render, including in 4:3 where the content scale is fractional. The
+	 * renderer already samples boxart nearest-neighbour, so this is visually a wash
+	 * (<=1px, the stepping pixel-art has anyway). In the tile target CAR_CY maps to the
+	 * integer tile centre, so the tile render is unaffected. */
+	{
+		float sxp = t->vsx * cx + t->vdx, syp = t->vsy * cy + t->vdy;
+		int sxi = (int)(sxp + (sxp >= 0.0f ? 0.5f : -0.5f));
+		int syi = (int)(syp + (syp >= 0.0f ? 0.5f : -0.5f));
+		cx = ((float)sxi - t->vdx) / t->vsx;
+		cy = ((float)syi - t->vdy) / t->vsy;
+	}
 	const snes_img_entry *im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
 	if (cx < -280 || cx > SNES_VW + 280) return;
 	if (frame) {
