@@ -285,11 +285,21 @@ static void wr32le(unsigned char *p, unsigned v)
 #define GBA_STATE_MAGIC	0x53414247u	/* "GBAS" */
 #define GBA_STATE_MAX	(1u * 1024 * 1024)	/* 512 KB gpSP state + hdr, block-aligned */
 
+#ifdef AYANEO_GBA_SD
+static int  sd_mode_on(void);            /* defined after the SD globals below */
+static int  sd_state_write(unsigned char *scratch);
+static int  sd_state_read(unsigned char *scratch);
+static void sd_sav_write(void);
+#endif
+
 static int state_write(unsigned char *scratch)
 {
 	unsigned sz = gba_core_state_size();
 	unsigned total;
 
+#ifdef AYANEO_GBA_SD
+	if (sd_mode_on()) return sd_state_write(scratch);
+#endif
 	if (!sz || (unsigned long long)sz + 8 > GBA_STATE_MAX)
 		return 0;
 	total = 8 + sz;
@@ -314,6 +324,9 @@ static int state_read(unsigned char *scratch)
 	unsigned char hdr[8];
 	unsigned magic, sz;
 
+#ifdef AYANEO_GBA_SD
+	if (sd_mode_on()) return sd_state_read(scratch);
+#endif
 	if (partition_read(GBA_PART, GBA_STATE_OFF, hdr, 8) != 8)
 		return 0;
 	magic = rd32le(hdr);
@@ -337,6 +350,9 @@ static void sav_save(unsigned char *scratch)
 	unsigned sz = gba_core_backup_size();		/* fixed 128 KB */
 	unsigned total = 8 + sz;
 
+#ifdef AYANEO_GBA_SD
+	if (sd_mode_on()) { sd_sav_write(); return; }
+#endif
 	if (!sz || total > GBA_SAV_MAX)
 		return;
 	wr32le(scratch + 0, GBA_SAV_MAGIC);
@@ -862,6 +878,32 @@ static int gba_sd_rom_select(void)
 		ayaneo_canvas_present();
 		thread_sleep(16);
 	}
+}
+
+/* ---- save-state / .sav persistence to the SD, matched to the selected ROM ---- */
+static int sd_mode_on(void) { return s_sd_mode && s_sel_rom >= 0 && s_sel_rom < s_nrom; }
+
+static int sd_state_write(unsigned char *scratch)
+{
+	unsigned sz = gba_core_state_size();
+	if (!sz) return 0;
+	gba_core_state_save(scratch);   /* raw gpSP state (no boot_b header needed) */
+	return gba_sd_write_state(&s_sd_vol, s_roms[s_sel_rom].name, 0, scratch, sz) == 0;
+}
+
+static int sd_state_read(unsigned char *scratch)
+{
+	unsigned sz = gba_core_state_size();
+	uint32_t n = gba_sd_load_state(&s_sd_vol, s_roms[s_sel_rom].name, 0, scratch, GBA_STATE_MAX);
+	if (!sz || n != sz) return 0;   /* absent or size mismatch (version guard) */
+	gba_core_state_load(scratch);
+	return 1;
+}
+
+static void sd_sav_write(void)
+{
+	gba_sd_write_sav(&s_sd_vol, s_roms[s_sel_rom].name,
+			 gba_core_backup_ptr(), gba_core_backup_size());
 }
 #endif
 
