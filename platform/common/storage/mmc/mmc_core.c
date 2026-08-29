@@ -3777,6 +3777,14 @@ int mmc_init_card(struct mmc_host *host, struct mmc_card *card)
 
 	/* change clock */
 	host->card = card;
+#if defined(AYANEO_GBA_SD) && defined(AYANEO_SD_CLKCAP)
+	/* EXPERIMENT: cap host-1 (removable microSD) to SD default-speed 25MHz. The
+	 * read data transfers correctly but the tail CRC fails at 50MHz HS; a lower
+	 * data clock should give a clean CRC. Safe now that the SD waits are bounded
+	 * (a bad clock fails-fast instead of hanging). */
+	if (host->id == 1 && card->maxhz > 25000000)
+		card->maxhz = 25000000;
+#endif
 	mmc_set_clock(host, mmc_card_ddr(card), card->maxhz);
 
 #if defined(FEATURE_MMC_UHS1)

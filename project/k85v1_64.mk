@@ -78,6 +78,14 @@ AYANEO_GBA := yes
 DEFINES += AYANEO_GBA_SD
 endif
 
+# Experiment (default off): cap the removable microSD (host 1) to SD default-speed
+# 25MHz to see if the read tail-CRC clears at a lower data clock. Enable with
+# `AYANEO_SD_CLKCAP=yes` on top of AYANEO_GBA_SD=yes.
+AYANEO_SD_CLKCAP ?= no
+ifeq ($(AYANEO_SD_CLKCAP),yes)
+DEFINES += AYANEO_SD_CLKCAP
+endif
+
 AYANEO_GBA ?= no
 ifeq ($(AYANEO_GBA),yes)
 DEFINES += AYANEO_GBA
