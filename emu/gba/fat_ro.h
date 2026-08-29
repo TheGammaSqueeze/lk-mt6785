@@ -18,9 +18,13 @@
 /* Read `count` 512-byte sectors starting at absolute LBA `lba` into `buf`.
  * Returns the number of sectors read (== count on success). */
 typedef unsigned (*fat_read_fn)(void *ctx, uint32_t lba, uint32_t count, void *buf);
+/* Write `count` sectors at absolute LBA. Returns count on success. Optional -
+ * only needed for the write layer (fat_wr.c); leave 0 for read-only mounts. */
+typedef unsigned (*fat_write_fn)(void *ctx, uint32_t lba, uint32_t count, const void *buf);
 
 typedef struct {
 	fat_read_fn rd;
+	fat_write_fn wr;          /* 0 for read-only; set via fat_set_writer for fat_wr.c */
 	void *ctx;
 	uint32_t part_lba;        /* absolute LBA of the volume's first sector */
 	uint32_t fat_start;       /* absolute LBA of FAT #0 */
@@ -32,6 +36,7 @@ typedef struct {
 	uint32_t total_clusters;  /* count of data clusters (for type + bounds) */
 	uint16_t bytes_per_sec;   /* 512 assumed but stored/validated */
 	uint8_t  sec_per_clus;
+	uint8_t  num_fats;        /* FAT copies (mirror writes across all) */
 	uint8_t  is_fat32;
 	uint8_t  mounted;
 	uint8_t  sec_buf[512];     /* scratch sector for FAT/dir reads */
@@ -63,6 +68,9 @@ typedef struct {
 /* Probe the block device (MBR or bare VBR), locate the first FAT16/32 volume,
  * parse its BPB. Returns 0 on success, negative on failure (no card / not FAT). */
 int fat_mount(fat_vol *v, fat_read_fn rd, void *ctx);
+
+/* Attach a sector-write callback so the volume can be modified via fat_wr.c. */
+void fat_set_writer(fat_vol *v, fat_write_fn wr);
 
 /* Open the directory at `path` ("/", "/roms/gba", case-insensitive). 0 on ok. */
 int fat_opendir(fat_vol *v, const char *path, fat_dir *d);

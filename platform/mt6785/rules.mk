@@ -361,6 +361,7 @@ ifeq ($(AYANEO_GBA),yes)
 OBJS += emu/gba/gba_driver.o
 OBJS += emu/gba/fat_ro.o
 OBJS += emu/gba/sd_fat.o
+OBJS += emu/gba/fat_wr.o
 ifeq ($(AYANEO_GBA_SD),yes)
 OBJS += emu/gba/sd_fastboot.o
 endif

@@ -62,6 +62,7 @@ static int parse_bpb(fat_vol *v, const uint8_t *b, uint32_t part_lba)
 	dataclus = (total - first_data) / spc;
 	v->bytes_per_sec = bps;
 	v->sec_per_clus = spc;
+	v->num_fats = nfats;
 	v->part_lba = part_lba;
 	v->fat_start = part_lba + reserved;
 	v->fat_sectors = fatsz;
@@ -80,8 +81,11 @@ static int parse_bpb(fat_vol *v, const uint8_t *b, uint32_t part_lba)
 	return 0;
 }
 
+void fat_set_writer(fat_vol *v, fat_write_fn wr) { v->wr = wr; }
+
 int fat_mount(fat_vol *v, fat_read_fn rd, void *ctx)
 {
+	v->wr = 0;
 	uint8_t s0[512];
 	int i;
 	v->rd = rd; v->ctx = ctx; v->mounted = 0;
