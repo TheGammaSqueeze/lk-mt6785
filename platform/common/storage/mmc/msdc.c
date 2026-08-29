@@ -2999,6 +2999,9 @@ int msdc_init(int id, struct mmc_host *host, int clksrc, int mode)
 		MSDC_WRITE32(host->base + 0xb8, 0x1488180fu);   /* MSDC_PATCH_BIT2 */
 		/* Kernel msdc_init_hw sets SDC_CFG.SDIO=1 (bit19); LK clears it. Match. */
 		MSDC_SET_FIELD(SDC_CFG, SDC_CFG_SDIO, 1);
+		/* KEY RESULT: forcing CKDIV=0x320 (~130kHz) STILL gave bad-CRC, which rules
+		 * out timing/sampling entirely (130kHz is trivially sampleable). So the
+		 * failure is power or wiring (CMD line), not signal timing. */
 	}
 
 	msdc_pr_info("[SD%d] Host controller intialization done\n", id);
