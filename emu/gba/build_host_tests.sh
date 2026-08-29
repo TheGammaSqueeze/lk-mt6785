@@ -18,6 +18,7 @@ mkdir -p "$MNT" 2>/dev/null || true
 echo "== building =="
 gcc -O2 -I. -o /tmp/wr_test   fat_wr_test.c      fat_ro.c fat_wr.c
 gcc -O2 -I. -o /tmp/save_test gba_sd_save_test.c fat_ro.c fat_wr.c gba_sd_save.c
+gcc -O2 -I. -o /tmp/dirext_test fat_dirext_test.c fat_ro.c fat_wr.c
 
 mkimg() { # <img> <mkfs-args...>  - fresh image with the SD dir layout (no roms needed)
 	local img="$1"; shift
@@ -34,6 +35,7 @@ run() { # <label> <mkfs-args...>
 	mkimg "$img" "${@:2}"
 	cp "$img" "$img.a"; /tmp/wr_test   "$img.a"
 	cp "$img" "$img.b"; /tmp/save_test "$img.b"
+	sudo mount -o loop "$img.b" "$MNT"; sudo mkdir -p "$MNT/saves/gba" 2>/dev/null||true; sudo umount "$MNT"; /tmp/dirext_test "$img.b"
 	echo -n "fsck: "; fsck.fat -n "$img.b" 2>&1 | tail -1
 }
 

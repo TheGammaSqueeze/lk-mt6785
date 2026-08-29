@@ -286,14 +286,30 @@ int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
 		uint32_t rl[24], ro[24]; int run = 0, found = 0, idx = 0, k;
 		uint8_t cks = lfn_checksum(short11);
 		static const int lo[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
-		di_init(&it, v, cluster, root_sec, root_left);
-		while (di_next(&it, &lba, &o, &rec)) {
-			if (rec[0] == 0x00 || rec[0] == 0xE5) {
-				if (run < 24) { rl[run] = lba; ro[run] = o; }
-				if (++run >= need_slots) { found = 1; break; }
-			} else run = 0;
+		if (need_slots > 24) { free_chain(v, first); return -7; }
+		for (;;) {                                    /* extend the dir if it is full */
+			run = 0; found = 0;
+			di_init(&it, v, cluster, root_sec, root_left);
+			while (di_next(&it, &lba, &o, &rec)) {
+				if (rec[0] == 0x00 || rec[0] == 0xE5) {
+					if (run < 24) { rl[run] = lba; ro[run] = o; }
+					if (++run >= need_slots) { found = 1; break; }
+				} else run = 0;
+			}
+			if (found) break;
+			/* Full: grow the dir by one zeroed cluster (cluster-chain dirs only; the
+			 * FAT16 fixed root cannot grow) and rescan. */
+			if (cluster == 0) { free_chain(v, first); return -7; }
+			{
+				uint32_t last = cluster, nx, nc; unsigned zi; uint8_t zb[512];
+				while ((nx = get_fat(v, last)) >= 2 && nx < v->total_clusters + 2u) last = nx;
+				nc = alloc_clus(v, last);
+				if (!nc) { free_chain(v, first); return -7; }   /* disk full */
+				for (k = 0; k < 512; k++) zb[k] = 0;
+				for (zi = 0; zi < v->sec_per_clus; zi++)
+					if (wsec(v, clus_lba(v, nc) + zi, zb) != 0) { free_chain(v, first); return -7; }
+			}
 		}
-		if (!found || need_slots > 24) { free_chain(v, first); return -7; }   /* dir full */
 
 		for (s = nlfn; s >= 1; s--) {                 /* LFN entries, highest seq first */
 			uint8_t db[512], *r; int cb = (s - 1) * 13;
