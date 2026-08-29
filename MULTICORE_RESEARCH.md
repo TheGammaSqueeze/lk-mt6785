@@ -2294,3 +2294,30 @@ Built TWO signed images this cycle:
 Both staged to /mnt/c/pairmini. A fully 4:3-exact default-path nav-rebuild win needs the bigger "wide-strip anchor"
 refactor (render a fixed-world window, pan by src_x, rebuild only on window exit) which must solve the focus-hole
 double-contribution - higher risk, deferred for the user's go-ahead given repeated blind-display backfires.
+
+### PATH-1 FEASIBILITY (2026-08-29, source RE, no HW this cycle - target 0123456789ABCDEF not attached)
+Cycle goal: determine if path (1) "get SSPM to service SPMC CPU-power at LK so a plain PSCI CPU_ON completes
+the DSU coherency P-Channel" is reachable. New findings from the LK + kernel source:
+- SSPM IS RUNNING AT LK. The SSPM firmware is loaded by the PRELOADER (not the kernel): the kernel sspm_plt.c
+  only attaches (sspm_logger_init on an already-mapped share region, no request_firmware), and LK
+  aee_platform_debug.c reads "*SSPM_INFO stored by preloader". So SSPM absence is NOT the wall.
+- BUT LK HAS NO WAY TO TALK TO SSPM. platform/mt6785/mt_sspm.c is a 101-line stub that only flips the
+  reserved-memory DT node status to "okay"; it has NO IPI/mailbox code. Grep of all of platform/ for
+  spm_to_sspm / sspm_ipi / mbox / mtk_ipi / ipi_send => NONE. And there is NO PSCI/CPU_ON path in
+  platform/mt6785 or platform/common either (grep cpu_on/psci/0x84000003 => none). LK brings up the worker
+  ONLY via the custom CPC-arm bypass - precisely because it cannot issue an SSPM-serviced PSCI CPU_ON.
+- The kernel's SSPM CPU-power interaction for hotplug is not an explicit "enable service" IPI from the SPM
+  driver either (spm_v4 sspm commands are all SODI3/idle notify - SPM_ENTER/LEAVE_SODI3); the CPU_ON->SPMC
+  ->SSPM->DSU-P-Channel handshake lives inside ATF/BL31 + the SSPM fw, invisible to both the kernel SPM
+  driver and to LK.
+CONCLUSION on path (1): to arm SSPM CPU-power at LK we would have to (i) implement the full SSPM IPI mailbox
+protocol inside LK (mbox map + ipi send/wait + the exact CPU-power service opcode), and (ii) hope the
+preloader-loaded SSPM image actually has the CPU-power-on service armed at this stage (unknown, and the
+observed plain-PSCI-CPU_ON hang at LK is evidence it is NOT). That is a large, speculative implementation with
+no way to validate a single step without the target on ADB. So path (1) is NOT a cheap next build; it is a
+major sub-project, correctly deprioritised behind the already-staged DVM lever.
+STATUS: multicore probe remains blocked on HARDWARE - the two untested-on-HW levers are (A) lk_a_snes_bigcore_
+dvm.img (cpu0 TLBIALLIS+DSB ISH post-canary, staged, awaiting a flash + BC CANARY UART read) and (B) the
+large LK-SSPM-mailbox implementation above. No new buildable+testable multicore experiment can be advanced
+this cycle without the target device (0123456789ABCDEF) on ADB; only a28c0e0e (the GammaOS box, NOT the
+target) is attached. Mechanism (P-Channel not fired without SSPM-serviced SPMC) stands unchanged and sharpened.
