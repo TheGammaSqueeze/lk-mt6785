@@ -65,20 +65,25 @@ static int ends_dot_gba(const char *n)
 	  return e[0] == '.' && lc(e[1]) == 'g' && lc(e[2]) == 'b' && lc(e[3]) == 'a'; }
 }
 
-int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max)
+int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
 {
-	fat_dir d; fat_dirent e; int n = 0, i, j;
+	fat_dir d; fat_dirent e; int n = 0, i, j, tot = 0;
+	if (total) *total = 0;
 	if (max <= 0 || fat_opendir(v, "/roms/gba", &d) != 0) return 0;
-	while (fat_readdir(&d, &e) && n < max) {
-		int k = 0;
+	while (fat_readdir(&d, &e)) {
 		if (e.is_dir || !ends_dot_gba(e.name)) continue;
 		if (e.size == 0) continue;          /* skip empty/placeholder files */
-		while (e.name[k] && k < 127) { out[n].name[k] = e.name[k]; k++; }
-		out[n].name[k] = 0;
-		out[n].first_clus = e.first_clus;
-		out[n].size = e.size;
-		n++;
+		tot++;                              /* count every match, even past the cap */
+		if (n < max) {
+			int k = 0;
+			while (e.name[k] && k < 127) { out[n].name[k] = e.name[k]; k++; }
+			out[n].name[k] = 0;
+			out[n].first_clus = e.first_clus;
+			out[n].size = e.size;
+			n++;
+		}
 	}
+	if (total) *total = tot;
 	for (i = 1; i < n; i++) {           /* insertion sort, case-insensitive by name */
 		gba_rom_entry t = out[i];
 		for (j = i - 1; j >= 0 && name_ci_cmp(out[j].name, t.name) > 0; j--)

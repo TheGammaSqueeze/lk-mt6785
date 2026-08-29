@@ -22,8 +22,10 @@ typedef struct {
 } gba_rom_entry;
 
 /* Enumerate *.gba files in /roms/gba into out[0..max), sorted case-insensitively
- * by name. Returns the count (<= max). */
-int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max);
+ * by name. Returns the count STORED (<= max). If total is non-NULL it receives the
+ * TOTAL number of matching ROMs found, so a caller can tell the list was capped
+ * (total > returned) instead of silently dropping the overflow. */
+int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total);
 
 /* Read a ROM (identified by its cached first_clus/size) into dst, up to cap bytes.
  * Returns the number of bytes read (== min(size,cap) on success). */

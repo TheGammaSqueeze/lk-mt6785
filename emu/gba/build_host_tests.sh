@@ -32,7 +32,9 @@ mkimg() { # <img> <mkfs-args...>  - fresh image with the SD dir layout (no roms 
 	mkfs.fat "$@" "$img" >/dev/null 2>&1
 	sudo mount -o loop "$img" "$MNT"
 	sudo mkdir -p "$MNT/saves/gba" "$MNT/states/gba" "$MNT/roms/gba"
-	sudo dd if=/dev/urandom of="$MNT/roms/gba/good.gba" bs=4096 count=1 status=none
+	sudo dd if=/dev/urandom of="$MNT/roms/gba/good.gba"  bs=4096 count=1 status=none
+	sudo dd if=/dev/urandom of="$MNT/roms/gba/good2.gba" bs=4096 count=1 status=none
+	sudo dd if=/dev/urandom of="$MNT/roms/gba/good3.gba" bs=4096 count=1 status=none
 	sudo touch "$MNT/roms/gba/empty.gba"
 	sudo sync; sudo umount "$MNT"
 }

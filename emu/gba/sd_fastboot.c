@@ -64,9 +64,12 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 		 i ? "OK" : "MISSING", i ? f.size : 0u);
 	fastboot_info(lbuf);
 
-	nr = gba_sd_list_roms(&v, roms, 16);
-	snprintf(lbuf, sizeof lbuf, "sd: /roms/gba count=%d", nr);
-	fastboot_info(lbuf);
+	{
+		int tot = 0;
+		nr = gba_sd_list_roms(&v, roms, 16, &tot);
+		snprintf(lbuf, sizeof lbuf, "sd: /roms/gba count=%d (total=%d)", nr, tot);
+		fastboot_info(lbuf);
+	}
 	for (i = 0; i < nr && i < 8; i++) {
 		snprintf(lbuf, sizeof lbuf, "sd: rom[%d] %s (%u)", i, roms[i].name, roms[i].size);
 		fastboot_info(lbuf);
