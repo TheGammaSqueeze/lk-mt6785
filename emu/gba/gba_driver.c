@@ -1051,6 +1051,45 @@ void ayaneo_gbc_charging_screen(void)
 	}
 }
 
+#ifdef AYANEO_GBA_SD
+#include "sd_fat.h"
+/* Assets present on the microSD? Requires /gba_bios.bin (the intro) plus >=1 file
+ * in /roms/gba (something to select). Mirrors the host-validated probe in
+ * fat_ro_test.c. */
+static int gba_sd_assets_ok(fat_vol *v)
+{
+	fat_file bios; fat_dir d; fat_dirent e;
+	if (fat_open(v, "/gba_bios.bin", &bios) != 0) return 0;
+	if (fat_opendir(v, "/roms/gba", &d) != 0) return 0;
+	while (fat_readdir(&d, &e)) if (!e.is_dir) return 1;
+	return 0;
+}
+
+/*
+ * SD boot gate. Returns < 0 to tell the boot hook to FALL THROUGH to the normal
+ * kernel boot (no card / not FAT / assets missing) - the always-safe default. On
+ * success (card + assets) it will run the SD emu flow (bios intro -> ROM select ->
+ * game) and never return. That flow is wired incrementally (tasks c-e); until it is
+ * complete this logs and still returns < 0 so the device always boots normally.
+ */
+int ayaneo_gba_sd_boot(void)
+{
+	static fat_vol vol;
+	int rc = gba_sd_mount(&vol);
+	if (rc != 0) {
+		GBA_LOG("gba-sd: no FAT microSD (rc=%d) -> normal boot\n", rc);
+		return -1;
+	}
+	if (!gba_sd_assets_ok(&vol)) {
+		GBA_LOG("gba-sd: microSD present but /gba_bios.bin + /roms/gba missing -> normal boot\n");
+		return -2;
+	}
+	GBA_LOG("gba-sd: microSD + assets found (fat32=%d) - emu-from-SD not yet wired, normal boot for now\n",
+		vol.is_fat32);
+	return -3;   /* TODO(c-e): run bios intro + ROM select + game; never returns on success */
+}
+#endif /* AYANEO_GBA_SD */
+
 void ayaneo_gbc_start(void)
 {
 #if defined(AYANEO_AUDIO_TRACE) || defined(AYANEO_DEBUG_LOGGING)

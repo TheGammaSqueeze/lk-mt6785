@@ -731,7 +731,22 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	video_rainbow_boot_stop();
 #endif
 
-#if defined(AYANEO_GBC) || defined(AYANEO_GBA)
+#if defined(AYANEO_GBA_SD)
+	/*
+	 * GBA-from-SD flow: if a FAT microSD with /gba_bios.bin + /roms/gba is present,
+	 * run the emulator from the card (bios intro -> ROM select -> game) and never
+	 * return. If there is no card, it is not FAT, or the assets are missing, the
+	 * gate returns < 0 and we FALL THROUGH to the normal kernel boot below - the
+	 * always-safe default (the device is never bricked into a non-booting state).
+	 */
+	{
+		extern int ayaneo_gba_sd_boot(void);
+		if (ayaneo_gba_sd_boot() >= 0)
+			for (;;)
+				thread_sleep(1000);
+		/* else: fall through to the normal kernel boot */
+	}
+#elif defined(AYANEO_GBC) || defined(AYANEO_GBA)
 	/*
 	 * Experiment: instead of booting the kernel, hand the panel to the GBC/GBA
 	 * emulator and run it forever. The boot animation has already played and

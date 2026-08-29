@@ -67,6 +67,19 @@ int main(int argc, char **argv)
 		free(whole);
 	}
 
+	/* mirrors the on-device asset probe (gba_driver.c): bios openable + roms/gba
+	 * has >=1 file. This is the gate that decides emu-vs-normal-boot. */
+	printf("--- SD asset probe (bios + >=1 rom) ---\n");
+	{
+		fat_file bios; fat_dir rd; fat_dirent re; int have_rom = 0, ok;
+		int bios_ok = (fat_open(&v, "/gba_bios.bin", &bios) == 0);
+		int roms_ok = (fat_opendir(&v, "/roms/gba", &rd) == 0);
+		if (roms_ok) while (fat_readdir(&rd, &re)) if (!re.is_dir) { have_rom = 1; break; }
+		ok = bios_ok && roms_ok && have_rom;
+		printf("  bios=%d roms_dir=%d have_rom=%d -> assets_ok=%d\n", bios_ok, roms_ok, have_rom, ok);
+		if (!ok) { printf("  FAIL: probe should pass on this image\n"); fails++; }
+	}
+
 	printf("\n%s (%d entries listed, %d failures)\n", fails ? "FAIL" : "ALL PASS", nlist, fails);
 	return fails ? 1 : 0;
 }

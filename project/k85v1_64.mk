@@ -68,6 +68,16 @@ endif
 # over the same hooks (ayaneo_gbc_start / _charging_screen / _select_held). The
 # core archive (emu/gba/libgpsp.a) must be prebuilt via emu/gba/build_core_gba.sh.
 # Enable with `AYANEO_GBA=yes`.
+# GBA-from-SD-card flow (branch lk-gba-emu-sd-card): load gba_bios.bin + ROMs from
+# the microSD (roms/gba, saves/gba, states/gba) instead of boot_b, with a ROM-select
+# screen. If no card / no assets, fall through to the normal kernel boot. Implies
+# AYANEO_GBA (reuses the gpSP core + driver). Enable with `AYANEO_GBA_SD=yes`.
+AYANEO_GBA_SD ?= no
+ifeq ($(AYANEO_GBA_SD),yes)
+AYANEO_GBA := yes
+DEFINES += AYANEO_GBA_SD
+endif
+
 AYANEO_GBA ?= no
 ifeq ($(AYANEO_GBA),yes)
 DEFINES += AYANEO_GBA
