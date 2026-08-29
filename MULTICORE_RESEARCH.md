@@ -2516,3 +2516,9 @@ Software paths remain CLOSED (CLOSURE + ROOT CAUSE above): (b) MCDI and (c) ATF 
 the only open items (a) whole-aff1=1 mcucci/mcucfg hotplug diff and (d) post-join DVM/TLBI-ISH lever both need
 the live device. No new source-buildable experiment. Idle-waiting for the device; 3 staged HW-gated actions run
 in runbook order on return.
+
+### HEARTBEAT (2026-08-29, cycle 13, no HW): unchanged, idle-waiting
+Target 0123456789ABCDEF still off ADB (only a28c0e0e). putty.log unchanged since 14:41 - no new UART BC lines.
+Software paths remain CLOSED (b MCDI + c ATF RE done, no snoop step). Open items a (mcucci/mcucfg hotplug diff)
+and d (post-join DVM/TLBI-ISH lever) both need the live device. No new source-buildable experiment. Idle-waiting;
+3 staged HW-gated actions run in runbook order on return.
