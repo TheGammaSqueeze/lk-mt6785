@@ -2492,3 +2492,12 @@ source-buildable experiment remains. The loop is now idle-waiting for the device
 HW-gated actions can run, in runbook order: (1) flash-free run_mcucfg_diff.sh 0123456789ABCDEF (whole-aff1=1
 group off-vs-on MMIO diff), (2) lk_a_snes_bigcore_nosspm.img, (3) lk_a_snes_bigcore_dvm.img. No code/build change
 this cycle - nothing new is correct to build while every SW path is closed and the device is absent.
+
+### HEARTBEAT (2026-08-29, cycle 10, no HW): idle-waiting, no software lever remains
+Target 0123456789ABCDEF still off ADB (only a28c0e0e attached, the non-target box). No new UART BC lines.
+Software-side research remains CLOSED per the CLOSURE + final ROOT CAUSE sections above; re-running WebSearch or
+re-reading the ATF/MCUPM source this cycle would only restate the triangulated conclusion (coherent join is the
+SSPM-serviced SPMC power-P-Channel, no bootloader-reachable MMIO/sysreg/mailbox opcode). Not manufacturing a
+duplicate result. Loop stays idle-waiting for the device to return so the 3 staged HW-gated actions run in runbook
+order: (1) run_mcucfg_diff.sh whole-aff1=1 group off-vs-on diff, (2) lk_a_snes_bigcore_nosspm.img, (3)
+lk_a_snes_bigcore_dvm.img. If those fail the wall is fundamental; the shipped win is the proven producer-offload.
