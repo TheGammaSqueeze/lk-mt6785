@@ -730,12 +730,19 @@ void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, 
 		 * almost every block takes a branch-free fast path. Pixel-identical to scalar. */
 		for (; X + 8 <= sx1; X += 8) {
 			const uint32_t *sp = &srow[X];
-			/* scalar alpha reduction (AArch32 has no horizontal min/max intrinsic) */
-			unsigned aand = sp[0] & sp[1] & sp[2] & sp[3] & sp[4] & sp[5] & sp[6] & sp[7];
-			unsigned aor  = sp[0] | sp[1] | sp[2] | sp[3] | sp[4] | sp[5] | sp[6] | sp[7];
+			uint32x4_t lo = vld1q_u32(sp), hi = vld1q_u32(sp + 4);
+			/* NEON alpha reduction (AArch32 has no horizontal min/max, so fold the
+			 * 4-lane vectors to 2 lanes then combine the two scalars): AND-reduce for
+			 * all-opaque, OR-reduce for all-transparent - no per-pixel scalar loads. */
+			uint32x2_t a2 = vand_u32(vget_low_u32(vandq_u32(lo, hi)),
+						 vget_high_u32(vandq_u32(lo, hi)));
+			uint32x2_t o2 = vorr_u32(vget_low_u32(vorrq_u32(lo, hi)),
+						 vget_high_u32(vorrq_u32(lo, hi)));
+			unsigned aand = vget_lane_u32(a2, 0) & vget_lane_u32(a2, 1);
+			unsigned aor  = vget_lane_u32(o2, 0) | vget_lane_u32(o2, 1);
 			if ((aand & 0xff000000u) == 0xff000000u) { /* all 8 opaque -> 128-bit copy */
-				vst1q_u32(&drow[X - sx0], vld1q_u32(sp));
-				vst1q_u32(&drow[X - sx0 + 4], vld1q_u32(sp + 4));
+				vst1q_u32(&drow[X - sx0], lo);
+				vst1q_u32(&drow[X - sx0 + 4], hi);
 			} else if ((aor & 0xff000000u) == 0u) {    /* all 8 transparent */
 				/* nothing to write */
 			} else {                                   /* mixed edge: scalar */
