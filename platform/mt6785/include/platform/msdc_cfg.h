@@ -81,7 +81,14 @@
 /* MSDC Host Number                                                         */
 /*--------------------------------------------------------------------------*/
 
-#if (defined(MMC_MSDC_DRV_CTP) && !defined(FPGA_PLATFORM))
+/* AYANEO_GBA_SD needs a SECOND MMC host: the boot storage is the internal eMMC
+ * on msdc0, and the external microSD (our ROM/BIOS source) is on msdc1. The stock
+ * LK build sizes the driver for a single host (MSDC_MAX_NUM=1), so mmc_init(1)
+ * would hit BUG_ON(id >= NR_MMC). Allow two hosts for the LK driver build. Normal
+ * boot is unaffected (it only ever inits host 0); host 1 is used solely when we
+ * call mmc_legacy_init(2)/mmc_init(1) for the SD. */
+#if (defined(MMC_MSDC_DRV_CTP) && !defined(FPGA_PLATFORM)) \
+	|| (defined(MMC_MSDC_DRV_LK) && !defined(FPGA_PLATFORM))
 #define MSDC_MAX_NUM            (2)
 #else
 #define MSDC_MAX_NUM            (1)
