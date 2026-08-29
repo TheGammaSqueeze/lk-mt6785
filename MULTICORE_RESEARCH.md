@@ -2390,3 +2390,29 @@ This is the THIRD independent confirmation of the same wall, now fully triangula
    the only remaining un-built SW path is a full LK-side SSPM IPI mailbox to drive a real serviced power-up
    (large, speculative). Multicore probe is HW-blocked: target 0123456789ABCDEF is not on ADB (only a28c0e0e,
    the non-target GammaOS box). No further buildable+testable experiment remains this cycle.
+
+### CYCLE (2026-08-29, no HW): tooling confirmed staged; DEVICE-RETURN RUNBOOK (priority order)
+No target on ADB again (only a28c0e0e). Confirmed the empirical toolchain is fully staged and ready, so the
+next hardware window is maximally productive with zero setup:
+- tools/live_regpoke/regpoke.ko  : BUILT (Aug 28, vermagic 4.14.186) - no rebuild needed unless kernel changes.
+- tools/live_regpoke/run_mcucfg_diff.sh : the task-(a) "done right" diff - powers the WHOLE DSU1 (cpu4-7) off
+  vs on (offlining only cpu4 leaves DSU1 powered, so earlier single-core diffs could not expose a DSU1-cluster
+  snoop reg). Dumps mcucfg 0x0c530000/64KB + mcucci 0x0c510000/4KB nonzero, diffs ON vs OFF. NOT yet run in
+  whole-DSU1 mode (its OFF dump was ephemeral /tmp) => this is the #1 unrun on-device experiment.
+- live_cpc_coherent.txt (1536 lines) = the DSU1-ON reference; live_cpc_reference.txt shows CPC 0x0c53a814=
+  200b0000 (bit29 SET in the live-coherent state - the one persistent CPC_FLOW delta the bit29 build tests).
+
+DEVICE-RETURN RUNBOOK (run in this order when 0123456789ABCDEF is back on ADB):
+1. FLASH-FREE FIRST (no LK reflash, fastest signal): ./tools/live_regpoke/run_mcucfg_diff.sh 0123456789ABCDEF
+   -> whole-DSU1 ON-vs-OFF mcucfg/mcucci diff. Any reg outside the SPM/CPC power block (near 0x0c53a700) that
+   moves is the cross-DSU snoop-admission control the LK bringup must reproduce. This is the last untried MMIO
+   hunt and needs no reflash.
+2. If (1) finds a candidate reg: add it to bigcore.c bc_spmc_init, build, flash, read BC canary.
+3. Else flash lk_a_snes_bigcore_nosspm.img + tee_patched_armcpc.img -> read "BC NOSSPM"/canary (SSPM-out-of-loop
+   hardware-FSM power-up test).
+4. Else flash lk_a_snes_bigcore_dvm.img -> read canary (post-join DVM/TLBIALLIS nudge).
+5. If 1-4 all fail: the wall is fully confirmed (triangulated: ATF RE + SSPM-only + DSU TRM) and the only
+   remaining SW path is a full LK-side SSPM IPI mailbox (large). Fall back to the producer-offload using ONLY the
+   proven directions (worker reads static pre-bringup data + worker->cpu0 writes), now cheaper thanks to the
+   RGBA NEON re-blit added this session.
+STATUS: multicore HW-blocked; no new buildable+testable experiment remains without the device. Levers staged.
