@@ -834,6 +834,13 @@ int fastboot_init(void *base, unsigned size)
 	/*LXO: END!Download related command*/
 
 	fastboot_oem_register();
+#ifdef AYANEO_GBA_SD
+	{
+		/* microSD debug channel: oem sd-probe / oem sd-read:<lba> (emu/gba/sd_fastboot.c) */
+		extern void gba_sd_fastboot_register(void);
+		gba_sd_fastboot_register();
+	}
+#endif
 #if defined(MTK_SECURITY_SW_SUPPORT)
 	fastboot_register("oem p2u", cmd_oem_p2u, TRUE, FALSE);
 #endif
