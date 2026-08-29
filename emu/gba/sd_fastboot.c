@@ -95,9 +95,15 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 		{
 			extern unsigned msdc1_reg_read(unsigned off);
 			unsigned cfg = msdc1_reg_read(0x00);
-			snprintf(lbuf, sizeof lbuf, "sd: POSTinit CFG=0x%08x CKDIV=%u INT=0x%08x PS=0x%08x SDCSTS=0x%08x",
-				 cfg, (cfg >> 8) & 0xfff, msdc1_reg_read(0x0C),
-				 msdc1_reg_read(0x08), msdc1_reg_read(0x34));
+			/* correct offsets: INT=0x0c CMDTMO=bit9 RSPCRCERR=bit10; SDC_CMD=0x34
+			 * (last cmd, opcode in [5:0]); SDC_STS=0x3c; SDC_RESP0=0x40. */
+			unsigned intr = msdc1_reg_read(0x0c);
+			snprintf(lbuf, sizeof lbuf, "sd: POSTinit CKDIV=%u INT=0x%08x CMDTMO=%u RSPCRC=%u",
+				 (cfg >> 8) & 0xfff, intr, (intr >> 9) & 1u, (intr >> 10) & 1u);
+			fastboot_info(lbuf);
+			snprintf(lbuf, sizeof lbuf, "sd: POSTinit SDC_CMD=0x%08x(op%u) STS=0x%08x RESP0=0x%08x",
+				 msdc1_reg_read(0x34), msdc1_reg_read(0x34) & 0x3f,
+				 msdc1_reg_read(0x3c), msdc1_reg_read(0x40));
 			fastboot_info(lbuf);
 		}
 		snprintf(lbuf, sizeof lbuf, "sd: msdc1 init FAILED, mmc rc=%d (no card / power / pinmux)", gba_sd_hw_rc());
