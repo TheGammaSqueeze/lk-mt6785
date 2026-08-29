@@ -77,6 +77,7 @@ extern int mt_get_gpio_in(unsigned pin);
 #define SNES_COMP_PA  0x51000000u   /* compressed staging */
 #define SNES_WP_PA    0x52000000u   /* wallpaper cache (1536*720*4) */
 #define SNES_CHROME_PA 0x53000000u  /* static chrome cache (up to 1280*960*4 in 4:3) */
+#define SNES_CTILE_PA  0x54000000u  /* card-tile cache (up to 64 * 320*360*4 = ~29MB, fits <0x56000000) */
 #define SNES_RAW_MAX  (32u * 1024 * 1024)
 #define SNES_COMP_MAX (16u * 1024 * 1024)
 #define HOME_CAP (16u * 1024 * 1024 / (unsigned)sizeof(snes_rnode))
@@ -249,6 +250,15 @@ static int snes_emu_thread(void *arg)
 			   (uint32_t *)SNES_CHROME_PA) != 0) {
 		dbg("SNES ERR: menu init");
 		for (;;) { mtk_wdt_restart(); thread_sleep(200); }
+	}
+
+	/* Card-tile cache for the 60fps single-buffer carousel: one CT tile per game in
+	 * the free DRAM window at 0x54000000 (the panel maps up to 0x56000000 WB = 32MB,
+	 * ~71 tiles). Direct-mapped by game index so a held scroll never rebuilds. */
+	{
+		static int s_ctile_gi[64];
+		int cap = s_menu.ngames; if (cap > 64) cap = 64; if (cap < 1) cap = 1;
+		snes_menu_set_ctile(&s_menu, (uint32_t *)SNES_CTILE_PA, s_ctile_gi, cap);
 	}
 
 	input_init();

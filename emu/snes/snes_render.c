@@ -675,6 +675,82 @@ void snes_render_node(snes_target *t, snes_scene *s, snes_rnode *n)
 int snes_render_count(void) { return g_ndr; }
 
 /* ---- direct-draw helpers (screen space; cx,cy = centre in the 1280x720 space) --- */
+/* Blit a pre-rendered w*h straight-RGBA (0xAARRGGBB) tile centred at the VIEW-
+ * transformed (cx,cy), 1:1 (no scale - the tile already carries the view scale).
+ * Source-over onto the fb; honours offx/offy and the optional scanline band. Used
+ * by the card-tile cache: render each card body once, blit the tile per frame
+ * instead of re-rendering ~6 sprites. Exact when the transformed centre is integer
+ * (settled cards); at most 1px sampling difference at fractional (mid-scroll)
+ * positions, which is imperceptible while the strip is moving. */
+void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, float cy)
+{
+	float scx = t->vsx * cx + t->vdx, scy = t->vsy * cy + t->vdy;
+	int cxp = (int)(scx + (scx >= 0 ? 0.5f : -0.5f));
+	int cyp = (int)(scy + (scy >= 0 ? 0.5f : -0.5f));
+	int x0 = cxp - w / 2, y0 = cyp - h / 2;      /* virtual-space top-left */
+	int sx0 = 0, sy0 = 0, sx1 = w, sy1 = h, X, Y;
+	int xlim = t->W - t->offx, ylim = t->H - t->offy;
+	if (!pix || w <= 0 || h <= 0) return;
+	if (xlim > SNES_VW) xlim = SNES_VW;          /* never exceed the design width */
+	/* clip source rect to [0,xlim)x[0,ylim) in virtual space */
+	if (x0 < 0)      { sx0 = -x0; x0 = 0; }
+	if (y0 < 0)      { sy0 = -y0; y0 = 0; }
+	if (x0 + (sx1 - sx0) > xlim) sx1 = sx0 + (xlim - x0);
+	if (y0 + (sy1 - sy0) > ylim) sy1 = sy0 + (ylim - y0);
+	for (Y = sy0; Y < sy1; Y++) {
+		const uint32_t *srow = pix + (unsigned)Y * w;
+		uint32_t *drow = t->fb + (unsigned)(t->offy + y0 + (Y - sy0)) * t->pitch
+			       + t->offx + x0;
+		X = sx0;
+#ifdef __ARM_NEON
+		/* NEON: classify each aligned run of 8 tile pixels - all opaque -> straight
+		 * 8-wide store (card body), all transparent -> skip (tile margin), mixed ->
+		 * scalar (anti-aliased edges only). The card body + margin are the bulk, so
+		 * almost every block takes a branch-free fast path. Pixel-identical to scalar. */
+		for (; X + 8 <= sx1; X += 8) {
+			const uint32_t *sp = &srow[X];
+			/* scalar alpha reduction (AArch32 has no horizontal min/max intrinsic) */
+			unsigned aand = sp[0] & sp[1] & sp[2] & sp[3] & sp[4] & sp[5] & sp[6] & sp[7];
+			unsigned aor  = sp[0] | sp[1] | sp[2] | sp[3] | sp[4] | sp[5] | sp[6] | sp[7];
+			if ((aand & 0xff000000u) == 0xff000000u) { /* all 8 opaque -> 128-bit copy */
+				vst1q_u32(&drow[X - sx0], vld1q_u32(sp));
+				vst1q_u32(&drow[X - sx0 + 4], vld1q_u32(sp + 4));
+			} else if ((aor & 0xff000000u) == 0u) {    /* all 8 transparent */
+				/* nothing to write */
+			} else {                                   /* mixed edge: scalar */
+				int q;
+				for (q = 0; q < 8; q++) {
+					uint32_t s = srow[X + q]; unsigned sa = s >> 24;
+					uint32_t *dp = &drow[X - sx0 + q];
+					if (!sa) continue;
+					if (sa == 255) { *dp = s; continue; }
+					{ uint32_t dv = *dp; unsigned ia = 255 - sa;
+					  unsigned sr=(s>>16)&0xff,sg=(s>>8)&0xff,sb=s&0xff;
+					  unsigned dr=(dv>>16)&0xff,dg=(dv>>8)&0xff,db=dv&0xff;
+					  dr=(sr*sa+dr*ia+127)/255; dg=(sg*sa+dg*ia+127)/255; db=(sb*sa+db*ia+127)/255;
+					  *dp = 0xff000000u | (dr<<16) | (dg<<8) | db; }
+				}
+			}
+		}
+#endif
+		for (; X < sx1; X++) {
+			uint32_t s = srow[X];
+			unsigned sa = s >> 24;
+			if (!sa) continue;
+			if (sa == 255) { drow[X - sx0] = s; continue; }
+			{
+				uint32_t dv = drow[X - sx0];
+				unsigned ia = 255 - sa;
+				unsigned sr = (s >> 16) & 0xff, sg = (s >> 8) & 0xff, sb = s & 0xff;
+				unsigned dr = (dv >> 16) & 0xff, dg = (dv >> 8) & 0xff, db = dv & 0xff;
+				dr = (sr * sa + dr * ia + 127) / 255;
+				dg = (sg * sa + dg * ia + 127) / 255;
+				db = (sb * sa + db * ia + 127) / 255;
+				drow[X - sx0] = 0xff000000u | (dr << 16) | (dg << 8) | db;
+			}
+		}
+	}
+}
 void snes_blit_tex(snes_target *t, const snes_pack *pk, const snes_img_entry *im,
 		   float cx, float cy, float w, float h, float alpha)
 {

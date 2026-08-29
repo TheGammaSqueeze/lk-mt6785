@@ -710,6 +710,58 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		else    snes_fill_quad(t, cx, cy, bw, bh, 0.15f, 0.15f, 0.2f, 1.0f);
 	}
 }
+/* ---- card-tile cache (single-buffer 60fps; see snes_menu.h) ---- */
+#define CT_PIX ((unsigned)SNES_CT_W * (unsigned)SNES_CT_H)
+
+/* Render game gi's NORMAL card body (dark frame + boxart + player icon + resume
+ * dots, dim=1, no cursor) centred in a SNES_CT_W x SNES_CT_H straight-RGBA tile, at
+ * the current aspect's content scale (baked in so the tile blits 1:1). */
+static void render_card_tile(snes_menu *m, int gi, uint32_t *tile)
+{
+	snes_target tt;
+	unsigned i;
+	int z;
+	float S = m->aspect ? ASP_CONTENT_S : 1.0f;
+	float save_rd = m->resume_dim, save_cs = m->cont_shift, save_xf = m->xfade_t;
+	{ char *zp = (char *)&tt; for (z = 0; z < (int)sizeof(tt); z++) zp[z] = 0; }
+	tt.fb = tile; tt.pitch = SNES_CT_W; tt.W = SNES_CT_W; tt.H = SNES_CT_H;
+	tt.offx = 0; tt.offy = 0;
+	/* world (0, CAR_CY) -> tile centre (CT_W/2, CT_H/2), scale S */
+	snes_target_view(&tt, S, S, (float)SNES_CT_W / 2.0f,
+			 (float)SNES_CT_H / 2.0f - S * CAR_CY);
+	for (i = 0; i < CT_PIX; i++) tile[i] = 0;          /* transparent */
+	m->resume_dim = 0.0f; m->cont_shift = 0.0f; m->xfade_t = 0.0f;
+	draw_card(m, &tt, gi, 0.0f, 0.0f, 1.0f);           /* dark, undimmed, no cursor */
+	m->resume_dim = save_rd; m->cont_shift = save_cs; m->xfade_t = save_xf;
+}
+
+/* Fetch game gi's cached tile, rendering+caching on a miss. Direct-mapped by gi so a
+ * sustained held scroll reuses tiles and never rebuilds. Returns 0 if the cache is
+ * disabled (caller falls back to a live draw_card). */
+static const uint32_t *ctile_get(snes_menu *m, int gi)
+{
+	int slot;
+	if (!m->ctile || m->ctile_cap <= 0 || !m->ctile_gi) return 0;
+	if (m->ctile_aspect != m->aspect) {                /* aspect flip invalidates all */
+		int k;
+		for (k = 0; k < m->ctile_cap; k++) m->ctile_gi[k] = -1;
+		m->ctile_aspect = m->aspect;
+	}
+	slot = gi % m->ctile_cap; if (slot < 0) slot += m->ctile_cap;
+	if (m->ctile_gi[slot] != gi) {
+		render_card_tile(m, gi, m->ctile + (unsigned)slot * CT_PIX);
+		m->ctile_gi[slot] = gi;
+	}
+	return m->ctile + (unsigned)slot * CT_PIX;
+}
+
+void snes_menu_set_ctile(snes_menu *m, uint32_t *buf, int *gi, int cap)
+{
+	int k;
+	m->ctile = buf; m->ctile_gi = gi; m->ctile_cap = cap; m->ctile_aspect = -1;
+	if (gi) for (k = 0; k < cap; k++) gi[k] = -1;
+}
+
 static void draw_carousel(snes_menu *m, snes_target *t)
 {
 	int n = m->ngames, j;
@@ -729,6 +781,14 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 		cx = 640.0f + wx;
 		if (cx < -280 || cx > SNES_VW + 280) continue;
 		blue_a = (j == m->prev_focus) ? prog : 0.0f;   /* outgoing card fades out */
+		/* Cache fast path: a plain non-focused card (no blue crossfade, no resume
+		 * dim) is identical to its pre-rendered tile - blit it instead of ~6 live
+		 * sprite blits. The outgoing crossfade card (blue_a>0) and resume-dimmed
+		 * cards fall through to the exact live render. */
+		if (blue_a <= 0.003f && m->resume_dim == 0.0f) {
+			const uint32_t *tile = ctile_get(m, j);
+			if (tile) { snes_blit_raw(t, tile, SNES_CT_W, SNES_CT_H, cx, CAR_CY); continue; }
+		}
 		draw_card(m, t, j, cx, blue_a, ndim);
 	}
 	/* the selected card stays bright and keeps its blue active frame in resume
@@ -1210,6 +1270,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	unsigned i;
 	/* zero the struct fields we rely on */
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
+	m->ctile = 0; m->ctile_gi = 0; m->ctile_cap = 0; m->ctile_aspect = -1;
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;
 	m->disp_cur = m->disp_sel = 1; m->sub_rep_t = 0.0f; m->sub_rep_ctrl = 0;
 	m->disp_zone = 0; m->frame_sel = 0; m->frame_scroll = 0; m->frame_applied = 0;

@@ -50,6 +50,61 @@ int main(int argc, char **argv)
 	snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
 	if (getenv("SNES_ASPECT43")) { menu.aspect = 1; menu.chrome_ready = 0; }  /* rebuild chrome for 4:3 */
 
+	/* Card-tile cache for the 60fps single-buffer path (disable with SNES_NOCACHE). */
+	{
+		static int ctgi[128];
+		int cap = menu.ngames; if (cap > 128) cap = 128; if (cap < 1) cap = 1;
+		if (!getenv("SNES_NOCACHE")) {
+			uint32_t *ctbuf = malloc((size_t)cap * SNES_CT_W * SNES_CT_H * 4);
+			snes_menu_set_ctile(&menu, ctbuf, ctgi, cap);
+		}
+	}
+
+	/* Cache exactness check: `host_render <pack> - ctcheck [nav]` renders each SETTLED
+	 * state along a nav path both with the tile cache and with a live direct render, and
+	 * diffs. Settled cards sit at integer positions so the cache must be pixel-exact
+	 * (native) / within the baked <=1px 4:3 resample. */
+	if (argc > 3 && strcmp(argv[3], "ctcheck") == 0) {
+		const char *rnav = argc > 4 ? argv[4] : "RRRLLDDUU";
+		uint32_t *A = malloc((size_t)W * H * 4), *B = malloc((size_t)W * H * 4);
+		int ni, s, worst = 0, worstpx = 0, nstates = 0;
+		int ctgi2[128]; int cap2 = menu.ngames > 128 ? 128 : menu.ngames;
+		uint32_t *ctb2 = malloc((size_t)(cap2<1?1:cap2) * SNES_CT_W * SNES_CT_H * 4);
+		memset(&in, 0, sizeof(in));
+		for (s = 0; s < 240; s++) snes_menu_update(&menu, &in, 1.0f/60.0f);
+		for (ni = 0; ni <= (int)strlen(rnav); ni++) {
+			int px, dmax = 0, dcnt = 0, bx0=W, by0=H, bx1=-1, by1=-1;
+			/* settle fully so cards sit at integer positions */
+			for (s = 0; s < 40; s++) { memset(&in,0,sizeof(in)); snes_menu_update(&menu,&in,1.0f/60.0f); }
+			/* A = live (cache off) */
+			snes_menu_set_ctile(&menu, 0, 0, 0);
+			for (i=0;i<W*H;i++) fb[i]=0xFF000000u; snes_menu_render(&menu,&t);
+			for (i=0;i<W*H;i++) A[i]=fb[i];
+			/* B = cached */
+			snes_menu_set_ctile(&menu, ctb2, ctgi2, cap2<1?1:cap2);
+			for (i=0;i<W*H;i++) fb[i]=0xFF000000u; snes_menu_render(&menu,&t);
+			for (i=0;i<W*H;i++) B[i]=fb[i];
+			for (px=0; px<W*H; px++) {
+				int dr=((A[px]>>16)&0xff)-((B[px]>>16)&0xff); int dg=((A[px]>>8)&0xff)-((B[px]>>8)&0xff); int db=(A[px]&0xff)-(B[px]&0xff);
+				if(dr<0)dr=-dr; if(dg<0)dg=-dg; if(db<0)db=-db;
+				{ int d=dr>dg?dr:dg; if(db>d)d=db; if(d){dcnt++; if(d>dmax)dmax=d;
+				  { int xx=px%W, yy=px/W; if(xx<bx0)bx0=xx; if(xx>bx1)bx1=xx; if(yy<by0)by0=yy; if(yy>by1)by1=yy; } } }
+			}
+			if (dmax>worst) worst=dmax; if (dcnt>worstpx) worstpx=dcnt; nstates++;
+			fprintf(stderr, "  state %2d (after '%.*s'): diff_px=%d maxchan=%d bbox=[%d,%d..%d,%d]\n",
+				ni, ni, rnav, dcnt, dmax, bx0,by0,bx1,by1);
+			if (ni < (int)strlen(rnav)) {
+				char c=rnav[ni]; memset(&in,0,sizeof(in));
+				in.right=(c=='R'); in.left=(c=='L'); in.up=(c=='U'); in.down=(c=='D');
+				snes_menu_update(&menu,&in,1.0f/60.0f);
+			}
+		}
+		fprintf(stderr, "CTCHECK aspect=%d states=%d WORST diff_px=%d maxchan=%d  (%s)\n",
+			menu.aspect, nstates, worstpx, worst,
+			worst==0 ? "PIXEL-EXACT" : worst<=16 ? "within <=1px resample" : "REGRESSION");
+		return 0;
+	}
+
 	/* Phase profiler: `host_render <pack> - prof [nav]` settles the attract, then holds
 	 * RIGHT for N frames (moving carousel = worst case) timing each render phase via the
 	 * g_perf[] hook (0 wp, 1 chrome, 2 carousel, 3 filmstrip, 4 rest). Prints the average

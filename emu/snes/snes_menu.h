@@ -91,17 +91,15 @@ typedef struct {
 	int wp_ready;
 	uint32_t *chrome;             /* cached static home chrome, VW*VH u32 (0 alpha = uncovered) */
 	int chrome_ready;
-	int cc_y0, cc_y1;             /* L2 card-cache non-empty row band (OVL_LAYERS.md); y1<y0 = empty */
-	/* Focused-card body cache (L3 60fps path): the card body (frame+boxart+icons, PREMULT)
-	 * is expensive to re-render on the in-order A55 (~4ms/frame), but it is invariant to the
-	 * live cont_shift pan - only the focus/sel_world/aspect change it. Render it ONCE into
-	 * this caller-provided full-frame buffer at the SETTLED (cont_shift=0) position, then each
-	 * frame blit it into L3 shifted by the integer pan (exact: the pan is quantised to whole
-	 * panel px) and draw only the pulsing cursor live. fcc_sig drives rebuilds; -1 = invalid. */
-	uint32_t *fcc;                /* focused-card cache, panel-sized (VW-pitch) u32, or 0 to disable */
-	uint32_t fcc_sig;             /* signature of the cached body state */
-	int fcc_ready;                /* 1 = fcc holds a valid settled body for fcc_sig */
-	int fcc_x0, fcc_x1, fcc_y0, fcc_y1;  /* settled (canonical) body bbox in fcc (panel coords) */
+	/* Card-tile cache (single-buffer 60fps): each game's NORMAL card body (dark frame +
+	 * boxart + player icon + resume dots, dim=1, no cursor) is rendered ONCE into a
+	 * CT_W*CT_H straight-RGBA tile and blitted per frame by draw_carousel instead of ~6
+	 * live sprite blits. Direct-mapped by game index (slot = gi % ctile_cap) so a sustained
+	 * held scroll reuses tiles and never rebuilds. Caller provides the buffer + slot array. */
+	uint32_t *ctile;              /* ctile_cap * CT_W*CT_H u32, or 0 = disabled (live render) */
+	int *ctile_gi;                /* per-slot cached game index, -1 = empty (ctile_cap ints) */
+	int ctile_cap;                /* number of tile slots */
+	int ctile_aspect;             /* aspect the cached tiles were built for; -1 = none */
 	int aspect;                   /* 0 = native 16:9 (letterboxed); 1 = 4:3 (fills the 960 panel) */
 	float scroll;
 
@@ -154,28 +152,6 @@ typedef struct {
 #define WP_CACHE_W 1536
 #define WP_CACHE_H 720
 
-/* L3 (selection-cursor) OVL layer: the fixed panel-space rect that is cleared and
- * cleaned each frame - a generous box covering every cursor position (focused-card
- * cursor + the card<->menubar slide path, both 16:9 and 4:3). Kept a constant so
- * the double-buffered L3 never trails without per-frame bbox tracking. */
-#define SNES_CURSOR_X0 0
-#define SNES_CURSOR_Y0 0     /* from the top: covers the menubar cursor's top corners
-                              * (screen y~13) during the menubar<->carousel slide */
-#define SNES_CURSOR_X1 1280  /* full width: the focused card's blue frame (on L3) can
-                              * slide anywhere across the screen during a scroll */
-#define SNES_CURSOR_Y1 680
-
-/* L2 card-cache geometry for the OVL PAN (movement 60fps; OVL_LAYERS.md). The strip
- * is rendered SETTLED into a WIDE, band-height buffer with a margin on each side so
- * cards sliding in from the edges are pre-rendered (not clipped); the layer is then
- * panned by the live cont_shift via the OVL src_x. MARGIN 608 covers the cull's
- * off-screen reach (world [-280,1560] -> screen ~[-450,1731]); W = 1280 + 2*608. The
- * card band [BAND_Y0, BAND_Y0+BAND_H) covers 4:3 (y~316..643) and 16:9 (y~342..617). */
-#define SNES_L2_MARGIN  608
-#define SNES_L2_W       (1280 + 2 * SNES_L2_MARGIN)   /* 2496 */
-#define SNES_L2_BAND_Y0 300
-#define SNES_L2_BAND_H  384
-
 /* Initialise. home_pool/bg_pool are snes_rnode arrays of the given capacities;
  * wp is a WP_CACHE_W*WP_CACHE_H u32 buffer. Returns 0 on success. */
 int snes_menu_init(snes_menu *m, const snes_pack *pk,
@@ -183,36 +159,16 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		   snes_rnode *bg_pool, unsigned bg_cap,
 		   uint32_t *wp, uint32_t *chrome);
 
+/* Provide the card-tile cache backing store (see snes_menu struct). buf must hold
+ * cap * SNES_CT_W * SNES_CT_H u32; gi must hold cap ints. Pass buf=0 to disable the
+ * cache (draw_carousel then renders every card live, the b369be3 path). */
+void snes_menu_set_ctile(snes_menu *m, uint32_t *buf, int *gi, int cap);
+/* tile dimensions (one card body); exported so callers can size the buffer */
+#define SNES_CT_W 320
+#define SNES_CT_H 360
+
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt);
 void snes_menu_render(snes_menu *m, snes_target *t);
-
-/* OVL hardware-layering (state-0 idle home 60fps path; see OVL_LAYERS.md).
- * snes_menu_cardcache_sig: hash of all card-strip state; rebuild L2 when it changes.
- * snes_menu_build_cardcache: render the cursorless card strip into t (panel-sized
- *   L2 buffer, straight alpha), recording the non-empty band in m->cc_y0/cc_y1.
- * snes_menu_render_cursor_layer: clear + draw the live selection cursor into t (L3). */
-uint32_t snes_menu_cardcache_sig(snes_menu *m);
-void snes_menu_build_cardcache(snes_menu *m, snes_target *t);
-/* 2-core split: build only buffer rows [r0,r1) of the strip; two disjoint calls equal
- * the full build (host-validated). Leaves the single-core build path untouched. */
-void snes_menu_build_cardcache_band(snes_menu *m, snes_target *t, int r0, int r1);
-/* Producer-offload: one pre-rendered NORMAL-card tile per game. CARD_TILE_W*H straight-alpha
- * RGBA. The worker fills tiles[gi*CARD_TILE_W*CARD_TILE_H] from static pack data at boot;
- * snes_menu_build_cardcache_tiled blits them instead of re-rendering (NATIVE, non-resume
- * regime only - pixel-identical to build_cardcache there). See PRODUCER_OFFLOAD.md. */
-#define CARD_TILE_W 320
-#define CARD_TILE_H 360
-void snes_menu_render_card_tile(snes_menu *m, int gi, uint32_t *tile);
-void snes_menu_build_cardcache_tiled(snes_menu *m, snes_target *t, const uint32_t *tiles);
-void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t, int full_clear);
-
-/* Home-carousel dynamic-state pack/unpack for the MMIO 2-core split: cpu0 packs the
- * per-frame dynamic fields (the state==0 render depends only on these; the rest of the
- * struct is static after init), publishes SNES_STATE_NWORDS u32 over an MMIO channel,
- * and the worker unpacks them into its frozen-snapshot menu copy before rendering. */
-#define SNES_STATE_NWORDS 23
-void snes_menu_pack_state(const snes_menu *m, uint32_t *buf);
-void snes_menu_unpack_state(snes_menu *m, const uint32_t *buf);
 
 /* Drain one queued sound (res hash) to play, or 0 if none. */
 uint32_t snes_menu_next_sound(snes_menu *m);
