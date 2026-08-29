@@ -816,13 +816,53 @@ void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsign
 
 #ifdef AYANEO_GBA_SD
 #include "sd_fat.h"
+#include "gba_sd_save.h"
 /* SD flow state, shared between the boot gate and emu_thread. s_sd_mode=1 makes
- * emu_thread run the BIOS-from-SD intro (no cartridge) instead of the boot_b ROM. */
+ * emu_thread run the SD flow (ROM-select then game) instead of the boot_b ROM. */
 static int s_sd_mode;
 static unsigned char s_sd_bios[16384];
 static fat_vol s_sd_vol;
 static gba_rom_entry s_roms[128];   /* enumerated /roms/gba, sorted (task d/e) */
 static int s_nrom;
+static int s_sel_rom = -1;          /* chosen ROM index (for save/state paths) */
+
+static int rs_move(int sel, int n, int up, int down)
+{ if (n <= 0) return 0; if (up) sel = (sel - 1 + n) % n; if (down) sel = (sel + 1) % n; return sel; }
+static int rs_scroll(int top, int sel, int rows, int n)
+{ if (sel < top) top = sel; if (sel >= top + rows) top = sel - rows + 1;
+  if (top > n - rows) top = n - rows; if (top < 0) top = 0; return top; }
+
+/* Draw the ROM list to the panel and let the user pick one. D-pad moves, A plays,
+ * B/AYA has no effect (there is nothing to go back to). Returns the chosen index. */
+static int gba_sd_rom_select(void)
+{
+	unsigned pitch, W, H;
+	int sel = 0, top = 0, rows, i;
+	int x, y0, rowh = 30;
+	if (s_nrom <= 0) return -1;
+	for (;;) {
+		unsigned k = menu_keys();
+		unsigned int *buf = ayaneo_canvas_back(&pitch, &W, &H);
+		if (k & MK_UP)   sel = rs_move(sel, s_nrom, 1, 0);
+		if (k & MK_DOWN) sel = rs_move(sel, s_nrom, 0, 1);
+		if (k & MK_A) return sel;
+		rows = ((int)H - 120) / rowh; if (rows < 1) rows = 1;
+		top = rs_scroll(top, sel, rows, s_nrom);
+		x = 40; y0 = 80;
+		ayaneo_fill(buf, pitch, 0, 0, (int)W, (int)H, 0xFF10141Cu);
+		ayaneo_fill(buf, pitch, 0, 0, (int)W, 6, 0xFF5090F0u);
+		ayaneo_text(buf, pitch, x, 28, 3, 0xFFFFFFFFu, "Select a GBA game");
+		for (i = 0; i < rows && top + i < s_nrom; i++) {
+			int idx = top + i, y = y0 + i * rowh;
+			unsigned int fg = 0xFFC8D0E0u;
+			if (idx == sel) { ayaneo_fill(buf, pitch, x - 12, y - 4, (int)W - 2 * (x - 12), rowh, 0xFF5090F0u); fg = 0xFF102030u; }
+			ayaneo_text(buf, pitch, x, y, 2, fg, s_roms[idx].name);
+		}
+		ayaneo_text(buf, pitch, x, (int)H - 28, 2, 0xFF80E080u, "Up/Down: move    A: play");
+		ayaneo_canvas_present();
+		thread_sleep(16);
+	}
+}
 #endif
 
 /* ===================== emulator thread ===================== */
@@ -848,18 +888,30 @@ static int emu_thread(void *arg)
 	}
 #ifdef AYANEO_GBA_SD
 	if (s_sd_mode) {
-		/* BIOS intro: empty cartridge so the SD BIOS plays its boot logo and then
-		 * halts at the Nintendo-logo cart check. gamepak_size=0 is safe. The ROM
-		 * header area is zeroed so the cart check deterministically fails. */
-		unsigned char *rp = gba_core_rom_ptr();
-		int i;
-		for (i = 0; i < 0x200; i++) rp[i] = 0;
-		romsz = 0;
-		gba_dbg("GBA SD: BIOS intro (no ROM), core_start");
-		if (gba_core_start(0, s_sd_bios) != 0) {
-			gba_dbg("GBA ERR: core_start (bios intro) failed");
+		input_init();                        /* need the D-pad/A for the ROM-select */
+		if (s_nrom > 0) {
+			int sel = gba_sd_rom_select();
+			unsigned char *rp = gba_core_rom_ptr();
+			s_sel_rom = sel;
+			romsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp, gba_core_rom_capacity());
+			gba_dbg("GBA SD: ROM selected + loaded, core_start");
+			if (!romsz) { gba_dbg("GBA ERR: SD ROM load failed"); return 0; }
+		} else {
+			/* no ROMs -> BIOS-only intro (empty cartridge: the BIOS plays its logo
+			 * then halts at the cart check; gamepak_size=0 is safe). */
+			unsigned char *rp = gba_core_rom_ptr();
+			int i;
+			for (i = 0; i < 0x200; i++) rp[i] = 0;
+			romsz = 0;
+			gba_dbg("GBA SD: no ROMs, BIOS intro");
+		}
+		if (gba_core_start(romsz, s_sd_bios) != 0) {
+			gba_dbg("GBA ERR: SD core_start failed");
 			return 0;
 		}
+		if (romsz)                           /* inject the cartridge battery save (.sav) */
+			gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
+					(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
 	} else
 #endif
 	{
@@ -877,6 +929,9 @@ static int emu_thread(void *arg)
 	}
 	gba_dbg("GBA 4: reset_gba ok");
 
+#ifdef AYANEO_GBA_SD
+	if (!s_sd_mode)   /* SD mode already inited input before the ROM-select */
+#endif
 	input_init();
 	ayaneo_settings_load();
 #ifdef AYANEO_GBA_SD
