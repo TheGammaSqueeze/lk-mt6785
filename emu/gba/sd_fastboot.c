@@ -80,6 +80,18 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 				fastboot_info(lbuf);
 			}
 		}
+		/* verify msdc1 PINMUX + PULL took: GPIO MODE16(0x10005400)/MODE17(0x10005410)
+		 * should select msdc mode (nibbles=1); PUPD0(0x11C20060)/R0(0x11C20080)/
+		 * R1(0x11C20090) the pulls. Wrong pinmux = pins not on the controller. */
+		{
+			extern unsigned msdc_mmio_read(unsigned addr);
+			snprintf(lbuf, sizeof lbuf, "sd: msdc1 MODE16=0x%08x MODE17=0x%08x",
+				 msdc_mmio_read(0x10005400), msdc_mmio_read(0x10005410));
+			fastboot_info(lbuf);
+			snprintf(lbuf, sizeof lbuf, "sd: msdc1 PUPD0=0x%08x R0=0x%08x R1=0x%08x",
+				 msdc_mmio_read(0x11C20060), msdc_mmio_read(0x11C20080), msdc_mmio_read(0x11C20090));
+			fastboot_info(lbuf);
+		}
 		/* verify the msdc1 clock mux took (CLK_CFG_4=0x10000080, msdc1=[18:16];
 		 * my fix writes 4 = MSDC1_CLKSRC_200MHZ). Also CLK_CFG_UPDATE=0x10000004. */
 		{
