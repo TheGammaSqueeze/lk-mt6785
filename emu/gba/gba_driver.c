@@ -821,6 +821,8 @@ void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsign
 static int s_sd_mode;
 static unsigned char s_sd_bios[16384];
 static fat_vol s_sd_vol;
+static gba_rom_entry s_roms[128];   /* enumerated /roms/gba, sorted (task d/e) */
+static int s_nrom;
 #endif
 
 /* ===================== emulator thread ===================== */
@@ -1119,7 +1121,9 @@ int ayaneo_gba_sd_boot(void)
 		GBA_LOG("gba-sd: /gba_bios.bin present but not a 16KB readable BIOS -> normal boot\n");
 		return -3;
 	}
-	GBA_LOG("gba-sd: microSD + assets OK (fat32=%d) - running BIOS intro from SD\n", s_sd_vol.is_fat32);
+	s_nrom = gba_sd_list_roms(&s_sd_vol, s_roms, 128);
+	GBA_LOG("gba-sd: microSD + assets OK (fat32=%d, %d roms in /roms/gba) - running BIOS intro from SD\n",
+		s_sd_vol.is_fat32, s_nrom);
 	s_sd_mode = 1;
 	ayaneo_gbc_start();   /* spawns emu_thread, which runs the SD intro (s_sd_mode) */
 	return 0;

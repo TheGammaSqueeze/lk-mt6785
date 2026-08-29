@@ -14,4 +14,15 @@
 int gba_sd_mount(fat_vol *v);
 int gba_sd_load_bios(fat_vol *v, unsigned char *dst);
 
+/* One ROM in /roms/gba (name kept for display + save/state matching). */
+typedef struct {
+	char name[128];           /* file name incl. .gba (truncated to 127) */
+	uint32_t first_clus;
+	uint32_t size;
+} gba_rom_entry;
+
+/* Enumerate *.gba files in /roms/gba into out[0..max), sorted case-insensitively
+ * by name. Returns the count (<= max). */
+int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max);
+
 #endif

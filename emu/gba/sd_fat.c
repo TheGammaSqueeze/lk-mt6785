@@ -40,3 +40,36 @@ int gba_sd_load_bios(fat_vol *v, unsigned char *dst)
 	if (fat_read(&f, 0, dst, 16384u) != 16384u) return -3;
 	return 0;
 }
+
+static char lc(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
+static int name_ci_cmp(const char *a, const char *b)
+{ while (*a && *b) { char x = lc(*a), y = lc(*b); if (x != y) return x - y; a++; b++; } return lc(*a) - lc(*b); }
+static int ends_dot_gba(const char *n)
+{
+	int L = 0; while (n[L]) L++;
+	if (L < 4) return 0;
+	{ const char *e = n + L - 4;
+	  return e[0] == '.' && lc(e[1]) == 'g' && lc(e[2]) == 'b' && lc(e[3]) == 'a'; }
+}
+
+int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max)
+{
+	fat_dir d; fat_dirent e; int n = 0, i, j;
+	if (max <= 0 || fat_opendir(v, "/roms/gba", &d) != 0) return 0;
+	while (fat_readdir(&d, &e) && n < max) {
+		int k = 0;
+		if (e.is_dir || !ends_dot_gba(e.name)) continue;
+		while (e.name[k] && k < 127) { out[n].name[k] = e.name[k]; k++; }
+		out[n].name[k] = 0;
+		out[n].first_clus = e.first_clus;
+		out[n].size = e.size;
+		n++;
+	}
+	for (i = 1; i < n; i++) {           /* insertion sort, case-insensitive by name */
+		gba_rom_entry t = out[i];
+		for (j = i - 1; j >= 0 && name_ci_cmp(out[j].name, t.name) > 0; j--)
+			out[j + 1] = out[j];
+		out[j + 1] = t;
+	}
+	return n;
+}
