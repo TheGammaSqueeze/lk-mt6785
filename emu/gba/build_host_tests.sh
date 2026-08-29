@@ -21,6 +21,7 @@ gcc -O2 -I. -o /tmp/save_test gba_sd_save_test.c fat_ro.c fat_wr.c gba_sd_save.c
 gcc -O2 -I. -o /tmp/dirext_test fat_dirext_test.c fat_ro.c fat_wr.c
 gcc -O2 -I. -o /tmp/sdfat_test  sd_fat_test.c      fat_ro.c sd_fat.c fat_wr.c
 gcc -O2 -I. -o /tmp/nav_test    rom_select_nav_test.c
+gcc -O2 -I. -o /tmp/mkdir_test  fat_mkdir_test.c   fat_ro.c fat_wr.c
 echo "== ROM-select nav math =="; /tmp/nav_test
 
 mkimg() { # <img> <mkfs-args...>  - fresh image with the SD dir layout (no roms needed)
@@ -42,6 +43,13 @@ run() { # <label> <mkfs-args...>
 	cp "$img" "$img.b"; /tmp/save_test "$img.b"
 	sudo mount -o loop "$img.b" "$MNT"; sudo mkdir -p "$MNT/saves/gba" 2>/dev/null||true; sudo umount "$MNT"; /tmp/dirext_test "$img.b"
 	cp "$img" "$img.c"; /tmp/sdfat_test "$img.c"
+	# fresh image with ONLY /roms/gba (no save dirs) to exercise fat_wr_mkpath
+	local mimg=/tmp/gba_sd_$2.mkd
+	rm -f "$mimg"; dd if=/dev/zero of="$mimg" bs=1M count=96 status=none
+	mkfs.fat "${@:2}" "$mimg" >/dev/null 2>&1
+	sudo mount -o loop "$mimg" "$MNT"; sudo mkdir -p "$MNT/roms/gba"; sudo sync; sudo umount "$MNT"
+	/tmp/mkdir_test "$mimg"
+	echo -n "fsck(mkd): "; fsck.fat -n "$mimg" 2>&1 | tail -1
 	echo -n "fsck: "; fsck.fat -n "$img.b" 2>&1 | tail -1
 }
 

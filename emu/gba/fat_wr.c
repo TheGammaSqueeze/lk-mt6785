@@ -363,3 +363,111 @@ int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
 	}
 	return 0;
 }
+
+/* ---- directory creation (mkdir -p) - 8.3 names only (saves/states/gba) ---- */
+
+/* Write one 32-byte record into the first free slot of the parent dir (cluster
+ * chain OR FAT16 fixed root), growing a cluster-chain dir by a zeroed cluster if
+ * it is full. Returns 0 on ok. */
+static int put_dir_slot(fat_vol *v, uint32_t pcluster, uint32_t proot_sec,
+			uint32_t proot_left, const uint8_t rec[32])
+{
+	dir_iter it; uint32_t lba, o; uint8_t *r;
+	for (;;) {
+		di_init(&it, v, pcluster, proot_sec, proot_left);
+		while (di_next(&it, &lba, &o, &r)) {
+			if (r[0] == 0x00 || r[0] == 0xE5) {
+				uint8_t db[512]; int k;
+				if (rsec(v, lba, db) != 0) return -1;
+				for (k = 0; k < 32; k++) db[o + k] = rec[k];
+				return wsec(v, lba, db);
+			}
+		}
+		if (pcluster == 0) return -2;             /* FAT16 fixed root cannot grow */
+		{
+			uint32_t last = pcluster, nx, nc; unsigned zi; uint8_t zb[512]; int k;
+			while ((nx = get_fat(v, last)) >= 2 && nx < v->total_clusters + 2u) last = nx;
+			nc = alloc_clus(v, last);
+			if (!nc) return -3;
+			for (k = 0; k < 512; k++) zb[k] = 0;
+			for (zi = 0; zi < v->sec_per_clus; zi++)
+				if (wsec(v, clus_lba(v, nc) + zi, zb) != 0) return -3;
+		}
+	}
+}
+
+/* Create directory <name> (8.3) in an already-resolved parent. parent_first is
+ * the parent dir's first cluster, used for the child's ".." (0 if parent = root). */
+static int mkdir_in(fat_vol *v, uint32_t pcluster, uint32_t proot_sec,
+		    uint32_t proot_left, uint32_t parent_first, const char *name)
+{
+	uint8_t s11[11], rec[32], db[512];
+	uint32_t c; unsigned zi; int k;
+	if (make_8_3(name, s11) != 0) return -1;      /* our dir names are all 8.3 */
+	c = alloc_clus(v, 0);                          /* content cluster (EOC, unlinked) */
+	if (!c) return -2;
+	for (k = 0; k < 512; k++) db[k] = 0;           /* zero the whole cluster first */
+	for (zi = 0; zi < v->sec_per_clus; zi++)
+		if (wsec(v, clus_lba(v, c) + zi, db) != 0) return -3;
+	{                                              /* first sector: "." and ".." */
+		uint8_t *e0 = db, *e1 = db + 32; int i;
+		for (k = 0; k < 512; k++) db[k] = 0;
+		for (i = 0; i < 11; i++) e0[i] = ' ';
+		e0[0] = '.'; e0[11] = 0x10;
+		wr16(e0 + 20, (uint16_t)(c >> 16)); wr16(e0 + 26, (uint16_t)(c & 0xFFFF));
+		for (i = 0; i < 11; i++) e1[i] = ' ';
+		e1[0] = '.'; e1[1] = '.'; e1[11] = 0x10;
+		wr16(e1 + 20, (uint16_t)(parent_first >> 16));
+		wr16(e1 + 26, (uint16_t)(parent_first & 0xFFFF));
+	}
+	if (wsec(v, clus_lba(v, c), db) != 0) return -3;
+	{                                              /* the parent's entry for this dir */
+		int i;
+		for (i = 0; i < 32; i++) rec[i] = 0;
+		for (i = 0; i < 11; i++) rec[i] = s11[i];
+		rec[11] = 0x10;                        /* directory attribute */
+		wr16(rec + 20, (uint16_t)(c >> 16));
+		wr16(rec + 26, (uint16_t)(c & 0xFFFF));
+		wr32(rec + 28, 0);                     /* dirs carry size 0 */
+	}
+	return put_dir_slot(v, pcluster, proot_sec, proot_left, rec);
+}
+
+/* mkdir -p: create every missing component of an absolute path of 8.3 names.
+ * Idempotent (existing components are descended into). 0 on success. */
+int fat_wr_mkpath(fat_vol *v, const char *path)
+{
+	char cur[256];
+	const char *p = path;
+	int curlen;
+	if (!v->wr) return -1;
+	cur[0] = '/'; cur[1] = 0; curlen = 1;
+	while (*p == '/') p++;
+	while (*p) {
+		char child[256]; int ci = 0, n = 0;
+		fat_dir d;
+		int parent_is_root = (curlen == 1);
+		int i;
+		for (i = 0; i < curlen; i++) child[ci++] = cur[i];
+		if (!parent_is_root) child[ci++] = '/';
+		while (*p && *p != '/' && ci < 255) { child[ci++] = *p++; n++; }
+		child[ci] = 0;
+		while (*p == '/') p++;
+		if (n == 0) break;
+		if (fat_opendir(v, child, &d) != 0) {         /* missing -> create it */
+			char comp[64]; int k = 0;
+			uint32_t pcl, prs, prl, parent_first;
+			for (i = ci - n; i < ci; i++) comp[k++] = child[i];
+			comp[k] = 0;
+			if (dir_head(v, cur, &pcl, &prs, &prl) != 0) return -2;
+			parent_first = parent_is_root ? 0u : pcl;
+			{
+				int rc = mkdir_in(v, pcl, prs, prl, parent_first, comp);
+				if (rc != 0) return rc;
+			}
+		}
+		for (i = 0; i <= ci; i++) cur[i] = child[i];  /* descend: cur = child */
+		curlen = ci;
+	}
+	return 0;
+}

@@ -35,6 +35,7 @@ int gba_sd_write_named(fat_vol *v, const char *dir, const char *romname,
 {
 	char nm[288];
 	base_ext(romname, ext, nm, (int)sizeof nm);
+	fat_wr_mkpath(v, dir);   /* ensure saves/gba or states/gba exists (idempotent) */
 	return fat_wr_put(v, dir, nm, buf, len);
 }
 

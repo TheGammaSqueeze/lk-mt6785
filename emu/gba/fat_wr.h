@@ -20,4 +20,11 @@
 int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
 	       const void *buf, uint32_t len);
 
+/* mkdir -p for an absolute path of 8.3 component names (e.g. "/saves/gba").
+ * Idempotent: existing components are descended into, missing ones created with
+ * proper "." / ".." entries. Lets the save path work on a card that only has
+ * roms/gba, without silently dropping saves. Returns 0 on success, negative on
+ * error (no writer / disk full / a component name is not 8.3). */
+int fat_wr_mkpath(fat_vol *v, const char *path);
+
 #endif
