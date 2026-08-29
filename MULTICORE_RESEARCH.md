@@ -2509,3 +2509,10 @@ lines to classify. Software-side research remains CLOSED (see CLOSURE + ROOT CAU
 hotplug diff and (d) the post-join DVM/TLBI-ISH lever - both REQUIRE the live device (regpoke + hotplug), which
 is absent. No new source-buildable experiment exists. Loop stays idle-waiting; the 3 staged HW-gated actions run
 in runbook order the moment the device returns.
+
+### HEARTBEAT (2026-08-29, cycle 12, no HW): unchanged, idle-waiting
+Target 0123456789ABCDEF still off ADB (only a28c0e0e). putty.log unchanged since 14:41 - no new UART BC lines.
+Software paths remain CLOSED (CLOSURE + ROOT CAUSE above): (b) MCDI and (c) ATF RE done, no software snoop step;
+the only open items (a) whole-aff1=1 mcucci/mcucfg hotplug diff and (d) post-join DVM/TLBI-ISH lever both need
+the live device. No new source-buildable experiment. Idle-waiting for the device; 3 staged HW-gated actions run
+in runbook order on return.
