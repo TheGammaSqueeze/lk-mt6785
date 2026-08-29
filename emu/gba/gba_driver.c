@@ -842,11 +842,7 @@ static gba_rom_entry s_roms[128];   /* enumerated /roms/gba, sorted (task d/e) *
 static int s_nrom;
 static int s_sel_rom = -1;          /* chosen ROM index (for save/state paths) */
 
-static int rs_move(int sel, int n, int up, int down)
-{ if (n <= 0) return 0; if (up) sel = (sel - 1 + n) % n; if (down) sel = (sel + 1) % n; return sel; }
-static int rs_scroll(int top, int sel, int rows, int n)
-{ if (sel < top) top = sel; if (sel >= top + rows) top = sel - rows + 1;
-  if (top > n - rows) top = n - rows; if (top < 0) top = 0; return top; }
+#include "rom_select_nav.h"   /* rs_move / rs_scroll (host-tested nav math) */
 
 /* Draw the ROM list to the panel and let the user pick one. D-pad moves, A plays,
  * B/AYA has no effect (there is nothing to go back to). Returns the chosen index. */
