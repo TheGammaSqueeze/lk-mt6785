@@ -75,3 +75,14 @@ Any failure at any step falls back to normal boot -> the device is never bricked
 2. FAT32 read + readdir. 3. Boot-flow gate + gba_bios.bin intro + ROM-select + ROM load (read-only saves).
 4. FAT32 write for save/state persistence. 5. (optional) exFAT.
 Steps 2-3 are fully host/offline-implementable; step 1 and final on-device polish need the target on adb.
+
+## Cache-coherency of the SD read/write path (verified 2026-08-29, source analysis)
+The boot_b saver (sav_save) calls arch_clean_cache_range before partition_write, which raised the question of
+whether the SD path (mmc_wrap_bread/bwrite via fat_ro/fat_wr) also needs caller-side cache maintenance on its
+transfer buffers. It does NOT. The MMC driver self-maintains: platform/common/storage/mmc/msdc_dma.c wraps every
+DMA transfer with msdc_flush_membuf() -> arch_clean_invalidate_cache_range() on the data buffer (msdc_dma.c:251,
+281) plus the descriptor buffers. mt6785 enables MSDC_ENABLE_DMA_MODE (msdc_cfg.h:93). If MSDC ever runs PIO
+(msdc_pio_bread/bwrite), the CPU does the copy through cached accesses and no maintenance is needed either. So
+fat_wr's unflushed stack sector buffers are safe on device by construction; adding arch_clean_cache_range around
+mmc_wrap_bwrite would be redundant (the boot_b clean is for the separate UFS/partition path). No code change
+needed - this is a negative result recorded so the on-device bring-up does not chase a non-bug.
