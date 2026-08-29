@@ -1214,6 +1214,18 @@ void snes_menu_render_cursor_layer(snes_menu *m, snes_target *t, int full_clear)
 		float prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus) ? m->xfade_t / CAR_XFADE : 0.0f;
 		int cacheable = (m->fcc && prog <= 0.003f && m->state == 0 && m->ngames > 0
 				 && m->card_act && m->cur_slide_t >= CUR_SLIDE_DUR);
+#ifdef AYANEO_FASTPAN_L3
+		/* FAST-PAN fps cut: while actively scrolling (cont_shift well off centre) the crossfade
+		 * would force a ~4.4ms live focused-card body render EVERY frame (fcc not usable mid-
+		 * xfade) -> frame overruns a vsync -> the tear-free double-barrier halves it to 15fps.
+		 * The moving cards already read clearly from the L2 dark strip, so SKIP the L3 focused
+		 * body during a fast pan (draw only the cursor below); the blue highlight settles back
+		 * in the instant the scroll stops. Render-cost only - no tearing risk. */
+		if ((m->cont_shift > 40.0f || m->cont_shift < -40.0f) && m->state == 0
+		    && m->cur_slide_t >= CUR_SLIDE_DUR) {
+			m->fcc_ready = 0;   /* body was not drawn; force a rebuild when it settles */
+		} else
+#endif
 		if (cacheable) {
 			float vsx = m->aspect ? ASP_CONTENT_S : 1.0f;
 			int shift_px = (int)(m->cont_shift * vsx + (m->cont_shift >= 0.0f ? 0.5f : -0.5f));

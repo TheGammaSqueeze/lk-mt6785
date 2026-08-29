@@ -203,3 +203,9 @@ AYANEO_SB_SCROLL ?= no
 ifeq ($(AYANEO_SB_SCROLL),yes)
 DEFINES += AYANEO_SB_SCROLL
 endif
+# fps: during a fast carousel pan, skip the ~4.4ms L3 focused-card body re-render (cursor still
+# drawn; blue highlight settles when scrolling stops) so the moving frame fits a vsync.
+AYANEO_FASTPAN_L3 ?= no
+ifeq ($(AYANEO_FASTPAN_L3),yes)
+DEFINES += AYANEO_FASTPAN_L3
+endif
