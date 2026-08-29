@@ -2251,3 +2251,15 @@ signed.img. Expected: presses ~45fps, held-scroll ~30fps, idle 60fps, tear-free.
 transitions per held-scroll (start/stop) - may add brief flicker moments (the transition flicker is still
 unfixed - reverted the handoff that made it a black blank; it needs a debug capture to fix properly).
 STILL OPEN: the transition flicker (carousel<->menu/submenu) - separate from fps, needs the SNESX debug capture.
+
+### FLICKER ROOT-FIX (CMDQ) RULED OUT AS TOO RISKY (2026-08-29)
+Researched the proper transition-flicker fix: atomic OVL layer commit via CMDQ (SOF-latched, so the L0/L2/L3
+toggle latches together = no flicker). Finding: LK HAS a CMDQ engine but only for the TRIGGER loop
+(cmdq_handle_trigger, continuous video-mode). The CONFIG path is DIRECT (primary_display_use_cmdq = CMDQ_DISABLE)
+and the whole ayaneo present flow (config_input_multi + trigger + vsync) is built around direct writes. Wiring the
+OVL CONFIG through CMDQ (cmdqRecFlush etc.) to get atomic commits would be a MAJOR rewrite of the present path -
+high risk, not doable blind. So the atomic-commit flicker fix is out. Remaining options for the transition
+flicker: (1) get the SNESX debug capture (lk_a_snes_fastpan2_debug.img) and do a targeted handoff that does NOT
+regress (my blind handoff made a black blank); (2) accept the slight residual flicker (it is minor; fps was the
+priority and is addressed by fastpan2). Deferred to the user's fps confirmation + flicker capture. No blind
+change this cycle - the display present is finicky and blind edits have backfired repeatedly.
