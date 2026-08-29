@@ -67,7 +67,11 @@ struct msdc_cust msdc_cap[MSDC_MAX_NUM] = {
 #endif
 	}
 
-#if (defined(MMC_MSDC_DRV_CTP) && !defined(FPGA_PLATFORM))
+/* AYANEO GBA-SD: also provide the msdc1 (external microSD) entry for the LK
+ * build. Without it, msdc_cap[1] is zero-initialized (no clock source, 0 data
+ * pins, no caps) and mmc_init(1) fails. UHS1/DDR are intentionally dropped so the
+ * SD stays at plain high-speed SDR (no LK-uncalibrated tuning = no CMDTUNEFAIL). */
+#if !defined(FPGA_PLATFORM)
 	,
 	{
 		MSDC1_CLKSRC_DEFAULT, /* host clock source           */
@@ -82,13 +86,13 @@ struct msdc_cust msdc_cap[MSDC_MAX_NUM] = {
 		MSDC_DRVN_GEAR1,    /* command pad driving on 1.8V   */
 		MSDC_DRVN_GEAR1,    /* data pad driving on 1.8V      */
 		4,                  /* data pins                     */
-#if defined(FPGA_PLATFORM)
 		0, 0,               /* power status                  */
+		/* hardware capability flags (LK: high-speed only, no UHS1/DDR tuning) */
+#if defined(MMC_MSDC_DRV_CTP)
+		MSDC_HIGHSPEED | MSDC_UHS1 | MSDC_DDR
 #else
-		0, 0,               /* power status                  */
+		MSDC_HIGHSPEED
 #endif
-		/* hardware capability flags     */
-		MSDC_HIGHSPEED | MSDC_UHS1 | MSDC_DDR //|MSDC_UHS1|MSDC_SDIO_IRQ|MSDC_DDR
 	}
 #endif
 };

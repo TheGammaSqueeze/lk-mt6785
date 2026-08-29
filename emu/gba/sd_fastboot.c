@@ -52,15 +52,24 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 	 * by comparison. bit0 of each *_CON0 is the SW enable. Raw MT6359 offsets. */
 	{
 		extern unsigned msdc_pmic_read(unsigned reg);
+		extern void msdc_ext_sd_power_on(void);
+		/* Scan CON0 candidates around the SD LDO area; en=bit0. Neighboring LDO
+		 * CON0s read 0x1cXX, so a 0x0000 read flags a wrong/absent register. */
 		static const struct { const char *nm; unsigned reg; } ldo[] = {
-			{ "VEMC(eMMC-ref)", 0x1cb8 }, { "VMCH(SD-card)", 0x1cd8 },
-			{ "VMC(SD-io)", 0x1cc4 }, { "VSIM1", 0x1cc8 },
-			{ "VIO18", 0x1ca8 }, { "VUSB", 0x1d08 },
+			{ "VEMC", 0x1cb8 }, { "VMCH?", 0x1cd8 }, { "VMC?a", 0x1cc4 },
+			{ "VMC?b", 0x1cbc }, { "VSIM1", 0x1cc8 }, { "VIO18", 0x1ca8 },
 		};
 		int k;
 		for (k = 0; k < (int)(sizeof ldo / sizeof ldo[0]); k++) {
 			unsigned rv = msdc_pmic_read(ldo[k].reg);
-			snprintf(lbuf, sizeof lbuf, "sd: PMIC %-10s CON0[%04x]=0x%04x en=%u",
+			snprintf(lbuf, sizeof lbuf, "sd: PRE  %-6s [%04x]=0x%04x en=%u",
+				 ldo[k].nm, ldo[k].reg, rv, rv & 1u);
+			fastboot_info(lbuf);
+		}
+		msdc_ext_sd_power_on();   /* attempt to enable VMCH(0x1cd8)+VMC(0x1cc4) */
+		for (k = 0; k < (int)(sizeof ldo / sizeof ldo[0]); k++) {
+			unsigned rv = msdc_pmic_read(ldo[k].reg);
+			snprintf(lbuf, sizeof lbuf, "sd: POST %-6s [%04x]=0x%04x en=%u",
 				 ldo[k].nm, ldo[k].reg, rv, rv & 1u);
 			fastboot_info(lbuf);
 		}

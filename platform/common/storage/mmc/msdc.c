@@ -2830,7 +2830,11 @@ int msdc_init(int id, struct mmc_host *host, int clksrc, int mode)
 	if (msdc_cap[id].flags & MSDC_HIGHSPEED)
 		host->caps |= (MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SD_HIGHSPEED);
 #if defined(FEATURE_MMC_UHS1)
-	if (msdc_cap[id].flags & MSDC_UHS1)
+	/* AYANEO GBA-SD: keep the external microSD (msdc1) OUT of UHS-1. LK never
+	 * calibrated msdc1's tuning, so entering SDR50/104 makes command tuning fail
+	 * (mmc_init returns MMC_ERR_CMDTUNEFAIL=6). High-speed (50 MHz, no tuning) is
+	 * plenty to read FAT for the boot ROM/BIOS. eMMC (id 0) is unchanged. */
+	if ((msdc_cap[id].flags & MSDC_UHS1) && id != 1)
 		host->caps |= MMC_CAP_SD_UHS1;
 #endif
 	if (msdc_cap[id].flags & MSDC_DDR)
