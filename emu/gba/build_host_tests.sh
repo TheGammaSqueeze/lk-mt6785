@@ -19,13 +19,16 @@ echo "== building =="
 gcc -O2 -I. -o /tmp/wr_test   fat_wr_test.c      fat_ro.c fat_wr.c
 gcc -O2 -I. -o /tmp/save_test gba_sd_save_test.c fat_ro.c fat_wr.c gba_sd_save.c
 gcc -O2 -I. -o /tmp/dirext_test fat_dirext_test.c fat_ro.c fat_wr.c
+gcc -O2 -I. -o /tmp/sdfat_test  sd_fat_test.c      fat_ro.c sd_fat.c
 
 mkimg() { # <img> <mkfs-args...>  - fresh image with the SD dir layout (no roms needed)
 	local img="$1"; shift
 	rm -f "$img"; dd if=/dev/zero of="$img" bs=1M count=96 status=none
 	mkfs.fat "$@" "$img" >/dev/null 2>&1
 	sudo mount -o loop "$img" "$MNT"
-	sudo mkdir -p "$MNT/saves/gba" "$MNT/states/gba"
+	sudo mkdir -p "$MNT/saves/gba" "$MNT/states/gba" "$MNT/roms/gba"
+	sudo dd if=/dev/urandom of="$MNT/roms/gba/good.gba" bs=4096 count=1 status=none
+	sudo touch "$MNT/roms/gba/empty.gba"
 	sudo sync; sudo umount "$MNT"
 }
 
@@ -36,6 +39,7 @@ run() { # <label> <mkfs-args...>
 	cp "$img" "$img.a"; /tmp/wr_test   "$img.a"
 	cp "$img" "$img.b"; /tmp/save_test "$img.b"
 	sudo mount -o loop "$img.b" "$MNT"; sudo mkdir -p "$MNT/saves/gba" 2>/dev/null||true; sudo umount "$MNT"; /tmp/dirext_test "$img.b"
+	cp "$img" "$img.c"; /tmp/sdfat_test "$img.c"
 	echo -n "fsck: "; fsck.fat -n "$img.b" 2>&1 | tail -1
 }
 

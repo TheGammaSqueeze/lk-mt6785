@@ -59,6 +59,7 @@ int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max)
 	while (fat_readdir(&d, &e) && n < max) {
 		int k = 0;
 		if (e.is_dir || !ends_dot_gba(e.name)) continue;
+		if (e.size == 0) continue;          /* skip empty/placeholder files */
 		while (e.name[k] && k < 127) { out[n].name[k] = e.name[k]; k++; }
 		out[n].name[k] = 0;
 		out[n].first_clus = e.first_clus;
@@ -78,7 +79,11 @@ uint32_t gba_sd_load_rom(fat_vol *v, const gba_rom_entry *r, unsigned char *dst,
 {
 	fat_file f;
 	uint32_t n = r->size;
+	/* Refuse a ROM that does not fit the arena: a truncated read is a CORRUPT
+	 * ROM (gpSP would execute garbage). Return 0 so the caller rejects it and
+	 * falls back to the selector instead of booting a broken game. Also reject
+	 * an empty file. */
+	if (n == 0 || n > cap) return 0;
 	f.v = v; f.first_clus = r->first_clus; f.size = r->size;   /* reuse the cached chain head */
-	if (n > cap) n = cap;
 	return fat_read(&f, 0, dst, n);
 }

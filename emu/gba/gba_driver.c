@@ -938,12 +938,17 @@ static int emu_thread(void *arg)
 	if (s_sd_mode) {
 		input_init();                        /* need the D-pad/A for the ROM-select */
 		if (s_nrom > 0) {
-			int sel = gba_sd_rom_select();
 			unsigned char *rp = gba_core_rom_ptr();
-			s_sel_rom = sel;
-			romsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp, gba_core_rom_capacity());
+			/* Loop the selector: if a ROM fails to load (oversize/corrupt/read
+			 * error) go back to the list rather than freeze on a dead screen. */
+			for (;;) {
+				int sel = gba_sd_rom_select();
+				s_sel_rom = sel;
+				romsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp, gba_core_rom_capacity());
+				if (romsz) break;
+				gba_dbg("GBA ERR: SD ROM load failed, back to selector");
+			}
 			gba_dbg("GBA SD: ROM selected + loaded, core_start");
-			if (!romsz) { gba_dbg("GBA ERR: SD ROM load failed"); return 0; }
 		} else {
 			/* no ROMs -> BIOS-only intro (empty cartridge: the BIOS plays its logo
 			 * then halts at the cart check; gamepak_size=0 is safe). */
