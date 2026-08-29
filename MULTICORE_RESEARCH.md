@@ -2416,3 +2416,20 @@ DEVICE-RETURN RUNBOOK (run in this order when 0123456789ABCDEF is back on ADB):
    proven directions (worker reads static pre-bringup data + worker->cpu0 writes), now cheaper thanks to the
    RGBA NEON re-blit added this session.
 STATUS: multicore HW-blocked; no new buildable+testable experiment remains without the device. Levers staged.
+
+### CYCLE (2026-08-29, no HW): DT topology pins worker = cpu4 (aff1=1 A55), validates the whole-group diff
+Resolved the long-standing cpu1-vs-cpu4 ambiguity from the kernel DT (arch/arm64/boot/dts/mediatek/mt6785.dts):
+- MPIDR affinity: aff1=0 => {cpu0@000..cpu3@003, all Cortex-A55}; aff1=1 => {cpu4@100,cpu5@101 A55 +
+  cpu6@102,cpu7@103 A75}. (Note the cpu-map SCHEDULER grouping differs: cluster0 = the 6 A55, cluster1 = the 2
+  A75 - that is the DVFS/topology view, NOT the MPIDR/SPMC power grouping.)
+- The LK worker is mpidr 0x100 = cpu4, an A55 in the aff1=1 group - a DIFFERENT affinity-1 domain from cpu0
+  (aff1=0). So the observed wall is cross-aff1-group snoop admission, and the earlier "SPM_CPU_PWR_CON(1)"
+  reference is the SPMC per-core slot for that core, not "cpu1 in DSU0".
+CONSEQUENCE: this VALIDATES run_mcucfg_diff.sh's design (power the ENTIRE aff1=1 group cpu4-7 off vs on;
+offlining only cpu4 leaves the group's DSU/complex powered so only a per-core bit would move). It also adds one
+device-return SUB-CHECK to runbook step 1: confirm whether the aff1=1 group has its OWN CPUTOP/MCUSYS power +
+coherency-admission domain (a second spm_poweron_cluster-equivalent) that the single-core LK bypass never drives
+- on mt8192 spm_poweron_cluster is a no-op (single cluster), but mt6785 has a real second aff1 group, so a
+skipped cluster-level admit is a live candidate the whole-group ON-vs-OFF diff will expose (any aff1=1
+CPUTOP/coherency reg that is SET only when the group is up). No new buildable+testable experiment without the
+device; the whole-group diff remains the #1 flash-free action. Target still off ADB (only a28c0e0e).
