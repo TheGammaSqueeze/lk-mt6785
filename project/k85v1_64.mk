@@ -118,6 +118,19 @@ DEFINES += AYANEO_BC_MCSI
 DEFINES += AYANEO_BIGCORE_EXPT
 DEFINES += AYANEO_DEBUG_LOGGING
 endif
+# Derived from the mt8192 ATF RE (spm_poweron_cpu): ATF sets SSPM_ALL_PWR_CTRL_EN
+# (CPC_FLOW_CTRL bit13, "for cpu-hotplug") around PWR_ON to route the power-on
+# through the SSPM-serviced flow that drives the DSU coherency P-Channel. At LK the
+# preloader-loaded SSPM may not be servicing that flow, so the request degrades to
+# power-only (ACK set, but no snoop admission = the observed wall). This experiment
+# powers the worker with bit13 CLEAR, so the pure SPM/CPC hardware FSM runs the
+# sequence without SSPM routing - tests whether the hardware path admits coherency.
+AYANEO_BC_NOSSPM ?= no
+ifeq ($(AYANEO_BC_NOSSPM),yes)
+DEFINES += AYANEO_BC_NOSSPM
+DEFINES += AYANEO_BIGCORE_EXPT
+DEFINES += AYANEO_DEBUG_LOGGING
+endif
 # AYANEO experiment (animated-boot-logo branch): paint a scrolling rainbow
 # gradient over the whole panel during LK instead of the static eMMC boot logo.
 # Set to no to restore the normal boot logo.

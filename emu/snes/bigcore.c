@@ -288,6 +288,20 @@ static int bc_manual_poweron(unsigned cpu, unsigned entry)
 
 	/* spm_poweron_cpu: tell CPC (SSPM_ALL_PWR_CTRL_EN), assert PWR_ON, poll the
 	 * ack - WITH A TIMEOUT (ATF has none, which is why its CPU_ON hangs). */
+#ifdef AYANEO_BC_NOSSPM
+	/* NOSSPM experiment: power WITHOUT routing through SSPM (bit13 CLEAR). ATF sets
+	 * SSPM_ALL_PWR_CTRL_EN so the SSPM-serviced flow fires the DSU coherency P-Channel;
+	 * if SSPM is not servicing at LK, that path yields power-only. Force it clear and let
+	 * the SPM/CPC hardware FSM own the whole sequence, then see if the worker canary flips. */
+	clrb(MCUCFG_CPC_FLOW_CTRL, SSPM_ALL_PWR_CTRL_EN);
+	_dprintf("BC NOSSPM: CPC_FLOW_CTRL bit13 CLEARED before PWR_ON (0x%x)\n",
+		 rd32(MCUCFG_CPC_FLOW_CTRL));
+	setb(SPM_CPU_PWR_CON(cpu), PWR_ON);
+	for (i = 0; i < 100000; i++) {
+		if (rd32(SPM_CPU_PWR_STATUS) & ACK_BIT(cpu)) { ack = 1; break; }
+		udelay(1);
+	}
+#else
 	setb(MCUCFG_CPC_FLOW_CTRL, SSPM_ALL_PWR_CTRL_EN);
 	setb(SPM_CPU_PWR_CON(cpu), PWR_ON);
 	for (i = 0; i < 100000; i++) {
@@ -295,6 +309,7 @@ static int bc_manual_poweron(unsigned cpu, unsigned entry)
 		udelay(1);
 	}
 	clrb(MCUCFG_CPC_FLOW_CTRL, SSPM_ALL_PWR_CTRL_EN);
+#endif
 
 	g_bc_pwrstat = rd32(SPM_CPU_PWR_STATUS);
 	_dprintf("BC: pwrstat post=0x%x ack=%d (waited %d us)\n", g_bc_pwrstat, ack, i);

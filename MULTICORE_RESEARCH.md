@@ -2321,3 +2321,33 @@ dvm.img (cpu0 TLBIALLIS+DSB ISH post-canary, staged, awaiting a flash + BC CANAR
 large LK-SSPM-mailbox implementation above. No new buildable+testable multicore experiment can be advanced
 this cycle without the target device (0123456789ABCDEF) on ADB; only a28c0e0e (the GammaOS box, NOT the
 target) is attached. Mechanism (P-Channel not fired without SSPM-serviced SPMC) stands unchanged and sharpened.
+
+### TASK (c): FULL mt8192 ATF POWER-ON RE + NOSSPM LEVER (2026-08-29, no HW - target off ADB)
+RE'd the complete mt8192 ATF (closest DSU/DynamIQ sibling to mt6785; GammaOSNextDistribution-A14/external/
+arm-trusted-firmware) CPU power-on path end to end to find any late-join snoop action ATF-at-LK omits:
+- plat_power_domain_on: spm_poweron_cluster(if off) -> mcucfg_init_archstate -> mcucfg_set_bootaddr ->
+  spm_poweron_cpu. spm_poweron_cpu (drivers/spmc/mtspmc.c): [big: DREQ20_BIG_VPROC_ISO=0] ->
+  setbits CPC_FLOW_CTRL SSPM_ALL_PWR_CTRL_EN(bit13) -> setbits SPM_CPU_PWR PWR_ON -> poll powerstate ->
+  clrbits SSPM_ALL_PWR_CTRL_EN. spmc_init: PWR_RST_B[1..7], GIC_WAKEUP_IGNORE[1..7], clr RESETPWRON_CONFIG,
+  set CPC_CTRL_ENABLE(bit16).
+- plat_power_domain_on_finish (runs ON the newly-powered core): mcucfg_enable_gic_wakeup + plat_cpu_pwron_common
+  -> pwr_cpu_on hook = pwr_cpu_pwron() which RETURNS 0 (EMPTY). So there is NO self-core coherency step the
+  worker stub misses.
+- mt_plat_cpu_pm_init (BL31 boot): mtk_cpc_init only sets CPC_DBG_EN|CPC_CALC_EN + CPC_OFF_PRE_EN|CPC_AUTO_OFF_EN
+  + CPC_OFF_THRES (idle auto-power-OFF). NOTHING about power-on snoop admission.
+=> DEFINITIVE: the ENTIRE ATF power-on path contains NO software DSU/MCSI snoop-admission MMIO write. The LK
+   bypass (bigcore.c bc_spmc_init + bc_manual_poweron) already replicates ALL of it, including the bit13
+   SSPM_ALL_PWR_CTRL_EN toggle around PWR_ON. Snoop admission is performed entirely inside the SPMC/SSPM
+   hardware+firmware FSM. This closes the "ATF does a secret snoop MMIO step we are missing" hypothesis for good
+   and matches the MCSI raw-read = all-zero finding (MCSI is unused on mt6785; the CPC/DSU P-Channel is the path).
+
+NEW LEVER BUILT (lk_a_snes_bigcore_nosspm.img, AYANEO_BC_NOSSPM): the one untried interpretation of bit13. ATF
+SETS SSPM_ALL_PWR_CTRL_EN so SSPM services the power-on and fires the DSU P-Channel; if the preloader-loaded SSPM
+is NOT servicing that flow at LK, the request degrades to power-only (ACK set, no coherency = exactly our wall).
+This build powers the worker with bit13 CLEAR, letting the pure SPM/CPC hardware FSM own the sequence with SSPM
+out of the loop. Outcomes: (A) worker canary flips 0xa86dbdec -> 0xCA5Axxxx => the SSPM routing was the problem,
+hardware path grants coherency (WIN, wire the 2-core splits); (B) still frozen / no ACK => confirms coherency
+requires SSPM servicing that is unavailable at LK (wall stands, and the only remaining SW path is the large
+LK-SSPM-mailbox impl). Flash lk_a_snes_bigcore_nosspm.img + tee_patched_armcpc.img; read the BC lines
+(watch "BC NOSSPM: ... bit13 CLEARED", the pwrstat/ack, and "BC ... post: w_can1/w_static_can"). Timeout-guarded,
+worker-only, off by default - safe to flash with the user away. Awaiting HW to test.
