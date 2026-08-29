@@ -53,8 +53,9 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 	{
 		extern unsigned msdc_pmic_read(unsigned reg);
 		static const struct { const char *nm; unsigned reg; } ldo[] = {
-			{ "VEMC(eMMC)", 0x1cb8 }, { "VSIM1", 0x1cc8 }, { "VSIM2", 0x1cd8 },
-			{ "VIO18", 0x1ca8 }, { "VIO28", 0x1d5a }, { "VUSB", 0x1d08 },
+			{ "VEMC(eMMC-ref)", 0x1cb8 }, { "VMCH(SD-card)", 0x1cd8 },
+			{ "VMC(SD-io)", 0x1cc4 }, { "VSIM1", 0x1cc8 },
+			{ "VIO18", 0x1ca8 }, { "VUSB", 0x1d08 },
 		};
 		int k;
 		for (k = 0; k < (int)(sizeof ldo / sizeof ldo[0]); k++) {

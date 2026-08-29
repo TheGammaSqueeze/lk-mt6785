@@ -1045,19 +1045,30 @@ void msdc_apply_timing(unsigned int id)
  * (likely pmic_set_register_value with the right MT6359 LDO flag, once found).
  * ------------------------------------------------------------------------- */
 #if defined(MMC_MSDC_DRV_LK) && !defined(FPGA_PLATFORM)
+/* Undo the empty-macro shadow so these bind to the REAL PMIC functions. Reads
+ * never change state; writes are limited to the two SD LDO enable bits below. */
+#undef pmic_read_interface
+#undef pmic_config_interface
+extern U32 pmic_read_interface(U32 RegNum, U32 *val, U32 MASK, U32 SHIFT);
+extern U32 pmic_config_interface(U32 RegNum, U32 val, U32 MASK, U32 SHIFT);
+extern void mdelay(unsigned long msec);
+
+/* The external microSD is powered by VMCH (card) + VMC (IO). Registers taken from
+ * the RUNNING kernel's mt6358-regulator (which powers this board's SD and reports
+ * VMCH=3.0V, VMC=1.86V enabled): VMCH_CON0=0x1cd8 bit0, VMC_CON0=0x1cc4 bit0.
+ * The LK MT6359 header mislabels 0x1cd8 as VSIM2, but the kernel proves 0x1cd8 is
+ * the SD card rail on this hardware. Enable both (leave VOSEL at the power-up
+ * default; add explicit voltage only if the card needs it). Verified via the
+ * fastboot sd-probe PMIC dump (0x1cd8/0x1cc4 read back enabled after this). */
 void msdc_ext_sd_power_on(void)
 {
-	/* intentional no-op for now - see the note above (empirical step first) */
+	pmic_config_interface(0x1cd8, 1, 0x1, 0);   /* VMCH (SD card power) enable */
+	pmic_config_interface(0x1cc4, 1, 0x1, 0);   /* VMC  (SD IO power)   enable */
+	mdelay(10);                                 /* let the rails settle */
 }
 
-/* Safe READ-ONLY dump of a PMIC register (16-bit) via the real pmic_read_interface
- * (this file otherwise #defines it to an empty macro for the non-CTP build). Reads
- * never change PMIC state, so this is safe to call from the fastboot probe to see
- * which LDOs are enabled at LK time (e.g. compare the SD rails against VEMC, which
- * must be on because the eMMC boots). RegNum is the raw MT6359 register offset
- * (MT6359_PMIC_REG_BASE == 0). */
-#undef pmic_read_interface
-extern U32 pmic_read_interface(U32 RegNum, U32 *val, U32 MASK, U32 SHIFT);
+/* Safe READ-ONLY dump of a PMIC register (16-bit) via the real pmic_read_interface.
+ * Reads never change PMIC state. RegNum is the raw register offset (base == 0). */
 unsigned msdc_pmic_read(unsigned reg)
 {
 	U32 v = 0;
