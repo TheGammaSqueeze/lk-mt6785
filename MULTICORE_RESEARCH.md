@@ -2351,3 +2351,22 @@ requires SSPM servicing that is unavailable at LK (wall stands, and the only rem
 LK-SSPM-mailbox impl). Flash lk_a_snes_bigcore_nosspm.img + tee_patched_armcpc.img; read the BC lines
 (watch "BC NOSSPM: ... bit13 CLEARED", the pwrstat/ack, and "BC ... post: w_can1/w_static_can"). Timeout-guarded,
 worker-only, off by default - safe to flash with the user away. Awaiting HW to test.
+
+### TASK (b) CLOSE: MCUPM RULED OUT on mt6785 - SSPM is the sole CPU-power servicer (2026-08-29, no HW)
+Checked whether MCUPM (a separate power coprocessor on the mt6853/6873/6885 generation) is the CPU-power/
+coherency servicer on mt6785, since the cron notes reference mcupm. Result from the kernel defconfigs:
+  arch/arm64/configs/k85v1_64_defconfig       : CONFIG_MTK_TINYSYS_SSPM_SUPPORT=y   (no MCUPM)
+  arch/arm64/configs/k85v1_64_debug_defconfig : CONFIG_MTK_TINYSYS_SSPM_SUPPORT=y   (no MCUPM)
+Contrast: k6853/k6873/k6875/k6889 (mt6853/6873/6885) defconfigs set CONFIG_MTK_TINYSYS_MCUPM_SUPPORT=y.
+So mt6785 has NO MCUPM coprocessor; there is nothing MCUPM to kick/load at LK. The CPU-power + DSU-coherency
+servicer is SSPM via the SPMC, exactly matching the ATF spm_poweron_cpu path (SSPM_ALL_PWR_CTRL_EN bit13) RE'd
+last cycle, and the mt6785 kernel mcupm_driver IPI is DVFS/logger only (no dsu/l3/cpu_pwr/coherency slot).
+=> This closes the last open ambiguity in task (b): the servicer is SSPM, singular. The staged
+   lk_a_snes_bigcore_nosspm.img (power the worker with bit13 CLEAR) is therefore precisely the right lever to
+   test whether SSPM-servicing is the wall vs whether the pure SPM/CPC hardware FSM can grant coherency.
+
+CYCLE STATUS: all source-RE tasks (a)-(d) are now exhausted and MCUPM is ruled out. Two levers are BUILT+STAGED
+awaiting the target on ADB: lk_a_snes_bigcore_nosspm.img (SSPM-out-of-loop) and lk_a_snes_bigcore_dvm.img
+(post-join DVM/TLBIALLIS). The only remaining un-built SW path is a full LK-side SSPM IPI mailbox implementation
+(large, speculative). No further buildable+testable multicore experiment can be advanced without the device
+(0123456789ABCDEF), which is not attached (only a28c0e0e, the non-target GammaOS box, is present).
