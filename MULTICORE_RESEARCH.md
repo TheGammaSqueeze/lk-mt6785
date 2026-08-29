@@ -2453,3 +2453,34 @@ SSPM-serviced power-P-Channel step (firmware-internal, no software MMIO), triang
 are confirmed driven; no software snoop-admit register exists. The remaining actions are all HW-gated (the
 flash-free whole-aff1=1-group mcucfg diff, then the staged nosspm/dvm levers) or the large LK-SSPM-mailbox
 subproject. Target still off ADB (only a28c0e0e). No new buildable+testable experiment this cycle.
+
+### CLOSURE (2026-08-29, no HW): all SOFTWARE paths closed - LK-SSPM-mailbox would have no power-on opcode
+Verified the exact MCDI/SSPM mailbox slot semantics (drivers/misc/mediatek/base/power/mcdi/mtk_mcdi_governor_lib.c
++ mcdi_v1/mtk_mcdi_util.c) to test whether the one remaining un-built path (a full LK-side SSPM IPI mailbox) could
+drive a coherent CPU power-on. Result: the mailbox slots are IDLE coordination only -
+  MCDI_MBOX_AP_READY (AP announces idle-readiness), MCDI_MBOX_PENDING_ON_EVENT / is_cpu_pwr_on_event_pending()
+  (the idle governor checks for a pending WAKEUP so it does not deep-idle a cluster), CPC_PWR_ON_MASK.
+There is NO "power on cpuN into coherency" command opcode. The coherent power-on itself is ATF PSCI CPU_ON ->
+SPMC hardware P-Channel, gated by SSPM_ALL_PWR_CTRL_EN (which the LK bypass ALREADY sets). SSPM's role is to
+SERVICE the SPMC/idle FSM, not to accept a mailbox "bring this core up coherent" request. So implementing the
+LK-SSPM mailbox would expose no lever that unlocks coherent bringup - the last theoretical software path is CLOSED.
+
+=== MULTICORE RESEARCH: COMPLETE (software-side). Every path enumerated and closed or HW-gated: ===
+- Power/ack: worker PWR_ON_ACK identical to a live coherent core (not the problem). CLOSED.
+- Snoop-admit MMIO register: SPM+CPC+mcucci+mcucfg diffs show only power-gating; MCSI unused (raw reads 0);
+  single CPUTOP domain already driven; no per-core snoop-enable reg exists. CLOSED.
+- ATF secret step: full mt8192 ATF power-on RE (spmc_init + spm_poweron_cpu + empty on_finish + mtk_cpc_init) has
+  NO software snoop step; LK replays it all incl SSPM_ALL_PWR_CTRL_EN. CLOSED.
+- Servicer: mt6785 is SSPM-only (no MCUPM); MCDI/SSPM mailbox is idle-coordination, no power-on/coherency opcode.
+  CLOSED (this cycle).
+- Arch: Arm DynamIQ DSU TRM - coherency join is power-P-Channel-automatic, no ACTLR.SMPEN/ACINACTM SW bit on
+  A55/A76. CLOSED.
+=> ROOT CAUSE (final): a manually-woken LK core (cpu4, aff1=1 A55) is powered+ACK'd but never went through the
+   SSPM-serviced SPMC power-up P-Channel that fires DSU snoop admission; that handshake is firmware/hardware
+   internal with NO software MMIO/sysreg/mailbox lever a bootloader can pull. Powered-write-only-non-snooping is
+   the expected, irreducible result.
+REMAINING (all HW-gated, need target 0123456789ABCDEF on ADB - see the device-return runbook above):
+  (1) flash-free whole-aff1=1-group mcucfg/mcucci diff (last empirical MMIO hunt); (2) staged nosspm lever;
+  (3) staged dvm lever. If all three fail, the wall is fundamental and the win is the producer-offload (worker
+  reads static data + worker->cpu0 writes, both PROVEN; tile re-blit now cheap via the RGBA NEON path).
+No further software experiment can be advanced without the device. Target still off ADB (only a28c0e0e).
