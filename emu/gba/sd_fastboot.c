@@ -100,8 +100,8 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 			snprintf(lbuf, sizeof lbuf, "sd: TOPCK CLK_CFG_4=0x%08x msdc1mux=%u",
 				 cc4, (cc4 >> 16) & 0x7);
 			fastboot_info(lbuf);
-			snprintf(lbuf, sizeof lbuf, "sd: msdc1 PB0=0x%08x PB1=0x%08x (want 403c0006/fffa4340)",
-				 msdc_mmio_read(0x112400b0), msdc_mmio_read(0x112400b4));
+			snprintf(lbuf, sizeof lbuf, "sd: msdc1 PB2=0x%08x(w 1488180f) SDC_CFG=0x%08x(w 13090000)",
+				 msdc_mmio_read(0x112400b8), msdc_mmio_read(0x11240030));
 			fastboot_info(lbuf);
 		}
 		msdc_ext_sd_power_on();   /* attempt to enable VMCH(0x1cd8)+VMC(0x1cc4) */

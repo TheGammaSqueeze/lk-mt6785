@@ -1088,9 +1088,12 @@ extern void mdelay(unsigned long msec);
  * fastboot sd-probe PMIC dump (0x1cd8/0x1cc4 read back enabled after this). */
 void msdc_ext_sd_power_on(void)
 {
-	pmic_config_interface(0x1cd8, 1, 0x1, 0);   /* VMCH (SD card power) enable */
-	pmic_config_interface(0x1cc4, 1, 0x1, 0);   /* VMC  (SD IO power)   enable */
-	mdelay(10);                                 /* let the rails settle */
+	/* NOTE: 0x1cd8 is likely VSIM2 on this MT6359 (LK header), not VMCH - the card
+	 * is powered externally regardless. Kept as a harmless no-op-ish enable; a
+	 * VMCH power-cycle experiment did not change the bad-CRC, so power is not the
+	 * lever. The card responds; the open issue is response-CRC/signal. */
+	pmic_config_interface(0x1cd8, 1, 0x1, 0);
+	mdelay(10);
 }
 
 /* Safe READ-ONLY dump of a PMIC register (16-bit) via the real pmic_read_interface.
