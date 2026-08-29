@@ -90,6 +90,16 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 	}
 
 	if (gba_sd_hw_init() != 0) {
+		/* post-init msdc1 state: CKDIV (MSDC_CFG[19:8]) = init clock, MSDC_INT
+		 * (0x0C) = last-cmd interrupt/error flags, MSDC_PS, SDC_STS. */
+		{
+			extern unsigned msdc1_reg_read(unsigned off);
+			unsigned cfg = msdc1_reg_read(0x00);
+			snprintf(lbuf, sizeof lbuf, "sd: POSTinit CFG=0x%08x CKDIV=%u INT=0x%08x PS=0x%08x SDCSTS=0x%08x",
+				 cfg, (cfg >> 8) & 0xfff, msdc1_reg_read(0x0C),
+				 msdc1_reg_read(0x08), msdc1_reg_read(0x34));
+			fastboot_info(lbuf);
+		}
 		snprintf(lbuf, sizeof lbuf, "sd: msdc1 init FAILED, mmc rc=%d (no card / power / pinmux)", gba_sd_hw_rc());
 		fastboot_fail(lbuf);
 		return;
