@@ -2997,6 +2997,8 @@ int msdc_init(int id, struct mmc_host *host, int clksrc, int mode)
 		MSDC_WRITE32(host->base + 0xb0, 0x403c0006u);   /* MSDC_PATCH_BIT0 */
 		MSDC_WRITE32(host->base + 0xb4, 0xfffa4340u);   /* MSDC_PATCH_BIT1 */
 		MSDC_WRITE32(host->base + 0xb8, 0x1488180fu);   /* MSDC_PATCH_BIT2 */
+		/* Kernel msdc_init_hw sets SDC_CFG.SDIO=1 (bit19); LK clears it. Match. */
+		MSDC_SET_FIELD(SDC_CFG, SDC_CFG_SDIO, 1);
 	}
 
 	msdc_pr_info("[SD%d] Host controller intialization done\n", id);
