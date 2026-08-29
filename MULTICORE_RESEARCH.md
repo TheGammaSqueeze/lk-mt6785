@@ -2216,3 +2216,15 @@ the milder original transition flicker (no black blank). Lesson: the OVL layer t
 finicky; do NOT fix the transition flicker blind - it needs the debug SNESX capture across the exact frames.
 REMAINING (user to prioritise): (1) 15fps movement -> cut the L3 focused-card re-render+unpremult on pure-pan
 frames (render-cost, safe); (2) the slight transition flicker -> needs debug capture to fix without regressing.
+
+### FPS ATTEMPT: FAST-PAN L3 SKIP (2026-08-29, user chose movement-fps)
+The 15fps movement ceiling = tear-free double-barrier + the moving frame overrunning a vsync. Frame cost:
+L0 render ~8ms + L3 cursor layer ~9ms. The L3 ~9ms during scroll is dominated by the focused-card BODY rendered
+LIVE every frame - because the focus-change crossfade (CAR_XFADE 0.2s) makes the fcc cache unusable, so
+draw_focus_card runs (~4.4ms) + unpremult (~4ms) each step. Fix (AYANEO_FASTPAN_L3, lk_a_snes_fastpan_signed.img,
+on the notear4 tear-free base): while cont_shift is well off-centre (actively scrolling, |cont_shift|>40, settled
+slide, state 0), SKIP the L3 focused-card body (cards read fine from the L2 dark strip); draw only the cursor;
+the blue highlight settles the instant scrolling stops. Cuts the moving frame ~17ms->~13ms (under one vsync) so
+the double barrier can reach ~30fps. Render-cost change only - NO vsync/tearing risk (host cardtile still PASS).
+Awaiting user test: expect scroll ~30fps tear-free; visual tradeoff = the focused card loses its blue highlight
+DURING a fast scroll (dark like the others), popping back on settle - user to judge if acceptable.
