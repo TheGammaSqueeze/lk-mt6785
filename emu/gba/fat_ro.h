@@ -40,6 +40,14 @@ typedef struct {
 	uint8_t  is_fat32;
 	uint8_t  mounted;
 	uint8_t  sec_buf[512];     /* scratch sector for FAT/dir reads */
+	/* fat_wr.c write-back cache of ONE FAT sector (FAT copy #0). A save touches
+	 * the same FAT sector hundreds of times (alloc + mirror writes); caching it
+	 * and flushing to all FAT copies once collapses that to a couple of writes.
+	 * fat_ro.c only zeroes fatw_valid/dirty on mount; all real use is fat_wr.c. */
+	uint8_t  fatw_buf[512];
+	uint32_t fatw_sec;         /* absolute FAT#0 LBA held in fatw_buf */
+	uint8_t  fatw_valid;       /* fatw_buf holds fatw_sec */
+	uint8_t  fatw_dirty;       /* fatw_buf modified vs disk */
 } fat_vol;
 
 typedef struct {

@@ -15,27 +15,47 @@ static uint32_t clus_lba(fat_vol *v, uint32_t n) { return v->data_start + (n - 2
 static uint32_t eoc(fat_vol *v) { return v->is_fat32 ? 0x0FFFFFFFu : 0xFFFFu; }
 
 /* raw FAT entry (masked); EOC returned as-is (>= eoc threshold) */
+/* --- write-back cache of one FAT#0 sector (see fat_vol.fatw_*) ------------- */
+/* Flush the cached FAT sector to ALL FAT copies (they are mirrors). */
+static int fatw_flush(fat_vol *v)
+{
+	if (v->fatw_valid && v->fatw_dirty) {
+		unsigned f;
+		uint32_t rel = v->fatw_sec - v->fat_start;          /* sector index within a FAT */
+		for (f = 0; f < v->num_fats; f++)
+			if (wsec(v, v->fat_start + (uint32_t)f * v->fat_sectors + rel, v->fatw_buf) != 0)
+				return -1;
+		v->fatw_dirty = 0;
+	}
+	return 0;
+}
+/* Make abssec (a FAT#0 LBA) the cached sector, flushing a dirty prior one. */
+static int fatw_load(fat_vol *v, uint32_t abssec)
+{
+	if (v->fatw_valid && v->fatw_sec == abssec) return 0;
+	if (fatw_flush(v) != 0) return -1;
+	if (rsec(v, abssec, v->fatw_buf) != 0) { v->fatw_valid = 0; return -1; }
+	v->fatw_sec = abssec; v->fatw_valid = 1;
+	return 0;
+}
 static uint32_t get_fat(fat_vol *v, uint32_t n)
 {
 	uint32_t bo = v->is_fat32 ? n * 4u : n * 2u;
-	uint8_t b[512];
-	if (rsec(v, v->fat_start + bo / 512u, b) != 0) return eoc(v);
-	return v->is_fat32 ? (rd32(b + bo % 512u) & 0x0FFFFFFFu) : rd16(b + bo % 512u);
+	uint32_t off = bo % 512u;
+	if (fatw_load(v, v->fat_start + bo / 512u) != 0) return eoc(v);
+	return v->is_fat32 ? (rd32(v->fatw_buf + off) & 0x0FFFFFFFu) : rd16(v->fatw_buf + off);
 }
 
-/* write a FAT entry to every FAT copy */
+/* update a FAT entry: modify only the cached FAT#0 sector; fatw_flush mirrors
+ * it to every FAT copy, so a run of allocations costs a couple of writes total. */
 static int set_fat(fat_vol *v, uint32_t n, uint32_t val)
 {
 	uint32_t bo = v->is_fat32 ? n * 4u : n * 2u;
 	uint32_t off = bo % 512u;
-	uint8_t b[512]; unsigned f;
-	for (f = 0; f < v->num_fats; f++) {
-		uint32_t sec = v->fat_start + (uint32_t)f * v->fat_sectors + bo / 512u;
-		if (rsec(v, sec, b) != 0) return -1;
-		if (v->is_fat32) wr32(b + off, (rd32(b + off) & 0xF0000000u) | (val & 0x0FFFFFFFu));
-		else             wr16(b + off, (uint16_t)val);
-		if (wsec(v, sec, b) != 0) return -1;
-	}
+	if (fatw_load(v, v->fat_start + bo / 512u) != 0) return -1;
+	if (v->is_fat32) wr32(v->fatw_buf + off, (rd32(v->fatw_buf + off) & 0xF0000000u) | (val & 0x0FFFFFFFu));
+	else             wr16(v->fatw_buf + off, (uint16_t)val);
+	v->fatw_dirty = 1;
 	return 0;
 }
 
@@ -214,8 +234,20 @@ static void mangle_short(fat_vol *v, uint32_t cluster, uint32_t root_sec, uint32
 	}
 }
 
+static int fat_wr_put_i(fat_vol *v, const char *dirpath, const char *name,
+			const void *buf, uint32_t len);
+
+/* public entry: run the op, then flush the write-back FAT cache so the FAT is
+ * fully persisted before returning (the caller may power off right after). */
 int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
 	       const void *buf, uint32_t len)
+{
+	int r = fat_wr_put_i(v, dirpath, name, buf, len);
+	if (fatw_flush(v) != 0 && r == 0) r = -9;
+	return r;
+}
+static int fat_wr_put_i(fat_vol *v, const char *dirpath, const char *name,
+			const void *buf, uint32_t len)
 {
 	const uint8_t *src = buf;
 	uint8_t short11[11], sec[512];
@@ -483,7 +515,15 @@ static int mkdir_in(fat_vol *v, uint32_t pcluster, uint32_t proot_sec,
 
 /* mkdir -p: create every missing component of an absolute path of 8.3 names.
  * Idempotent (existing components are descended into). 0 on success. */
+static int fat_wr_mkpath_i(fat_vol *v, const char *path);
+
 int fat_wr_mkpath(fat_vol *v, const char *path)
+{
+	int r = fat_wr_mkpath_i(v, path);
+	if (fatw_flush(v) != 0 && r == 0) r = -9;
+	return r;
+}
+static int fat_wr_mkpath_i(fat_vol *v, const char *path)
 {
 	char cur[256];
 	const char *p = path;

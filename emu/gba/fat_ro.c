@@ -100,6 +100,7 @@ int fat_mount(fat_vol *v, fat_read_fn rd, void *ctx)
 	uint8_t s0[512];
 	int i;
 	v->rd = rd; v->ctx = ctx; v->mounted = 0;
+	v->fatw_valid = 0; v->fatw_dirty = 0;   /* drop any stale write-back FAT cache */
 	if (rd(ctx, 0, 1, s0) != 1) return -1;
 	if (s0[510] != 0x55 || s0[511] != 0xAA) return -2;
 	/* Bare VBR ("superfloppy")? A VBR starts with a jump (0xEB/0xE9) and has a
