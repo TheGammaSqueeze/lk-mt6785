@@ -239,15 +239,25 @@ void gba_menu_render(snes_target *t, const snes_pack *pk,
 		}
 		/* short title on the cartridge label plate for near cards */
 		if (f > 0.25f) {
+			float ls = 0.5f * sc, lw;
+			float platew = 240.0f * sc;   /* label plate inner width */
 			disp_name(roms[idx].name, nm, sizeof nm);
+			lw = snes_text_width(pk, font, ls, nm);
+			if (lw > platew && lw > 1.0f) ls *= platew / lw;
 			snes_draw_text(t, pk, font, cx, CARD_CY - 40 * sc,
-				       0.5f * sc, 0xFF203040u, 1, nm);
+				       ls, 0xFF203040u, 1, nm);
 		}
 	}
 
-	/* focused game title (large) + hint, below the strip */
+	/* focused game title (large) + hint, below the strip. Auto-fit: shrink the
+	 * scale so long names never run off the panel. */
 	disp_name(roms[sel].name, nm, sizeof nm);
-	snes_draw_text(t, pk, font_big, CENTER_X, TITLE_Y, 1.0f, 0xFFFFFFFFu, 1, nm);
+	{
+		float ts = 1.0f, tw = snes_text_width(pk, font_big, ts, nm);
+		float maxw = VW - 120.0f;
+		if (tw > maxw && tw > 1.0f) ts *= maxw / tw;
+		snes_draw_text(t, pk, font_big, CENTER_X, TITLE_Y, ts, 0xFFFFFFFFu, 1, nm);
+	}
 	snes_draw_text(t, pk, font, CENTER_X, HINT_Y, 0.7f, 0xFF9FB4E0u, 1,
 		       "Left/Right: browse    A: play");
 }
