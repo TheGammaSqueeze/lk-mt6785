@@ -123,7 +123,11 @@ done
 if command -v qemu-arm-static >/dev/null 2>&1 && command -v arm-linux-gnueabihf-gcc >/dev/null 2>&1; then
   if bash emu/gba/menu/build_host_arm.sh >/tmp/gbamenu_arm_build.txt 2>&1; then
     HRA=emu/gba/menu/host_render_arm; neonfail=0
-    for pair in "0:" "0:RRR" "40:" "40:]]S"; do
+    # cover both NEON blocks (snes_render.c:113 sprite/text 565->8888, :751 cached-tile
+    # blit_raw) and their opaque/transparent/mixed-edge branches: home + carousel exercise
+    # the tile blit, the submenu + menubar exercise varied sprites/glyphs, GBA carts the
+    # cached path, resume the dimmed (scalar) cached blit.
+    for pair in "0:" "0:RRR" "0:URRRRA" "0:U" "40:" "40:]]S" "40:D"; do
       ro="${pair%%:*}"; nv="${pair#*:}"
       GBA_ROSTER="$ro" "$HR"  "$PACK" /tmp/gbamenu_sc.ppm 30 "$nv" >/dev/null 2>&1
       GBA_ROSTER="$ro" qemu-arm-static "$HRA" "$PACK" /tmp/gbamenu_ne.ppm 30 "$nv" >/dev/null 2>&1
@@ -131,7 +135,7 @@ if command -v qemu-arm-static >/dev/null 2>&1 && command -v arm-linux-gnueabihf-
         printf "  FAIL neon   n=%s nav '%s' - NEON output differs from scalar\n" "$ro" "$nv"; neonfail=1; fail=1
       fi
     done
-    [ "$neonfail" = 0 ] && echo "  OK   neon blitter parity (ARM+NEON == scalar, 4 states)"
+    [ "$neonfail" = 0 ] && echo "  OK   neon blitter parity (ARM+NEON == scalar, 7 states, both blit paths)"
   else
     echo "  skip neon - ARM host build failed (see /tmp/gbamenu_arm_build.txt)"
   fi
