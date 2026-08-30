@@ -1511,6 +1511,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->bg_acc = 0.0f; m->scr_speed = BG_DEFAULT_SPEED; m->scr_dir = 1.0f;
 	m->cur_scroll_time = 0.0f; m->cur_scroll_spd = 0.0f;
 	m->rep_t = 0.0f; m->rep_dir = 0; m->rep_primed = 0;
+	m->jmp_t = 0.0f; m->jmp_dir = 0;
 	m->car_tween = CAR_REPEAT_DELAY;
 	m->resume_expl_t = 3.5f;   /* notice starts hidden until the list is opened */
 
@@ -1864,6 +1865,27 @@ static void car_navigate(snes_menu *m, int dir)
 	if (cardShift != 0.0f) m->car_navd = 1;   /* web tween advances from NEXT frame */
 }
 
+/* Page jump (GBA L/R shoulder): move the focus by CAR_PAGE and SNAP to the settled
+ * left-pinned position (no per-card tween), so a large SD library is traversable in a
+ * few presses. Rings wrap; small linear rosters clamp. The snap keeps it cheap on the
+ * A55 (no live crossfade/scroll) and the filmstrip window follows the new focus. */
+#define CAR_PAGE       10
+#define CAR_JUMP_RATE  0.22f
+static void car_jump(snes_menu *m, int delta)
+{
+	int n = m->ngames, nf;
+	if (n <= 0 || delta == 0) return;
+	if (n >= CAR_RING_MIN) nf = (((m->focus + delta) % n) + n) % n;   /* wrap */
+	else { nf = m->focus + delta; if (nf < 0) nf = 0; else if (nf >= n) nf = n - 1; }
+	if (nf == m->focus) return;
+	m->prev_focus = nf;                          /* prev==focus -> no crossfade (snap) */
+	m->focus = nf;
+	m->xfade_t = 0.0f;
+	m->sel_world = CAR_SLOT_X; m->cont_shift = 0.0f;   /* settled, left-pinned */
+	m->car_navd = 0; m->car_tween = 0.0f;
+	push_snd(m, m->sfx_move);
+}
+
 /* Display screen-mode line: resolve the 3 radio items in visual (left->right)
  * order [CRTFilter(-360), 4:3(0), DotByDot(+360)] by name. */
 static void resolve_disp_items(snes_menu *m, snes_rnode *out[3])
@@ -2202,6 +2224,14 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				thresh = CAR_REPEAT_RATE;
 				car_navigate(m, dirnow);
 			}
+		}
+		/* L/R shoulder = page jump (fast scroll for large libraries): snap on press,
+		 * then auto-repeat every CAR_JUMP_RATE while held. GBA only. */
+		if (m->gba_mode) {
+			int jdir = in->rb ? 1 : (in->lb ? -1 : 0);
+			if (jdir == 0) { m->jmp_dir = 0; m->jmp_t = 0.0f; }
+			else if (jdir != m->jmp_dir) { m->jmp_dir = jdir; m->jmp_t = 0.0f; car_jump(m, jdir * CAR_PAGE); }
+			else { m->jmp_t += dt; while (m->jmp_t >= CAR_JUMP_RATE) { m->jmp_t -= CAR_JUMP_RATE; car_jump(m, jdir * CAR_PAGE); } }
 		}
 		if (eu) { m->state = 1; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; m->cur_slide_t = 0.0f; push_snd(m, m->sfx_up); }
 		if (ed && m->resume) {                 /* Down -> suspend-point menu */

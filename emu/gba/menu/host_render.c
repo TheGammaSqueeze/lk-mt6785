@@ -266,6 +266,7 @@ int main(int argc, char **argv)
 			else if (c == 'U') in.up = 1; else if (c == 'D') in.down = 1;
 			else if (c == 'A') in.a = 1; else if (c == 'B') in.b = 1;
 			else if (c == 'S') in.select = 1; else if (c == 'T') in.start = 1;
+			else if (c == '[') in.lb = 1; else if (c == ']') in.rb = 1;  /* shoulder page-jump */
 			snes_menu_update(&menu, &in, 1.0f / 60.0f);   /* pressed 1 frame */
 			memset(&in, 0, sizeof(in));
 			for (j = 0; j < settle; j++) snes_menu_update(&menu, &in, 1.0f / 60.0f);

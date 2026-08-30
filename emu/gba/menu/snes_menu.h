@@ -11,6 +11,7 @@
 
 typedef struct {
 	int left, right, up, down, a, b, start, select;   /* level: 1 = pressed */
+	int lb, rb;                                       /* L/R shoulder: page jump */
 } snes_input;
 
 typedef struct {
@@ -131,6 +132,8 @@ typedef struct {
 	float rep_t;                  /* time held in the current direction */
 	int   rep_dir;                /* held direction: -1 left, +1 right, 0 none */
 	int   rep_primed;             /* initial REPEAT_DELAY elapsed -> now REPEAT_RATE */
+	float jmp_t;                  /* L/R shoulder page-jump auto-repeat countdown */
+	int   jmp_dir;                /* held shoulder: -1 L, +1 R, 0 none */
 	float car_tween;              /* current card-slide tween time (HGAP/rate) */
 	int   car_navd;               /* a nav happened this frame: skip one cont_shift step (web tween starts next frame) */
 

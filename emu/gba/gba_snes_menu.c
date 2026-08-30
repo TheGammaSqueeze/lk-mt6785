@@ -55,6 +55,8 @@ extern int  mt_get_gpio_in(unsigned pin);
 #define K_B 82
 #define K_START 91
 #define K_SELECT 90
+#define K_LB 92    /* GBA L shoulder = page jump back */
+#define K_RB 81    /* GBA R shoulder = page jump forward */
 #define PRESSED(g) (mt_get_gpio_in(GP(g)) == 0)
 
 extern int pmic_detect_powerkey(void);
@@ -248,6 +250,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		in.up = PRESSED(K_UP); in.down = PRESSED(K_DOWN);
 		in.a = PRESSED(K_A); in.b = PRESSED(K_B);
 		in.start = PRESSED(K_START); in.select = PRESSED(K_SELECT);
+		in.lb = PRESSED(K_LB); in.rb = PRESSED(K_RB);
 
 		t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
 		t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;
