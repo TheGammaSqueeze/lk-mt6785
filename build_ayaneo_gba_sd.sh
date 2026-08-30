@@ -71,26 +71,17 @@ if [ -d "$SNES_ASSETS" ]; then
 	fi
 	echo "$PACK_SHA" > out/.snes_pack.sha
 
-	# Non-fatal smoke test: build the host renderer and render the home + a submenu
-	# from the freshly-packed blob, so an asset-pipeline break (bad pack, missing
-	# resource, render crash) is caught here rather than only on device.
+	# Non-fatal but COMPREHENSIVE validation: run the full host suite against the freshly
+	# packed blob - all 21 menu states non-blank, audio assets resolve, launch returns the
+	# right ROM (incl after sort), and (when the ARM cross-gcc + qemu are present) the
+	# device NEON blitter + nav/sort/launch logic match the scalar reference. Catches far
+	# more than the old single-path smoke test, at build time rather than on device.
 	if command -v gcc >/dev/null 2>&1; then
-		echo ">> Smoke-testing the pack (host render)"
-		if bash emu/gba/menu/build_host.sh >/dev/null 2>&1; then
-			# render a nav path, then verify the frame is not blank (>1% of the
-			# pixel bytes non-zero) so a "pack opens but renders nothing" regression
-			# is caught, not just a crash. Pure-stdlib check (no PIL dependency).
-			if GBA_ROSTER=6 emu/gba/menu/host_render out/snes_pack.bin \
-				/tmp/gba_smoke.ppm 60 "URA" >/dev/null 2>&1 \
-				&& python3 -c "import sys;d=open('/tmp/gba_smoke.ppm','rb').read();i=0
-for _ in range(3): i=d.index(b'\n',i)+1
-b=d[i:];sys.exit(0 if sum(x!=0 for x in b)>len(b)//100 else 1)"; then
-				echo "   smoke test OK (home + Display submenu rendered, non-blank)"
-			else
-				echo "!! smoke test FAILED: pack missing/blank render - check pack_snes.py" >&2
-			fi
+		echo ">> Validating the pack (host suite: states + audio + launch + NEON)"
+		if bash tools/ayaneo/gba/validate_menu.sh out/snes_pack.bin 2>&1 | sed 's/^/   /'; then
+			echo "   validation OK"
 		else
-			echo "   (host renderer build skipped - not fatal)"
+			echo "!! validation FAILED - check the failing state above / pack_snes.py" >&2
 		fi
 	fi
 else
