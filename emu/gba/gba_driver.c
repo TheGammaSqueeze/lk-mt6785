@@ -118,6 +118,10 @@ extern int  mtk_detect_key(unsigned short hwkey);
 #define GB_L	 0x200u
 
 /* ---- config ---- */
+/* How many BIOS frames to play as the boot-logo intro before the ROM-select menu
+ * (~59.73 fps, so ~150 frames ~= 2.5 s: the Nintendo logo slide + chime). The
+ * user can cut it short by holding B, or disable it via the skip-boot-logo setting. */
+#define GBA_SD_INTRO_FRAMES	150
 #define GBA_ARENA_PA	0x50000000u
 #define GBA_ARENA_SZ	(64u * 1024 * 1024)
 #define GBA_DRV_RESERVE	(2u * 1024 * 1024)	/* state/sav scratch at the arena tail */
@@ -956,44 +960,24 @@ static int emu_thread(void *arg)
 	}
 #ifdef AYANEO_GBA_SD
 	if (s_sd_mode) {
+		unsigned char *rp = gba_core_rom_ptr();
+		int i;
 		input_init();                        /* need the D-pad/A for the ROM-select */
 		/* Load GammaOS Pico settings from the SD card (portable with the card);
-		 * this marks settings loaded so the later boot_b load keeps the SD values,
-		 * and lets us honour skip-boot-logo etc. before the intro/menu. */
+		 * marks settings loaded so the later boot_b load keeps the SD values, and
+		 * lets us honour skip-boot-logo before the intro/menu. */
 		gba_sd_settings_load(&s_sd_vol);
-		if (s_nrom > 0) {
-			unsigned char *rp = gba_core_rom_ptr();
-			/* Loop the selector: if a ROM fails to load (oversize/corrupt/read
-			 * error) go back to the list rather than freeze on a dead screen. */
-			for (;;) {
-				int sel = gba_sd_rom_select();
-				s_sel_rom = sel;
-				romsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp, gba_core_rom_capacity());
-				if (romsz) break;
-				gba_dbg("GBA ERR: SD ROM load failed, back to selector");
-			}
-			gba_dbg("GBA SD: ROM selected + loaded, core_start");
-		} else {
-			/* no ROMs -> BIOS-only intro (empty cartridge: the BIOS plays its logo
-			 * then halts at the cart check; gamepak_size=0 is safe). */
-			unsigned char *rp = gba_core_rom_ptr();
-			int i;
-			for (i = 0; i < 0x200; i++) rp[i] = 0;
-			romsz = 0;
-			gba_dbg("GBA SD: no ROMs, BIOS intro");
-		}
+		/* Boot the emulator with NO cartridge, using the SD card's own
+		 * gba_bios.bin (s_sd_bios), so the real GBA BIOS plays its boot logo as
+		 * the intro. The ROM-select menu and the chosen game are driven after the
+		 * display + CPU thread are up (see the s_sd_mode intro block just before
+		 * the main frame loop). No prebaked BIOS: if gba_bios.bin was missing,
+		 * ayaneo_gba_sd_boot already fell through to a normal boot. */
+		for (i = 0; i < 0x200; i++) rp[i] = 0;
+		romsz = 0;
 		if (gba_core_start(romsz, s_sd_bios) != 0) {
 			gba_dbg("GBA ERR: SD core_start failed");
 			return 0;
-		}
-		if (romsz) {
-			/* inject the cartridge battery save (.sav) */
-			gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
-					(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
-			/* auto-resume the last save state (states/gba/<rom>.st0) unless B is
-			 * held at launch - a no-op if there is no state file. */
-			if (!PRESSED(GPIO_B))
-				state_read(scratch);
 		}
 	} else
 #endif
@@ -1026,6 +1010,14 @@ static int emu_thread(void *arg)
 	}
 	s_ready = 1;
 
+	/* Non-SD: disable the watchdog as before. SD flow: KEEP it armed through the
+	 * BIOS intro + ROM-select + the mid-run reset into the game (the main frame
+	 * loop kicks it every frame, and sd_read/sd_write kick during loads/saves), so
+	 * if the game-start reset ever hangs the watchdog recovers to a normal boot
+	 * instead of a dead screen. */
+#ifdef AYANEO_GBA_SD
+	if (!s_sd_mode)
+#endif
 	mtk_wdt_disable();
 
 	/* Default to the LOWEST OPP: the dynarec is ~300 fps-capable even at 600 MHz,
@@ -1044,8 +1036,10 @@ static int emu_thread(void *arg)
 	/* let the boot chime finish before we take the codec */
 	{
 		int g = 0;
-		while (ayaneo_boot_audio_active() && g++ < 300)
+		while (ayaneo_boot_audio_active() && g++ < 300) {
 			thread_sleep(20);
+			mtk_wdt_restart();	/* SD flow keeps the wdt armed here; feed it */
+		}
 	}
 	ayaneo_gbc_audio_init();
 	{
@@ -1082,6 +1076,43 @@ static int emu_thread(void *arg)
 		 * always ready before each vsync.
 		 */
 		int ff_prev = 0;
+
+#ifdef AYANEO_GBA_SD
+		/* SD flow: the core is currently running the SD card's BIOS (no cart), so
+		 * present the BIOS boot logo as the intro, then drop into the ROM-select
+		 * menu, then reset the core into the chosen game. Honour skip-boot-logo
+		 * (SD setting); the user can also cut the logo short by holding B. */
+		if (s_sd_mode) {
+			int fi, intro_frames = ayaneo_get_skip_gba_intro() ? 0 : GBA_SD_INTRO_FRAMES;
+			for (fi = 0; fi < intro_frames; fi++) {
+				update_buttons();
+				run_one_frame();
+				ayaneo_gbc_show_frame(gba_core_screen());
+				mtk_wdt_restart();		/* keep the armed watchdog fed during the intro */
+				if (PRESSED(GPIO_B)) break;	/* hold B to skip the logo */
+			}
+			if (s_nrom > 0) {
+				unsigned char *rp = gba_core_rom_ptr();
+				for (;;) {
+					int sel = gba_sd_rom_select();
+					s_sel_rom = sel;
+					romsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp, gba_core_rom_capacity());
+					if (romsz) break;
+					gba_dbg("GBA ERR: SD ROM load failed, back to selector");
+				}
+				/* reset the running core into the selected game (SD BIOS + cart) */
+				if (gba_core_start(romsz, s_sd_bios) != 0) {
+					gba_dbg("GBA ERR: SD game core_start failed");
+					return 0;
+				}
+				gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
+						(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
+				if (!PRESSED(GPIO_B))
+					state_read(scratch);
+			}
+			/* no ROMs on the card: keep showing the BIOS (romsz stays 0). */
+		}
+#endif
 
 		for (;;) {
 			int uncapped;
