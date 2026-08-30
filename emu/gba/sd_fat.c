@@ -73,6 +73,12 @@ static unsigned sd_read(void *ctx, uint32_t lba, uint32_t count, void *buf)
 static unsigned sd_write(void *ctx, uint32_t lba, uint32_t count, const void *buf)
 {
 	(void)ctx;
+#ifdef AYANEO_GBA_SD
+	/* Kick the 10s LK watchdog on every SD sector write so a long save (state or
+	 * .sav, which fat_wr writes sector-by-sector) does not reset the device mid
+	 * save when the power key is pressed in game. */
+	{ extern void mtk_wdt_restart(void); mtk_wdt_restart(); }
+#endif
 	return (unsigned)mmc_wrap_bwrite(SD_DEV_NUM, (unsigned long)lba,
 					 (unsigned long)count, buf, SD_PART_USER);
 }
