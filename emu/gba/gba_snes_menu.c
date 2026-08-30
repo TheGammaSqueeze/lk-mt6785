@@ -310,7 +310,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			pb[i++]='.'; pb[i++]='0'+(peak_us/100)%10; pb[i++]='m'; pb[i++]='s'; pb[i++]=' ';
 			pb[i++]='0'+(fps/100)%10; pb[i++]='0'+(fps/10)%10; pb[i++]='0'+fps%10;
 			pb[i++]='f'; pb[i]=0;
-			ayaneo_text(fb, pitch, 8, 8, 2, 0xFF00FF66u, pb);
+			ayaneo_fill(fb, pitch, 4, 4, 16 * i + 12, 40, 0xFF101018u);  /* readable bg */
+			ayaneo_text(fb, pitch, 8, 10, 2, 0xFF00FF66u, pb);
 		}
 		if (fade_in > 0) {   /* fade in from black (255 -> 0) over 18 frames = 0.3s */
 			ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H, 0xFF000000u,
