@@ -1122,7 +1122,10 @@ static void draw_wrapped(snes_menu *m, snes_target *t, uint32_t font, float x, f
  * the web (no word-wrap), so page-scroll is line-based. */
 #define LEGAL_NVIS 18          /* label pool / page N (web _legalWidget N=18, LH=24) */
 static const char *g_legal_tail[] = {
-	"", "\xC2\xA9""2017 Nintendo", "",
+	/* "\302\251" is the UTF-8 copyright sign; octal escapes are capped at 3 digits so
+	 * "2017" stays separate without the adjacent-literal split a linter reads as a
+	 * missing comma (byte-identical to "\xC2\xA9" "2017 Nintendo"). */
+	"", "\302\2512017 Nintendo", "",
 	"Trademarks are property of their respective owners. Nintendo Entertainment System and SUPER NES",
 	" are trademarks of Nintendo.",
 	"Les marques appartiennent \xC3\xA0 leurs propri\xC3\xA9taires respectifs. Nintendo Entertainment System et SUPER",

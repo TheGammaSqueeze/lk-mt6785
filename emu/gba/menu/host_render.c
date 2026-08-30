@@ -100,8 +100,8 @@ int main(int argc, char **argv)
 		for (k = 0; k < gn; k++) {
 			if (k < 8) { gba_clean_name(raw[k], clean[k]); }
 			else {
-				char tmp[128]; const char *b = raw[k % 8]; int p = 0;
-				while (b[p] && p < 100) { tmp[p] = b[p]; p++; }
+				char tmp[100]; const char *b = raw[k % 8]; int p = 0;
+				while (b[p] && p < 99) { tmp[p] = b[p]; p++; }   /* bounded so the snprintf below cannot truncate */
 				tmp[p] = 0;
 				/* insert a number before the tag so cleanup still exercises tags */
 				snprintf(clean[k], sizeof(clean[k]), "%s %d", tmp, k);
