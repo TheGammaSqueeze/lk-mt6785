@@ -192,7 +192,10 @@ void gba_menu_render(snes_target *t, const snes_pack *pk,
 	if (wall) {
 		const snes_img_entry *wim = &pk->img[wall->img];
 		float rx = VW / (float)wim->w, ry = VH / (float)wim->h;
-		float uvx = posf * 0.06f, uvy = 0.0f;
+		/* parallax on nav (posf) plus a slow continuous diagonal drift (anim) so
+		 * the background stays alive even when idle, like the SNES-mini menu. */
+		float uvx = posf * 0.06f + anim * 0.004f;
+		float uvy = anim * 0.0025f;
 		snes_blit_wallpaper(t, pk, wim, CENTER_X, VH / 2.0f, VW, VH,
 				    uvx, uvy, rx, ry, 1.0f);
 	} else {
