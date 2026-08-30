@@ -3,7 +3,7 @@
  * renders the menu to a PPM, so the output can be validated against the web app
  * locally without the device. Not part of the LK build.
  *
- *   build:  emu/snes/build_host.sh
+ *   build:  emu/gba/menu/build_host.sh
  *   run:    ./host_render <snes_pack.bin> <out.ppm> [frames] [nav]
  *           nav = a string of L/R/U/D/A/B/S/T applied one per frame before render
  */
