@@ -38,12 +38,7 @@ extern void ayaneo_gbc_audio_init(void);
 extern int  ayaneo_menu_audio_room(void);
 extern void ayaneo_menu_audio_submit(const short *stereo, unsigned frames);
 extern void ayaneo_menu_audio_silence(void);
-extern unsigned int gpt4_get_current_tick(void);   /* 13 MHz free-running counter */
-extern int  ayaneo_present_skip_framedone;         /* 1 = non-blocking present */
-extern int  ayaneo_wait_frame_done(void);          /* block until panel FRAME_DONE */
-
-/* one 60 Hz frame at the 13 MHz counter (~16.67 ms) */
-#define FRAME_TICKS 216667u
+extern int  ayaneo_present_skip_framedone;         /* 0 = present blocks on vsync */
 
 /* GBA button GPIOs (active-low), same panel as the SNES build's map */
 extern int  mt_get_gpio_in(unsigned pin);
@@ -191,7 +186,6 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 {
 	const snes_img_entry *cart;
 	int pwr_armed = 0;
-	int use_framedone = 1, framedone_timeouts = 0;   /* adaptive vsync pacing */
 	int fade_in = 18;   /* fade the menu in from black on entry over 0.3s, matching
 			     * the SNES sys_fade IN_DURATION (reveal); the BIOS intro left the
 			     * panel black. The first frame is fully black, which also hides the
@@ -217,14 +211,12 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		snes_menu_set_ctile(&s_menu, (uint32_t *)SNES_CTILE_PA, s_ctile_gi, cap);
 	}
 
-	ayaneo_set_cpu_mhz(2000);
-	/* Pace the menu ourselves rather than relying on the present's internal vsync
-	 * wait (which only fires in DSI video mode). Make the present non-blocking and
-	 * explicitly wait for the panel FRAME_DONE each loop, so exactly one buffer is
-	 * shown per refresh - the menu render is ~2ms, so without this the double buffer
-	 * would flip many times per refresh and the panel would sample torn/mixed
-	 * buffers = the flicker during movement. */
-	ayaneo_present_skip_framedone = 1;
+	ayaneo_set_cpu_mhz(2100);   /* max big-core OPP for render headroom */
+	/* Present-pacing: blocking config_input on the panel FRAME_DONE (skip=0), exactly
+	 * like the flicker-free GBA game in normal play. The present itself paces the loop
+	 * to the panel refresh; the loop adds NO extra wait/timer (that overran a refresh
+	 * and dropped frames = the movement flicker). */
+	ayaneo_present_skip_framedone = 0;
 	/* Re-own the panel in the clean canvas/double-buffer state. The BIOS-logo intro
 	 * ran between the boot flow's display_prepare and here and left the layer in its
 	 * own scan-out mode; without this the two canvas buffers can present
@@ -252,7 +244,6 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		snes_target t;
 		snes_input in;
 		int launch;
-		unsigned int frame_t0 = gpt4_get_current_tick();
 
 		in.left = PRESSED(K_LEFT); in.right = PRESSED(K_RIGHT);
 		in.up = PRESSED(K_UP); in.down = PRESSED(K_DOWN);
@@ -303,10 +294,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 				ayaneo_fill_blend(lfb, lp, 0, 0, (int)lw, (int)lh, 0xFF000000u,
 						  (f * 255) / 11);
 				pump_audio();
-				ayaneo_canvas_present();
-				if (use_framedone) ayaneo_wait_frame_done();
+				ayaneo_canvas_present();   /* blocks on vsync (skip=0) */
 				mtk_wdt_restart();
-				thread_sleep(1);
 			}
 			/* Stop the BGM and zero the WHOLE audio ring before handing off: no one
 			 * feeds the AFE ring while the game ROM loads/decompresses, and the DMA
@@ -318,31 +307,18 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			return launch;
 		}
 
-		ayaneo_canvas_present();   /* non-blocking: OVL latches the new buffer at vsync */
-		/* Pace to vsync via FRAME_DONE - but only if the panel actually raises that
-		 * event (DSI video mode). If the wait keeps hitting its ~50ms timeout (command
-		 * mode / no event), it would peg the menu at 20fps, so detect that and fall
-		 * back to the timer floor below (which alone still prevents uncapped flips). */
-		if (use_framedone) {
-			unsigned int w0 = gpt4_get_current_tick();
-			ayaneo_wait_frame_done();
-			if (gpt4_get_current_tick() - w0 > 455000u) {   /* >~35ms = timed out */
-				if (++framedone_timeouts >= 3) use_framedone = 0;
-			} else framedone_timeouts = 0;
-		}
+		/* Present exactly like the (flicker-free) GBA game does in normal play:
+		 * skip_framedone=0, so ayaneo_canvas_present() -> config_input BLOCKS on the
+		 * panel FRAME_DONE, locking the loop to the panel refresh (one buffer shown
+		 * per vsync). An earlier version stacked a wait_frame_done + a 13MHz timer
+		 * FLOOR on top of this - that adds delay AFTER the vsync block, so the loop
+		 * overruns a refresh and drops frames = the periodic flicker on movement.
+		 * Do NOT add extra pacing here; the single blocking present is the pacing. */
+		ayaneo_canvas_present();
 		mtk_wdt_restart();
 		{
 			int p = pmic_detect_powerkey();
 			if (!p) pwr_armed = 1; else if (pwr_armed) mt_power_off();
-		}
-		/* Rate floor: if wait_frame_done ever returns early (a stale/pending event),
-		 * make sure we never exceed 60 fps. Sleep the bulk (yielding), spin the last
-		 * bit. Normally a no-op since wait_frame_done already consumed ~a frame. */
-		{
-			unsigned int el;
-			while ((el = gpt4_get_current_tick() - frame_t0) < FRAME_TICKS) {
-				if (FRAME_TICKS - el > 26000u) thread_sleep(1);  /* >~2ms left */
-			}
 		}
 	}
 }
