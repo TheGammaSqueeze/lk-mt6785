@@ -7,9 +7,28 @@ SNES thumbnail window so it fills the card screen 1:1. Output is an RGBA PNG.
 Usage: gen_gba_cart.py <out.png>
 """
 import sys
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 W, H = 228, 160
+
+FONTS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+]
+
+
+def font(sz):
+    for f in FONTS:
+        try:
+            return ImageFont.truetype(f, sz)
+        except OSError:
+            pass
+    return ImageFont.load_default()
+
+
+def ctext(d, cx, y, s, fnt, fill):
+    b = d.textbbox((0, 0), s, font=fnt)
+    d.text((cx - (b[2] - b[0]) / 2 - b[0], y), s, font=fnt, fill=fill)
 
 
 def main():
@@ -17,53 +36,61 @@ def main():
     im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
 
-    # window background: soft vertical indigo gradient so the cart reads on any card
+    # window backdrop: soft indigo so the cart reads on any card background
     for y in range(H):
         t = y / (H - 1)
-        d.line([(0, y), (W, y)], fill=(26 + int(14 * t), 22 + int(10 * t),
-                                       54 + int(24 * t), 255))
+        d.line([(0, y), (W, y)], fill=(22 + int(12 * t), 20 + int(9 * t),
+                                       46 + int(22 * t), 255))
 
-    # cartridge body (rounded), inset from the window
-    bx0, by0, bx1, by1 = 34, 14, W - 34, H - 10
-    body = (58, 60, 78, 255)
-    edge = (120, 132, 176, 255)
-    # body vertical gradient inside a rounded mask
+    # cartridge silhouette: real GBA carts have a wide top that steps in at the
+    # shoulders to a slightly narrower body. Draw as a rounded body with two top
+    # shoulder cuts.
+    bx0, by0, bx1, by1 = 30, 12, W - 30, H - 8
+    sh = 16                       # shoulder inset depth
     mask = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([bx0, by0, bx1, by1], radius=16, fill=255)
+    md = ImageDraw.Draw(mask)
+    md.rounded_rectangle([bx0, by0 + sh, bx1, by1], radius=14, fill=255)
+    md.rounded_rectangle([bx0 + 12, by0, bx1 - 12, by0 + sh + 14], radius=10, fill=255)
+
+    # body vertical gradient (charcoal, lighter at top) painted through the mask
     grad = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     gp = grad.load()
     for y in range(H):
         t = y / (H - 1)
-        r = int(70 - 26 * t); g = int(72 - 26 * t); b = int(92 - 30 * t)
+        r = int(74 - 34 * t); g = int(76 - 34 * t); b = int(86 - 36 * t)
         for x in range(W):
             gp[x, y] = (r, g, b, 255)
     im.paste(grad, (0, 0), mask)
-    d.rounded_rectangle([bx0, by0, bx1, by1], radius=16, outline=edge, width=3)
-    # top bevel highlight
-    d.arc([bx0 + 3, by0 + 3, bx1 - 3, by1 - 3], start=185, end=355,
-          fill=(170, 182, 220, 200), width=2)
 
-    # label plate
-    lx0, ly0, lx1, ly1 = bx0 + 14, by0 + 12, bx1 - 14, int(H * 0.52)
+    # outline + top bevel highlight (trace the mask edge subtly)
+    edge = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ed = ImageDraw.Draw(edge)
+    ed.rounded_rectangle([bx0, by0 + sh, bx1, by1], radius=14,
+                         outline=(150, 158, 190, 255), width=3)
+    ed.rounded_rectangle([bx0 + 12, by0, bx1 - 12, by0 + sh + 14], radius=10,
+                         outline=(150, 158, 190, 255), width=3)
+    im.alpha_composite(edge)
+
+    # label plate with the GBA wordmark
+    lx0, ly0, lx1, ly1 = bx0 + 16, by0 + sh + 8, bx1 - 16, int(H * 0.60)
     d.rounded_rectangle([lx0, ly0, lx1, ly1], radius=8,
-                        fill=(232, 234, 244, 255), outline=(150, 156, 176, 255), width=2)
-    # a stylised "GBA" mark on the label
-    d.text(((lx0 + lx1) // 2 - 16, (ly0 + ly1) // 2 - 6), "GBA",
-           fill=(70, 78, 120, 255))
+                        fill=(236, 238, 246, 255), outline=(150, 156, 176, 255), width=2)
+    cx = (lx0 + lx1) // 2
+    ctext(d, cx, ly0 + 6, "GBA", font(30), (58, 66, 120, 255))
+    ctext(d, cx, ly1 - 18, "GAME BOY ADVANCE", font(9), (110, 116, 150, 255))
 
-    # notch top-right (cart shape cue)
-    d.rectangle([bx1 - 30, by0, bx1 - 6, by0 + 12], fill=(46, 48, 64, 255))
-    d.rounded_rectangle([bx1 - 28, by0 + 2, bx1 - 8, by0 + 11], radius=4,
-                        fill=(66, 68, 88, 255))
+    # thumb notch (bottom-centre grip cut of a GBA cart)
+    d.rounded_rectangle([cx - 18, by1 - 12, cx + 18, by1 - 2], radius=4,
+                        fill=(40, 42, 54, 255))
 
-    # metallic ridged connector along the bottom
-    cy0 = int(H * 0.66)
+    # metallic connector ridges just under the label
+    cy0 = ly1 + 8
     for i in range(9):
-        cx = bx0 + 16 + i * ((bx1 - bx0 - 32) / 8.0)
-        for yy in range(cy0, by1 - 6):
-            tt = (yy - cy0) / max(1, (by1 - 6 - cy0))
+        rx = lx0 + 6 + i * ((lx1 - lx0 - 12) / 8.0)
+        for yy in range(cy0, by1 - 16):
+            tt = (yy - cy0) / max(1, (by1 - 16 - cy0))
             c = int(120 - 60 * tt)
-            d.line([(cx - 5, yy), (cx + 5, yy)], fill=(c, c + 6, c + 22, 255))
+            d.line([(rx - 4, yy), (rx + 4, yy)], fill=(c, c + 6, c + 22, 255))
 
     im.save(out)
     print("wrote", out, im.size)
