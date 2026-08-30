@@ -35,6 +35,7 @@ extern void ayaneo_display_prepare(void);
 extern void ayaneo_gbc_audio_init(void);
 extern int  ayaneo_menu_audio_room(void);
 extern void ayaneo_menu_audio_submit(const short *stereo, unsigned frames);
+extern void ayaneo_menu_audio_silence(void);
 
 /* GBA button GPIOs (active-low), same panel as the SNES build's map */
 extern int  mt_get_gpio_in(unsigned pin);
@@ -259,13 +260,13 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			int f;
 			/* let the confirm SFX play out */
 			for (f = 0; f < 5; f++) { pump_audio(); mtk_wdt_restart(); thread_sleep(16); }
-			/* Stop the BGM and flush the ring with silence before handing off: no
-			 * one feeds the AFE ring while the game ROM loads/decompresses, so a
-			 * stale BGM tail would loop. snes_audio_init clears all voices, then
-			 * pump_audio mixes silence and fills the ring ahead of the DMA cursor
-			 * (once it drains it just replays silence = silent). */
+			/* Stop the BGM and zero the WHOLE audio ring before handing off: no one
+			 * feeds the AFE ring while the game ROM loads/decompresses, and the DMA
+			 * loops the entire 341ms ring, so a submit-at-write-cursor silence tail
+			 * is not enough - it would still wrap and replay older BGM frames. Clear
+			 * the mixer voices and wipe the whole ring so the DMA loops silence. */
 			snes_audio_init(&s_mix);
-			for (f = 0; f < 6; f++) { pump_audio(); mtk_wdt_restart(); thread_sleep(16); }
+			ayaneo_menu_audio_silence();
 			return launch;
 		}
 

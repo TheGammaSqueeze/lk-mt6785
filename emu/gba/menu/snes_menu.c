@@ -881,12 +881,26 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 	 * anchor, its centre at world Y=-191 -> screen 551 (NOT a forced 32x32 square
 	 * bottom-anchored at 535). */
 	float ccx, ccy = TH_CENTER_Y;
+	/* GBA mode has no per-game small icons; draw a small GBA cartridge per slot so
+	 * the strip is populated (and the chevron points at a real thumbnail). Centre
+	 * the row on 640 and shrink the spacing if there are many ROMs. */
+	float base = TH_X0, sp = TH_SPACING;
+	if (m->gba_mode && n > 0) {
+		sp = 52.0f;
+		if (n > 1 && sp * (float)(n - 1) > 1120.0f) sp = 1120.0f / (float)(n - 1);
+		base = 640.0f - sp * (float)(n - 1) * 0.5f;
+	}
 	if (n <= 0) return;
 	for (i = 0; i < n; i++) {
-		const snes_game_rec *g = game(m, i);
-		const snes_img_entry *im = (g && g->small_img != 0xFFFF) ? &m->pk->img[g->small_img] : 0;
-		float cx = TH_X0 + TH_SPACING * (float)i;
-		if (im) snes_blit_tex(t, m->pk, im, cx, ccy, (float)im->w, (float)im->h, 1.0f);
+		float cx = base + sp * (float)i;
+		if (m->gba_mode) {
+			if (m->gba_cart_img)
+				snes_blit_tex(t, m->pk, m->gba_cart_img, cx, ccy, 46.0f, 32.0f, 1.0f);
+		} else {
+			const snes_game_rec *g = game(m, i);
+			const snes_img_entry *im = (g && g->small_img != 0xFFFF) ? &m->pk->img[g->small_img] : 0;
+			if (im) snes_blit_tex(t, m->pk, im, cx, ccy, (float)im->w, (float)im->h, 1.0f);
+		}
 	}
 	/* Animated downward-chevron cursor over the selected filmstrip icon
 	 * (cursor_node: cursor_thumbnails.spriteanim, curor_thumbnail_1/2/3, 12x8,
@@ -894,7 +908,7 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 	 * authored up-pointing arrowhead renders pointing DOWN onto the thumbnail.
 	 * 13-frame 30fps blink pulsing full(1)->line(3)->full. Atlas: _1=145,881
 	 * _2=159,881  _3=173,881. Cyan tint (63,191,255). */
-	ccx = TH_X0 + TH_SPACING * (float)m->focus;
+	ccx = base + sp * (float)m->focus;
 	if (m->card_act) {
 		static const uint16_t seq[13] = { 0,1,1,1,1,2,2,2,1,1,0,0,0 };
 		static const uint16_t sx[3] = { 145, 159, 173 };

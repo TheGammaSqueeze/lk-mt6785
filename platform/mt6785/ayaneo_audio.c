@@ -1160,3 +1160,13 @@ void ayaneo_menu_audio_submit(const short *stereo, unsigned frames)
 	}
 	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
 }
+
+/* Zero the ENTIRE audio ring so the AFE DMA loops silence instead of replaying the
+ * last BGM segment. Submitting silence at the write cursor is not enough (the DMA
+ * wraps and re-reads older frames), so wipe the whole buffer. Used at the menu ->
+ * game handoff, when nobody feeds the ring during the ROM load. */
+void ayaneo_menu_audio_silence(void)
+{
+	memset(s_gbc_ring, 0, sizeof(s_gbc_ring));
+	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+}

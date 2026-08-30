@@ -249,6 +249,26 @@ int main(int argc, char **argv)
 		for (k = 0; k < n; k++) wp[k] = 0xFF204060u;
 		menu.wp_ready = 1;
 	}
+	/* COVCHECK: mimic the on-device driver (which does NOT clear the whole back
+	 * buffer - only the letterbox bars - and relies on the render to cover the rest).
+	 * Fill a sentinel, do just the letterbox clear, render, then report any pixel the
+	 * render left untouched: on the double-buffered panel those flicker. */
+	if (getenv("COVCHECK")) {
+		int offy = (H - SNES_VH) / 2, x2, y2, miss = 0;
+		int x0 = W, y0 = H, x1 = -1, y1b = -1;
+		uint32_t SENT = 0xFF17EA5Bu;   /* unlikely bright green sentinel */
+		for (i = 0; i < W * H; i++) fb[i] = SENT;
+		if (offy > 0) { for (i = 0; i < W * offy; i++) fb[i] = 0xFF000000u;
+			for (i = (H - offy) * W; i < W * H; i++) fb[i] = 0xFF000000u; }
+		snes_menu_render(&menu, &t);
+		for (y2 = 0; y2 < H; y2++) for (x2 = 0; x2 < W; x2++)
+			if (fb[y2 * W + x2] == SENT) { miss++;
+				if (x2 < x0) x0 = x2; if (x2 > x1) x1 = x2;
+				if (y2 < y0) y0 = y2; if (y2 > y1b) y1b = y2; }
+		fprintf(stderr, "COVCHECK: %d unwritten px (flicker); bbox=[%d,%d..%d,%d]\n",
+			miss, x0, y0, x1, y1b);
+	}
+
 	/* clear letterbox + render final frame */
 	for (i = 0; i < W * H; i++) fb[i] = 0xFF000000u;
 	snes_menu_render(&menu, &t);
