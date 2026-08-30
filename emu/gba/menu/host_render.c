@@ -46,6 +46,24 @@ int main(int argc, char **argv)
 	if (snes_menu_init(&menu, &pk, home_pool, 4096, bg_pool, 256, wp, chrome) != 0) {
 		fprintf(stderr, "menu init failed\n"); return 1;
 	}
+	/* AUDIT_AUDIO: verify the BGM + SFX GUIDs the menu wires actually resolve to sound
+	 * records in the packed blob (the build smoke test renders but never touches audio,
+	 * so a missing/renamed sound asset would otherwise only surface on device). */
+	if (getenv("AUDIT_AUDIO")) {
+		static const struct { const char *name, *guid; } au[] = {
+			{ "bgm_home",           "29593b07-3016-49a0-9e70-c9d651bcafa2" },
+			{ "sfx_move/cursor",    "5d71cecd-38d1-42d6-9f16-77581477eb97" },
+			{ "sfx_decide/click",   "e8d6f848-db86-4b5f-9657-8a43a761a8d6" },
+			{ "sfx_cancel",         "fd22b34f-5b1b-4162-92dd-f63277ca5af4" },
+			{ "sfx_up",             "9d492e12-d0fb-489b-8814-ff9a5c84493c" } };
+		int k, miss = 0;
+		for (k = 0; k < (int)(sizeof(au)/sizeof(au[0])); k++) {
+			const snes_snd_entry *s = snes_res_snd(&pk, snes_hash(au[k].guid));
+			fprintf(stderr, "  audio %-18s %s\n", au[k].name,
+				s ? "OK" : (miss = 1, "MISSING"));
+		}
+		return miss;
+	}
 	t.fb = fb; t.pitch = W; t.W = W; t.H = H;
 	t.offx = (W - SNES_VW) / 2; t.offy = (H - SNES_VH) / 2;
 	snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);

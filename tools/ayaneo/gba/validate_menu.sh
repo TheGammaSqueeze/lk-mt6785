@@ -87,8 +87,18 @@ for entry in "${LARGE_STATES[@]}"; do
   fi
 done
 
+# audio assets: the BGM + SFX GUIDs the menu wires must resolve in the pack (rendering
+# never touches audio, so a missing sound would otherwise only surface on device).
+if AUDIT_AUDIO=1 "$HR" "$PACK" /tmp/gbamenu_audit.ppm >/tmp/gbamenu_audio.txt 2>&1; then
+  sed 's/^/  /' /tmp/gbamenu_audio.txt
+else
+  echo "  FAIL audio - one or more BGM/SFX assets MISSING from the pack" >&2
+  sed 's/^/  /' /tmp/gbamenu_audio.txt
+  fail=1
+fi
+
 if [ "$fail" = 0 ]; then
-  echo ">> all $(( ${#STATES[@]} + ${#LARGE_STATES[@]} )) states rendered non-blank"
+  echo ">> all $(( ${#STATES[@]} + ${#LARGE_STATES[@]} )) states rendered non-blank + audio OK"
   [ -n "$PNGDIR" ] && echo "   PNGs in $PNGDIR"
 else
   echo "!! one or more states failed" >&2
