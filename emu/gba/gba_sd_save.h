@@ -23,4 +23,8 @@ int      gba_sd_write_sav(fat_vol *v, const char *rom, const void *buf, uint32_t
 uint32_t gba_sd_load_state(fat_vol *v, const char *rom, int slot, unsigned char *dst, uint32_t cap);
 int      gba_sd_write_state(fat_vol *v, const char *rom, int slot, const void *buf, uint32_t len);
 
+/* GammaOS Pico menu settings on the SD card (/gba/settings.bin). 0 = ok. */
+int gba_sd_settings_load(fat_vol *v);
+int gba_sd_settings_save(fat_vol *v);
+
 #endif

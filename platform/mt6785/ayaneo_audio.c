@@ -186,7 +186,7 @@ static unsigned int s_audio_ms;
  * and the game, and to the backlight during the animation and in-game. */
 #define AYANEO_SET_OFF		0x01E00000u	/* 30 MB into boot_b */
 #define AYANEO_SET_MAGIC	0x54455341u	/* "ASET" LE */
-#define AYANEO_SET_VER		2u
+#define AYANEO_SET_VER		3u
 #define AYANEO_BL_MIN		16		/* keep the panel visible (never 0) */
 #define AYANEO_BL_MAX		255		/* mt65xx LCD level is 0-255 */
 #define AYANEO_BL_STEP		8		/* fine granularity (~30 steps) */
@@ -206,6 +206,7 @@ static volatile int s_skip_boot = 0;		/* skip the animation + chime */
 static volatile int s_lcd_filter = 0;		/* 0 off, 1 scanlines, 2 grid, 3 both */
 static volatile int s_color_correct = 0;	/* CGB colour correction on/off */
 static volatile int s_dark_filter = 0;		/* 0-5 dark filter level */
+static volatile int s_skip_gba_intro = 0;	/* skip the GBA BIOS boot-logo intro (SD flow) */
 static int s_settings_loaded;
 
 /* ---------- little-endian helpers ---------- */
@@ -255,6 +256,8 @@ int ayaneo_get_load_on_boot(void)   { return s_load_on_boot; }
 void ayaneo_set_load_on_boot(int v) { s_load_on_boot = v ? 1 : 0; }
 int ayaneo_get_skip_boot(void)      { return s_skip_boot; }
 void ayaneo_set_skip_boot(int v)    { s_skip_boot = v ? 1 : 0; }
+int ayaneo_get_skip_gba_intro(void)   { return s_skip_gba_intro; }
+void ayaneo_set_skip_gba_intro(int v) { s_skip_gba_intro = v ? 1 : 0; }
 int ayaneo_get_lcd_filter(void)     { return s_lcd_filter; }
 void ayaneo_set_lcd_filter(int v)   { s_lcd_filter = (v < 0) ? 0 : (v > 3 ? 3 : v); }
 int ayaneo_get_color_correct(void)  { return s_color_correct; }
@@ -295,6 +298,51 @@ void ayaneo_settings_load(void)
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
+	if (ver >= 3)
+		s_skip_gba_intro = rd32(b + 36) ? 1 : 0;
+}
+
+/* Serialize/deserialize the settings block so a caller can persist it elsewhere
+ * (the GBA-from-SD flow keeps it on the SD card). Same 64-byte layout as boot_b.
+ * serialize returns the byte count; deserialize applies a block and marks the
+ * settings loaded so a later boot_b load does not override the SD values. */
+int ayaneo_settings_serialize(unsigned char *b, int cap)
+{
+	if (cap < 64) return 0;
+	memset(b, 0, 64);
+	wr32(b + 0, AYANEO_SET_MAGIC);
+	wr32(b + 4, AYANEO_SET_VER);
+	wr32(b + 8, (unsigned int)s_gbc_vol);
+	wr32(b + 12, (unsigned int)s_brightness);
+	wr32(b + 16, (unsigned int)s_load_on_boot);
+	wr32(b + 20, (unsigned int)s_skip_boot);
+	wr32(b + 24, (unsigned int)s_lcd_filter);
+	wr32(b + 28, (unsigned int)s_color_correct);
+	wr32(b + 32, (unsigned int)s_dark_filter);
+	wr32(b + 36, (unsigned int)s_skip_gba_intro);
+	return 64;
+}
+void ayaneo_settings_deserialize(const unsigned char *b, int len)
+{
+	unsigned int ver;
+	if (len < 64 || rd32(b) != AYANEO_SET_MAGIC)
+		return;
+	ver = rd32(b + 4);
+	{
+		int vol = (int)rd32(b + 8), bl = (int)rd32(b + 12);
+		if (vol >= 0 && vol <= 100) s_gbc_vol = vol;
+		if (bl >= AYANEO_BL_MIN && bl <= AYANEO_BL_MAX) s_brightness = bl;
+	}
+	if (ver >= 2) {
+		s_load_on_boot  = rd32(b + 16) ? 1 : 0;
+		s_skip_boot     = rd32(b + 20) ? 1 : 0;
+		ayaneo_set_lcd_filter((int)rd32(b + 24));
+		s_color_correct = rd32(b + 28) ? 1 : 0;
+		ayaneo_set_dark_filter((int)rd32(b + 32));
+	}
+	if (ver >= 3)
+		s_skip_gba_intro = rd32(b + 36) ? 1 : 0;
+	s_settings_loaded = 1;			/* SD values are authoritative from here */
 }
 
 /* write all current settings back to boot_b (block-aligned) */
@@ -312,6 +360,7 @@ void ayaneo_settings_save(void)
 	wr32(b + 24, (unsigned int)s_lcd_filter);
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
+	wr32(b + 36, (unsigned int)s_skip_gba_intro);
 	s_settings_loaded = 1;			/* our value is now authoritative */
 	arch_clean_cache_range((addr_t)b, sizeof(b));
 	partition_write(AYANEO_AUDIO_PART, AYANEO_SET_OFF, b, sizeof(b));

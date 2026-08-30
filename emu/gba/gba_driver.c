@@ -73,6 +73,9 @@ extern void ayaneo_gba_audio_pace(void);	/* audio-clock frame pacing */
 extern int  ayaneo_present_skip_framedone;	/* mt_disp_drv.c: 1 = non-blocking present */
 extern void ayaneo_settings_load(void);
 extern void ayaneo_settings_save(void);
+#ifdef AYANEO_GBA_SD
+static void sd_settings_mirror(void);	/* mirror settings to the SD card (early fwd decl) */
+#endif
 extern int  ayaneo_brightness_step(int dir);
 extern int  ayaneo_brightness_pct(void);
 extern void ayaneo_gbc_osd_show(int kind, int pct);
@@ -267,6 +270,9 @@ static void poll_volume(void)
 			ayaneo_gbc_osd_show(1, ayaneo_gbc_audio_get_volume());
 		}
 		ayaneo_settings_save();
+#ifdef AYANEO_GBA_SD
+		sd_settings_mirror();
+#endif
 	}
 	if (!sel)
 		s_sel_modifier = 0;
@@ -290,6 +296,7 @@ static int  sd_mode_on(void);            /* defined after the SD globals below *
 static int  sd_state_write(unsigned char *scratch);
 static int  sd_state_read(unsigned char *scratch);
 static void sd_sav_write(void);
+static void sd_settings_mirror(void);    /* persist GammaOS settings to the SD card */
 #endif
 
 static int state_write(unsigned char *scratch)
@@ -406,6 +413,9 @@ static void save_and_poweroff(unsigned char *scratch)
 	state_write(scratch);
 	sav_save(scratch);
 	ayaneo_settings_save();
+#ifdef AYANEO_GBA_SD
+	sd_settings_mirror();
+#endif
 	ayaneo_gbc_audio_shutdown();
 	mt_power_off();
 }
@@ -706,8 +716,12 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_CLOSE:    if (act) return 1; changed = 0; break;
 	default: changed = 0; break;
 	}
-	if (changed)
+	if (changed) {
 		ayaneo_settings_save();
+#ifdef AYANEO_GBA_SD
+		sd_settings_mirror();
+#endif
+	}
 	return 0;
 }
 
@@ -908,6 +922,15 @@ static void sd_sav_write(void)
 	gba_sd_write_sav(&s_sd_vol, s_roms[s_sel_rom].name,
 			 gba_core_backup_ptr(), gba_core_backup_size());
 }
+
+/* Mirror the GammaOS Pico settings to the SD card whenever they change, so they
+ * travel with the card and are read back at the next LK start. No-op if not in
+ * the SD flow. */
+static void sd_settings_mirror(void)
+{
+	if (s_sd_mode)
+		gba_sd_settings_save(&s_sd_vol);
+}
 #endif
 
 /* ===================== emulator thread ===================== */
@@ -934,6 +957,10 @@ static int emu_thread(void *arg)
 #ifdef AYANEO_GBA_SD
 	if (s_sd_mode) {
 		input_init();                        /* need the D-pad/A for the ROM-select */
+		/* Load GammaOS Pico settings from the SD card (portable with the card);
+		 * this marks settings loaded so the later boot_b load keeps the SD values,
+		 * and lets us honour skip-boot-logo etc. before the intro/menu. */
+		gba_sd_settings_load(&s_sd_vol);
 		if (s_nrom > 0) {
 			unsigned char *rp = gba_core_rom_ptr();
 			/* Loop the selector: if a ROM fails to load (oversize/corrupt/read
