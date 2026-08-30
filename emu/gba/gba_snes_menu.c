@@ -189,6 +189,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 {
 	const snes_img_entry *cart;
 	int pwr_armed = 0;
+	int use_framedone = 1, framedone_timeouts = 0;   /* adaptive vsync pacing */
 
 	if (nrom <= 0) return -1;
 	if (load_pack() != 0) return -2;
@@ -285,7 +286,17 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		}
 
 		ayaneo_canvas_present();   /* non-blocking: OVL latches the new buffer at vsync */
-		ayaneo_wait_frame_done();  /* block until that vsync -> one buffer per refresh */
+		/* Pace to vsync via FRAME_DONE - but only if the panel actually raises that
+		 * event (DSI video mode). If the wait keeps hitting its ~50ms timeout (command
+		 * mode / no event), it would peg the menu at 20fps, so detect that and fall
+		 * back to the timer floor below (which alone still prevents uncapped flips). */
+		if (use_framedone) {
+			unsigned int w0 = gpt4_get_current_tick();
+			ayaneo_wait_frame_done();
+			if (gpt4_get_current_tick() - w0 > 455000u) {   /* >~35ms = timed out */
+				if (++framedone_timeouts >= 3) use_framedone = 0;
+			} else framedone_timeouts = 0;
+		}
 		mtk_wdt_restart();
 		{
 			int p = pmic_detect_powerkey();
