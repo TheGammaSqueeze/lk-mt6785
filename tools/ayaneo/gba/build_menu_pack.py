@@ -236,24 +236,46 @@ def gen_wallpaper(w=256, h=256):
 
 
 def gen_cart(w=300, h=220):
-    """A GBA-cartridge-style placeholder tile: rounded dark body, top label plate,
-    ridged bottom connector. Title text is drawn by the menu at runtime."""
+    """A GBA-cartridge-style placeholder tile: rounded body with a vertical
+    gradient + bevel highlight, top label plate, and a metallic ridged connector.
+    Title text is drawn by the menu at runtime; the menu's accent tint colours the
+    whole sprite so the label plate picks up each game's hue."""
     im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    body = (40, 40, 52, 255)
-    edge = (90, 100, 140, 255)
-    d.rounded_rectangle([6, 6, w - 6, h - 6], radius=18, fill=body, outline=edge, width=3)
-    # top label plate (where boxart/title goes)
+    edge = (96, 106, 150, 255)
+
+    # rounded body mask, then paint a vertical gradient only inside it
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([6, 6, w - 6, h - 6], radius=18, fill=255)
+    grad = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    gpx = grad.load()
+    for y in range(h):
+        tg = y / (h - 1)                       # 0 top -> 1 bottom
+        r = int(52 - 20 * tg); g = int(52 - 20 * tg); b = int(66 - 22 * tg)
+        for x in range(w):
+            gpx[x, y] = (r, g, b, 255)
+    im.paste(grad, (0, 0), mask)
+    d.rounded_rectangle([6, 6, w - 6, h - 6], radius=18, outline=edge, width=3)
+    # top bevel highlight
+    d.arc([8, 8, w - 8, h - 8], start=185, end=355, fill=(140, 150, 190, 200), width=2)
+
+    # top label plate (where boxart/title goes) with an inner shadow line
     d.rounded_rectangle([20, 20, w - 20, int(h * 0.62)], radius=10,
-                        fill=(230, 232, 240, 255), outline=(150, 155, 170, 255), width=2)
+                        fill=(232, 234, 242, 255), outline=(150, 155, 170, 255), width=2)
+    d.line([26, int(h * 0.62) - 3, w - 26, int(h * 0.62) - 3], fill=(200, 204, 214, 255), width=2)
+
     # notch top-right (cart shape cue)
-    d.rectangle([w - 60, 6, w - 6, 26], fill=body)
-    d.rounded_rectangle([w - 58, 8, w - 8, 24], radius=6, fill=(60, 62, 78, 255))
-    # bottom connector ridges
+    d.rectangle([w - 60, 6, w - 6, 26], fill=(46, 46, 60, 255))
+    d.rounded_rectangle([w - 58, 8, w - 8, 24], radius=6, fill=(64, 66, 84, 255))
+
+    # metallic ridged bottom connector (per-ridge vertical shading)
     by = int(h * 0.70)
     for i in range(10):
         cx = 30 + i * ((w - 60) / 9.0)
-        d.rectangle([cx - 6, by, cx + 6, by + 26], fill=(70, 72, 90, 255))
+        for yy in range(by, by + 26):
+            tt = (yy - by) / 25.0
+            c = int(110 - 55 * tt)
+            d.line([cx - 6, yy, cx + 6, yy], fill=(c, c + 6, c + 24, 255))
     return im
 
 
