@@ -271,26 +271,29 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		}
 
 		snes_menu_update(&s_menu, &in, 1.0f / 60.0f);
-		snes_menu_render(&s_menu, &t);
-		/* TEMP diagnostic: on-screen frame time (ms.tenths) + fps, top-left, so the
-		 * real device pacing can be reported. Uses the previous frame's period. */
+		/* TEMP diagnostic top-left: "R<render>ms L<loop>ms <fps>f". R = how long
+		 * snes_menu_render takes (the actual budget: must be < 16.7ms for 60fps); L =
+		 * the whole loop period (paced by the blocking present). If R is high the
+		 * render is over budget; if R is low but L is high it is the present/vsync. */
 		{
 			static unsigned int last_t;
-			static char pb[24];
-			unsigned int now = gpt4_get_current_tick();
-			if (last_t) {
-				unsigned int us = (now - last_t) / 13u;    /* microseconds */
-				unsigned int mt = (us + 50u) / 100u;        /* tenths of ms */
-				unsigned int fps = us ? (1000000u + us / 2u) / us : 0;
-				int i = 0;
-				pb[i++] = '0' + (mt / 100) % 10; pb[i++] = '0' + (mt / 10) % 10;
-				pb[i++] = '.'; pb[i++] = '0' + mt % 10;
-				pb[i++] = 'm'; pb[i++] = 's'; pb[i++] = ' ';
-				pb[i++] = '0' + (fps / 100) % 10; pb[i++] = '0' + (fps / 10) % 10;
-				pb[i++] = '0' + fps % 10; pb[i++] = 'f'; pb[i] = 0;
-			} else pb[0] = 0;
-			last_t = now;
-			if (pb[0]) ayaneo_text(fb, pitch, 8, 8, 2, 0xFF00FF66u, pb);
+			static char pb[32];
+			unsigned int r0 = gpt4_get_current_tick();
+			unsigned int rus, lus, fps, now;
+			int i = 0;
+			snes_menu_render(&s_menu, &t);
+			now = gpt4_get_current_tick();
+			rus = (now - r0) / 13u;                         /* render microseconds */
+			lus = last_t ? (r0 - last_t) / 13u : 0u;        /* prev loop period us */
+			fps = lus ? (1000000u + lus / 2u) / lus : 0u;
+			last_t = r0;
+			pb[i++]='R'; pb[i++]='0'+(rus/10000)%10; pb[i++]='0'+(rus/1000)%10;
+			pb[i++]='.'; pb[i++]='0'+(rus/100)%10; pb[i++]='m'; pb[i++]='s'; pb[i++]=' ';
+			pb[i++]='L'; pb[i++]='0'+(lus/10000)%10; pb[i++]='0'+(lus/1000)%10;
+			pb[i++]='.'; pb[i++]='0'+(lus/100)%10; pb[i++]='m'; pb[i++]='s'; pb[i++]=' ';
+			pb[i++]='0'+(fps/100)%10; pb[i++]='0'+(fps/10)%10; pb[i++]='0'+fps%10;
+			pb[i++]='f'; pb[i]=0;
+			ayaneo_text(fb, pitch, 8, 8, 2, 0xFF00FF66u, pb);
 		}
 		if (fade_in > 0) {   /* fade in from black (255 -> 0) over 18 frames = 0.3s */
 			ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H, 0xFF000000u,
