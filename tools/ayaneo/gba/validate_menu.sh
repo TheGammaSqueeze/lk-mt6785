@@ -103,6 +103,16 @@ else
   fail=1
 fi
 
+# never-brick fallback: if the SNES pack is ever missing/corrupt the menu falls back to
+# the plain-list selector (rs_move/rs_scroll). That path is safety-critical, so run its
+# standalone host test here too (it lives otherwise only in the heavier FAT/SD suite).
+if gcc -O2 -Iemu/gba -o /tmp/gbamenu_nav_test emu/gba/rom_select_nav_test.c >/dev/null 2>&1 \
+   && /tmp/gbamenu_nav_test >/dev/null 2>&1; then
+  echo "  OK   never-brick fallback nav (rs_move/rs_scroll)"
+else
+  echo "  FAIL never-brick fallback nav test" >&2; fail=1
+fi
+
 # launch correctness: a nav ending in A must hand back order[focus] (the right ROM),
 # which must hold even after a SELECT sort reverses the order (the SA case: sort then
 # launch the on-screen game must return its real SD index, not a screen position).
