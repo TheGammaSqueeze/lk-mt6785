@@ -192,8 +192,10 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	const snes_img_entry *cart;
 	int pwr_armed = 0;
 	int use_framedone = 1, framedone_timeouts = 0;   /* adaptive vsync pacing */
-	int fade_in = 12;   /* fade the menu in from black on entry (~0.2s), symmetric
-			     * with the launch fade-out; the BIOS intro left the panel black */
+	int fade_in = 18;   /* fade the menu in from black on entry over 0.3s, matching
+			     * the SNES sys_fade IN_DURATION (reveal); the BIOS intro left the
+			     * panel black. The first frame is fully black, which also hides the
+			     * one-time wallpaper/chrome cache build hitch. */
 
 	if (nrom <= 0) return -1;
 	if (load_pack() != 0) return -2;
@@ -272,9 +274,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 
 		snes_menu_update(&s_menu, &in, 1.0f / 60.0f);
 		snes_menu_render(&s_menu, &t);
-		if (fade_in > 0) {   /* fade in from black over the first ~12 frames */
+		if (fade_in > 0) {   /* fade in from black (255 -> 0) over 18 frames = 0.3s */
 			ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H, 0xFF000000u,
-					  (fade_in * 255) / 12);
+					  (fade_in * 255) / 18);
 			fade_in--;
 		}
 		pump_audio();
