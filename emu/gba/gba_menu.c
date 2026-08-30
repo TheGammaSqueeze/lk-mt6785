@@ -216,6 +216,15 @@ void gba_menu_render(snes_target *t, const snes_pack *pk,
 	for (i = VISIBLE_HALF; i >= -VISIBLE_HALF; i--) {
 		int idx = sel + i;
 		float rel = (float)sel + (float)i - posf;
+		/* with a small library the +/-nrom wrap can place the same game in more
+		 * than one slot of the window; draw each game only at its nearest slot so
+		 * a 3-game list does not repeat cards across the strip. */
+		{
+			int an = i < 0 ? -i : i;
+			int ip = i - nrom, im = i + nrom;
+			int ap = ip < 0 ? -ip : ip, amm = im < 0 ? -im : im;
+			if (ap < an || amm < an) continue;
+		}
 		float cx = CENTER_X + rel * CARD_SPACING;
 		float af = rel < 0 ? -rel : rel;
 		float f = 1.0f - af;                       /* 1 at centre -> 0 */

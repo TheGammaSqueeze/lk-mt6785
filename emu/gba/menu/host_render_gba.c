@@ -59,8 +59,14 @@ int main(int argc, char **argv)
 	t.fb = fb; t.pitch = W; t.W = W; t.H = H;
 	t.offx = (W - SNES_VW) / 2; t.offy = (H - SNES_VH) / 2;
 
-	gba_menu_render(&t, &pk, roms, 6, sel, (float)sel, 1.5f,
-			argc > 4 ? (float)atof(argv[4]) : 0.0f);
+	{
+		int nrom = argc > 5 ? atoi(argv[5]) : 6;
+		if (nrom < 1) nrom = 1;
+		if (nrom > 6) nrom = 6;
+		if (sel >= nrom) sel = nrom - 1;
+		gba_menu_render(&t, &pk, roms, nrom, sel, (float)sel, 1.5f,
+				argc > 4 ? (float)atof(argv[4]) : 0.0f);
+	}
 
 	f = fopen(out, "wb");
 	fprintf(f, "P6\n%d %d\n255\n", W, H);
