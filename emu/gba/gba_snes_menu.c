@@ -259,12 +259,18 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		in.up = PRESSED(K_UP); in.down = PRESSED(K_DOWN);
 		in.a = PRESSED(K_A); in.b = PRESSED(K_B);
 		/* Start+Select held together toggles the perf HUD (below) and is consumed
-		 * so it does not also launch/sort; pressed individually they behave normally. */
+		 * so it does not also launch/sort; pressed individually they behave normally.
+		 * Once the combo engages, keep swallowing whichever button lingers until BOTH
+		 * release - otherwise lifting Select while still holding Start would fire a
+		 * launch (the menu edge-detects start with pstart=0 from the consumed frame). */
 		{
 			int cs = PRESSED(K_START), csel = PRESSED(K_SELECT);
 			if (cs && csel) {
-				if (!s_hud_combo) { s_show_hud = !s_show_hud; s_hud_combo = 1; }
+				if (!s_hud_combo) { s_show_hud = !s_show_hud; }
+				s_hud_combo = 1;
 				in.start = 0; in.select = 0;
+			} else if (s_hud_combo && (cs || csel)) {
+				in.start = 0; in.select = 0;   /* combo still releasing */
 			} else {
 				s_hud_combo = 0;
 				in.start = cs; in.select = csel;
