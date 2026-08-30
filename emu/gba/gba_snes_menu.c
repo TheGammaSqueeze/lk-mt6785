@@ -286,26 +286,28 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		}
 
 		snes_menu_update(&s_menu, &in, dt);
-		/* TEMP diagnostic top-left: "R<render>ms L<loop>ms <fps>f". R = how long
-		 * snes_menu_render takes (the actual budget: must be < 16.7ms for 60fps); L =
-		 * the whole loop period (paced by the blocking present). If R is high the
-		 * render is over budget; if R is low but L is high it is the present/vsync. */
+		/* TEMP diagnostic top-left: "R<render> P<peak> <fps>f". R = current
+		 * snes_menu_render ms; P = the PEAK render ms over the last ~2s (the worst
+		 * frame is what breaks vsync and causes the flicker, not the average). Both
+		 * must stay < 16.7ms for a solid 60fps. */
 		{
-			static unsigned int last_t;
+			static unsigned int last_t, peak_us, peak_hold;
 			static char pb[32];
 			unsigned int r0 = gpt4_get_current_tick();
 			unsigned int rus, lus, fps, now;
 			int i = 0;
 			snes_menu_render(&s_menu, &t);
 			now = gpt4_get_current_tick();
-			rus = (now - r0) / 13u;                         /* render microseconds */
-			lus = last_t ? (r0 - last_t) / 13u : 0u;        /* prev loop period us */
+			rus = (now - r0) / 13u;
+			lus = last_t ? (r0 - last_t) / 13u : 0u;
 			fps = lus ? (1000000u + lus / 2u) / lus : 0u;
 			last_t = r0;
+			if (rus > peak_us) { peak_us = rus; peak_hold = 120; }
+			else if (peak_hold) peak_hold--; else peak_us = rus;   /* decay after ~2s */
 			pb[i++]='R'; pb[i++]='0'+(rus/10000)%10; pb[i++]='0'+(rus/1000)%10;
 			pb[i++]='.'; pb[i++]='0'+(rus/100)%10; pb[i++]='m'; pb[i++]='s'; pb[i++]=' ';
-			pb[i++]='L'; pb[i++]='0'+(lus/10000)%10; pb[i++]='0'+(lus/1000)%10;
-			pb[i++]='.'; pb[i++]='0'+(lus/100)%10; pb[i++]='m'; pb[i++]='s'; pb[i++]=' ';
+			pb[i++]='P'; pb[i++]='0'+(peak_us/10000)%10; pb[i++]='0'+(peak_us/1000)%10;
+			pb[i++]='.'; pb[i++]='0'+(peak_us/100)%10; pb[i++]='m'; pb[i++]='s'; pb[i++]=' ';
 			pb[i++]='0'+(fps/100)%10; pb[i++]='0'+(fps/10)%10; pb[i++]='0'+fps%10;
 			pb[i++]='f'; pb[i]=0;
 			ayaneo_text(fb, pitch, 8, 8, 2, 0xFF00FF66u, pb);
