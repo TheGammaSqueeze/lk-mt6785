@@ -131,6 +131,19 @@ int gba_core_start(unsigned romsz, const void *bios16k)
 	return 0;
 }
 
+/* For the boot-logo intro: gpSP's init_cpu() HLE-skips the BIOS and starts at the
+ * cart entry (0x08000000), so the Nintendo boot logo never plays. Point the CPU
+ * at the BIOS reset vector (0x0) in Supervisor mode instead, so the real BIOS
+ * runs its boot sequence - it animates the cart-header logo, then hands off to
+ * the cart. Call right after gba_core_start(). */
+void gba_core_enter_bios(void)
+{
+	set_cpu_mode(MODE_SUPERVISOR);
+	reg[REG_CPSR] = 0x000000D3;	/* Supervisor, ARM state, IRQ+FIQ disabled */
+	reg[REG_PC] = 0x00000000;
+	reg[CHANGED_PC_STATUS] = 1;
+}
+
 /* The CPU thread body (run by the driver on its own LK thread). Never returns;
  * it yields once per frame through switch_to_main_thread(). */
 void gba_core_cpu_loop(void)

@@ -40,6 +40,7 @@ extern unsigned gba_core_rom_capacity(void);
 extern unsigned char *gba_core_scratch_ptr(void);
 extern unsigned gba_core_scratch_size(void);
 extern int  gba_core_start(unsigned romsz, const void *bios16k);
+extern void gba_core_enter_bios(void);	/* run the BIOS boot logo (start PC at 0x0) */
 extern void gba_core_cpu_loop(void);
 extern void gba_core_pre_frame(void);
 extern void gba_core_post_frame(void);
@@ -1022,6 +1023,7 @@ static int emu_thread(void *arg)
 			gba_dbg("GBA ERR: SD core_start failed");
 			return 0;
 		}
+		gba_core_enter_bios();			/* start at the BIOS so its logo plays */
 	} else
 #endif
 	{
