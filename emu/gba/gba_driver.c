@@ -62,6 +62,7 @@ extern int  zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstle
 extern int  pmic_detect_powerkey(void);
 extern void mt_power_off(void);
 extern void ayaneo_gbc_show_frame(const unsigned short *pix);	/* mt_disp_drv.c */
+extern void ayaneo_gba_show_intro_frame(const unsigned short *pix);	/* 6x fill-height */
 extern void ayaneo_gbc_blank(void);		/* clear both game fbs to black */
 extern void mtk_wdt_restart(void);
 extern void mtk_wdt_disable(void);
@@ -125,9 +126,10 @@ extern int  mtk_detect_key(unsigned short hwkey);
 
 /* ---- config ---- */
 /* How many BIOS frames to play as the boot-logo intro before the ROM-select menu
- * (~59.73 fps, so ~210 frames ~= 3.5 s: the full Nintendo logo slide + chime).
- * The user can cut it short by holding B, or disable it via the skip-boot setting. */
-#define GBA_SD_INTRO_FRAMES	210
+ * (~59.73 fps, so 300 frames ~= 5 s: the full Nintendo logo slide + chime with a
+ * beat to spare). The user can cut it short by holding B, or disable it via the
+ * skip-boot setting. */
+#define GBA_SD_INTRO_FRAMES	300
 #define GBA_ARENA_PA	0x50000000u
 #define GBA_ARENA_SZ	(64u * 1024 * 1024)
 #define GBA_DRV_RESERVE	(2u * 1024 * 1024)	/* state/sav scratch at the arena tail */
@@ -1148,10 +1150,11 @@ static int emu_thread(void *arg)
 			 * each step, no translated blocks to go stale). The dynarec is switched
 			 * back on for the actual game below. */
 			dynarec_enable = 0;
+			ayaneo_gbc_blank();			/* black edges outside the cropped logo */
 			for (fi = 0; fi < intro_frames; fi++) {
 				update_buttons();
 				run_one_frame();
-				ayaneo_gbc_show_frame(gba_core_screen());
+				ayaneo_gba_show_intro_frame(gba_core_screen());	/* 6x fill-height */
 				mtk_wdt_restart();		/* keep the armed watchdog fed during the intro */
 				if (PRESSED(GPIO_B)) break;	/* hold B to skip the logo */
 			}

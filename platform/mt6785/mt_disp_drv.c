@@ -805,13 +805,12 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
  * are cleared once; per frame only the game area is blitted.
  */
 #if defined(AYANEO_GBA)
-/* GBA: 240x160 native, integer 6x -> 1440x960: fills the 960 panel HEIGHT, and
- * the 1440 width is centred and cropped to 1280 (80 px off each side). Nearest
- * neighbour. The blit below clips to the panel, so the horizontal overhang is
- * simply not drawn. */
+/* GBA: 240x160 native, integer 5x -> 1200x800 centred on the 1280x960 panel. The
+ * game runs at this fast, unclipped scale; the BIOS-logo intro uses a separate
+ * 6x fill-height path (ayaneo_gba_show_intro_frame). */
 #define GBC_SRC_W	240
 #define GBC_SRC_H	160
-#define GBC_SCALE	6
+#define GBC_SCALE	5
 #else
 /* GBC: 160x144 native, integer 6x -> 960x864. */
 #define GBC_SRC_W	160
@@ -1016,11 +1015,7 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
 	unsigned int dw = GBC_SRC_W * GBC_SCALE, dh = GBC_SRC_H * GBC_SCALE;
-	/* signed: for GBA at 6x the 1440 width overhangs the 1280 panel, so xoff is
-	 * negative and the blit clips the off-panel columns (crop L/R, fill height). */
-	int xoff = ((int)W - (int)dw) / 2, yoff = ((int)H - (int)dh) / 2;
-	int cy0 = yoff < 0 ? 0 : yoff;			/* clamped span for the cache clean */
-	int cy1 = yoff + (int)dh > (int)H ? (int)H : yoff + (int)dh;
+	unsigned int xoff = (W - dw) / 2, yoff = (H - dh) / 2;
 	unsigned int *dst;
 	unsigned int dpa;
 	unsigned int sx, sy, ix, iy;
@@ -1049,23 +1044,17 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 					((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
 
 				for (iy = 0; iy < GBC_SCALE; iy++) {
-					int dsty = yoff + (int)sy * GBC_SCALE + (int)iy;
-					int dstx0 = xoff + (int)sx * GBC_SCALE;
-					unsigned int *o;
+					unsigned int *o = dst +
+						(yoff + sy * GBC_SCALE + iy) * pitch_w +
+						(xoff + sx * GBC_SCALE);
 					int lastrow = (iy == GBC_SCALE - 1);
-					if (dsty < 0 || dsty >= (int)H)
-						continue;		/* off-panel row (clipped) */
-					o = dst + (unsigned int)dsty * pitch_w;
 					for (ix = 0; ix < GBC_SCALE; ix++) {
-						int dstx = dstx0 + (int)ix;
 						unsigned int c = px;
 						int lastcol = (ix == GBC_SCALE - 1);
-						if (dstx < 0 || dstx >= (int)W)
-							continue;	/* off-panel column (crop L/R) */
 						if (filt == 1 && lastrow) c = dk;
 						else if (filt == 2 && (lastrow || lastcol)) c = dk;
 						else if (filt == 3 && (lastrow || lastcol)) c = dk;
-						o[dstx] = c;
+						o[ix] = c;
 					}
 				}
 			}
@@ -1084,8 +1073,50 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		ayaneo_fill(dst, pitch_w, xoff + 4, yoff + 4, 200, 28, 0xFF000000u);
 		ayaneo_text(dst, pitch_w, xoff + 8, yoff + 6, 2, 0xFF30FF60u, s);
 	}
-	arch_clean_cache_range((unsigned int)(dst + (unsigned int)cy0 * pitch_w),
-			       (unsigned int)(cy1 - cy0) * pitch_w * 4);
+	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
+	ayaneo_present(dpa, W, H, pitch_w);
+	s_fb_flip ^= 1;
+}
+
+/* BIOS-logo intro only: scale the 240x160 frame 6x = 1440x960 to FILL the panel
+ * HEIGHT, centred and cropped to the 1280 width (nearest neighbour). Efficient -
+ * the visible source-column range is computed once so the inner loop has no
+ * per-pixel clipping (that slowed the game). No LCD filter. */
+void ayaneo_gba_show_intro_frame(const unsigned short *pix)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	const int S = 6, SRC_W = 240, SRC_H = 160;
+	int xoff = ((int)W - SRC_W * S) / 2;		/* -80: overhang cropped */
+	int sx0 = (-xoff + S - 1) / S;			/* first fully-visible src col */
+	int sx1 = ((int)W - xoff) / S;			/* one past last fully-visible */
+	unsigned int *dst;
+	unsigned int dpa;
+	int sx, sy, ix, iy;
+
+	if (sx0 < 0) sx0 = 0;
+	if (sx1 > SRC_W) sx1 = SRC_W;
+	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
+	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
+
+	for (sy = 0; sy < SRC_H; sy++) {
+		const unsigned short *srow = pix + sy * SRC_W;
+		int dy0 = sy * S;
+		for (sx = sx0; sx < sx1; sx++) {
+			unsigned int v = srow[sx];
+			unsigned int r = ((v >> 11) & 0x1f) << 3;
+			unsigned int g = ((v >> 5) & 0x3f) << 2;
+			unsigned int b = (v & 0x1f) << 3;
+			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+			int dx = xoff + sx * S;
+			for (iy = 0; iy < S; iy++) {
+				unsigned int *o = dst + (unsigned int)(dy0 + iy) * pitch_w + dx;
+				for (ix = 0; ix < S; ix++)
+					o[ix] = px;
+			}
+		}
+	}
+	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
 	ayaneo_present(dpa, W, H, pitch_w);
 	s_fb_flip ^= 1;
 }
