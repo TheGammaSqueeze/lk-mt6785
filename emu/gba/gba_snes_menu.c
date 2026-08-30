@@ -34,6 +34,7 @@ extern void thread_sleep(unsigned);
 extern int  zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstlen, int offset);
 extern int  partition_read(const char *name, unsigned long long off, void *buf, unsigned long len);
 extern void ayaneo_set_cpu_mhz(unsigned int mhz);
+extern unsigned int ayaneo_get_cpu_mhz(void);
 extern void ayaneo_display_prepare(void);
 extern void ayaneo_gbc_audio_init(void);
 extern int  ayaneo_menu_audio_room(void);
@@ -169,6 +170,7 @@ static void pump_audio(void)
 int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 {
 	const snes_img_entry *cart;
+	unsigned int saved_mhz;
 	int pwr_armed = 0;
 	int fade_in = 18;   /* fade the menu in from black on entry over 0.3s, matching
 			     * the SNES sys_fade IN_DURATION (reveal); the BIOS intro left the
@@ -202,6 +204,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * fb-size = pitch*960*4 <= 1536*960*4 = 5.9MB < the 8MB comp region. */
 	snes_menu_set_rcache(&s_menu, (uint32_t *)SNES_COMP_PA);
 
+	/* Bump to the max OPP for render headroom during the menu, but REMEMBER the
+	 * caller's clock (the emulation default the driver set before us, currently 600 MHz)
+	 * and restore it on exit so the game runs at its intended clock, not the menu's
+	 * (the task: set clocks for the menu, then back to the emulation clock on launch). */
+	saved_mhz = ayaneo_get_cpu_mhz();
 	ayaneo_set_cpu_mhz(2100);   /* max big-core OPP for render headroom */
 	/* Present-pacing: blocking config_input on the panel FRAME_DONE (skip=0), exactly
 	 * like the flicker-free GBA game in normal play. The present itself paces the loop
@@ -349,6 +356,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			 * the mixer voices and wipe the whole ring so the DMA loops silence. */
 			snes_audio_init(&s_mix);
 			ayaneo_menu_audio_silence();
+			ayaneo_set_cpu_mhz(saved_mhz);   /* restore the emulation clock */
 			return launch;
 		}
 
