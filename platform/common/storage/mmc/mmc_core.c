@@ -3129,6 +3129,27 @@ static int mmc_dev_bwrite(struct mmc_card *card, unsigned long blknr, u32 blkcnt
 			}
 		}
 		if (err == MMC_ERR_NONE) {
+#if defined(AYANEO_GBA_SD)
+			/* NEVER-HANG: on the removable microSD (host 1) a failed/incomplete
+			 * write can leave the card answering CMD13 with "busy" (PRG state)
+			 * forever, hanging this poll (it does no data transfer, so it never
+			 * kicks the watchdog) - the save-on-poweroff path would freeze the
+			 * device. Bound the busy wait and kick the watchdog; on timeout give
+			 * up on this block so save_and_poweroff proceeds to power off. */
+			if (host->id == 1) {
+				extern void mtk_wdt_restart(void);
+				unsigned busy_tmo = 200000;
+				do {
+					mtk_wdt_restart();
+					err = mmc_send_status(host, card, &status);
+					if (err) break;
+					if ((status & R1_READY_FOR_DATA) &&
+					    R1_CURRENT_STATE(status) != 7 &&
+					    R1_CURRENT_STATE(status) != 6)
+						break;
+				} while (--busy_tmo);
+			} else
+#endif
 			do {
 				err = mmc_send_status(host, card, &status);
 				if (err) {
