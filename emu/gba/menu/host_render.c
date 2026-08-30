@@ -55,6 +55,9 @@ int main(int argc, char **argv)
 	/* 4:3 warped-wallpaper cache (fast memcpy path); SNES_NOWP43 keeps the gather. */
 	if (!getenv("SNES_NOWP43"))
 		snes_menu_set_wp43(&menu, malloc((size_t)WP43_PERIOD * WP43_H * 4));
+	/* resume-panel overlay cache (fb-size); SNES_NORCACHE keeps the live subtree walk. */
+	if (!getenv("SNES_NORCACHE"))
+		snes_menu_set_rcache(&menu, malloc((size_t)t.pitch * t.H * 4));
 
 	/* GBA_ROSTER=<n>: exercise the GBA adaptation (n mock ROM names + cart placeholder). */
 	if (getenv("GBA_ROSTER")) {

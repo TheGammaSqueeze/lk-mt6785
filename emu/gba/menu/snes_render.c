@@ -682,6 +682,31 @@ int snes_render_count(void) { return g_ndr; }
  * instead of re-rendering ~6 sprites. Exact when the transformed centre is integer
  * (settled cards); at most 1px sampling difference at fractional (mid-scroll)
  * positions, which is imperceptible while the strip is moving. */
+void snes_composite(snes_target *t, const uint32_t *ov, int y0, int y1)
+{
+	int y, x, W = t->W < SNES_VW ? t->W : SNES_VW;
+	if (y0 < 0) y0 = 0;
+	if (y1 > t->H) y1 = t->H;
+	for (y = y0; y < y1; y++) {
+		const uint32_t *src = ov + (unsigned)y * t->pitch;
+		uint32_t *dst = t->fb + (unsigned)y * t->pitch;
+		for (x = 0; x < W; x++) {
+			uint32_t s = src[x];
+			unsigned sa = s >> 24;
+			if (!sa) continue;
+			if (sa == 255) { dst[x] = s; continue; }
+			{
+				uint32_t d = dst[x];
+				unsigned ia = 255 - sa;
+				unsigned r = ((((s >> 16) & 0xff) * sa) + (((d >> 16) & 0xff) * ia) + 127) / 255;
+				unsigned g = ((((s >>  8) & 0xff) * sa) + (((d >>  8) & 0xff) * ia) + 127) / 255;
+				unsigned b = ((( (s & 0xff)      ) * sa) + (( (d & 0xff)      ) * ia) + 127) / 255;
+				dst[x] = 0xff000000u | (r << 16) | (g << 8) | b;
+			}
+		}
+	}
+}
+
 void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, float cy, float dim)
 {
 	float scx = t->vsx * cx + t->vdx, scy = t->vsy * cy + t->vdy;

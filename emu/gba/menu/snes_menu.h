@@ -96,6 +96,13 @@ typedef struct {
 	int wp43_ready;
 	uint32_t *chrome;             /* cached static home chrome, VW*VH u32 (0 alpha = uncovered) */
 	int chrome_ready;
+	/* resume/suspend-list panel cache: the panel is static once slid in, so render it
+	 * ONCE into an fb-size overlay (0 alpha uncovered) and composite it each settled
+	 * frame instead of re-walking its scene subtree (the resume state's dominant cost).
+	 * Caller-provides an fb-size buffer (pitch*H u32); 0 = always render live. */
+	uint32_t *rcache;
+	int rcache_ready, rcache_y0, rcache_y1;
+	float rcache_sel;             /* sel_world the panel was cached for (chevron pos) */
 	/* Card-tile cache (single-buffer 60fps): each game's NORMAL card body (dark frame +
 	 * boxart + player icon + resume dots, dim=1, no cursor) is rendered ONCE into a
 	 * CT_W*CT_H straight-RGBA tile and blitted per frame by draw_carousel instead of ~6
@@ -181,6 +188,8 @@ int snes_menu_take_launch(snes_menu *m);
 /* Provide the 4:3 warped-wallpaper cache backing store (WP43_PERIOD*WP43_H u32), or
  * 0 to keep the per-pixel gather. */
 void snes_menu_set_wp43(snes_menu *m, uint32_t *buf);
+/* Provide the resume-panel overlay cache (fb-size: pitch*H u32), or 0 to disable. */
+void snes_menu_set_rcache(snes_menu *m, uint32_t *buf);
 
 /* Initialise. home_pool/bg_pool are snes_rnode arrays of the given capacities;
  * wp is a WP_CACHE_W*WP_CACHE_H u32 buffer. Returns 0 on success. */

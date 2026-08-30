@@ -217,6 +217,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		snes_menu_set_ctile(&s_menu, (uint32_t *)SNES_CTILE_PA, s_ctile_gi, 1);
 	}
 	snes_menu_set_wp43(&s_menu, (uint32_t *)SNES_WP43_PA);
+	/* Resume-panel overlay cache: reuse the deflate staging (free after load_pack).
+	 * fb-size = pitch*960*4 <= 1536*960*4 = 5.9MB < the 8MB comp region. */
+	snes_menu_set_rcache(&s_menu, (uint32_t *)SNES_COMP_PA);
 
 	ayaneo_set_cpu_mhz(2100);   /* max big-core OPP for render headroom */
 	/* Present-pacing: blocking config_input on the panel FRAME_DONE (skip=0), exactly

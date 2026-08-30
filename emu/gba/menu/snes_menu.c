@@ -302,6 +302,33 @@ static void build_wp43(snes_menu *m)
 }
 
 void snes_menu_set_wp43(snes_menu *m, uint32_t *buf) { m->wp43 = buf; m->wp43_ready = 0; }
+void snes_menu_set_rcache(snes_menu *m, uint32_t *buf) { m->rcache = buf; m->rcache_ready = 0; }
+
+/* Render the (settled) resume panel ONCE into the rcache overlay so later frames
+ * composite it 1:1 instead of re-walking the subtree. Uses a target that mirrors t
+ * exactly (same pitch/offx/offy/view) with fb = rcache, tf[5] forced to 0 (settled),
+ * and records the covered fb-row range. The caller must have already set the panel's
+ * emptymode/hud/explanation-off states (as for the live render). */
+static void build_rcache(snes_menu *m, snes_target *t)
+{
+	snes_target ct = *t;
+	unsigned i, n = (unsigned)t->pitch * (unsigned)t->H;
+	float save_y = m->resume->tf[5];
+	int y, x, y0 = t->H, y1 = 0, W = t->W < SNES_VW ? t->W : SNES_VW;
+	if (!m->rcache) return;
+	ct.fb = m->rcache;
+	for (i = 0; i < n; i++) m->rcache[i] = 0;      /* transparent */
+	m->resume->tf[5] = 0.0f;
+	snes_render_node(&ct, &m->home, m->resume);
+	m->resume->tf[5] = save_y;
+	for (y = 0; y < t->H; y++) {                    /* covered fb-row range */
+		const uint32_t *row = m->rcache + (unsigned)y * t->pitch;
+		for (x = 0; x < W; x++) if (row[x] >> 24) { if (y < y0) y0 = y; y1 = y + 1; break; }
+	}
+	m->rcache_y0 = y0; m->rcache_y1 = y1;
+	m->rcache_sel = m->sel_world;
+	m->rcache_ready = 1;
+}
 
 /* 4:3: the neon wallpaper zooms by ASP_WALL_S to fill the whole 960 panel (no black
  * gaps). With the warped cache (wp43) this is a per-row memcpy-scroll; without it,
@@ -1415,6 +1442,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	/* zero the struct fields we rely on */
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
 	m->wp43 = 0; m->wp43_ready = 0;
+	m->rcache = 0; m->rcache_ready = 0; m->rcache_sel = -1e9f;
 	m->gba_mode = 0; m->gba_names = 0; m->gba_cart_img = 0; m->launch = -1; m->pstart = 0;
 	m->ctile = 0; m->ctile_gi = 0; m->ctile_cap = 0; m->ctile_aspect = -1;
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;
@@ -2652,7 +2680,18 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			 * skips), then the hint frame + text on top - so it covers the slots. */
 			if (expl) expl->enabled = 0;
 			set_view(m, t, VIEW_CONTENT);
-			snes_render_node(t, &m->home, m->resume);
+			/* Panel: once slid in (open_y settled ~0) it is static, so cache it and
+			 * composite the overlay each frame instead of re-walking the subtree
+			 * (the resume state's dominant cost). Re-walk live only while sliding, or
+			 * if the selected-card chevron moved (rcache_sel), or with no cache. */
+			if (m->rcache && m->open_y > -0.5f && m->open_y < 0.5f) {
+				if (!m->rcache_ready || m->rcache_sel != m->sel_world)
+					build_rcache(m, t);
+				snes_composite(t, m->rcache, m->rcache_y0, m->rcache_y1);
+			} else {
+				m->rcache_ready = 0;   /* sliding: overlay stale, rebuild on settle */
+				snes_render_node(t, &m->home, m->resume);
+			}
 			/* the notice holds fully opaque for 2s, then fades to 0 over 1s and
 			 * disappears (sys_resume_emptymode.showExplanation). */
 			{

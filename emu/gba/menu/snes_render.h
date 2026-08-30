@@ -53,6 +53,10 @@ void snes_blit_tex_tint(snes_target *t, const snes_pack *pk, const snes_img_entr
 			float cx, float cy, float w, float h, float alpha,
 			float tr, float tg, float tb);
 void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, float cy, float dim);
+/* Source-over composite of a full-fb-size straight-RGBA overlay (same pitch/offx/offy
+ * as t, rendered 1:1) onto the target, rows [y0,y1) only. Blits a pre-rendered static
+ * overlay (e.g. the resume panel) far cheaper than re-walking its scene subtree. */
+void snes_composite(snes_target *t, const uint32_t *ov, int y0, int y1);
 void snes_fill_quad(snes_target *t, float cx, float cy, float w, float h,
 		    float r, float g, float b, float a);
 /* draw text with a pack font (by font-name hash); align 0 left/1 centre/2 right. */
