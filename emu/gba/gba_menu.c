@@ -146,13 +146,18 @@ void gba_menu_render(snes_target *t, const snes_pack *pk,
 
 	snes_target_view(t, 1.0f, 1.0f, 0.0f, 0.0f);
 
-	/* wallpaper: stretch-fill the virtual area (parallax added later). Centred at
-	 * (640,360) with size 1280x720 -> covers [0,1280]x[0,720]. */
-	if (wall)
-		snes_blit_tex(t, pk, &pk->img[wall->img], CENTER_X, VH / 2.0f,
-			      VW, VH, 1.0f);
-	else
+	/* wallpaper: tiled parallax scroll. The tile img is IMG_TILE; uvrx/uvry are the
+	 * repeat counts (dest / tile size), uvx scrolls slowly with the carousel so the
+	 * background drifts opposite the cards for depth. */
+	if (wall) {
+		const snes_img_entry *wim = &pk->img[wall->img];
+		float rx = VW / (float)wim->w, ry = VH / (float)wim->h;
+		float uvx = posf * 0.06f, uvy = 0.0f;
+		snes_blit_wallpaper(t, pk, wim, CENTER_X, VH / 2.0f, VW, VH,
+				    uvx, uvy, rx, ry, 1.0f);
+	} else {
 		snes_fill_quad(t, CENTER_X, VH / 2.0f, VW, VH, 0.10f, 0.08f, 0.22f, 1.0f);
+	}
 
 	snes_draw_text(t, pk, font, CENTER_X, HEADER_Y, 0.8f, 0xFFDCE4FFu, 1,
 		       "GBA GAMES");

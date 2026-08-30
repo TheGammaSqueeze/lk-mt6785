@@ -806,6 +806,23 @@ void snes_blit_tex_tint(snes_target *t, const snes_pack *pk, const snes_img_entr
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
 }
+/* Tiled wallpaper blit with a uv offset (for parallax scroll). uvrx/uvry = how
+ * many source tiles span the dest w/h; uvx/uvy = 0..1 scroll offset. */
+void snes_blit_wallpaper(snes_target *t, const snes_pack *pk, const snes_img_entry *im,
+			 float cx, float cy, float w, float h,
+			 float uvx, float uvy, float uvrx, float uvry, float alpha)
+{
+	snes_draw d; float S[6];
+	if (!im) return;
+	d.pix = snes_img_pixels(pk, im); d.rgb565 = (im->flags & SNES_IMG_RGB565) ? 1 : 0;
+	d.img_w = im->w; d.img_h = im->h; d.sx = 0; d.sy = 0; d.sw = im->w; d.sh = im->h;
+	d.dw = w; d.dh = h; d.px = w / 2; d.py = h / 2;
+	d.hflip = d.vflip = d.additive = d.is_quad = 0;
+	d.tile = 1; d.uvx = uvx; d.uvy = uvy; d.uvrx = uvrx; d.uvry = uvry;
+	d.tr = d.tg = d.tb = 1; d.ta = alpha;
+	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
+	blit(t, S, &d);
+}
 void snes_blit_spr(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp,
 		   float cx, float cy, float scale, float alpha)
 {

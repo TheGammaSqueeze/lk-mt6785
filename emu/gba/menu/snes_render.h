@@ -38,6 +38,11 @@ void snes_render_debug_markers(snes_target *t);
 /* direct-draw helpers (screen space; cx,cy = centre in the 1280x720 virtual space) */
 void snes_blit_tex(snes_target *t, const snes_pack *pk, const snes_img_entry *im,
 		   float cx, float cy, float w, float h, float alpha);
+/* tiled wallpaper blit with a uv scroll offset (parallax). uvrx/uvry = repeat
+ * count (dest/tile); uvx/uvy = 0..1 scroll offset. */
+void snes_blit_wallpaper(snes_target *t, const snes_pack *pk, const snes_img_entry *im,
+			 float cx, float cy, float w, float h,
+			 float uvx, float uvy, float uvrx, float uvry, float alpha);
 void snes_blit_spr(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp,
 		   float cx, float cy, float scale, float alpha);
 void snes_blit_spr_tint(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp,
