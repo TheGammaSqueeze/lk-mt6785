@@ -115,6 +115,30 @@ for lnav in A RRRA "]]A" SA "]]SA" RRSA "[A"; do
   fi
 done
 
+# NEON blitter parity: the DEVICE runs the snes_render.c __ARM_NEON path, but the x86
+# host build above only compiles the scalar fallback, so a NEON-specific pixel bug would
+# ship untested. When an ARM cross-gcc + qemu-arm-static are present, build the ARM+NEON
+# harness and diff its output vs the scalar one (must be pixel-identical). Skipped (not
+# failed) when the toolchain is absent.
+if command -v qemu-arm-static >/dev/null 2>&1 && command -v arm-linux-gnueabihf-gcc >/dev/null 2>&1; then
+  if bash emu/gba/menu/build_host_arm.sh >/tmp/gbamenu_arm_build.txt 2>&1; then
+    HRA=emu/gba/menu/host_render_arm; neonfail=0
+    for pair in "0:" "0:RRR" "40:" "40:]]S"; do
+      ro="${pair%%:*}"; nv="${pair#*:}"
+      GBA_ROSTER="$ro" "$HR"  "$PACK" /tmp/gbamenu_sc.ppm 30 "$nv" >/dev/null 2>&1
+      GBA_ROSTER="$ro" qemu-arm-static "$HRA" "$PACK" /tmp/gbamenu_ne.ppm 30 "$nv" >/dev/null 2>&1
+      if ! cmp -s /tmp/gbamenu_sc.ppm /tmp/gbamenu_ne.ppm; then
+        printf "  FAIL neon   n=%s nav '%s' - NEON output differs from scalar\n" "$ro" "$nv"; neonfail=1; fail=1
+      fi
+    done
+    [ "$neonfail" = 0 ] && echo "  OK   neon blitter parity (ARM+NEON == scalar, 4 states)"
+  else
+    echo "  skip neon - ARM host build failed (see /tmp/gbamenu_arm_build.txt)"
+  fi
+else
+  echo "  skip neon - no arm-linux-gnueabihf-gcc + qemu-arm-static (device NEON path unchecked here)"
+fi
+
 if [ "$fail" = 0 ]; then
   echo ">> all $(( ${#STATES[@]} + ${#LARGE_STATES[@]} )) states rendered non-blank + audio + launch OK"
   [ -n "$PNGDIR" ] && echo "   PNGs in $PNGDIR"
