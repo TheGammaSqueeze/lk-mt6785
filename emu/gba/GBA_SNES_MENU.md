@@ -54,31 +54,49 @@ menu - the whole SD flow is gated behind `AYANEO_GBA_SD=yes`).
     0x50000000  decompressed pack blob (capped at HOME_PA - 2MB = 22MB)
     0x51800000  home rnode pool (16MB)
     0x52800000  bg rnode pool (2MB)
-    0x52A00000  deflate staging (8MB; free after load_pack)
-    0x53200000  wallpaper cache (1536x720)
+    0x52A00000  deflate staging (8MB; free after load_pack) -> reused as the
+                resume-panel overlay cache (fb-size ~4.9MB) during the menu
+    0x53200000  wallpaper cache (1536x720, the neon bg)
     0x53700000  static chrome cache (1280x960)
-    0x54000000  card-tile cache (<=64 tiles)
+    0x54000000  4:3 warped-wallpaper cache (WP43_PERIOD 2701 x 960 = 10.4MB)
+    0x54C00000  card-tile cache (GBA cards all identical -> cap 1)
 
 The blob lives where the 64MB gpSP arena (0x50000000) normally sits; it is free
 during ROM-select and the emulator reclaims it on launch.
 
-## Performance (60fps target, 2000 MHz during the menu)
-
-Reuses the SNES perf stack: cached wallpaper (memcpy scroll in 16:9, per-pixel
-warp in 4:3), a static chrome cache composited each frame, and a card-tile cache
-(each card body pre-rendered once, blitted per frame). The blitter
-(`snes_render.o`) is built `-O2 + NEON`; the rest of the menu is `-Os` to keep
-`lk_a` within its 2MB budget alongside the gpSP emulator (raw ~1.98MB).
+## Performance (60fps target, 2100 MHz during the menu)
 
 The panel is physically 1280x960 (4:3), so the menu runs the SNES 4:3 layout
 (fills the panel; menubar pinned top, SUPER NINTENDO bar bottom) rather than
-letterboxing the 720 design.
+letterboxing the 720 design. That makes every full-frame pixel pass 33% larger,
+and the 4:3 wallpaper originally needed a per-pixel inverse-map GATHER (scattered
+reads, slow on ARM) - which put the render right at the 60fps budget and caused
+frames to oscillate 60<->30 (visible flicker + audio-ring starvation). The perf
+stack (host render times in parens):
 
-Frame pacing: the render is only ~2ms, so an uncapped present would flip the
-double buffer many times per refresh (torn/mixed buffers = flicker on movement).
-The loop makes the present non-blocking (`skip_framedone=1`) and paces with
-`ayaneo_wait_frame_done()` (one buffer per vsync), with a 13MHz-timer floor and an
-adaptive fallback to timer-only if the FRAME_DONE event never fires (command mode).
+- 4:3 warped-wallpaper cache (`wp43`): the ASP_WALL_S warp is baked once into a
+  2701x960 buffer so `draw_wp_43` is a per-row MEMCPY-scroll, not a gather.
+- static chrome cache: the homemenu chrome rendered once, run-length memcpy each
+  frame (`draw_chrome`).
+- card-tile cache: card body pre-rendered once, blitted per frame. Every GBA card
+  is the identical cart placeholder, so ONE tile serves all (cap 1) - which frees
+  the DRAM for the 10.4MB wallpaper cache.
+- resume-panel cache: the suspend list is static once slid in, so it is rendered
+  once into an overlay and `snes_composite`d each frame instead of re-walking its
+  scene subtree (5.19 -> 3.02ms).
+
+Result (host): home / menubar / carousel ~1.9ms, resume 3.0ms, submenus 3.2-4.6ms
+(static when viewed, so no flicker even if over budget on device). The blitter
+`snes_render.o` is `-O2 + NEON`; the rest is `-Os` for the 2MB `lk_a` budget.
+
+Frame pacing: match the flicker-free GBA game exactly - `skip_framedone=0`, ONE
+blocking `ayaneo_canvas_present()` per frame (config_input blocks on the panel
+FRAME_DONE = one buffer per vsync). Do NOT stack a wait/timer on top: that adds
+delay after the vsync block, overruns a refresh, drops frames. `snes_menu_update`
+gets the REAL measured dt (not fixed 1/60) so motion is correct at any frame rate.
+A TEMP on-screen "R<render> P<peak> <fps>" readout (top-left) reports the device
+render time; P (peak render ms) is the number to watch - a spike over 16.7ms is
+what breaks vsync.
 
 Audio handoff: the menu BGM feeds the shared AFE ring; on launch the whole ring is
 zeroed (`ayaneo_menu_audio_silence()`) so the DMA loops silence during the ROM
