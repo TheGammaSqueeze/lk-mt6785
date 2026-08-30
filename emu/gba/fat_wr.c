@@ -55,10 +55,15 @@ static uint32_t alloc_clus(fat_vol *v, uint32_t prev)
 
 static void free_chain(fat_vol *v, uint32_t c)
 {
+	uint32_t hops = 0;
 	while (c >= 2 && c < v->total_clusters + 2u) {
 		uint32_t nx = get_fat(v, c);
 		set_fat(v, c, 0);
 		if (nx < 2 || nx >= v->total_clusters + 2u) break;
+		/* guard against a corrupt/cyclic FAT chain: at most total_clusters hops,
+		 * else this would spin forever (kicking the watchdog on every FAT I/O, so
+		 * no reset either) and hang the save. */
+		if (++hops > v->total_clusters) break;
 		c = nx;
 	}
 }
