@@ -290,6 +290,23 @@ int main(int argc, char **argv)
 			for (j = 0; j < settle; j++) snes_menu_update(&menu, &in, 1.0f / 60.0f);
 		}
 	}
+	/* AUDIT_LAUNCH: verify a nav ending in A/Start launches the RIGHT ROM, i.e. the
+	 * index handed back == order[focus] (the SD-roster index of the focused game),
+	 * which must hold even after a SELECT sort reverses the order. Catches an
+	 * off-by-one or a wrong focus->index mapping that renders fine but boots the
+	 * wrong game. Exits non-zero on mismatch. */
+	if (getenv("AUDIT_LAUNCH")) {
+		int li = snes_menu_take_launch(&menu);
+		int f = menu.ngames ? (((menu.focus % menu.ngames) + menu.ngames) % menu.ngames) : 0;
+		int expect = menu.ngames ? menu.order[f] : -1;
+		if (li < 0) {
+			fprintf(stderr, "  launch: none (nav must end in A/Start) focus=%d\n", f);
+			return 2;
+		}
+		fprintf(stderr, "  launch=%d focus=%d order[focus]=%d sort=%d  %s\n",
+			li, f, expect, menu.sort_rule, li == expect ? "OK" : "MISMATCH");
+		return li == expect ? 0 : 1;
+	}
 	/* Validation aid: with "flat" as the 5th arg, replace the scrolling
 	 * wallpaper cache with a constant colour. The UI (opaque chrome, cards,
 	 * text) renders identically either way, so diffing a normal render against

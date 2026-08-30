@@ -103,8 +103,20 @@ else
   fail=1
 fi
 
+# launch correctness: a nav ending in A must hand back order[focus] (the right ROM),
+# which must hold even after a SELECT sort reverses the order (the SA case: sort then
+# launch the on-screen game must return its real SD index, not a screen position).
+for lnav in A RRRA "]]A" SA "]]SA" RRSA "[A"; do
+  if out=$(GBA_ROSTER=40 AUDIT_LAUNCH=1 "$HR" "$PACK" /tmp/gbamenu_launch.ppm 20 "$lnav" 2>&1); then
+    printf "  OK   launch %-8s %s\n" "$lnav" "$(echo "$out" | grep -o 'launch=[0-9]* .*OK')"
+  else
+    printf "  FAIL launch %-8s - wrong ROM index\n" "$lnav"; echo "$out" | sed 's/^/    /'
+    fail=1
+  fi
+done
+
 if [ "$fail" = 0 ]; then
-  echo ">> all $(( ${#STATES[@]} + ${#LARGE_STATES[@]} )) states rendered non-blank + audio OK"
+  echo ">> all $(( ${#STATES[@]} + ${#LARGE_STATES[@]} )) states rendered non-blank + audio + launch OK"
   [ -n "$PNGDIR" ] && echo "   PNGs in $PNGDIR"
 else
   echo "!! one or more states failed" >&2
