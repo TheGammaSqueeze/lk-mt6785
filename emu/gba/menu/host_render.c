@@ -55,10 +55,12 @@ int main(int argc, char **argv)
 
 	/* GBA_ROSTER=<n>: exercise the GBA adaptation (n mock ROM names + cart placeholder). */
 	if (getenv("GBA_ROSTER")) {
+		/* names as the driver hands them over (build_names strips a trailing .gba) */
 		static const char *mock[8] = {
-			"Pokemon Emerald Version.gba", "The Legend of Zelda - Minish Cap.gba",
-			"Metroid Fusion.gba", "Advance Wars 2.gba", "Golden Sun.gba",
-			"Mario Kart Super Circuit.gba", "Fire Emblem.gba", "Castlevania Aria.gba" };
+			"Legend of Zelda, The - The Minish Cap (USA, Australia)",
+			"Pokemon Emerald Version", "Metroid Fusion", "Advance Wars 2",
+			"Golden Sun - The Lost Age", "Mario Kart Super Circuit",
+			"Fire Emblem", "Castlevania - Aria of Sorrow" };
 		int gn = atoi(getenv("GBA_ROSTER")); if (gn < 1) gn = 1; if (gn > 8) gn = 8;
 		const snes_img_entry *cart = snes_res_img(&pk, snes_hash("gba_cart"));
 		snes_menu_set_gba_roster(&menu, mock, gn, cart);

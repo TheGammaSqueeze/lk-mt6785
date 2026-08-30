@@ -2476,10 +2476,24 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	 * (0,0,0,1)); the authored 0.298 grey is only for unselected games. */
 	set_view(m, t, VIEW_CONTENT);
 	g = game(m, m->focus);
-	if (g || m->gba_mode)
+	if (g)
 		snes_draw_text(t, m->pk, m->f_title, 640,
 			       152.0f - RESUME_TITLE_DY * m->resume_dim, 1.0f,
 			       0xFF000000u, 1, game_name(m, m->focus));
+	else if (m->gba_mode) {
+		/* GBA ROM file names can be long; shrink the title so it never overflows
+		 * the caption_title plate. The plate is ~1044 px native (BANNERX, not
+		 * content-zoomed) while the text draws in VIEW_CONTENT (screen width =
+		 * virtual * content_scale), so cap the virtual width to plate/scale. */
+		const char *nm = game_name(m, m->focus);
+		float cs = m->aspect ? ASP_CONTENT_S : 1.0f;
+		float maxw = 980.0f / cs;
+		float ts = 1.0f, tw = snes_text_width(m->pk, m->f_title, ts, nm);
+		if (tw > maxw && tw > 1.0f) ts = maxw / tw;
+		snes_draw_text(t, m->pk, m->f_title, 640,
+			       152.0f - RESUME_TITLE_DY * m->resume_dim, ts,
+			       0xFF000000u, 1, nm);
+	}
 
 	/* sort-rule label, briefly shown after a Select press */
 	if (m->sort_label_t > 0) {
