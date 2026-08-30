@@ -245,12 +245,24 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		s_menu.chrome_ready = 0;
 	}
 
+	{
+	unsigned int prev_frame = 0;
 	for (;;) {
 		unsigned int pitch, W, H;
 		unsigned int *fb = ayaneo_canvas_back(&pitch, &W, &H);
 		snes_target t;
 		snes_input in;
 		int launch;
+		float dt;
+		/* real elapsed dt (not a fixed 1/60) so animations run at the correct
+		 * wall-clock speed even when the frame rate dips below 60. Clamp to a sane
+		 * range so a first frame / long stall does not jump the animations. */
+		{
+			unsigned int nowf = gpt4_get_current_tick();
+			dt = prev_frame ? (float)(nowf - prev_frame) / 13000000.0f : 1.0f / 60.0f;
+			prev_frame = nowf;
+			if (dt < 0.004f) dt = 0.004f; else if (dt > 0.1f) dt = 0.1f;
+		}
 
 		in.left = PRESSED(K_LEFT); in.right = PRESSED(K_RIGHT);
 		in.up = PRESSED(K_UP); in.down = PRESSED(K_DOWN);
@@ -270,7 +282,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			ayaneo_fill(fb, pitch, 0, t.offy + SNES_VH, (int)W, t.offy, 0xFF000000u);
 		}
 
-		snes_menu_update(&s_menu, &in, 1.0f / 60.0f);
+		snes_menu_update(&s_menu, &in, dt);
 		/* TEMP diagnostic top-left: "R<render>ms L<loop>ms <fps>f". R = how long
 		 * snes_menu_render takes (the actual budget: must be < 16.7ms for 60fps); L =
 		 * the whole loop period (paced by the blocking present). If R is high the
@@ -350,5 +362,6 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			int p = pmic_detect_powerkey();
 			if (!p) pwr_armed = 1; else if (pwr_armed) mt_power_off();
 		}
+	}
 	}
 }
