@@ -1796,7 +1796,11 @@ static void car_navigate(snes_menu *m, int dir)
 	else { nf = m->focus + dir; if (nf < 0) nf = 0; else if (nf >= n) nf = n - 1; }
 	if (nf == m->focus) return;               /* clamped at an end: no move */
 	m->prev_focus = m->focus;                 /* start the blue-frame crossfade */
-	m->xfade_t = CAR_XFADE;
+	/* GBA runs on the slow in-order A55 (LK boot core); a live crossfade card every
+	 * held-scroll frame busts the frame budget. Snap it (outgoing card jumps to its
+	 * cached dark tile, new focus is blue at once) so a held scroll uses only cached
+	 * tiles - imperceptible under motion, and it keeps movement near 60fps. */
+	m->xfade_t = m->gba_mode ? 0.0f : CAR_XFADE;
 	m->focus = nf;
 	bg_scroll_kick(m, dir);
 	/* card-slide tween time: first press over REPEAT_DELAY, held over REPEAT_RATE */
