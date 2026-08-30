@@ -136,6 +136,16 @@ if command -v qemu-arm-static >/dev/null 2>&1 && command -v arm-linux-gnueabihf-
       fi
     done
     [ "$neonfail" = 0 ] && echo "  OK   neon blitter parity (ARM+NEON == scalar, 7 states, both blit paths)"
+    # ARM logic parity: the nav/sort/launch integer logic runs on the device (ARM); a
+    # sign/width bug there would boot the wrong game. Confirm the launched index matches
+    # x86 across sort/jump combos (the render diff above only covers pixels, not logic).
+    logicfail=0
+    for lnav in A "]]A" SA "]]SA" RRSA "[A"; do
+      lx=$(GBA_ROSTER=40 AUDIT_LAUNCH=1 "$HR"  "$PACK" /tmp/gbamenu_lx.ppm 20 "$lnav" 2>&1 | grep -o 'launch=[0-9-]*')
+      la=$(GBA_ROSTER=40 AUDIT_LAUNCH=1 qemu-arm-static "$HRA" "$PACK" /tmp/gbamenu_la.ppm 20 "$lnav" 2>&1 | grep -o 'launch=[0-9-]*')
+      [ "$lx" = "$la" ] || { printf "  FAIL arm-logic %-6s x86=%s arm=%s\n" "$lnav" "$lx" "$la"; logicfail=1; fail=1; }
+    done
+    [ "$logicfail" = 0 ] && echo "  OK   arm logic parity (nav/sort/launch ARM == x86, 6 cases)"
   else
     echo "  skip neon - ARM host build failed (see /tmp/gbamenu_arm_build.txt)"
   fi
