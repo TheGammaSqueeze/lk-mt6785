@@ -1890,6 +1890,7 @@ static void car_jump(snes_menu *m, int delta)
 	m->xfade_t = 0.0f;
 	m->sel_world = CAR_SLOT_X; m->cont_shift = 0.0f;   /* settled, left-pinned */
 	m->car_navd = 0; m->car_tween = 0.0f;
+	bg_scroll_kick(m, delta > 0 ? 1 : -1);   /* nudge the parallax like a d-pad step */
 	push_snd(m, m->sfx_move);
 }
 
