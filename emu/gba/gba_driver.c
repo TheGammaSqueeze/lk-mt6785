@@ -954,6 +954,32 @@ static void sd_settings_mirror(void)
 	if (s_sd_mode)
 		gba_sd_settings_save(&s_sd_vol);
 }
+
+/* Build a minimal "logo cart" in the gpSP ROM buffer for the BIOS boot-logo
+ * intro. The GBA BIOS renders its logo from the CART HEADER's Nintendo-logo
+ * bytes and then boots the cart, so an empty cart makes the BIOS jump into
+ * unmapped ROM and the dynarec faults (data abort in translate_block_arm).
+ * Instead: fill the whole buffer with ARM "b ." (0xEAFFFFFE) so any execution in
+ * cart space loops harmlessly, then overlay a REAL header (Nintendo logo + valid
+ * checksum + entry, which branches to 0xC0 = a loop) copied from the first ROM on
+ * the card so the authentic logo shows. No prebaked data. Returns the cart size. */
+static unsigned gba_sd_build_logo_cart(unsigned char *rp)
+{
+	unsigned *w = (unsigned *)rp;
+	unsigned n = 0x8000u / 4u, j;
+	for (j = 0; j < n; j++)
+		w[j] = 0xEAFFFFFEu;			/* b . everywhere = safe self-loop */
+	if (s_nrom > 0) {
+		fat_file f;
+		f.v = &s_sd_vol;
+		f.first_clus = s_roms[0].first_clus;
+		f.size = s_roms[0].size;
+		/* 0..0xC0 = real header: logo(0x04-0x9F) + checksum(0xBD) + entry(0x00,
+		 * which branches to 0x080000C0 -> our loop). Restores the loops beyond. */
+		fat_read(&f, 0, rp, 0xC0u);
+	}
+	return 0x8000u;
+}
 #endif
 
 /* ===================== emulator thread ===================== */
@@ -980,7 +1006,6 @@ static int emu_thread(void *arg)
 #ifdef AYANEO_GBA_SD
 	if (s_sd_mode) {
 		unsigned char *rp = gba_core_rom_ptr();
-		int i;
 		input_init();                        /* need the D-pad/A for the ROM-select */
 		/* Load GammaOS Pico settings from the SD card (portable with the card);
 		 * marks settings loaded so the later boot_b load keeps the SD values, and
@@ -992,8 +1017,7 @@ static int emu_thread(void *arg)
 		 * display + CPU thread are up (see the s_sd_mode intro block just before
 		 * the main frame loop). No prebaked BIOS: if gba_bios.bin was missing,
 		 * ayaneo_gba_sd_boot already fell through to a normal boot. */
-		for (i = 0; i < 0x200; i++) rp[i] = 0;
-		romsz = 0;
+		romsz = gba_sd_build_logo_cart(rp);	/* real logo header + safe self-loops */
 		if (gba_core_start(romsz, s_sd_bios) != 0) {
 			gba_dbg("GBA ERR: SD core_start failed");
 			return 0;
