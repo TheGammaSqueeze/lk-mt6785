@@ -72,11 +72,26 @@ int main(int argc, char **argv)
 			"Mario Kart Super Circuit (USA, Europe).gba",
 			"Fire Emblem (USA, Australia).gba",
 			"Castlevania - Aria of Sorrow (USA).gba" };
-		static char clean[8][128];
-		static const char *mock[8];
-		int gn = atoi(getenv("GBA_ROSTER")), k; if (gn < 1) gn = 1; if (gn > 8) gn = 8;
+		static char clean[128][128];
+		static const char *mock[128];
+		/* GBA_ROSTER up to 128 (the driver's roster cap): the first 8 are the real
+		 * titles above; 8+ synthesize "<base> N.gba" so the large-roster ring carousel,
+		 * filmstrip spacing and sort get exercised (a full SD card is the common case). */
+		int gn = atoi(getenv("GBA_ROSTER")), k; if (gn < 1) gn = 1; if (gn > 128) gn = 128;
 		const snes_img_entry *cart = snes_res_img(&pk, snes_hash("gba_cart"));
-		for (k = 0; k < 8; k++) { gba_clean_name(raw[k], clean[k]); mock[k] = clean[k]; }
+		for (k = 0; k < gn; k++) {
+			if (k < 8) { gba_clean_name(raw[k], clean[k]); }
+			else {
+				char tmp[128]; const char *b = raw[k % 8]; int p = 0;
+				while (b[p] && p < 100) { tmp[p] = b[p]; p++; }
+				tmp[p] = 0;
+				/* insert a number before the tag so cleanup still exercises tags */
+				snprintf(clean[k], sizeof(clean[k]), "%s %d", tmp, k);
+				{ char c2[128]; gba_clean_name(clean[k], c2);
+				  snprintf(clean[k], sizeof(clean[k]), "%s", c2); }
+			}
+			mock[k] = clean[k];
+		}
 		snes_menu_set_gba_roster(&menu, mock, gn, cart);
 		if (!cart) fprintf(stderr, "WARN gba_cart image not in pack\n");
 	}

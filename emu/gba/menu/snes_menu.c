@@ -1001,17 +1001,27 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 	 * bottom-anchored at 535). */
 	float ccx, ccy = TH_CENTER_Y;
 	/* GBA mode has no per-game small icons; draw a small GBA cartridge per slot so
-	 * the strip is populated (and the chevron points at a real thumbnail). Centre
-	 * the row on 640 and shrink the spacing if there are many ROMs. */
+	 * the strip is populated (and the chevron points at a real thumbnail). A small
+	 * library is CENTRED on 640 at a fixed readable spacing; a large one (more than
+	 * fits) becomes a SCROLLING window that keeps the focused icon near centre and
+	 * clamps at the two ends, so 100+ ROMs stay legible instead of a crammed line. */
 	float base = TH_X0, sp = TH_SPACING;
 	if (m->gba_mode && n > 0) {
+		float halfvis = (640.0f - 80.0f) / 52.0f;   /* icons from centre to margin */
 		sp = 52.0f;
-		if (n > 1 && sp * (float)(n - 1) > 1120.0f) sp = 1120.0f / (float)(n - 1);
-		base = 640.0f - sp * (float)(n - 1) * 0.5f;
+		if ((float)(n - 1) <= 2.0f * halfvis) {
+			base = 640.0f - sp * (float)(n - 1) * 0.5f;   /* whole strip fits: centre */
+		} else {
+			float s = (float)m->focus;                    /* scroll index at centre */
+			float smin = halfvis, smax = (float)(n - 1) - halfvis;
+			if (s < smin) s = smin; else if (s > smax) s = smax;
+			base = 640.0f - sp * s;                       /* focus near centre, clamped */
+		}
 	}
 	if (n <= 0) return;
 	for (i = 0; i < n; i++) {
 		float cx = base + sp * (float)i;
+		if (cx < -40.0f || cx > SNES_VW + 40.0f) continue;   /* cull off-screen icons */
 		if (m->gba_mode) {
 			if (m->gba_cart_img) {   /* draw the cart at its native aspect (48 wide) */
 				const snes_img_entry *ci = m->gba_cart_img;
