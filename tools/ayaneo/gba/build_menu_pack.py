@@ -202,24 +202,36 @@ class Packer:
 
 # ---------- procedural asset generation ----------
 def gen_wallpaper(w=256, h=256):
-    """Seamless-tiling indigo/purple wallpaper with a soft diagonal weave motif."""
+    """Seamless-tiling indigo/purple wallpaper with a diamond-lattice weave motif.
+    All spatial functions are periodic over the tile (integer wave counts) so the
+    tile repeats without a visible seam; no global gradient/vignette for the same
+    reason (that is handled at blit time by the parallax scroll)."""
     im = Image.new("RGBA", (w, h))
     px = im.load()
+    tau = 2 * math.pi
     for y in range(h):
+        vy = y / h
         for x in range(w):
-            # base vertical gradient indigo -> deep purple
-            t = y / (h - 1)
-            r = int(24 + 34 * t)
-            g = int(18 + 10 * t)
-            bl = int(56 + 60 * t)
-            # seamless diagonal weave using sines of tau*x/w etc.
-            wv = (math.sin(2 * math.pi * (x * 2) / w) +
-                  math.sin(2 * math.pi * (y * 2) / h) +
-                  math.sin(2 * math.pi * (x + y) / w))
-            d = int(10 * wv)
-            px[x, y] = (max(0, min(255, r + d)),
-                        max(0, min(255, g + d // 2)),
-                        max(0, min(255, bl + d)), 255)
+            vx = x / w
+            # deep indigo/purple base (flat so it tiles; parallax adds motion)
+            r, g, bl = 30.0, 20.0, 72.0
+            # diamond lattice: |sin| ridges on both diagonals -> argyle weave
+            d1 = math.sin(tau * (vx + vy) * 4.0)
+            d2 = math.sin(tau * (vx - vy) * 4.0)
+            lattice = (abs(d1) * abs(d2))          # 0..1, bright at ridge crossings
+            # soft glow blobs on a 2x2 grid of tile centres
+            gx = math.sin(tau * vx * 2.0)
+            gy = math.sin(tau * vy * 2.0)
+            blob = max(0.0, gx * gy)               # 0..1 lobes
+            # fine cross-hatch sparkle for texture
+            hatch = 0.5 + 0.5 * math.sin(tau * vx * 16.0) * math.sin(tau * vy * 16.0)
+            hi = 46.0 * lattice + 30.0 * blob + 8.0 * hatch
+            r += hi * 0.55
+            g += hi * 0.30
+            bl += hi * 0.95
+            px[x, y] = (max(0, min(255, int(r))),
+                        max(0, min(255, int(g))),
+                        max(0, min(255, int(bl))), 255)
     return im
 
 
