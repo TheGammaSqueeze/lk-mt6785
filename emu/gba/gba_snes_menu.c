@@ -177,6 +177,18 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	ayaneo_gbc_audio_init();
 	if (s_menu.bgm) play_sound(s_menu.bgm, 1);
 
+	/* The Pocket Air Mini panel is physically 1280x960 (4:3), so run the SNES
+	 * menu's 4:3 layout (fills the panel; menubar pinned to the top, SUPER
+	 * NINTENDO bar to the bottom) rather than letterboxing the 720 design. Probe
+	 * the canvas height once and set the initial aspect so the very first frame is
+	 * already 4:3 (no 16:9 flash + chrome rebuild). The loop keeps this in sync. */
+	{
+		unsigned int pitch0, W0, H0;
+		(void)ayaneo_canvas_back(&pitch0, &W0, &H0);
+		s_menu.aspect = ((int)H0 >= 960) ? 1 : 0;
+		s_menu.chrome_ready = 0;
+	}
+
 	for (;;) {
 		unsigned int pitch, W, H;
 		unsigned int *fb = ayaneo_canvas_back(&pitch, &W, &H);

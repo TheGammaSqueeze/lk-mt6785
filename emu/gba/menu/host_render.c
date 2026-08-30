@@ -48,7 +48,10 @@ int main(int argc, char **argv)
 	t.fb = fb; t.pitch = W; t.W = W; t.H = H;
 	t.offx = (W - SNES_VW) / 2; t.offy = (H - SNES_VH) / 2;
 	snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
-	if (getenv("SNES_ASPECT43")) { menu.aspect = 1; menu.chrome_ready = 0; }  /* rebuild chrome for 4:3 */
+	/* The device panel is 1280x960 (4:3), so default to the 4:3 layout to match
+	 * what ships; SNES_FORCE169 forces the letterboxed 720 design for comparison. */
+	if (!getenv("SNES_FORCE169")) { menu.aspect = 1; menu.chrome_ready = 0; }
+	if (getenv("SNES_ASPECT43")) { menu.aspect = 1; menu.chrome_ready = 0; }
 
 	/* GBA_ROSTER=<n>: exercise the GBA adaptation (n mock ROM names + cart placeholder). */
 	if (getenv("GBA_ROSTER")) {
