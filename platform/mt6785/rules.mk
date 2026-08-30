@@ -369,10 +369,12 @@ OBJS += emu/gba/sd_fastboot.o
 # software renderer is float-heavy, so build the render/scene/audio modules with
 # hardware NEON FP (LK default -mfloat-abi=soft would make every op an aeabi call).
 OBJS += emu/gba/menu/snes_pack.o emu/gba/menu/snes_scene.o emu/gba/menu/snes_render.o emu/gba/menu/snes_audio.o
+OBJS += emu/gba/gba_menu.o
 GBA_MENU_FP := -mfpu=neon -mfloat-abi=softfp -ffast-math
 $(BUILDDIR)/emu/gba/menu/snes_render.o: CFLAGS += $(GBA_MENU_FP)
 $(BUILDDIR)/emu/gba/menu/snes_scene.o:  CFLAGS += $(GBA_MENU_FP)
 $(BUILDDIR)/emu/gba/menu/snes_audio.o:  CFLAGS += $(GBA_MENU_FP)
+$(BUILDDIR)/emu/gba/gba_menu.o:         CFLAGS += $(GBA_MENU_FP)
 endif
 else
 OBJS += emu/gbc/gbc_driver.o

@@ -641,7 +641,7 @@ static void cpu_step(int dir)
 }
 
 enum { MK_UP=1, MK_DOWN=2, MK_LEFT=4, MK_RIGHT=8, MK_A=16, MK_B=32, MK_AYA=64 };
-static unsigned menu_keys(void)
+unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 {
 	static unsigned prev;
 	unsigned raw = 0, edge;
@@ -893,6 +893,8 @@ static int s_sel_rom = -1;          /* chosen ROM index (for save/state paths) *
 
 /* Draw the ROM list to the panel and let the user pick one. D-pad moves, A plays,
  * B/AYA has no effect (there is nothing to go back to). Returns the chosen index. */
+extern int gba_menu_run(const gba_rom_entry *roms, int nrom, int start_sel);
+
 static int gba_sd_rom_select(void)
 {
 	unsigned pitch, W, H;
@@ -900,6 +902,14 @@ static int gba_sd_rom_select(void)
 	int x, y0, rowh = 30;
 	int fade = 15;   /* quick fade in from a full white canvas (~0.25s), GBA-style */
 	if (s_nrom <= 0) return -1;
+
+	/* Preferred: the SNES-mini-style carousel (assets from boot_b). Returns -2 if
+	 * the menu asset pack is not present -> fall through to the plain list so a
+	 * boot_b without the pack still lets the user pick a game (never-brick). */
+	{
+		int r = gba_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
+		if (r >= 0) return r;
+	}
 	for (;;) {
 		mtk_wdt_restart();   /* kick the 10s watchdog: idling on the menu must not reset the device */
 		unsigned k = menu_keys();
