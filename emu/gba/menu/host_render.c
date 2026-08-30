@@ -269,9 +269,34 @@ int main(int argc, char **argv)
 			miss, x0, y0, x1, y1b);
 	}
 
+	/* TIMEIT: render N times and report ms/frame (relative cost of states/aspects). */
+	if (getenv("TIMEIT")) {
+		int reps = atoi(getenv("TIMEIT")); struct timespec a, b; int r2; double ms;
+		if (reps < 1) reps = 200;
+		clock_gettime(CLOCK_MONOTONIC, &a);
+		for (r2 = 0; r2 < reps; r2++) snes_menu_render(&menu, &t);
+		clock_gettime(CLOCK_MONOTONIC, &b);
+		ms = ((b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6) / reps;
+		fprintf(stderr, "TIMEIT: %.3f ms/render (aspect=%d, %d reps)\n", ms, menu.aspect, reps);
+	}
+
 	/* clear letterbox + render final frame */
 	for (i = 0; i < W * H; i++) fb[i] = 0xFF000000u;
 	snes_menu_render(&menu, &t);
+
+	/* ALPHACHECK: the panel OVL presents with per-pixel alpha enabled (aen=1), so
+	 * any framebuffer pixel with alpha < 0xFF blends with black on device - and
+	 * moving partial-alpha pixels flicker. Count them (should be 0). */
+	if (getenv("ALPHACHECK")) {
+		int bad = 0, x2, y2, x0 = W, y0 = H, x1 = -1, y1b = -1;
+		for (y2 = 0; y2 < H; y2++) for (x2 = 0; x2 < W; x2++) {
+			if ((fb[y2 * W + x2] >> 24) != 0xFFu) { bad++;
+				if (x2 < x0) x0 = x2; if (x2 > x1) x1 = x2;
+				if (y2 < y0) y0 = y2; if (y2 > y1b) y1b = y2; }
+		}
+		fprintf(stderr, "ALPHACHECK: %d px with alpha<0xFF; bbox=[%d,%d..%d,%d]\n",
+			bad, x0, y0, x1, y1b);
+	}
 
 	/* write PPM (P6) - fb is 0xAARRGGBB */
 	f = fopen(outf, "wb");

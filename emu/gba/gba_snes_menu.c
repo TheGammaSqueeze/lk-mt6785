@@ -36,6 +36,11 @@ extern void ayaneo_gbc_audio_init(void);
 extern int  ayaneo_menu_audio_room(void);
 extern void ayaneo_menu_audio_submit(const short *stereo, unsigned frames);
 extern void ayaneo_menu_audio_silence(void);
+extern unsigned int gpt4_get_current_tick(void);   /* 13 MHz free-running counter */
+extern int  ayaneo_present_skip_framedone;         /* 1 = non-blocking present */
+
+/* one 60 Hz frame at the 13 MHz counter (~16.67 ms) */
+#define FRAME_TICKS 216667u
 
 /* GBA button GPIOs (active-low), same panel as the SNES build's map */
 extern int  mt_get_gpio_in(unsigned pin);
@@ -205,6 +210,10 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	}
 
 	ayaneo_set_cpu_mhz(2000);
+	/* Ensure presents pace to vsync (a prior game session's benchmark mode may have
+	 * left this set). Even so, the menu render is far cheaper than an emulated game
+	 * frame, so if the panel does not actually block we self-pace below. */
+	ayaneo_present_skip_framedone = 0;
 	/* Re-own the panel in the clean canvas/double-buffer state. The BIOS-logo intro
 	 * ran between the boot flow's display_prepare and here and left the layer in its
 	 * own scan-out mode; without this the two canvas buffers can present
@@ -232,6 +241,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		snes_target t;
 		snes_input in;
 		int launch;
+		unsigned int frame_t0 = gpt4_get_current_tick();
 
 		in.left = PRESSED(K_LEFT); in.right = PRESSED(K_RIGHT);
 		in.up = PRESSED(K_UP); in.down = PRESSED(K_DOWN);
@@ -270,11 +280,23 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			return launch;
 		}
 
-		ayaneo_canvas_present();   /* blocks on vsync -> paces to 60Hz */
+		ayaneo_canvas_present();   /* should block on vsync -> pace to 60Hz */
 		mtk_wdt_restart();
 		{
 			int p = pmic_detect_powerkey();
 			if (!p) pwr_armed = 1; else if (pwr_armed) mt_power_off();
+		}
+		/* Self-pace to 60 fps. The menu renders in ~2ms; if the panel present does
+		 * not actually block on vsync, an uncapped loop would flip the double buffer
+		 * hundreds of times per refresh and the 60Hz panel would sample torn/mixed
+		 * buffers = the flicker seen during movement. Cap each frame to FRAME_TICKS:
+		 * sleep the bulk (yielding), then spin the residual for precision. When the
+		 * present already blocks, the elapsed time is ~a frame and this is a no-op. */
+		{
+			unsigned int el;
+			while ((el = gpt4_get_current_tick() - frame_t0) < FRAME_TICKS) {
+				if (FRAME_TICKS - el > 26000u) thread_sleep(1);  /* >~2ms left */
+			}
 		}
 	}
 }
