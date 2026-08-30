@@ -2551,7 +2551,8 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	if (m->sort_label_t > 0) {
 		static const char *nm[4] = { "Sort: Title", "Sort: Publisher",
 			"Sort: Players", "Sort: Release" };
-		static const char *gbanm[2] = { "Sort: Name A-Z", "Sort: Name Z-A" };
+		/* the SNES title font has no ':' glyph, so use words the font can render */
+		static const char *gbanm[2] = { "Sort A to Z", "Sort Z to A" };
 		const char *lbl = m->gba_mode ? gbanm[m->sort_rule & 1] : nm[m->sort_rule & 3];
 		snes_fill_quad(t, 640, 210, 360, 40, 0.06f, 0.08f, 0.10f, 0.85f);
 		snes_draw_text(t, m->pk, m->f_s, 640, 202, 1.0f, 0xFFE0E8F0u, 1, lbl);
