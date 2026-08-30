@@ -2081,6 +2081,21 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				m->launch = m->order[f];
 			}
 		}
+		if (m->gba_mode && in->select && !m->ps) {   /* toggle name sort A-Z <-> Z-A */
+			int n = m->ngames, k;
+			int cur = m->order[((m->focus % n) + n) % n];   /* focused ROM index */
+			/* the SD scan hands ROMs in case-insensitive A-Z order (sd_fat), which is
+			 * order[i]=i; reversing it gives Z-A. Cards are identical placeholders so
+			 * the tile cache stays valid. */
+			m->sort_rule ^= 1;                              /* 0 = A-Z, 1 = Z-A */
+			for (k = 0; k < n; k++)
+				m->order[k] = (unsigned short)(m->sort_rule ? (n - 1 - k) : k);
+			for (k = 0; k < n; k++)
+				if (m->order[k] == cur) { m->focus = k; m->car_x = k; break; }
+			m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
+			m->sort_label_t = 1.5f;
+			push_snd(m, m->sfx_decide);
+		}
 		if (!m->gba_mode && in->select && !m->ps) {   /* cycle roster sort */
 			const snes_game_rec *cur = game(m, m->focus);
 			m->sort_rule = (m->sort_rule + 1) % 4;
@@ -2536,9 +2551,10 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	if (m->sort_label_t > 0) {
 		static const char *nm[4] = { "Sort: Title", "Sort: Publisher",
 			"Sort: Players", "Sort: Release" };
+		static const char *gbanm[2] = { "Sort: Name A-Z", "Sort: Name Z-A" };
+		const char *lbl = m->gba_mode ? gbanm[m->sort_rule & 1] : nm[m->sort_rule & 3];
 		snes_fill_quad(t, 640, 210, 360, 40, 0.06f, 0.08f, 0.10f, 0.85f);
-		snes_draw_text(t, m->pk, m->f_s, 640, 202, 1.0f, 0xFFE0E8F0u, 1,
-			       nm[m->sort_rule & 3]);
+		snes_draw_text(t, m->pk, m->f_s, 640, 202, 1.0f, 0xFFE0E8F0u, 1, lbl);
 	}
 
 
