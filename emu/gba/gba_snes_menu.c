@@ -39,6 +39,9 @@ extern int  ayaneo_menu_audio_room(void);
 extern void ayaneo_menu_audio_submit(const short *stereo, unsigned frames);
 extern void ayaneo_menu_audio_silence(void);
 extern int  ayaneo_present_skip_framedone;         /* 0 = present blocks on vsync */
+extern unsigned int gpt4_get_current_tick(void);   /* 13 MHz free-running counter */
+extern int  ayaneo_text(unsigned int *buf, unsigned int pitch_w, int x, int y,
+			int scale, unsigned int argb, const char *s);
 
 /* GBA button GPIOs (active-low), same panel as the SNES build's map */
 extern int  mt_get_gpio_in(unsigned pin);
@@ -70,7 +73,8 @@ extern void mt_power_off(void);
 #define SNES_COMP_PA   0x52A00000u   /* compressed staging (deflate, <=8MB) */
 #define SNES_WP_PA     0x53200000u   /* wallpaper cache (1536*720*4 = 4.2MB) */
 #define SNES_CHROME_PA 0x53700000u   /* static chrome cache (1280*960*4 = 4.7MB) */
-#define SNES_CTILE_PA  0x54000000u   /* card-tile cache (<=64 * 320*360*4 = 29.5MB) */
+#define SNES_WP43_PA   0x54000000u   /* 4:3 warped-wallpaper cache (2701*960*4 = 10.4MB) */
+#define SNES_CTILE_PA  0x54C00000u   /* card-tile cache (GBA cards identical -> cap 1) */
 /* the decompressed blob must stay strictly inside [BLOB_PA, HOME_PA); cap it 2MB
  * short of the 24MB region so it can never overrun the home node pool */
 #define SNES_RAW_MAX   ((SNES_HOME_PA - SNES_BLOB_PA) - 2u * 1024 * 1024)  /* 22MB */
@@ -204,12 +208,15 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	snes_menu_set_gba_roster(&s_menu, s_nameptr, nrom, cart);
 	if (start_sel >= 0 && start_sel < nrom) s_menu.focus = start_sel;
 
-	/* card-tile cache: one CT tile per game in the free window at 0x54000000 */
+	/* Every GBA card body is the identical cart placeholder, so ONE cached tile
+	 * serves all games (cap 1); that frees the DRAM for the 10.4MB warped-wallpaper
+	 * cache, which turns the 4:3 wallpaper draw into a per-row memcpy (the per-pixel
+	 * gather straddled the 60fps budget on device). */
 	{
-		static int s_ctile_gi[64];
-		int cap = nrom; if (cap > 64) cap = 64; if (cap < 1) cap = 1;
-		snes_menu_set_ctile(&s_menu, (uint32_t *)SNES_CTILE_PA, s_ctile_gi, cap);
+		static int s_ctile_gi[1];
+		snes_menu_set_ctile(&s_menu, (uint32_t *)SNES_CTILE_PA, s_ctile_gi, 1);
 	}
+	snes_menu_set_wp43(&s_menu, (uint32_t *)SNES_WP43_PA);
 
 	ayaneo_set_cpu_mhz(2100);   /* max big-core OPP for render headroom */
 	/* Present-pacing: blocking config_input on the panel FRAME_DONE (skip=0), exactly
@@ -265,6 +272,26 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 
 		snes_menu_update(&s_menu, &in, 1.0f / 60.0f);
 		snes_menu_render(&s_menu, &t);
+		/* TEMP diagnostic: on-screen frame time (ms.tenths) + fps, top-left, so the
+		 * real device pacing can be reported. Uses the previous frame's period. */
+		{
+			static unsigned int last_t;
+			static char pb[24];
+			unsigned int now = gpt4_get_current_tick();
+			if (last_t) {
+				unsigned int us = (now - last_t) / 13u;    /* microseconds */
+				unsigned int mt = (us + 50u) / 100u;        /* tenths of ms */
+				unsigned int fps = us ? (1000000u + us / 2u) / us : 0;
+				int i = 0;
+				pb[i++] = '0' + (mt / 100) % 10; pb[i++] = '0' + (mt / 10) % 10;
+				pb[i++] = '.'; pb[i++] = '0' + mt % 10;
+				pb[i++] = 'm'; pb[i++] = 's'; pb[i++] = ' ';
+				pb[i++] = '0' + (fps / 100) % 10; pb[i++] = '0' + (fps / 10) % 10;
+				pb[i++] = '0' + fps % 10; pb[i++] = 'f'; pb[i] = 0;
+			} else pb[0] = 0;
+			last_t = now;
+			if (pb[0]) ayaneo_text(fb, pitch, 8, 8, 2, 0xFF00FF66u, pb);
+		}
 		if (fade_in > 0) {   /* fade in from black (255 -> 0) over 18 frames = 0.3s */
 			ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H, 0xFF000000u,
 					  (fade_in * 255) / 18);

@@ -89,6 +89,11 @@ typedef struct {
 	float sort_label_t;           /* seconds remaining to show the sort-name label */
 	uint32_t *wp;                 /* wallpaper cache, WP_W*WP_H u32 (caller-provided) */
 	int wp_ready;
+	/* 4:3 fast-path: the ASP_WALL_S-warped wallpaper pre-rendered so draw_wp_43 is a
+	 * per-row memcpy-scroll instead of a per-pixel gather (the gather straddled the
+	 * vsync budget on device). Caller-provided WP43_H*WP43_PERIOD u32; 0 = gather. */
+	uint32_t *wp43;
+	int wp43_ready;
 	uint32_t *chrome;             /* cached static home chrome, VW*VH u32 (0 alpha = uncovered) */
 	int chrome_ready;
 	/* Card-tile cache (single-buffer 60fps): each game's NORMAL card body (dark frame +
@@ -169,6 +174,13 @@ int snes_menu_take_launch(snes_menu *m);
 /* wallpaper cache dims (caller allocates WP_CACHE_W*WP_CACHE_H u32). */
 #define WP_CACHE_W 1536
 #define WP_CACHE_H 720
+/* 4:3 warped-wallpaper cache: one horizontal period in SCREEN pixels (WP_CACHE_W *
+ * ASP_WALL_S ~= 2701) x 960 rows. Caller allocates WP43_PERIOD*WP43_H u32 (~10.4MB). */
+#define WP43_PERIOD 2701
+#define WP43_H 960
+/* Provide the 4:3 warped-wallpaper cache backing store (WP43_PERIOD*WP43_H u32), or
+ * 0 to keep the per-pixel gather. */
+void snes_menu_set_wp43(snes_menu *m, uint32_t *buf);
 
 /* Initialise. home_pool/bg_pool are snes_rnode arrays of the given capacities;
  * wp is a WP_CACHE_W*WP_CACHE_H u32 buffer. Returns 0 on success. */

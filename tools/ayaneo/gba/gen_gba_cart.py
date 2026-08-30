@@ -38,7 +38,15 @@ def ctext(d, cx, y, s, fnt, fill):
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else "/tmp/gba_cart.png"
     svg = sys.argv[2] if len(sys.argv) > 2 else SVG
-    import cairosvg
+    try:
+        import cairosvg
+    except ImportError:
+        sys.stderr.write("gen_gba_cart.py needs cairosvg to rasterise the cartridge "
+                         "SVG:\n    pip install cairosvg\n")
+        sys.exit(3)
+    if not os.path.exists(svg):
+        sys.stderr.write("cartridge SVG not found: %s\n" % svg)
+        sys.exit(3)
 
     # rasterise the SVG large, drop the bottom attribution band
     RW = 912

@@ -52,6 +52,9 @@ int main(int argc, char **argv)
 	 * what ships; SNES_FORCE169 forces the letterboxed 720 design for comparison. */
 	if (!getenv("SNES_FORCE169")) { menu.aspect = 1; menu.chrome_ready = 0; }
 	if (getenv("SNES_ASPECT43")) { menu.aspect = 1; menu.chrome_ready = 0; }
+	/* 4:3 warped-wallpaper cache (fast memcpy path); SNES_NOWP43 keeps the gather. */
+	if (!getenv("SNES_NOWP43"))
+		snes_menu_set_wp43(&menu, malloc((size_t)WP43_PERIOD * WP43_H * 4));
 
 	/* GBA_ROSTER=<n>: exercise the GBA adaptation (n mock ROM names + cart placeholder). */
 	if (getenv("GBA_ROSTER")) {

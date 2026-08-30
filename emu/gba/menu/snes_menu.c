@@ -275,28 +275,80 @@ static void build_wp(snes_menu *m)
 		}
 	}
 	m->wp_ready = 1;
+	m->wp43_ready = 0;   /* the warped cache derives from wp; rebuild it */
 }
-/* 4:3: the neon wallpaper zooms by ASP_WALL_S to fill the whole 960 panel (no
- * black gaps). Inverse-map each of the 960 fb rows + 1280 cols back into the wp
- * cache (x map precomputed once/frame). vdx=640-s*640, vdy=480-s*360. */
+/* Build the 4:3 warped-wallpaper cache: cache[Y][s] = wp[wy(Y)][ (s/ASP_WALL_S) mod
+ * WP_CACHE_W ], i.e. the vertical warp and horizontal zoom baked in so a scrolled
+ * screen row is a contiguous run in the cache (memcpy, not a per-pixel gather). One
+ * horizontal wallpaper period spans WP43_PERIOD screen columns. */
+static void build_wp43(snes_menu *m)
+{
+	float inv = 1.0f / ASP_WALL_S;
+	float vdy = 480.0f - ASP_WALL_S * 360.0f;
+	int Y, s;
+	if (!m->wp43 || !m->wp_ready) return;
+	for (Y = 0; Y < WP43_H; Y++) {
+		int wy = (int)(((float)Y - vdy) * inv);
+		uint32_t *dst = m->wp43 + (unsigned)Y * WP43_PERIOD;
+		const uint32_t *src;
+		if (wy < 0) wy = 0; if (wy >= WP_CACHE_H) wy = WP_CACHE_H - 1;
+		src = m->wp + (unsigned)wy * WP_CACHE_W;
+		for (s = 0; s < WP43_PERIOD; s++) {
+			int wx = (int)((float)s * inv) % WP_CACHE_W;
+			dst[s] = src[wx];
+		}
+	}
+	m->wp43_ready = 1;
+}
+
+void snes_menu_set_wp43(snes_menu *m, uint32_t *buf) { m->wp43 = buf; m->wp43_ready = 0; }
+
+/* 4:3: the neon wallpaper zooms by ASP_WALL_S to fill the whole 960 panel (no black
+ * gaps). With the warped cache (wp43) this is a per-row memcpy-scroll; without it,
+ * the original per-pixel inverse-map gather. vdx=640-s*640, vdy=480-s*360. */
 static void draw_wp_43(snes_menu *m, snes_target *t, int scroll_px)
 {
-	static int xmap[SNES_VW];
 	int Y, X, off = ((scroll_px % WP_CACHE_W) + WP_CACHE_W) % WP_CACHE_W;
 	float inv = 1.0f / ASP_WALL_S;
 	float vdx = 640.0f - ASP_WALL_S * 640.0f, vdy = 480.0f - ASP_WALL_S * 360.0f;
 	if (!m->wp_ready) return;
-	for (X = 0; X < SNES_VW; X++) {
-		int wx = (int)(((float)X - vdx) * inv) + off;
-		wx %= WP_CACHE_W; if (wx < 0) wx += WP_CACHE_W;
-		xmap[X] = wx;
+
+	if (m->wp43) {
+		int s0;
+		if (!m->wp43_ready) build_wp43(m);
+		/* screen col X maps to cache col wrap(X - vdx + off*ASP_WALL_S); as X steps
+		 * by 1 the cache col steps by 1, so a screen row is a contiguous cache run. */
+		s0 = (int)(-vdx + (float)off * ASP_WALL_S + 0.5f) % WP43_PERIOD;
+		if (s0 < 0) s0 += WP43_PERIOD;
+		for (Y = 0; Y < t->H && Y < WP43_H; Y++) {
+			uint32_t *dst = t->fb + (unsigned)Y * t->pitch + t->offx;
+			const uint32_t *crow = m->wp43 + (unsigned)Y * WP43_PERIOD;
+			int first = WP43_PERIOD - s0;
+			if (first >= SNES_VW) {
+				memcpy(dst, crow + s0, (unsigned)SNES_VW * 4u);
+			} else {
+				memcpy(dst, crow + s0, (unsigned)first * 4u);
+				memcpy(dst + first, crow, (unsigned)(SNES_VW - first) * 4u);
+			}
+		}
+		return;
 	}
-	for (Y = 0; Y < t->H && Y < 960; Y++) {
-		int wy = (int)(((float)Y - vdy) * inv);
-		uint32_t *src, *dst = t->fb + (unsigned)Y * t->pitch + t->offx;
-		if (wy < 0) wy = 0; if (wy >= WP_CACHE_H) wy = WP_CACHE_H - 1;
-		src = m->wp + (unsigned)wy * WP_CACHE_W;
-		for (X = 0; X < SNES_VW; X++) dst[X] = src[xmap[X]];
+
+	/* fallback: per-pixel gather */
+	{
+		static int xmap[SNES_VW];
+		for (X = 0; X < SNES_VW; X++) {
+			int wx = (int)(((float)X - vdx) * inv) + off;
+			wx %= WP_CACHE_W; if (wx < 0) wx += WP_CACHE_W;
+			xmap[X] = wx;
+		}
+		for (Y = 0; Y < t->H && Y < 960; Y++) {
+			int wy = (int)(((float)Y - vdy) * inv);
+			uint32_t *src, *dst = t->fb + (unsigned)Y * t->pitch + t->offx;
+			if (wy < 0) wy = 0; if (wy >= WP_CACHE_H) wy = WP_CACHE_H - 1;
+			src = m->wp + (unsigned)wy * WP_CACHE_W;
+			for (X = 0; X < SNES_VW; X++) dst[X] = src[xmap[X]];
+		}
 	}
 }
 static void draw_wp(snes_menu *m, snes_target *t, int scroll_px)
@@ -895,8 +947,11 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 	for (i = 0; i < n; i++) {
 		float cx = base + sp * (float)i;
 		if (m->gba_mode) {
-			if (m->gba_cart_img)
-				snes_blit_tex(t, m->pk, m->gba_cart_img, cx, ccy, 46.0f, 32.0f, 1.0f);
+			if (m->gba_cart_img) {   /* draw the cart at its native aspect (48 wide) */
+				const snes_img_entry *ci = m->gba_cart_img;
+				float fw = 48.0f, fh = ci->w ? fw * (float)ci->h / (float)ci->w : 30.0f;
+				snes_blit_tex(t, m->pk, ci, cx, ccy, fw, fh, 1.0f);
+			}
 		} else {
 			const snes_game_rec *g = game(m, i);
 			const snes_img_entry *im = (g && g->small_img != 0xFFFF) ? &m->pk->img[g->small_img] : 0;
@@ -1359,6 +1414,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	unsigned i;
 	/* zero the struct fields we rely on */
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
+	m->wp43 = 0; m->wp43_ready = 0;
 	m->gba_mode = 0; m->gba_names = 0; m->gba_cart_img = 0; m->launch = -1; m->pstart = 0;
 	m->ctile = 0; m->ctile_gi = 0; m->ctile_cap = 0; m->ctile_aspect = -1;
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;
