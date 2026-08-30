@@ -26,6 +26,8 @@ extern unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, 
 extern void ayaneo_canvas_present(void);
 extern void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
 			int x, int y, int w, int h, unsigned int argb);
+extern void ayaneo_fill_blend(unsigned int *buf, unsigned int pitch_w,
+			      int x, int y, int w, int h, unsigned int argb, int alpha);
 extern void mtk_wdt_restart(void);
 extern void thread_sleep(unsigned);
 extern int  zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstlen, int offset);
@@ -273,8 +275,30 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		launch = snes_menu_take_launch(&s_menu);
 		if (launch >= 0 && launch < nrom) {
 			int f;
-			/* let the confirm SFX play out */
-			for (f = 0; f < 5; f++) { pump_audio(); mtk_wdt_restart(); thread_sleep(16); }
+			/* Launch transition: keep rendering the menu (frozen on the picked
+			 * card) with a growing black overlay while the confirm SFX plays, so it
+			 * fades out to black -> game instead of freezing then cutting. Matches
+			 * the SNES-Classic launch feel. ~12 frames = ~0.2s at 60fps. */
+			for (f = 0; f < 12; f++) {
+				unsigned int lp, lw, lh;
+				unsigned int *lfb = ayaneo_canvas_back(&lp, &lw, &lh);
+				snes_target lt;
+				lt.fb = lfb; lt.pitch = lp; lt.W = (int)lw; lt.H = (int)lh;
+				lt.offx = ((int)lw - SNES_VW) / 2; lt.offy = ((int)lh - SNES_VH) / 2;
+				snes_target_view(&lt, 1.0f, 1.0f, 0.0f, 0.0f);
+				if (lt.offy > 0) {
+					ayaneo_fill(lfb, lp, 0, 0, (int)lw, lt.offy, 0xFF000000u);
+					ayaneo_fill(lfb, lp, 0, lt.offy + SNES_VH, (int)lw, lt.offy, 0xFF000000u);
+				}
+				snes_menu_render(&s_menu, &lt);
+				ayaneo_fill_blend(lfb, lp, 0, 0, (int)lw, (int)lh, 0xFF000000u,
+						  (f * 255) / 11);
+				pump_audio();
+				ayaneo_canvas_present();
+				if (use_framedone) ayaneo_wait_frame_done();
+				mtk_wdt_restart();
+				thread_sleep(1);
+			}
 			/* Stop the BGM and zero the WHOLE audio ring before handing off: no one
 			 * feeds the AFE ring while the game ROM loads/decompresses, and the DMA
 			 * loops the entire 341ms ring, so a submit-at-write-cursor silence tail
