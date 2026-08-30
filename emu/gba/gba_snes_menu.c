@@ -58,16 +58,17 @@ extern void mt_power_off(void);
 #define SNES_OFF      0x01100000ull
 #define SNES_MAGIC    0x5A534E53u          /* "SNSZ" */
 
-/* DRAM map (WB window [0x50000000,0x56000000) is all free during ROM-select).
- * Generous spacing: the packed blob can be up to 24MB (rgb565 firmware art). */
-#define SNES_BLOB_PA   0x50000000u   /* decompressed pack (<=24MB) */
+/* DRAM map (WB window [0x50000000,0x56000000) is all free during ROM-select). */
+#define SNES_BLOB_PA   0x50000000u   /* decompressed pack (region ends at HOME_PA) */
 #define SNES_HOME_PA   0x51800000u   /* home rnode pool (16MB) */
 #define SNES_BG_PA     0x52800000u   /* bg rnode pool (2MB) */
 #define SNES_COMP_PA   0x52A00000u   /* compressed staging (deflate, <=8MB) */
 #define SNES_WP_PA     0x53200000u   /* wallpaper cache (1536*720*4 = 4.2MB) */
 #define SNES_CHROME_PA 0x53700000u   /* static chrome cache (1280*960*4 = 4.7MB) */
 #define SNES_CTILE_PA  0x54000000u   /* card-tile cache (<=64 * 320*360*4 = 29.5MB) */
-#define SNES_RAW_MAX   (24u * 1024 * 1024)
+/* the decompressed blob must stay strictly inside [BLOB_PA, HOME_PA); cap it 2MB
+ * short of the 24MB region so it can never overrun the home node pool */
+#define SNES_RAW_MAX   ((SNES_HOME_PA - SNES_BLOB_PA) - 2u * 1024 * 1024)  /* 22MB */
 #define SNES_COMP_MAX  (8u  * 1024 * 1024)
 #define HOME_CAP       (16u * 1024 * 1024 / (unsigned)sizeof(snes_rnode))
 #define BG_CAP         (2u  * 1024 * 1024 / (unsigned)sizeof(snes_rnode))
