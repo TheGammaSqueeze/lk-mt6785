@@ -262,8 +262,12 @@ int gba_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	int sel = (start_sel >= 0 && start_sel < nrom) ? start_sel : 0;
 	float posf = (float)sel;          /* smooth scroll position (in card units) */
 	int fade = 16;                    /* fade in from white, GBA-style */
-	int held = 1;                     /* debounce: require release before repeat */
+	int a_held = 1;                   /* A debounce: require release before re-fire */
+	int nav_dir = 0;                  /* currently held nav direction (-1/0/+1) */
+	int nav_timer = 0;                /* frames until the next auto-repeat step */
 	float anim = 0.0f;                /* rising glow-pulse phase (radians) */
+	const int NAV_DELAY = 22;         /* frames before auto-repeat kicks in (~0.36s) */
+	const int NAV_REPEAT = 6;         /* frames between repeats while held (~0.10s) */
 
 	if (nrom <= 0) return -1;
 	if (menu_pack_load() != 0) return -2;
@@ -276,12 +280,25 @@ int gba_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		unsigned int *fb;
 		snes_target t;
 		unsigned k = menu_keys();
+		int dir = (k & (MK_LEFT|MK_UP)) ? -1 : (k & (MK_RIGHT|MK_DOWN)) ? 1 : 0;
 
-		if (!k) held = 0;
-		if (!held) {
-			if (k & (MK_LEFT|MK_UP))         { sel = (sel + nrom - 1) % nrom; held = 1; play_snd("gbamenu/sfx_move", 0, 256, 0); }
-			else if (k & (MK_RIGHT|MK_DOWN)) { sel = (sel + 1) % nrom; held = 1; play_snd("gbamenu/sfx_move", 0, 256, 0); }
-			else if (k & MK_A)               { play_snd("gbamenu/sfx_confirm", 0, 256, 0); pump_audio(); return sel; }
+		/* directional nav: step on fresh press, then auto-repeat (delay -> fast)
+		 * while the direction is held so long game lists scroll quickly. */
+		if (dir == 0) { nav_dir = 0; nav_timer = 0; }
+		else {
+			int step = 0;
+			if (dir != nav_dir) { step = 1; nav_dir = dir; nav_timer = NAV_DELAY; }
+			else if (--nav_timer <= 0) { step = 1; nav_timer = NAV_REPEAT; }
+			if (step) {
+				sel = (sel + (dir < 0 ? nrom - 1 : 1)) % nrom;
+				play_snd("gbamenu/sfx_move", 0, 256, 0);
+			}
+		}
+
+		/* A = confirm, debounced against a held button */
+		if (!(k & MK_A)) a_held = 0;
+		if (!a_held && (k & MK_A)) {
+			play_snd("gbamenu/sfx_confirm", 0, 256, 0); pump_audio(); return sel;
 		}
 		pump_audio();
 
