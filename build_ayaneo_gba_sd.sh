@@ -36,9 +36,9 @@ make "$PROJECT" AYANEO_GBA_SD=yes -j"$JOBS"
 BUILT="build-$PROJECT/lk.img"
 [ -f "$BUILT" ] || { echo "!! build did not produce $BUILT" >&2; exit 1; }
 
-# sanity: the carousel object must be linked in this variant
-if [ ! -f "build-$PROJECT/emu/gba/gba_menu.o" ]; then
-	echo "!! gba_menu.o was not built - AYANEO_GBA_SD did not take effect" >&2
+# sanity: the SNES-menu driver object must be linked in this variant
+if [ ! -f "build-$PROJECT/emu/gba/gba_snes_menu.o" ]; then
+	echo "!! gba_snes_menu.o was not built - AYANEO_GBA_SD did not take effect" >&2
 	exit 1
 fi
 
