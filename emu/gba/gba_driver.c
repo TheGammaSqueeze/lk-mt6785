@@ -1127,6 +1127,12 @@ static int emu_thread(void *arg)
 		 * (SD setting); the user can also cut the logo short by holding B. */
 		if (s_sd_mode) {
 			int fi, intro_frames = ayaneo_get_skip_gba_intro() ? 0 : GBA_SD_INTRO_FRAMES;
+			/* Run the BIOS-logo intro on the pure INTERPRETER: the dynarec faults
+			 * in translate_block_arm here, and the interpreter also naturally picks
+			 * up the reset PC after the intro->game gba_core_start (it re-reads PC
+			 * each step, no translated blocks to go stale). The dynarec is switched
+			 * back on for the actual game below. */
+			dynarec_enable = 0;
 			for (fi = 0; fi < intro_frames; fi++) {
 				update_buttons();
 				run_one_frame();
@@ -1155,7 +1161,8 @@ static int emu_thread(void *arg)
 						(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
 				if (!PRESSED(GPIO_B))
 					state_read(scratch);
-				s_cpu_restart_req = 1;	/* CPU thread re-enters execute_arm cleanly */
+				dynarec_enable = 1;	/* full-speed dynarec for the actual game */
+				s_cpu_restart_req = 1;	/* CPU thread re-enters gba_core_cpu_loop cleanly */
 			}
 			/* no ROMs on the card: keep showing the BIOS (romsz stays 0). */
 		}
