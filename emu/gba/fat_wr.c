@@ -40,18 +40,26 @@ static int set_fat(fat_vol *v, uint32_t n, uint32_t val)
 }
 
 /* claim a free cluster (FAT==0), mark EOC, optionally link prev->new. 0 = full. */
-static uint32_t alloc_clus(fat_vol *v, uint32_t prev)
+/* Claim a free cluster (FAT==0), mark EOC, optionally link prev->new. 0 = full.
+ * hint (optional): scan starts there and is advanced past the claimed cluster so
+ * a run of allocations is linear instead of rescanning from cluster 2 each time
+ * (that was O(n^2) FAT-sector reads, the main cost of a multi-cluster save). The
+ * hint is only valid within a single monotonic allocation run (no frees), where
+ * every cluster below it is already used or just claimed, so none is skipped. */
+static uint32_t alloc_clus_h(fat_vol *v, uint32_t prev, uint32_t *hint)
 {
-	uint32_t n;
-	for (n = 2; n < v->total_clusters + 2u; n++) {
+	uint32_t n = (hint && *hint >= 2u) ? *hint : 2u;
+	for (; n < v->total_clusters + 2u; n++) {
 		if (get_fat(v, n) == 0) {
 			if (set_fat(v, n, eoc(v)) != 0) return 0;
 			if (prev >= 2 && set_fat(v, prev, n) != 0) return 0;
+			if (hint) *hint = n + 1u;
 			return n;
 		}
 	}
 	return 0;
 }
+static uint32_t alloc_clus(fat_vol *v, uint32_t prev) { return alloc_clus_h(v, prev, 0); }
 
 static void free_chain(fat_vol *v, uint32_t c)
 {
@@ -226,13 +234,16 @@ int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
 	need_slots = nlfn + 1;
 	if (!is83) mangle_short(v, cluster, root_sec, root_left, name, short11);
 
-	/* allocate + write the data chain */
+	/* allocate + write the data chain (linear scan via hint, not O(n^2)) */
 	need_clus = len ? (len + cbytes - 1u) / cbytes : 0u;
-	for (i = 0; i < need_clus; i++) {
-		uint32_t c = alloc_clus(v, prev);
-		if (!c) { if (first) free_chain(v, first); return -4; }   /* disk full */
-		if (!first) first = c;
-		prev = c;
+	{
+		uint32_t ahint = 2u;
+		for (i = 0; i < need_clus; i++) {
+			uint32_t c = alloc_clus_h(v, prev, &ahint);
+			if (!c) { if (first) free_chain(v, first); return -4; }   /* disk full */
+			if (!first) first = c;
+			prev = c;
+		}
 	}
 	off = 0;
 	{
