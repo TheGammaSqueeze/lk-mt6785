@@ -290,29 +290,68 @@ int fat_open(fat_vol *v, const char *path, fat_file *f)
 	return -3;
 }
 
+/* next_cluster with a caller-held one-sector FAT cache: a sequential chain walk
+ * mostly hits the same FAT sector (128 FAT32 entries per sector), so this turns
+ * thousands of FAT-sector reads into a handful. fatb/fatb_sec persist across
+ * calls; *fatb_sec == 0xFFFFFFFF means empty. */
+static uint32_t nextc_cached(fat_vol *v, uint32_t n, uint8_t *fatb, uint32_t *fatb_sec)
+{
+	uint32_t byteoff = v->is_fat32 ? n * 4u : n * 2u;
+	uint32_t sec = v->fat_start + byteoff / 512u;
+	uint32_t off = byteoff % 512u;
+	uint32_t val;
+	if (sec != *fatb_sec) {
+		if (v->rd(v->ctx, sec, 1, fatb) != 1) return 0;
+		*fatb_sec = sec;
+	}
+	if (v->is_fat32) { val = rd32(fatb + off) & 0x0FFFFFFFu; return (val >= 0x0FFFFFF8u) ? 0 : val; }
+	val = rd16(fatb + off);
+	return (val >= 0xFFF8u) ? 0 : val;
+}
+
 uint32_t fat_read(fat_file *f, uint32_t off, void *buf, uint32_t len)
 {
 	fat_vol *v = f->v;
 	uint32_t cbytes = (uint32_t)v->sec_per_clus * 512u;
 	uint32_t got = 0, clus = f->first_clus, skip, i;
 	uint8_t *out = buf;
+	uint8_t fatb[512]; uint32_t fatb_sec = 0xFFFFFFFFu;   /* local FAT-sector cache */
+	uint32_t inclus;
 	if (off >= f->size) return 0;
 	if (off + len > f->size) len = f->size - off;
 	skip = off / cbytes;                              /* clusters to skip */
-	for (i = 0; i < skip && clus; i++) clus = next_cluster(v, clus);
+	for (i = 0; i < skip && clus; i++) clus = nextc_cached(v, clus, fatb, &fatb_sec);
 	if (!clus) return 0;
-	{
-		uint32_t inclus = off % cbytes;               /* byte offset within cluster */
-		while (len && clus >= 2) {
+	inclus = off % cbytes;                            /* byte offset within cluster */
+	while (len && clus >= 2) {
+		/* Coalesce a run of physically CONTIGUOUS clusters (clus, clus+1, ...)
+		 * into ONE big block transfer straight into the caller buffer. A ROM is
+		 * usually contiguous, so a 16MB load becomes a couple of transfers
+		 * instead of ~4096 (one per cluster) plus ~4096 FAT walks. Only when we
+		 * are at a cluster boundary and want at least a whole cluster. */
+		if (inclus == 0 && len >= cbytes) {
+			uint32_t want_clus = len / cbytes;
+			uint32_t c = clus, run = 1;
+			uint32_t succ = nextc_cached(v, c, fatb, &fatb_sec);
+			uint32_t nsec;
+			while (run < want_clus && succ == c + 1u) {
+				c = succ; run++;
+				succ = nextc_cached(v, c, fatb, &fatb_sec);
+			}
+			nsec = run * (uint32_t)v->sec_per_clus;
+			if (v->rd(v->ctx, clus_lba(v, clus), nsec, out + got) != nsec) return got;
+			got += nsec * 512u; len -= nsec * 512u;
+			clus = succ;                              /* successor of the last cluster in the run */
+			continue;
+		}
+		/* Partial cluster (a non-zero head offset, or a final tail < one cluster):
+		 * read whole sectors in bulk, bouncing through sec_buf only for a partial
+		 * head/tail sector. */
+		{
 			uint32_t sec = inclus / 512u, so = inclus % 512u;
 			uint32_t lba = clus_lba(v, clus) + sec;
 			while (sec < v->sec_per_clus && len) {
 				if (so == 0 && len >= 512u) {
-					/* Fast path: read as many WHOLE sectors as fit in this
-					 * cluster and the request in ONE block transfer straight
-					 * into the caller buffer (no per-sector bounce through
-					 * sec_buf). Turns a 16MB ROM load from 32768 single-sector
-					 * reads into a handful of multi-sector reads. */
 					uint32_t maxsec = v->sec_per_clus - sec;
 					uint32_t wantsec = len / 512u;
 					uint32_t nsec = wantsec < maxsec ? wantsec : maxsec;
@@ -327,7 +366,7 @@ uint32_t fat_read(fat_file *f, uint32_t off, void *buf, uint32_t len)
 				}
 			}
 			inclus = 0;
-			if (len) clus = next_cluster(v, clus);
+			if (len) clus = nextc_cached(v, clus, fatb, &fatb_sec);
 		}
 	}
 	return got;
