@@ -61,6 +61,16 @@ if [ -d "$SNES_ASSETS" ]; then
 	echo ">> Packaging boot_b (animation + chime + SNES pack)"
 	python3 tools/ayaneo/gba/build_snes_boot_b.py out/snes_pack.bin out/gba_menu_boot_b.img
 
+	# The pack (hence boot_b) is byte-deterministic: it only changes when the SNES
+	# assets or the cart art change. Report whether it differs from the last build so
+	# the user can skip re-flashing the ~22MB boot_b on code-only (lk_a) changes.
+	BOOT_B_CHANGED=1
+	PACK_SHA="$(sha256sum out/snes_pack.bin | cut -d' ' -f1)"
+	if [ -f out/.snes_pack.sha ] && [ "$(cat out/.snes_pack.sha)" = "$PACK_SHA" ]; then
+		BOOT_B_CHANGED=0
+	fi
+	echo "$PACK_SHA" > out/.snes_pack.sha
+
 	# Non-fatal smoke test: build the host renderer and render the home + a submenu
 	# from the freshly-packed blob, so an asset-pipeline break (bad pack, missing
 	# resource, render crash) is caught here rather than only on device.
@@ -93,3 +103,7 @@ echo
 echo ">> Done."
 echo "   Signed LK:  out/lk_a_gba_sd_signed.img -> fastboot flash lk_a    out/lk_a_gba_sd_signed.img"
 echo "   boot_b:     out/gba_menu_boot_b.img    -> fastboot flash boot_b  out/gba_menu_boot_b.img"
+if [ "${BOOT_B_CHANGED:-1}" = "0" ]; then
+	echo "   NOTE: boot_b assets are UNCHANGED since the last build - you can skip"
+	echo "         re-flashing boot_b and just flash lk_a (a code-only change)."
+fi
