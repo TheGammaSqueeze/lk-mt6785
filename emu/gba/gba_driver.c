@@ -471,6 +471,15 @@ static unsigned load_rom(void)
 static event_t ev_cpu, ev_main;
 static thread_t *s_cpu_thread;
 
+/* Clean restart of the CPU thread's execute_arm after a mid-run core reset (the
+ * BIOS-intro -> selected-game transition). We cannot resume execute_arm in place
+ * after gba_core_start()/reset_gba() flushes the dynarec (it would run stale
+ * translated code -> data abort in translate_block_arm). Instead, when a restart
+ * is requested, the CPU thread longjmps back to the top of gba_core_cpu_loop so
+ * execute_arm re-enters cleanly - exactly like the very first start. */
+static void *s_cpu_jb[8];
+static volatile int s_cpu_restart_req;
+
 static void gba_dbg(const char *msg);	/* on-screen status (defined below) */
 
 /* LK boots with SCTLR.A=1 (strict alignment faults, set in arch/arm/crt0.S).
@@ -495,13 +504,18 @@ void gba_yield_to_main(void)
 	if (first) { first = 0; gba_dbg("GBA 6b: dynarec yielded 1st frame"); }
 	event_signal(&ev_main, false);
 	event_wait(&ev_cpu);
+	if (s_cpu_restart_req) {		/* a core reset happened while we were parked */
+		s_cpu_restart_req = 0;
+		__builtin_longjmp(s_cpu_jb, 1);	/* re-enter gba_core_cpu_loop from the top */
+	}
 }
 
 static int cpu_thread_fn(void *arg)
 {
 	(void)arg;
-	event_wait(&ev_cpu);		/* wait for the first frontend kick */
-	gba_disable_align_faults();	/* gpSP does unaligned host loads (see above) */
+	event_wait(&ev_cpu);		/* wait for the first frontend kick (once) */
+	__builtin_setjmp(s_cpu_jb);	/* restart point for the intro -> game reset */
+	gba_disable_align_faults();	/* (re)disable align faults on this core */
 	gba_dbg("GBA 6a: cpu thread running core");
 	gba_core_cpu_loop();		/* runs forever, yields via gba_yield_to_main */
 	return 0;
@@ -1100,7 +1114,10 @@ static int emu_thread(void *arg)
 					if (romsz) break;
 					gba_dbg("GBA ERR: SD ROM load failed, back to selector");
 				}
-				/* reset the running core into the selected game (SD BIOS + cart) */
+				/* reset the running core into the selected game (SD BIOS + cart).
+				 * reset_gba flushes the dynarec, so we must NOT let execute_arm
+				 * resume in place; request a clean restart (see gba_yield_to_main)
+				 * which the first main-loop frame below triggers. */
 				if (gba_core_start(romsz, s_sd_bios) != 0) {
 					gba_dbg("GBA ERR: SD game core_start failed");
 					return 0;
@@ -1109,6 +1126,7 @@ static int emu_thread(void *arg)
 						(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
 				if (!PRESSED(GPIO_B))
 					state_read(scratch);
+				s_cpu_restart_req = 1;	/* CPU thread re-enters execute_arm cleanly */
 			}
 			/* no ROMs on the card: keep showing the BIOS (romsz stays 0). */
 		}
