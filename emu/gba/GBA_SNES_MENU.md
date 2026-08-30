@@ -38,9 +38,36 @@ menu - the whole SD flow is gated behind `AYANEO_GBA_SD=yes`).
 - the bottom filmstrip draws a small GBA cart per slot (centred), so the chevron
   points at a real thumbnail.
 - A / Start set `m->launch`; `snes_menu_take_launch()` hands it to the driver.
-- SELECT toggles a name A-Z / Z-A sort (the SD scan is already A-Z).
+- SELECT toggles a name A-Z / Z-A sort (the SD scan is already A-Z, sorted
+  case-insensitively in `sd_fat.c`); focus stays on the same game across the flip.
 - rosters below `CAR_RING_MIN` (8) use a finite LINEAR carousel with clamped nav
   (no on-screen ring wrap = no card pop); 8+ keep the seamless SNES ring.
+
+## Controls (GBA mode)
+
+    D-pad L/R     move one game (auto-repeat when held)
+    D-pad Up      open the menubar (SNES settings screens, decorative for GBA)
+    D-pad Down    open the Suspend Point List (SNES firmware screen, not wired for GBA)
+    A / Start     launch the focused ROM
+    SELECT        toggle name sort A-Z <-> Z-A
+    L / R shoulder  PAGE JUMP by 10 games, snap + auto-repeat (fast scroll for big
+                    libraries); `car_jump()` clamps the step to [1, n-1] so it never
+                    wraps onto the same card (a page of 10 in a 10-game ring)
+    Start+Select  toggle the perf HUD (off by default; consumed so it does not
+                  also launch/sort) - shows current + peak render ms for flicker
+                  diagnosis on device
+
+## Large-library affordances
+
+A full SD card of ROMs (up to the 128 the driver hands over) is the common case, so:
+- the bottom filmstrip is a fixed-spacing SCROLLING window (focus kept near centre,
+  clamped at the ends) once the roster exceeds what fits, instead of cramming every
+  cart into an unreadable line.
+- a slim scroll-position bar (top-right, `VIEW_TOP` 1:1 screen space) shows a cyan
+  thumb at `focus/(n-1)` when `n >= CAR_RING_MIN` - a numeric "N / total" is not used
+  because the SNES firmware fonts have incomplete digit glyphs (no `4`, etc).
+- the L/R page jump above; both it and a d-pad step nudge the parallax background
+  (`bg_scroll_kick`) so the wallpaper stays alive during fast traversal.
 
 ## boot_b layout (SD flow: the ROM region is free, ROM comes from the card)
 
@@ -102,9 +129,10 @@ blocking `ayaneo_canvas_present()` per frame (config_input blocks on the panel
 FRAME_DONE = one buffer per vsync). Do NOT stack a wait/timer on top: that adds
 delay after the vsync block, overruns a refresh, drops frames. `snes_menu_update`
 gets the REAL measured dt (not fixed 1/60) so motion is correct at any frame rate.
-A TEMP on-screen "R<render> P<peak> <fps>" readout (top-left) reports the device
+An on-screen "R<render> P<peak> <fps>" readout (top-left) reports the device
 render time; P (peak render ms) is the number to watch - a spike over 16.7ms is
-what breaks vsync.
+what breaks vsync. It is OFF by default (clean menu) and toggles with Start+Select
+so the user can still report the numbers if flicker is ever seen on device.
 
 Audio handoff: the menu BGM feeds the shared AFE ring; on launch the whole ring is
 zeroed (`ayaneo_menu_audio_silence()`) so the DMA loops silence during the ROM
@@ -116,5 +144,14 @@ load instead of replaying the BGM tail.
     GBA_ROSTER=6 ./host_render <pack> <out.ppm> <settle> <nav>   # e.g. nav "URRRA"
 
 `COVCHECK=1` (unwritten pixels), `ALPHACHECK=1` (alpha<0xFF), `TIMEIT=N`
-(ms/render), `SNES_FORCE169=1` (16:9). The device is often unreachable; validate
-host-side and stage `lk_a.img` + `gba_menu_boot_b.img` to `/mnt/c/pairmini`.
+(ms/render), `SNES_FORCE169=1` (16:9), `AUDIT_AUDIO=1` (BGM/SFX GUIDs resolve in the
+pack), `GBA_ROSTER=N` (mock N ROMs, up to 128, cleaned by the real `gba_clean_name`).
+
+`tools/ayaneo/gba/validate_menu.sh` is the full regression pass: all 11 menu states
+plus a large-library set (n=10/40/128 exercising the page-jump `[`/`]`, sort-at-scale,
+scrolling filmstrip and position bar) plus the audio-asset audit - 18 states + audio,
+each non-blank-checked. `ctcheck` (host_render `- ctcheck`) diffs the card-tile /
+focused-tile caches against a live render.
+
+The device is often unreachable; validate host-side and stage `lk_a.img` +
+`gba_menu_boot_b.img` to `/mnt/c/pairmini`.
