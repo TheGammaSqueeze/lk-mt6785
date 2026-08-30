@@ -2715,6 +2715,24 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			       152.0f - RESUME_TITLE_DY * m->resume_dim, ts,
 			       0xFF000000u, 1, nm);
 	}
+	/* scroll-position indicator for large GBA libraries: the shoulder page-jump moves
+	 * in big steps, so show where the focus sits in the roster. A numeric "N / total"
+	 * is out (the SNES firmware fonts have incomplete digit glyphs), so draw a slim
+	 * horizontal bar with a thumb at focus/(n-1) - font-free and SNES-clean. Only when
+	 * the roster is big enough to scroll, only on the home carousel. Drawn in VIEW_TOP
+	 * (1:1 screen space) so it pins consistently in 16:9 and 4:3. */
+	if (m->gba_mode && m->ngames >= CAR_RING_MIN && m->state == 0) {
+		int f = (((m->focus % m->ngames) + m->ngames) % m->ngames);
+		float TRW = 210.0f, TRH = 10.0f, tx = 1280.0f - 30.0f - TRW, ty = 132.0f;
+		float thw = TRW / (float)m->ngames; if (thw < 16.0f) thw = 16.0f;
+		float thx = tx + (TRW - thw) * (m->ngames > 1 ? (float)f / (float)(m->ngames - 1) : 0.0f);
+		set_view(m, t, VIEW_TOP);
+		/* track (dim) then thumb (bright cyan, matching the active-card accent) */
+		snes_fill_quad(t, tx + TRW * 0.5f, ty, TRW + 12.0f, TRH + 14.0f, 0.05f, 0.07f, 0.10f, 0.66f);
+		snes_fill_quad(t, tx + TRW * 0.5f, ty, TRW, TRH, 0.22f, 0.28f, 0.34f, 0.9f);
+		snes_fill_quad(t, thx + thw * 0.5f, ty, thw, TRH, 0.14f, 0.75f, 1.0f, 1.0f);
+		set_view(m, t, VIEW_CONTENT);
+	}
 
 	/* sort-rule label, briefly shown after a Select press */
 	if (m->sort_label_t > 0) {
