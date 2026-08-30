@@ -89,6 +89,8 @@ extern void mt_power_off(void);
 static snes_pack s_pk;
 static snes_menu s_menu;
 static snes_mixer s_mix;
+static int s_show_hud;   /* perf HUD off by default; Start+Select toggles it */
+static int s_hud_combo;  /* edge-latch for the toggle combo */
 static short s_mixbuf[16384 * 2];
 
 /* roster name storage (stripped ".gba"), + a pointer table for the menu */
@@ -249,7 +251,18 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		in.left = PRESSED(K_LEFT); in.right = PRESSED(K_RIGHT);
 		in.up = PRESSED(K_UP); in.down = PRESSED(K_DOWN);
 		in.a = PRESSED(K_A); in.b = PRESSED(K_B);
-		in.start = PRESSED(K_START); in.select = PRESSED(K_SELECT);
+		/* Start+Select held together toggles the perf HUD (below) and is consumed
+		 * so it does not also launch/sort; pressed individually they behave normally. */
+		{
+			int cs = PRESSED(K_START), csel = PRESSED(K_SELECT);
+			if (cs && csel) {
+				if (!s_hud_combo) { s_show_hud = !s_show_hud; s_hud_combo = 1; }
+				in.start = 0; in.select = 0;
+			} else {
+				s_hud_combo = 0;
+				in.start = cs; in.select = csel;
+			}
+		}
 		in.lb = PRESSED(K_LB); in.rb = PRESSED(K_RB);
 
 		t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
@@ -290,8 +303,12 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			pb[i++]='.'; pb[i++]='0'+(peak_us/100)%10; pb[i++]='m'; pb[i++]='s'; pb[i++]=' ';
 			pb[i++]='0'+(fps/100)%10; pb[i++]='0'+(fps/10)%10; pb[i++]='0'+fps%10;
 			pb[i++]='f'; pb[i]=0;
-			ayaneo_fill(fb, pitch, 4, 4, 16 * i + 12, 40, 0xFF101018u);  /* readable bg */
-			ayaneo_text(fb, pitch, 8, 10, 2, 0xFF00FF66u, pb);
+			/* off by default for a clean menu; Start+Select toggles it on so the user
+			 * can still report the device render/peak ms if flicker is ever seen. */
+			if (s_show_hud) {
+				ayaneo_fill(fb, pitch, 4, 4, 16 * i + 12, 40, 0xFF101018u);  /* readable bg */
+				ayaneo_text(fb, pitch, 8, 10, 2, 0xFF00FF66u, pb);
+			}
 		}
 		if (fade_in > 0) {   /* fade in from black (255 -> 0) over 18 frames = 0.3s */
 			ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H, 0xFF000000u,
