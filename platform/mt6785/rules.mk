@@ -371,12 +371,12 @@ OBJS += emu/gba/sd_fastboot.o
 OBJS += emu/gba/menu/snes_pack.o emu/gba/menu/snes_scene.o emu/gba/menu/snes_render.o emu/gba/menu/snes_audio.o
 OBJS += emu/gba/menu/snes_menu.o emu/gba/gba_snes_menu.o
 GBA_MENU_FP := -mfpu=neon -mfloat-abi=softfp -ffast-math
-# perf-critical (blitter + audio mixer): keep NEON; -Os to fit lk_a's 2MB budget
-# (the blit fast path is memory-bound so the size trade keeps NEON vectorisation)
-$(BUILDDIR)/emu/gba/menu/snes_render.o: CFLAGS += $(GBA_MENU_FP) -Os
+# perf-critical BLITTER: -O2 + NEON for full 60fps. This is the dominant per-frame
+# cost (wallpaper + card + text blits); -Os here drops below 60fps and the double
+# buffer visibly flickers. Keeping just this at -O2 fits the 2MB lk_a budget (raw
+# ~1.98MB). The rest is orchestration/one-time build - -Os to fit alongside gpSP.
+$(BUILDDIR)/emu/gba/menu/snes_render.o: CFLAGS += $(GBA_MENU_FP)
 $(BUILDDIR)/emu/gba/menu/snes_audio.o:  CFLAGS += $(GBA_MENU_FP) -Os
-# logic-heavy (scene build + menu state machine): -Os to fit lk_a's 2MB budget
-# (this LK already carries the full gpSP GBA emulator alongside the menu)
 $(BUILDDIR)/emu/gba/menu/snes_scene.o:  CFLAGS += $(GBA_MENU_FP) -Os
 $(BUILDDIR)/emu/gba/menu/snes_menu.o:   CFLAGS += $(GBA_MENU_FP) -Os
 $(BUILDDIR)/emu/gba/menu/snes_pack.o:   CFLAGS += -Os
