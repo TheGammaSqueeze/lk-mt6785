@@ -979,8 +979,11 @@ static int legal_ip_lines(snes_menu *m, const char **out, int max)
 	const snes_pack *pk = m->pk;
 	uint32_t seen[128];
 	unsigned short ord[128];
-	int n = m->ngames, i, j, ns = 0, nl = 0;
-	if (n <= 0) return 0;
+	/* GBA ROMs have no pack game record (game_raw would read OOB past the pack's
+	 * SNES roster), so skip the per-game copyright list in GBA mode - only the
+	 * static tail below is shown. */
+	int n = m->gba_mode ? 0 : m->ngames, i, j, ns = 0, nl = 0;
+	if (n <= 0) goto tail;
 	for (i = 0; i < n; i++) ord[i] = (unsigned short)i;
 	for (i = 1; i < n; i++) {                       /* sort (publisher, release, title) */
 		unsigned short k = ord[i];
@@ -1005,6 +1008,7 @@ static int legal_ip_lines(snes_menu *m, const char **out, int max)
 		seen[ns++] = g->copyright;
 		out[nl++] = snes_str(pk, g->copyright);
 	}
+tail:
 	for (i = 0; i < (int)(sizeof(g_legal_tail) / sizeof(g_legal_tail[0])) && nl < max; i++)
 		out[nl++] = g_legal_tail[i];
 	return nl;
