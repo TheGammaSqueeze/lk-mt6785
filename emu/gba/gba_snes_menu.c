@@ -75,6 +75,7 @@ extern void mt_power_off(void);
 #define SNES_CHROME_PA 0x53700000u   /* static chrome cache (1280*960*4 = 4.7MB) */
 #define SNES_WP43_PA   0x54000000u   /* 4:3 warped-wallpaper cache (2701*960*4 = 10.4MB) */
 #define SNES_CTILE_PA  0x54C00000u   /* card-tile cache (GBA cards identical -> cap 1) */
+#define SNES_FCT_PA    0x54C80000u   /* focused (blue) card-body tile (320*360*4 = 450KB) */
 /* the decompressed blob must stay strictly inside [BLOB_PA, HOME_PA); cap it 2MB
  * short of the 24MB region so it can never overrun the home node pool */
 #define SNES_RAW_MAX   ((SNES_HOME_PA - SNES_BLOB_PA) - 2u * 1024 * 1024)  /* 22MB */
@@ -216,6 +217,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		static int s_ctile_gi[1];
 		snes_menu_set_ctile(&s_menu, (uint32_t *)SNES_CTILE_PA, s_ctile_gi, 1);
 	}
+	snes_menu_set_fct(&s_menu, (uint32_t *)SNES_FCT_PA);
 	snes_menu_set_wp43(&s_menu, (uint32_t *)SNES_WP43_PA);
 	/* Resume-panel overlay cache: reuse the deflate staging (free after load_pack).
 	 * fb-size = pitch*960*4 <= 1536*960*4 = 5.9MB < the 8MB comp region. */

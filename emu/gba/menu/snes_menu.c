@@ -817,7 +817,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		/* rounded selection cursor on the focused card - only while the carousel
 		 * is the active focus (state 0 home) AND not mid-slide (the slide cursor
 		 * draws it travelling to/from the menubar). */
-		if (blue_a > 0.003f && m->state == 0 && m->cur_slide_t >= CUR_SLIDE_DUR)
+		if (blue_a > 0.003f && !m->no_cursor && m->state == 0 && m->cur_slide_t >= CUR_SLIDE_DUR)
 			draw_card_cursor(m, t, cx, cy, blue_a > 1.0f ? 1.0f : blue_a,
 					 dim, frame->img);
 	} else {                                 /* fallback: plain framed boxart */
@@ -835,13 +835,14 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 /* Render game gi's NORMAL card body (dark frame + boxart + player icon + resume
  * dots, dim=1, no cursor) centred in a SNES_CT_W x SNES_CT_H straight-RGBA tile, at
  * the current aspect's content scale (baked in so the tile blits 1:1). */
-static void render_card_tile(snes_menu *m, int gi, uint32_t *tile)
+static void render_card_tile(snes_menu *m, int gi, uint32_t *tile, float blue_a)
 {
 	snes_target tt;
 	unsigned i;
 	int z;
 	float S = m->aspect ? ASP_CONTENT_S : 1.0f;
 	float save_rd = m->resume_dim, save_cs = m->cont_shift, save_xf = m->xfade_t;
+	int save_nc = m->no_cursor;
 	{ char *zp = (char *)&tt; for (z = 0; z < (int)sizeof(tt); z++) zp[z] = 0; }
 	tt.fb = tile; tt.pitch = SNES_CT_W; tt.W = SNES_CT_W; tt.H = SNES_CT_H;
 	tt.offx = 0; tt.offy = 0;
@@ -850,8 +851,30 @@ static void render_card_tile(snes_menu *m, int gi, uint32_t *tile)
 			 (float)SNES_CT_H / 2.0f - S * CAR_CY);
 	for (i = 0; i < CT_PIX; i++) tile[i] = 0;          /* transparent */
 	m->resume_dim = 0.0f; m->cont_shift = 0.0f; m->xfade_t = 0.0f;
-	draw_card(m, &tt, gi, 0.0f, 0.0f, 1.0f);           /* dark, undimmed, no cursor */
+	m->no_cursor = 1;                                  /* cursor drawn live on top */
+	draw_card(m, &tt, gi, 0.0f, blue_a, 1.0f);         /* undimmed, no cursor */
 	m->resume_dim = save_rd; m->cont_shift = save_cs; m->xfade_t = save_xf;
+	m->no_cursor = save_nc;
+}
+
+/* Build the focused (fully-blue) card body tile once. Every GBA cart is the same
+ * placeholder, so the active card body is identical for all games - render it into
+ * `fct` and blit + draw the pulsing cursor live each frame, killing the last
+ * per-frame live card render (~2.7ms on the A55). Rebuilt when the aspect flips. */
+static const uint32_t *fct_get(snes_menu *m, int gi)
+{
+	if (!m->fct) return 0;
+	if (!m->fct_ready || m->fct_aspect != m->aspect) {
+		render_card_tile(m, gi, m->fct, 1.0f);         /* blue_a=1 -> active body */
+		m->fct_ready = 1;
+		m->fct_aspect = m->aspect;
+	}
+	return m->fct;
+}
+
+void snes_menu_set_fct(snes_menu *m, uint32_t *buf)
+{
+	m->fct = buf; m->fct_ready = 0; m->fct_aspect = -1;
 }
 
 /* Fetch game gi's cached tile, rendering+caching on a miss. Direct-mapped by gi so a
@@ -868,7 +891,7 @@ static const uint32_t *ctile_get(snes_menu *m, int gi)
 	}
 	slot = gi % m->ctile_cap; if (slot < 0) slot += m->ctile_cap;
 	if (m->ctile_gi[slot] != gi) {
-		render_card_tile(m, gi, m->ctile + (unsigned)slot * CT_PIX);
+		render_card_tile(m, gi, m->ctile + (unsigned)slot * CT_PIX, 0.0f);
 		m->ctile_gi[slot] = gi;
 	}
 	return m->ctile + (unsigned)slot * CT_PIX;
@@ -943,7 +966,23 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 	}
 	/* the selected card stays bright and keeps its blue active frame in resume
 	 * (cardColorDark dims only the OTHER cards); just its normal crossfade. */
-	draw_card(m, t, m->focus, 640.0f + m->sel_world + m->cont_shift, 1.0f - prog, 1.0f);
+	{
+		float fcx = 640.0f + m->sel_world + m->cont_shift;
+		/* Cache fast path: when the focused card is fully blue (no crossfade
+		 * mid-nav) its body is the identical cached fct tile - blit it and draw
+		 * only the pulsing cursor live, skipping the ~2.7ms live card render. The
+		 * outgoing crossfade (prog>0) falls through to the live draw_card. */
+		const uint32_t *fct = (prog <= 0.003f) ? fct_get(m, m->focus) : 0;
+		if (fct) {
+			const snes_spr_entry *cf = m->card_norm ? m->card_norm : m->card_act;
+			snes_blit_raw(t, fct, SNES_CT_W, SNES_CT_H, fcx, CAR_CY, 1.0f);
+			if (m->state == 0 && m->cur_slide_t >= CUR_SLIDE_DUR)
+				draw_card_cursor(m, t, fcx, CAR_CY, 1.0f, 1.0f,
+						 cf ? cf->img : 0);
+		} else {
+			draw_card(m, t, m->focus, fcx, 1.0f - prog, 1.0f);
+		}
+	}
 }
 
 /* ---- bottom thumbnail filmstrip (ports sys_thumbnail_icon: a fixed 21-icon
@@ -1445,6 +1484,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->rcache = 0; m->rcache_ready = 0; m->rcache_sel = -1e9f;
 	m->gba_mode = 0; m->gba_names = 0; m->gba_cart_img = 0; m->launch = -1; m->pstart = 0;
 	m->ctile = 0; m->ctile_gi = 0; m->ctile_cap = 0; m->ctile_aspect = -1;
+	m->fct = 0; m->fct_ready = 0; m->fct_aspect = -1; m->no_cursor = 0;
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;
 	m->disp_cur = m->disp_sel = 1; m->sub_rep_t = 0.0f; m->sub_rep_ctrl = 0;
 	m->disp_zone = 0; m->frame_sel = 0; m->frame_scroll = 0; m->frame_applied = 0;

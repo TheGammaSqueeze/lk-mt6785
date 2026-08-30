@@ -60,6 +60,7 @@ menu - the whole SD flow is gated behind `AYANEO_GBA_SD=yes`).
     0x53700000  static chrome cache (1280x960)
     0x54000000  4:3 warped-wallpaper cache (WP43_PERIOD 2701 x 960 = 10.4MB)
     0x54C00000  card-tile cache (GBA cards all identical -> cap 1)
+    0x54C80000  focused (blue) card-body tile (identical for all GBA carts)
 
 The blob lives where the 64MB gpSP arena (0x50000000) normally sits; it is free
 during ROM-select and the emulator reclaims it on launch.
@@ -84,6 +85,13 @@ stack (host render times in parens):
 - resume-panel cache: the suspend list is static once slid in, so it is rendered
   once into an overlay and `snes_composite`d each frame instead of re-walking its
   scene subtree (5.19 -> 3.02ms).
+- focused-card body tile (`fct`): the ctile cache only serves the NON-focused cards;
+  the blue (active) focused card was still rendered live every frame (~2.7ms on the
+  A55). Its body is identical for every GBA cart, so it is baked ONCE (blue frame +
+  cart art, cursor suppressed) and blitted each frame with only the pulsing cursor
+  drawn live. Host carousel phase 1101 -> 555us, total frame 1891 -> 1370us. The
+  cache is bypassed mid-nav crossfade (never happens in GBA mode - the crossfade is
+  snapped - but kept for correctness) and rebuilt on an aspect flip.
 
 Result (host): home / menubar / carousel ~1.9ms, resume 3.0ms, submenus 3.2-4.6ms
 (static when viewed, so no flicker even if over budget on device). The blitter

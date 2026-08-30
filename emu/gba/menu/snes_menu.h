@@ -103,6 +103,11 @@ typedef struct {
 	uint32_t *rcache;
 	int rcache_ready, rcache_y0, rcache_y1;
 	float rcache_sel;             /* sel_world the panel was cached for (chevron pos) */
+	/* focused-card body tile: the blue (active) card body is identical for every GBA
+	 * cart, so cache it ONCE (like ctile) and blit it + draw only the pulsing cursor
+	 * live - kills the last per-frame live card render (~2.7ms on the A55). */
+	uint32_t *fct;
+	int fct_ready, fct_aspect, no_cursor;
 	/* Card-tile cache (single-buffer 60fps): each game's NORMAL card body (dark frame +
 	 * boxart + player icon + resume dots, dim=1, no cursor) is rendered ONCE into a
 	 * CT_W*CT_H straight-RGBA tile and blitted per frame by draw_carousel instead of ~6
@@ -202,6 +207,9 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
  * cap * SNES_CT_W * SNES_CT_H u32; gi must hold cap ints. Pass buf=0 to disable the
  * cache (draw_carousel then renders every card live, the b369be3 path). */
 void snes_menu_set_ctile(snes_menu *m, uint32_t *buf, int *gi, int cap);
+/* Provide the focused (blue) card-body tile cache (SNES_CT_W*SNES_CT_H u32), or 0 to
+ * render the focused card live each frame. Identical for all GBA carts. */
+void snes_menu_set_fct(snes_menu *m, uint32_t *buf);
 /* tile dimensions (one card body); exported so callers can size the buffer */
 #define SNES_CT_W 320
 #define SNES_CT_H 360

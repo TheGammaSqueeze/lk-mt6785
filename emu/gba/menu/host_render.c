@@ -80,6 +80,7 @@ int main(int argc, char **argv)
 		if (!getenv("SNES_NOCACHE")) {
 			uint32_t *ctbuf = malloc((size_t)cap * SNES_CT_W * SNES_CT_H * 4);
 			snes_menu_set_ctile(&menu, ctbuf, ctgi, cap);
+			snes_menu_set_fct(&menu, malloc((size_t)SNES_CT_W * SNES_CT_H * 4));
 		}
 	}
 
@@ -93,6 +94,7 @@ int main(int argc, char **argv)
 		int ni, s, worst = 0, worstpx = 0, nstates = 0;
 		int ctgi2[128]; int cap2 = menu.ngames > 128 ? 128 : menu.ngames;
 		uint32_t *ctb2 = malloc((size_t)(cap2<1?1:cap2) * SNES_CT_W * SNES_CT_H * 4);
+		uint32_t *fctb = malloc((size_t)SNES_CT_W * SNES_CT_H * 4);
 		memset(&in, 0, sizeof(in));
 		for (s = 0; s < 240; s++) snes_menu_update(&menu, &in, 1.0f/60.0f);
 		for (ni = 0; ni <= (int)strlen(rnav); ni++) {
@@ -101,10 +103,12 @@ int main(int argc, char **argv)
 			for (s = 0; s < 40; s++) { memset(&in,0,sizeof(in)); snes_menu_update(&menu,&in,1.0f/60.0f); }
 			/* A = live (cache off) */
 			snes_menu_set_ctile(&menu, 0, 0, 0);
+			snes_menu_set_fct(&menu, 0);
 			for (i=0;i<W*H;i++) fb[i]=0xFF000000u; snes_menu_render(&menu,&t);
 			for (i=0;i<W*H;i++) A[i]=fb[i];
 			/* B = cached */
 			snes_menu_set_ctile(&menu, ctb2, ctgi2, cap2<1?1:cap2);
+			snes_menu_set_fct(&menu, fctb);
 			for (i=0;i<W*H;i++) fb[i]=0xFF000000u; snes_menu_render(&menu,&t);
 			for (i=0;i<W*H;i++) B[i]=fb[i];
 			for (px=0; px<W*H; px++) {
