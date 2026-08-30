@@ -12,6 +12,7 @@
  */
 #include "menu/snes_pack.h"
 #include "menu/snes_render.h"
+#include "menu/snes_audio.h"
 #include "sd_fat.h"           /* gba_rom_entry */
 
 /* ---- LK / driver primitives (externs; no LK headers pulled in here) ---- */
@@ -26,6 +27,8 @@ extern int  zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstle
 extern int  partition_read(const char *name, unsigned long long off, void *buf, unsigned long len);
 extern unsigned char *gba_core_scratch_ptr(void);
 extern unsigned gba_core_scratch_size(void);
+extern int  ayaneo_menu_audio_room(void);
+extern void ayaneo_menu_audio_submit(const short *stereo, unsigned frames);
 
 /* mirror of gba_driver.c menu_keys() bits */
 enum { MK_UP=1, MK_DOWN=2, MK_LEFT=4, MK_RIGHT=8, MK_A=16, MK_B=32, MK_AYA=64 };
@@ -69,6 +72,30 @@ static int menu_pack_load(void)
 	if (snes_pack_open(&s_pk, (void *)MENU_PACK_PA, rawlen) != 0) return -1;
 	s_pk_ok = 1;
 	return 0;
+}
+
+/* ---- audio: BGM loop + move/confirm SFX via the menu mixer ---- */
+static snes_mixer s_mix;
+static short s_mixbuf[2048 * 2];
+
+static void play_snd(const char *id, int loop, int gain, int is_bgm)
+{
+	const snes_snd_entry *s = snes_res_snd(&s_pk, fnv1a(id));
+	if (!s) return;
+	snes_audio_play(&s_mix, (const int16_t *)(s_pk.base + s->pcm), s->frames,
+			s->rate, s->loop_start, s->loop_end, loop, gain, is_bgm);
+}
+
+/* keep the 48 kHz codec ring fed from the mixer, paced by the AFE read cursor */
+static void pump_audio(void)
+{
+	int room = ayaneo_menu_audio_room();
+	while (room > 0) {
+		int n = room > 2048 ? 2048 : room;
+		snes_audio_mix(&s_mix, s_mixbuf, (unsigned)n);
+		ayaneo_menu_audio_submit(s_mixbuf, (unsigned)n);
+		room -= n;
+	}
 }
 
 /* ---- carousel geometry ----
@@ -174,6 +201,9 @@ int gba_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	if (nrom <= 0) return -1;
 	if (menu_pack_load() != 0) return -2;
 
+	snes_audio_init(&s_mix);
+	play_snd("gbamenu/music", 1 /*loop*/, 180, 1 /*bgm*/);
+
 	for (;;) {
 		unsigned pitch, W, H;
 		unsigned int *fb;
@@ -182,10 +212,11 @@ int gba_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 
 		if (!k) held = 0;
 		if (!held) {
-			if (k & (MK_LEFT|MK_UP))         { sel = (sel + nrom - 1) % nrom; held = 1; }
-			else if (k & (MK_RIGHT|MK_DOWN)) { sel = (sel + 1) % nrom; held = 1; }
-			else if (k & MK_A)               { return sel; }
+			if (k & (MK_LEFT|MK_UP))         { sel = (sel + nrom - 1) % nrom; held = 1; play_snd("gbamenu/sfx_move", 0, 256, 0); }
+			else if (k & (MK_RIGHT|MK_DOWN)) { sel = (sel + 1) % nrom; held = 1; play_snd("gbamenu/sfx_move", 0, 256, 0); }
+			else if (k & MK_A)               { play_snd("gbamenu/sfx_confirm", 0, 256, 0); pump_audio(); return sel; }
 		}
+		pump_audio();
 
 		/* tween the scroll toward the selected card, shortest wrap direction */
 		{

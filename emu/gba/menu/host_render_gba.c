@@ -29,6 +29,8 @@ int zunzip(unsigned char*s,unsigned long*l,void*d,int dl,int o){(void)s;(void)l;
 int partition_read(const char*n,unsigned long long o,void*b,unsigned long l){(void)n;(void)o;(void)b;(void)l;return -1;}
 unsigned char *gba_core_scratch_ptr(void){return 0;}
 unsigned gba_core_scratch_size(void){return 0;}
+int ayaneo_menu_audio_room(void){return 0;}
+void ayaneo_menu_audio_submit(const short*s,unsigned f){(void)s;(void)f;}
 
 int main(int argc, char **argv)
 {

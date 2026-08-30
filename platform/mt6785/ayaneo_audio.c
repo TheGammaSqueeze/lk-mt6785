@@ -1120,3 +1120,43 @@ void ayaneo_gba_audio_pace(void)
 			break;
 	}
 }
+
+/* ---- direct 48 kHz stereo submit for the carousel-menu mixer ----
+ * The menu's snes_audio mixer already produces 48 kHz interleaved stereo s16
+ * (= the ring rate GBC_DST_HZ), so write straight into the ring with no resample.
+ * ayaneo_menu_audio_room() reports how many frames fit under the target lead over
+ * the AFE read cursor so the caller keeps the ring fed without over/underrun. */
+int ayaneo_menu_audio_room(void)
+{
+	unsigned cur, base, rd; int lead, room;
+	if (!s_gbc_audio_on || s_gbc_paused)
+		return 0;
+	cur  = afe_r(AFE_DL1_CUR);
+	base = (unsigned)(addr_t)s_gbc_ring;
+	rd   = (cur >= base) ? (cur - base) / 4u : 0u;
+	lead = (int)((s_gbc_widx - rd) & (GBC_RING_FRAMES - 1));
+	if (lead >= (int)(GBC_RING_FRAMES / 2))
+		lead -= (int)GBC_RING_FRAMES;
+	room = (int)GBA_AUDIO_LEAD - lead;
+	if (room < 0) room = 0;
+	if (room > (int)(GBC_RING_FRAMES / 4)) room = (int)(GBC_RING_FRAMES / 4);
+	return room;
+}
+
+void ayaneo_menu_audio_submit(const short *stereo, unsigned frames)
+{
+	int vol = s_gbc_vol;
+	unsigned q = (vol >= 100) ? 256u : ((unsigned)vol * 256u / 100u);
+	unsigned i;
+	if (!s_gbc_audio_on || s_gbc_paused)
+		return;
+	for (i = 0; i < frames; i++) {
+		int l = stereo[i * 2 + 0], r = stereo[i * 2 + 1];
+		unsigned idx = s_gbc_widx & (GBC_RING_FRAMES - 1);
+		if (q < 256) { l = (l * (int)q) >> 8; r = (r * (int)q) >> 8; }
+		s_gbc_ring[idx * 2 + 0] = (short)l;
+		s_gbc_ring[idx * 2 + 1] = (short)r;
+		s_gbc_widx++;
+	}
+	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+}
