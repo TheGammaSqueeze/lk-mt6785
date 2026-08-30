@@ -853,6 +853,7 @@ static int gba_sd_rom_select(void)
 	int x, y0, rowh = 30;
 	if (s_nrom <= 0) return -1;
 	for (;;) {
+		mtk_wdt_restart();   /* kick the 10s watchdog: idling on the menu must not reset the device */
 		unsigned k = menu_keys();
 		unsigned int *buf = ayaneo_canvas_back(&pitch, &W, &H);
 		if (k & MK_UP)   sel = rs_move(sel, s_nrom, 1, 0);

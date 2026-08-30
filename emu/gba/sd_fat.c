@@ -59,6 +59,13 @@ int gba_sd_trace_get(unsigned idx, unsigned *op, unsigned *app, unsigned *err, u
 static unsigned sd_read(void *ctx, uint32_t lba, uint32_t count, void *buf)
 {
 	(void)ctx;
+#ifdef AYANEO_GBA_SD
+	/* Kick the 10s LK watchdog on every SD sector read so a long transfer (e.g.
+	 * loading a 16MB ROM, which is one big fat_read that blocks well past 10s)
+	 * does not let the watchdog reset the device mid-load. Covers ROM/BIOS/state
+	 * loads and the mount reads uniformly. */
+	{ extern void mtk_wdt_restart(void); mtk_wdt_restart(); }
+#endif
 	return (unsigned)mmc_wrap_bread(SD_DEV_NUM, (unsigned long)lba,
 					(unsigned long)count, buf, SD_PART_USER);
 }
