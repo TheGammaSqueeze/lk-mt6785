@@ -239,12 +239,28 @@ int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
 		uint32_t c = first;
 		while (off < len && c >= 2) {
 			uint32_t base = clus_lba(v, c);
-			for (s = 0; s < (int)v->sec_per_clus && off < len; s++) {
-				uint32_t n = len - off; if (n > 512u) n = 512u;
-				for (i = 0; i < n; i++) sec[i] = src[off + i];
-				for (; i < 512u; i++) sec[i] = 0;
-				if (wsec(v, base + s, sec) != 0) { free_chain(v, first); return -5; }
-				off += n;
+			s = 0;
+			while (s < (int)v->sec_per_clus && off < len) {
+				uint32_t remain = len - off;
+				if (remain >= 512u) {
+					/* Fast path: write as many WHOLE sectors as fit in this
+					 * cluster and the buffer in ONE block transfer straight from
+					 * the source (no per-sector copy through sec[]). Turns a big
+					 * save-state write from hundreds of single-sector writes into
+					 * a few multi-sector writes. */
+					uint32_t maxsec = (uint32_t)v->sec_per_clus - (uint32_t)s;
+					uint32_t wantsec = remain / 512u;
+					uint32_t nsec = wantsec < maxsec ? wantsec : maxsec;
+					if (v->wr(v->ctx, base + s, nsec, src + off) != nsec) { free_chain(v, first); return -5; }
+					off += nsec * 512u; s += (int)nsec;
+				} else {
+					/* final partial sector: zero-pad through the bounce buffer */
+					uint32_t n = remain;
+					for (i = 0; i < n; i++) sec[i] = src[off + i];
+					for (; i < 512u; i++) sec[i] = 0;
+					if (wsec(v, base + s, sec) != 0) { free_chain(v, first); return -5; }
+					off += n; s++;
+				}
 			}
 			c = get_fat(v, c);
 		}
