@@ -60,6 +60,24 @@ if [ -d "$SNES_ASSETS" ]; then
 
 	echo ">> Packaging boot_b (animation + chime + SNES pack)"
 	python3 tools/ayaneo/gba/build_snes_boot_b.py out/snes_pack.bin out/gba_menu_boot_b.img
+
+	# Non-fatal smoke test: build the host renderer and render the home + a submenu
+	# from the freshly-packed blob, so an asset-pipeline break (bad pack, missing
+	# resource, render crash) is caught here rather than only on device.
+	if command -v gcc >/dev/null 2>&1; then
+		echo ">> Smoke-testing the pack (host render)"
+		if bash emu/gba/menu/build_host.sh >/dev/null 2>&1; then
+			if GBA_ROSTER=6 emu/gba/menu/host_render out/snes_pack.bin \
+				/tmp/gba_smoke.ppm 60 "URA" >/dev/null 2>&1 \
+				&& [ -s /tmp/gba_smoke.ppm ]; then
+				echo "   smoke test OK (home + Display submenu rendered)"
+			else
+				echo "!! smoke test FAILED: the pack did not render - check pack_snes.py" >&2
+			fi
+		else
+			echo "   (host renderer build skipped - not fatal)"
+		fi
+	fi
 else
 	echo "!! SNES_ASSETS dir not found: $SNES_ASSETS" >&2
 	echo "   set SNES_ASSETS=<snes-mini asset tree> to build the menu boot_b." >&2
