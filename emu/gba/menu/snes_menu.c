@@ -1,4 +1,5 @@
 #include "snes_menu.h"
+#include <string.h>       /* strcmp / memcpy (LK provides these via lib/libc) */
 
 /* ---- optional per-phase render profiler ----
  * The driver sets g_perf_tick to a free-running counter (13 MHz on device); the
