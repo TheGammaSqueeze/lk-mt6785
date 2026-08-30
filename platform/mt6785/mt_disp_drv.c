@@ -805,10 +805,13 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
  * are cleared once; per frame only the game area is blitted.
  */
 #if defined(AYANEO_GBA)
-/* GBA: 240x160 native, integer 5x -> 1200x800 centred on the 1280x960 panel. */
+/* GBA: 240x160 native, integer 6x -> 1440x960: fills the 960 panel HEIGHT, and
+ * the 1440 width is centred and cropped to 1280 (80 px off each side). Nearest
+ * neighbour. The blit below clips to the panel, so the horizontal overhang is
+ * simply not drawn. */
 #define GBC_SRC_W	240
 #define GBC_SRC_H	160
-#define GBC_SCALE	5
+#define GBC_SCALE	6
 #else
 /* GBC: 160x144 native, integer 6x -> 960x864. */
 #define GBC_SRC_W	160
@@ -1013,7 +1016,11 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
 	unsigned int dw = GBC_SRC_W * GBC_SCALE, dh = GBC_SRC_H * GBC_SCALE;
-	unsigned int xoff = (W - dw) / 2, yoff = (H - dh) / 2;
+	/* signed: for GBA at 6x the 1440 width overhangs the 1280 panel, so xoff is
+	 * negative and the blit clips the off-panel columns (crop L/R, fill height). */
+	int xoff = ((int)W - (int)dw) / 2, yoff = ((int)H - (int)dh) / 2;
+	int cy0 = yoff < 0 ? 0 : yoff;			/* clamped span for the cache clean */
+	int cy1 = yoff + (int)dh > (int)H ? (int)H : yoff + (int)dh;
 	unsigned int *dst;
 	unsigned int dpa;
 	unsigned int sx, sy, ix, iy;
@@ -1042,17 +1049,23 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 					((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
 
 				for (iy = 0; iy < GBC_SCALE; iy++) {
-					unsigned int *o = dst +
-						(yoff + sy * GBC_SCALE + iy) * pitch_w +
-						(xoff + sx * GBC_SCALE);
+					int dsty = yoff + (int)sy * GBC_SCALE + (int)iy;
+					int dstx0 = xoff + (int)sx * GBC_SCALE;
+					unsigned int *o;
 					int lastrow = (iy == GBC_SCALE - 1);
+					if (dsty < 0 || dsty >= (int)H)
+						continue;		/* off-panel row (clipped) */
+					o = dst + (unsigned int)dsty * pitch_w;
 					for (ix = 0; ix < GBC_SCALE; ix++) {
+						int dstx = dstx0 + (int)ix;
 						unsigned int c = px;
 						int lastcol = (ix == GBC_SCALE - 1);
+						if (dstx < 0 || dstx >= (int)W)
+							continue;	/* off-panel column (crop L/R) */
 						if (filt == 1 && lastrow) c = dk;
 						else if (filt == 2 && (lastrow || lastcol)) c = dk;
 						else if (filt == 3 && (lastrow || lastcol)) c = dk;
-						o[ix] = c;
+						o[dstx] = c;
 					}
 				}
 			}
@@ -1071,9 +1084,22 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		ayaneo_fill(dst, pitch_w, xoff + 4, yoff + 4, 200, 28, 0xFF000000u);
 		ayaneo_text(dst, pitch_w, xoff + 8, yoff + 6, 2, 0xFF30FF60u, s);
 	}
-	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
+	arch_clean_cache_range((unsigned int)(dst + (unsigned int)cy0 * pitch_w),
+			       (unsigned int)(cy1 - cy0) * pitch_w * 4);
 	ayaneo_present(dpa, W, H, pitch_w);
 	s_fb_flip ^= 1;
+}
+
+/* Blank BOTH game frame buffers to black. Called at the menu -> game transition
+ * so no menu / BIOS-intro pixels linger in any area the game frame does not draw
+ * (belt-and-suspenders now that the 6x game fills the panel). */
+void ayaneo_gbc_blank(void)
+{
+	if (!fb_addr)
+		return;
+	memset(fb_addr, 0, fb_size);
+	memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
+	arch_clean_cache_range((unsigned int)fb_addr, fb_size * 2);
 }
 #endif /* AYANEO_GBC */
 

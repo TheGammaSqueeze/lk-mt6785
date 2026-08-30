@@ -62,6 +62,7 @@ extern int  zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstle
 extern int  pmic_detect_powerkey(void);
 extern void mt_power_off(void);
 extern void ayaneo_gbc_show_frame(const unsigned short *pix);	/* mt_disp_drv.c */
+extern void ayaneo_gbc_blank(void);		/* clear both game fbs to black */
 extern void mtk_wdt_restart(void);
 extern void mtk_wdt_disable(void);
 extern int  ayaneo_boot_audio_active(void);
@@ -90,6 +91,8 @@ extern int  ayaneo_get_lcd_filter(void);
 extern void ayaneo_set_lcd_filter(int v);
 extern void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
 			int x, int y, int w, int h, unsigned int argb);
+extern void ayaneo_fill_blend(unsigned int *buf, unsigned int pitch_w,
+			int x, int y, int w, int h, unsigned int argb, int alpha);
 extern int  ayaneo_text(unsigned int *buf, unsigned int pitch_w,
 			int x, int y, int scale, unsigned int argb, const char *s);
 extern unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigned int *H);
@@ -122,9 +125,9 @@ extern int  mtk_detect_key(unsigned short hwkey);
 
 /* ---- config ---- */
 /* How many BIOS frames to play as the boot-logo intro before the ROM-select menu
- * (~59.73 fps, so ~150 frames ~= 2.5 s: the Nintendo logo slide + chime). The
- * user can cut it short by holding B, or disable it via the skip-boot-logo setting. */
-#define GBA_SD_INTRO_FRAMES	150
+ * (~59.73 fps, so ~210 frames ~= 3.5 s: the full Nintendo logo slide + chime).
+ * The user can cut it short by holding B, or disable it via the skip-boot setting. */
+#define GBA_SD_INTRO_FRAMES	210
 #define GBA_ARENA_PA	0x50000000u
 #define GBA_ARENA_SZ	(64u * 1024 * 1024)
 #define GBA_DRV_RESERVE	(2u * 1024 * 1024)	/* state/sav scratch at the arena tail */
@@ -814,6 +817,10 @@ void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 extern void ayaneo_display_prepare(void);	/* mt_disp_drv.c (also declared below) */
 static void gba_dbg(const char *msg)
 {
+	/* Trace-only now that GBA is stable: the on-screen green status text is gated
+	 * out (it also cost two vsync-blocked presents per call, slowing the load).
+	 * Define AYANEO_GBA_DEBUG_OSD to bring the on-screen status back. */
+#ifdef AYANEO_GBA_DEBUG_OSD
 	int i;
 	for (i = 0; i < 2; i++) {		/* both buffers -> stable on hang */
 		unsigned int pitch, W, H;
@@ -822,6 +829,7 @@ static void gba_dbg(const char *msg)
 		ayaneo_text(buf, pitch, 20, 8, 3, 0xFF30FF60u, msg);
 		ayaneo_canvas_present();
 	}
+#endif
 	GBA_ATRACE("%s\n", msg);
 }
 
@@ -889,6 +897,7 @@ static int gba_sd_rom_select(void)
 	unsigned pitch, W, H;
 	int sel = 0, top = 0, rows, i;
 	int x, y0, rowh = 30;
+	int fade = 30;   /* fade in from a full white canvas (~0.5s), like the GBA game start */
 	if (s_nrom <= 0) return -1;
 	for (;;) {
 		mtk_wdt_restart();   /* kick the 10s watchdog: idling on the menu must not reset the device */
@@ -916,6 +925,10 @@ static int gba_sd_rom_select(void)
 			ayaneo_text(buf, pitch, x, y, 2, fg, dn);
 		}
 		ayaneo_text(buf, pitch, x, (int)H - 28, 2, 0xFF80E080u, "Up/Down: move    A: play");
+		if (fade > 0) {			/* white -> menu fade over the first frames */
+			ayaneo_fill_blend(buf, pitch, 0, 0, (int)W, (int)H, 0xFFFFFFFFu, (255 * fade) / 30);
+			fade--;
+		}
 		ayaneo_canvas_present();
 		thread_sleep(16);
 	}
@@ -1163,6 +1176,7 @@ static int emu_thread(void *arg)
 						(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
 				if (!PRESSED(GPIO_B))
 					state_read(scratch);
+				ayaneo_gbc_blank();	/* wipe menu/BIOS pixels before the game draws */
 				dynarec_enable = 1;	/* full-speed dynarec for the actual game */
 				s_cpu_restart_req = 1;	/* CPU thread re-enters gba_core_cpu_loop cleanly */
 			}
