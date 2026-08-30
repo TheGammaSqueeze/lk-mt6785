@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 #include "snes_menu.h"
+#include "gba_name.h"
 
 /* free-running microsecond counter for the phase profiler (g_perf_tick hook) */
 static unsigned prof_now_us(void)
@@ -61,14 +62,21 @@ int main(int argc, char **argv)
 
 	/* GBA_ROSTER=<n>: exercise the GBA adaptation (n mock ROM names + cart placeholder). */
 	if (getenv("GBA_ROSTER")) {
-		/* names as the driver hands them over (build_names strips a trailing .gba) */
-		static const char *mock[8] = {
-			"Legend of Zelda, The - The Minish Cap (USA, Australia)",
-			"Pokemon Emerald Version", "Metroid Fusion", "Advance Wars 2",
-			"Golden Sun - The Lost Age", "Mario Kart Super Circuit",
-			"Fire Emblem", "Castlevania - Aria of Sorrow" };
-		int gn = atoi(getenv("GBA_ROSTER")); if (gn < 1) gn = 1; if (gn > 8) gn = 8;
+		/* RAW SD file names (with .gba + No-Intro tags), cleaned by the SAME
+		 * gba_clean_name the device driver runs so the host title == device title. */
+		static const char *raw[8] = {
+			"Legend of Zelda, The - The Minish Cap (USA, Australia).gba",
+			"Pokemon - Emerald Version (USA, Europe).gba",
+			"Metroid Fusion (USA) [!].gba", "Advance Wars 2 (USA).gba",
+			"Golden Sun - The Lost Age (USA, Australia).gba",
+			"Mario Kart Super Circuit (USA, Europe).gba",
+			"Fire Emblem (USA, Australia).gba",
+			"Castlevania - Aria of Sorrow (USA).gba" };
+		static char clean[8][128];
+		static const char *mock[8];
+		int gn = atoi(getenv("GBA_ROSTER")), k; if (gn < 1) gn = 1; if (gn > 8) gn = 8;
 		const snes_img_entry *cart = snes_res_img(&pk, snes_hash("gba_cart"));
+		for (k = 0; k < 8; k++) { gba_clean_name(raw[k], clean[k]); mock[k] = clean[k]; }
 		snes_menu_set_gba_roster(&menu, mock, gn, cart);
 		if (!cart) fprintf(stderr, "WARN gba_cart image not in pack\n");
 	}

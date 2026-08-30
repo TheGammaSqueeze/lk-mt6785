@@ -19,6 +19,7 @@
 #include "menu/snes_render.h"
 #include "menu/snes_menu.h"
 #include "menu/snes_audio.h"
+#include "menu/gba_name.h"          /* gba_clean_name (shared with host_render) */
 #include "sd_fat.h"                 /* gba_rom_entry */
 
 /* ---- LK / driver primitives (externs; no LK headers pulled in here) ---- */
@@ -117,38 +118,12 @@ static int load_pack(void)
  * No-Intro region/dump tag groups " (USA)", " (Rev 1)", " [!]" ... (the SNES title
  * font also lacks '(' ')' ',' glyphs, so these would render as gaps). Trailing
  * spaces are trimmed. dst holds up to 128 chars. */
-static void clean_name(const char *nm, char *dst)
-{
-	int L = 0;
-	while (nm[L] && L < 127) { dst[L] = nm[L]; L++; }
-	dst[L] = 0;
-	if (L >= 4 && dst[L-4] == '.' && (dst[L-3]|32) == 'g' &&
-	    (dst[L-2]|32) == 'b' && (dst[L-1]|32) == 'a') { L -= 4; dst[L] = 0; }
-	for (;;) {
-		int e = L, c;
-		while (e > 0 && dst[e-1] == ' ') e--;          /* trailing spaces */
-		if (e <= 0) break;
-		c = dst[e-1];
-		if (c == ')' || c == ']') {                    /* a trailing tag group */
-			int open = (c == ')') ? '(' : '[', j = e - 1, depth = 0;
-			while (j >= 0) {
-				if (dst[j] == c) depth++;
-				else if (dst[j] == open && --depth == 0) break;
-				j--;
-			}
-			if (j <= 0) { L = e; break; }          /* no opener / whole name */
-			L = j; dst[L] = 0;                     /* cut before the group */
-		} else { L = e; dst[L] = 0; break; }
-	}
-	if (L == 0) { dst[0] = 0; }                            /* keep at least "" */
-}
-
 /* Build the display-name table from the SD roster (cleaned titles). */
 static void build_names(const gba_rom_entry *roms, int nrom)
 {
 	int i;
 	for (i = 0; i < nrom && i < 128; i++) {
-		clean_name(roms[i].name, s_names[i]);
+		gba_clean_name(roms[i].name, s_names[i]);
 		if (s_names[i][0] == 0) {                       /* pathological all-tag name */
 			int L = 0; const char *nm = roms[i].name;
 			while (nm[L] && L < 127) { s_names[i][L] = nm[L]; L++; }
