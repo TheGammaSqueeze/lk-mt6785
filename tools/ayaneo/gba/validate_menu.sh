@@ -56,6 +56,12 @@ LARGE_STATES=(
   "40:big_sorted:]]S"
   "128:huge_home:"
   "128:huge_jump:]]]]]]"
+  # adversarial stress: a long chaotic sequence (menubar in/out, submenus, resume,
+  # sorts, shoulder jumps, launches, back) must never crash/hang and must end in a
+  # valid non-blank frame - exercises the state machine the single-path states cannot.
+  "1:chaos_n1:URDLRUDABURRRAB]S[]S]]DUURRRRAB[[]SSUDRLRL]]]]SABUDR]["
+  "8:chaos_n8:URDLRUDABURRRAB]S[]S]]DUURRRRAB[[]SSUDRLRL]]]]SABUDR]["
+  "40:chaos_n40:URDLRUDABURRRAB]S[]S]]DUURRRRAB[[]SSUDRLRL]]]]SABUDR]["
 )
 
 fail=0
