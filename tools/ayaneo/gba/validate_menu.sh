@@ -49,6 +49,7 @@ b=d[i:];sys.exit(0 if sum(x!=0 for x in b)>len(b)//100 else 1)"
 # rosters, which the fixed n=6 pass above cannot exercise (the old 8-cap once hid a
 # real filmstrip-cram bug). '[' = L-shoulder page back, ']' = R-shoulder page forward.
 LARGE_STATES=(
+  "10:ring10_jump:]"
   "40:big_home:"
   "40:big_jump_fwd:]]"
   "40:big_jump_back:]][["

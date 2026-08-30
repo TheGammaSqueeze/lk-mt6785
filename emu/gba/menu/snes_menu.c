@@ -1873,8 +1873,15 @@ static void car_navigate(snes_menu *m, int dir)
 #define CAR_JUMP_RATE  0.22f
 static void car_jump(snes_menu *m, int delta)
 {
-	int n = m->ngames, nf;
+	int n = m->ngames, nf, mag;
 	if (n <= 0 || delta == 0) return;
+	/* clamp the magnitude to [1, n-1] so a ring jump never wraps back onto the same
+	 * card (e.g. a page of 10 in a 10-game ring would be a no-op and the shoulder
+	 * would feel dead); it also keeps the jump meaningful for small rings. */
+	mag = delta < 0 ? -delta : delta;
+	if (mag > n - 1) mag = n - 1;
+	if (mag < 1) mag = 1;
+	delta = delta < 0 ? -mag : mag;
 	if (n >= CAR_RING_MIN) nf = (((m->focus + delta) % n) + n) % n;   /* wrap */
 	else { nf = m->focus + delta; if (nf < 0) nf = 0; else if (nf >= n) nf = n - 1; }
 	if (nf == m->focus) return;
