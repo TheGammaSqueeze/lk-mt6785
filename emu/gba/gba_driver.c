@@ -83,6 +83,8 @@ extern int  ayaneo_get_load_on_boot(void);
 extern void ayaneo_set_load_on_boot(int v);
 extern int  ayaneo_get_skip_boot(void);
 extern void ayaneo_set_skip_boot(int v);
+extern int  ayaneo_get_skip_gba_intro(void);
+extern void ayaneo_set_skip_gba_intro(int v);
 extern int  ayaneo_get_lcd_filter(void);
 extern void ayaneo_set_lcd_filter(int v);
 extern void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
@@ -651,7 +653,7 @@ static unsigned menu_keys(void)
 }
 
 enum {
-	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_LOADBOOT, MI_SKIPBOOT,
+	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_LOADBOOT, MI_SKIPBOOT, MI_SKIPINTRO,
 	MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_BENCH, MI_CLOSE, MI_COUNT
 };
 
@@ -667,6 +669,7 @@ static const char *menu_value(int item, char *buf)
 	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter())); break;
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
+	case MI_SKIPINTRO: p = mi_puts(p, ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
 	case MI_LOADSTATE:
 	case MI_SAVESTATE: p = mi_puts(p, "[A]"); break;
 	case MI_BATTERY:
@@ -703,6 +706,7 @@ static const char *menu_label(int item)
 	case MI_FILTER:    return "LCD Filter";
 	case MI_LOADBOOT:  return "Load State on Boot";
 	case MI_SKIPBOOT:  return "Skip Boot Anim/Chime";
+	case MI_SKIPINTRO: return "Skip BIOS Intro";
 	case MI_LOADSTATE: return "Load State";
 	case MI_SAVESTATE: return "Save State";
 	case MI_BATTERY:   return "Battery";
@@ -727,6 +731,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
 	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;
 	case MI_SKIPBOOT: if (dir || act) ayaneo_set_skip_boot(!ayaneo_get_skip_boot()); else changed = 0; break;
+	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;
 	case MI_CPU:      if (dir) cpu_step(dir); changed = 0; break;
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
 	case MI_LOADSTATE: if (act) mi_puts(status, state_read(state) ? "State loaded" : "No save state"); changed = 0; break;
