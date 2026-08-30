@@ -893,7 +893,7 @@ static int s_sel_rom = -1;          /* chosen ROM index (for save/state paths) *
 
 /* Draw the ROM list to the panel and let the user pick one. D-pad moves, A plays,
  * B/AYA has no effect (there is nothing to go back to). Returns the chosen index. */
-extern int gba_menu_run(const gba_rom_entry *roms, int nrom, int start_sel);
+extern int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel);
 
 static int gba_sd_rom_select(void)
 {
@@ -903,11 +903,11 @@ static int gba_sd_rom_select(void)
 	int fade = 15;   /* quick fade in from a full white canvas (~0.25s), GBA-style */
 	if (s_nrom <= 0) return -1;
 
-	/* Preferred: the SNES-mini-style carousel (assets from boot_b). Returns -2 if
-	 * the menu asset pack is not present -> fall through to the plain list so a
+	/* Preferred: the real SNES-Classic-mini menu (assets from boot_b). Returns -2 if
+	 * the SNES asset pack is not present -> fall through to the plain list so a
 	 * boot_b without the pack still lets the user pick a game (never-brick). */
 	{
-		int r = gba_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
+		int r = gba_snes_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
 		if (r >= 0) return r;
 	}
 	for (;;) {

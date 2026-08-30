@@ -46,11 +46,25 @@ mkdir -p out
 echo ">> Signing LK"
 python3 tools/ayaneo/sign_lk.py "$BUILT" out/lk_a_gba_sd_signed.img
 
-echo ">> Packaging menu asset pack"
-python3 tools/ayaneo/gba/build_menu_pack.py out/gbamenu.pack
+# The ROM-select screen is the REAL SNES-Classic-mini menu; its asset pack is
+# built from the (copyright, user-supplied) snes-mini firmware asset tree. Point
+# SNES_ASSETS at it (the same dist/assets or web/public tree the web app uses).
+SNES_ASSETS="${SNES_ASSETS:-/work/snesmini/snes-mini-emu/web/public/assets}"
+if [ -d "$SNES_ASSETS" ]; then
+	echo ">> Generating GBA cartridge placeholder"
+	python3 tools/ayaneo/gba/gen_gba_cart.py out/gba_cart.png
 
-echo ">> Packaging boot_b (animation + chime + menu pack)"
-python3 tools/ayaneo/gba/build_menu_boot_b.py out/gbamenu.pack out/gba_menu_boot_b.img
+	echo ">> Packing SNES menu assets (with GBA cart placeholder)"
+	python3 tools/ayaneo/snes/pack_snes.py "$SNES_ASSETS" out/snes_pack.bin \
+		--rgb565 --gba-cart out/gba_cart.png
+
+	echo ">> Packaging boot_b (animation + chime + SNES pack)"
+	python3 tools/ayaneo/gba/build_snes_boot_b.py out/snes_pack.bin out/gba_menu_boot_b.img
+else
+	echo "!! SNES_ASSETS dir not found: $SNES_ASSETS" >&2
+	echo "   set SNES_ASSETS=<snes-mini asset tree> to build the menu boot_b." >&2
+	echo "   (LK still built; it falls back to the plain list without the pack.)" >&2
+fi
 
 echo
 echo ">> Done."

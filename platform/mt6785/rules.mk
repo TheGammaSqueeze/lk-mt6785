@@ -369,12 +369,25 @@ OBJS += emu/gba/sd_fastboot.o
 # software renderer is float-heavy, so build the render/scene/audio modules with
 # hardware NEON FP (LK default -mfloat-abi=soft would make every op an aeabi call).
 OBJS += emu/gba/menu/snes_pack.o emu/gba/menu/snes_scene.o emu/gba/menu/snes_render.o emu/gba/menu/snes_audio.o
-OBJS += emu/gba/gba_menu.o
+OBJS += emu/gba/menu/snes_menu.o emu/gba/gba_snes_menu.o
 GBA_MENU_FP := -mfpu=neon -mfloat-abi=softfp -ffast-math
-$(BUILDDIR)/emu/gba/menu/snes_render.o: CFLAGS += $(GBA_MENU_FP)
-$(BUILDDIR)/emu/gba/menu/snes_scene.o:  CFLAGS += $(GBA_MENU_FP)
-$(BUILDDIR)/emu/gba/menu/snes_audio.o:  CFLAGS += $(GBA_MENU_FP)
-$(BUILDDIR)/emu/gba/gba_menu.o:         CFLAGS += $(GBA_MENU_FP)
+# perf-critical (blitter + audio mixer): keep NEON; -Os to fit lk_a's 2MB budget
+# (the blit fast path is memory-bound so the size trade keeps NEON vectorisation)
+$(BUILDDIR)/emu/gba/menu/snes_render.o: CFLAGS += $(GBA_MENU_FP) -Os
+$(BUILDDIR)/emu/gba/menu/snes_audio.o:  CFLAGS += $(GBA_MENU_FP) -Os
+# logic-heavy (scene build + menu state machine): -Os to fit lk_a's 2MB budget
+# (this LK already carries the full gpSP GBA emulator alongside the menu)
+$(BUILDDIR)/emu/gba/menu/snes_scene.o:  CFLAGS += $(GBA_MENU_FP) -Os
+$(BUILDDIR)/emu/gba/menu/snes_menu.o:   CFLAGS += $(GBA_MENU_FP) -Os
+$(BUILDDIR)/emu/gba/menu/snes_pack.o:   CFLAGS += -Os
+$(BUILDDIR)/emu/gba/gba_snes_menu.o:    CFLAGS += $(GBA_MENU_FP) -Os
+# reclaim the last few KB of the 2MB lk_a budget from the (correctness-safe) SD
+# driver objects that carry this menu variant
+$(BUILDDIR)/emu/gba/gba_driver.o:       CFLAGS += -Os
+$(BUILDDIR)/emu/gba/gba_sd_save.o:      CFLAGS += -Os
+$(BUILDDIR)/emu/gba/sd_fastboot.o:      CFLAGS += -Os
+$(BUILDDIR)/emu/gba/fat_ro.o:           CFLAGS += -Os
+$(BUILDDIR)/emu/gba/fat_wr.o:           CFLAGS += -Os
 endif
 else
 OBJS += emu/gbc/gbc_driver.o
