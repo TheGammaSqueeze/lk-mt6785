@@ -17,7 +17,7 @@
 
 extern void gba_menu_render(snes_target *t, const snes_pack *pk,
 			    const gba_rom_entry *roms, int nrom, int sel, float posf,
-			    float anim);
+			    float anim, float launch);
 
 /* ---- stubs for the LK-only externs gba_menu.c declares (unused here) ---- */
 unsigned int *ayaneo_canvas_back(unsigned int *p, unsigned int *w, unsigned int *h){(void)p;(void)w;(void)h;return 0;}
@@ -59,7 +59,8 @@ int main(int argc, char **argv)
 	t.fb = fb; t.pitch = W; t.W = W; t.H = H;
 	t.offx = (W - SNES_VW) / 2; t.offy = (H - SNES_VH) / 2;
 
-	gba_menu_render(&t, &pk, roms, 6, sel, (float)sel, 1.5f);
+	gba_menu_render(&t, &pk, roms, 6, sel, (float)sel, 1.5f,
+			argc > 4 ? (float)atof(argv[4]) : 0.0f);
 
 	f = fopen(out, "wb");
 	fprintf(f, "P6\n%d %d\n255\n", W, H);

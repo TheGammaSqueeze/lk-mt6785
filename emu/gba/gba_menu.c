@@ -172,11 +172,13 @@ static void disp_name(const char *nm, char *out, int cap)
  * smooth (tweened) scroll position in card units. */
 void gba_menu_render(snes_target *t, const snes_pack *pk,
 		     const gba_rom_entry *roms, int nrom, int sel, float posf,
-		     float anim)
+		     float anim, float launch)
 {
 	/* pulse 0..1 for the focused-card glow (anim is a rising phase in radians) */
 	float ph = anim - (float)(int)(anim / 6.2831853f) * 6.2831853f;
 	float pulse = 0.5f + 0.5f * (ph < 3.14159f ? (ph / 3.14159f) : (2.0f - ph / 3.14159f));
+	/* launch 0..1: on confirm the focused cart zooms up and its glow flares */
+	float lsc = 1.0f + launch * 0.7f;
 	const snes_spr_entry *wall = snes_res_spr(pk, fnv1a("gbamenu/wallpaper.spr"));
 	const snes_spr_entry *cart = snes_res_spr(pk, fnv1a("gbamenu/cart.spr"));
 	uint32_t font = fnv1a("gbamenu/font"), font_big = fnv1a("gbamenu/font_big");
@@ -217,16 +219,19 @@ void gba_menu_render(snes_target *t, const snes_pack *pk,
 		float sc = SIDE_SCALE + (FOCUS_SCALE - SIDE_SCALE) * (f < 0 ? 0 : f);
 		float a = 0.55f + 0.45f * (f < 0 ? 0 : f);
 		float ar, ag, ab;
+		int focused = f > 0.85f;
 		while (idx < 0) idx += nrom;
 		while (idx >= nrom) idx -= nrom;
 		if (cx < -180 || cx > VW + 180) continue;
+		if (focused) sc *= lsc;                    /* zoom the focused cart on launch */
 		accent_rgb(roms[idx].name, &ar, &ag, &ab);
 		/* soft glow behind the focused card, pulsing with the accent colour */
-		if (f > 0.85f) {
+		if (focused) {
+			float flare = pulse + launch * 2.5f;
 			float gw = 360 * sc * (1.05f + 0.10f * pulse);
 			float gh = 300 * sc * (1.05f + 0.10f * pulse);
 			snes_fill_quad(t, cx, CARD_CY, gw, gh, ar, ag, ab,
-				       0.16f * pulse * f);
+				       0.16f * flare * f);
 		}
 		/* drop shadow */
 		snes_fill_quad(t, cx + 8 * sc, CARD_CY + 12 * sc,
@@ -305,10 +310,29 @@ int gba_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			}
 		}
 
-		/* A = confirm, debounced against a held button */
+		/* A = confirm: play SFX, then a short launch animation (focused cart
+		 * zooms + glow flares while a white flash fills the screen), matching the
+		 * GBA game white fade-in on the far side. Debounced against a held A. */
 		if (!(k & MK_A)) a_held = 0;
 		if (!a_held && (k & MK_A)) {
-			play_snd("gbamenu/sfx_confirm", 0, 256, 0); pump_audio(); return sel;
+			int lf;
+			play_snd("gbamenu/sfx_confirm", 0, 256, 0);
+			for (lf = 0; lf <= 14; lf++) {
+				float lp = (float)lf / 14.0f;
+				pump_audio();
+				fb = ayaneo_canvas_back(&pitch, &W, &H);
+				t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
+				t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;
+				anim += 0.12f;
+				gba_menu_render(&t, &s_pk, roms, nrom, sel, posf, anim, lp);
+				ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H,
+						  0xFFFFFFFFu, (int)(255.0f * lp * lp));
+				ayaneo_canvas_present();
+				mtk_wdt_restart();
+				thread_sleep(16);
+			}
+			pump_audio();
+			return sel;
 		}
 		pump_audio();
 
@@ -327,7 +351,7 @@ int gba_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;
 
 		anim += 0.12f;   /* ~1.1s glow cycle at 60fps */
-		gba_menu_render(&t, &s_pk, roms, nrom, sel, posf, anim);
+		gba_menu_render(&t, &s_pk, roms, nrom, sel, posf, anim, 0.0f);
 
 		if (fade > 0) {
 			ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H, 0xFFFFFFFFu,
