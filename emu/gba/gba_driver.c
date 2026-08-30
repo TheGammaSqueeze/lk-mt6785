@@ -126,10 +126,9 @@ extern int  mtk_detect_key(unsigned short hwkey);
 
 /* ---- config ---- */
 /* How many BIOS frames to play as the boot-logo intro before the ROM-select menu
- * (~59.73 fps, so 300 frames ~= 5 s: the full Nintendo logo slide + chime with a
- * beat to spare). The user can cut it short by holding B, or disable it via the
- * skip-boot setting. */
-#define GBA_SD_INTRO_FRAMES	300
+ * (~59.73 fps, so 270 frames ~= 4.5 s: the full Nintendo logo slide + chime).
+ * The user can cut it short by holding B, or disable it via the skip-boot setting. */
+#define GBA_SD_INTRO_FRAMES	270
 #define GBA_ARENA_PA	0x50000000u
 #define GBA_ARENA_SZ	(64u * 1024 * 1024)
 #define GBA_DRV_RESERVE	(2u * 1024 * 1024)	/* state/sav scratch at the arena tail */
@@ -899,7 +898,7 @@ static int gba_sd_rom_select(void)
 	unsigned pitch, W, H;
 	int sel = 0, top = 0, rows, i;
 	int x, y0, rowh = 30;
-	int fade = 30;   /* fade in from a full white canvas (~0.5s), like the GBA game start */
+	int fade = 15;   /* quick fade in from a full white canvas (~0.25s), GBA-style */
 	if (s_nrom <= 0) return -1;
 	for (;;) {
 		mtk_wdt_restart();   /* kick the 10s watchdog: idling on the menu must not reset the device */
@@ -928,7 +927,7 @@ static int gba_sd_rom_select(void)
 		}
 		ayaneo_text(buf, pitch, x, (int)H - 28, 2, 0xFF80E080u, "Up/Down: move    A: play");
 		if (fade > 0) {			/* white -> menu fade over the first frames */
-			ayaneo_fill_blend(buf, pitch, 0, 0, (int)W, (int)H, 0xFFFFFFFFu, (255 * fade) / 30);
+			ayaneo_fill_blend(buf, pitch, 0, 0, (int)W, (int)H, 0xFFFFFFFFu, (255 * fade) / 15);
 			fade--;
 		}
 		ayaneo_canvas_present();
