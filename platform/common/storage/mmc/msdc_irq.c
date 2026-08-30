@@ -247,6 +247,27 @@ u32 msdc_lk_intr_wait(struct mmc_host *host, u32 intrs)
 
 	int ret = 0;
 
+#if defined(AYANEO_GBA_SD)
+	/* The removable microSD (host 1) has no IRQ wired in LK, so the completion
+	 * event (msdc_int_event) is never signaled and this wait would block on
+	 * event_wait_timeout for ~65s, letting the hardware watchdog reset the device
+	 * mid read -> boot loop. Poll the hardware MSDC_INT status register directly
+	 * (bounded), the same way the eMMC boot path polls, so the DMA read completes
+	 * or fails fast and boot falls through gracefully. */
+	if (host->id == 1) {
+		u32 spin = 30000000; /* a few seconds worst case, well under the watchdog */
+		u32 s;
+		do {
+			s = MSDC_READ32(MSDC_INT);
+			if (s & intrs) {
+				MSDC_WRITE32(MSDC_INT, (s & intrs));
+				return s;
+			}
+		} while (--spin);
+		return 0; /* timeout: caller maps status 0 to MMC_ERR_TIMEOUT */
+	}
+#endif
+
 	MSG(INT, "[msdc_lk_intr_wait]\n");
 	/* warning that interrupts are not enabled */
 	WARN_ON((MSDC_READ32(MSDC_INTEN) & intrs) != intrs);

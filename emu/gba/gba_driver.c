@@ -1218,7 +1218,24 @@ static int gba_sd_assets_ok(fat_vol *v)
  */
 int ayaneo_gba_sd_boot(void)
 {
-	int rc = gba_sd_mount(&s_sd_vol);
+	int rc;
+
+	/* NEVER-BRICK GUARD: if the previous boot was reset by the watchdog, the last
+	 * SD attempt may have crashed (data abort -> "halting" -> HW watchdog reset) or
+	 * hung. Skip the SD emulator path this boot and fall through to normal Android
+	 * boot, so the device always self-recovers instead of boot looping. A later
+	 * clean (non-watchdog) boot will retry the SD path automatically. */
+	{
+		extern unsigned int mtk_wdt_check_status(void);
+		unsigned int wsta = mtk_wdt_check_status();
+		/* HWWDT_RST | SWWDT_RST | IRQWDT_RST */
+		if (wsta & (0x80000000u | 0x40000000u | 0x20000000u)) {
+			GBA_LOG("gba-sd: prior boot was a watchdog reset (0x%x) - skipping SD to avoid a loop -> normal boot\n", wsta);
+			return -9;
+		}
+	}
+
+	rc = gba_sd_mount(&s_sd_vol);
 	if (rc != 0) {
 		if (rc == -4)
 			GBA_LOG("gba-sd: microSD is exFAT (unsupported) - reformat FAT32 -> normal boot\n");

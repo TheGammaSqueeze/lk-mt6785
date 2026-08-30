@@ -3005,16 +3005,6 @@ int msdc_init(int id, struct mmc_host *host, int clksrc, int mode)
 	msdc_config_bus(host, HOST_BUS_WIDTH_1);
 	msdc_config_clock(host, 0, MSDC_MIN_SCLK, 0);
 
-#if defined(AYANEO_GBA_SD)
-	/* NEVER-BRICK + correctness: the removable microSD (host 1) DMA read waits on
-	 * an interrupt event (msdc_lk_intr_wait, ~65s) but msdc1's IRQ is not wired in
-	 * LK, so the read stalls ~65s and the hardware watchdog resets the device mid
-	 * read -> boot loop. Force host 1 to PIO mode: it polls MSDC_INT directly (no
-	 * IRQ needed) and its loop is bounded, so the read completes or fails fast and
-	 * boot falls through to normal Android instead of hanging. */
-	if (host->id == 1)
-		mode = MSDC_MODE_PIO;
-#endif
 	msdc_set_dmode(host, mode);
 	msdc_set_pio_bits(host, 32);
 
