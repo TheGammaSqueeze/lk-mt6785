@@ -133,6 +133,21 @@ static void accent_rgb(const char *nm, float *r, float *g, float *b)
 	}
 }
 
+/* "sel/total" position label built without libc (LK render fn is freestanding) */
+static void pos_label(int sel, int total, char *out)
+{
+	char tmp[16]; int n = 0, i, j = 0;
+	int a = sel + 1;
+	if (a <= 0) tmp[n++] = '0';
+	while (a > 0) { tmp[n++] = '0' + (a % 10); a /= 10; }
+	for (i = n - 1; i >= 0; i--) out[j++] = tmp[i];
+	out[j++] = ' '; out[j++] = '/'; out[j++] = ' ';
+	n = 0; a = total; if (a <= 0) tmp[n++] = '0';
+	while (a > 0) { tmp[n++] = '0' + (a % 10); a /= 10; }
+	for (i = n - 1; i >= 0; i--) out[j++] = tmp[i];
+	out[j] = 0;
+}
+
 static float approach(float cur, float tgt, float rate)
 {
 	float d = tgt - cur;
@@ -184,6 +199,13 @@ void gba_menu_render(snes_target *t, const snes_pack *pk,
 
 	snes_draw_text(t, pk, font, CENTER_X, HEADER_Y, 0.8f, 0xFFDCE4FFu, 1,
 		       "GBA GAMES");
+
+	/* position counter, top-right of the header row */
+	{
+		char pl[24];
+		pos_label(sel, nrom, pl);
+		snes_draw_text(t, pk, font, VW - 40.0f, HEADER_Y, 0.6f, 0xFF9FB4E0u, 2, pl);
+	}
 
 	/* filmstrip of cards, farthest first so the focused one paints on top */
 	for (i = VISIBLE_HALF; i >= -VISIBLE_HALF; i--) {
