@@ -31,6 +31,7 @@ extern void thread_sleep(unsigned);
 extern int  zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstlen, int offset);
 extern int  partition_read(const char *name, unsigned long long off, void *buf, unsigned long len);
 extern void ayaneo_set_cpu_mhz(unsigned int mhz);
+extern void ayaneo_display_prepare(void);
 extern void ayaneo_gbc_audio_init(void);
 extern int  ayaneo_menu_audio_room(void);
 extern void ayaneo_menu_audio_submit(const short *stereo, unsigned frames);
@@ -203,6 +204,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	}
 
 	ayaneo_set_cpu_mhz(2000);
+	/* Re-own the panel in the clean canvas/double-buffer state. The BIOS-logo intro
+	 * ran between the boot flow's display_prepare and here and left the layer in its
+	 * own scan-out mode; without this the two canvas buffers can present
+	 * inconsistently (flicker). This zeroes both buffers + reconfigures the layer. */
+	ayaneo_display_prepare();
 	snes_audio_init(&s_mix);
 	ayaneo_gbc_audio_init();
 	if (s_menu.bgm) play_sound(s_menu.bgm, 1);
@@ -250,8 +256,15 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 
 		launch = snes_menu_take_launch(&s_menu);
 		if (launch >= 0 && launch < nrom) {
-			/* let the confirm SFX and a couple of frames land, then hand off */
 			int f;
+			/* let the confirm SFX play out */
+			for (f = 0; f < 5; f++) { pump_audio(); mtk_wdt_restart(); thread_sleep(16); }
+			/* Stop the BGM and flush the ring with silence before handing off: no
+			 * one feeds the AFE ring while the game ROM loads/decompresses, so a
+			 * stale BGM tail would loop. snes_audio_init clears all voices, then
+			 * pump_audio mixes silence and fills the ring ahead of the DMA cursor
+			 * (once it drains it just replays silence = silent). */
+			snes_audio_init(&s_mix);
 			for (f = 0; f < 6; f++) { pump_audio(); mtk_wdt_restart(); thread_sleep(16); }
 			return launch;
 		}

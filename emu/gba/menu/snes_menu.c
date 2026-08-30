@@ -526,6 +526,20 @@ static int ring_delta(int a, int b, int n)
 	return d;
 }
 
+/* Minimum roster for the infinite ring wrap to happen OFF screen. The carousel
+ * shows about slots -2..+5; a card wraps at ring distance n/2, so the wrap is only
+ * hidden (cx culled) when n/2 exceeds that window, i.e. n >= 8. Below that the ring
+ * would flip a card to the wrong side mid-slide (visible pop), so small rosters use
+ * a finite LINEAR layout (card j at j-focus, no wrap) with clamped navigation. */
+#define CAR_RING_MIN 8
+
+/* signed slot offset of game j from the focus for the CARD layout */
+static int card_delta(const snes_menu *m, int j)
+{
+	if (m->ngames >= CAR_RING_MIN) return ring_delta(m->focus, j, m->ngames);
+	return j - m->focus;
+}
+
 /* How far the Suspend Point List is open (0 = closed/just-starting, 1 = settled).
  * The home content (title + carousel) is raised in proportion. */
 static float resume_open_frac(snes_menu *m)
@@ -827,7 +841,7 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 	for (j = 0; j < n; j++) {
 		float wx, cx, blue_a;
 		if (j == m->focus) continue;
-		wx = m->sel_world + CAR_HGAP * (float)ring_delta(m->focus, j, n) + m->cont_shift;
+		wx = m->sel_world + CAR_HGAP * (float)card_delta(m, j) + m->cont_shift;
 		cx = 640.0f + wx;
 		if (cx < -280 || cx > SNES_VW + 280) continue;
 		blue_a = (j == m->prev_focus) ? prog : 0.0f;   /* outgoing card fades out */
@@ -1674,12 +1688,17 @@ static void bg_step(snes_menu *m)
 
 static void car_navigate(snes_menu *m, int dir)
 {
-	int n = m->ngames;
+	int n = m->ngames, nf;
 	float old_sw = m->sel_world, cardShift, ns;
 	if (n <= 0) return;
+	/* small rosters use a finite linear strip (see CAR_RING_MIN): clamp at the ends
+	 * instead of wrapping, so there is no on-screen wrap pop. */
+	if (n >= CAR_RING_MIN) nf = ((m->focus + dir) % n + n) % n;
+	else { nf = m->focus + dir; if (nf < 0) nf = 0; else if (nf >= n) nf = n - 1; }
+	if (nf == m->focus) return;               /* clamped at an end: no move */
 	m->prev_focus = m->focus;                 /* start the blue-frame crossfade */
 	m->xfade_t = CAR_XFADE;
-	m->focus = ((m->focus + dir) % n + n) % n;
+	m->focus = nf;
 	bg_scroll_kick(m, dir);
 	/* card-slide tween time: first press over REPEAT_DELAY, held over REPEAT_RATE */
 	m->car_tween = m->rep_primed ? CAR_REPEAT_RATE : CAR_REPEAT_DELAY;
