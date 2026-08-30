@@ -307,10 +307,24 @@ uint32_t fat_read(fat_file *f, uint32_t off, void *buf, uint32_t len)
 			uint32_t sec = inclus / 512u, so = inclus % 512u;
 			uint32_t lba = clus_lba(v, clus) + sec;
 			while (sec < v->sec_per_clus && len) {
-				uint32_t n = 512u - so; if (n > len) n = len;
-				if (read_sec(v, lba) != 0) return got;
-				fr_memcpy(out + got, v->sec_buf + so, n);
-				got += n; len -= n; so = 0; sec++; lba++;
+				if (so == 0 && len >= 512u) {
+					/* Fast path: read as many WHOLE sectors as fit in this
+					 * cluster and the request in ONE block transfer straight
+					 * into the caller buffer (no per-sector bounce through
+					 * sec_buf). Turns a 16MB ROM load from 32768 single-sector
+					 * reads into a handful of multi-sector reads. */
+					uint32_t maxsec = v->sec_per_clus - sec;
+					uint32_t wantsec = len / 512u;
+					uint32_t nsec = wantsec < maxsec ? wantsec : maxsec;
+					if (v->rd(v->ctx, lba, nsec, out + got) != nsec) return got;
+					got += nsec * 512u; len -= nsec * 512u;
+					sec += nsec; lba += nsec;
+				} else {
+					uint32_t n = 512u - so; if (n > len) n = len;
+					if (read_sec(v, lba) != 0) return got;
+					fr_memcpy(out + got, v->sec_buf + so, n);
+					got += n; len -= n; so = 0; sec++; lba++;
+				}
 			}
 			inclus = 0;
 			if (len) clus = next_cluster(v, clus);
