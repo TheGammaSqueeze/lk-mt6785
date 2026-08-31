@@ -216,12 +216,31 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	if (do_reverse) fade_in = 0;   /* the reverse punch IS the transition - no white wash */
 
 	if (nrom <= 0) return -1;
-	if (load_pack() != 0) return -2;
+
+	/* Own the panel and paint it BEFORE the slow pack decompress + one-time wallpaper/
+	 * chrome cache build, so the boot-logo -> menu handover is not a couple of black
+	 * frames. Normal entry: whiteout (the menu then fades in from white = seamless).
+	 * Reverse entry (returning from a closed game): leave the frozen game frame on the
+	 * panel - the game already owns the canvas - so the reverse punch reveals the menu
+	 * with no black/white flash in between. */
+	saved_mhz = ayaneo_get_cpu_mhz();
+	ayaneo_set_cpu_mhz(2100);            /* max OPP: faster decompress + build too */
+	ayaneo_present_skip_framedone = 0;
+	if (!do_reverse) {
+		unsigned int wp, ww, wh;
+		unsigned int *wfb;
+		ayaneo_display_prepare();    /* re-own the panel after the BIOS-logo intro */
+		wfb = ayaneo_canvas_back(&wp, &ww, &wh);
+		ayaneo_fill(wfb, wp, 0, 0, (int)ww, (int)wh, 0xFFFFFFFFu);
+		ayaneo_canvas_present();
+	}
+
+	if (load_pack() != 0) { ayaneo_set_cpu_mhz(saved_mhz); return -2; }
 
 	if (snes_menu_init(&s_menu, &s_pk, (snes_rnode *)SNES_HOME_PA, HOME_CAP,
 			   (snes_rnode *)SNES_BG_PA, BG_CAP, (uint32_t *)SNES_WP_PA,
 			   (uint32_t *)SNES_CHROME_PA) != 0)
-		return -2;
+		{ ayaneo_set_cpu_mhz(saved_mhz); return -2; }
 
 	build_names(roms, nrom);
 	cart = snes_res_img(&s_pk, snes_hash("gba_cart"));
@@ -242,22 +261,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * fb-size = pitch*960*4 <= 1536*960*4 = 5.9MB < the 8MB comp region. */
 	snes_menu_set_rcache(&s_menu, (uint32_t *)SNES_COMP_PA);
 
-	/* Bump to the max OPP for render headroom during the menu, but REMEMBER the
-	 * caller's clock (the emulation default the driver set before us, currently 600 MHz)
-	 * and restore it on exit so the game runs at its intended clock, not the menu's
-	 * (the task: set clocks for the menu, then back to the emulation clock on launch). */
-	saved_mhz = ayaneo_get_cpu_mhz();
-	ayaneo_set_cpu_mhz(2100);   /* max big-core OPP for render headroom */
-	/* Present-pacing: blocking config_input on the panel FRAME_DONE (skip=0), exactly
-	 * like the flicker-free GBA game in normal play. The present itself paces the loop
-	 * to the panel refresh; the loop adds NO extra wait/timer (that overran a refresh
-	 * and dropped frames = the movement flicker). */
-	ayaneo_present_skip_framedone = 0;
-	/* Re-own the panel in the clean canvas/double-buffer state. The BIOS-logo intro
-	 * ran between the boot flow's display_prepare and here and left the layer in its
-	 * own scan-out mode; without this the two canvas buffers can present
-	 * inconsistently (flicker). This zeroes both buffers + reconfigures the layer. */
-	ayaneo_display_prepare();
+	/* (panel already owned + painted above, before the slow build; clock at 2100 too) */
 	snes_audio_init(&s_mix);
 	ayaneo_gbc_audio_init();
 	if (s_menu.bgm) play_sound(s_menu.bgm, 1);
