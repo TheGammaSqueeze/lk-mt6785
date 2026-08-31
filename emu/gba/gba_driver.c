@@ -1214,7 +1214,10 @@ static int emu_thread(void *arg)
 						(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
 				if (!PRESSED(GPIO_B))
 					state_read(scratch);
-				ayaneo_gbc_blank();	/* wipe menu/BIOS pixels before the game draws */
+				/* Do NOT blank here: it blacks the live frozen-menu snapshot = a black
+				 * flash before the opening punch. The punch composites the full frame
+				 * (menu snapshot + game) then clears the letterbox, so the frozen menu
+				 * stays on screen right up to the seamless growing-circle opening. */
 				dynarec_enable = 1;	/* full-speed dynarec for the actual game */
 				s_cpu_restart_req = 1;	/* CPU thread re-enters gba_core_cpu_loop cleanly */
 			}
@@ -1300,7 +1303,8 @@ static int emu_thread(void *arg)
 							gba_core_backup_size());
 					if (!PRESSED(GPIO_B))
 						state_read(scratch);
-					ayaneo_gbc_blank();
+					/* no blank: keep the frozen menu on screen for the seamless
+					 * growing-circle opening (the punch composites the full frame). */
 					dynarec_enable = 1;
 					s_cpu_restart_req = 1;
 					punch_start = 0;	/* re-arm the forward punch */
@@ -1353,9 +1357,23 @@ static int emu_thread(void *arg)
 				extern void ayaneo_gba_punch_prerender(const unsigned short *pix);
 				extern void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius);
 				extern void ayaneo_gbc_clear_letterbox(void);
-				int i, N = 20;
+				int i, N = 20, w;
 				gba_punch_ready = 0;
 				(void)punch_start;
+				/* On a FRESH launch the game has only rendered the GBA BIOS white
+				 * screen, so pre-rendering it here would open into a jarring white.
+				 * Run the game forward until it has produced real (non-blank-white)
+				 * content, capped, so the opening shows the actual game. Resumed games
+				 * are already non-blank on frame 0 => zero warmup. */
+				for (w = 0; w < 150; w++) {
+					const unsigned short *s = gba_core_screen();
+					int k, white = 0;
+					for (k = 0; k < 240 * 160; k += 373)
+						if (s[k] >= 0xF7DEu) white++;   /* near-white RGB565 */
+					if (white < 90)                         /* <90% of ~103 samples */
+						break;
+					run_one_frame();
+				}
 				ayaneo_gba_punch_prerender(gba_core_screen());
 				for (i = 1; i <= N; i++) {
 					int r = (int)((long long)GBA_PUNCH_MAX_R * i / N);   /* 0 -> MAX */
