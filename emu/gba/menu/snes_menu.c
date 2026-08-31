@@ -362,6 +362,7 @@ static void build_rcache(snes_menu *m, snes_target *t)
 	m->rcache_y0 = y0; m->rcache_y1 = y1;
 	m->rcache_sel = m->sel_world;
 	m->rcache_ready = 1;
+	m->sub_ready = 0;   /* shared buffer now holds the resume panel, not the submenu */
 }
 
 /* 4:3: the neon wallpaper zooms by ASP_WALL_S to fill the whole 960 panel (no black
@@ -391,8 +392,12 @@ static void draw_wp_43(snes_menu *m, snes_target *t, int scroll_px)
 		if (s0 < 0) s0 += WP43_PERIOD;
 		for (Y = y0; Y < y1; Y++) {
 			uint32_t *dst = t->fb + (unsigned)Y * t->pitch + t->offx;
-			const uint32_t *crow = m->wp43 + (unsigned)Y * WP43_PERIOD;
-			int first = WP43_PERIOD - s0;
+			const uint32_t *crow;
+			int first;
+			if (m->wp_skip1 > m->wp_skip0 && Y >= m->wp_skip0 && Y < m->wp_skip1)
+				continue;    /* row is fully hidden by an opaque overlay (submenu panel) */
+			crow = m->wp43 + (unsigned)Y * WP43_PERIOD;
+			first = WP43_PERIOD - s0;
 			if (first >= SNES_VW) {
 				memcpy(dst, crow + s0, (unsigned)SNES_VW * 4u);
 			} else {
@@ -1549,6 +1554,8 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
 	m->wp43 = 0; m->wp43_ready = 0;
 	m->rcache = 0; m->rcache_ready = 0; m->rcache_sel = -1e9f;
+	m->sub_ready = 0; m->sub_key = 0; m->sub_op0 = 0; m->sub_op1 = 0;
+	m->wp_skip0 = 0; m->wp_skip1 = 0;
 	m->gba_mode = 0; m->gba_names = 0; m->gba_cart_img = 0; m->launch = -1; m->pstart = 0;
 	m->ctile = 0; m->ctile_gi = 0; m->ctile_cap = 0; m->ctile_aspect = -1;
 	m->fct = 0; m->fct_ready = 0; m->fct_aspect = -1; m->no_cursor = 0;
@@ -2594,6 +2601,78 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	}
 }
 
+/* Draw the open submenu's contain-view panel (opaque backing + overlay scene + its
+ * hints / lists / frame strip / language buttons) into t. Static content, so it is
+ * cached when settled (build_submenu_cache) instead of re-walked every frame. */
+static void draw_submenu_contain(snes_menu *m, snes_target *t)
+{
+	snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
+	m->overlay[m->open]->tf[5] = m->open_y;
+	snes_render_node(t, &m->home, m->overlay[m->open]);
+	draw_reset_dialog(m, t);
+	if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
+	else if (m->open == 4) draw_manual_hints(m, t);
+	else if (m->open >= 0 && m->open <= 2) draw_option_hints(m, t);
+	if (m->open == 0) draw_frame_strip(m, t);
+	if (m->open == 2 && m->card_act) {
+		snes_rnode *el = child_named(m->pk, m->overlay[2], "elements"), *it;
+		for (it = el ? el->child : 0; it; it = it->sib) {
+			snes_rnode *btn = child_named(m->pk, it, "button");
+			float w[6];
+			int on = name_eq(m->pk, it, lang_name(m->lang_sel));
+			snes_spr_entry d = { m->card_act->img, (uint16_t)(on ? 113 : 99),
+					     881, 12, 12, 6, 6 };
+			if (!btn) continue;
+			snes_node_world(btn, w);
+			snes_blit_spr(t, m->pk, &d, 640.0f + w[2], 360.0f - w[5], 2.4f, 1.0f);
+		}
+	}
+}
+
+/* Render the settled submenu panel ONCE into the rcache buffer (shared with the resume
+ * panel; the two states are mutually exclusive) so later frames composite it 1:1
+ * instead of re-walking the whole scene graph (~56ms -> a memcpy-class composite). */
+static void build_submenu_cache(snes_menu *m, snes_target *t)
+{
+	snes_target ct = *t;   /* inherits the CONTAIN view the caller set */
+	unsigned i, n = (unsigned)t->pitch * (unsigned)t->H;
+	int y, x, y0 = t->H, y1 = 0, W = t->W < SNES_VW ? t->W : SNES_VW;
+	if (!m->rcache) return;
+	ct.fb = m->rcache;
+	for (i = 0; i < n; i++) m->rcache[i] = 0;      /* transparent */
+	draw_submenu_contain(m, &ct);
+	{
+		int op0 = t->H, op1 = 0;
+		for (y = 0; y < t->H; y++) {
+			const uint32_t *row = m->rcache + (unsigned)y * t->pitch;
+			int full = 1;
+			for (x = 0; x < W; x++) {
+				unsigned a = row[x] >> 24;
+				if (a) { if (y < y0) y0 = y; y1 = y + 1; }   /* any-opaque range */
+				if (a != 255) full = 0;
+			}
+			if (full) { if (y < op0) op0 = y; op1 = y + 1; }  /* fully-opaque band */
+		}
+		m->sub_op0 = op0; m->sub_op1 = op1;
+	}
+	m->sub_y0 = y0; m->sub_y1 = y1;
+	m->sub_ready = 1;
+	m->rcache_ready = 0;   /* the shared buffer now holds the submenu, not the resume */
+}
+
+/* FNV-1a of everything that changes the submenu panel's appearance; a change forces a
+ * cache rebuild (one live frame, like a nav), otherwise the cache is composited. */
+static unsigned submenu_sig(snes_menu *m)
+{
+	unsigned h = 2166136261u;
+	int v[11], k;
+	v[0] = m->open;         v[1] = (int)m->opt_on;    v[2] = m->opt_cur;  v[3] = m->lang_sel;
+	v[4] = m->lang_cur;     v[5] = m->disp_sel;       v[6] = m->disp_cur; v[7] = m->frame_sel;
+	v[8] = m->frame_scroll; v[9] = m->reset_dlg_open; v[10] = m->reset_armed;
+	for (k = 0; k < 11; k++) h = (h ^ (unsigned)v[k]) * 16777619u;
+	return h;
+}
+
 void snes_menu_render(snes_menu *m, snes_target *t)
 {
 	const snes_game_rec *g;
@@ -2619,7 +2698,15 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		 * hints/lists/strips in the contain view (they are one 'contain' subtree in
 		 * the web, so they move with the panel rather than pinning to the bar edges). */
 		if (m->aspect) {
+			/* skip the wallpaper rows fully hidden by the opaque settled panel (the
+			 * composite overwrites them anyway) - the wasted memcpy under the panel was
+			 * ~the whole panel band. Only the FULLY-opaque backing band is skipped, so
+			 * the hint rows above/below the band still get wallpaper. */
+			int sub_settled = (m->state == 2 && m->sub_ready &&
+					   m->open_y > -0.5f && m->open_y < 0.5f && !m->closing);
+			if (sub_settled) { m->wp_skip0 = m->sub_op0; m->wp_skip1 = m->sub_op1; }
 			draw_wp(m, t, (int)m->scroll);
+			m->wp_skip0 = m->wp_skip1 = 0;
 			if (!m->homemenu) snes_render_scene(t, &m->home);
 			else              draw_chrome(m, t);
 			/* the menubar item that opened this submenu is deactivated (no fill/
@@ -2631,29 +2718,37 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 						    64.0f, 1.0f, m->card_act->img);
 			}
 			set_view(m, t, VIEW_CONTAIN);
-			/* the option scene's own full-native black overlay (contain-scaled) is
-			 * the panel's opaque backing - in 16:9 the full-screen scrim provided it,
-			 * but contain only covers the centred 720 band, so paint it explicitly to
-			 * hide the wallpaper behind the panel (the top/bottom bars still show). */
-			snes_fill_quad(t, 640, 360, SNES_VW, SNES_VH, 0.0f, 0.0f, 0.0f, 1.0f);
-			m->overlay[m->open]->tf[5] = m->open_y;
-			snes_render_node(t, &m->home, m->overlay[m->open]);
-			draw_reset_dialog(m, t);
-			if (m->open == 3) { draw_copyright_list(m, t); draw_copyright_hints(m, t); }
-			else if (m->open == 4) draw_manual_hints(m, t);
-			else if (m->open >= 0 && m->open <= 2) draw_option_hints(m, t);
-			if (m->open == 0) draw_frame_strip(m, t);
-			if (m->open == 2 && m->card_act) {
-				snes_rnode *el = child_named(m->pk, m->overlay[2], "elements"), *it;
-				for (it = el ? el->child : 0; it; it = it->sib) {
-					snes_rnode *btn = child_named(m->pk, it, "button");
-					float w[6];
-					int on = name_eq(m->pk, it, lang_name(m->lang_sel));
-					snes_spr_entry d = { m->card_act->img, (uint16_t)(on ? 113 : 99),
-							     881, 12, 12, 6, 6 };
-					if (!btn) continue;
-					snes_node_world(btn, w);
-					snes_blit_spr(t, m->pk, &d, 640.0f + w[2], 360.0f - w[5], 2.4f, 1.0f);
+			/* Settled: composite the cached static panel (a memcpy-class blit = 60fps);
+			 * sliding/closing: render it live (a few frames). The whole panel (opaque
+			 * backing + overlay scene + hints/lists/strip/language buttons) was re-walked
+			 * every frame = ~56ms/15fps, so cache it once settled and rebuild only when a
+			 * selection changes (submenu_sig). See draw_submenu_contain/build_submenu_cache. */
+			{
+				int settled = (m->open_y > -0.5f && m->open_y < 0.5f && !m->closing);
+				if (settled && m->rcache) {
+					unsigned sig = submenu_sig(m);
+					int oy0, oy1;
+					if (!m->sub_ready || m->sub_key != sig) {
+						build_submenu_cache(m, t);
+						m->sub_key = sig;
+					}
+					/* memcpy the fully-opaque panel band (the bulk) instead of the
+					 * per-pixel alpha loop; alpha-composite only the sparse edge rows. */
+					oy0 = m->sub_op0; oy1 = m->sub_op1;
+					if (oy1 > oy0) {
+						int yy, W = t->W < SNES_VW ? t->W : SNES_VW;
+						snes_composite(t, m->rcache, m->sub_y0, oy0);
+						for (yy = oy0; yy < oy1; yy++)
+							memcpy(t->fb + (unsigned)yy * t->pitch,
+							       m->rcache + (unsigned)yy * t->pitch,
+							       (unsigned)W * 4u);
+						snes_composite(t, m->rcache, oy1, m->sub_y1);
+					} else {
+						snes_composite(t, m->rcache, m->sub_y0, m->sub_y1);
+					}
+				} else {
+					m->sub_ready = 0;
+					draw_submenu_contain(m, t);
 				}
 			}
 			return;

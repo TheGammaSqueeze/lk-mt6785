@@ -104,6 +104,14 @@ typedef struct {
 	uint32_t *rcache;
 	int rcache_ready, rcache_y0, rcache_y1;
 	float rcache_sel;             /* sel_world the panel was cached for (chevron pos) */
+	/* settled-submenu panel cache: the open submenu (state 2) is static content that
+	 * was re-walking the whole scene graph every frame (~56ms = 15fps). Cache it into
+	 * the rcache buffer (shared; the two states are mutually exclusive) once settled and
+	 * composite it, rebuilding only when the panel or a selection changes (sub_key). */
+	int sub_ready, sub_y0, sub_y1;
+	int sub_op0, sub_op1;         /* fully-opaque row band (the panel backing) */
+	unsigned sub_key;             /* signature of open + all interactive submenu state */
+	int wp_skip0, wp_skip1;       /* transient: draw_wp_43 skips rows [skip0,skip1) (hidden by an opaque overlay) */
 	/* focused-card body tile: the blue (active) card body is identical for every GBA
 	 * cart, so cache it ONCE (like ctile) and blit it + draw only the pulsing cursor
 	 * live - kills the last per-frame live card render (~2.7ms on the A55). */
