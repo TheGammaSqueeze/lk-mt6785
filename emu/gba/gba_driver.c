@@ -1259,18 +1259,22 @@ static int emu_thread(void *arg)
 			{
 				extern volatile unsigned int g_dbg_hz1000;
 				extern void ayaneo_gba_audio_set_rate(int panel_hz100);
-				static unsigned int g_acc, g_last; static int g_cnt, g_recal;
+				static unsigned int g_acc, g_last; static int g_cnt, g_wins, g_recal;
 				unsigned int now = gpt4_get_current_tick();
-				unsigned int lus = g_last ? (now - g_last) / 13u : 0u;
+				unsigned int lt = g_last ? (now - g_last) : 0u;   /* period in 13 MHz ticks */
 				g_last = now;
-				if (lus > 8000u && lus < 40000u) {
-					g_acc += lus;
-					if (++g_cnt >= 128) {
-						g_dbg_hz1000 = 1000000000u / (g_acc / 128u);
+				if (lt > 104000u && lt < 300000u) {   /* 8..23 ms; reject doubled frames */
+					g_acc += lt;
+					if (++g_cnt >= 64) {   /* 64-frame window (~1.07s): averages out per-frame
+					                         emulation CPU jitter so the readout tracks the TRUE
+					                         fixed panel rate as steadily as the menu loop. */
+						g_dbg_hz1000 = (unsigned int)(832000000000LL / (long long)g_acc);
 						g_acc = 0; g_cnt = 0;
-						if (!g_recal && g_dbg_hz1000 >= 55000u && g_dbg_hz1000 <= 65000u) {
+						/* recalibrate the audio resampler to the true rate after ~2 s of
+						 * stable windows (2 * 64 frames), not the noisy first window. */
+						if (!g_recal && ++g_wins >= 2 && g_dbg_hz1000 >= 55000u && g_dbg_hz1000 <= 65000u) {
 							g_recal = 1;
-							s_panel_hz100 = (int)(g_dbg_hz1000 / 10u);   /* accurate Hz*100 */
+							s_panel_hz100 = (int)(g_dbg_hz1000 / 10u);
 							ayaneo_gba_audio_set_rate(s_panel_hz100);
 						}
 					}

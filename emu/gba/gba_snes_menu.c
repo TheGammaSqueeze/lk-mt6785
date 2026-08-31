@@ -510,16 +510,20 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			lus = last_t ? (r0 - last_t) / 13u : 0u;
 			fps = lus ? (1000000u + lus / 2u) / lus : 0u;
 			last_t = r0;
-			/* precise panel refresh: average the vsync-locked loop period over 128
-			 * frames -> Hz*1000 (present() blocks on the panel vsync, so lus IS the
-			 * panel period once steady). */
+			/* precise panel refresh: average the vsync-locked loop period (in 13 MHz
+			 * TICKS, not rounded us) over an 8-frame window -> Hz*1000 = 8*13e9/ticks.
+			 * present() blocks on the panel vsync so the period IS the panel period; a
+			 * short window updates ~every 0.13 s (fine for polling) and ticks + the
+			 * 64-bit divide give sub-milli-Hz precision. Reject doubled frames (>23 ms). */
 			{
-				static unsigned int acc; static int cnt;
-				if (lus > 8000u && lus < 40000u) {
-					acc += lus;
-					if (++cnt >= 128) {   /* 32-bit only: 1e9/avg_us = Hz*1000 */
-						g_dbg_hz1000 = 1000000000u / (acc / 128u);
-						acc = 0; cnt = 0;
+				static unsigned int acc_ticks, hz_last; static int cnt;
+				unsigned int lt = hz_last ? (r0 - hz_last) : 0u;
+				hz_last = r0;
+				if (lt > 104000u && lt < 300000u) {
+					acc_ticks += lt;
+					if (++cnt >= 8) {
+						g_dbg_hz1000 = (unsigned int)(104000000000LL / (long long)acc_ticks);
+						acc_ticks = 0; cnt = 0;
 					}
 				}
 			}
