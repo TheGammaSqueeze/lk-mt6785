@@ -44,26 +44,36 @@ static char lbuf[96];
 static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
 	(void)arg; (void)data; (void)sz;
-	{
-		extern volatile unsigned int g_gaud_snap;   /* audio resync snaps (should stay ~0) */
-		snprintf(lbuf, sizeof lbuf, "render=%u peak=%u fps=%u snap=%u",
-			 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps, g_gaud_snap);
-	}
+	snprintf(lbuf, sizeof lbuf, "p=%u f=%u", g_dbg_peak_us, g_dbg_fps);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
 
-/* oem launch - force-launch the focused ROM (drives the game over USB for testing). */
-static void cmd_launch(const char *arg, void *data, unsigned sz)
+/* oem launch - force-launch the focused ROM; oem nav:<L R U D A B S T [ ]> - inject one
+ * clean nav press + report the peak render us for that movement (reset first) so the
+ * flicker campaign can measure any state. g_dbg_force_launch when arg is empty. */
+extern volatile int g_dbg_key, g_dbg_key_hold, g_dbg_peak_reset, g_dbg_force_launch;
+static void cmd_nav(const char *arg, void *data, unsigned sz)
 {
-	(void)arg; (void)data; (void)sz;
-	g_dbg_force_launch = 1;
+	static const char K[] = "LRUDABST[]";   /* codes 0..9 */
+	int code = -1, i;
+	char c;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	c = *arg;
+	if (c == '!') { g_dbg_force_launch = 1; thread_sleep(300); fastboot_okay(""); return; }
+	if (c >= 'a' && c <= 'z') c -= 32;
+	for (i = 0; i < 10; i++) if (K[i] == c) { code = i; break; }
+	if (code < 0) { fastboot_okay(""); return; }
+	g_dbg_peak_reset = 1;
+	g_dbg_key = code;
+	g_dbg_key_hold = 7;
 	thread_sleep(300);
-	fastboot_okay("");
+	fastboot_okay("");   /* read the resulting peak via `oem diag` */
 }
 
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
-	fastboot_register("oem launch", cmd_launch, 1, 0);
+	fastboot_register("oem nav:", cmd_nav, 1, 0);
 }

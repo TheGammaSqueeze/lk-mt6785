@@ -523,9 +523,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		menu_av_draw(fb, pitch, (int)W, (int)H);   /* volume/brightness OSD bar */
 		pump_audio();
 
-		/* debug: fastboot `oem launch` forces a launch of the focused ROM (injected
-		 * edge presses do not fire the menu launch, so this drives the launch->close
-		 * round-trip over USB for testing the punch + reverse transitions). */
+		/* debug: fastboot `oem nav:!` force-launches the focused ROM (injected edge
+		 * presses do not fire the menu launch), driving the launch->close round-trip
+		 * over USB for testing the punch + reverse transitions. */
 		if (g_dbg_force_launch) {
 			g_dbg_force_launch = 0;
 			if (s_menu.gba_mode && s_menu.ngames > 0) {

@@ -998,7 +998,6 @@ void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
  * only the input format + source rate differ, so only this submit is new. */
 #define GBA_SRC_HZ	65536u
 
-volatile unsigned int g_gaud_snap;       /* TEMP probe: # of audio resync snaps */
 static long long s_ga_accl, s_ga_accr;
 static unsigned s_ga_n, s_ga_phase;
 static int s_ga_inc = (int)GBC_DST_HZ;	/* resampler output rate (nom 48000) */
@@ -1057,7 +1056,6 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 		if (lead < (int)(GBC_RING_FRAMES / 16) ||	/* ~<21 ms: near underrun */
 		    lead > (int)((GBC_RING_FRAMES * 7) / 16)) {	/* ~>150 ms: near overrun */
 			s_gbc_widx = (rd + GBC_RING_FRAMES / 4) & (GBC_RING_FRAMES - 1);
-			g_gaud_snap++;               /* TEMP probe: audio resync discontinuity */
 		} else {
 			/*
 			 * Closed-loop clock recovery. The fixed resampler rate cannot be

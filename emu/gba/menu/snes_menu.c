@@ -931,6 +931,18 @@ static const uint32_t *ctile_get(snes_menu *m, int gi)
 		for (k = 0; k < m->ctile_cap; k++) m->ctile_gi[k] = -1;
 		m->ctile_aspect = m->aspect;
 	}
+	/* Every GBA cart body is the IDENTICAL placeholder, so keying the cache by game
+	 * index makes a scroll (which shows several distinct indices at once) re-render the
+	 * same tile once per visible card per frame - the direct-mapped cap-1 slot thrashes
+	 * and a scroll-from-rest that brings a fresh index into view spikes the frame. Cache
+	 * ONE shared body tile (slot 0, sentinel key) and return it for every card. */
+	if (m->gba_mode) {
+		if (m->ctile_gi[0] != 0x40000000) {
+			render_card_tile(m, gi, m->ctile, 0.0f);
+			m->ctile_gi[0] = 0x40000000;
+		}
+		return m->ctile;
+	}
 	slot = gi % m->ctile_cap; if (slot < 0) slot += m->ctile_cap;
 	if (m->ctile_gi[slot] != gi) {
 		render_card_tile(m, gi, m->ctile + (unsigned)slot * CT_PIX, 0.0f);
