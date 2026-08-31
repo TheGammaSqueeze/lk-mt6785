@@ -97,6 +97,17 @@ extern int  mt_get_gpio_in(unsigned pin);
 extern int pmic_detect_powerkey(void);
 extern void mt_power_off(void);
 
+/* Volume / brightness control from the menu (same as the in-game poll): the two
+ * hardware volume keys change volume; SELECT + a volume key changes brightness. A
+ * small OSD bar is drawn over the menu, and the persist is deferred so the eMMC/SD
+ * write does not stall the loop (mirror of gba_driver.c poll_volume). */
+extern int  ayaneo_gbc_audio_get_volume(void);
+extern void ayaneo_gbc_audio_set_volume(int v);
+extern int  ayaneo_brightness_step(int dir);
+extern int  ayaneo_brightness_pct(void);
+extern int  mtk_detect_key(unsigned short key);   /* HW keycode: 0x11 vol+, 0x00 vol- */
+extern void ayaneo_settings_save(void);
+
 /* Live debug metrics, read by the fastboot debug channel (emu/gba/menu_fastboot.c)
  * from its own thread while this menu runs. Plain globals: single writer (this
  * loop), racy reads are fine for diagnostics. */
@@ -129,6 +140,63 @@ static unsigned int frame_cksum(const unsigned int *fb, unsigned int pitch_w,
 			h = (h ^ row[x]) * 16777619u;
 	}
 	return h;
+}
+
+/* ---- menu volume / brightness (OSD + deferred persist) ---- */
+static int      s_av_kind;        /* 0 none, 1 volume, 2 brightness */
+static int      s_av_pct;         /* 0..100 for the bar */
+static unsigned s_av_until;       /* 13 MHz tick the OSD hides */
+static int      s_av_dirty;       /* a change is pending persist */
+static unsigned s_av_tick;        /* 13 MHz tick of the last change */
+
+/* Read the two hardware volume keys (edge-detected) and adjust volume, or
+ * brightness when SELECT is held. Sets the OSD + marks the persist dirty. */
+static void menu_av_poll(void)
+{
+	static int up_prev, dn_prev;
+	int up = mtk_detect_key(0x11);        /* VOL_UP  */
+	int dn = mtk_detect_key(0x00);        /* VOL_DOWN */
+	int sel = PRESSED(K_SELECT);
+	int dir = 0;
+
+	if (up && !up_prev) dir = +1;
+	else if (dn && !dn_prev) dir = -1;
+	if (dir) {
+		if (sel) {
+			s_av_kind = 2;
+			s_av_pct = ayaneo_brightness_step(dir);
+		} else {
+			int v = ayaneo_gbc_audio_get_volume() + dir * 5;
+			ayaneo_gbc_audio_set_volume(v);
+			s_av_kind = 1;
+			s_av_pct = ayaneo_gbc_audio_get_volume();   /* clamped 0..100 */
+		}
+		if (s_av_pct < 0) s_av_pct = 0; else if (s_av_pct > 100) s_av_pct = 100;
+		s_av_until = gpt4_get_current_tick() + 19500000u;   /* ~1.5s */
+		s_av_dirty = 1;
+		s_av_tick = gpt4_get_current_tick();
+	}
+	up_prev = up; dn_prev = dn;
+
+	/* flush the persist ~0.7s after the last change (off the key-repeat hot path) */
+	if (s_av_dirty && (gpt4_get_current_tick() - s_av_tick) >= 9100000u) {
+		s_av_dirty = 0;
+		ayaneo_settings_save();   /* eMMC persist; SD mirror stays a game-path detail */
+	}
+}
+
+/* Draw the volume/brightness OSD bar over the rendered menu while it is active. */
+static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
+{
+	int bw = 420, bh = 46, bx, by, fillw;
+	if (!s_av_kind) return;
+	if ((int)(gpt4_get_current_tick() - s_av_until) >= 0) { s_av_kind = 0; return; }
+	bx = (W - bw) / 2; by = H - 150;
+	ayaneo_fill(fb, pitch, bx - 8, by - 30, bw + 16, bh + 40, 0xE0101018u);  /* panel */
+	ayaneo_text(fb, pitch, bx, by - 26, 2, 0xFFFFFFFFu, s_av_kind == 2 ? "BRIGHTNESS" : "VOLUME");
+	ayaneo_fill(fb, pitch, bx, by, bw, bh, 0xFF303848u);                     /* track */
+	fillw = bw * s_av_pct / 100; if (fillw < 0) fillw = 0; if (fillw > bw) fillw = bw;
+	ayaneo_fill(fb, pitch, bx, by, fillw, bh, 0xFF50A0F0u);                  /* fill */
 }
 
 /* ---- boot_b SNES pack (SNSZ) location in the GBA-SD flow ----
@@ -410,6 +478,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			g_inject_frames--;
 		}
 
+		menu_av_poll();   /* volume / brightness keys (+ deferred persist) */
+
 		t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
 		t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;
 		snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
@@ -462,6 +532,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 					  (fade_in * 255) / 18);
 			fade_in--;
 		}
+		menu_av_draw(fb, pitch, (int)W, (int)H);   /* volume/brightness OSD bar */
 		pump_audio();
 
 		launch = snes_menu_take_launch(&s_menu);
