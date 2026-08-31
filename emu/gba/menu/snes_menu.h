@@ -103,6 +103,7 @@ typedef struct {
 	 * Caller-provides an fb-size buffer (pitch*H u32); 0 = always render live. */
 	uint32_t *rcache;
 	int rcache_ready, rcache_y0, rcache_y1;
+	int rcache_op0, rcache_op1;   /* fully-opaque backing band of the resume panel */
 	float rcache_sel;             /* sel_world the panel was cached for (chevron pos) */
 	/* settled-submenu panel cache: the open submenu (state 2) is static content that
 	 * was re-walking the whole scene graph every frame (~56ms = 15fps). Cache it into

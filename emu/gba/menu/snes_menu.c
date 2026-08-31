@@ -355,9 +355,19 @@ static void build_rcache(snes_menu *m, snes_target *t)
 	m->resume->tf[5] = 0.0f;
 	snes_render_node(&ct, &m->home, m->resume);
 	m->resume->tf[5] = save_y;
-	for (y = 0; y < t->H; y++) {                    /* covered fb-row range */
-		const uint32_t *row = m->rcache + (unsigned)y * t->pitch;
-		for (x = 0; x < W; x++) if (row[x] >> 24) { if (y < y0) y0 = y; y1 = y + 1; break; }
+	{
+		int op0 = t->H, op1 = 0;
+		for (y = 0; y < t->H; y++) {
+			const uint32_t *row = m->rcache + (unsigned)y * t->pitch;
+			int full = 1;
+			for (x = 0; x < W; x++) {
+				unsigned a = row[x] >> 24;
+				if (a) { if (y < y0) y0 = y; y1 = y + 1; }   /* any-opaque range */
+				if (a != 255) full = 0;
+			}
+			if (full) { if (y < op0) op0 = y; op1 = y + 1; }  /* fully-opaque backing */
+		}
+		m->rcache_op0 = op0; m->rcache_op1 = op1;
 	}
 	m->rcache_y0 = y0; m->rcache_y1 = y1;
 	m->rcache_sel = m->sel_world;
@@ -2805,7 +2815,13 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	}
 
 	PERF_BEGIN();
+	/* resume (state 3) settled: skip the wallpaper rows hidden by the opaque suspend
+	 * panel backing (the panel composite overwrites them) - same trick as the submenu. */
+	if (m->state == 3 && m->rcache_ready && m->open_y > -0.5f && m->open_y < 0.5f) {
+		m->wp_skip0 = m->rcache_op0; m->wp_skip1 = m->rcache_op1;
+	}
 	draw_wp(m, t, (int)m->scroll);
+	m->wp_skip0 = m->wp_skip1 = 0;
 	PERF_END(0);
 	/* Home + menubar + resume all use the cached home chrome (the full-scene
 	 * re-render was a big per-frame cost; the menubar even re-rendered the cards
@@ -2947,9 +2963,23 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			 * (the resume state's dominant cost). Re-walk live only while sliding, or
 			 * if the selected-card chevron moved (rcache_sel), or with no cache. */
 			if (m->rcache && m->open_y > -0.5f && m->open_y < 0.5f) {
+				int oy0, oy1;
 				if (!m->rcache_ready || m->rcache_sel != m->sel_world)
 					build_rcache(m, t);
-				snes_composite(t, m->rcache, m->rcache_y0, m->rcache_y1);
+				/* memcpy the fully-opaque panel backing (the bulk); alpha-composite
+				 * only the sparse edge rows - same trick as the submenu cache. */
+				oy0 = m->rcache_op0; oy1 = m->rcache_op1;
+				if (oy1 > oy0) {
+					int yy, W = t->W < SNES_VW ? t->W : SNES_VW;
+					snes_composite(t, m->rcache, m->rcache_y0, oy0);
+					for (yy = oy0; yy < oy1; yy++)
+						memcpy(t->fb + (unsigned)yy * t->pitch,
+						       m->rcache + (unsigned)yy * t->pitch,
+						       (unsigned)W * 4u);
+					snes_composite(t, m->rcache, oy1, m->rcache_y1);
+				} else {
+					snes_composite(t, m->rcache, m->rcache_y0, m->rcache_y1);
+				}
 			} else {
 				m->rcache_ready = 0;   /* sliding: overlay stale, rebuild on settle */
 				snes_render_node(t, &m->home, m->resume);
