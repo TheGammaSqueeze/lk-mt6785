@@ -998,9 +998,11 @@ void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
  * only the input format + source rate differ, so only this submit is new. */
 #define GBA_SRC_HZ	65536u
 
+volatile unsigned int g_gaud_snap;       /* TEMP probe: # of audio resync snaps */
 static long long s_ga_accl, s_ga_accr;
 static unsigned s_ga_n, s_ga_phase;
 static int s_ga_inc = (int)GBC_DST_HZ;	/* resampler output rate (nom 48000) */
+static int s_ga_inc_base = (int)GBC_DST_HZ;	/* calibrated rate; the trim floats +-64 of it */
 
 int ayaneo_gba_audio_drc_rate(void) { return s_ga_inc; }
 
@@ -1022,6 +1024,7 @@ void ayaneo_gba_audio_set_rate(int panel_hz100)
 	if (inc < 44000) inc = 44000;
 	if (inc > 52000) inc = 52000;
 	s_ga_inc = inc;
+	s_ga_inc_base = inc;
 }
 
 /* `frames` stereo frames, s16 interleaved [L,R,L,R,...] at GBA_SRC_HZ. */
@@ -1052,8 +1055,27 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 		if (lead >= (int)(GBC_RING_FRAMES / 2))
 			lead -= (int)GBC_RING_FRAMES;
 		if (lead < (int)(GBC_RING_FRAMES / 16) ||	/* ~<21 ms: near underrun */
-		    lead > (int)((GBC_RING_FRAMES * 7) / 16))	/* ~>150 ms: near overrun */
+		    lead > (int)((GBC_RING_FRAMES * 7) / 16)) {	/* ~>150 ms: near overrun */
 			s_gbc_widx = (rd + GBC_RING_FRAMES / 4) & (GBC_RING_FRAMES - 1);
+			g_gaud_snap++;               /* TEMP probe: audio resync discontinuity */
+		} else {
+			/*
+			 * Closed-loop clock recovery. The fixed resampler rate cannot be
+			 * EXACTLY the true AFE 48 kHz consumption (panel-Hz measurement + AFE
+			 * crystal both have small error), so `lead` slowly drifts until it hits
+			 * the emergency snap above - an ~85 ms jump = the periodic audible blip
+			 * (measured ~1 snap/90s at idle). Instead, nudge the resampler rate by
+			 * +-1 (of ~48000 = ~0.002%, far below audible) to hold lead near the
+			 * centre target, so the snap never triggers. inc floats within +-64 of
+			 * the calibrated base = a hard bound on any pitch excursion. This is
+			 * standard audio clock recovery; the tiny bounded trim is inaudible
+			 * where the periodic snap was not.
+			 */
+			int tgt = (int)(GBC_RING_FRAMES / 4);          /* ~85 ms centre */
+			int db  = (int)(GBC_RING_FRAMES / 32);         /* ~10 ms deadband */
+			if (lead > tgt + db) { if (s_ga_inc > s_ga_inc_base - 64) s_ga_inc--; }
+			else if (lead < tgt - db) { if (s_ga_inc < s_ga_inc_base + 64) s_ga_inc++; }
+		}
 	}
 
 	for (i = 0; i < frames; i++) {

@@ -44,39 +44,26 @@ static char lbuf[96];
 static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
 	(void)arg; (void)data; (void)sz;
-	snprintf(lbuf, sizeof lbuf, "render=%u peak=%u fps=%u",
-		 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps);
+	{
+		extern volatile unsigned int g_gaud_snap;   /* audio resync snaps (should stay ~0) */
+		snprintf(lbuf, sizeof lbuf, "render=%u peak=%u fps=%u snap=%u",
+			 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps, g_gaud_snap);
+	}
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
 
-/* oem key:<name> - inject one nav button (held ~7 frames = a clean edge press) and
- * reset the peak tracker so the movement it triggers is measured clean. Names:
- * L R U D A B S(elect) T(start=Title) [ ] map to codes 0..9. */
-extern volatile int g_dbg_key, g_dbg_key_hold, g_dbg_peak_reset;
-static void cmd_key(const char *arg, void *data, unsigned sz)
+/* oem launch - force-launch the focused ROM (drives the game over USB for testing). */
+static void cmd_launch(const char *arg, void *data, unsigned sz)
 {
-	static const char K[] = "LRUDABST[]";   /* codes 0..9 */
-	int code = -1, i;
-	char c;
-	(void)data; (void)sz;
-	while (*arg == ' ' || *arg == ':') arg++;
-	c = *arg;
-	if (c >= 'a' && c <= 'z') c -= 32;
-	for (i = 0; i < 10; i++) if (K[i] == c) { code = i; break; }
-	if (code < 0) { fastboot_fail("bad key"); return; }
-	g_dbg_peak_reset = 1;
-	g_dbg_key = code;
-	g_dbg_key_hold = 7;
-	thread_sleep(300);        /* let the press + the movement settle */
-	snprintf(lbuf, sizeof lbuf, "key=%d peak=%u fps=%u",
-		 code, g_dbg_peak_us, g_dbg_fps);
-	fastboot_info(lbuf);
+	(void)arg; (void)data; (void)sz;
+	g_dbg_force_launch = 1;
+	thread_sleep(300);
 	fastboot_okay("");
 }
 
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
-	fastboot_register("oem nav:", cmd_key, 1, 0);
+	fastboot_register("oem launch", cmd_launch, 1, 0);
 }
