@@ -1069,10 +1069,18 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 			 * standard audio clock recovery; the tiny bounded trim is inaudible
 			 * where the periodic snap was not.
 			 */
+			/* Bound must exceed the worst-case base-calibration error, or the trim
+			 * SATURATES at the limit and any residual drift still hits the emergency
+			 * snap = the periodic sample repeat - which returns whenever the panel is
+			 * not exactly the GBA rate (e.g. 59.751 vs 59.7275 = 0.04%, or the noisy
+			 * 2-sample boot measure off by ~0.13% = ~64 inc units, exactly the old
+			 * limit). Widen to +-512 (~1% pitch ceiling, never reached in practice -
+			 * the trim settles at the real error, a few dozen units): now the loop
+			 * fully absorbs any realistic panel-vs-GBA mismatch, no snap. */
 			int tgt = (int)(GBC_RING_FRAMES / 4);          /* ~85 ms centre */
 			int db  = (int)(GBC_RING_FRAMES / 32);         /* ~10 ms deadband */
-			if (lead > tgt + db) { if (s_ga_inc > s_ga_inc_base - 64) s_ga_inc--; }
-			else if (lead < tgt - db) { if (s_ga_inc < s_ga_inc_base + 64) s_ga_inc++; }
+			if (lead > tgt + db) { if (s_ga_inc > s_ga_inc_base - 512) s_ga_inc--; }
+			else if (lead < tgt - db) { if (s_ga_inc < s_ga_inc_base + 512) s_ga_inc++; }
 		}
 	}
 
