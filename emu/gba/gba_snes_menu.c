@@ -124,6 +124,7 @@ volatile int          g_dbg_focus;         /* current focused game index */
  * 0..9 = L R U D A B Select Start LB RB; -1 = none. */
 volatile int          g_inject_btn = -1;
 volatile int          g_inject_frames = 0;
+volatile int          g_dbg_force_launch;   /* fastboot `oem launch`: force-launch focused ROM */
 
 /* Motion capture (fastboot `oem capmotion`): snapshot N consecutive presented
  * frames into a DRAM ring during an injected scroll, so the host can assemble the
@@ -546,6 +547,16 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		menu_av_draw(fb, pitch, (int)W, (int)H);   /* volume/brightness OSD bar */
 		pump_audio();
 
+		/* debug: fastboot `oem launch` forces a launch of the focused ROM (injected
+		 * edge presses do not fire the menu launch, so this drives the launch->close
+		 * round-trip over USB for testing the punch + reverse transitions). */
+		if (g_dbg_force_launch) {
+			g_dbg_force_launch = 0;
+			if (s_menu.gba_mode && s_menu.ngames > 0) {
+				int n = s_menu.ngames, f = ((s_menu.focus % n) + n) % n;
+				s_menu.launch = s_menu.order[f];
+			}
+		}
 		launch = snes_menu_take_launch(&s_menu);
 		if (launch >= 0 && launch < nrom) {
 			/* Punch-hole launch: instead of fading the menu to black, CAPTURE the

@@ -38,7 +38,7 @@ extern volatile unsigned int g_dbg_render_us, g_dbg_peak_us, g_dbg_fps;
 extern volatile unsigned int g_dbg_present_cnt;
 extern volatile int g_dbg_focus;
 extern volatile int g_inject_btn, g_inject_frames;
-extern volatile int g_dbg_reverse_ran, g_dbg_arm_cnt, g_dbg_force_close;
+extern volatile int g_dbg_reverse_ran, g_dbg_arm_cnt, g_dbg_force_close, g_dbg_force_launch;
 
 static char lbuf[96];
 
@@ -86,9 +86,18 @@ static void cmd_close(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+static void cmd_launch(const char *arg, void *data, unsigned sz)
+{
+	(void)arg; (void)data; (void)sz;
+	g_dbg_force_launch = 1;
+	thread_sleep(300);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem key:", cmd_key, 1, 0);
+	fastboot_register("oem launch", cmd_launch, 1, 0);
 	fastboot_register("oem close", cmd_close, 1, 0);
 }
