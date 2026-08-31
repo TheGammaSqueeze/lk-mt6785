@@ -34,26 +34,14 @@ extern int  snprintf(char *str, unsigned long size, const char *fmt, ...);
 extern void thread_sleep(unsigned ms);
 
 /* live panel + metrics + input injection (display driver + gba_snes_menu.c) */
-extern const unsigned int *ayaneo_canvas_front(unsigned int *pitch, unsigned int *W, unsigned int *H);
 extern volatile unsigned int g_dbg_render_us, g_dbg_peak_us, g_dbg_fps;
 extern volatile unsigned int g_dbg_present_cnt;
 extern volatile int g_dbg_focus;
 extern volatile int g_inject_btn, g_inject_frames;
-extern volatile int g_cap_want, g_cap_have;
-extern volatile unsigned int g_cap_pitch, g_cap_w, g_cap_h;
 extern volatile int g_dbg_reverse_ran, g_dbg_arm_cnt, g_dbg_force_close;
-#define GBA_CAP_PA  0x4E000000u
-#define GBA_CAP_MAX 6
 
 static char lbuf[96];
 
-static unsigned long parse_u(const char *s)
-{
-	unsigned long v = 0;
-	while (*s == ' ' || *s == ':') s++;
-	while (*s >= '0' && *s <= '9') { v = v * 10u + (unsigned long)(*s - '0'); s++; }
-	return v;
-}
 
 static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
@@ -87,53 +75,6 @@ static void cmd_key(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* Downscaled RGB565 hex screenshot over bounded INFO lines (13 px = 52 hex + a 4
- * char row tag <= 63 bytes, safely under MAX_RSP_SIZE). Wide rows continue on
- * "<row>+" lines. Reconstruct with tools/ayaneo/gba/fastboot_menu_shot.py. */
-/* Dump one downscaled RGB565 hex frame from `base` (front buffer or a capture-ring
- * slot). 13 px per <=64-byte INFO line; wide rows continue on "<row>+" lines. */
-static void dump_frame_hex(const unsigned int *base, unsigned int pitch,
-			   unsigned int W, unsigned int H, int step)
-{
-	static const char *hx = "0123456789abcdef";
-	unsigned int x, y;
-	if (step <= 0) step = 16;
-	for (y = 0; y < H; y += (unsigned)step) {
-		const unsigned int *row = base + (unsigned long)y * pitch;
-		char *o = lbuf;
-		int col = 0, k;
-		k = snprintf(lbuf, sizeof lbuf, "%03u:", y / (unsigned)step);
-		o += k;
-		for (x = 0; x < W; x += (unsigned)step) {
-			unsigned int px = row[x];
-			unsigned int r = (px >> 16) & 0xff, g = (px >> 8) & 0xff, b = px & 0xff;
-			unsigned int p = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-			if (col == 13) {
-				*o = 0; fastboot_info(lbuf);
-				o = lbuf; o += snprintf(lbuf, sizeof lbuf, "%03u+", y / (unsigned)step);
-				col = 0;
-			}
-			*o++ = hx[(p >> 12) & 0xf]; *o++ = hx[(p >> 8) & 0xf];
-			*o++ = hx[(p >> 4) & 0xf];  *o++ = hx[p & 0xf];
-			col++;
-		}
-		*o = 0;
-		fastboot_info(lbuf);
-	}
-}
-
-static void cmd_getframe(const char *arg, void *data, unsigned sz)
-{
-	int i = (int)parse_u(arg);
-	unsigned long bytes;
-	(void)data; (void)sz;
-	if (g_cap_have <= 0 || i < 0 || i >= g_cap_have) { fastboot_fail("bad idx"); return; }
-	bytes = (unsigned long)g_cap_pitch * g_cap_h * 4u;
-	dump_frame_hex((const unsigned int *)(unsigned long)(GBA_CAP_PA + (unsigned long)i * bytes),
-		       g_cap_pitch, g_cap_w, g_cap_h, 20);
-	fastboot_okay("");
-}
-
 /* oem close: trigger the in-game close path (game -> menu reverse) so it can be
  * tested over USB. Read `oem diag` after: arm=<n> rev=<n> shows whether the driver
  * armed the reverse and whether the reverse block actually ran. */
@@ -149,6 +90,5 @@ void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem key:", cmd_key, 1, 0);
-	fastboot_register("oem getframe:", cmd_getframe, 1, 0);
 	fastboot_register("oem close", cmd_close, 1, 0);
 }

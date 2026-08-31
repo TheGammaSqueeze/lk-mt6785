@@ -1177,6 +1177,34 @@ void ayaneo_gbc_blank(void)
 	arch_clean_cache_range((unsigned int)fb_addr, fb_size * 2);
 }
 
+/* Clear ONLY the letterbox (the region outside the centred game) in BOTH buffers,
+ * leaving the game area untouched. Used at the launch-punch END: the punch left the
+ * menu snapshot in the letterbox, but the game area is already full gameplay (radius
+ * covers it). A full ayaneo_gbc_blank() there memsets the LIVE buffer black =
+ * a one-frame black flash = the menu->game transition flicker. Clearing only the
+ * letterbox never blacks the live game centre, so there is no flash. */
+void ayaneo_gbc_clear_letterbox(void)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	int dw = GBC_SRC_W * GBC_SCALE, dh = GBC_SRC_H * GBC_SCALE;
+	int xoff = ((int)W - dw) / 2, yoff = ((int)H - dh) / 2;
+	int b, y;
+
+	if (!fb_addr)
+		return;
+	for (b = 0; b < 2; b++) {
+		unsigned int *fb = (unsigned int *)((unsigned char *)fb_addr + (b ? fb_size : 0));
+		for (y = 0; y < yoff; y++)                 memset(fb + (unsigned)y * pitch, 0, W * 4);
+		for (y = yoff + dh; y < (int)H; y++)       memset(fb + (unsigned)y * pitch, 0, W * 4);
+		for (y = yoff; y < yoff + dh; y++) {       /* left + right side strips */
+			memset(fb + (unsigned)y * pitch, 0, xoff * 4);
+			memset(fb + (unsigned)y * pitch + (xoff + dw), 0, (W - xoff - dw) * 4);
+		}
+	}
+	arch_clean_cache_range((unsigned int)fb_addr, fb_size * 2);
+}
+
 /* Punch-hole launch transition: composite the LIVE game frame (`pix`, the same
  * 240x160 -> GBC_SCALE centred render as ayaneo_gbc_show_frame, black letterbox)
  * INSIDE a circle of `radius` centred at (cx,cy), and the frozen menu `snap` (a

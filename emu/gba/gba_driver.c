@@ -1346,12 +1346,15 @@ static int emu_thread(void *arg)
 				el = now - punch_start;
 				if (el >= GBA_PUNCH_TICKS) {		/* time up -> full gameplay */
 					gba_punch_ready = 0;
-					/* The punch composited the menu snapshot OUTSIDE the circle, so
-					 * it left menu pixels in the 40px/80px letterbox that normal
-					 * show_frame never redraws (it only paints + flushes the centred
-					 * game band). Blank both buffers once here so no snapshot remnant
-					 * lingers around the letterbox on the freshly launched game. */
-					ayaneo_gbc_blank();
+					/* The punch left the menu snapshot in the 40/80px letterbox that
+					 * normal show_frame never redraws. Clear ONLY the letterbox (both
+					 * buffers) - a full ayaneo_gbc_blank() here memsets the LIVE buffer
+					 * black = a one-frame black flash = the menu->game transition
+					 * flicker the user saw. The game area is already full gameplay. */
+					{
+						extern void ayaneo_gbc_clear_letterbox(void);
+						ayaneo_gbc_clear_letterbox();
+					}
 					ayaneo_gbc_show_frame(gba_core_screen());
 					continue;
 				}
