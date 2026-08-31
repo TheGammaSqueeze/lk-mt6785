@@ -204,6 +204,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	const snes_img_entry *cart;
 	unsigned int saved_mhz;
 	int pwr_armed = 0;
+	int do_reverse = g_reverse_punch;	/* consume now so a failed re-entry (pack missing)
+						 * cannot leave a stale reverse armed for next time */
+	g_reverse_punch = 0;
 	int fade_in = 18;   /* fade the menu in from WHITE on entry over 0.3s (the boot-logo
 			     * animation ends on a whiteout, so a white->menu fade is a seamless
 			     * handover; was black). matching
@@ -273,7 +276,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	/* Reverse punch-hole (returning from a closed game): render one menu frame as the
 	 * reveal, then shrink the frozen last game frame into a hole so the menu appears
 	 * around it - the mirror of the launch transition. Time-paced to GBA_REVERSE_MS. */
-	if (g_reverse_punch) {
+	if (do_reverse) {
 		unsigned int cp, cw, ch;
 		unsigned int *cfb = ayaneo_canvas_back(&cp, &cw, &ch);
 		unsigned int pstart, ticks = GBA_REVERSE_MS * 13000u;
@@ -303,7 +306,6 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			ayaneo_canvas_present();
 			mtk_wdt_restart();
 		}
-		g_reverse_punch = 0;
 	}
 
 	{
