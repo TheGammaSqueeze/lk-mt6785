@@ -312,30 +312,33 @@ static void play_reverse_punch(unsigned int ms)
 	}
 	snes_menu_render(&s_menu, &lt);
 	memcpy((void *)(uintptr_t)GBA_REVERSE_SNAP_PA, cfb, (size_t)cp * ch * 4);
-	pstart = gpt4_get_current_tick();
-	for (;;) {
-		unsigned int now = gpt4_get_current_tick(), el = now - pstart;
-		unsigned int p2, w2, h2;
-		unsigned int *db;
-		int r;
-		if (el >= ticks) break;
-		r = (int)((long long)820 * (ticks - el) / ticks);   /* MAX -> 0: game shrinks */
-		db = ayaneo_canvas_back(&p2, &w2, &h2);
-		gba_punch_composite(db, (const uint32_t *)GBA_REVERSE_SNAP_PA, (int)p2,
-				    (int)w2, (int)h2, (const unsigned short *)GBA_GAME_FREEZE_PA,
-				    -1, -1, r, 5, 240, 160,
-				    ((int)w2 - 1200) / 2, ((int)h2 - 800) / 2);
-		ayaneo_canvas_present();
-		if (g_cap_want > 0) {
-			int idx = GBA_CAP_MAX - g_cap_want;
-			if (idx >= 0 && idx < GBA_CAP_MAX) {
-				unsigned long b = (unsigned long)p2 * h2 * 4u;
-				memcpy((void *)(uintptr_t)(GBA_CAP_PA + (unsigned long)idx * b), db, b);
-				g_cap_pitch = p2; g_cap_w = w2; g_cap_h = h2; g_cap_have = idx + 1;
+	(void)pstart; (void)ticks;
+	/* FRAME-paced (not time-paced): the full-frame composite is ~40-60ms for a large
+	 * circle, so a time-paced 180ms window only rendered 2-3 frames = a jarring pop
+	 * that read as "no transition". Step the radius over a FIXED frame count so the
+	 * shrink is always a smooth, visible sequence regardless of the per-frame cost. */
+	{
+		int i, N = 16;
+		for (i = 1; i <= N; i++) {
+			unsigned int p2, w2, h2;
+			unsigned int *db = ayaneo_canvas_back(&p2, &w2, &h2);
+			int r = 820 * (N - i) / N;                   /* MAX -> 0: game shrinks */
+			gba_punch_composite(db, (const uint32_t *)GBA_REVERSE_SNAP_PA, (int)p2,
+					    (int)w2, (int)h2, (const unsigned short *)GBA_GAME_FREEZE_PA,
+					    -1, -1, r, 5, 240, 160,
+					    ((int)w2 - 1200) / 2, ((int)h2 - 800) / 2);
+			ayaneo_canvas_present();
+			if (g_cap_want > 0) {
+				int idx = GBA_CAP_MAX - g_cap_want;
+				if (idx >= 0 && idx < GBA_CAP_MAX) {
+					unsigned long b = (unsigned long)p2 * h2 * 4u;
+					memcpy((void *)(uintptr_t)(GBA_CAP_PA + (unsigned long)idx * b), db, b);
+					g_cap_pitch = p2; g_cap_w = w2; g_cap_h = h2; g_cap_have = idx + 1;
+				}
+				g_cap_want--;
 			}
-			g_cap_want--;
+			mtk_wdt_restart();
 		}
-		mtk_wdt_restart();
 	}
 }
 
