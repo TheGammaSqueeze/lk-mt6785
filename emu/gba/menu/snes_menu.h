@@ -113,7 +113,6 @@ typedef struct {
 	int sub_op0, sub_op1;         /* fully-opaque row band (the panel backing) */
 	unsigned sub_key;             /* signature of open + all interactive submenu state */
 	int wp_skip0, wp_skip1;       /* transient: draw_wp_43 skips rows [skip0,skip1) (hidden by an opaque overlay) */
-	float dbg_oy;                 /* debug: if < 1e8, force open_y to this (freeze a mid-slide for capture) */
 	/* focused-card body tile: the blue (active) card body is identical for every GBA
 	 * cart, so cache it ONCE (like ctile) and blit it + draw only the pulsing cursor
 	 * live - kills the last per-frame live card render (~2.7ms on the A55). */

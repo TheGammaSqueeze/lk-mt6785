@@ -1565,7 +1565,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->wp43 = 0; m->wp43_ready = 0;
 	m->rcache = 0; m->rcache_ready = 0; m->rcache_sel = -1e9f;
 	m->sub_ready = 0; m->sub_key = 0; m->sub_op0 = 0; m->sub_op1 = 0;
-	m->wp_skip0 = 0; m->wp_skip1 = 0; m->dbg_oy = 1e9f;
+	m->wp_skip0 = 0; m->wp_skip1 = 0;
 	m->gba_mode = 0; m->gba_names = 0; m->gba_cart_img = 0; m->launch = -1; m->pstart = 0;
 	m->ctile = 0; m->ctile_gi = 0; m->ctile_cap = 0; m->ctile_aspect = -1;
 	m->fct = 0; m->fct_ready = 0; m->fct_aspect = -1; m->no_cursor = 0;
@@ -2743,13 +2743,9 @@ static unsigned submenu_sig(snes_menu *m)
 	return h;
 }
 
-void snes_menu_dbg_set_oy(snes_menu *m, float v) { if (m) m->dbg_oy = v; }
-
 void snes_menu_render(snes_menu *m, snes_target *t)
 {
 	const snes_game_rec *g;
-
-	if (m->dbg_oy < 1e8f) m->open_y = m->dbg_oy;   /* debug: freeze a mid-slide for capture */
 
 	/* 4:3 fills the whole 960 panel (no letterbox); the per-view-group aspect
 	 * transform placed by set_view handles the vertical centring instead. */
