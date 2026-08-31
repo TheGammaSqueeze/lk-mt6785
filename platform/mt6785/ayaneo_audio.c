@@ -999,31 +999,50 @@ void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
 #define GBA_SRC_HZ	65536u
 
 static long long s_ga_accl, s_ga_accr;
-static unsigned s_ga_n, s_ga_phase;
-static int s_ga_inc = (int)GBC_DST_HZ;	/* resampler output rate (nom 48000) */
-static int s_ga_inc_base = (int)GBC_DST_HZ;	/* calibrated rate; the trim floats +-64 of it */
+static unsigned s_ga_n, s_ga_phase;	/* phase accumulator, 1/GA_FRAC sample units */
+/*
+ * The resampler output increment is carried in 1/GA_FRAC-sample units (a
+ * fractional DDS). An INTEGER increment (nom 48000) can only step the output
+ * rate in ~1 Hz jumps, so it can never sit exactly on the true panel-vs-AFE
+ * ratio - the recovery loop then has to toggle between two integers, a slow
+ * wow/flutter. With GA_FRAC=256 the feed-forward base lands within ~0.004 Hz of
+ * the true rate, the loop barely moves, and the residual dither is inaudible.
+ */
+#define GA_FRAC		256
+static int s_ga_inc = (int)(GBC_DST_HZ * GA_FRAC);	/* output rate, 1/256 units */
+static int s_ga_inc_base = (int)(GBC_DST_HZ * GA_FRAC);	/* calibrated base; trim floats a hair */
 
-int ayaneo_gba_audio_drc_rate(void) { return s_ga_inc; }
+int ayaneo_gba_audio_drc_rate(void) { return s_ga_inc / GA_FRAC; }
 
 /*
- * Calibrate the resampler ONCE to the measured panel refresh (panel_hz100 =
- * Hz*100). The emulator is vsync-locked, so it produces audio at
- * panel_fps * 1097.25 samples/s; we pick a FIXED output increment so that
- * resamples exactly to the 48 kHz AFE rate -> zero long-term drift AND a constant
- * rate (no dynamic pitch wobble). inc = 48000 * 59.7275 / panel_fps
- *     = 48000 * 5972.75 / panel_hz100 = 286692000 / panel_hz100.
- * (samples/frame * GBA_fps = 65536, so 65536/1097.25 = 59.7275 exactly.)
+ * Calibrate the resampler to the measured panel refresh. The emulator is
+ * vsync-locked, so it produces audio at panel_fps * 1097.25 samples/s; we pick a
+ * FIXED output increment so that resamples exactly to the 48 kHz AFE rate -> zero
+ * long-term drift AND a constant rate (no dynamic pitch wobble).
+ *   inc(1x) = 48000 * 59.7275 / panel_fps = 48000 * 5972.75 / panel_hz100.
+ * ayaneo_gba_audio_set_rate_milli takes the panel rate in milli-Hz (Hz*1000) for
+ * the ~0.002% precision the fractional base needs; the Hz*100 wrapper is kept for
+ * the coarse boot-time seed. inc256 = 48000*5972.75*256*10 / hz1000
+ *   = 733931520000 / hz1000. (65536/1097.25 = 59.7275 exactly.)
  */
+void ayaneo_gba_audio_set_rate_milli(int hz1000)
+{
+	long long inc;
+	if (hz1000 < 50000 || hz1000 > 70000)	/* sanity: 50-70 Hz */
+		return;
+	inc = 733931520000LL / (long long)hz1000;
+	if (inc < (long long)44000 * GA_FRAC) inc = (long long)44000 * GA_FRAC;
+	if (inc > (long long)52000 * GA_FRAC) inc = (long long)52000 * GA_FRAC;
+	s_ga_inc = (int)inc;
+	s_ga_inc_base = (int)inc;
+}
+
 void ayaneo_gba_audio_set_rate(int panel_hz100)
 {
-	int inc;
 	if (panel_hz100 < 5000 || panel_hz100 > 7000)	/* sanity: 50-70 Hz */
 		return;
-	inc = (int)(286692000 / panel_hz100);
-	if (inc < 44000) inc = 44000;
-	if (inc > 52000) inc = 52000;
-	s_ga_inc = inc;
-	s_ga_inc_base = inc;
+	ayaneo_gba_audio_set_rate_milli(panel_hz100 * 10);
+	return;
 }
 
 /* `frames` stereo frames, s16 interleaved [L,R,L,R,...] at GBA_SRC_HZ. */
@@ -1079,8 +1098,14 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 			 * fully absorbs any realistic panel-vs-GBA mismatch, no snap. */
 			int tgt = (int)(GBC_RING_FRAMES / 4);          /* ~85 ms centre */
 			int db  = (int)(GBC_RING_FRAMES / 32);         /* ~10 ms deadband */
-			if (lead > tgt + db) { if (s_ga_inc > s_ga_inc_base - 512) s_ga_inc--; }
-			else if (lead < tgt - db) { if (s_ga_inc < s_ga_inc_base + 512) s_ga_inc++; }
+			/* Fine trim in 1/256 units: +-8 = ~0.03 output-Hz per submit, bounded
+			 * to +-0.25% of the base. With the accurate fractional feed-forward the
+			 * loop sits essentially still (the base already matches the true rate),
+			 * so this only mops up the tiny AFE-crystal-vs-panel drift; the
+			 * steady-state dither is far below audible = constant rate, no wow. */
+			int lim = s_ga_inc_base / 400;                 /* ~0.25% ceiling */
+			if (lead > tgt + db) { if (s_ga_inc > s_ga_inc_base - lim) s_ga_inc -= 8; }
+			else if (lead < tgt - db) { if (s_ga_inc < s_ga_inc_base + lim) s_ga_inc += 8; }
 		}
 	}
 
@@ -1092,11 +1117,11 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 		s_ga_accr += r;
 		s_ga_n++;
 		s_ga_phase += (unsigned)s_ga_inc;
-		if (s_ga_phase >= GBA_SRC_HZ) {
+		if (s_ga_phase >= GBA_SRC_HZ * GA_FRAC) {
 			int ol, or_;
 			unsigned idx;
 
-			s_ga_phase -= GBA_SRC_HZ;
+			s_ga_phase -= GBA_SRC_HZ * GA_FRAC;
 			ol  = (int)(s_ga_accl / (long long)s_ga_n);
 			or_ = (int)(s_ga_accr / (long long)s_ga_n);
 			s_ga_accl = s_ga_accr = 0;

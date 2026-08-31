@@ -203,8 +203,8 @@ long gba_host_time(void)
 #define GPIO_SELECT	90
 #define GPIO_LB		92	/* GBA L shoulder */
 #define GPIO_RB		81	/* GBA R shoulder */
-#define GPIO_X		84	/* autofire A */
-#define GPIO_Y		85	/* autofire B */
+#define GPIO_X		84	/* autofire B */
+#define GPIO_Y		85	/* autofire A */
 #define GPIO_R2		57	/* key_rc / second-stage right trigger = fast-forward */
 #define GPIO_AYA	86	/* menu */
 #define AUTOFIRE_HZ	12
@@ -271,8 +271,8 @@ static void update_buttons(void)
 
 	af = ((unsigned)current_time() * AUTOFIRE_HZ / 500u) & 1;
 	if (af) {
-		if (deb & RB_X) m |= GB_A;	/* X = autofire A */
-		if (deb & RB_Y) m |= GB_B;	/* Y = autofire B */
+		if (deb & RB_X) m |= GB_B;	/* X = autofire B */
+		if (deb & RB_Y) m |= GB_A;	/* Y = autofire A */
 	}
 
 	s_fast_forward = (deb & RB_FF) ? 1 : 0;	/* R2 held = fast-forward */
@@ -1258,8 +1258,8 @@ static int emu_thread(void *arg)
 			 * reports it correctly. */
 			{
 				extern volatile unsigned int g_dbg_hz1000;
-				extern void ayaneo_gba_audio_set_rate(int panel_hz100);
-				static unsigned int g_acc, g_last; static int g_cnt, g_wins, g_recal;
+				extern void ayaneo_gba_audio_set_rate_milli(int hz1000);
+				static unsigned int g_acc, g_last, g_prevhz; static int g_cnt, g_recal;
 				unsigned int now = gpt4_get_current_tick();
 				unsigned int lt = g_last ? (now - g_last) : 0u;   /* period in 13 MHz ticks */
 				g_last = now;
@@ -1268,15 +1268,22 @@ static int emu_thread(void *arg)
 					if (++g_cnt >= 64) {   /* 64-frame window (~1.07s): averages out per-frame
 					                         emulation CPU jitter so the readout tracks the TRUE
 					                         fixed panel rate as steadily as the menu loop. */
-						g_dbg_hz1000 = (unsigned int)(832000000000LL / (long long)g_acc);
+						unsigned int hz = (unsigned int)(832000000000LL / (long long)g_acc);
+						g_dbg_hz1000 = hz;
 						g_acc = 0; g_cnt = 0;
-						/* recalibrate the audio resampler to the true rate after ~2 s of
-						 * stable windows (2 * 64 frames), not the noisy first window. */
-						if (!g_recal && ++g_wins >= 2 && g_dbg_hz1000 >= 55000u && g_dbg_hz1000 <= 65000u) {
+						/* Recalibrate the audio resampler to the TRUE panel rate, but ONLY
+						 * from a STABLE reading: two consecutive 64-frame windows within
+						 * 0.05 Hz and in the realistic panel band. This rejects the boot /
+						 * dynarec-warmup windows (irregular frame timing) that would
+						 * otherwise mis-seed the resampler and leave the recovery loop
+						 * hunting = the audible stretching. Precise (milli-Hz), one-shot. */
+						if (!g_recal && hz >= 58000u && hz <= 61000u && g_prevhz &&
+						    (hz > g_prevhz ? hz - g_prevhz : g_prevhz - hz) <= 50u) {
 							g_recal = 1;
-							s_panel_hz100 = (int)(g_dbg_hz1000 / 10u);
-							ayaneo_gba_audio_set_rate(s_panel_hz100);
+							s_panel_hz100 = (int)(hz / 10u);
+							ayaneo_gba_audio_set_rate_milli((int)hz);
 						}
+						g_prevhz = hz;
 					}
 				}
 			}
