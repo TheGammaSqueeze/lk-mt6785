@@ -42,7 +42,6 @@ extern volatile int g_inject_btn, g_inject_frames;
 extern volatile int g_cap_want, g_cap_have;
 extern volatile unsigned int g_cap_pitch, g_cap_w, g_cap_h;
 extern volatile int g_dbg_reverse_ran, g_dbg_arm_cnt, g_dbg_force_close;
-extern int gba_punch_ready;   /* set when the menu launch block fires */
 #define GBA_CAP_PA  0x4E000000u
 #define GBA_CAP_MAX 6
 
@@ -59,8 +58,8 @@ static unsigned long parse_u(const char *s)
 static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
 	(void)arg; (void)data; (void)sz;
-	snprintf(lbuf, sizeof lbuf, "fps=%u pres=%u st=%d pr=%d arm=%d rev=%d",
-		 g_dbg_fps, g_dbg_present_cnt, g_dbg_focus, gba_punch_ready, g_dbg_arm_cnt, g_dbg_reverse_ran);
+	snprintf(lbuf, sizeof lbuf, "render=%u fps=%u focus=%d arm=%d rev=%d",
+		 g_dbg_render_us, g_dbg_fps, g_dbg_focus, g_dbg_arm_cnt, g_dbg_reverse_ran);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
