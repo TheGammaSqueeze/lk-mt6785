@@ -283,14 +283,17 @@ static void lcm_get_params(LCM_PARAMS *params)
 	params->dsi.vertical_sync_active = 8;
 	params->dsi.vertical_backporch = 8;
 #if defined(AYANEO_GBA)
-	/* The in-LK GBA emulator locks its frame rate to the panel vsync, so we tune
-	 * the panel to the GBA's true 59.7275 Hz for correct game speed (and minimal
-	 * audio rate-conversion). MEASURED on-device: vtotal 1038 (vfp 62) -> 57.46 Hz,
-	 * i.e. real pixel clock ~85.28 MHz (htotal 1430). Target vtotal =
-	 * 1038 * 57.46/59.7275 = 998.6 -> 999 lines (vfp = 999-976 = 23) -> ~59.70 Hz
-	 * (0.04% off, the audio DRC trims the remainder). Only frame blanking changes;
-	 * DSI data rate / signal integrity are untouched. */
-	params->dsi.vertical_frontporch = 23;
+	/* The in-LK GBA emulator locks its frame rate to the panel vsync, so we tune the
+	 * panel to the GBA's true 59.7275 Hz for correct game speed (and near-zero audio
+	 * rate-conversion). MEASURED on-device (128-frame average): vfp 23 / hfp 60
+	 * (vtotal 999, htotal 1430) -> 59.749 Hz, i.e. real pixel clock ~85.355 MHz. That
+	 * OVERSHOOTS 59.7275 by 0.037%, and vertical-only cannot do better (vfp 24 -> 59.689,
+	 * under by more). Adding TWO lines of horizontal front porch too lets us hit it:
+	 * vtotal 998 (vfp 22) x htotal 1432 (hfp 62) = 1,429,136; 85.355e6 / 1,429,136 =
+	 * 59.7250 Hz (0.004% under, essentially exact - the audio clock-recovery trims the
+	 * rest). PLL_CLOCK / DSI data rate are UNCHANGED, so only blanking moves (signal
+	 * integrity untouched); the game path also recalibrates audio from the measured rate. */
+	params->dsi.vertical_frontporch = 22;
 #else
 	params->dsi.vertical_frontporch = 16;
 #endif
@@ -298,7 +301,11 @@ static void lcm_get_params(LCM_PARAMS *params)
 
 	params->dsi.horizontal_sync_active = 30;
 	params->dsi.horizontal_backporch = 60;
+#if defined(AYANEO_GBA)
+	params->dsi.horizontal_frontporch = 62;   /* +2 vs stock 60: see the vfp note above */
+#else
 	params->dsi.horizontal_frontporch = 60;
+#endif
 	params->dsi.horizontal_active_pixel = FRAME_WIDTH;
 
 	params->dsi.word_count = FRAME_WIDTH * 3;

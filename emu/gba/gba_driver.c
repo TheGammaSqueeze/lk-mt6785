@@ -1241,6 +1241,34 @@ static int emu_thread(void *arg)
 		for (;;) {
 			int uncapped;
 
+			/* precise IN-GAME panel refresh (vsync-locked show_frame): average the loop
+			 * period over 128 frames -> Hz*1000. The boot-time primary_display_get_
+			 * vsync_interval() only samples 2 vsync intervals (IRQ jitter ~+-0.1 Hz), so
+			 * s_panel_hz100 (shown in the GammaOS menu AND used to calibrate the audio
+			 * resampler) is imprecise. Recalibrate BOTH from this 128-frame average the
+			 * first time it is valid, so audio locks to the TRUE panel rate and the menu
+			 * reports it correctly. */
+			{
+				extern volatile unsigned int g_dbg_hz1000;
+				extern void ayaneo_gba_audio_set_rate(int panel_hz100);
+				static unsigned int g_acc, g_last; static int g_cnt, g_recal;
+				unsigned int now = gpt4_get_current_tick();
+				unsigned int lus = g_last ? (now - g_last) / 13u : 0u;
+				g_last = now;
+				if (lus > 8000u && lus < 40000u) {
+					g_acc += lus;
+					if (++g_cnt >= 128) {
+						g_dbg_hz1000 = 1000000000u / (g_acc / 128u);
+						g_acc = 0; g_cnt = 0;
+						if (!g_recal && g_dbg_hz1000 >= 55000u && g_dbg_hz1000 <= 65000u) {
+							g_recal = 1;
+							s_panel_hz100 = (int)(g_dbg_hz1000 / 10u);   /* accurate Hz*100 */
+							ayaneo_gba_audio_set_rate(s_panel_hz100);
+						}
+					}
+				}
+			}
+
 			update_buttons();
 			run_one_frame();		/* runs one GBA frame + submits its audio */
 			if (frame == 0)		/* first frame done => dynarec executed OK */

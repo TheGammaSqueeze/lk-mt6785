@@ -118,6 +118,7 @@ volatile unsigned int g_dbg_render_us;     /* last snes_menu_render time (us) */
 volatile unsigned int g_dbg_peak_us;       /* peak render over ~2s */
 volatile unsigned int g_dbg_fps;           /* measured loop rate */
 volatile unsigned int g_dbg_present_cnt;   /* frames actually presented (re-latched) */
+volatile unsigned int g_dbg_hz1000;        /* measured panel refresh * 1000 (averaged) */
 volatile int          g_dbg_focus;         /* current focused game index */
 
 /* Debug input injection (fastboot `oem key:<name>`): drive the live menu over USB.
@@ -509,6 +510,19 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			lus = last_t ? (r0 - last_t) / 13u : 0u;
 			fps = lus ? (1000000u + lus / 2u) / lus : 0u;
 			last_t = r0;
+			/* precise panel refresh: average the vsync-locked loop period over 128
+			 * frames -> Hz*1000 (present() blocks on the panel vsync, so lus IS the
+			 * panel period once steady). */
+			{
+				static unsigned int acc; static int cnt;
+				if (lus > 8000u && lus < 40000u) {
+					acc += lus;
+					if (++cnt >= 128) {   /* 32-bit only: 1e9/avg_us = Hz*1000 */
+						g_dbg_hz1000 = 1000000000u / (acc / 128u);
+						acc = 0; cnt = 0;
+					}
+				}
+			}
 			if (g_dbg_peak_reset) { g_dbg_peak_reset = 0; peak_us = 0; peak_hold = 0; }
 			if (rus > peak_us) { peak_us = rus; peak_hold = 120; }
 			else if (peak_hold) peak_hold--; else peak_us = rus;   /* decay after ~2s */

@@ -44,7 +44,10 @@ static char lbuf[96];
 static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
 	(void)arg; (void)data; (void)sz;
-	snprintf(lbuf, sizeof lbuf, "p=%u f=%u", g_dbg_peak_us, g_dbg_fps);
+	{
+		extern volatile unsigned int g_dbg_hz1000;
+		snprintf(lbuf, sizeof lbuf, "p=%u f=%u hz1000=%u", g_dbg_peak_us, g_dbg_fps, g_dbg_hz1000);
+	}
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
