@@ -33,7 +33,7 @@ rm -rf "$OBJDIR"; mkdir -p "$OBJDIR"
 
 # Core C sources (libretro.c / memmap_win32.c / gpsp_griffin.c intentionally
 # excluded - we drive the core directly from gba_wrap.c).
-SRCS="cpu cpu_threaded gba_memory main video sound input cheats gba_cc_lut"
+SRCS="cpu cpu_threaded gba_memory main video sound input cheats gba_cc_lut444"
 
 for f in $SRCS; do
 	$CC $FLAGS -c "$DIR/$f.c" -o "$OBJDIR/$f.o"

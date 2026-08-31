@@ -103,6 +103,8 @@ extern int  ayaneo_get_skip_gba_intro(void);
 extern void ayaneo_set_skip_gba_intro(int v);
 extern int  ayaneo_get_lcd_filter(void);
 extern void ayaneo_set_lcd_filter(int v);
+extern int  ayaneo_get_color_correct(void);
+extern void ayaneo_set_color_correct(int v);
 extern void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
 			int x, int y, int w, int h, unsigned int argb);
 extern void ayaneo_fill_blend(unsigned int *buf, unsigned int pitch_w,
@@ -712,7 +714,7 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 }
 
 enum {
-	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_LOADBOOT, MI_SKIPBOOT, MI_SKIPINTRO,
+	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_COLORCORRECT, MI_LOADBOOT, MI_SKIPBOOT, MI_SKIPINTRO,
 	MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
 };
 
@@ -726,6 +728,7 @@ static const char *menu_value(int item, char *buf)
 	case MI_BRIGHT:   p = mi_putu(p, (unsigned)ayaneo_brightness_pct()); p = mi_puts(p, "%"); break;
 	case MI_VOLUME:   p = mi_putu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mi_puts(p, "%"); break;
 	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter())); break;
+	case MI_COLORCORRECT: p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
 	case MI_SKIPINTRO: p = mi_puts(p, ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
@@ -772,6 +775,7 @@ static const char *menu_label(int item)
 	case MI_BRIGHT:    return "Brightness";
 	case MI_VOLUME:    return "Volume";
 	case MI_FILTER:    return "LCD Filter";
+	case MI_COLORCORRECT: return "Color Correction";
 	case MI_LOADBOOT:  return "Load State on Boot";
 	case MI_SKIPBOOT:  return "Skip Boot Anim/Chime";
 	case MI_SKIPINTRO: return "Skip BIOS Intro";
@@ -798,6 +802,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_BRIGHT:   if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case MI_VOLUME:   if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
 	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
+	case MI_COLORCORRECT: if (dir || act) ayaneo_set_color_correct(!ayaneo_get_color_correct()); else changed = 0; break;
 	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;
 	case MI_SKIPBOOT: if (dir || act) ayaneo_set_skip_boot(!ayaneo_get_skip_boot()); else changed = 0; break;
 	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;

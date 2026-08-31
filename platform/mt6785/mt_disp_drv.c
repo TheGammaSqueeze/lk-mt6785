@@ -1006,6 +1006,7 @@ static void ayaneo_draw_osd(unsigned int *dst, unsigned int pitch_w,
 }
 
 extern int ayaneo_get_lcd_filter(void);		/* ayaneo_audio.c */
+extern int ayaneo_get_color_correct(void);	/* ayaneo_audio.c */
 extern int gbc_menu_is_open(void);		/* gbc_driver.c */
 extern void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 				  unsigned int W, unsigned int H);
@@ -1076,10 +1077,19 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		/* LCD filter: 1 scanlines (dim last row of each 6x block), 2 grid
 		 * (dim last row + col), 3 both/heavier. Cheap per-subpixel darkening. */
 		int filt = ayaneo_get_lcd_filter();
+		/* gpSP color correction: map each source pixel through the GBA LCD gamma
+		 * LUT (indexed by RGB555, red high) so colors match real hardware instead
+		 * of the oversaturated raw output. Applied once per 240x160 source pixel
+		 * (before the 5x upscale), gated by the persisted setting. */
+		int cc = ayaneo_get_color_correct();
+		extern const unsigned short gba_cc_lut444[];
 		for (sy = 0; sy < GBC_SRC_H; sy++) {
 			const unsigned short *srow = pix + sy * GBC_SRC_W;
 			for (sx = 0; sx < GBC_SRC_W; sx++) {
 				unsigned int v = srow[sx];
+				if (cc) v = gba_cc_lut444[(((v >> 12) & 0xF) << 8) |
+							  (((v >> 7) & 0xF) << 4) |
+							  ((v >> 1) & 0xF)];
 				unsigned int r = ((v >> 11) & 0x1f) << 3;
 				unsigned int g = ((v >> 5) & 0x3f) << 2;
 				unsigned int b = (v & 0x1f) << 3;
