@@ -122,8 +122,6 @@ volatile int          g_dbg_focus;         /* current focused game index */
 /* Debug input injection (fastboot `oem key:<name>`): drive the live menu over USB.
  * One button at a time, held a few frames so the menu edge-detects a clean press.
  * 0..9 = L R U D A B Select Start LB RB; -1 = none. */
-volatile int          g_inject_btn = -1;
-volatile int          g_inject_frames = 0;
 volatile int          g_dbg_force_launch;   /* fastboot `oem launch`: force-launch focused ROM */
 
 /* Motion capture (fastboot `oem capmotion`): snapshot N consecutive presented
@@ -476,19 +474,6 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		}
 		in.lb = PRESSED(K_LB); in.rb = PRESSED(K_RB);
 
-		/* Fold in a debug-injected button (fastboot oem key:<name>) so the menu can
-		 * be driven over USB without touching the hardware buttons. */
-		if (g_inject_frames > 0) {
-			switch (g_inject_btn) {
-			case 0: in.left = 1; break;   case 1: in.right = 1; break;
-			case 2: in.up = 1; break;     case 3: in.down = 1; break;
-			case 4: in.a = 1; break;      case 5: in.b = 1; break;
-			case 6: in.select = 1; break; case 7: in.start = 1; break;
-			case 8: in.lb = 1; break;     case 9: in.rb = 1; break;
-			default: break;
-			}
-			g_inject_frames--;
-		}
 
 		menu_av_poll();   /* volume / brightness keys (+ deferred persist) */
 
@@ -512,10 +497,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		 * must stay < 16.7ms for a solid 60fps. */
 		{
 			static unsigned int last_t, peak_us, peak_hold;
-			static char pb[32];
 			unsigned int r0 = gpt4_get_current_tick();
 			unsigned int rus, lus, fps, now;
-			int i = 0;
 			snes_menu_render(&s_menu, &t);
 			now = gpt4_get_current_tick();
 			rus = (now - r0) / 13u;
@@ -525,19 +508,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			if (rus > peak_us) { peak_us = rus; peak_hold = 120; }
 			else if (peak_hold) peak_hold--; else peak_us = rus;   /* decay after ~2s */
 			g_dbg_render_us = rus; g_dbg_peak_us = peak_us; g_dbg_fps = fps;
-			g_dbg_focus = s_menu.focus;
-			pb[i++]='R'; pb[i++]='0'+(rus/10000)%10; pb[i++]='0'+(rus/1000)%10;
-			pb[i++]='.'; pb[i++]='0'+(rus/100)%10; pb[i++]='m'; pb[i++]='s'; pb[i++]=' ';
-			pb[i++]='P'; pb[i++]='0'+(peak_us/10000)%10; pb[i++]='0'+(peak_us/1000)%10;
-			pb[i++]='.'; pb[i++]='0'+(peak_us/100)%10; pb[i++]='m'; pb[i++]='s'; pb[i++]=' ';
-			pb[i++]='0'+(fps/100)%10; pb[i++]='0'+(fps/10)%10; pb[i++]='0'+fps%10;
-			pb[i++]='f'; pb[i]=0;
-			/* off by default for a clean menu; Start+Select toggles it on so the user
-			 * can still report the device render/peak ms if flicker is ever seen. */
-			if (s_show_hud) {
-				ayaneo_fill(fb, pitch, 4, 4, 16 * i + 12, 40, 0xFF101018u);  /* readable bg */
-				ayaneo_text(fb, pitch, 8, 10, 2, 0xFF00FF66u, pb);
-			}
+			(void)s_show_hud;
 		}
 		if (fade_in > 0) {   /* fade in from WHITE (255 -> 0) over 18 frames = 0.3s */
 			ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H, 0xFFFFFFFFu,
