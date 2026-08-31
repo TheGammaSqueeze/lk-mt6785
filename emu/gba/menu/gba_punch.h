@@ -68,4 +68,59 @@ static inline void gba_punch_composite(uint32_t *dst, const uint32_t *snap, int 
 	}
 }
 
+/* FAST reverse path: when the game frame is FROZEN (the close transition), convert +
+ * upscale it to a full W x H BGRA buffer ONCE (this helper), so each transition frame
+ * is then just memcpy (gba_punch_composite_pre) instead of a per-pixel RGB565->888
+ * convert. Turns a ~50ms/frame composite into ~5ms = a smooth 60fps shrink. `game_full`
+ * is pitch-wide like dst; game at scale S centred at xoff/yoff, black letterbox. */
+static inline void gba_punch_prerender(uint32_t *game_full, int pitch, int W, int H,
+				       const uint16_t *pix, int S, int SRC_W, int SRC_H,
+				       int xoff, int yoff)
+{
+	int y, x;
+	for (y = 0; y < H; y++) {
+		uint32_t *row = game_full + (unsigned)y * pitch;
+		int in_gy = (y >= yoff && y < yoff + SRC_H * S);
+		const uint16_t *srow = in_gy ? (pix + (unsigned)((y - yoff) / S) * SRC_W) : 0;
+		for (x = 0; x < W; x++) {
+			if (in_gy && x >= xoff && x < xoff + SRC_W * S) {
+				unsigned int v = srow[(x - xoff) / S];
+				unsigned int r = ((v >> 11) & 0x1f) << 3;
+				unsigned int g = ((v >> 5) & 0x3f) << 2;
+				unsigned int b = (v & 0x1f) << 3;
+				row[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+			} else {
+				row[x] = 0xFF000000u;
+			}
+		}
+	}
+}
+
+/* memcpy-only circle composite: game_full inside the hole, snap outside. */
+static inline void gba_punch_composite_pre(uint32_t *dst, const uint32_t *snap,
+					   const uint32_t *game_full, int pitch,
+					   int W, int H, int cx, int cy, int radius)
+{
+	long r2 = (long)radius * radius;
+	int y;
+	if (cx < 0) cx = W / 2;
+	if (cy < 0) cy = H / 2;
+	for (y = 0; y < H; y++) {
+		uint32_t *drow = dst + (unsigned)y * pitch;
+		const uint32_t *srow = snap + (unsigned)y * pitch;
+		const uint32_t *grow = game_full + (unsigned)y * pitch;
+		int dy = y - cy;
+		long dd = r2 - (long)dy * dy;
+		int hw = (dd <= 0) ? -1 : gba_punch_isqrt(dd);
+		int x0, x1;
+		if (hw < 0) { memcpy(drow, srow, (size_t)W * 4); continue; }
+		x0 = cx - hw; x1 = cx + hw;
+		if (x0 < 0) x0 = 0;
+		if (x1 > W - 1) x1 = W - 1;
+		if (x0 > 0)        memcpy(drow, srow, (size_t)x0 * 4);
+		memcpy(drow + x0, grow + x0, (size_t)(x1 - x0 + 1) * 4);
+		if (x1 + 1 < W)    memcpy(drow + x1 + 1, srow + x1 + 1, (size_t)(W - x1 - 1) * 4);
+	}
+}
+
 #endif /* GBA_PUNCH_H */

@@ -41,6 +41,7 @@ int gba_punch_ready = 0;            /* set on launch; consumed by the driver loo
 extern unsigned int gpt4_get_current_tick(void);
 #define GBA_REVERSE_SNAP_PA 0x55000000u   /* rendered menu frame (fb-size) = reveal */
 #define GBA_GAME_FREEZE_PA  0x55800000u   /* frozen 240x160 RGB565 game frame */
+#define GBA_GAME_FULL_PA    0x55900000u   /* game pre-rendered full-screen BGRA (fast reverse) */
 #define GBA_REVERSE_MS      180u
 static int g_reverse_punch = 0;
 volatile int g_dbg_arm_cnt;   /* incremented each time the driver arms the reverse */
@@ -313,20 +314,21 @@ static void play_reverse_punch(unsigned int ms)
 	snes_menu_render(&s_menu, &lt);
 	memcpy((void *)(uintptr_t)GBA_REVERSE_SNAP_PA, cfb, (size_t)cp * ch * 4);
 	(void)pstart; (void)ticks;
-	/* FRAME-paced (not time-paced): the full-frame composite is ~40-60ms for a large
-	 * circle, so a time-paced 180ms window only rendered 2-3 frames = a jarring pop
-	 * that read as "no transition". Step the radius over a FIXED frame count so the
-	 * shrink is always a smooth, visible sequence regardless of the per-frame cost. */
+	/* Pre-convert the FROZEN game to a full-screen BGRA buffer ONCE, so each shrink
+	 * frame is just memcpy (gba_punch_composite_pre) = ~5ms not ~50ms. FRAME-paced
+	 * over a fixed count so the shrink is a smooth, visible 60fps sequence. */
+	gba_punch_prerender((uint32_t *)(uintptr_t)GBA_GAME_FULL_PA, (int)cp, (int)cw, (int)ch,
+			    (const unsigned short *)GBA_GAME_FREEZE_PA, 5, 240, 160,
+			    ((int)cw - 1200) / 2, ((int)ch - 800) / 2);
 	{
-		int i, N = 16;
+		int i, N = 20;
 		for (i = 1; i <= N; i++) {
 			unsigned int p2, w2, h2;
 			unsigned int *db = ayaneo_canvas_back(&p2, &w2, &h2);
 			int r = 820 * (N - i) / N;                   /* MAX -> 0: game shrinks */
-			gba_punch_composite(db, (const uint32_t *)GBA_REVERSE_SNAP_PA, (int)p2,
-					    (int)w2, (int)h2, (const unsigned short *)GBA_GAME_FREEZE_PA,
-					    -1, -1, r, 5, 240, 160,
-					    ((int)w2 - 1200) / 2, ((int)h2 - 800) / 2);
+			gba_punch_composite_pre(db, (const uint32_t *)GBA_REVERSE_SNAP_PA,
+						(const uint32_t *)GBA_GAME_FULL_PA, (int)p2,
+						(int)w2, (int)h2, -1, -1, r);
 			ayaneo_canvas_present();
 			if (g_cap_want > 0) {
 				int idx = GBA_CAP_MAX - g_cap_want;
