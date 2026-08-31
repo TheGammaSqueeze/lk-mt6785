@@ -44,6 +44,16 @@
 #include <debug.h>
 #include <string.h>
 
+/* AYANEO GBA POC: fractional MIPI data rate (kHz) to fine-tune the panel refresh onto the
+ * GBA's exact 59.7275 Hz. The MIPITX PLL is fractional-N, but data_Rate = PLL_CLOCK*2 is
+ * integer MHz, so integer timing only BRACKETS the target (~0.05 Hz grid). Recomputing the
+ * PLL PCW from this kHz value (see the DSI_*PHY_clk_setting PCW blocks) tunes it in ~0.0002%
+ * steps. 0 = use the stock integer data_Rate. 532000 reproduces the stock 59.751 Hz.
+ * CRON-TUNED by measurement (oem diag hz1000). */
+#if defined(AYANEO_GBA)
+#define AYANEO_GBA_DR_KHZ 526512u
+#endif
+
 #include <platform/mt_gpio.h>
 #include "lcm_util.h"
 
@@ -1571,6 +1581,19 @@ void DSI_CPHY_clk_setting(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAMS *d
 			tmp = ((pcw & 0xFF) << 24) | (((256 * (data_Rate * pcw_ratio % 26) / 26) & 0xFF) << 16) |
 				(((256 * (256 * (data_Rate * pcw_ratio % 26) % 26) / 26) & 0xFF) << 8) |
 				((256 * (256 * (256 * (data_Rate * pcw_ratio % 26) % 26) % 26) / 26) & 0xFF);
+#if defined(AYANEO_GBA) && AYANEO_GBA_DR_KHZ
+			{	/* fractional data rate: same Q7.24 PCW with /26000 (kHz) instead of /26 (MHz) */
+				unsigned int num = (unsigned int)AYANEO_GBA_DR_KHZ * pcw_ratio;
+				unsigned int r0 = num % 26000u;
+				unsigned int r1 = (256u * r0) % 26000u;
+				unsigned int r2 = (256u * r1) % 26000u;
+				pcw = num / 26000u;
+				tmp = ((pcw & 0xFF) << 24)
+				    | (((256u * r0 / 26000u) & 0xFF) << 16)
+				    | (((256u * r1 / 26000u) & 0xFF) << 8)
+				    | ((256u * r2 / 26000u) & 0xFF);
+			}
+#endif
 			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PLL_CON0, tmp);
 
 			MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_PLL_CON1, FLD_RG_DSI_PLL_POSDIV, posdiv);
@@ -1825,6 +1848,19 @@ void DSI_DPHY_clk_setting(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAMS *d
 			tmp = ((pcw & 0xFF) << 24) | (((256 * (data_Rate * pcw_ratio % 26) / 26) & 0xFF) << 16) |
 				(((256 * (256 * (data_Rate * pcw_ratio % 26) % 26) / 26) & 0xFF) << 8) |
 				((256 * (256 * (256 * (data_Rate * pcw_ratio % 26) % 26) % 26) / 26) & 0xFF);
+#if defined(AYANEO_GBA) && AYANEO_GBA_DR_KHZ
+			{	/* fractional data rate: same Q7.24 PCW with /26000 (kHz) instead of /26 (MHz) */
+				unsigned int num = (unsigned int)AYANEO_GBA_DR_KHZ * pcw_ratio;
+				unsigned int r0 = num % 26000u;
+				unsigned int r1 = (256u * r0) % 26000u;
+				unsigned int r2 = (256u * r1) % 26000u;
+				pcw = num / 26000u;
+				tmp = ((pcw & 0xFF) << 24)
+				    | (((256u * r0 / 26000u) & 0xFF) << 16)
+				    | (((256u * r1 / 26000u) & 0xFF) << 8)
+				    | ((256u * r2 / 26000u) & 0xFF);
+			}
+#endif
 			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PLL_CON0, tmp);
 
 			MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_PLL_CON1, FLD_RG_DSI_PLL_POSDIV, posdiv);

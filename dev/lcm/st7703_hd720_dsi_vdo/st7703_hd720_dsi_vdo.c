@@ -311,6 +311,14 @@ static void lcm_get_params(LCM_PARAMS *params)
 	params->dsi.word_count = FRAME_WIDTH * 3;
 
 	params->dsi.PLL_CLOCK = 266;
+#if defined(AYANEO_GBA)
+	/* Disable spread-spectrum clocking: SSC modulates the MIPI PLL (default ~0..-5%) to
+	 * spread EMI, but that makes the panel refresh OSCILLATE (and pulls its average down),
+	 * which fights the exact GBA-rate match. The GBA emulator needs a rock-stable refresh,
+	 * so turn SSC off - the pixel clock (hence refresh) is then the precise fractional-N
+	 * value from AYANEO_GBA_DR_KHZ, with no modulation. */
+	params->dsi.ssc_disable = 1;
+#endif
 }
 
 static void lcm_init_lcm(void)
