@@ -202,6 +202,7 @@ int snes_menu_take_launch(snes_menu *m);
 /* Provide the 4:3 warped-wallpaper cache backing store (WP43_PERIOD*WP43_H u32), or
  * 0 to keep the per-pixel gather. */
 void snes_menu_set_wp43(snes_menu *m, uint32_t *buf);
+void snes_menu_prewarm(snes_menu *m);
 /* Provide the resume-panel overlay cache (fb-size: pitch*H u32), or 0 to disable. */
 void snes_menu_set_rcache(snes_menu *m, uint32_t *buf);
 

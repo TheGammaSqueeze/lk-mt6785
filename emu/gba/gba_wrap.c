@@ -161,6 +161,18 @@ void gba_core_post_frame(void) { render_audio(); }
 
 const unsigned short *gba_core_screen(void) { return (const unsigned short *)s_screen; }
 
+/* Wipe the core screen to a solid colour. Used before the launch punch-in warmup so a
+ * stale previous-game frame (still in s_screen when switching ROMs) is cleared: the
+ * warmup then runs the NEW game until it renders real content, instead of opening onto
+ * the last game's screenshot. */
+void gba_core_screen_fill(unsigned short v)
+{
+	unsigned short *p = (unsigned short *)s_screen;
+	int i;
+	if (!p) return;
+	for (i = 0; i < SCREEN_PX; i++) p[i] = v;
+}
+
 /* ================= input ================= */
 /* The driver hands us a ready-made GBA P1 mask (BUTTON_* bits). The core polls
  * per-button through the retro input callback, so translate id -> BUTTON bit. */

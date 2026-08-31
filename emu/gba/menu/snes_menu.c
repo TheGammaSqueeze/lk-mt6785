@@ -281,24 +281,58 @@ static void build_wp(snes_menu *m)
  * WP_CACHE_W ], i.e. the vertical warp and horizontal zoom baked in so a scrolled
  * screen row is a contiguous run in the cache (memcpy, not a per-pixel gather). One
  * horizontal wallpaper period spans WP43_PERIOD screen columns. */
+/* 8-bit-weighted lerp of two BGRA pixels; fx in 0..256 (256 = full b). */
+static inline uint32_t wp_lerp(uint32_t a, uint32_t b, int fx)
+{
+	int ia = 256 - fx;
+	unsigned r = (((a >> 16) & 0xff) * ia + ((b >> 16) & 0xff) * fx) >> 8;
+	unsigned g = (((a >> 8) & 0xff) * ia + ((b >> 8) & 0xff) * fx) >> 8;
+	unsigned bl = (((a) & 0xff) * ia + ((b) & 0xff) * fx) >> 8;
+	return 0xFF000000u | (r << 16) | (g << 8) | bl;
+}
 static void build_wp43(snes_menu *m)
 {
 	float inv = 1.0f / ASP_WALL_S;
 	float vdy = 480.0f - ASP_WALL_S * 360.0f;
 	int Y, s;
 	if (!m->wp43 || !m->wp_ready) return;
+	/* The 4:3 warp upscales the 1536-wide wp horizontally ~1.76x and warps it
+	 * vertically. Nearest sampling here duplicated whole columns/rows = the visible
+	 * aliasing/shimmer on the wallpaper. Bilinear over the 2x2 wp neighbourhood
+	 * removes it. This runs ONCE (cached in wp43), so there is zero per-frame cost -
+	 * the interpolation is off the render hot path entirely. */
 	for (Y = 0; Y < WP43_H; Y++) {
-		int wy = (int)(((float)Y - vdy) * inv);
+		float wyf = ((float)Y - vdy) * inv;
+		int wy0 = (int)wyf, wy1, fy;
 		uint32_t *dst = m->wp43 + (unsigned)Y * WP43_PERIOD;
-		const uint32_t *src;
-		if (wy < 0) wy = 0; if (wy >= WP_CACHE_H) wy = WP_CACHE_H - 1;
-		src = m->wp + (unsigned)wy * WP_CACHE_W;
+		const uint32_t *r0, *r1;
+		fy = (int)((wyf - (float)wy0) * 256.0f);
+		wy1 = wy0 + 1;
+		if (wy0 < 0) { wy0 = 0; fy = 0; } else if (wy0 >= WP_CACHE_H) wy0 = WP_CACHE_H - 1;
+		if (wy1 < 0) wy1 = 0; else if (wy1 >= WP_CACHE_H) wy1 = WP_CACHE_H - 1;
+		r0 = m->wp + (unsigned)wy0 * WP_CACHE_W;
+		r1 = m->wp + (unsigned)wy1 * WP_CACHE_W;
 		for (s = 0; s < WP43_PERIOD; s++) {
-			int wx = (int)((float)s * inv) % WP_CACHE_W;
-			dst[s] = src[wx];
+			float wxf = (float)s * inv;
+			int wxi = (int)wxf;
+			int fx = (int)((wxf - (float)wxi) * 256.0f);
+			int wx0 = wxi % WP_CACHE_W;
+			int wx1 = (wx0 + 1) % WP_CACHE_W;
+			uint32_t top = wp_lerp(r0[wx0], r0[wx1], fx);
+			uint32_t bot = wp_lerp(r1[wx0], r1[wx1], fx);
+			dst[s] = wp_lerp(top, bot, fy);
 		}
 	}
 	m->wp43_ready = 1;
+}
+/* Pre-build the wallpaper + 4:3 warped caches now (at menu init), so the one-time
+ * ~2.6M-pixel bilinear warp does not land on the first on-screen frame/scroll as a
+ * dropped frame. After this both caches are ready and every frame is a pure memcpy. */
+void snes_menu_prewarm(snes_menu *m)
+{
+	if (!m) return;
+	if (!m->wp_ready) build_wp(m);
+	if (m->wp43 && !m->wp43_ready) build_wp43(m);
 }
 
 void snes_menu_set_wp43(snes_menu *m, uint32_t *buf) { m->wp43 = buf; m->wp43_ready = 0; }

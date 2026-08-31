@@ -125,17 +125,13 @@ volatile int          g_dbg_focus;         /* current focused game index */
  * 0..9 = L R U D A B Select Start LB RB; -1 = none. */
 volatile int          g_dbg_force_launch;   /* fastboot `oem launch`: force-launch focused ROM */
 
-/* Motion capture (fastboot `oem capmotion`): snapshot N consecutive presented
- * frames into a DRAM ring during an injected scroll, so the host can assemble the
- * actual MOVEMENT (a single settled screenshot cannot show motion flicker). Ring
- * lives at the fastboot download scratch [0x4E000000,0x50000000) = 32MB, free while
- * the menu runs (no download in flight); 6 * 4.9MB = 29.5MB fits below the menu
- * caches at 0x50000000. */
-#define GBA_CAP_PA   0x4E000000u
-#define GBA_CAP_MAX  6
-volatile int          g_cap_want;      /* frames still to grab (set by oem capmotion) */
-volatile int          g_cap_have;      /* frames grabbed so far */
-volatile unsigned int g_cap_pitch, g_cap_w, g_cap_h;   /* geometry of the grabbed frames */
+/* fastboot `oem key:<name>`: inject one button into the live menu for a few frames so
+ * the menu edge-detects a clean press. g_dbg_key = code 0..9 (L R U D A B Sel Start LB
+ * RB), g_dbg_key_hold = frames left to hold. g_dbg_peak_reset zeroes the peak tracker so
+ * the next movement's peak render us is measured clean (set at the start of an inject). */
+volatile int          g_dbg_key = -1;
+volatile int          g_dbg_key_hold;
+volatile int          g_dbg_peak_reset;
 
 /* ---- menu volume / brightness (OSD + deferred persist) ---- */
 static int      s_av_kind;        /* 0 none, 1 volume, 2 brightness */
@@ -330,15 +326,6 @@ static void play_reverse_punch(unsigned int ms)
 						(const uint32_t *)GBA_GAME_FULL_PA, (int)p2,
 						(int)w2, (int)h2, -1, -1, r);
 			ayaneo_canvas_present();
-			if (g_cap_want > 0) {
-				int idx = GBA_CAP_MAX - g_cap_want;
-				if (idx >= 0 && idx < GBA_CAP_MAX) {
-					unsigned long b = (unsigned long)p2 * h2 * 4u;
-					memcpy((void *)(uintptr_t)(GBA_CAP_PA + (unsigned long)idx * b), db, b);
-					g_cap_pitch = p2; g_cap_w = w2; g_cap_h = h2; g_cap_have = idx + 1;
-				}
-				g_cap_want--;
-			}
 			mtk_wdt_restart();
 		}
 	}
@@ -432,6 +419,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		s_menu.chrome_ready = 0;
 	}
 
+	/* Build the wallpaper + 4:3 warped caches NOW (bilinear, ~2.6M px one-time) so the
+	 * first on-screen scroll is a pure memcpy and never a dropped frame. Without this
+	 * the lazy build lands on the first movement as a ~24ms hitch (one-frame flicker). */
+	snes_menu_prewarm(&s_menu);
+
 	/* Reverse punch-hole (returning from a closed game): render one menu frame as the
 	 * reveal, then shrink the frozen last game frame into a hole so the menu appears
 	 * around it - the mirror of the launch transition. Time-paced to GBA_REVERSE_MS. */
@@ -479,6 +471,13 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		}
 		in.lb = PRESSED(K_LB); in.rb = PRESSED(K_RB);
 
+		/* fastboot-injected key: OR one button on for g_dbg_key_hold frames. */
+		if (g_dbg_key_hold > 0) {
+			int *b[10] = { &in.left, &in.right, &in.up, &in.down, &in.a,
+				       &in.b, &in.select, &in.start, &in.lb, &in.rb };
+			if (g_dbg_key >= 0 && g_dbg_key < 10) *b[g_dbg_key] = 1;
+			g_dbg_key_hold--;
+		}
 
 		menu_av_poll();   /* volume / brightness keys (+ deferred persist) */
 
@@ -510,6 +509,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			lus = last_t ? (r0 - last_t) / 13u : 0u;
 			fps = lus ? (1000000u + lus / 2u) / lus : 0u;
 			last_t = r0;
+			if (g_dbg_peak_reset) { g_dbg_peak_reset = 0; peak_us = 0; peak_hold = 0; }
 			if (rus > peak_us) { peak_us = rus; peak_hold = 120; }
 			else if (peak_hold) peak_hold--; else peak_us = rus;   /* decay after ~2s */
 			g_dbg_render_us = rus; g_dbg_peak_us = peak_us; g_dbg_fps = fps;
@@ -576,20 +576,6 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		 * roll. Do NOT reintroduce a frame-skipping present gate. */
 		ayaneo_canvas_present();
 		g_dbg_present_cnt++;
-		/* Motion capture: copy the frame just shown into the ring (one per loop =
-		 * one per vsync), so a burst spans real movement. ~5MB memcpy briefly dips
-		 * fps during the grab - a diagnostic, not the steady path. */
-		if (g_cap_want > 0) {
-			int idx = GBA_CAP_MAX - g_cap_want;
-			if (idx >= 0 && idx < GBA_CAP_MAX) {
-				unsigned long bytes = (unsigned long)pitch * H * 4u;
-				memcpy((void *)(uintptr_t)(GBA_CAP_PA + (unsigned long)idx * bytes),
-				       fb, bytes);
-				g_cap_pitch = pitch; g_cap_w = W; g_cap_h = H;
-				g_cap_have = idx + 1;
-			}
-			g_cap_want--;
-		}
 		mtk_wdt_restart();
 		{
 			int p = pmic_detect_powerkey();

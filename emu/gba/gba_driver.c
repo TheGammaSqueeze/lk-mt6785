@@ -1363,16 +1363,25 @@ static int emu_thread(void *arg)
 				/* On a FRESH launch the game has only rendered the GBA BIOS white
 				 * screen, so pre-rendering it here would open into a jarring white.
 				 * Run the game forward until it has produced real (non-blank-white)
-				 * content, capped, so the opening shows the actual game. Resumed games
-				 * are already non-blank on frame 0 => zero warmup. */
+				 * content, capped, so the opening shows the actual game.
+				 *
+				 * When SWITCHING games, s_screen still holds the PREVIOUS game's last
+				 * frame (non-white), so the check below would break at w=0 and open onto
+				 * the old game's screenshot. Wipe the screen to white first: now BOTH the
+				 * fresh-boot BIOS and the stale-previous-game cases start white, and the
+				 * loop runs the NEW game until it renders its own real content. Resumed
+				 * games redraw on their first emulated frame => ~1 frame of warmup. */
+				extern void gba_core_screen_fill(unsigned short v);
+				gba_core_screen_fill(0xFFFFu);
 				for (w = 0; w < 150; w++) {
 					const unsigned short *s = gba_core_screen();
 					int k, white = 0;
+					run_one_frame();                        /* render at least one NEW frame */
+					s = gba_core_screen();
 					for (k = 0; k < 240 * 160; k += 373)
 						if (s[k] >= 0xF7DEu) white++;   /* near-white RGB565 */
 					if (white < 90)                         /* <90% of ~103 samples */
 						break;
-					run_one_frame();
 				}
 				ayaneo_gba_punch_prerender(gba_core_screen());
 				for (i = 1; i <= N; i++) {
