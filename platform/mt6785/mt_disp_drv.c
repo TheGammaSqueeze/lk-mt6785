@@ -1202,6 +1202,11 @@ void ayaneo_gba_punch_frame(const unsigned short *pix, const unsigned int *snap,
 			    cx, cy, radius, GBC_SCALE, GBC_SRC_W, GBC_SRC_H, xoff, yoff);
 	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
 	ayaneo_present(dpa, W, H, pitch_w);
+	/* Block one vsync before flipping so the swap is live before the next frame is
+	 * composited into the other buffer (same fix as ayaneo_canvas_present). The
+	 * launch punch composites the full-frame menu snapshot, so without this the
+	 * partial-black flip glitch shows = the menu->game transition flicker. */
+	priamry_display_wait_for_vsync();
 	s_fb_flip ^= 1;
 }
 #endif /* AYANEO_GBC */
