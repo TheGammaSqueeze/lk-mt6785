@@ -213,6 +213,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			     * the SNES sys_fade IN_DURATION (reveal); the BIOS intro left the
 			     * panel black. The first frame is fully black, which also hides the
 			     * one-time wallpaper/chrome cache build hitch. */
+	if (do_reverse) fade_in = 0;   /* the reverse punch IS the transition - no white wash */
 
 	if (nrom <= 0) return -1;
 	if (load_pack() != 0) return -2;

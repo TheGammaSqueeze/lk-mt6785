@@ -84,6 +84,7 @@ extern void ayaneo_gbc_audio_set_volume(int v);
 extern int  ayaneo_gbc_audio_get_volume(void);
 extern void ayaneo_gbc_audio_pause(int on);
 extern void ayaneo_gbc_audio_shutdown(void);
+extern void ayaneo_menu_audio_silence(void);	/* zero the shared AFE ring (stop looping) */
 extern void ayaneo_gba_audio_pace(void);	/* audio-clock frame pacing */
 extern int  ayaneo_present_skip_framedone;	/* mt_disp_drv.c: 1 = non-blocking present */
 extern void ayaneo_settings_load(void);
@@ -1249,6 +1250,11 @@ static int emu_thread(void *arg)
 					long rsz;
 					state_write(scratch);		/* persist the current game */
 					sav_save(scratch);
+					/* Stop the game audio + wipe the shared AFE ring so it does not
+					 * loop the last game frames while the menu re-inits (mirror of the
+					 * launch handoff). The menu re-inits the codec + plays its BGM. */
+					ayaneo_gbc_audio_pause(1);
+					ayaneo_menu_audio_silence();
 					gba_menu_arm_reverse(gba_core_screen());  /* freeze frame for reverse */
 					for (;;) {
 						int sel = gba_sd_rom_select();
