@@ -1250,10 +1250,13 @@ static int emu_thread(void *arg)
 					long rsz;
 					state_write(scratch);		/* persist the current game */
 					sav_save(scratch);
-					/* Stop the game audio + wipe the shared AFE ring so it does not
-					 * loop the last game frames while the menu re-inits (mirror of the
-					 * launch handoff). The menu re-inits the codec + plays its BGM. */
-					ayaneo_gbc_audio_pause(1);
+					/* Wipe the shared AFE ring so it does not loop the last game
+					 * frames while the menu re-inits (mirror of the launch handoff).
+					 * Do NOT call ayaneo_gbc_audio_pause(1) here: it latches
+					 * s_gbc_paused=1, and the submit path early-returns while paused,
+					 * which would permanently mute the menu BGM and every game launched
+					 * afterwards. The silence() wipe alone stops the loop; the menu then
+					 * re-inits the codec and plays its BGM (exactly like first boot). */
 					ayaneo_menu_audio_silence();
 					gba_menu_arm_reverse(gba_core_screen());  /* freeze frame for reverse */
 					for (;;) {

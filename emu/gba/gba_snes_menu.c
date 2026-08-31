@@ -73,6 +73,7 @@ extern int  ayaneo_menu_audio_room(void);
 extern void ayaneo_menu_audio_submit(const short *stereo, unsigned frames);
 extern void ayaneo_menu_audio_silence(void);
 extern int  ayaneo_present_skip_framedone;         /* 0 = present blocks on vsync */
+extern int  ayaneo_wait_frame_done(void);          /* block one vsync WITHOUT re-latching the OVL */
 extern unsigned int gpt4_get_current_tick(void);   /* 13 MHz free-running counter */
 extern int  ayaneo_text(unsigned int *buf, unsigned int pitch_w, int x, int y,
 			int scale, unsigned int argb, const char *s);
@@ -94,6 +95,23 @@ extern int  mt_get_gpio_in(unsigned pin);
 
 extern int pmic_detect_powerkey(void);
 extern void mt_power_off(void);
+
+/* FNV-1a over an 8x8 grid of the freshly rendered back buffer. Any real UI change
+ * (cursor, text, a sliding card) touches many grid cells, so an equal checksum two
+ * frames running means the frame is byte-for-byte static. ~19k strided reads, well
+ * under a millisecond next to the 16-54ms render. Used by the present gate below to
+ * decide whether the OVL re-latch (= the rolling black band) is actually needed. */
+static unsigned int frame_cksum(const unsigned int *fb, unsigned int pitch_w,
+				unsigned int W, unsigned int H)
+{
+	unsigned int h = 2166136261u, y, x;
+	for (y = 0; y < H; y += 8) {
+		const unsigned int *row = fb + (size_t)y * pitch_w;
+		for (x = 0; x < W; x += 8)
+			h = (h ^ row[x]) * 16777619u;
+	}
+	return h;
+}
 
 /* ---- boot_b SNES pack (SNSZ) location in the GBA-SD flow ----
  * In the SD flow the old ROM region at 0x01100000 is free (ROM comes from SD), so
@@ -440,14 +458,40 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			return launch;
 		}
 
-		/* Present exactly like the (flicker-free) GBA game does in normal play:
-		 * skip_framedone=0, so ayaneo_canvas_present() -> config_input BLOCKS on the
-		 * panel FRAME_DONE, locking the loop to the panel refresh (one buffer shown
-		 * per vsync). An earlier version stacked a wait_frame_done + a 13MHz timer
-		 * FLOOR on top of this - that adds delay AFTER the vsync block, so the loop
-		 * overruns a refresh and drops frames = the periodic flicker on movement.
-		 * Do NOT add extra pacing here; the single blocking present is the pacing. */
-		ayaneo_canvas_present();
+		/* Present gate (kills the rolling black band).
+		 *
+		 * ayaneo_canvas_present() latches a NEW OVL buffer address to force a frame
+		 * push (config_input with an unchanged address is a no-op in DSI video mode).
+		 * With CMDQ disabled that latch takes effect IMMEDIATELY - if it lands
+		 * mid-scan it briefly disturbs scanout = the rolling black band the user sees,
+		 * worst on the sharp UI assets. Two independent wins here:
+		 *
+		 *   1) STATIC frame (suspend list, Display submenu, a settled carousel): the
+		 *      8x8 checksum matches what is already on screen, so the re-latch buys
+		 *      nothing. Skip the present entirely and just block one vsync - the panel
+		 *      keeps scanning the stable front buffer, zero banding. (We only ever
+		 *      render into the BACK buffer, so the displayed frame is never disturbed.)
+		 *
+		 *   2) CHANGED frame (carousel scrolling, fades): wait for FRAME_DONE FIRST so
+		 *      we are at the start of vblank, THEN latch (skip_framedone so we do not
+		 *      add a second vsync wait = no 30fps halving). The address swap now lands
+		 *      in the blanking interval instead of mid-scan, so even moving content no
+		 *      longer tears. */
+		{
+			static unsigned int last_sum;
+			static int have_last;
+			unsigned int sum = frame_cksum(fb, pitch, W, H);
+			if (have_last && sum == last_sum) {
+				ayaneo_wait_frame_done();        /* static: no re-latch, no band */
+			} else {
+				ayaneo_wait_frame_done();        /* align the latch to vblank */
+				ayaneo_present_skip_framedone = 1;
+				ayaneo_canvas_present();
+				ayaneo_present_skip_framedone = 0;
+				last_sum = sum;
+				have_last = 1;
+			}
+		}
 		mtk_wdt_restart();
 		{
 			int p = pmic_detect_powerkey();
