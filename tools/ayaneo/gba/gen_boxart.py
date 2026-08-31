@@ -26,6 +26,7 @@ Push a tile to the device SD with the existing fastboot path:
   fastboot -s <serial> oem sd-put:/roms/gba/boxart/<romstem>.ART < out/boxart/<stem>.ART
 """
 import sys, os, io, struct, zipfile, argparse
+import numpy as np
 from PIL import Image
 
 MAGIC = b"GART"
@@ -34,17 +35,10 @@ MAGIC = b"GART"
 def to_565(im):
     im = im.convert("RGB")
     w, h = im.size
-    px = im.load()
-    out = bytearray(w * h * 2)
-    i = 0
-    for y in range(h):
-        for x in range(w):
-            r, g, b = px[x, y]
-            v = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-            out[i] = v & 0xFF
-            out[i + 1] = (v >> 8) & 0xFF
-            i += 2
-    return w, h, bytes(out)
+    a = np.asarray(im, dtype=np.uint16)          # h x w x 3
+    r, g, b = a[:, :, 0], a[:, :, 1], a[:, :, 2]
+    v = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+    return w, h, v.astype("<u2").tobytes()
 
 
 def convert_one(im, max_dim):
