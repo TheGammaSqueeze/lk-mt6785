@@ -3021,10 +3021,19 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			 * if the selected-card chevron moved (rcache_sel), or with no cache. */
 			/* Cache the panel at the settled reference (build_rcache forces tf[5]=0),
 			 * then composite it shifted by open_y - so the slide-up-from-bottom runs at
-			 * 60fps too (was a live re-walk per slide frame). Rebuild on a chevron move. */
+			 * 60fps too (was a live re-walk per slide frame). Rebuild only when SETTLED
+			 * (chevron/sel move); during the slide reuse the cache (the selection can't
+			 * change mid-slide, and re-checking sel_world while the carousel is still
+			 * easing thrashed the rebuild). Build once on the first slide frame so the
+			 * slide has a cache to shift. */
 			if (m->rcache) {
-				if (!m->rcache_ready || m->rcache_sel != m->sel_world)
+				int rsettled = (m->open_y > -0.5f && m->open_y < 0.5f);
+				if (rsettled) {
+					if (!m->rcache_ready || m->rcache_sel != m->sel_world)
+						build_rcache(m, t);
+				} else if (!m->rcache_ready) {
 					build_rcache(m, t);
+				}
 				blit_cached_panel(m, t, m->rcache_y0, m->rcache_y1,
 						  m->rcache_op0, m->rcache_op1, (int)m->open_y);
 			} else {
