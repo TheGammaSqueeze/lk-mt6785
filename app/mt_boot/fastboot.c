@@ -843,6 +843,10 @@ int fastboot_init(void *base, unsigned size)
 		/* microSD debug channel: oem sd-probe / oem sd-read:<lba> (emu/gba/sd_fastboot.c) */
 		extern void gba_sd_fastboot_register(void);
 		gba_sd_fastboot_register();
+		/* SNES-menu debug channel: oem menu-init / menu-nav:<keys> / menu-shot
+		 * (emu/gba/menu_fastboot.c) - drive the menu + read timings/screenshots. */
+		extern void gba_menu_fastboot_register(void);
+		gba_menu_fastboot_register();
 	}
 #endif
 #if defined(MTK_SECURITY_SW_SUPPORT)

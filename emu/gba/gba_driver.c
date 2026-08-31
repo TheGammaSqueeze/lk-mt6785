@@ -164,6 +164,8 @@ extern int  mtk_detect_key(unsigned short hwkey);
 static int s_ready;
 static volatile int s_fast_forward;
 static volatile int s_close_req;	/* in-game menu "Close": save + back to the SNES selector */
+static int s_settings_dirty;		/* volume/brightness changed: persist is deferred (see poll_volume) */
+static unsigned s_settings_tick;	/* 13 MHz tick of the last volume/brightness change */
 static volatile int s_benchmark;
 static volatile int s_fps;
 static volatile int s_menu_open;
@@ -294,10 +296,14 @@ static void poll_volume(void)
 			ayaneo_gbc_audio_set_volume(v);
 			ayaneo_gbc_osd_show(1, ayaneo_gbc_audio_get_volume());
 		}
-		ayaneo_settings_save();
-#ifdef AYANEO_GBA_SD
-		sd_settings_mirror();
-#endif
+		/* Defer the persist. ayaneo_settings_save() + sd_settings_mirror() do an
+		 * eMMC + SD/FAT write that stalls this loop for many ms; done inline on
+		 * every key repeat, the audio ring is starved between steps and the AFE
+		 * DMA loops the last frames (the "audio looping between volume steps").
+		 * Mark dirty + timestamp instead; the game loop flushes ONCE, ~0.7s after
+		 * the last change, with the ring silenced across the write. */
+		s_settings_dirty = 1;
+		s_settings_tick = gpt4_get_current_tick();
 	}
 	if (!sel)
 		s_sel_modifier = 0;
@@ -1227,6 +1233,19 @@ static int emu_thread(void *arg)
 
 			mtk_wdt_restart();
 			poll_volume();
+			/* Flush the deferred volume/brightness persist once the user has
+			 * stopped adjusting (~0.7s), silencing the audio ring across the
+			 * eMMC/SD write so the stall plays silence instead of looping. */
+			if (s_settings_dirty &&
+			    (gpt4_get_current_tick() - s_settings_tick) >= 9100000u) {
+				s_settings_dirty = 0;
+				ayaneo_gbc_audio_pause(1);
+				ayaneo_settings_save();
+#ifdef AYANEO_GBA_SD
+				sd_settings_mirror();
+#endif
+				ayaneo_gbc_audio_pause(0);
+			}
 			poll_led();
 			check_power(scratch);
 			frame++;
@@ -1325,6 +1344,12 @@ static int emu_thread(void *arg)
 				el = now - punch_start;
 				if (el >= GBA_PUNCH_TICKS) {		/* time up -> full gameplay */
 					gba_punch_ready = 0;
+					/* The punch composited the menu snapshot OUTSIDE the circle, so
+					 * it left menu pixels in the 40px/80px letterbox that normal
+					 * show_frame never redraws (it only paints + flushes the centred
+					 * game band). Blank both buffers once here so no snapshot remnant
+					 * lingers around the letterbox on the freshly launched game. */
+					ayaneo_gbc_blank();
 					ayaneo_gbc_show_frame(gba_core_screen());
 					continue;
 				}
