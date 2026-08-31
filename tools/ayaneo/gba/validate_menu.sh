@@ -113,6 +113,16 @@ else
   echo "  FAIL never-brick fallback nav test" >&2; fail=1
 fi
 
+# punch-hole launch transition: the compositor (gba_punch_composite) runs only on
+# device, so host-test its geometry (game inside the growing circle, black letterbox,
+# menu snapshot outside) via the standalone test.
+if gcc -O2 -Iemu/gba/menu -o /tmp/gbamenu_punch_test emu/gba/gba_punch_test.c >/dev/null 2>&1 \
+   && /tmp/gbamenu_punch_test >/dev/null 2>&1; then
+  echo "  OK   punch-hole transition compositor"
+else
+  echo "  FAIL punch-hole transition compositor" >&2; fail=1
+fi
+
 # launch correctness: a nav ending in A must hand back order[focus] (the right ROM),
 # which must hold even after a SELECT sort reverses the order (the SA case: sort then
 # launch the on-screen game must return its real SD index, not a screen position).
