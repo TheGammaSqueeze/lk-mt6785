@@ -732,7 +732,54 @@ void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, 
 		if (idim < 256) {
 			/* dimmed re-blit (resume/suspend-list): multiply source RGB by idim/256
 			 * then source-over. Exact vs the live dimmed card: compositing is linear
-			 * under a uniform tint, so dim(A over B) == (dim A) over (dim B). */
+			 * under a uniform tint, so dim(A over B) == (dim A) over (dim B).
+			 * This is the suspend-list's dominant per-frame cost, so NEON the bulk
+			 * (all-opaque card body) the same way the un-dimmed path does. */
+#ifdef __ARM_NEON
+			{
+			static const uint8_t amask_b[8] = { 0,0,0,0xff, 0,0,0,0xff };
+			uint8x8_t vidim = vdup_n_u8((uint8_t)idim), amask = vld1_u8(amask_b);
+			for (; X + 8 <= sx1; X += 8) {
+				const uint32_t *sp = &srow[X];
+				uint32x4_t lo = vld1q_u32(sp), hi = vld1q_u32(sp + 4);
+				uint32x2_t a2 = vand_u32(vget_low_u32(vandq_u32(lo, hi)),
+							 vget_high_u32(vandq_u32(lo, hi)));
+				uint32x2_t o2 = vorr_u32(vget_low_u32(vorrq_u32(lo, hi)),
+							 vget_high_u32(vorrq_u32(lo, hi)));
+				unsigned aand = vget_lane_u32(a2, 0) & vget_lane_u32(a2, 1);
+				unsigned aor  = vget_lane_u32(o2, 0) | vget_lane_u32(o2, 1);
+				if ((aand & 0xff000000u) == 0xff000000u) {   /* all opaque: dim, A=255 */
+					uint8x16_t p = vreinterpretq_u8_u32(lo);
+					uint8x8_t pl = vshrn_n_u16(vmull_u8(vget_low_u8(p), vidim), 8);
+					uint8x8_t ph = vshrn_n_u16(vmull_u8(vget_high_u8(p), vidim), 8);
+					uint8x16_t q = vreinterpretq_u8_u32(hi);
+					uint8x8_t ql = vshrn_n_u16(vmull_u8(vget_low_u8(q), vidim), 8);
+					uint8x8_t qh = vshrn_n_u16(vmull_u8(vget_high_u8(q), vidim), 8);
+					pl = vorr_u8(pl, amask); ph = vorr_u8(ph, amask);
+					ql = vorr_u8(ql, amask); qh = vorr_u8(qh, amask);
+					vst1q_u32(&drow[X - sx0], vreinterpretq_u32_u8(vcombine_u8(pl, ph)));
+					vst1q_u32(&drow[X - sx0 + 4], vreinterpretq_u32_u8(vcombine_u8(ql, qh)));
+				} else if ((aor & 0xff000000u) == 0u) {
+					/* all transparent: leave dst */
+				} else {
+					int q;
+					for (q = 0; q < 8; q++) {
+						uint32_t s = srow[X + q]; unsigned sa = s >> 24;
+						unsigned sr, sg, sb; uint32_t *dp = &drow[X - sx0 + q];
+						if (!sa) continue;
+						sr = (((s >> 16) & 0xff) * idim) >> 8;
+						sg = (((s >> 8) & 0xff) * idim) >> 8;
+						sb = ((s & 0xff) * idim) >> 8;
+						if (sa == 255) { *dp = 0xff000000u | (sr << 16) | (sg << 8) | sb; continue; }
+						{ uint32_t dv = *dp; unsigned ia = 255 - sa;
+						  unsigned dr = (dv >> 16) & 0xff, dg = (dv >> 8) & 0xff, db = dv & 0xff;
+						  dr = (sr * sa + dr * ia + 127) / 255; dg = (sg * sa + dg * ia + 127) / 255; db = (sb * sa + db * ia + 127) / 255;
+						  *dp = 0xff000000u | (dr << 16) | (dg << 8) | db; }
+					}
+				}
+			}
+			}
+#endif
 			for (; X < sx1; X++) {
 				uint32_t s = srow[X]; unsigned sa = s >> 24;
 				unsigned sr, sg, sb; uint32_t *dp = &drow[X - sx0];
