@@ -162,6 +162,7 @@ extern int  mtk_detect_key(unsigned short hwkey);
 
 static int s_ready;
 static volatile int s_fast_forward;
+static volatile int s_close_req;	/* in-game menu "Close": save + back to the SNES selector */
 static volatile int s_benchmark;
 static volatile int s_fps;
 static volatile int s_menu_open;
@@ -753,7 +754,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
 	case MI_LOADSTATE: if (act) mi_puts(status, state_read(state) ? "State loaded" : "No save state"); changed = 0; break;
 	case MI_SAVESTATE: if (act) { int ok = state_write(state); sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;
-	case MI_CLOSE:    if (act) return 1; changed = 0; break;
+	case MI_CLOSE:    if (act) { s_close_req = 1; return 1; } changed = 0; break;
 	default: changed = 0; break;
 	}
 	if (changed) {
@@ -1233,6 +1234,44 @@ static int emu_thread(void *arg)
 				menu_toggle();
 			if (s_menu_open)
 				menu_tick(scratch);
+
+			/* in-game menu "Close": save the current game (state + battery sav) and
+			 * go back to the SNES ROM selector with a reverse punch-hole transition.
+			 * The CPU thread is parked on the frame-sync event while gba_sd_rom_select
+			 * runs; core_start + s_cpu_restart_req re-enter it cleanly into the pick. */
+			if (s_close_req) {
+				s_close_req = 0;
+				s_menu_open = 0;
+#ifdef AYANEO_GBA_SD
+				if (s_sd_mode && s_nrom > 0) {
+					extern void gba_menu_arm_reverse(const unsigned short *game_frame);
+					unsigned char *rp = gba_core_rom_ptr();
+					long rsz;
+					state_write(scratch);		/* persist the current game */
+					sav_save(scratch);
+					gba_menu_arm_reverse(gba_core_screen());  /* freeze frame for reverse */
+					for (;;) {
+						int sel = gba_sd_rom_select();
+						s_sel_rom = sel;
+						rsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp,
+								      gba_core_rom_capacity());
+						if (rsz) break;
+					}
+					if (gba_core_start(rsz, s_sd_bios) != 0)
+						return 0;
+					gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
+							(unsigned char *)gba_core_backup_ptr(),
+							gba_core_backup_size());
+					if (!PRESSED(GPIO_B))
+						state_read(scratch);
+					ayaneo_gbc_blank();
+					dynarec_enable = 1;
+					s_cpu_restart_req = 1;
+					punch_start = 0;	/* re-arm the forward punch */
+				}
+#endif
+				continue;
+			}
 
 			/* fast-forward: present sparsely so the vsync block does not cap the
 			 * rate - runs flat out. */
