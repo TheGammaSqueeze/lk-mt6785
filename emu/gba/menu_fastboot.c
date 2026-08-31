@@ -75,30 +75,8 @@ static void cmd_key(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem close: trigger the in-game close path (reverse punch transition) over USB.
- * rev= in diag shows the transition actually ran. */
-static void cmd_close(const char *arg, void *data, unsigned sz)
-{
-	(void)arg; (void)data; (void)sz;
-	g_dbg_force_close = 1;
-	thread_sleep(1200);
-	snprintf(lbuf, sizeof lbuf, "rev=%d", g_dbg_reverse_ran);
-	fastboot_info(lbuf);
-	fastboot_okay("");
-}
-
-static void cmd_launch(const char *arg, void *data, unsigned sz)
-{
-	(void)arg; (void)data; (void)sz;
-	g_dbg_force_launch = 1;
-	thread_sleep(300);
-	fastboot_okay("");
-}
-
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem nav:", cmd_key, 1, 0);
-	fastboot_register("oem launch", cmd_launch, 1, 0);
-	fastboot_register("oem close", cmd_close, 1, 0);
 }

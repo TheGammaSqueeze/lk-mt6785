@@ -259,9 +259,56 @@ static void cmd_sd_wtest(const char *arg, void *data, unsigned sz)
 	fastboot_okay("sd-wtest: write+verify OK");
 }
 
+/*
+ * Push an arbitrary file to the SD card. Usage:
+ *   fastboot stage <localfile>            (or: fastboot get_staged is the reverse)
+ *   fastboot oem sd-put:/roms/gba/boxart/GAME.ART
+ * The previously-downloaded payload (download_base/size, handed in as data/sz) is
+ * written to the given absolute path. The parent directory is created if missing
+ * (mkdir -p). The FINAL name component must be 8.3 (uppercased) - callers name their
+ * own files (boxart tiles, config), so that is fine. This reuses the existing
+ * fastboot USB bulk stack + the tested FAT writer, so no separate UMS/ADB gadget is
+ * needed to get files (e.g. boxart) onto the card.
+ */
+static void cmd_sd_put(const char *arg, void *data, unsigned sz)
+{
+	static char dir[96];
+	const char *path = arg, *slash = 0, *name;
+	fat_vol v;
+	int rc, i;
+
+	while (*path == ' ' || *path == ':') path++;
+	if (*path != '/' || sz == 0 || !data) { fastboot_fail("sd-put: need /path + payload"); return; }
+
+	/* split at the LAST '/': dir = leading part, name = trailing 8.3 component */
+	for (i = 0; path[i]; i++) if (path[i] == '/') slash = path + i;
+	if (!slash || !slash[1]) { fastboot_fail("sd-put: bad path"); return; }
+	name = slash + 1;
+	{
+		int dl = (int)(slash - path);          /* chars before the last slash */
+		if (dl <= 0) { dir[0] = '/'; dir[1] = 0; }   /* root */
+		else {
+			if (dl > (int)sizeof dir - 1) dl = (int)sizeof dir - 1;
+			for (i = 0; i < dl; i++) dir[i] = path[i];
+			dir[dl] = 0;
+		}
+	}
+
+	rc = gba_sd_mount(&v);
+	if (rc != 0 || !v.wr) { fastboot_fail("sd-put: mount failed"); return; }
+	rc = fat_wr_mkpath(&v, dir);
+	if (rc == 0) rc = fat_wr_put(&v, dir, name, data, sz);
+	if (rc != 0) { snprintf(lbuf, sizeof lbuf, "sd-put: rc=%d", rc); fastboot_fail(lbuf); return; }
+
+	snprintf(lbuf, sizeof lbuf, "sd-put: wrote %u", sz);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_sd_fastboot_register(void)
 {
 	fastboot_register("oem sd-probe", cmd_sd_probe, 1, 0);
 	fastboot_register("oem sd-read:", cmd_sd_read, 1, 0);
 	fastboot_register("oem sd-wtest", cmd_sd_wtest, 1, 0);
+	fastboot_register("oem sd-put:", cmd_sd_put, 1, 1);
 }
