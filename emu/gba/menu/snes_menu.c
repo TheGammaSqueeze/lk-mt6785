@@ -2673,19 +2673,6 @@ static void blit_cached_panel(snes_menu *m, snes_target *t,
 	}
 }
 
-/* The moving blue selection box is a "cursor_area" node; only ONE is enabled at a time
- * (the current cell in the active zone). Find it so it can be excluded from the cached
- * panel and drawn live on top - then a cursor move never rebuilds the cache. */
-static snes_rnode *find_enabled_cursor(snes_menu *m, snes_rnode *n)
-{
-	snes_rnode *c, *r;
-	if (!n) return 0;
-	if (n->enabled && name_eq(m->pk, n, "cursor_area")) return n;
-	for (c = n->child; c; c = c->sib)
-		if ((r = find_enabled_cursor(m, c))) return r;
-	return 0;
-}
-
 /* Render the settled submenu panel ONCE into the rcache buffer (shared with the resume
  * panel; the two states are mutually exclusive) so later frames composite it 1:1
  * instead of re-walking the whole scene graph (~56ms -> a memcpy-class composite). The
@@ -2695,18 +2682,17 @@ static void build_submenu_cache(snes_menu *m, snes_target *t)
 	snes_target ct = *t;   /* inherits the CONTAIN view the caller set */
 	unsigned i, n = (unsigned)t->pitch * (unsigned)t->H;
 	int y, x, y0 = t->H, y1 = 0, W = t->W < SNES_VW ? t->W : SNES_VW;
-	snes_rnode *cur;
 	float save_oy = m->open_y;
 	if (!m->rcache) return;
-	cur = m->open >= 0 && m->open < 5 ? find_enabled_cursor(m, m->overlay[m->open]) : 0;
-	if (cur) cur->enabled = 0;                     /* exclude the cursor from the cache */
-	m->open_y = 0.0f;                              /* build at the SETTLED reference so the
-							* slide is a shift of this one snapshot */
+	/* Build at the SETTLED reference (open_y=0) so the slide is a shift of this one
+	 * snapshot. The cursor_area (blue selection box) is a BACKGROUND highlight rendered
+	 * UNDER the item content (text / radio switches / frame previews), so it must be in
+	 * the cache at its authored z-order - drawing it live on top covered that content. */
+	m->open_y = 0.0f;
 	ct.fb = m->rcache;
 	for (i = 0; i < n; i++) m->rcache[i] = 0;      /* transparent */
 	draw_submenu_contain(m, &ct);
 	m->open_y = save_oy;
-	if (cur) cur->enabled = 1;                     /* restore for the live draw */
 	{
 		int op0 = t->H, op1 = 0;
 		for (y = 0; y < t->H; y++) {
@@ -2727,19 +2713,17 @@ static void build_submenu_cache(snes_menu *m, snes_target *t)
 }
 
 /* FNV-1a of everything that changes the submenu panel's appearance; a change forces a
- * cache rebuild (one live frame, like a nav), otherwise the cache is composited. */
+ * cache rebuild (one live frame). The cursor position IS included: the cursor_area is a
+ * background highlight baked into the cache under the content, so moving it must rebuild. */
 static unsigned submenu_sig(snes_menu *m)
 {
-	/* Only fields that change the STATIC panel content. The cursor position (opt_cur,
-	 * disp_cur, lang_cur, frame_sel) is excluded: the cursor is drawn live over the
-	 * cache, so moving it must NOT rebuild. disp_zone + frame_scroll DO change content
-	 * (which zone/frames show) so they stay. */
 	unsigned h = 2166136261u;
-	int v[8], k;
+	int v[12], k;
 	v[0] = m->open;         v[1] = (int)m->opt_on;    v[2] = m->disp_sel; v[3] = m->lang_sel;
 	v[4] = m->frame_scroll; v[5] = m->disp_zone;      v[6] = m->reset_dlg_open;
-	v[7] = m->reset_armed;
-	for (k = 0; k < 8; k++) h = (h ^ (unsigned)v[k]) * 16777619u;
+	v[7] = m->reset_armed;   v[8] = m->opt_cur;       v[9] = m->disp_cur;
+	v[10] = m->lang_cur;    v[11] = m->frame_sel;
+	for (k = 0; k < 12; k++) h = (h ^ (unsigned)v[k]) * 16777619u;
 	return h;
 }
 
@@ -2799,18 +2783,12 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			 * re-walk per slide frame). Rebuild only when the content changes (sig). */
 			if (m->rcache) {
 				unsigned sig = submenu_sig(m);
-				snes_rnode *cur;
 				if (!m->sub_ready || m->sub_key != sig) {
 					build_submenu_cache(m, t);
 					m->sub_key = sig;
 				}
 				blit_cached_panel(m, t, m->sub_y0, m->sub_y1,
 						  m->sub_op0, m->sub_op1, (int)m->open_y);
-				/* draw the moving cursor live over the cache (excluded from it) at the
-				 * current slid position, so cursor moves + the slide stay rebuild-free. */
-				m->overlay[m->open]->tf[5] = m->open_y;
-				cur = m->open < 5 ? find_enabled_cursor(m, m->overlay[m->open]) : 0;
-				if (cur) snes_render_node(t, &m->home, cur);
 			} else {
 				draw_submenu_contain(m, t);
 			}
