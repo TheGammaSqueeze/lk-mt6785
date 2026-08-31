@@ -70,8 +70,12 @@ extern void ayaneo_gba_punch_frame(const unsigned short *pix, const unsigned int
 				   int cx, int cy, int radius);
 extern int  gba_punch_ready;			/* set by the SNES selector on launch */
 #define GBA_PUNCH_SNAP_PA  0x54000000u		/* menu snapshot (matches gba_snes_menu.c) */
-#define GBA_PUNCH_FRAMES   48			/* transition length (frames) */
 #define GBA_PUNCH_MAX_R    820			/* > 1280x960 half-diagonal (800) = full cover */
+/* Time-paced, NOT frame-count paced: the compositing cost per frame is unknown on the
+ * A55, so drive the radius by elapsed wall-clock (13 MHz gpt4) to guarantee a snappy,
+ * fixed-duration reveal (fewer frames if slow, more if fast). 180 ms = clearly < 0.2s. */
+#define GBA_PUNCH_MS       180
+#define GBA_PUNCH_TICKS    (GBA_PUNCH_MS * 13000u)	/* 13 MHz ticks for GBA_PUNCH_MS */
 extern void mtk_wdt_restart(void);
 extern void mtk_wdt_disable(void);
 extern int  ayaneo_boot_audio_active(void);
@@ -1204,7 +1208,7 @@ static int emu_thread(void *arg)
 		}
 #endif
 
-		int punch_i = 0;		/* punch-hole transition progress (frames shown) */
+		unsigned punch_start = 0;	/* 13 MHz tick the punch-hole began (0 = not yet) */
 		for (;;) {
 			int uncapped;
 
@@ -1259,18 +1263,28 @@ static int emu_thread(void *arg)
 
 			/* normal play: one present per frame = paced to the panel vsync */
 			ayaneo_present_skip_framedone = 0;
-			/* Launch punch-hole: for the first GBA_PUNCH_FRAMES frames after a menu
-			 * launch, composite the live game inside a growing circle over the frozen
-			 * menu snapshot so the menu is visibly eaten by the expanding hole while
-			 * real gameplay runs underneath. Fast-forward/benchmark above skip this
-			 * (they return early); once done, fall back to the normal game present. */
-			if (gba_punch_ready && punch_i < GBA_PUNCH_FRAMES) {
-				int r = GBA_PUNCH_MAX_R * (punch_i + 1) / GBA_PUNCH_FRAMES;
+			/* Launch punch-hole: for GBA_PUNCH_MS after a menu launch, composite the
+			 * live game inside a growing circle over the frozen menu snapshot so the
+			 * menu is visibly eaten by the expanding hole while real gameplay runs
+			 * underneath. Radius is paced by elapsed wall-clock (snappy, fixed
+			 * duration regardless of the per-frame composite cost). Fast-forward/
+			 * benchmark above skip this; once done, the normal game present resumes. */
+			if (gba_punch_ready) {
+				unsigned now = gpt4_get_current_tick();
+				unsigned el;
+				int r;
+				if (!punch_start) punch_start = now ? now : 1u;
+				el = now - punch_start;
+				if (el >= GBA_PUNCH_TICKS) {		/* time up -> full gameplay */
+					gba_punch_ready = 0;
+					ayaneo_gbc_show_frame(gba_core_screen());
+					continue;
+				}
+				r = (int)((long long)GBA_PUNCH_MAX_R * el / GBA_PUNCH_TICKS);
+				if (r < 1) r = 1;
 				ayaneo_gba_punch_frame(gba_core_screen(),
 						       (const unsigned int *)GBA_PUNCH_SNAP_PA,
 						       -1, -1, r);
-				if (++punch_i >= GBA_PUNCH_FRAMES)
-					gba_punch_ready = 0;
 				continue;
 			}
 			ayaneo_gbc_show_frame(gba_core_screen());

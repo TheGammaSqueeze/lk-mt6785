@@ -70,6 +70,18 @@ def composite(snap, gi, radius):
     mask = DIST2 <= radius*radius
     return np.where(mask[..., None], game_full(gi), snap)
 
+def label_frame(text):
+    from PIL import ImageDraw, ImageFont
+    img = Image.new("RGB", (W, H), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 64)
+    except Exception:
+        font = ImageFont.load_default()
+    tw = d.textlength(text, font=font)
+    d.text(((W - tw) / 2, H / 2 - 40), text, fill=(235, 235, 235), font=font)
+    return np.asarray(img)
+
 def main():
     if not os.path.exists(HR):
         subprocess.run(["bash", "emu/gba/menu/build_host.sh"], check=True)
@@ -81,12 +93,21 @@ def main():
         hold = 18 if k in (0, len(navs)-1) else 8
         frames += [f]*hold
     snap = frames[-1]                          # the launch frame = punch snapshot
-    # 2) punch-hole transition: growing circle reveals the live mock game
-    for i in range(PUNCH_FRAMES):
-        r = MAXR * (i+1) // PUNCH_FRAMES
+    # 2) SNAPPY transition at real speed: on device it is time-paced to ~180ms, so at
+    #    30fps that is ~6 steps (radius linear in time). This is the true feel.
+    SNAPPY_N = 6
+    for i in range(SNAPPY_N):
+        r = MAXR * (i+1) // SNAPPY_N
         frames.append(composite(snap, i, r))
-    # 3) a couple seconds of the full game
-    for i in range(PUNCH_FRAMES, PUNCH_FRAMES+50):
+    for i in range(SNAPPY_N, SNAPPY_N+24):     # ~0.8s of the full game
+        frames.append(game_full(i))
+    # 3) slow-motion replay so the 180ms transition is actually watchable
+    frames += [label_frame("SLOW MOTION REPLAY")]*18
+    SLOW_N = 40
+    for i in range(SLOW_N):
+        r = MAXR * (i+1) // SLOW_N
+        frames.append(composite(snap, i//4, r))
+    for i in range(SLOW_N, SLOW_N+16):
         frames.append(game_full(i))
 
     tmp = tempfile.mkdtemp()
