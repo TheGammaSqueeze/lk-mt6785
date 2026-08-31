@@ -113,6 +113,15 @@ else
   echo "  FAIL never-brick fallback nav test" >&2; fail=1
 fi
 
+# boxart .ART decode: the SD tile loader parses a GART header and expands the compact
+# RGB565 payload to the engine's 3-byte (565 + a8) format. Host-test the pure decoder.
+if gcc -O2 -Iemu/gba -o /tmp/gbamenu_boxart_test emu/gba/gba_boxart_test.c emu/gba/gba_boxart.c >/dev/null 2>&1 \
+   && /tmp/gbamenu_boxart_test >/dev/null 2>&1; then
+  echo "  OK   boxart .ART decode (header + 565->565a8 expand)"
+else
+  echo "  FAIL boxart .ART decode test" >&2; fail=1
+fi
+
 # punch-hole launch transition: the compositor (gba_punch_composite) runs only on
 # device, so host-test its geometry (game inside the growing circle, black letterbox,
 # menu snapshot outside) via the standalone test.
