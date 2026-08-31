@@ -36,11 +36,12 @@ extern void thread_sleep(unsigned ms);
 /* live panel + metrics + input injection (display driver + gba_snes_menu.c) */
 extern const unsigned int *ayaneo_canvas_front(unsigned int *pitch, unsigned int *W, unsigned int *H);
 extern volatile unsigned int g_dbg_render_us, g_dbg_peak_us, g_dbg_fps;
-extern volatile unsigned int g_dbg_present_cnt, g_dbg_skip_cnt;
+extern volatile unsigned int g_dbg_present_cnt;
 extern volatile int g_dbg_focus;
 extern volatile int g_inject_btn, g_inject_frames;
 extern volatile int g_cap_want, g_cap_have;
 extern volatile unsigned int g_cap_pitch, g_cap_w, g_cap_h;
+extern volatile int g_dbg_rev_test, g_dbg_reverse_ran;
 #define GBA_CAP_PA  0x4E000000u
 #define GBA_CAP_MAX 6
 
@@ -57,8 +58,8 @@ static unsigned long parse_u(const char *s)
 static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
 	(void)arg; (void)data; (void)sz;
-	snprintf(lbuf, sizeof lbuf, "render=%u peak=%u fps=%u focus=%d pres=%u",
-		 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps, g_dbg_focus, g_dbg_present_cnt);
+	snprintf(lbuf, sizeof lbuf, "render=%u peak=%u fps=%u pres=%u rev=%d",
+		 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps, g_dbg_present_cnt, g_dbg_reverse_ran);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -78,13 +79,11 @@ static void cmd_key(const char *arg, void *data, unsigned sz)
 {
 	int k = keycode(arg), w = 0;
 	(void)data; (void)sz;
-	if (k < 0) { fastboot_fail("use L R U D A B S T [ ]"); return; }
+	if (k < 0) { fastboot_fail("bad key"); return; }
 	g_inject_btn = k;
 	g_inject_frames = 3;                       /* held ~3 frames = a clean press edge */
 	while (g_inject_frames > 0 && w < 400) { thread_sleep(2); w++; }  /* wait consumed */
 	thread_sleep(220);                         /* let the nav animation settle */
-	snprintf(lbuf, sizeof lbuf, "focus=%d peak=%u", g_dbg_focus, g_dbg_peak_us);
-	fastboot_info(lbuf);
 	fastboot_okay("");
 }
 
@@ -123,24 +122,6 @@ static void dump_frame_hex(const unsigned int *base, unsigned int pitch,
 	}
 }
 
-/* Capture GBA_CAP_MAX consecutive presented frames while a scroll is injected, so
- * the host can assemble the actual carousel MOTION (a settled screenshot can't).
- * `oem capmotion:s` captures static (no scroll) to inspect steady frame-to-frame. */
-static void cmd_capmotion(const char *arg, void *data, unsigned sz)
-{
-	int w = 0, statc;
-	(void)data; (void)sz;
-	while (*arg == ' ' || *arg == ':') arg++;
-	statc = (*arg == 's' || *arg == 'S');
-	g_cap_have = 0;
-	g_cap_want = GBA_CAP_MAX;
-	if (!statc) { g_inject_btn = 1; g_inject_frames = GBA_CAP_MAX + 3; }  /* R = scroll */
-	while (g_cap_want > 0 && w < 600) { thread_sleep(5); w++; }
-	snprintf(lbuf, sizeof lbuf, "cap %d %ux%u p%u", g_cap_have, g_cap_w, g_cap_h, g_cap_pitch);
-	fastboot_info(lbuf);
-	fastboot_okay("");
-}
-
 static void cmd_getframe(const char *arg, void *data, unsigned sz)
 {
 	int i = (int)parse_u(arg);
@@ -153,10 +134,22 @@ static void cmd_getframe(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* Play the reverse punch in isolation (synthetic freeze) + capture its frames. */
+static void cmd_rev(const char *arg, void *data, unsigned sz)
+{
+	int w = 0;
+	(void)arg; (void)data; (void)sz;
+	g_cap_have = 0; g_cap_want = GBA_CAP_MAX; g_dbg_rev_test = 1;
+	while (g_cap_want > 0 && w < 400) { thread_sleep(5); w++; }
+	snprintf(lbuf, sizeof lbuf, "rev %d", g_cap_have);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem key:", cmd_key, 1, 0);
-	fastboot_register("oem capmotion", cmd_capmotion, 1, 0);
 	fastboot_register("oem getframe:", cmd_getframe, 1, 0);
+	fastboot_register("oem rev", cmd_rev, 1, 0);
 }

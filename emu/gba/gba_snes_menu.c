@@ -115,7 +115,6 @@ volatile unsigned int g_dbg_render_us;     /* last snes_menu_render time (us) */
 volatile unsigned int g_dbg_peak_us;       /* peak render over ~2s */
 volatile unsigned int g_dbg_fps;           /* measured loop rate */
 volatile unsigned int g_dbg_present_cnt;   /* frames actually presented (re-latched) */
-volatile unsigned int g_dbg_skip_cnt;      /* frames the static gate skipped */
 volatile int          g_dbg_focus;         /* current focused game index */
 
 /* Debug input injection (fastboot `oem key:<name>`): drive the live menu over USB.
@@ -293,6 +292,62 @@ static void pump_audio(void)
 	}
 }
 
+/* Reverse punch-hole: render the current menu to the SNAP reveal buffer, then shrink
+ * the frozen game frame (GBA_GAME_FREEZE_PA) into a hole over `ms`, revealing the menu.
+ * Shared by the close-re-entry path and the `oem rev` isolation test. Captures its own
+ * frames if a motion capture is armed (g_cap_want) so the transition is inspectable. */
+volatile int g_dbg_reverse_ran;
+static void play_reverse_punch(unsigned int ms)
+{
+	unsigned int cp, cw, ch, pstart, ticks = ms * 13000u;
+	unsigned int *cfb = ayaneo_canvas_back(&cp, &cw, &ch);
+	snes_target lt;
+	lt.fb = cfb; lt.pitch = cp; lt.W = (int)cw; lt.H = (int)ch;
+	lt.offx = ((int)cw - SNES_VW) / 2; lt.offy = ((int)ch - SNES_VH) / 2;
+	snes_target_view(&lt, 1.0f, 1.0f, 0.0f, 0.0f);
+	if (lt.offy > 0) {
+		ayaneo_fill(cfb, cp, 0, 0, (int)cw, lt.offy, 0xFF000000u);
+		ayaneo_fill(cfb, cp, 0, lt.offy + SNES_VH, (int)cw, lt.offy, 0xFF000000u);
+	}
+	snes_menu_render(&s_menu, &lt);
+	memcpy((void *)(uintptr_t)GBA_REVERSE_SNAP_PA, cfb, (size_t)cp * ch * 4);
+	pstart = gpt4_get_current_tick();
+	for (;;) {
+		unsigned int now = gpt4_get_current_tick(), el = now - pstart;
+		unsigned int p2, w2, h2;
+		unsigned int *db;
+		int r;
+		if (el >= ticks) break;
+		r = (int)((long long)820 * (ticks - el) / ticks);   /* MAX -> 0: game shrinks */
+		db = ayaneo_canvas_back(&p2, &w2, &h2);
+		gba_punch_composite(db, (const uint32_t *)GBA_REVERSE_SNAP_PA, (int)p2,
+				    (int)w2, (int)h2, (const unsigned short *)GBA_GAME_FREEZE_PA,
+				    -1, -1, r, 5, 240, 160,
+				    ((int)w2 - 1200) / 2, ((int)h2 - 800) / 2);
+		ayaneo_canvas_present();
+		if (g_cap_want > 0) {
+			int idx = GBA_CAP_MAX - g_cap_want;
+			if (idx >= 0 && idx < GBA_CAP_MAX) {
+				unsigned long b = (unsigned long)p2 * h2 * 4u;
+				memcpy((void *)(uintptr_t)(GBA_CAP_PA + (unsigned long)idx * b), db, b);
+				g_cap_pitch = p2; g_cap_w = w2; g_cap_h = h2; g_cap_have = idx + 1;
+			}
+			g_cap_want--;
+		}
+		mtk_wdt_restart();
+	}
+}
+
+/* oem rev: fill the freeze buffer with a bright test pattern + play the reverse in
+ * isolation, so its frames can be captured without closing a real game. */
+volatile int g_dbg_rev_test;
+static void reverse_test_fill(void)
+{
+	unsigned short *g = (unsigned short *)(uintptr_t)GBA_GAME_FREEZE_PA;
+	int i;
+	for (i = 0; i < 240 * 160; i++) g[i] = (unsigned short)0xF81F;   /* bright magenta */
+}
+
 /*
  * Run the SNES-style ROM selector. Returns the chosen ROM index, or -2 if the
  * SNES pack is missing (caller falls back to the plain list).
@@ -384,37 +439,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	/* Reverse punch-hole (returning from a closed game): render one menu frame as the
 	 * reveal, then shrink the frozen last game frame into a hole so the menu appears
 	 * around it - the mirror of the launch transition. Time-paced to GBA_REVERSE_MS. */
-	if (do_reverse) {
-		unsigned int cp, cw, ch;
-		unsigned int *cfb = ayaneo_canvas_back(&cp, &cw, &ch);
-		unsigned int pstart, ticks = GBA_REVERSE_MS * 13000u;
-		snes_target lt;
-		lt.fb = cfb; lt.pitch = cp; lt.W = (int)cw; lt.H = (int)ch;
-		lt.offx = ((int)cw - SNES_VW) / 2; lt.offy = ((int)ch - SNES_VH) / 2;
-		snes_target_view(&lt, 1.0f, 1.0f, 0.0f, 0.0f);
-		if (lt.offy > 0) {
-			ayaneo_fill(cfb, cp, 0, 0, (int)cw, lt.offy, 0xFF000000u);
-			ayaneo_fill(cfb, cp, 0, lt.offy + SNES_VH, (int)cw, lt.offy, 0xFF000000u);
-		}
-		snes_menu_render(&s_menu, &lt);
-		memcpy((void *)(uintptr_t)GBA_REVERSE_SNAP_PA, cfb, (size_t)cp * ch * 4);
-		pstart = gpt4_get_current_tick();
-		for (;;) {
-			unsigned int now = gpt4_get_current_tick(), el = now - pstart;
-			unsigned int p2, w2, h2;
-			unsigned int *db;
-			int r;
-			if (el >= ticks) break;
-			r = (int)((long long)820 * (ticks - el) / ticks);   /* MAX -> 0: game shrinks */
-			db = ayaneo_canvas_back(&p2, &w2, &h2);
-			gba_punch_composite(db, (const uint32_t *)GBA_REVERSE_SNAP_PA, (int)p2,
-					    (int)w2, (int)h2, (const unsigned short *)GBA_GAME_FREEZE_PA,
-					    -1, -1, r, 5, 240, 160,
-					    ((int)w2 - 1200) / 2, ((int)h2 - 800) / 2);
-			ayaneo_canvas_present();
-			mtk_wdt_restart();
-		}
-	}
+	if (do_reverse) { g_dbg_reverse_ran++; play_reverse_punch(GBA_REVERSE_MS); }
 
 	{
 	unsigned int prev_frame = 0;
@@ -473,6 +498,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		}
 
 		menu_av_poll();   /* volume / brightness keys (+ deferred persist) */
+		if (g_dbg_rev_test) { g_dbg_rev_test = 0; reverse_test_fill(); play_reverse_punch(700u); }
 
 		t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
 		t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;
