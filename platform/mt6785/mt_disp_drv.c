@@ -1132,6 +1132,79 @@ void ayaneo_gbc_blank(void)
 	memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
 	arch_clean_cache_range((unsigned int)fb_addr, fb_size * 2);
 }
+
+/* integer sqrt (floor) for the punch-hole circle span; no libm on the LK path. */
+static int ayaneo_isqrt(long n)
+{
+	long x, y;
+	if (n <= 0)
+		return 0;
+	x = n; y = (x + 1) / 2;
+	while (y < x) { x = y; y = (x + n / x) / 2; }
+	return (int)x;
+}
+
+/* Punch-hole launch transition: composite the LIVE game frame (`pix`, the same
+ * 240x160 -> GBC_SCALE centred render as ayaneo_gbc_show_frame, black letterbox
+ * around it) INSIDE a circle of `radius` centred at (cx,cy), and the frozen menu
+ * `snap` (a full fb-size BGRA snapshot the menu captured on launch) OUTSIDE it.
+ * Growing radius each call reveals real gameplay while the menu is eaten by the
+ * hole. Per-row: memcpy the snapshot on the two outside spans, per-pixel only the
+ * inside-circle span. Presents + flips like the other game-frame paths. */
+void ayaneo_gba_punch_frame(const unsigned short *pix, const unsigned int *snap,
+			    int cx, int cy, int radius)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	const int S = GBC_SCALE, SRC_W = GBC_SRC_W, SRC_H = GBC_SRC_H;
+	int dw = SRC_W * S, dh = SRC_H * S;
+	int xoff = ((int)W - dw) / 2, yoff = ((int)H - dh) / 2;
+	long r2 = (long)radius * radius;
+	unsigned int *dst;
+	unsigned int dpa;
+	int y, x;
+
+	if (!fb_addr || !snap)
+		return;
+	if (cx < 0) cx = (int)W / 2;                          /* default: screen centre */
+	if (cy < 0) cy = (int)H / 2;
+	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
+	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
+
+	for (y = 0; y < (int)H; y++) {
+		unsigned int *drow = dst + (unsigned int)y * pitch_w;
+		const unsigned int *srow = snap + (unsigned int)y * pitch_w;
+		int dy = y - cy;
+		long dd = r2 - (long)dy * dy;
+		int hw = (dd <= 0) ? -1 : ayaneo_isqrt(dd);   /* circle half-width at row y */
+		int x0, x1;
+		if (hw < 0) {                                 /* whole row outside the hole */
+			memcpy(drow, srow, (size_t)W * 4);
+			continue;
+		}
+		x0 = cx - hw; x1 = cx + hw;
+		if (x0 < 0) x0 = 0;
+		if (x1 > (int)W - 1) x1 = (int)W - 1;
+		if (x0 > 0)                                   /* left snapshot span */
+			memcpy(drow, srow, (size_t)x0 * 4);
+		for (x = x0; x <= x1; x++) {                  /* inside the hole: game/black */
+			if (x >= xoff && x < xoff + dw && y >= yoff && y < yoff + dh) {
+				unsigned int v = pix[(y - yoff) / S * SRC_W + (x - xoff) / S];
+				unsigned int r = ((v >> 11) & 0x1f) << 3;
+				unsigned int g = ((v >> 5) & 0x3f) << 2;
+				unsigned int b = (v & 0x1f) << 3;
+				drow[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+			} else {
+				drow[x] = 0xFF000000u;                /* game letterbox */
+			}
+		}
+		if (x1 + 1 < (int)W)                          /* right snapshot span */
+			memcpy(drow + x1 + 1, srow + x1 + 1, (size_t)((int)W - x1 - 1) * 4);
+	}
+	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
+	ayaneo_present(dpa, W, H, pitch_w);
+	s_fb_flip ^= 1;
+}
 #endif /* AYANEO_GBC */
 
 /*
