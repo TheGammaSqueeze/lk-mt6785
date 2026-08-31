@@ -283,17 +283,17 @@ static void lcm_get_params(LCM_PARAMS *params)
 	params->dsi.vertical_sync_active = 8;
 	params->dsi.vertical_backporch = 8;
 #if defined(AYANEO_GBA)
-	/* The in-LK GBA emulator locks its frame rate to the panel vsync, so we tune the
-	 * panel to the GBA's true 59.7275 Hz for correct game speed (and near-zero audio
-	 * rate-conversion). MEASURED on-device (128-frame average): vfp 23 / hfp 60
-	 * (vtotal 999, htotal 1430) -> 59.749 Hz, i.e. real pixel clock ~85.355 MHz. That
-	 * OVERSHOOTS 59.7275 by 0.037%, and vertical-only cannot do better (vfp 24 -> 59.689,
-	 * under by more). Adding TWO lines of horizontal front porch too lets us hit it:
-	 * vtotal 998 (vfp 22) x htotal 1432 (hfp 62) = 1,429,136; 85.355e6 / 1,429,136 =
-	 * 59.7250 Hz (0.004% under, essentially exact - the audio clock-recovery trims the
-	 * rest). PLL_CLOCK / DSI data rate are UNCHANGED, so only blanking moves (signal
-	 * integrity untouched); the game path also recalibrates audio from the measured rate. */
-	params->dsi.vertical_frontporch = 22;
+	/* The in-LK GBA emulator locks its frame rate to the panel vsync, so match the panel
+	 * to the GBA's true 59.7275 Hz - and, crucially, run AT-OR-ABOVE it so the game never
+	 * runs slower than a real GBA. MEASURED on-device (128-frame average) at fixed
+	 * PLL_CLOCK=266: vfp 23 / hfp 60 (vtotal 999, htotal 1430) -> 59.749 Hz. The blanking
+	 * grid steps ~0.05 Hz (hfp 61 -> 59.697, vfp 24 -> 59.690, both BELOW target = slower,
+	 * rejected), so there is NO grid point between 59.7275 and 59.749: 59.749 is the closest
+	 * value at-or-above the GBA rate (+0.037%, ~1 frame fast per 2700 = imperceptible; the
+	 * audio clock-recovery, seeded from the measured rate, absorbs the rest). Going closer
+	 * would need a fractional MIPI data rate (PLL is integer-MHz), which risks panel
+	 * stability for a 0.02% gain - not worth it. Blanking-only: DSI data rate untouched. */
+	params->dsi.vertical_frontporch = 23;
 #else
 	params->dsi.vertical_frontporch = 16;
 #endif
@@ -302,7 +302,7 @@ static void lcm_get_params(LCM_PARAMS *params)
 	params->dsi.horizontal_sync_active = 30;
 	params->dsi.horizontal_backporch = 60;
 #if defined(AYANEO_GBA)
-	params->dsi.horizontal_frontporch = 62;   /* +2 vs stock 60: see the vfp note above */
+	params->dsi.horizontal_frontporch = 60;   /* stock: closest grid point AT-OR-ABOVE 59.7275 */
 #else
 	params->dsi.horizontal_frontporch = 60;
 #endif

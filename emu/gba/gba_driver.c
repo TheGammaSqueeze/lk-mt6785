@@ -721,12 +721,20 @@ static const char *menu_value(int item, char *buf)
 		p = mi_putu(p, mhz); p = mi_puts(p, " MHz");
 		break;
 	}
-	case MI_PANEL:
-		/* measured refresh vs the GBA's 59.7275 Hz (target 5973) */
-		p = mi_putu(p, (unsigned)(s_panel_hz100 / 100)); *p++ = '.';
-		{ unsigned f = (unsigned)(s_panel_hz100 % 100); if (f < 10) *p++ = '0'; p = mi_putu(p, f); }
+	case MI_PANEL: {
+		/* measured refresh (3 decimals) vs the GBA's 59.7275 Hz. Prefer the precise
+		 * 128-frame average (g_dbg_hz1000, Hz*1000); fall back to the coarse boot
+		 * measurement (s_panel_hz100, Hz*100) until the average is valid. */
+		extern volatile unsigned int g_dbg_hz1000;
+		unsigned hz = g_dbg_hz1000 ? g_dbg_hz1000 : (unsigned)s_panel_hz100 * 10u;
+		unsigned frac = hz % 1000u;
+		p = mi_putu(p, hz / 1000u); *p++ = '.';
+		if (frac < 100u) *p++ = '0';
+		if (frac < 10u)  *p++ = '0';
+		p = mi_putu(p, frac);
 		p = mi_puts(p, " Hz");
 		break;
+	}
 	case MI_BENCH:
 		if (s_benchmark) { p = mi_putu(p, (unsigned)s_fps); p = mi_puts(p, " fps"); }
 		else p = mi_puts(p, "Off");
