@@ -193,6 +193,12 @@ int snes_menu_take_launch(snes_menu *m);
  * ASP_WALL_S ~= 2701) x 960 rows. Caller allocates WP43_PERIOD*WP43_H u32 (~10.4MB). */
 #define WP43_PERIOD 2701
 #define WP43_H 960
+/* Rows fully hidden behind the opaque 4:3 chrome bars (menubar top / SUPER NINTENDO
+ * bottom): the wallpaper memcpy skips [0,WP43_TOP_SKIP) and [WP43_BOT_KEEP,960) to cut
+ * memory traffic on the A55. Host-measured covered = [0,95] + [870,959]; these are a
+ * conservative subset (8px margins) and clip-vs-noclip is validated pixel-identical. */
+#define WP43_TOP_SKIP 88
+#define WP43_BOT_KEEP 878
 /* Provide the 4:3 warped-wallpaper cache backing store (WP43_PERIOD*WP43_H u32), or
  * 0 to keep the per-pixel gather. */
 void snes_menu_set_wp43(snes_menu *m, uint32_t *buf);

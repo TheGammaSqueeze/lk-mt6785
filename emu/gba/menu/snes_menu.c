@@ -345,9 +345,17 @@ static void draw_wp_43(snes_menu *m, snes_target *t, int scroll_px)
 		if (!m->wp43_ready) build_wp43(m);
 		/* screen col X maps to cache col wrap(X - vdx + off*ASP_WALL_S); as X steps
 		 * by 1 the cache col steps by 1, so a screen row is a contiguous cache run. */
+		/* In 4:3, skip the rows fully hidden behind the opaque top menubar and bottom
+		 * SUPER NINTENDO bars (they overwrite them anyway): not writing the wallpaper
+		 * in [0,WP43_TOP_SKIP) + [WP43_BOT_KEEP,H) cuts ~18% of this full-screen memcpy
+		 * = real headroom on the memory-bound A55. Host-validated clip==noclip. */
+		int y0 = m->aspect ? WP43_TOP_SKIP : 0;
+		int y1 = m->aspect ? WP43_BOT_KEEP : t->H;
+		if (y1 > t->H) y1 = t->H;
+		if (y1 > WP43_H) y1 = WP43_H;
 		s0 = (int)(-vdx + (float)off * ASP_WALL_S + 0.5f) % WP43_PERIOD;
 		if (s0 < 0) s0 += WP43_PERIOD;
-		for (Y = 0; Y < t->H && Y < WP43_H; Y++) {
+		for (Y = y0; Y < y1; Y++) {
 			uint32_t *dst = t->fb + (unsigned)Y * t->pitch + t->offx;
 			const uint32_t *crow = m->wp43 + (unsigned)Y * WP43_PERIOD;
 			int first = WP43_PERIOD - s0;
