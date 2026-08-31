@@ -1237,6 +1237,40 @@ void ayaneo_gba_punch_frame(const unsigned short *pix, const unsigned int *snap,
 	priamry_display_wait_for_vsync();
 	s_fb_flip ^= 1;
 }
+
+/* FAST launch punch (same idea as the smooth reverse): freeze the current game frame
+ * into a full-screen BGRA buffer ONCE, then each growing-circle frame is memcpy-only
+ * (gba_punch_composite_pre) = ~5ms not ~50ms, so the driver can frame-pace a smooth
+ * 60fps opening. The game is paused for the ~0.3s punch (imperceptible at launch). */
+#define GBA_PUNCH_GAME_FULL_PA 0x55900000u
+void ayaneo_gba_punch_prerender(const unsigned short *pix)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	int dw = GBC_SRC_W * GBC_SCALE, dh = GBC_SRC_H * GBC_SCALE;
+	if (!pix) return;
+	gba_punch_prerender((uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, (int)pitch,
+			    (int)W, (int)H, pix, GBC_SCALE, GBC_SRC_W, GBC_SRC_H,
+			    ((int)W - dw) / 2, ((int)H - dh) / 2);
+	arch_clean_cache_range(GBA_PUNCH_GAME_FULL_PA, pitch * H * 4);
+}
+
+void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	unsigned int *dst;
+	unsigned int dpa;
+	if (!fb_addr || !snap) return;
+	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
+	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
+	gba_punch_composite_pre(dst, snap, (const uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA,
+				(int)pitch, (int)W, (int)H, -1, -1, radius);
+	arch_clean_cache_range((unsigned int)dst, H * pitch * 4);
+	ayaneo_present(dpa, W, H, pitch);
+	priamry_display_wait_for_vsync();
+	s_fb_flip ^= 1;
+}
 #endif /* AYANEO_GBC */
 
 /*

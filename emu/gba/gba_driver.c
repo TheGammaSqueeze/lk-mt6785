@@ -442,6 +442,11 @@ static void try_load_state(unsigned char *scratch)
 
 static void save_and_poweroff(unsigned char *scratch)
 {
+	/* Mute the game audio FIRST so the ~1s eMMC/SD save does not replay the AFE ring
+	 * (the loop the user heard on power-off). pause(1) both wipes the ring and stops
+	 * the submit path refeeding it; the permanent mute is fine here - we are shutting
+	 * down anyway (audio_shutdown follows). */
+	ayaneo_gbc_audio_pause(1);
 	state_write(scratch);
 	sav_save(scratch);
 	ayaneo_settings_save();
@@ -1269,16 +1274,17 @@ static int emu_thread(void *arg)
 					extern void gba_menu_arm_reverse(const unsigned short *game_frame);
 					unsigned char *rp = gba_core_rom_ptr();
 					long rsz;
+					/* Wipe the shared AFE ring FIRST, BEFORE the slow eMMC/SD saves:
+					 * the CPU thread is parked here so nothing refeeds the ring, and
+					 * state_write/sav_save stall the loop for ~1s during which the DMA
+					 * would otherwise replay the last game audio (the loop the user
+					 * heard on close). Silencing up front makes the save play silence.
+					 * Do NOT use ayaneo_gbc_audio_pause(1) (latches s_gbc_paused=1 and
+					 * permanently mutes the menu BGM + future games); the wipe alone
+					 * stops the loop and the menu re-inits the codec like first boot. */
+					ayaneo_menu_audio_silence();
 					state_write(scratch);		/* persist the current game */
 					sav_save(scratch);
-					/* Wipe the shared AFE ring so it does not loop the last game
-					 * frames while the menu re-inits (mirror of the launch handoff).
-					 * Do NOT call ayaneo_gbc_audio_pause(1) here: it latches
-					 * s_gbc_paused=1, and the submit path early-returns while paused,
-					 * which would permanently mute the menu BGM and every game launched
-					 * afterwards. The silence() wipe alone stops the loop; the menu then
-					 * re-inits the codec and plays its BGM (exactly like first boot). */
-					ayaneo_menu_audio_silence();
 					gba_menu_arm_reverse(gba_core_screen());  /* freeze frame for reverse */
 					for (;;) {
 						int sel = gba_sd_rom_select();
@@ -1339,30 +1345,26 @@ static int emu_thread(void *arg)
 			 * duration regardless of the per-frame composite cost). Fast-forward/
 			 * benchmark above skip this; once done, the normal game present resumes. */
 			if (gba_punch_ready) {
-				unsigned now = gpt4_get_current_tick();
-				unsigned el;
-				int r;
-				if (!punch_start) punch_start = now ? now : 1u;
-				el = now - punch_start;
-				if (el >= GBA_PUNCH_TICKS) {		/* time up -> full gameplay */
-					gba_punch_ready = 0;
-					/* The punch left the menu snapshot in the 40/80px letterbox that
-					 * normal show_frame never redraws. Clear ONLY the letterbox (both
-					 * buffers) - a full ayaneo_gbc_blank() here memsets the LIVE buffer
-					 * black = a one-frame black flash = the menu->game transition
-					 * flicker the user saw. The game area is already full gameplay. */
-					{
-						extern void ayaneo_gbc_clear_letterbox(void);
-						ayaneo_gbc_clear_letterbox();
-					}
-					ayaneo_gbc_show_frame(gba_core_screen());
-					continue;
+				/* FRAME-paced fast opening (mirror of the smooth close): freeze +
+				 * pre-render the launch game frame once, then step a growing circle
+				 * over a fixed count with a memcpy-only composite = smooth 60fps. The
+				 * game is paused for the ~0.3s punch (imperceptible at launch). Then
+				 * clear only the letterbox (no black flash) and resume live gameplay. */
+				extern void ayaneo_gba_punch_prerender(const unsigned short *pix);
+				extern void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius);
+				extern void ayaneo_gbc_clear_letterbox(void);
+				int i, N = 20;
+				gba_punch_ready = 0;
+				(void)punch_start;
+				ayaneo_gba_punch_prerender(gba_core_screen());
+				for (i = 1; i <= N; i++) {
+					int r = (int)((long long)GBA_PUNCH_MAX_R * i / N);   /* 0 -> MAX */
+					if (r < 1) r = 1;
+					ayaneo_gba_punch_frame_pre((const unsigned int *)GBA_PUNCH_SNAP_PA, r);
+					mtk_wdt_restart();
 				}
-				r = (int)((long long)GBA_PUNCH_MAX_R * el / GBA_PUNCH_TICKS);
-				if (r < 1) r = 1;
-				ayaneo_gba_punch_frame(gba_core_screen(),
-						       (const unsigned int *)GBA_PUNCH_SNAP_PA,
-						       -1, -1, r);
+				ayaneo_gbc_clear_letterbox();
+				ayaneo_gbc_show_frame(gba_core_screen());
 				continue;
 			}
 			ayaneo_gbc_show_frame(gba_core_screen());
