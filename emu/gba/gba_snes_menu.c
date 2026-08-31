@@ -579,36 +579,16 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			return launch;
 		}
 
-		/* Present gate (removes the rolling black band on STATIC screens only).
-		 *
-		 * ayaneo_canvas_present() latches a new OVL buffer address every frame to
-		 * force a push (config_input with an unchanged address is a no-op in DSI
-		 * video mode). With CMDQ disabled that latch is immediate; on a screen that
-		 * is not actually changing (suspend list, Display submenu, a settled
-		 * carousel) it buys nothing and its mid-scan re-latch is the rolling band.
-		 *
-		 * So: when the freshly rendered frame is byte-identical to the last one we
-		 * presented (8x8 checksum), SKIP the present entirely and just block one
-		 * vsync - the panel keeps scanning the untouched front buffer, zero banding
-		 * (we only ever render into the BACK buffer, never the displayed one).
-		 * When the frame really changed (carousel scroll, fades, parallax), present
-		 * EXACTLY as before: the plain blocking ayaneo_canvas_present() is the known
-		 * good path (a non-blocking / vblank-latched variant produced black-grain
-		 * artifacts on this panel, so do not touch the changed-frame path). */
-		{
-			static unsigned int last_sum;
-			static int have_last;
-			unsigned int sum = frame_cksum(fb, pitch, W, H);
-			if (have_last && sum == last_sum) {
-				ayaneo_wait_frame_done();        /* static: no re-latch, no band */
-				g_dbg_skip_cnt++;
-			} else {
-				ayaneo_canvas_present();         /* changed: known-good blocking present */
-				last_sum = sum;
-				have_last = 1;
-				g_dbg_present_cnt++;
-			}
-		}
+		/* Present EVERY frame at a STEADY cadence (blocks on FRAME_DONE = vsync).
+		 * This is exactly what the b369be3 SNES menu did when it was rock-solid with
+		 * NO flicker. The later "present gate" that SKIPPED byte-identical frames was
+		 * the regression: skipping a present shifts the phase of the next present
+		 * relative to the scan, so the immediate (CMDQ-disabled) OVL re-latch lands at
+		 * a DIFFERENT scanline each time = the rolling band the user sees. A constant
+		 * every-frame cadence latches at the same phase every frame, so there is no
+		 * roll. Do NOT reintroduce a frame-skipping present gate. */
+		ayaneo_canvas_present();
+		g_dbg_present_cnt++;
 		/* Motion capture: copy the frame just shown into the ring (one per loop =
 		 * one per vsync), so a burst spans real movement. ~5MB memcpy briefly dips
 		 * fps during the grab - a diagnostic, not the steady path. */
