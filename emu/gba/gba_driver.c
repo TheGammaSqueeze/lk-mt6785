@@ -123,7 +123,14 @@ extern int  mt_set_gpio_pull_select(unsigned pin, unsigned sel);
 extern int  mt_get_gpio_in(unsigned pin);
 extern int  mtk_detect_key(unsigned short hwkey);
 
+/* The embedded 16KB GBA BIOS is only needed by the NON-SD baked-game path. In the SD
+ * build the emulator only ever runs with s_sd_mode=1 (ayaneo_gba_sd_boot returns <0 ->
+ * normal Android boot otherwise), so that path is dead and the SD BIOS (s_sd_bios,
+ * loaded from the card) is used instead - dropping the 16KB keeps lk_a under its 2MB
+ * partition. A non-SD build still links + uses the real embedded BIOS. */
+#ifndef AYANEO_GBA_SD
 #include "gba_bios_data.h"
+#endif
 
 /* ---- GBA P1 button bits (BUTTON_* in gpSP input.h) ---- */
 #define GB_A	 0x001u
@@ -1085,7 +1092,11 @@ static int emu_thread(void *arg)
 			return 0;
 		}
 		gba_dbg("GBA 3: ROM decompressed, core_start");
+#ifdef AYANEO_GBA_SD
+		if (gba_core_start(romsz, s_sd_bios) != 0) {   /* dead path (s_sd_mode always 1) */
+#else
 		if (gba_core_start(romsz, gba_bios_data) != 0) {
+#endif
 			gba_dbg("GBA ERR: core_start failed");
 			return 0;
 		}
