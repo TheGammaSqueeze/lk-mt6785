@@ -101,14 +101,25 @@ def main():
         frames.append(composite(snap, i, r))
     for i in range(SNAPPY_N, SNAPPY_N+24):     # ~0.8s of the full game
         frames.append(game_full(i))
-    # 3) slow-motion replay so the 180ms transition is actually watchable
-    frames += [label_frame("SLOW MOTION REPLAY")]*18
-    SLOW_N = 40
-    for i in range(SLOW_N):
-        r = MAXR * (i+1) // SLOW_N
-        frames.append(composite(snap, i//4, r))
-    for i in range(SLOW_N, SLOW_N+16):
-        frames.append(game_full(i))
+    # 3) in-game menu "Close": save state + REVERSE punch (game shrinks into a hole
+    #    revealing the menu), snappy real speed, then back at the menu.
+    frames += [label_frame("IN-GAME MENU: CLOSE (saves state)")]*16
+    FROZEN = SNAPPY_N + 20            # the game frame frozen at close
+    REV_N = 6
+    for i in range(REV_N):
+        r = MAXR * (REV_N - i) // REV_N          # decreasing radius: game shrinks
+        frames.append(composite(snap, FROZEN, r))
+    frames += [snap]*22                          # back at the SNES menu
+    # 4) slow-motion replay of BOTH transitions so the 180ms reveals are watchable
+    frames += [label_frame("SLOW MOTION: launch + close")]*18
+    SLOW_N = 34
+    for i in range(SLOW_N):                       # launch (forward) grows
+        frames.append(composite(snap, i//4, MAXR * (i+1) // SLOW_N))
+    for i in range(10):
+        frames.append(game_full(SNAPPY_N + i))
+    for i in range(SLOW_N):                       # close (reverse) shrinks
+        frames.append(composite(snap, FROZEN, MAXR * (SLOW_N - i) // SLOW_N))
+    frames += [snap]*12
 
     tmp = tempfile.mkdtemp()
     for n, f in enumerate(frames):
