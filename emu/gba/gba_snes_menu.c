@@ -108,6 +108,12 @@ volatile unsigned int g_dbg_skip_cnt;      /* frames the static gate skipped */
 volatile int          g_dbg_focus;         /* current focused game index */
 volatile int          g_dbg_last_static;   /* 1 if the last frame was gate-skipped */
 
+/* Debug input injection (fastboot `oem key:<name>`): drive the live menu over USB.
+ * One button at a time, held a few frames so the menu edge-detects a clean press.
+ * 0..9 = L R U D A B Select Start LB RB; -1 = none. */
+volatile int          g_inject_btn = -1;
+volatile int          g_inject_frames = 0;
+
 /* FNV-1a over an 8x8 grid of the freshly rendered back buffer. Any real UI change
  * (cursor, text, a sliding card) touches many grid cells, so an equal checksum two
  * frames running means the frame is byte-for-byte static. ~19k strided reads, well
@@ -389,6 +395,20 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			}
 		}
 		in.lb = PRESSED(K_LB); in.rb = PRESSED(K_RB);
+
+		/* Fold in a debug-injected button (fastboot oem key:<name>) so the menu can
+		 * be driven over USB without touching the hardware buttons. */
+		if (g_inject_frames > 0) {
+			switch (g_inject_btn) {
+			case 0: in.left = 1; break;   case 1: in.right = 1; break;
+			case 2: in.up = 1; break;     case 3: in.down = 1; break;
+			case 4: in.a = 1; break;      case 5: in.b = 1; break;
+			case 6: in.select = 1; break; case 7: in.start = 1; break;
+			case 8: in.lb = 1; break;     case 9: in.rb = 1; break;
+			default: break;
+			}
+			g_inject_frames--;
+		}
 
 		t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
 		t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;
