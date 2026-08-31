@@ -524,7 +524,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			if (rus > peak_us) { peak_us = rus; peak_hold = 120; }
 			else if (peak_hold) peak_hold--; else peak_us = rus;   /* decay after ~2s */
 			g_dbg_render_us = rus; g_dbg_peak_us = peak_us; g_dbg_fps = fps;
-			g_dbg_focus = s_menu.focus;
+			g_dbg_focus = s_menu.state * 100 + s_menu.gba_mode * 10 + (s_menu.launch >= 0 ? 1 : 0);
 			pb[i++]='R'; pb[i++]='0'+(rus/10000)%10; pb[i++]='0'+(rus/1000)%10;
 			pb[i++]='.'; pb[i++]='0'+(rus/100)%10; pb[i++]='m'; pb[i++]='s'; pb[i++]=' ';
 			pb[i++]='P'; pb[i++]='0'+(peak_us/10000)%10; pb[i++]='0'+(peak_us/1000)%10;

@@ -58,8 +58,8 @@ static unsigned long parse_u(const char *s)
 static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
 	(void)arg; (void)data; (void)sz;
-	snprintf(lbuf, sizeof lbuf, "render=%u fps=%u pres=%u arm=%d rev=%d",
-		 g_dbg_render_us, g_dbg_fps, g_dbg_present_cnt, g_dbg_arm_cnt, g_dbg_reverse_ran);
+	snprintf(lbuf, sizeof lbuf, "fps=%u pres=%u st=%d arm=%d rev=%d",
+		 g_dbg_fps, g_dbg_present_cnt, g_dbg_focus, g_dbg_arm_cnt, g_dbg_reverse_ran);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
