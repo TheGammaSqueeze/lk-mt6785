@@ -56,10 +56,9 @@ static unsigned long parse_u(const char *s)
 
 static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
-	unsigned pc = g_dbg_present_cnt, sk = g_dbg_skip_cnt;
 	(void)arg; (void)data; (void)sz;
-	snprintf(lbuf, sizeof lbuf, "render=%u peak=%u fps=%u focus=%d pres=%u skip=%u",
-		 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps, g_dbg_focus, pc, sk);
+	snprintf(lbuf, sizeof lbuf, "render=%u peak=%u fps=%u focus=%d pres=%u",
+		 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps, g_dbg_focus, g_dbg_present_cnt);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }

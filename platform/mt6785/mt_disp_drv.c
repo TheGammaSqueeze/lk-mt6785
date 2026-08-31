@@ -933,6 +933,7 @@ const unsigned int *ayaneo_canvas_front(unsigned int *pitch_w, unsigned int *W, 
 }
 
 /* flush the whole back buffer and present it, then flip */
+extern int priamry_display_wait_for_vsync(void);   /* primary_display.c (name has the typo) */
 void ayaneo_canvas_present(void)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
@@ -942,6 +943,15 @@ void ayaneo_canvas_present(void)
 	arch_clean_cache_range((unsigned int)((unsigned char *)fb_addr +
 			       (s_fb_flip ? fb_size : 0)), fb_size);
 	ayaneo_present(dpa, W, H, pitch_w);
+	/* Video mode: the OVL latches the new buffer address at the NEXT vsync, but
+	 * primary_display_trigger returns immediately. Without waiting, the loop starts
+	 * redrawing the OTHER buffer while THIS one is still being scanned out -> tearing
+	 * + partial-black on every present = the "flickering like crazy" the user saw on
+	 * static screens (suspend list) after the present gate was removed. Block for one
+	 * vsync so the swap is live before we hand the old buffer back to the renderer.
+	 * This is exactly what the flicker-free b369be3 build did; dropping it was the
+	 * regression. It also paces the loop cleanly to the panel. */
+	priamry_display_wait_for_vsync();
 	s_fb_flip ^= 1;
 }
 

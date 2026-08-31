@@ -136,23 +136,6 @@ volatile int          g_cap_want;      /* frames still to grab (set by oem capmo
 volatile int          g_cap_have;      /* frames grabbed so far */
 volatile unsigned int g_cap_pitch, g_cap_w, g_cap_h;   /* geometry of the grabbed frames */
 
-/* FNV-1a over an 8x8 grid of the freshly rendered back buffer. Any real UI change
- * (cursor, text, a sliding card) touches many grid cells, so an equal checksum two
- * frames running means the frame is byte-for-byte static. ~19k strided reads, well
- * under a millisecond next to the 16-54ms render. Used by the present gate below to
- * decide whether the OVL re-latch (= the rolling black band) is actually needed. */
-static unsigned int frame_cksum(const unsigned int *fb, unsigned int pitch_w,
-				unsigned int W, unsigned int H)
-{
-	unsigned int h = 2166136261u, y, x;
-	for (y = 0; y < H; y += 8) {
-		const unsigned int *row = fb + (size_t)y * pitch_w;
-		for (x = 0; x < W; x += 8)
-			h = (h ^ row[x]) * 16777619u;
-	}
-	return h;
-}
-
 /* ---- menu volume / brightness (OSD + deferred persist) ---- */
 static int      s_av_kind;        /* 0 none, 1 volume, 2 brightness */
 static int      s_av_pct;         /* 0..100 for the bar */
