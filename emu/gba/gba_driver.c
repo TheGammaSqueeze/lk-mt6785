@@ -624,24 +624,25 @@ static void set_charge_led(int charging, int pct)
 static volatile int s_batt_pct = 50;
 static int s_panel_hz100;	/* measured panel refresh * 100 (e.g. 5973 = 59.73 Hz) */
 /* Update the charge LED without hitching the frame. upmu_is_chr_det() is a cheap
- * PMIC read, done ~every 2 s; get_bat_sense_volt() is a slow auxadc conversion
- * (it caused a ~1 s frame hitch while charging), so the near-full check is done
- * rarely (~every 30 s) and its result cached. */
+ * PMIC read, done ~every 2 s.
+ *
+ * The near-full brightness cue used get_bat_sense_volt() (a BATADC auxadc read),
+ * but that is a blocking pwrap spin (udelay 1300us/poll up to timeout, ~tens of ms
+ * to ~1 s) plus a UART dprintf. On the audio-mastered emulator loop that stall
+ * starves the AFE ring, which loops its 341 ms of samples = an audible replayed
+ * blip. It fired ~every 30 s WHILE CHARGING - and the device is charging the whole
+ * time it is on USB - so the game replayed a sample every 30-60 s. Dropping the
+ * cosmetic full=bright cue (the LED still shows charging vs not) removes the stall
+ * entirely; no periodic auxadc on the game thread. */
 static void poll_led(void)
 {
-	static int tick, vtick, full_cached;
+	static int tick;
 	int chr;
 	if (tick-- > 0)
 		return;
 	tick = 120;			/* ~2 s: charger-detect only (cheap) */
 	chr = upmu_is_chr_det();
-	if (chr && --vtick <= 0) {	/* ~every 30 s while charging: one auxadc read */
-		vtick = 15;		/* 15 * 2 s */
-		full_cached = get_bat_sense_volt(1) >= 4300;
-	}
-	if (!chr)
-		vtick = 0;		/* re-read promptly on next charge */
-	set_charge_led(chr, (chr && full_cached) ? 100 : 50);
+	set_charge_led(chr, 50);
 }
 
 static const unsigned s_cpu_opp[] = { 600, 800, 1000, 1200, 1400, 1600, 1800, 2000 };
