@@ -41,7 +41,7 @@ extern volatile int g_dbg_focus;
 extern volatile int g_inject_btn, g_inject_frames;
 extern volatile int g_cap_want, g_cap_have;
 extern volatile unsigned int g_cap_pitch, g_cap_w, g_cap_h;
-extern volatile int g_dbg_rev_test, g_dbg_reverse_ran;
+extern volatile int g_dbg_reverse_ran, g_dbg_arm_cnt, g_dbg_force_close;
 #define GBA_CAP_PA  0x4E000000u
 #define GBA_CAP_MAX 6
 
@@ -58,8 +58,8 @@ static unsigned long parse_u(const char *s)
 static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
 	(void)arg; (void)data; (void)sz;
-	snprintf(lbuf, sizeof lbuf, "render=%u peak=%u fps=%u pres=%u rev=%d",
-		 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps, g_dbg_present_cnt, g_dbg_reverse_ran);
+	snprintf(lbuf, sizeof lbuf, "render=%u fps=%u pres=%u arm=%d rev=%d",
+		 g_dbg_render_us, g_dbg_fps, g_dbg_present_cnt, g_dbg_arm_cnt, g_dbg_reverse_ran);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -134,15 +134,14 @@ static void cmd_getframe(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* Play the reverse punch in isolation (synthetic freeze) + capture its frames. */
-static void cmd_rev(const char *arg, void *data, unsigned sz)
+/* oem close: trigger the in-game close path (game -> menu reverse) so it can be
+ * tested over USB. Read `oem diag` after: arm=<n> rev=<n> shows whether the driver
+ * armed the reverse and whether the reverse block actually ran. */
+static void cmd_close(const char *arg, void *data, unsigned sz)
 {
-	int w = 0;
 	(void)arg; (void)data; (void)sz;
-	g_cap_have = 0; g_cap_want = GBA_CAP_MAX; g_dbg_rev_test = 1;
-	while (g_cap_want > 0 && w < 400) { thread_sleep(5); w++; }
-	snprintf(lbuf, sizeof lbuf, "rev %d", g_cap_have);
-	fastboot_info(lbuf);
+	g_dbg_force_close = 1;
+	thread_sleep(400);
 	fastboot_okay("");
 }
 
@@ -151,5 +150,5 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem key:", cmd_key, 1, 0);
 	fastboot_register("oem getframe:", cmd_getframe, 1, 0);
-	fastboot_register("oem rev", cmd_rev, 1, 0);
+	fastboot_register("oem close", cmd_close, 1, 0);
 }

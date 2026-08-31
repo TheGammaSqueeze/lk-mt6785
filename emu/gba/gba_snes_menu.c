@@ -43,11 +43,13 @@ extern unsigned int gpt4_get_current_tick(void);
 #define GBA_GAME_FREEZE_PA  0x55800000u   /* frozen 240x160 RGB565 game frame */
 #define GBA_REVERSE_MS      180u
 static int g_reverse_punch = 0;
+volatile int g_dbg_arm_cnt;   /* incremented each time the driver arms the reverse */
 
 /* Called by the driver on "Close" with the last game frame; armed here, consumed by
  * the reverse-punch block at the top of gba_snes_menu_run. */
 void gba_menu_arm_reverse(const unsigned short *game_frame)
 {
+	g_dbg_arm_cnt++;
 	if (game_frame) {
 		memcpy((void *)(uintptr_t)GBA_GAME_FREEZE_PA, game_frame, 240u * 160u * 2u);
 		g_reverse_punch = 1;
@@ -338,16 +340,6 @@ static void play_reverse_punch(unsigned int ms)
 	}
 }
 
-/* oem rev: fill the freeze buffer with a bright test pattern + play the reverse in
- * isolation, so its frames can be captured without closing a real game. */
-volatile int g_dbg_rev_test;
-static void reverse_test_fill(void)
-{
-	unsigned short *g = (unsigned short *)(uintptr_t)GBA_GAME_FREEZE_PA;
-	int i;
-	for (i = 0; i < 240 * 160; i++) g[i] = (unsigned short)0xF81F;   /* bright magenta */
-}
-
 /*
  * Run the SNES-style ROM selector. Returns the chosen ROM index, or -2 if the
  * SNES pack is missing (caller falls back to the plain list).
@@ -498,7 +490,6 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		}
 
 		menu_av_poll();   /* volume / brightness keys (+ deferred persist) */
-		if (g_dbg_rev_test) { g_dbg_rev_test = 0; reverse_test_fill(); play_reverse_punch(700u); }
 
 		t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
 		t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;

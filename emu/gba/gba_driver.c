@@ -164,6 +164,7 @@ extern int  mtk_detect_key(unsigned short hwkey);
 static int s_ready;
 static volatile int s_fast_forward;
 static volatile int s_close_req;	/* in-game menu "Close": save + back to the SNES selector */
+volatile int g_dbg_force_close;		/* fastboot `oem close`: trigger the close path for testing */
 static int s_settings_dirty;		/* volume/brightness changed: persist is deferred (see poll_volume) */
 static unsigned s_settings_tick;	/* 13 MHz tick of the last volume/brightness change */
 static volatile int s_benchmark;
@@ -1259,6 +1260,7 @@ static int emu_thread(void *arg)
 			 * go back to the SNES ROM selector with a reverse punch-hole transition.
 			 * The CPU thread is parked on the frame-sync event while gba_sd_rom_select
 			 * runs; core_start + s_cpu_restart_req re-enter it cleanly into the pick. */
+			if (g_dbg_force_close) { g_dbg_force_close = 0; s_close_req = 1; }
 			if (s_close_req) {
 				s_close_req = 0;
 				s_menu_open = 0;
