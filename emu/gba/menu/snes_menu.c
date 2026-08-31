@@ -3019,26 +3019,15 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			 * composite the overlay each frame instead of re-walking the subtree
 			 * (the resume state's dominant cost). Re-walk live only while sliding, or
 			 * if the selected-card chevron moved (rcache_sel), or with no cache. */
-			if (m->rcache && m->open_y > -0.5f && m->open_y < 0.5f) {
-				int oy0, oy1;
+			/* Cache the panel at the settled reference (build_rcache forces tf[5]=0),
+			 * then composite it shifted by open_y - so the slide-up-from-bottom runs at
+			 * 60fps too (was a live re-walk per slide frame). Rebuild on a chevron move. */
+			if (m->rcache) {
 				if (!m->rcache_ready || m->rcache_sel != m->sel_world)
 					build_rcache(m, t);
-				/* memcpy the fully-opaque panel backing (the bulk); alpha-composite
-				 * only the sparse edge rows - same trick as the submenu cache. */
-				oy0 = m->rcache_op0; oy1 = m->rcache_op1;
-				if (oy1 > oy0) {
-					int yy, W = t->W < SNES_VW ? t->W : SNES_VW;
-					snes_composite(t, m->rcache, m->rcache_y0, oy0);
-					for (yy = oy0; yy < oy1; yy++)
-						memcpy(t->fb + (unsigned)yy * t->pitch,
-						       m->rcache + (unsigned)yy * t->pitch,
-						       (unsigned)W * 4u);
-					snes_composite(t, m->rcache, oy1, m->rcache_y1);
-				} else {
-					snes_composite(t, m->rcache, m->rcache_y0, m->rcache_y1);
-				}
+				blit_cached_panel(m, t, m->rcache_y0, m->rcache_y1,
+						  m->rcache_op0, m->rcache_op1, (int)m->open_y);
 			} else {
-				m->rcache_ready = 0;   /* sliding: overlay stale, rebuild on settle */
 				snes_render_node(t, &m->home, m->resume);
 			}
 			/* the notice holds fully opaque for 2s, then fades to 0 over 1s and
