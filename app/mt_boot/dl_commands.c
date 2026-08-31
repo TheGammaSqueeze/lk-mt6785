@@ -439,8 +439,11 @@ bool cmd_flash_mmc_img(const char* arg, void* data, unsigned sz)
 			part_id = partition_get_region(index);
 #endif
 
+			/* NOTE: boot_b is EXCLUDED here - in the AYANEO GBA-from-SD flow it is
+			 * repurposed to hold the menu asset blob (anim + chime + SNES pack), not
+			 * an Android boot image, so the BOOTIMG_MAGIC check must not reject it. */
 			if (!strcmp(arg, "boot") || !strcmp(arg, "boot_a") ||
-			!strcmp(arg, "boot_b") || !strcmp(arg, "recovery")) {
+			!strcmp(arg, "recovery")) {
 				if (memcmp((void *)data, BOOTIMG_MAGIC, BOOTIMG_MAGIC_SZ-1)) {
                     set_response_msg("image is not a boot image");
                     return false;
