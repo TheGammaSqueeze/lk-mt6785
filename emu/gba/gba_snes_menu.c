@@ -182,7 +182,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	const snes_img_entry *cart;
 	unsigned int saved_mhz;
 	int pwr_armed = 0;
-	int fade_in = 18;   /* fade the menu in from black on entry over 0.3s, matching
+	int fade_in = 18;   /* fade the menu in from WHITE on entry over 0.3s (the boot-logo
+			     * animation ends on a whiteout, so a white->menu fade is a seamless
+			     * handover; was black). matching
 			     * the SNES sys_fade IN_DURATION (reveal); the BIOS intro left the
 			     * panel black. The first frame is fully black, which also hides the
 			     * one-time wallpaper/chrome cache build hitch. */
@@ -333,8 +335,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 				ayaneo_text(fb, pitch, 8, 10, 2, 0xFF00FF66u, pb);
 			}
 		}
-		if (fade_in > 0) {   /* fade in from black (255 -> 0) over 18 frames = 0.3s */
-			ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H, 0xFF000000u,
+		if (fade_in > 0) {   /* fade in from WHITE (255 -> 0) over 18 frames = 0.3s */
+			ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H, 0xFFFFFFFFu,
 					  (fade_in * 255) / 18);
 			fade_in--;
 		}
