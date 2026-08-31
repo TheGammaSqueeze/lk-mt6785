@@ -2014,6 +2014,28 @@ lk_debug:
 
 }
 
+#if defined(AYANEO_GBA_SD)
+/* Bring up the USB fastboot stack WHILE the emulator/menu runs, so the on-device
+ * debug channel (oem screenshot / oem diag / ...) is reachable over USB without
+ * rebooting into fastboot mode. Mirrors the fastboot: path in mt_boot_init but
+ * returns after udc_start() - fastboot_init() spawns its own handler thread and
+ * the udc is IRQ-driven, so the caller goes right back to running the game. Called
+ * once from ayaneo_gba_sd_boot() just after the emu thread is spawned. */
+void ayaneo_fastboot_usb_start(void)
+{
+	static int started;
+	unsigned int sz;
+	if (started)
+		return;
+	started = 1;
+	target_fastboot_init();
+	udc_init(&surf_udc_device);   /* emulator path never ran the fastboot: label, so udc is down */
+	sz = target_get_max_flash_size();
+	fastboot_init(target_get_scratch_address(), sz);
+	udc_start();
+}
+#endif
+
 APP_START(mt_boot)
 .init = mt_boot_init,
  APP_END

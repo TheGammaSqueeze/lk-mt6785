@@ -920,6 +920,18 @@ unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigne
 	return (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
 }
 
+/* Get the currently DISPLAYED (front) buffer - the one being scanned out, i.e.
+ * whatever was last presented. Used by the fastboot debug channel to screenshot
+ * the live panel content while the menu/game runs. present() flips s_fb_flip
+ * AFTER latching, so the displayed buffer is the opposite of the current back. */
+const unsigned int *ayaneo_canvas_front(unsigned int *pitch_w, unsigned int *W, unsigned int *H)
+{
+	*pitch_w = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT);
+	*W = CFG_DISPLAY_WIDTH;
+	*H = CFG_DISPLAY_HEIGHT;
+	return (const unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? 0 : fb_size));
+}
+
 /* flush the whole back buffer and present it, then flip */
 void ayaneo_canvas_present(void)
 {

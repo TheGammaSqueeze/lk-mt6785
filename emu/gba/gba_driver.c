@@ -1512,6 +1512,13 @@ int ayaneo_gba_sd_boot(void)
 	}
 	s_sd_mode = 1;
 	ayaneo_gbc_start();   /* spawns emu_thread, which runs the SD intro (s_sd_mode) */
+	/* Bring up the USB fastboot debug channel alongside the running emulator so
+	 * `fastboot oem screenshot` / `oem diag` work live over USB (no reboot to
+	 * fastboot mode). Spawns its own thread + IRQ-driven udc, returns immediately. */
+	{
+		extern void ayaneo_fastboot_usb_start(void);
+		ayaneo_fastboot_usb_start();
+	}
 	return 0;
 }
 #endif /* AYANEO_GBA_SD */

@@ -96,6 +96,17 @@ extern int  mt_get_gpio_in(unsigned pin);
 extern int pmic_detect_powerkey(void);
 extern void mt_power_off(void);
 
+/* Live debug metrics, read by the fastboot debug channel (emu/gba/menu_fastboot.c)
+ * from its own thread while this menu runs. Plain globals: single writer (this
+ * loop), racy reads are fine for diagnostics. */
+volatile unsigned int g_dbg_render_us;     /* last snes_menu_render time (us) */
+volatile unsigned int g_dbg_peak_us;       /* peak render over ~2s */
+volatile unsigned int g_dbg_fps;           /* measured loop rate */
+volatile unsigned int g_dbg_present_cnt;   /* frames actually presented (re-latched) */
+volatile unsigned int g_dbg_skip_cnt;      /* frames the static gate skipped */
+volatile int          g_dbg_focus;         /* current focused game index */
+volatile int          g_dbg_last_static;   /* 1 if the last frame was gate-skipped */
+
 /* FNV-1a over an 8x8 grid of the freshly rendered back buffer. Any real UI change
  * (cursor, text, a sliding card) touches many grid cells, so an equal checksum two
  * frames running means the frame is byte-for-byte static. ~19k strided reads, well
@@ -405,6 +416,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			last_t = r0;
 			if (rus > peak_us) { peak_us = rus; peak_hold = 120; }
 			else if (peak_hold) peak_hold--; else peak_us = rus;   /* decay after ~2s */
+			g_dbg_render_us = rus; g_dbg_peak_us = peak_us; g_dbg_fps = fps;
+			g_dbg_focus = s_menu.focus;
 			pb[i++]='R'; pb[i++]='0'+(rus/10000)%10; pb[i++]='0'+(rus/1000)%10;
 			pb[i++]='.'; pb[i++]='0'+(rus/100)%10; pb[i++]='m'; pb[i++]='s'; pb[i++]=' ';
 			pb[i++]='P'; pb[i++]='0'+(peak_us/10000)%10; pb[i++]='0'+(peak_us/1000)%10;
@@ -480,10 +493,12 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			unsigned int sum = frame_cksum(fb, pitch, W, H);
 			if (have_last && sum == last_sum) {
 				ayaneo_wait_frame_done();        /* static: no re-latch, no band */
+				g_dbg_skip_cnt++; g_dbg_last_static = 1;
 			} else {
 				ayaneo_canvas_present();         /* changed: known-good blocking present */
 				last_sum = sum;
 				have_last = 1;
+				g_dbg_present_cnt++; g_dbg_last_static = 0;
 			}
 		}
 		mtk_wdt_restart();
@@ -494,109 +509,3 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	}
 	}
 }
-
-/* ==========================================================================
- * Headless debug harness (fastboot mode). Lets the host drive the menu one
- * frame at a time over USB and read back per-state render timing + the
- * present-gate (static/changed) decision, and dump the framebuffer - all
- * without UART. It reuses the SAME snes_menu_update / snes_menu_render as the
- * live menu, so the timings and pixels are representative of real play. Driven
- * by the oem commands in emu/gba/menu_fastboot.c.
- *
- * Input language matches host_render / validate_menu.sh:
- *   L R U D  A B  S(elect) T(start)  [ ] (L/R shoulders / page jump).
- * ========================================================================== */
-static int          s_dbg_ready;
-static unsigned int s_dbg_last_us;    /* last snes_menu_render time (microseconds) */
-static unsigned int s_dbg_prev_sum;   /* checksum of the previously rendered frame */
-static int          s_dbg_static;     /* 1 if the last render matched the previous one */
-
-/* Render one menu frame into the panel back buffer; record its render time and
- * whether the present gate would treat it as static (unchanged vs the prior
- * frame). Does NOT flip/present, so repeated calls are non-destructive - the
- * caller presents explicitly when it wants the panel updated. */
-static void dbg_render_one(void)
-{
-	unsigned int pitch, W, H, r0, sum;
-	unsigned int *fb = ayaneo_canvas_back(&pitch, &W, &H);
-	snes_target t;
-	t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
-	t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;
-	snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
-	{ int want = ((int)H >= 960) ? 1 : 0;
-	  if (want != s_menu.aspect) { s_menu.aspect = want; s_menu.chrome_ready = 0; } }
-	if (t.offy > 0) {
-		ayaneo_fill(fb, pitch, 0, 0, (int)W, t.offy, 0xFF000000u);
-		ayaneo_fill(fb, pitch, 0, t.offy + SNES_VH, (int)W, t.offy, 0xFF000000u);
-	}
-	r0 = gpt4_get_current_tick();
-	snes_menu_render(&s_menu, &t);
-	s_dbg_last_us = (gpt4_get_current_tick() - r0) / 13u;
-	sum = frame_cksum(fb, pitch, W, H);
-	s_dbg_static = (sum == s_dbg_prev_sum);
-	s_dbg_prev_sum = sum;
-}
-
-/* Bring the menu up headlessly (mirror of gba_snes_menu_run's prologue, minus
- * the input loop). Returns 0 on success, negative on failure. */
-int gba_menu_dbg_init(const gba_rom_entry *roms, int nrom)
-{
-	static const snes_input ZIN;
-	unsigned int pitch0, W0, H0;
-	const snes_img_entry *cart;
-	int i;
-	s_dbg_ready = 0;
-	if (nrom <= 0) return -1;
-	ayaneo_set_cpu_mhz(2100);
-	ayaneo_display_prepare();
-	if (load_pack() != 0) return -2;
-	if (snes_menu_init(&s_menu, &s_pk, (snes_rnode *)SNES_HOME_PA, HOME_CAP,
-			   (snes_rnode *)SNES_BG_PA, BG_CAP, (uint32_t *)SNES_WP_PA,
-			   (uint32_t *)SNES_CHROME_PA) != 0) return -3;
-	build_names(roms, nrom);
-	cart = snes_res_img(&s_pk, snes_hash("gba_cart"));
-	snes_menu_set_gba_roster(&s_menu, s_nameptr, nrom, cart);
-	{ static int ct[1]; snes_menu_set_ctile(&s_menu, (uint32_t *)SNES_CTILE_PA, ct, 1); }
-	snes_menu_set_fct(&s_menu, (uint32_t *)SNES_FCT_PA);
-	snes_menu_set_wp43(&s_menu, (uint32_t *)SNES_WP43_PA);
-	snes_menu_set_rcache(&s_menu, (uint32_t *)SNES_COMP_PA);
-	(void)ayaneo_canvas_back(&pitch0, &W0, &H0);
-	s_menu.aspect = ((int)H0 >= 960) ? 1 : 0;
-	s_menu.chrome_ready = 0;
-	s_dbg_prev_sum = 0;
-	for (i = 0; i < 30; i++) snes_menu_update(&s_menu, &ZIN, 1.0f / 60.0f);
-	dbg_render_one();
-	s_dbg_ready = 1;
-	return 0;
-}
-
-/* Apply one nav char (pressed one frame), then `settle` released frames, and
- * render. Returns 0, or -1 if the harness was not initialised. */
-int gba_menu_dbg_step(char c, int settle)
-{
-	static const snes_input ZIN;
-	snes_input in = ZIN;
-	int j;
-	if (!s_dbg_ready) return -1;
-	switch (c) {
-	case 'L': in.left = 1; break;   case 'R': in.right = 1; break;
-	case 'U': in.up = 1; break;     case 'D': in.down = 1; break;
-	case 'A': in.a = 1; break;      case 'B': in.b = 1; break;
-	case 'S': in.select = 1; break; case 'T': in.start = 1; break;
-	case '[': in.lb = 1; break;     case ']': in.rb = 1; break;
-	default: break;
-	}
-	snes_menu_update(&s_menu, &in, 1.0f / 60.0f);
-	in = ZIN;
-	if (settle < 1) settle = 1;
-	for (j = 0; j < settle; j++) snes_menu_update(&s_menu, &in, 1.0f / 60.0f);
-	dbg_render_one();
-	return 0;
-}
-
-unsigned int gba_menu_dbg_render_us(void) { return s_dbg_last_us; }
-int          gba_menu_dbg_is_static(void) { return s_dbg_static; }
-int          gba_menu_dbg_take_launch(void) { return snes_menu_take_launch(&s_menu); }
-void         gba_menu_dbg_present(void) { ayaneo_canvas_present(); }
-const unsigned int *gba_menu_dbg_fb(unsigned int *pitch, unsigned int *W, unsigned int *H)
-{ return ayaneo_canvas_back(pitch, W, H); }
