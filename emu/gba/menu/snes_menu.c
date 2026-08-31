@@ -2639,18 +2639,36 @@ static void draw_submenu_contain(snes_menu *m, snes_target *t)
 	}
 }
 
+/* The moving blue selection box is a "cursor_area" node; only ONE is enabled at a time
+ * (the current cell in the active zone). Find it so it can be excluded from the cached
+ * panel and drawn live on top - then a cursor move never rebuilds the cache. */
+static snes_rnode *find_enabled_cursor(snes_menu *m, snes_rnode *n)
+{
+	snes_rnode *c, *r;
+	if (!n) return 0;
+	if (n->enabled && name_eq(m->pk, n, "cursor_area")) return n;
+	for (c = n->child; c; c = c->sib)
+		if ((r = find_enabled_cursor(m, c))) return r;
+	return 0;
+}
+
 /* Render the settled submenu panel ONCE into the rcache buffer (shared with the resume
  * panel; the two states are mutually exclusive) so later frames composite it 1:1
- * instead of re-walking the whole scene graph (~56ms -> a memcpy-class composite). */
+ * instead of re-walking the whole scene graph (~56ms -> a memcpy-class composite). The
+ * moving cursor is excluded (drawn live) so cursor moves do not force a rebuild. */
 static void build_submenu_cache(snes_menu *m, snes_target *t)
 {
 	snes_target ct = *t;   /* inherits the CONTAIN view the caller set */
 	unsigned i, n = (unsigned)t->pitch * (unsigned)t->H;
 	int y, x, y0 = t->H, y1 = 0, W = t->W < SNES_VW ? t->W : SNES_VW;
+	snes_rnode *cur;
 	if (!m->rcache) return;
+	cur = m->open >= 0 && m->open < 5 ? find_enabled_cursor(m, m->overlay[m->open]) : 0;
+	if (cur) cur->enabled = 0;                     /* exclude the cursor from the cache */
 	ct.fb = m->rcache;
 	for (i = 0; i < n; i++) m->rcache[i] = 0;      /* transparent */
 	draw_submenu_contain(m, &ct);
+	if (cur) cur->enabled = 1;                     /* restore for the live draw */
 	{
 		int op0 = t->H, op1 = 0;
 		for (y = 0; y < t->H; y++) {
@@ -2674,12 +2692,16 @@ static void build_submenu_cache(snes_menu *m, snes_target *t)
  * cache rebuild (one live frame, like a nav), otherwise the cache is composited. */
 static unsigned submenu_sig(snes_menu *m)
 {
+	/* Only fields that change the STATIC panel content. The cursor position (opt_cur,
+	 * disp_cur, lang_cur, frame_sel) is excluded: the cursor is drawn live over the
+	 * cache, so moving it must NOT rebuild. disp_zone + frame_scroll DO change content
+	 * (which zone/frames show) so they stay. */
 	unsigned h = 2166136261u;
-	int v[11], k;
-	v[0] = m->open;         v[1] = (int)m->opt_on;    v[2] = m->opt_cur;  v[3] = m->lang_sel;
-	v[4] = m->lang_cur;     v[5] = m->disp_sel;       v[6] = m->disp_cur; v[7] = m->frame_sel;
-	v[8] = m->frame_scroll; v[9] = m->reset_dlg_open; v[10] = m->reset_armed;
-	for (k = 0; k < 11; k++) h = (h ^ (unsigned)v[k]) * 16777619u;
+	int v[8], k;
+	v[0] = m->open;         v[1] = (int)m->opt_on;    v[2] = m->disp_sel; v[3] = m->lang_sel;
+	v[4] = m->frame_scroll; v[5] = m->disp_zone;      v[6] = m->reset_dlg_open;
+	v[7] = m->reset_armed;
+	for (k = 0; k < 8; k++) h = (h ^ (unsigned)v[k]) * 16777619u;
 	return h;
 }
 
@@ -2755,6 +2777,13 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 						snes_composite(t, m->rcache, oy1, m->sub_y1);
 					} else {
 						snes_composite(t, m->rcache, m->sub_y0, m->sub_y1);
+					}
+					/* draw the moving cursor live over the cached panel (excluded from
+					 * the cache), so cursor moves stay 60fps with no rebuild. */
+					{
+						snes_rnode *cur = m->open >= 0 && m->open < 5
+							? find_enabled_cursor(m, m->overlay[m->open]) : 0;
+						if (cur) snes_render_node(t, &m->home, cur);
 					}
 				} else {
 					m->sub_ready = 0;

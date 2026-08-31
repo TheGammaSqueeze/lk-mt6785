@@ -41,6 +41,36 @@ extern volatile int g_dbg_reverse_ran, g_dbg_arm_cnt, g_dbg_force_close, g_dbg_f
 
 static char lbuf[96];
 
+/* oem menu-shot[:step] - dump the live front buffer downscaled (default /16) as RGB565
+ * hex rows (bounded fastboot_info writes only, no bulk transfer), to eyeball a state
+ * over USB. Reconstruct with tools/ayaneo/gba/fastboot_menu_shot.py. */
+extern const unsigned int *ayaneo_canvas_front(unsigned int *pitch_w, unsigned int *W, unsigned int *H);
+static void cmd_shot(const char *arg, void *data, unsigned sz)
+{
+	static const char *hx = "0123456789abcdef";
+	unsigned int pitch = 0, W = 0, H = 0, x, y;
+	const unsigned int *fb = ayaneo_canvas_front(&pitch, &W, &H);
+	int step = 16;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg >= '1' && *arg <= '9') step = *arg - '0';
+	if (!fb || !W || !H) { fastboot_fail("no fb"); return; }
+	for (y = 0; y < H; y += (unsigned)step) {
+		const unsigned int *row = fb + (unsigned long)y * pitch;
+		char *o = lbuf; int col = 0;
+		o += snprintf(lbuf, sizeof lbuf, "%03u:", y / (unsigned)step);
+		for (x = 0; x < W; x += (unsigned)step) {
+			unsigned int px = row[x];
+			unsigned int p = (((px>>16&0xff)>>3)<<11)|(((px>>8&0xff)>>2)<<5)|((px&0xff)>>3);
+			if (col == 13) { *o = 0; fastboot_info(lbuf); o = lbuf;
+					 o += snprintf(lbuf, sizeof lbuf, "%03u+", y/(unsigned)step); col = 0; }
+			*o++ = hx[(p>>12)&0xf]; *o++ = hx[(p>>8)&0xf]; *o++ = hx[(p>>4)&0xf]; *o++ = hx[p&0xf]; col++;
+		}
+		*o = 0; fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
+
 static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
 	(void)arg; (void)data; (void)sz;
@@ -76,4 +106,5 @@ void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
+	fastboot_register("oem menu-shot", cmd_shot, 1, 0);
 }
