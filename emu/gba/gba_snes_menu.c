@@ -124,6 +124,10 @@ volatile int          g_dbg_focus;         /* current focused game index */
  * One button at a time, held a few frames so the menu edge-detects a clean press.
  * 0..9 = L R U D A B Select Start LB RB; -1 = none. */
 volatile int          g_dbg_force_launch;   /* fastboot `oem launch`: force-launch focused ROM */
+volatile int          g_menu_live;          /* 1 while the menu owns the panel; 0 in-game.
+					     * oem menu-shot refuses when 0 - reading the panel +
+					     * ~130 INFO writes while the emulator thread hogs the
+					     * CPU stalls the fastboot USB IN endpoint (no-link wedge). */
 
 /* fastboot `oem key:<name>`: inject one button into the live menu for a few frames so
  * the menu edge-detects a clean press. g_dbg_key = code 0..9 (L R U D A B Sel Start LB
@@ -567,6 +571,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			snes_audio_init(&s_mix);
 			ayaneo_menu_audio_silence();
 			ayaneo_set_cpu_mhz(saved_mhz);   /* restore the emulation clock */
+			g_menu_live = 0;                 /* leaving the menu for the game */
 			return launch;
 		}
 
@@ -580,6 +585,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		 * roll. Do NOT reintroduce a frame-skipping present gate. */
 		ayaneo_canvas_present();
 		g_dbg_present_cnt++;
+		g_menu_live = 1;   /* the menu owns the panel this frame (oem menu-shot is safe) */
 		mtk_wdt_restart();
 		{
 			int p = pmic_detect_powerkey();

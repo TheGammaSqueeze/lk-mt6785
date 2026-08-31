@@ -45,13 +45,19 @@ static char lbuf[96];
  * hex rows (bounded fastboot_info writes only, no bulk transfer), to eyeball a state
  * over USB. Reconstruct with tools/ayaneo/gba/fastboot_menu_shot.py. */
 extern const unsigned int *ayaneo_canvas_front(unsigned int *pitch_w, unsigned int *W, unsigned int *H);
+extern volatile int g_menu_live;
 static void cmd_shot(const char *arg, void *data, unsigned sz)
 {
 	static const char *hx = "0123456789abcdef";
 	unsigned int pitch = 0, W = 0, H = 0, x, y;
-	const unsigned int *fb = ayaneo_canvas_front(&pitch, &W, &H);
+	const unsigned int *fb;
 	int step = 16;
 	(void)data; (void)sz;
+	/* MENU ONLY: in-game the emulator thread starves the fastboot USB thread, so the
+	 * ~130 INFO writes here stall the IN endpoint = a no-link wedge needing a physical
+	 * power cycle. Refuse unless the menu owns the panel. */
+	if (!g_menu_live) { fastboot_fail("in-game (menu only)"); return; }
+	fb = ayaneo_canvas_front(&pitch, &W, &H);
 	while (*arg == ' ' || *arg == ':') arg++;
 	if (*arg >= '1' && *arg <= '9') step = *arg - '0';
 	if (!fb || !W || !H) { fastboot_fail("no fb"); return; }
