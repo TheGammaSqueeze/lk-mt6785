@@ -1565,7 +1565,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->wp43 = 0; m->wp43_ready = 0;
 	m->rcache = 0; m->rcache_ready = 0; m->rcache_sel = -1e9f;
 	m->sub_ready = 0; m->sub_key = 0; m->sub_op0 = 0; m->sub_op1 = 0;
-	m->wp_skip0 = 0; m->wp_skip1 = 0;
+	m->wp_skip0 = 0; m->wp_skip1 = 0; m->dbg_oy = 1e9f;
 	m->gba_mode = 0; m->gba_names = 0; m->gba_cart_img = 0; m->launch = -1; m->pstart = 0;
 	m->ctile = 0; m->ctile_gi = 0; m->ctile_cap = 0; m->ctile_aspect = -1;
 	m->fct = 0; m->fct_ready = 0; m->fct_aspect = -1; m->no_cursor = 0;
@@ -2639,6 +2639,40 @@ static void draw_submenu_contain(snes_menu *m, snes_target *t)
 	}
 }
 
+/* Blit the cached panel (rcache) shifted UP by `oy` fb rows (oy = the current open_y;
+ * 0 when settled, >0 mid-slide-from-top, <0 mid-slide-from-bottom). The fully-opaque
+ * backing band [op0,op1) is a straight memcpy (the bulk); the sparse edge rows are
+ * alpha-composited. Clips the destination to the screen. One path serves the settled
+ * frame (oy=0) AND the slide, so the open/close animation runs at 60fps. */
+static void blit_cached_panel(snes_menu *m, snes_target *t,
+			      int y0, int y1, int op0, int op1, int oy)
+{
+	int W = t->W < SNES_VW ? t->W : SNES_VW, y;
+	for (y = y0; y < y1; y++) {
+		int dy = y - oy;
+		const uint32_t *src;
+		uint32_t *dst;
+		if (dy < 0 || dy >= t->H) continue;
+		src = m->rcache + (unsigned)y * t->pitch;
+		dst = t->fb + (unsigned)dy * t->pitch;
+		if (y >= op0 && y < op1) {
+			memcpy(dst, src, (unsigned)W * 4u);       /* opaque backing: straight copy */
+		} else {
+			int x;                                    /* edge rows: alpha over */
+			for (x = 0; x < W; x++) {
+				uint32_t s = src[x]; unsigned sa = s >> 24;
+				if (!sa) continue;
+				if (sa == 255) { dst[x] = s; continue; }
+				{ uint32_t d = dst[x]; unsigned ia = 255 - sa;
+				  unsigned r = ((((s>>16)&0xff)*sa)+(((d>>16)&0xff)*ia)+127)/255;
+				  unsigned gg = ((((s>>8)&0xff)*sa)+(((d>>8)&0xff)*ia)+127)/255;
+				  unsigned b = (((s&0xff)*sa)+((d&0xff)*ia)+127)/255;
+				  dst[x] = 0xff000000u|(r<<16)|(gg<<8)|b; }
+			}
+		}
+	}
+}
+
 /* The moving blue selection box is a "cursor_area" node; only ONE is enabled at a time
  * (the current cell in the active zone). Find it so it can be excluded from the cached
  * panel and drawn live on top - then a cursor move never rebuilds the cache. */
@@ -2662,12 +2696,16 @@ static void build_submenu_cache(snes_menu *m, snes_target *t)
 	unsigned i, n = (unsigned)t->pitch * (unsigned)t->H;
 	int y, x, y0 = t->H, y1 = 0, W = t->W < SNES_VW ? t->W : SNES_VW;
 	snes_rnode *cur;
+	float save_oy = m->open_y;
 	if (!m->rcache) return;
 	cur = m->open >= 0 && m->open < 5 ? find_enabled_cursor(m, m->overlay[m->open]) : 0;
 	if (cur) cur->enabled = 0;                     /* exclude the cursor from the cache */
+	m->open_y = 0.0f;                              /* build at the SETTLED reference so the
+							* slide is a shift of this one snapshot */
 	ct.fb = m->rcache;
 	for (i = 0; i < n; i++) m->rcache[i] = 0;      /* transparent */
 	draw_submenu_contain(m, &ct);
+	m->open_y = save_oy;
 	if (cur) cur->enabled = 1;                     /* restore for the live draw */
 	{
 		int op0 = t->H, op1 = 0;
@@ -2705,9 +2743,13 @@ static unsigned submenu_sig(snes_menu *m)
 	return h;
 }
 
+void snes_menu_dbg_set_oy(snes_menu *m, float v) { if (m) m->dbg_oy = v; }
+
 void snes_menu_render(snes_menu *m, snes_target *t)
 {
 	const snes_game_rec *g;
+
+	if (m->dbg_oy < 1e8f) m->open_y = m->dbg_oy;   /* debug: freeze a mid-slide for capture */
 
 	/* 4:3 fills the whole 960 panel (no letterbox); the per-view-group aspect
 	 * transform placed by set_view handles the vertical centring instead. */
@@ -2755,40 +2797,26 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			 * backing + overlay scene + hints/lists/strip/language buttons) was re-walked
 			 * every frame = ~56ms/15fps, so cache it once settled and rebuild only when a
 			 * selection changes (submenu_sig). See draw_submenu_contain/build_submenu_cache. */
-			{
-				int settled = (m->open_y > -0.5f && m->open_y < 0.5f && !m->closing);
-				if (settled && m->rcache) {
-					unsigned sig = submenu_sig(m);
-					int oy0, oy1;
-					if (!m->sub_ready || m->sub_key != sig) {
-						build_submenu_cache(m, t);
-						m->sub_key = sig;
-					}
-					/* memcpy the fully-opaque panel band (the bulk) instead of the
-					 * per-pixel alpha loop; alpha-composite only the sparse edge rows. */
-					oy0 = m->sub_op0; oy1 = m->sub_op1;
-					if (oy1 > oy0) {
-						int yy, W = t->W < SNES_VW ? t->W : SNES_VW;
-						snes_composite(t, m->rcache, m->sub_y0, oy0);
-						for (yy = oy0; yy < oy1; yy++)
-							memcpy(t->fb + (unsigned)yy * t->pitch,
-							       m->rcache + (unsigned)yy * t->pitch,
-							       (unsigned)W * 4u);
-						snes_composite(t, m->rcache, oy1, m->sub_y1);
-					} else {
-						snes_composite(t, m->rcache, m->sub_y0, m->sub_y1);
-					}
-					/* draw the moving cursor live over the cached panel (excluded from
-					 * the cache), so cursor moves stay 60fps with no rebuild. */
-					{
-						snes_rnode *cur = m->open >= 0 && m->open < 5
-							? find_enabled_cursor(m, m->overlay[m->open]) : 0;
-						if (cur) snes_render_node(t, &m->home, cur);
-					}
-				} else {
-					m->sub_ready = 0;
-					draw_submenu_contain(m, t);
+			/* Cache the panel ONCE at the settled reference, then composite it - at
+			 * oy=0 when settled, or shifted by the current open_y mid-slide - so both
+			 * the steady state AND the open/close slide run at 60fps (was a ~56ms live
+			 * re-walk per slide frame). Rebuild only when the content changes (sig). */
+			if (m->rcache) {
+				unsigned sig = submenu_sig(m);
+				snes_rnode *cur;
+				if (!m->sub_ready || m->sub_key != sig) {
+					build_submenu_cache(m, t);
+					m->sub_key = sig;
 				}
+				blit_cached_panel(m, t, m->sub_y0, m->sub_y1,
+						  m->sub_op0, m->sub_op1, (int)m->open_y);
+				/* draw the moving cursor live over the cache (excluded from it) at the
+				 * current slid position, so cursor moves + the slide stay rebuild-free. */
+				m->overlay[m->open]->tf[5] = m->open_y;
+				cur = m->open < 5 ? find_enabled_cursor(m, m->overlay[m->open]) : 0;
+				if (cur) snes_render_node(t, &m->home, cur);
+			} else {
+				draw_submenu_contain(m, t);
 			}
 			return;
 		}

@@ -217,6 +217,10 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
 static snes_pack s_pk;
 static snes_menu s_menu;
 static snes_mixer s_mix;
+
+/* debug: freeze the submenu/resume slide at a fixed open_y for screenshot capture. */
+extern void snes_menu_dbg_set_oy(snes_menu *m, float v);
+void gba_menu_dbg_oy(int v) { snes_menu_dbg_set_oy(&s_menu, v <= -9000 ? 1e9f : (float)v); }
 static int s_show_hud;   /* perf HUD off by default; Start+Select toggles it */
 static int s_hud_combo;  /* edge-latch for the toggle combo */
 static short s_mixbuf[16384 * 2];

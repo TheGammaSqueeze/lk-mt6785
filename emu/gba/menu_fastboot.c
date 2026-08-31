@@ -71,6 +71,19 @@ static void cmd_shot(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem oy:<n|-9999> - freeze the slide at open_y=n (or -9999 to release) for capture. */
+extern void gba_menu_dbg_oy(int v);
+static void cmd_oy(const char *arg, void *data, unsigned sz)
+{
+	int v = 0, neg = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == '-') { neg = 1; arg++; }
+	while (*arg >= '0' && *arg <= '9') { v = v * 10 + (*arg - '0'); arg++; }
+	gba_menu_dbg_oy(neg ? -v : v);
+	fastboot_okay("");
+}
+
 static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
 	(void)arg; (void)data; (void)sz;
@@ -107,4 +120,5 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
 	fastboot_register("oem menu-shot", cmd_shot, 1, 0);
+	fastboot_register("oem oy:", cmd_oy, 1, 0);
 }
