@@ -171,6 +171,7 @@ extern int  mtk_detect_key(unsigned short hwkey);
 static int s_ready;
 static volatile int s_fast_forward;
 static volatile int s_close_req;	/* in-game menu "Close": save + back to the SNES selector */
+static volatile int s_reset_req;	/* soft reset: restart the current game (menu Reset / hotkey) */
 volatile int g_dbg_force_close;		/* fastboot `oem close`: trigger the close path for testing */
 static int s_settings_dirty;		/* volume/brightness changed: persist is deferred (see poll_volume) */
 static unsigned s_settings_tick;	/* 13 MHz tick of the last volume/brightness change */
@@ -250,7 +251,7 @@ static volatile int s_sel_modifier;
 /* refresh the button state once per frame (debounced across two reads) */
 static void update_buttons(void)
 {
-	static unsigned prev_raw;
+	static unsigned prev_raw, prev2_raw;
 	unsigned raw = 0, deb, m, i;
 	int af;
 
@@ -261,7 +262,12 @@ static void update_buttons(void)
 	if (PRESSED(GPIO_Y))  raw |= RB_Y;
 	if (PRESSED(GPIO_R2)) raw |= RB_FF;
 
-	deb = raw & prev_raw;
+	/* 3-frame agreement debounce: a bit is only accepted when it read pressed on
+	 * three consecutive frames. The old 2-frame AND let 2-frame line glitches
+	 * through as phantom presses; a third sample rejects them for one extra frame
+	 * (~16 ms) of press latency, which is a fair trade against false inputs. */
+	deb = raw & prev_raw & prev2_raw;
+	prev2_raw = prev_raw;
 	prev_raw = raw;
 
 	m = deb & 0x3ffu;			/* the 10 GBA buttons */
@@ -273,6 +279,20 @@ static void update_buttons(void)
 	if (af) {
 		if (deb & RB_X) m |= GB_B;	/* X = autofire B */
 		if (deb & RB_Y) m |= GB_A;	/* Y = autofire A */
+	}
+
+	/* soft-reset hotkey: Select+Start+L+R held ~0.5s restarts the current game.
+	 * Suppress those four from the game while the combo is engaged (so it does not
+	 * also act on them) and latch so it fires exactly once per hold. */
+	{
+		static int rc_hold, rc_fired;
+		unsigned combo = GB_SEL | GB_START | GB_L | GB_R;
+		if ((deb & combo) == combo) {
+			m &= ~combo;
+			if (++rc_hold >= 30 && !rc_fired) { s_reset_req = 1; rc_fired = 1; }
+		} else {
+			rc_hold = 0; rc_fired = 0;
+		}
 	}
 
 	s_fast_forward = (deb & RB_FF) ? 1 : 0;	/* R2 held = fast-forward */
@@ -693,7 +713,7 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_LOADBOOT, MI_SKIPBOOT, MI_SKIPINTRO,
-	MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_BENCH, MI_CLOSE, MI_COUNT
+	MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
 };
 
 static const char *filter_name(int f)
@@ -710,7 +730,8 @@ static const char *menu_value(int item, char *buf)
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
 	case MI_SKIPINTRO: p = mi_puts(p, ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
 	case MI_LOADSTATE:
-	case MI_SAVESTATE: p = mi_puts(p, "[A]"); break;
+	case MI_SAVESTATE:
+	case MI_RESET:     p = mi_puts(p, "[A]"); break;
 	case MI_BATTERY:
 		p = mi_putu(p, (unsigned)s_batt_pct); p = mi_puts(p, "% ");
 		p = mi_puts(p, upmu_is_chr_det() ? "Charging" : "Battery");
@@ -760,6 +781,7 @@ static const char *menu_label(int item)
 	case MI_CPU:       return "CPU Clock";
 	case MI_PANEL:     return "Panel Refresh";
 	case MI_BENCH:     return "Benchmark (Uncap)";
+	case MI_RESET:     return "Reset Game";
 	case MI_CLOSE:     return "Close";
 	}
 	return "";
@@ -783,6 +805,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
 	case MI_LOADSTATE: if (act) mi_puts(status, state_read(state) ? "State loaded" : "No save state"); changed = 0; break;
 	case MI_SAVESTATE: if (act) { int ok = state_write(state); sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;
+	case MI_RESET:    if (act) { s_reset_req = 1; return 1; } changed = 0; break;
 	case MI_CLOSE:    if (act) { s_close_req = 1; return 1; } changed = 0; break;
 	default: changed = 0; break;
 	}
@@ -1322,6 +1345,20 @@ static int emu_thread(void *arg)
 				menu_toggle();
 			if (s_menu_open)
 				menu_tick(scratch);
+
+			/* soft reset (menu "Reset Game" or the Select+Start+L+R hotkey): restart
+			 * the current game. The ROM + BIOS are still resident, so reset_gba() alone
+			 * re-inits the core from the cart entry; it flushes the dynarec, so we must
+			 * NOT resume execute_arm in place - request a clean CPU-thread restart, which
+			 * the next run_one_frame triggers (same mechanism as the intro->game reset). */
+			if (s_reset_req) {
+				extern void reset_gba(void);
+				s_reset_req = 0;
+				s_menu_open = 0;
+				ayaneo_menu_audio_silence();	/* drop the stale ring so it does not loop */
+				reset_gba();
+				s_cpu_restart_req = 1;
+			}
 
 			/* in-game menu "Close": save the current game (state + battery sav) and
 			 * go back to the SNES ROM selector with a reverse punch-hole transition.
