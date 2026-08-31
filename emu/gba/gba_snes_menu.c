@@ -117,13 +117,24 @@ volatile unsigned int g_dbg_fps;           /* measured loop rate */
 volatile unsigned int g_dbg_present_cnt;   /* frames actually presented (re-latched) */
 volatile unsigned int g_dbg_skip_cnt;      /* frames the static gate skipped */
 volatile int          g_dbg_focus;         /* current focused game index */
-volatile int          g_dbg_last_static;   /* 1 if the last frame was gate-skipped */
 
 /* Debug input injection (fastboot `oem key:<name>`): drive the live menu over USB.
  * One button at a time, held a few frames so the menu edge-detects a clean press.
  * 0..9 = L R U D A B Select Start LB RB; -1 = none. */
 volatile int          g_inject_btn = -1;
 volatile int          g_inject_frames = 0;
+
+/* Motion capture (fastboot `oem capmotion`): snapshot N consecutive presented
+ * frames into a DRAM ring during an injected scroll, so the host can assemble the
+ * actual MOVEMENT (a single settled screenshot cannot show motion flicker). Ring
+ * lives at the fastboot download scratch [0x4E000000,0x50000000) = 32MB, free while
+ * the menu runs (no download in flight); 6 * 4.9MB = 29.5MB fits below the menu
+ * caches at 0x50000000. */
+#define GBA_CAP_PA   0x4E000000u
+#define GBA_CAP_MAX  6
+volatile int          g_cap_want;      /* frames still to grab (set by oem capmotion) */
+volatile int          g_cap_have;      /* frames grabbed so far */
+volatile unsigned int g_cap_pitch, g_cap_w, g_cap_h;   /* geometry of the grabbed frames */
 
 /* FNV-1a over an 8x8 grid of the freshly rendered back buffer. Any real UI change
  * (cursor, text, a sliding card) touches many grid cells, so an equal checksum two
@@ -192,11 +203,11 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
 	if (!s_av_kind) return;
 	if ((int)(gpt4_get_current_tick() - s_av_until) >= 0) { s_av_kind = 0; return; }
 	bx = (W - bw) / 2; by = H - 150;
-	ayaneo_fill(fb, pitch, bx - 8, by - 30, bw + 16, bh + 40, 0xE0101018u);  /* panel */
-	ayaneo_text(fb, pitch, bx, by - 26, 2, 0xFFFFFFFFu, s_av_kind == 2 ? "BRIGHTNESS" : "VOLUME");
+	/* brightness = amber bar, volume = blue bar (so the two read apart without text) */
+	ayaneo_fill(fb, pitch, bx - 8, by - 8, bw + 16, bh + 16, 0xE0101018u);   /* panel */
 	ayaneo_fill(fb, pitch, bx, by, bw, bh, 0xFF303848u);                     /* track */
 	fillw = bw * s_av_pct / 100; if (fillw < 0) fillw = 0; if (fillw > bw) fillw = bw;
-	ayaneo_fill(fb, pitch, bx, by, fillw, bh, 0xFF50A0F0u);                  /* fill */
+	ayaneo_fill(fb, pitch, bx, by, fillw, bh, s_av_kind == 2 ? 0xFFF0A050u : 0xFF50A0F0u);
 }
 
 /* ---- boot_b SNES pack (SNSZ) location in the GBA-SD flow ----
@@ -590,13 +601,27 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			unsigned int sum = frame_cksum(fb, pitch, W, H);
 			if (have_last && sum == last_sum) {
 				ayaneo_wait_frame_done();        /* static: no re-latch, no band */
-				g_dbg_skip_cnt++; g_dbg_last_static = 1;
+				g_dbg_skip_cnt++;
 			} else {
 				ayaneo_canvas_present();         /* changed: known-good blocking present */
 				last_sum = sum;
 				have_last = 1;
-				g_dbg_present_cnt++; g_dbg_last_static = 0;
+				g_dbg_present_cnt++;
 			}
+		}
+		/* Motion capture: copy the frame just shown into the ring (one per loop =
+		 * one per vsync), so a burst spans real movement. ~5MB memcpy briefly dips
+		 * fps during the grab - a diagnostic, not the steady path. */
+		if (g_cap_want > 0) {
+			int idx = GBA_CAP_MAX - g_cap_want;
+			if (idx >= 0 && idx < GBA_CAP_MAX) {
+				unsigned long bytes = (unsigned long)pitch * H * 4u;
+				memcpy((void *)(uintptr_t)(GBA_CAP_PA + (unsigned long)idx * bytes),
+				       fb, bytes);
+				g_cap_pitch = pitch; g_cap_w = W; g_cap_h = H;
+				g_cap_have = idx + 1;
+			}
+			g_cap_want--;
 		}
 		mtk_wdt_restart();
 		{

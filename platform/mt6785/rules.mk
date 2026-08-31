@@ -380,9 +380,11 @@ $(BUILDDIR)/emu/gba/menu/snes_render.o: CFLAGS += $(GBA_MENU_FP)
 $(BUILDDIR)/emu/gba/menu/snes_audio.o:  CFLAGS += $(GBA_MENU_FP) -Os
 $(BUILDDIR)/emu/gba/menu/snes_scene.o:  CFLAGS += $(GBA_MENU_FP) -Os
 $(BUILDDIR)/emu/gba/menu/snes_menu.o:   CFLAGS += $(GBA_MENU_FP) -Os
-# menu orchestration + the fastboot debug harness: not perf-critical, -Os to fit lk_a.
+# menu orchestration + the fastboot debug harness: not perf-critical, -Os to fit lk_a
+# (the gpSP emulation core is a separate archive; gba_driver is just I/O + save/load).
 $(BUILDDIR)/emu/gba/gba_snes_menu.o:    CFLAGS += -Os
 $(BUILDDIR)/emu/gba/menu_fastboot.o:    CFLAGS += -Os
+$(BUILDDIR)/emu/gba/gba_driver.o:       CFLAGS += -Os
 $(BUILDDIR)/emu/gba/menu/snes_pack.o:   CFLAGS += -Os
 $(BUILDDIR)/emu/gba/gba_snes_menu.o:    CFLAGS += $(GBA_MENU_FP) -Os
 # reclaim the last few KB of the 2MB lk_a budget from the (correctness-safe) SD

@@ -37,8 +37,12 @@ extern void thread_sleep(unsigned ms);
 extern const unsigned int *ayaneo_canvas_front(unsigned int *pitch, unsigned int *W, unsigned int *H);
 extern volatile unsigned int g_dbg_render_us, g_dbg_peak_us, g_dbg_fps;
 extern volatile unsigned int g_dbg_present_cnt, g_dbg_skip_cnt;
-extern volatile int g_dbg_focus, g_dbg_last_static;
+extern volatile int g_dbg_focus;
 extern volatile int g_inject_btn, g_inject_frames;
+extern volatile int g_cap_want, g_cap_have;
+extern volatile unsigned int g_cap_pitch, g_cap_w, g_cap_h;
+#define GBA_CAP_PA  0x4E000000u
+#define GBA_CAP_MAX 6
 
 static char lbuf[96];
 
@@ -54,14 +58,10 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
 	unsigned pc = g_dbg_present_cnt, sk = g_dbg_skip_cnt;
 	(void)arg; (void)data; (void)sz;
-	snprintf(lbuf, sizeof lbuf, "diag: render=%uus peak=%uus fps=%u focus=%d last=%s",
-		 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps, g_dbg_focus,
-		 g_dbg_last_static ? "static" : "changed");
+	snprintf(lbuf, sizeof lbuf, "render=%u peak=%u fps=%u focus=%d pres=%u skip=%u",
+		 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps, g_dbg_focus, pc, sk);
 	fastboot_info(lbuf);
-	snprintf(lbuf, sizeof lbuf, "diag: present=%u skip=%u skip%%=%u",
-		 pc, sk, (pc + sk) ? (sk * 100u / (pc + sk)) : 0u);
-	fastboot_info(lbuf);
-	fastboot_okay("diag done");
+	fastboot_okay("");
 }
 
 static int keycode(const char *s)
@@ -79,35 +79,29 @@ static void cmd_key(const char *arg, void *data, unsigned sz)
 {
 	int k = keycode(arg), w = 0;
 	(void)data; (void)sz;
-	if (k < 0) { fastboot_fail("key: use one of L R U D A B S T [ ]"); return; }
+	if (k < 0) { fastboot_fail("use L R U D A B S T [ ]"); return; }
 	g_inject_btn = k;
 	g_inject_frames = 3;                       /* held ~3 frames = a clean press edge */
 	while (g_inject_frames > 0 && w < 400) { thread_sleep(2); w++; }  /* wait consumed */
 	thread_sleep(220);                         /* let the nav animation settle */
-	snprintf(lbuf, sizeof lbuf, "key: code=%d focus=%d render=%uus peak=%uus",
-		 k, g_dbg_focus, g_dbg_render_us, g_dbg_peak_us);
+	snprintf(lbuf, sizeof lbuf, "focus=%d peak=%u", g_dbg_focus, g_dbg_peak_us);
 	fastboot_info(lbuf);
-	fastboot_okay("key done");
+	fastboot_okay("");
 }
 
 /* Downscaled RGB565 hex screenshot over bounded INFO lines (13 px = 52 hex + a 4
  * char row tag <= 63 bytes, safely under MAX_RSP_SIZE). Wide rows continue on
  * "<row>+" lines. Reconstruct with tools/ayaneo/gba/fastboot_menu_shot.py. */
-static void cmd_shot(const char *arg, void *data, unsigned sz)
+/* Dump one downscaled RGB565 hex frame from `base` (front buffer or a capture-ring
+ * slot). 13 px per <=64-byte INFO line; wide rows continue on "<row>+" lines. */
+static void dump_frame_hex(const unsigned int *base, unsigned int pitch,
+			   unsigned int W, unsigned int H, int step)
 {
 	static const char *hx = "0123456789abcdef";
-	const unsigned int *fb;
-	unsigned int pitch, W, H, x, y;
-	int step = (int)parse_u(arg);
-	(void)data; (void)sz;
-
+	unsigned int x, y;
 	if (step <= 0) step = 16;
-	fb = ayaneo_canvas_front(&pitch, &W, &H);
-	snprintf(lbuf, sizeof lbuf, "shot: %ux%u step=%d rgb565", W, H, step);
-	fastboot_info(lbuf);
-
 	for (y = 0; y < H; y += (unsigned)step) {
-		const unsigned int *row = fb + (unsigned long)y * pitch;
+		const unsigned int *row = base + (unsigned long)y * pitch;
 		char *o = lbuf;
 		int col = 0, k;
 		k = snprintf(lbuf, sizeof lbuf, "%03u:", y / (unsigned)step);
@@ -128,12 +122,42 @@ static void cmd_shot(const char *arg, void *data, unsigned sz)
 		*o = 0;
 		fastboot_info(lbuf);
 	}
-	fastboot_okay("shot done");
+}
+
+/* Capture GBA_CAP_MAX consecutive presented frames while a scroll is injected, so
+ * the host can assemble the actual carousel MOTION (a settled screenshot can't).
+ * `oem capmotion:s` captures static (no scroll) to inspect steady frame-to-frame. */
+static void cmd_capmotion(const char *arg, void *data, unsigned sz)
+{
+	int w = 0, statc;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	statc = (*arg == 's' || *arg == 'S');
+	g_cap_have = 0;
+	g_cap_want = GBA_CAP_MAX;
+	if (!statc) { g_inject_btn = 1; g_inject_frames = GBA_CAP_MAX + 3; }  /* R = scroll */
+	while (g_cap_want > 0 && w < 600) { thread_sleep(5); w++; }
+	snprintf(lbuf, sizeof lbuf, "cap %d %ux%u p%u", g_cap_have, g_cap_w, g_cap_h, g_cap_pitch);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+static void cmd_getframe(const char *arg, void *data, unsigned sz)
+{
+	int i = (int)parse_u(arg);
+	unsigned long bytes;
+	(void)data; (void)sz;
+	if (g_cap_have <= 0 || i < 0 || i >= g_cap_have) { fastboot_fail("bad idx"); return; }
+	bytes = (unsigned long)g_cap_pitch * g_cap_h * 4u;
+	dump_frame_hex((const unsigned int *)(unsigned long)(GBA_CAP_PA + (unsigned long)i * bytes),
+		       g_cap_pitch, g_cap_w, g_cap_h, 20);
+	fastboot_okay("");
 }
 
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem key:", cmd_key, 1, 0);
-	fastboot_register("oem shot", cmd_shot, 1, 0);
+	fastboot_register("oem capmotion", cmd_capmotion, 1, 0);
+	fastboot_register("oem getframe:", cmd_getframe, 1, 0);
 }

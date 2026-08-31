@@ -390,37 +390,6 @@ void fastboot_okay(const char *info)
 	fastboot_ack("OKAY", info);
 }
 
-/* device -> host bulk upload (the `fastboot get_staged` / upload protocol): send
- * "DATA<size>", then the raw bytes in one transfer (the udc chunks internally, as
- * cmd_download's usb_read does for multi-MB). The command handler calls this and
- * then fastboot_okay(). Lets a debug command return megabytes (e.g. a full
- * framebuffer) instead of dribbling it through 64-byte INFO lines. */
-int fastboot_upload(void *buf, unsigned size)
-{
-	char resp[MAX_RSP_SIZE];
-
-	if (fastboot_state != STATE_COMMAND)
-		return -1;
-	snprintf(resp, MAX_RSP_SIZE, "DATA%08x", size);
-	if (usb_write(resp, strlen(resp)) < 0)
-		return -1;
-	/* Send in <=1MB bulk writes: a single multi-MB usb_write does not complete on
-	 * this udc, which left the host waiting ("Failed to read all N bytes"). The
-	 * host reads `size` bytes total across the packets, so one DATA header + chunked
-	 * body is a valid upload. */
-	{
-		unsigned off = 0;
-		while (off < size) {
-			unsigned chunk = size - off;
-			if (chunk > 0x100000u)
-				chunk = 0x100000u;
-			if (usb_write((unsigned char *)buf + off, chunk) < 0)
-				return -1;
-			off += chunk;
-		}
-	}
-	return 0;
-}
 
 static void fastboot_command_loop(void)
 {
