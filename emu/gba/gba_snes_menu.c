@@ -68,6 +68,7 @@ extern int  partition_read(const char *name, unsigned long long off, void *buf, 
 extern void ayaneo_set_cpu_mhz(unsigned int mhz);
 extern unsigned int ayaneo_get_cpu_mhz(void);
 extern void ayaneo_display_prepare(void);
+extern void ayaneo_display_prepare_white(void);   /* whiteout handover (no black flash) */
 extern void ayaneo_gbc_audio_init(void);
 extern int  ayaneo_menu_audio_room(void);
 extern void ayaneo_menu_audio_submit(const short *stereo, unsigned frames);
@@ -258,7 +259,12 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	if (!do_reverse) {
 		unsigned int wp, ww, wh;
 		unsigned int *wfb;
-		ayaneo_display_prepare();    /* re-own the panel after the BIOS-logo intro */
+		/* Whiteout prepare: paints BOTH buffers white, including the one being
+		 * scanned right now, so the BIOS-intro -> menu handover has no black flash
+		 * (plain ayaneo_display_prepare blacks the live buffer = the reported black
+		 * frame). Then present a white back buffer too and hold it through the slow
+		 * pack load; the menu fades in from white = seamless. */
+		ayaneo_display_prepare_white();
 		wfb = ayaneo_canvas_back(&wp, &ww, &wh);
 		ayaneo_fill(wfb, wp, 0, 0, (int)ww, (int)wh, 0xFFFFFFFFu);
 		ayaneo_canvas_present();

@@ -1006,12 +1006,20 @@ extern int ayaneo_wait_frame_done(void);	/* primary_display.c */
 /* Clear both scan-out buffers, disable the boot-menu layer so only our FB_LAYER
  * shows, and bring the backlight up at the persisted level. Idempotent; shared
  * by the emulator display and the offline-charging screen. */
-void ayaneo_display_prepare(void)
+/* Fill both scan-out buffers with 'argb', disable the boot-menu layer so only our
+ * FB_LAYER shows, and bring the backlight up. The fill colour matters for the
+ * handover: in DSI video mode one of these buffers is being scanned RIGHT NOW, so
+ * memset-ing it is visible on the panel immediately. Black gives a black flash
+ * between the BIOS intro and the menu; white gives the intended whiteout the menu
+ * then fades in from (a seamless handover). */
+static void ayaneo_display_prepare_fill(unsigned int argb)
 {
 	disp_input_config din;
+	unsigned int i, n = fb_size / 4;
+	unsigned int *p0 = (unsigned int *)fb_addr;
+	unsigned int *p1 = (unsigned int *)((unsigned char *)fb_addr + fb_size);
 
-	memset(fb_addr, 0, fb_size);
-	memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
+	for (i = 0; i < n; i++) { p0[i] = argb; p1[i] = argb; }
 	arch_clean_cache_range((unsigned int)fb_addr, fb_size);
 	arch_clean_cache_range((unsigned int)fb_addr + fb_size, fb_size);
 	memset(&din, 0, sizeof(din));
@@ -1020,6 +1028,19 @@ void ayaneo_display_prepare(void)
 	primary_display_config_input(&din);
 	mt65xx_backlight_on();
 	ayaneo_apply_persisted_brightness();
+}
+
+/* Idempotent; shared by the emulator display and the offline-charging screen. */
+void ayaneo_display_prepare(void)
+{
+	ayaneo_display_prepare_fill(0x00000000u);
+}
+
+/* Whiteout variant for the BIOS-intro -> menu handover: paints the live buffer
+ * white (not black) so there is no black flash before the menu fades in. */
+void ayaneo_display_prepare_white(void)
+{
+	ayaneo_display_prepare_fill(0xFFFFFFFFu);
 }
 
 void ayaneo_gbc_show_frame(const unsigned short *pix)
