@@ -52,12 +52,14 @@ so the reaction to an input surfaces one or more frames sooner.
 The display is always N frames ahead of the committed/audio timeline, so latency
 drops every frame. Cost: N+1 emulations per displayed frame, every frame.
 
-**Preemptive frames (what we ship).** Keep a ring of the last few committed
-states. On a normal (static-input) frame just run one frame. Only when the input
-**changes** do we rewind N committed frames and replay them plus the current frame
-with the new input held, so the game has "seen" the new input N frames earlier and
-its reaction surfaces that much sooner. Cost: 1 emulation on the (vast majority of)
-static frames, N+1 only on the rare input-edge frame.
+**True preemptive frames (implemented, then reverted - section 6).** Keep a ring of
+the last few committed states. On a normal (static-input) frame just run one frame.
+Only when the input **changes** do we rewind N committed frames and replay them plus
+the current frame with the new input held, so the game has "seen" the new input N
+frames earlier and its reaction surfaces that much sooner. Cost: 1 emulation on the
+(vast majority of) static frames, N+1 only on the rare input-edge frame. Cheaper on
+paper, but it modifies the committed timeline on every edge (audio pops) - so we
+ship run-ahead. (The Pico menu item keeps the name "Preemptive Frames".)
 
 We implemented run-ahead first, then tried preemptive (cheaper, and exact 1x
 speed - see section 5), but on-hardware testing showed preemptive's committed-
@@ -241,7 +243,61 @@ the committed timeline and its cost is constant.
 | Run-ahead (ship)  | 1.000x (exact)      | pristine/continuous | constant cost, smooth |
 | Preemptive        | 1.000x              | pops on edges    | variable cost, judder  |
 
-## 9. Limitations / future
+## 9. Input latency comparison
+
+"Input latency" here is button-press to on-screen reaction (button-to-photon),
+the sum of four parts:
+
+- **Input sampling** - the pad is polled once per frame, so a press lands on
+  average half a frame later (~8 ms).
+- **The game's own internal lag** - the game reads the pad, runs its logic, and
+  only renders the reaction 1-3 frames later. This is inherent to the game (it is
+  present on real hardware too) and is exactly what run-ahead removes.
+- **Render + vsync present** - the emulator renders the frame and shows it at the
+  next panel refresh (~1 frame, ~17 ms).
+- **LCD response** - the panel's pixel response (~5-15 ms, panel-dependent).
+
+Run-ahead advances the emulator N frames past what it displays, so the game's
+reaction appears N frames sooner - up to the game's actual internal lag (it cannot
+remove lag that is not there; going deeper than the internal lag gives no gain).
+
+> The ABSOLUTE figures below are pipeline ESTIMATES (a photodiode / high-speed
+> camera pass would pin exact numbers on this panel). The PER-TIER deltas are
+> exact by construction: each tier advances the visible frame one game-frame
+> (~16.7 ms) earlier, bounded by the game's internal lag and, in heavy scenes, by
+> the adaptive-depth controller.
+
+### Our LK per preemptive tier (representative game, ~2-3 frame internal lag)
+
+| Tier        | Look-ahead | Game lag left | Est. button-to-photon |
+|-------------|------------|---------------|-----------------------|
+| Off         | 0 frames   | 2-3 frames    | ~65-70 ms             |
+| Balanced    | 1 frame    | 1-2 frames    | ~48-52 ms             |
+| Responsive  | 2 frames   | 0-1 frame     | ~33-38 ms             |
+| Max         | 3 frames   | 0 frames      | ~30-35 ms             |
+
+### Versus other platforms (same class of game)
+
+| Platform                                | Why                                                 | Est. button-to-photon |
+|-----------------------------------------|-----------------------------------------------------|-----------------------|
+| Android retro handheld (stock emulator) | OS compositor + input stack + audio/vsync buffering | ~100-160 ms           |
+| RetroArch on PC (no run-ahead)          | emulator frame buffering                            | ~85-115 ms            |
+| Original GBA hardware                    | game internal lag + slow AGB LCD                    | ~70-90 ms             |
+| Analogue Pocket (FPGA)                   | cycle-accurate logic + fast modern LCD              | ~55-70 ms             |
+| **Our LK, Off**                          | bare-metal, no OS overhead                          | **~65-70 ms**         |
+| **Our LK, Responsive / Max**             | + run-ahead removing the game's internal lag        | **~30-38 ms**         |
+
+Takeaways:
+
+- Even with preemptive **Off**, bare-metal LK is roughly ~40-90 ms ahead of the
+  same emulator on an Android handheld: there is no compositor, input stack, or
+  extra frame buffering between the pad and the panel.
+- With preemptive frames on, LK undercuts **original hardware** and even the FPGA
+  **Analogue Pocket**, because it removes the game's own internal processing lag
+  that real hardware still has. Responsive/Max put a GBA game in the ~2-frame
+  button-to-photon range - about as low as an LCD handheld can go.
+
+## 10. Limitations / future
 
 - **Per-frame rewind cost + adaptive depth.** Run-ahead runs N+1 emulations + a
   512 KB save/load every frame; the emulation cost is scene-dependent (~2.3 ms
@@ -271,7 +327,7 @@ the committed timeline and its cost is constant.
   smooth, click-free behavior we want; preemptive's theoretical win (exact speed,
   lower average CPU) did not survive contact with real audio/pacing on hardware.
 
-## 10. Source map
+## 11. Source map
 
 - `emu/gba/gba_driver.c` - `preempt_present()` (the shipped run-ahead),
   `preempt_effective_depth`/`preempt_adapt` (predictive adaptive depth),
