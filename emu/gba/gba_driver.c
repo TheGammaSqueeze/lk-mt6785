@@ -916,14 +916,19 @@ static int ocv_pct(int mv)
 }
 
 #define BAT_CHARGE_OFFSET_MV	80
+/* Number of BATADC samples averaged. Each get_bat_sense_volt is one blocking pwrap
+ * auxadc read (~1-2 ms). Kept small (4 ~= 5-8 ms) so that on the audio-mastered game
+ * loop the whole read fits comfortably inside the AFE ring buffer (~341 ms) and is
+ * absorbed with no audible artifact - so battery_read needs NO audio pause. */
+#define BATTERY_SAMPLES		4
 static int battery_read(int *charging)
 {
 	int chr = upmu_is_chr_det();
 	long sum = 0;
 	int i, vmv;
-	for (i = 0; i < 16; i++)
+	for (i = 0; i < BATTERY_SAMPLES; i++)
 		sum += get_bat_sense_volt(1);
-	vmv = (int)(sum / 16);
+	vmv = (int)(sum / BATTERY_SAMPLES);
 	if (chr)
 		vmv -= BAT_CHARGE_OFFSET_MV;
 	if (charging)
@@ -967,28 +972,26 @@ static void poll_led(void)
 	set_charge_led(chr, 50);
 }
 
-/* Refresh s_batt_pct (shown in the Pico menu) at most once per interval_ms.
- * battery_read() averages 16 BATADC samples and each sample is a blocking pwrap spin,
- * so it must NOT run every frame on the audio-mastered game loop (that stall starves
- * the AFE ring and loops the last samples - the same reason the near-full LED cue was
- * dropped above). The Pico menu refreshes it every couple of seconds while OPEN (the
- * player is looking at it); during gameplay it refreshes at most once a minute in the
- * background, with the audio ring silenced across that one read so the stall cannot
- * loop. One shared timestamp, so "time since last read" is honoured regardless of which
- * path triggered it. */
-static void battery_poll(unsigned interval_ms, int silence)
+/* Refresh s_batt_pct (shown in the Pico menu) at most once every interval_frames calls.
+ * The read is a short BATADC average (BATTERY_SAMPLES) with NO audio pause: at ~5-8 ms it
+ * fits inside the AFE ring buffer, so the loop just refills a touch late and the DMA plays
+ * through - no cutout, no loop. It is still kept RARE because it does briefly stall this
+ * single audio-mastered core: the Pico menu refreshes it at most once a minute while OPEN,
+ * and gameplay only once every ten minutes in the background. Counted in frames, not the
+ * 13 MHz tick, because that tick wraps every ~5.5 minutes (2^32 / 13e6) and cannot measure
+ * a ten-minute interval. The shared counter resets on any read. */
+#define BATTERY_MENU_FRAMES	3600u	/* ~1 min at 60 fps: refresh while the menu is open */
+#define BATTERY_GAMEPLAY_FRAMES	36000u	/* ~10 min at 60 fps: rare background refresh in play */
+static void battery_poll(unsigned interval_frames)
 {
-	static unsigned last_tick;
+	static unsigned since;
 	static int primed;
-	unsigned now = gpt4_get_current_tick();
 	int chr;
-	if (primed && (now - last_tick) < interval_ms * 13000u)	/* 13 MHz tick */
+	if (primed && since++ < interval_frames)
 		return;
 	primed = 1;
-	last_tick = now;
-	if (silence) ayaneo_gbc_audio_pause(1);
-	s_batt_pct = battery_read(&chr);
-	if (silence) ayaneo_gbc_audio_pause(0);
+	since = 0;
+	s_batt_pct = battery_read(&chr);	/* no audio pause: short read, absorbed by the ring */
 }
 
 /* Manual CPU-clock OPPs, selectable in the CPU Clock menu all the way up to 2 GHz.
@@ -1217,14 +1220,14 @@ static void menu_toggle(void)
 	s_menu_open = !s_menu_open;
 	s_menu_status[0] = 0;
 	if (s_menu_open)
-		battery_poll(2000, 0);	/* refresh the shown % on open (throttled, no stall) */
+		battery_poll(BATTERY_MENU_FRAMES);	/* refresh the shown % on open (<= once/min) */
 	menu_keys();		/* drop the AYA edge */
 }
 
 static void menu_tick(unsigned char *state)
 {
 	unsigned k = menu_keys();
-	battery_poll(2000, 0);	/* menu is open: keep the shown % live (throttled ~2 s) */
+	battery_poll(BATTERY_MENU_FRAMES);	/* menu open: refresh the shown % at most once/min */
 	if (k & MK_UP)    { s_menu_sel = (s_menu_sel + MI_COUNT - 1) % MI_COUNT; s_menu_status[0] = 0; }
 	if (k & MK_DOWN)  { s_menu_sel = (s_menu_sel + 1) % MI_COUNT; s_menu_status[0] = 0; }
 	if (k & MK_LEFT)  { if (menu_change(s_menu_sel, -1, 0, state, s_menu_status)) s_menu_open = 0; }
@@ -1768,12 +1771,8 @@ static int emu_thread(void *arg)
 			}
 			poll_led();
 			check_power(scratch);
-			/* NO battery read during gameplay: battery_read is 16 blocking BATADC
-			 * samples, and on this single audio-mastered core any such stall (even
-			 * silenced) leaves a ~1-frame audio gap - audible once a minute, worse with
-			 * Preemptive Frames on where the budget is tighter. The percentage is only
-			 * shown in the Pico menu, which refreshes it on open and every ~2 s while
-			 * open, so gameplay never needs it. "At most once a minute" here means zero. */
+			if (!s_menu_open)
+				battery_poll(BATTERY_GAMEPLAY_FRAMES);	/* ~once/10 min, no pause */
 			frame++;
 
 			if (aya_edge())
