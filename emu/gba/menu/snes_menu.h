@@ -230,6 +230,9 @@ void snes_menu_apply_options(snes_menu *m);
  * 0 to keep the per-pixel gather. */
 void snes_menu_set_wp43(snes_menu *m, uint32_t *buf);
 void snes_menu_prewarm(snes_menu *m);
+/* Pre-render all per-ROM card tiles into the cache (after the aspect is set) so a
+ * box-art scroll stays a cache-hit 60fps. No-op without box art. */
+void snes_menu_prewarm_cards(snes_menu *m);
 /* Provide the resume-panel overlay cache (fb-size: pitch*H u32), or 0 to disable. */
 void snes_menu_set_rcache(snes_menu *m, uint32_t *buf);
 

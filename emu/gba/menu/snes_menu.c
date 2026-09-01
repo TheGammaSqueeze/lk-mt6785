@@ -998,6 +998,23 @@ void snes_menu_set_ctile(snes_menu *m, uint32_t *buf, int *gi, int cap)
 	if (gi) for (k = 0; k < cap; k++) gi[k] = -1;
 }
 
+/* Pre-render every game's card tile (and the focused tile) into the cache so a
+ * scroll with per-ROM box art is all cache hits. Without this, a card scrolling
+ * into view is a cold miss -> render_card_tile does a full box-art blit mid-frame
+ * and drops it (measured ~27 ms vs the 16.7 ms budget). No-op without box art (all
+ * cards share one placeholder tile). Call after the aspect is set. Bounded by the
+ * cache capacity, so it helps up to ctile_cap games. */
+void snes_menu_prewarm_cards(snes_menu *m)
+{
+	int i, lim;
+	if (!m || !m->gba_boxart || !m->ctile || m->ctile_cap <= 0)
+		return;
+	lim = (m->ngames < m->ctile_cap) ? m->ngames : m->ctile_cap;
+	for (i = 0; i < lim; i++)
+		(void)ctile_get(m, i);
+	(void)fct_get(m, m->focus);
+}
+
 void snes_menu_set_gba_roster(snes_menu *m, const char *const *names, int n,
 			      const snes_img_entry *cart)
 {

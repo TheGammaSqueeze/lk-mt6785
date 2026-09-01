@@ -492,6 +492,10 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * first on-screen scroll is a pure memcpy and never a dropped frame. Without this
 	 * the lazy build lands on the first movement as a ~24ms hitch (one-frame flicker). */
 	snes_menu_prewarm(&s_menu);
+	/* Also pre-render the per-ROM card tiles so a box-art scroll is all cache hits
+	 * (a cold miss mid-scroll renders a full card + box-art blit and drops the
+	 * frame). No-op without box art. */
+	snes_menu_prewarm_cards(&s_menu);
 
 	/* Reverse punch-hole (returning from a closed game): render one menu frame as the
 	 * reveal, then shrink the frozen last game frame into a hole so the menu appears
