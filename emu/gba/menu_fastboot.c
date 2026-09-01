@@ -52,11 +52,11 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		extern volatile unsigned int g_dbg_asub_done, g_dbg_asub_frames;
 		extern volatile int g_dbg_eff_pf;
 		extern unsigned int ayaneo_get_cpu_mhz(void);
-		extern volatile unsigned int g_dbg_blit_us;
+		extern volatile unsigned int g_dbg_blit_us, g_dbg_boot_mhz;
 		snprintf(lbuf, sizeof lbuf,
-			 "hz1000=%u em=%u blit=%u epf=%d mhz=%u afr=%u",
-			 g_dbg_hz1000, g_dbg_emu_us, g_dbg_blit_us,
-			 g_dbg_eff_pf, ayaneo_get_cpu_mhz(), g_dbg_asub_frames);
+			 "hz1000=%u em=%u epf=%d mhz=%u boot=%u afr=%u",
+			 g_dbg_hz1000, g_dbg_emu_us,
+			 g_dbg_eff_pf, ayaneo_get_cpu_mhz(), g_dbg_boot_mhz, g_dbg_asub_frames);
 	}
 	fastboot_info(lbuf);
 	fastboot_okay("");
@@ -104,9 +104,32 @@ static void cmd_preempt(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem selftest - run the run-ahead determinism self-test (device-blind validation
+ * of the rewind path) once at a frame boundary + report PASS/FAIL and the two
+ * compared state hashes. Runs a game first (oem nav:! or the menu) so the emu loop
+ * is live; the test is a no-op unless the loop is running. */
+static void cmd_selftest(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_selftest_req, g_dbg_selftest_pass;
+	extern volatile unsigned int g_dbg_selftest_rref, g_dbg_selftest_rtest;
+	int i;
+	(void)arg; (void)data; (void)sz;
+	g_dbg_selftest_pass = -1;
+	g_dbg_selftest_req = 1;
+	for (i = 0; i < 40 && g_dbg_selftest_pass < 0; i++)	/* up to ~2s for the loop to run it */
+		thread_sleep(50);
+	snprintf(lbuf, sizeof lbuf, "selftest=%s rref=%08x rtest=%08x",
+		 g_dbg_selftest_pass < 0 ? "TIMEOUT" :
+		 (g_dbg_selftest_pass ? "PASS" : "FAIL"),
+		 g_dbg_selftest_rref, g_dbg_selftest_rtest);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
 	fastboot_register("oem preempt:", cmd_preempt, 1, 0);
+	fastboot_register("oem selftest", cmd_selftest, 1, 0);
 }

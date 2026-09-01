@@ -264,10 +264,16 @@ static volatile int s_sel_modifier;
 #define RB_Y	0x2000u
 #define RB_FF	0x4000u
 
-/* refresh the button state once per frame (debounced across two reads) */
+/* refresh the button state once per frame (debounced across GAMEPLAY_DEBOUNCE reads).
+ * A bit is accepted only after it read pressed on that many CONSECUTIVE frames, which
+ * rejects contact bounce and multi-frame line glitches (release is immediate). 3
+ * frames rejects both single- AND two-frame glitches (the phantom-input class seen in
+ * real gameplay) at the cost of ~1 extra frame (~17 ms) of press latency vs a 2-frame
+ * filter - a deliberate trade toward input reliability during play. */
+#define GAMEPLAY_DEBOUNCE 3
 static void update_buttons(void)
 {
-	static unsigned prev_raw;
+	static unsigned hist[GAMEPLAY_DEBOUNCE - 1];	/* the last N-1 raw reads */
 	unsigned raw = 0, deb, m, i;
 	int af;
 
@@ -278,11 +284,12 @@ static void update_buttons(void)
 	if (PRESSED(GPIO_Y))  raw |= RB_Y;
 	if (PRESSED(GPIO_R2)) raw |= RB_FF;
 
-	/* 2-frame agreement debounce: a bit is accepted when it read pressed on two
-	 * consecutive frames. This rejects single-frame line glitches while keeping the
-	 * lowest press latency (one frame, ~16 ms less than a 3-frame filter). */
-	deb = raw & prev_raw;
-	prev_raw = raw;
+	/* N-frame agreement: accept a bit only when this read AND the previous N-1 reads
+	 * all had it pressed. */
+	deb = raw;
+	for (i = 0; i < GAMEPLAY_DEBOUNCE - 1; i++) deb &= hist[i];
+	for (i = GAMEPLAY_DEBOUNCE - 2; i > 0; i--) hist[i] = hist[i - 1];
+	hist[0] = raw;
 
 	m = deb & 0x3ffu;			/* the 10 GBA buttons */
 
@@ -645,6 +652,14 @@ static int s_pf_cap = 3;				/* closed-loop depth ceiling */
 static unsigned int s_committed_us;			/* committed frame emu us (this frame) */
 static volatile unsigned int g_dbg_preempt_emu_us;	/* ahead+save+load us (excl present) */
 
+/* Run-ahead determinism self-test (device-blind validation for the rewind path).
+ * Set by `oem selftest`; the emu loop runs it once at a frame boundary and reports
+ * the result here. pass = -1 not-run / 0 FAIL / 1 PASS. rref/rtest are the compared
+ * state hashes (must be equal for PASS). See gba_run_ahead_selftest below. */
+volatile int g_dbg_selftest_req;
+volatile int g_dbg_selftest_pass = -1;
+volatile unsigned int g_dbg_selftest_rref, g_dbg_selftest_rtest;
+
 static int preempt_effective_depth(void)
 {
 	int cfg = ayaneo_get_preempt_frames();
@@ -711,6 +726,87 @@ static void preempt_present(void)
 		t3 = gpt4_get_current_tick();
 		g_dbg_preempt_emu_us = ((t1 - t0) + (t3 - t2)) / 13u;	/* excl the present/blit */
 	}
+}
+
+/* FNV-1a 32-bit over a buffer, chainable (seed the running hash in). */
+static unsigned int fnv1a(unsigned int h, const unsigned char *p, unsigned long n)
+{
+	unsigned long i;
+	for (i = 0; i < n; i++) { h ^= p[i]; h *= 16777619u; }
+	return h;
+}
+
+/* Determinism self-test for the run-ahead rewind path (device-blind validation).
+ * Called at a frame boundary (CPU thread parked at vblank) with the machine at a
+ * committed state S0. It compares two one-frame advances FROM S0:
+ *   REF  = a plain normal-resume frame (exactly what Off / no-run-ahead does), and
+ *   TEST = a frame that first does the full run-ahead dance (save S0, run one muted
+ *          look-ahead frame, rewind to S0 with the light flush + sound-ring restore)
+ *          and THEN runs the committed frame, which re-enters via the longjmp
+ *          clean-boundary path - exactly what a run-ahead committed frame does.
+ * If the rewind restores EVERYTHING (savestate + the sound ring the savestate omits)
+ * and the clean-boundary re-entry is truly exact-1x, the two resulting states are
+ * byte-identical and the hashes match (PASS). If any cross-frame state is left on the
+ * discarded trajectory (the class of bug the sound-ring fix closed) or the re-entry
+ * is not a full frame, TEST diverges from REF (FAIL). The whole test runs audio-
+ * MUTED so it does not disturb the live audio stream; it costs ~3 emulated frames
+ * (~50 ms) of muted output, then the game continues one frame past S0 (a valid
+ * advance). Zero cost when not requested. */
+static void gba_run_ahead_selftest(void)
+{
+	extern int g_gba_load_light;
+	extern void gba_sound_ring_save(void *dst);
+	extern void gba_sound_ring_load(const void *src);
+	static unsigned char s0_state[512 * 1024] __attribute__((aligned(8)));
+	static unsigned char s0_snd[128 * 1024] __attribute__((aligned(8)));
+	static unsigned char tmp_state[512 * 1024] __attribute__((aligned(8)));
+	static unsigned char tmp_snd[128 * 1024] __attribute__((aligned(8)));
+	unsigned int rref, rtest;
+
+	/* snapshot S0 (the committed state we are standing on) */
+	gba_core_state_save(s0_state);
+	gba_sound_ring_save(s0_snd);
+
+	g_gba_audio_suppress = 1;			/* mute the whole probe */
+
+	/* REF: one plain normal-resume frame from S0, hash the resulting state */
+	run_one_frame();
+	gba_core_state_save(tmp_state);
+	gba_sound_ring_save(tmp_snd);
+	rref = fnv1a(2166136261u, tmp_state, sizeof s0_state);
+	rref = fnv1a(rref, tmp_snd, sizeof s0_snd);
+
+	/* rewind to S0 (light flush), re-enter as a full frame on the next resume */
+	g_gba_load_light = 1;
+	gba_core_state_load(s0_state);
+	gba_sound_ring_load(s0_snd);
+	g_gba_load_light = 0;
+	s_cpu_clean_boundary = 1;
+	s_cpu_restart_req = 1;
+
+	/* TEST: the run-ahead dance from S0 (mirror of preempt_present) ... */
+	gba_core_state_save(tmp_state);
+	gba_sound_ring_save(tmp_snd);
+	run_one_frame();				/* one muted look-ahead frame */
+	g_gba_load_light = 1;
+	gba_core_state_load(tmp_state);			/* rewind back to S0 */
+	gba_sound_ring_load(tmp_snd);
+	g_gba_load_light = 0;
+	s_cpu_clean_boundary = 1;
+	s_cpu_restart_req = 1;
+	/* ... then the committed frame (re-enters via the clean-boundary longjmp) */
+	run_one_frame();
+	gba_core_state_save(tmp_state);
+	gba_sound_ring_save(tmp_snd);
+	rtest = fnv1a(2166136261u, tmp_state, sizeof s0_state);
+	rtest = fnv1a(rtest, tmp_snd, sizeof s0_snd);
+
+	g_gba_audio_suppress = 0;
+
+	g_dbg_selftest_rref = rref;
+	g_dbg_selftest_rtest = rtest;
+	g_dbg_selftest_pass = (rref == rtest) ? 1 : 0;
+	/* the game is now one frame past S0 on the TEST trajectory = a valid advance */
 }
 
 /* ===================== GammaOS Pico overlay menu ===================== */
@@ -1536,6 +1632,11 @@ static int emu_thread(void *arg)
 					if (++cnt >= 16) { g_dbg_emu_us = acc / (16u * 13u); acc = 0; cnt = 0; }
 				}
 			}
+			if (g_dbg_selftest_req) {	/* `oem selftest`: validate the rewind path */
+				g_dbg_selftest_req = 0;
+				gba_run_ahead_selftest();
+			}
+
 			if (frame == 0)		/* first frame done => dynarec executed OK */
 				gba_dbg("GBA 7: first frame rendered (dynarec ok)");
 
