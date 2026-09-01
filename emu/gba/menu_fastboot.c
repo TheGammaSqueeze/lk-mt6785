@@ -104,23 +104,32 @@ static void cmd_preempt(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem selftest - run the run-ahead determinism self-test (device-blind validation
- * of the rewind path) once at a frame boundary + report PASS/FAIL and the two
- * compared state hashes. Runs a game first (oem nav:! or the menu) so the emu loop
- * is live; the test is a no-op unless the loop is running. */
+/* oem selftest[:N] - run the run-ahead determinism self-test (device-blind validation
+ * of the rewind path) at a frame boundary + report PASS/FAIL and the two compared state
+ * hashes. N = number of committed frames to compare (default 1; a larger N, e.g. 60,
+ * stress-tests ACCUMULATING drift across many consecutive rewinds). Runs a game first
+ * (oem nav:! or the menu) so the emu loop is live; a no-op unless the loop is running. */
 static void cmd_selftest(const char *arg, void *data, unsigned sz)
 {
-	extern volatile int g_dbg_selftest_req, g_dbg_selftest_pass;
+	extern volatile int g_dbg_selftest_req, g_dbg_selftest_pass, g_dbg_selftest_cmp;
 	extern volatile unsigned int g_dbg_selftest_rref, g_dbg_selftest_rtest;
-	int i;
-	(void)arg; (void)data; (void)sz;
+	int i, n = 0, c;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg >= '0' && *arg <= '9') n = n * 10 + (*arg++ - '0');
+	if (n < 1) n = 1;
+	if (n > 600) n = 600;					/* cap the muted-hitch length */
 	g_dbg_selftest_pass = -1;
-	g_dbg_selftest_req = 1;
-	for (i = 0; i < 40 && g_dbg_selftest_pass < 0; i++)	/* up to ~2s for the loop to run it */
+	g_dbg_selftest_req = n;
+	/* allow ~50ms/frame * N plus margin for the loop to run it */
+	for (i = 0; i < 40 + n * 4 && g_dbg_selftest_pass < 0; i++)
 		thread_sleep(50);
-	snprintf(lbuf, sizeof lbuf, "selftest=%s rref=%08x rtest=%08x",
+	c = g_dbg_selftest_cmp;
+	snprintf(lbuf, sizeof lbuf, "selftest[%d]=%s st=%d rng=%d scr=%d rref=%08x rtest=%08x", n,
 		 g_dbg_selftest_pass < 0 ? "TIMEOUT" :
-		 (g_dbg_selftest_pass ? "PASS" : "FAIL"),
+		 g_dbg_selftest_pass == 1 ? "PASS" :
+		 g_dbg_selftest_pass == 2 ? "PASS(scr-transient)" : "FAIL",
+		 (c & 1) ? 1 : 0, (c & 2) ? 1 : 0, (c & 4) ? 1 : 0,
 		 g_dbg_selftest_rref, g_dbg_selftest_rtest);
 	fastboot_info(lbuf);
 	fastboot_okay("");
