@@ -1133,14 +1133,16 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 			 * loop sits essentially still (the base already matches the true rate),
 			 * so this only mops up the tiny AFE-crystal-vs-panel drift; the
 			 * steady-state dither is far below audible = constant rate, no wow. */
-			/* ~0.67% ceiling. Run-ahead ("Preemptive Frames") advances the
-			 * committed timeline 280896+960 = ~0.34% fast per frame (the dynarec
-			 * re-entry priming stub), and panel-vs-GBA + boot-measure error add up
-			 * to ~0.13% more. A 0.25% ceiling SATURATED on that = the emergency
-			 * sample-repeat snap fired = audible periodic popping with run-ahead on.
-			 * Widen so the trim fully absorbs it (audio + video both ~0.34% fast, in
-			 * sync, inaudible pitch); the trim still settles at the real error. */
-			int lim = s_ga_inc_base / 150;                 /* ~0.67% ceiling */
+			/* Trim ceiling. Default (run-ahead Off): ~0.25% - the base already
+			 * matches the true rate, so this only mops up tiny AFE-crystal-vs-panel
+			 * drift. With run-ahead ON the committed timeline advances 280896+960 =
+			 * ~0.34% fast/frame (the dynarec re-entry priming stub) + ~0.13% panel/
+			 * boot error, which SATURATES a 0.25% ceiling = the emergency sample-
+			 * repeat snap fires = audible periodic popping. So widen to ~0.67% ONLY
+			 * when run-ahead is active, letting the trim fully absorb the drift
+			 * (audio + video both ~0.34% fast, in sync, inaudible pitch); the tight
+			 * default is unchanged for normal play. */
+			int lim = s_ga_inc_base / (s_preempt_frames > 0 ? 150 : 400);
 			if (lead > tgt + db) { if (s_ga_inc > s_ga_inc_base - lim) s_ga_inc -= 8; }
 			else if (lead < tgt - db) { if (s_ga_inc < s_ga_inc_base + lim) s_ga_inc += 8; }
 		}
