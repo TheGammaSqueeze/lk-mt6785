@@ -122,6 +122,20 @@ else
   echo "  FAIL boxart .ART decode test" >&2; fail=1
 fi
 
+# per-ROM boxart render: with GBA_BOXART mock tiles each card gets a distinct image,
+# so the focused card must change when focus moves (per-gi tile/fct) and differ from
+# the shared-placeholder render. Proves the per-gi render + caches without the device.
+if GBA_ROSTER=6 GBA_BOXART=1 "$HR" "$PACK" /tmp/gbamenu_bx0.ppm 60 "" >/dev/null 2>&1 \
+   && GBA_ROSTER=6 GBA_BOXART=1 "$HR" "$PACK" /tmp/gbamenu_bx1.ppm 60 "R" >/dev/null 2>&1 \
+   && GBA_ROSTER=6 "$HR" "$PACK" /tmp/gbamenu_nb.ppm 60 "" >/dev/null 2>&1 \
+   && blank_check /tmp/gbamenu_bx0.ppm \
+   && ! cmp -s /tmp/gbamenu_bx0.ppm /tmp/gbamenu_bx1.ppm \
+   && ! cmp -s /tmp/gbamenu_bx0.ppm /tmp/gbamenu_nb.ppm; then
+  echo "  OK   per-ROM boxart render (per-gi tile differs on focus + vs placeholder)"
+else
+  echo "  FAIL per-ROM boxart render" >&2; fail=1
+fi
+
 # punch-hole launch transition: the compositor (gba_punch_composite) runs only on
 # device, so host-test its geometry (game inside the growing circle, black letterbox,
 # menu snapshot outside) via the standalone test.

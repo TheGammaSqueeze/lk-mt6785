@@ -118,6 +118,7 @@ typedef struct {
 	 * live - kills the last per-frame live card render (~2.7ms on the A55). */
 	uint32_t *fct;
 	int fct_ready, fct_aspect, no_cursor;
+	int fct_gi;                   /* game index the focused tile was built for (per-ROM boxart) */
 	/* Card-tile cache (single-buffer 60fps): each game's NORMAL card body (dark frame +
 	 * boxart + player icon + resume dots, dim=1, no cursor) is rendered ONCE into a
 	 * CT_W*CT_H straight-RGBA tile and blitted per frame by draw_carousel instead of ~6
@@ -183,6 +184,13 @@ typedef struct {
 	int gba_mode;                       /* 1 = GBA roster/cart/launch active */
 	const char *const *gba_names;       /* ngames display names (ROM file names) */
 	const snes_img_entry *gba_cart_img; /* cartridge placeholder, drawn as every boxart */
+	/* Optional per-ROM box art (indexed by game index). When set, each card draws
+	 * its own gba_boxart[gi] (a w=0 entry falls back to the placeholder), resolved
+	 * against gba_boxart_pk (the DRAM region the SD .ART tiles were decoded into).
+	 * 0 = no boxart loaded -> every card uses the shared placeholder (and the ctile
+	 * cache keeps its single-shared-tile fast path). */
+	const snes_img_entry *gba_boxart;
+	const snes_pack *gba_boxart_pk;
 	int launch;                         /* focused ROM index to launch, -1 = none */
 	int pstart;                         /* prev-frame Start (edge detect for launch) */
 } snes_menu;
@@ -192,6 +200,10 @@ typedef struct {
  * after snes_menu_init. */
 void snes_menu_set_gba_roster(snes_menu *m, const char *const *names, int n,
 			      const snes_img_entry *cart);
+/* Provide per-ROM box art: img[0..ngames) indexed by game index (a w=0 entry means
+ * "no art, use the placeholder"), resolved against pack pk (the DRAM region the SD
+ * .ART tiles were decoded into). Pass img=0 to revert to the shared placeholder. */
+void snes_menu_set_gba_boxart(snes_menu *m, const snes_img_entry *img, const snes_pack *pk);
 /* If A/Start launched a ROM, returns its index and clears the flag; else -1. */
 int snes_menu_take_launch(snes_menu *m);
 

@@ -112,6 +112,32 @@ int main(int argc, char **argv)
 		}
 		snes_menu_set_gba_roster(&menu, mock, gn, cart);
 		if (!cart) fprintf(stderr, "WARN gba_cart image not in pack\n");
+
+		/* GBA_BOXART: exercise the per-ROM boxart path with mock tiles - a distinct
+		 * solid-colour RGB565 tile per game index, in a private "pack" whose base is
+		 * the tile buffer (snes_img_pixels resolves base + pixels). Proves the per-gi
+		 * render + per-gi ctile/fct caches without the on-device SD loader. */
+		if (getenv("GBA_BOXART")) {
+			enum { BXW = 48, BXH = 64 };
+			static unsigned char bx[128 * BXW * BXH * 3];
+			static snes_img_entry bimg[128];
+			static snes_pack bpk;
+			int gi2, j;
+			bpk.base = bx;
+			for (gi2 = 0; gi2 < gn; gi2++) {
+				unsigned off = (unsigned)gi2 * BXW * BXH * 3u;
+				unsigned short v = (unsigned short)((gi2 * 2113) & 0xFFFF); /* distinct */
+				for (j = 0; j < BXW * BXH; j++) {
+					bx[off + j * 3 + 0] = (unsigned char)(v & 0xFF);
+					bx[off + j * 3 + 1] = (unsigned char)(v >> 8);
+					bx[off + j * 3 + 2] = 0xFF;
+				}
+				bimg[gi2].w = BXW; bimg[gi2].h = BXH;
+				bimg[gi2].flags = SNES_IMG_RGB565; bimg[gi2].pad = 0;
+				bimg[gi2].pixels = off;
+			}
+			snes_menu_set_gba_boxart(&menu, bimg, &bpk);
+		}
 	}
 
 	/* Card-tile cache for the 60fps single-buffer path (disable with SNES_NOCACHE). */

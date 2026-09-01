@@ -814,8 +814,20 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		cx = ((float)sxi - t->vdx) / t->vsx;
 		cy = ((float)syi - t->vdy) / t->vsy;
 	}
-	const snes_img_entry *im = m->gba_mode ? m->gba_cart_img
-				 : ((g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0);
+	/* boxart source + the pack its pixels live in. GBA: per-ROM art when loaded
+	 * (gba_boxart[gi] with w>0, in gba_boxart_pk's DRAM region), else the shared
+	 * placeholder; SNES: the pack thumb. */
+	const snes_pack *impk = m->pk;
+	const snes_img_entry *im;
+	if (m->gba_mode) {
+		im = m->gba_cart_img;
+		if (m->gba_boxart && gi >= 0 && gi < m->ngames && m->gba_boxart[gi].w) {
+			im = &m->gba_boxart[gi];
+			impk = m->gba_boxart_pk ? m->gba_boxart_pk : m->pk;
+		}
+	} else {
+		im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
+	}
 	if (cx < -280 || cx > SNES_VW + 280) return;
 	if (frame) {
 		/* the `card` sprite is the screen BACKGROUND (blue when active, dark when
@@ -840,7 +852,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 			if (sfh < sf) sf = sfh;
 			if (sf > 1.0f) sf = 1.0f;
 			bw = im->w * sf * sc; bh = im->h * sf * sc;
-			snes_blit_tex_tint(t, m->pk, im, cx, cy - m->screen_oy * sc, bw, bh, 1.0f, dim, dim, dim);
+			snes_blit_tex_tint(t, impk, im, cx, cy - m->screen_oy * sc, bw, bh, 1.0f, dim, dim, dim);
 		}
 		/* player-count icon (bottom-right): 1P / 2P-simultaneous / 1P-2P, chosen
 		 * by players+simultaneous (sys_game_card_show.setPlayers). The player_icon
@@ -921,17 +933,21 @@ static void render_card_tile(snes_menu *m, int gi, uint32_t *tile, float blue_a)
 static const uint32_t *fct_get(snes_menu *m, int gi)
 {
 	if (!m->fct) return 0;
-	if (!m->fct_ready || m->fct_aspect != m->aspect) {
+	/* with per-ROM boxart the focused body differs per game, so rebuild when the
+	 * focused index changes; otherwise it is identical for all cards (build once). */
+	if (!m->fct_ready || m->fct_aspect != m->aspect ||
+	    (m->gba_boxart && m->fct_gi != gi)) {
 		render_card_tile(m, gi, m->fct, 1.0f);         /* blue_a=1 -> active body */
 		m->fct_ready = 1;
 		m->fct_aspect = m->aspect;
+		m->fct_gi = gi;
 	}
 	return m->fct;
 }
 
 void snes_menu_set_fct(snes_menu *m, uint32_t *buf)
 {
-	m->fct = buf; m->fct_ready = 0; m->fct_aspect = -1;
+	m->fct = buf; m->fct_ready = 0; m->fct_aspect = -1; m->fct_gi = -1;
 }
 
 /* Fetch game gi's cached tile, rendering+caching on a miss. Direct-mapped by gi so a
@@ -951,7 +967,7 @@ static const uint32_t *ctile_get(snes_menu *m, int gi)
 	 * same tile once per visible card per frame - the direct-mapped cap-1 slot thrashes
 	 * and a scroll-from-rest that brings a fresh index into view spikes the frame. Cache
 	 * ONE shared body tile (slot 0, sentinel key) and return it for every card. */
-	if (m->gba_mode) {
+	if (m->gba_mode && !m->gba_boxart) {
 		if (m->ctile_gi[0] != 0x40000000) {
 			render_card_tile(m, gi, m->ctile, 0.0f);
 			m->ctile_gi[0] = 0x40000000;
@@ -988,6 +1004,17 @@ void snes_menu_set_gba_roster(snes_menu *m, const char *const *names, int n,
 	if (m->focus >= n) m->focus = n > 0 ? n - 1 : 0;
 	/* the card-tile cache keys by game index; a roster change invalidates it */
 	m->ctile_aspect = -1;
+	if (m->ctile_gi) for (i = 0; i < m->ctile_cap; i++) m->ctile_gi[i] = -1;
+}
+
+void snes_menu_set_gba_boxart(snes_menu *m, const snes_img_entry *img, const snes_pack *pk)
+{
+	int i;
+	m->gba_boxart = img;
+	m->gba_boxart_pk = pk;
+	/* per-ROM art makes every card distinct: invalidate the shared/keyed tile caches */
+	m->ctile_aspect = -1;
+	m->fct_ready = 0; m->fct_gi = -1;
 	if (m->ctile_gi) for (i = 0; i < m->ctile_cap; i++) m->ctile_gi[i] = -1;
 }
 
