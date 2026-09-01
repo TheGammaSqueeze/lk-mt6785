@@ -214,10 +214,15 @@ the committed timeline and its cost is constant.
 
 ## 9. Limitations / future
 
-- **Per-frame rewind cost.** Run-ahead runs N+1 emulations + a 512 KB save/load
-  every frame. pf=1/2 fit the budget; pf=3 can exceed it in heavy scenes on this
-  downclocked part. Bumping the CPU clock while a game runs would give pf=3 more
-  headroom (future work).
+- **Per-frame rewind cost + adaptive depth.** Run-ahead runs N+1 emulations + a
+  512 KB save/load every frame; the emulation cost is scene-dependent (~2.3 ms
+  light, ~5 ms heavy). At a fixed depth a heavy scene overruns the ~16.6 ms vsync
+  budget and the loop (which masters audio) drops into slow motion. So the depth
+  is ADAPTIVE: `preempt_effective_depth() = min(configured, 5000/em)`, calibrated
+  on device (pf=2 at em~2.5 ms, pf=1 at em~5 ms). Heavy scenes gracefully fall to
+  a lower depth (or off) and hold 60 fps; the menu setting is effectively a "max
+  desired depth". A CPU-clock bump during gameplay would raise the ceiling so the
+  full depth holds in more scenes (future work).
 - Run-ahead reduces latency every frame (display is always N ahead), which is the
   smooth, click-free behavior we want; preemptive's theoretical win (exact speed,
   lower average CPU) did not survive contact with real audio/pacing on hardware.
