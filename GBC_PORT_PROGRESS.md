@@ -22,18 +22,18 @@ never-brick / boot-to-OS / SELECT-return flow.
 - Phasing: Phase 1 (menu/scan/icons/folders) first, then Phase 2 (core).
 
 ## Phase 1 — menu / SD (no core risk)
-- [ ] sd_fat.h: add console-type enum + `unsigned char type` to gba_rom_entry.
-- [ ] sd_fat.c: scan /roms/gb (.gb), /roms/gbc (.gbc), /roms/gba (.gba); tag type;
+- [x] sd_fat.h: add console-type enum + `unsigned char type` to gba_rom_entry.
+- [x] sd_fat.c: scan /roms/gb (.gb), /roms/gbc (.gbc), /roms/gba (.gba); tag type;
       merge + case-insensitive sort. Generic ends_ext + scan_folder helper.
-- [ ] Folder creation: fat_wr_mkpath /roms/gb, /roms/gbc, /roms/gba after
+- [x] Folder creation: fat_wr_mkpath /roms/gb, /roms/gbc, /roms/gba after
       assets_ok in ayaneo_gba_sd_boot (idempotent).
-- [ ] Icons: rasterize /work/logos to small PNGs (gb, gbc, gba). Add to pack via
+- [x] Icons: rasterize /work/logos to small PNGs (gb, gbc, gba). Add to pack via
       pack_snes.py (new --logo-gb/gbc/gba args -> res_map keys logo_gb/gbc/gba).
-- [ ] Thread per-game console type: gba_rom_entry.type -> gba_snes_menu.c ->
+- [x] Thread per-game console type: gba_rom_entry.type -> gba_snes_menu.c ->
       snes_menu_set_gba_roster -> snes_menu.c draw_card corner badge.
-- [ ] draw_card: blit the console logo bottom-right (mirror the player-count icon
+- [x] draw_card: blit the console logo bottom-right (mirror the player-count icon
       at m->card_pi_wx/wy). Host-validate, build, flash.
-- [ ] Launch: GB/GBC stubbed until Phase 2 (GBA path unchanged).
+- [x] Launch: GB/GBC stubbed (Phase 2) until Phase 2 (GBA path unchanged).
 
 ## Phase 2 — gambatte GB/GBC core as a boot_b blob
 - [ ] Build gambatte (emu/gbc) as a flat blob at a fixed VMA (reuse the gpSP blob
