@@ -685,11 +685,15 @@ static void preempt_present(void)
 	}
 	{
 		extern int g_gba_load_light;
+		extern void gba_sound_ring_save(void *dst);
+		extern void gba_sound_ring_load(const void *src);
 		static unsigned char s_ahead_state[512 * 1024] __attribute__((aligned(8)));
+		static unsigned char s_ahead_snd[128 * 1024] __attribute__((aligned(8)));	/* sound ring */
 		unsigned t0, t1, t2, t3;
 		int i;
 		t0 = gpt4_get_current_tick();
 		gba_core_state_save(s_ahead_state);
+		gba_sound_ring_save(s_ahead_snd);	/* ring contents (not in the savestate) */
 		g_gba_audio_suppress = 1;
 		for (i = 0; i < pf; i++)
 			run_one_frame();		/* look-ahead frames (muted) */
@@ -699,6 +703,7 @@ static void preempt_present(void)
 		t2 = gpt4_get_current_tick();
 		g_gba_load_light = 1;	/* ROM/BIOS caches stay valid across a same-ROM rewind */
 		gba_core_state_load(s_ahead_state);
+		gba_sound_ring_load(s_ahead_snd);	/* restore ring so committed audio is intact */
 		g_gba_load_light = 0;
 		s_cpu_clean_boundary = 1;	/* next committed frame re-enters as a full frame */
 		s_cpu_restart_req = 1;

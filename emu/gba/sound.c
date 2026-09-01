@@ -30,6 +30,24 @@ u32 sound_on;
 static s16 sound_buffer[BUFFER_SIZE];
 static u32 sound_buffer_base;
 
+/* Run-ahead helpers: the savestate captures the ring INDICES but not the ring
+ * CONTENTS (sound_buffer), so the muted look-ahead frames' render_audio draining
+ * (base advance + zeroing) and mixing (+=) would leave the committed audio region
+ * inconsistent after the rewind = distorted/dropped sound. The driver snapshots
+ * and restores the whole ring around the look-ahead so audio is byte-identical to
+ * the committed timeline. */
+unsigned gba_sound_ring_size(void) { return (unsigned)sizeof(sound_buffer); }
+void gba_sound_ring_save(void *dst)
+{
+  const s16 *s = sound_buffer; s16 *d = (s16 *)dst; u32 i;
+  for (i = 0; i < BUFFER_SIZE; i++) d[i] = s[i];
+}
+void gba_sound_ring_load(const void *src)
+{
+  const s16 *s = (const s16 *)src; s16 *d = sound_buffer; u32 i;
+  for (i = 0; i < BUFFER_SIZE; i++) d[i] = s[i];
+}
+
 static u32 sound_last_cpu_ticks;
 static fixed16_16 gbc_sound_tick_step;
 
