@@ -839,7 +839,15 @@ static const char *menu_value(int item, char *buf)
 	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter())); break;
 	case MI_COLORCORRECT: p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
 	case MI_PREEMPT: { int pf = ayaneo_get_preempt_frames();
-		if (pf <= 0) p = mi_puts(p, "Off"); else p = mi_putu(p, (unsigned)pf); break; }
+		/* Dynamic: show the configured max plus the depth the closed loop is
+		 * actually running right now (it backs off to hold 60 fps), so the user
+		 * sees it adapt - e.g. "3 (now 1)". */
+		if (pf <= 0) { p = mi_puts(p, "Off"); }
+		else { p = mi_putu(p, (unsigned)pf);
+		       p = mi_puts(p, " (now ");
+		       p = mi_putu(p, (unsigned)(g_dbg_eff_pf < 0 ? 0 : g_dbg_eff_pf));
+		       p = mi_puts(p, ")"); }
+		break; }
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
 	case MI_SKIPINTRO: p = mi_puts(p, ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
