@@ -541,16 +541,36 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			if (dt < 0.004f) dt = 0.004f; else if (dt > 0.1f) dt = 0.1f;
 		}
 
-		in.left = PRESSED(K_LEFT); in.right = PRESSED(K_RIGHT);
-		in.up = PRESSED(K_UP); in.down = PRESSED(K_DOWN);
-		in.a = PRESSED(K_A); in.b = PRESSED(K_B);
+		/* Maximum debounce for the carousel (same 4-frame agreement as the Pico
+		 * menu): reject contact bounce / line glitches so no stray nav or launch
+		 * fires. Build a raw mask, debounce, then unpack. */
+		{
+			extern unsigned ayaneo_menu_debounce(unsigned raw, unsigned *hist);
+			enum { DL=1, DR=2, DU=4, DD=8, DA=16, DB=32, DST=64, DSE=128, DLB=256, DRB=512 };
+			static unsigned mhist[3];	/* MENU_DEBOUNCE-1 = 3 */
+			unsigned raw = 0, deb;
+			if (PRESSED(K_LEFT))  raw |= DL;
+			if (PRESSED(K_RIGHT)) raw |= DR;
+			if (PRESSED(K_UP))    raw |= DU;
+			if (PRESSED(K_DOWN))  raw |= DD;
+			if (PRESSED(K_A))     raw |= DA;
+			if (PRESSED(K_B))     raw |= DB;
+			if (PRESSED(K_START)) raw |= DST;
+			if (PRESSED(K_SELECT))raw |= DSE;
+			if (PRESSED(K_LB))    raw |= DLB;
+			if (PRESSED(K_RB))    raw |= DRB;
+			deb = ayaneo_menu_debounce(raw, mhist);
+		in.left = !!(deb & DL); in.right = !!(deb & DR);
+		in.up = !!(deb & DU); in.down = !!(deb & DD);
+		in.a = !!(deb & DA); in.b = !!(deb & DB);
+		in.lb = !!(deb & DLB); in.rb = !!(deb & DRB);
 		/* Start+Select held together toggles the perf HUD (below) and is consumed
 		 * so it does not also launch/sort; pressed individually they behave normally.
 		 * Once the combo engages, keep swallowing whichever button lingers until BOTH
 		 * release - otherwise lifting Select while still holding Start would fire a
 		 * launch (the menu edge-detects start with pstart=0 from the consumed frame). */
 		{
-			int cs = PRESSED(K_START), csel = PRESSED(K_SELECT);
+			int cs = !!(deb & DST), csel = !!(deb & DSE);
 			if (cs && csel) {
 				if (!s_hud_combo) { s_show_hud = !s_show_hud; }
 				s_hud_combo = 1;
@@ -562,7 +582,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 				in.start = cs; in.select = csel;
 			}
 		}
-		in.lb = PRESSED(K_LB); in.rb = PRESSED(K_RB);
+		}	/* end debounce block */
 
 		/* entry gate: while a launch button (A / Start) is still held from the close
 		 * or launch, force it off so no launch edge fires; clear once both release. */

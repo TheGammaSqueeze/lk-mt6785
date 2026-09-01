@@ -841,10 +841,27 @@ static void preempt_apply_cpu(int pf)
 }
 
 enum { MK_UP=1, MK_DOWN=2, MK_LEFT=4, MK_RIGHT=8, MK_A=16, MK_B=32, MK_AYA=64 };
+/* Maximum debounce for MENU navigation (Pico menu + SNES carousel): a bit only
+ * counts as pressed after it read pressed on MENU_DEBOUNCE consecutive frames, so
+ * contact bounce and single/multi-frame line glitches can never register a stray
+ * menu press. Release is immediate. Menus are latency-insensitive, so this is
+ * strictly better there; GAMEPLAY keeps its lighter 2-frame filter (update_buttons)
+ * for responsiveness. */
+#define MENU_DEBOUNCE 4
+unsigned ayaneo_menu_debounce(unsigned raw, unsigned *hist)	/* hist: MENU_DEBOUNCE-1 words */
+{
+	unsigned deb = raw;
+	int i;
+	for (i = 0; i < MENU_DEBOUNCE - 1; i++) deb &= hist[i];
+	for (i = MENU_DEBOUNCE - 2; i > 0; i--) hist[i] = hist[i - 1];
+	hist[0] = raw;
+	return deb;
+}
+
 unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 {
-	static unsigned prev;
-	unsigned raw = 0, edge;
+	static unsigned prev, hist[MENU_DEBOUNCE - 1];
+	unsigned raw = 0, deb, edge;
 	if (PRESSED(GPIO_UP))    raw |= MK_UP;
 	if (PRESSED(GPIO_DOWN))  raw |= MK_DOWN;
 	if (PRESSED(GPIO_LEFT))  raw |= MK_LEFT;
@@ -852,8 +869,9 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 	if (PRESSED(GPIO_A))     raw |= MK_A;
 	if (PRESSED(GPIO_B))     raw |= MK_B;
 	if (PRESSED(GPIO_AYA))   raw |= MK_AYA;
-	edge = raw & ~prev;
-	prev = raw;
+	deb = ayaneo_menu_debounce(raw, hist);	/* max debounce for the Pico menu */
+	edge = deb & ~prev;
+	prev = deb;
 	return edge;
 }
 
