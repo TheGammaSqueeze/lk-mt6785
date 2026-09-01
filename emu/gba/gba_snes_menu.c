@@ -21,8 +21,11 @@
 #include "menu/snes_audio.h"
 #include "menu/gba_name.h"          /* gba_clean_name (shared with host_render) */
 #include "sd_fat.h"                 /* gba_rom_entry */
+#include "gba_boxart_sd.h"          /* gba_boxart_load_sd */
 #include <string.h>                 /* memcpy for the launch snapshot */
 #include <stdint.h>                 /* uintptr_t, size_t */
+
+extern fat_vol *gba_sd_menu_vol(void);   /* the mounted SD volume (gba_driver.c) */
 
 /* Punch-hole launch transition (see ayaneo_gba_punch_frame in mt_disp_drv.c): the
  * menu captures its final frame here on launch, then the driver composites live
@@ -211,8 +214,18 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
 #define SNES_WP_PA     0x53200000u   /* wallpaper cache (1536*720*4 = 4.2MB) */
 #define SNES_CHROME_PA 0x53700000u   /* static chrome cache (1280*960*4 = 4.7MB) */
 #define SNES_WP43_PA   0x54000000u   /* 4:3 warped-wallpaper cache (2701*960*4 = 10.4MB) */
-#define SNES_CTILE_PA  0x54C00000u   /* card-tile cache (GBA cards identical -> cap 1) */
+#define SNES_CTILE_PA  0x54C00000u   /* (legacy cap-1 shared-tile region; unused with boxart) */
 #define SNES_FCT_PA    0x54C80000u   /* focused (blue) card-body tile (320*360*4 = 450KB) */
+/* Per-ROM boxart lives in the WB-mapped [0x4E,0x56)M window (0x56000000+ faults).
+ * Decoded 565+a8 tiles (<=224*224*3=150528, slot rounded to 0x25000) in a region,
+ * plus an ENLARGED card-tile cache (cap 12, so a scroll showing several distinct
+ * cards does not thrash the direct-mapped slots). Both sit in the ~19MB free after
+ * WP43/FCT. Boxart tiles are on the SD card, never in lk_a. */
+#define SNES_BOXART_PA   0x54D00000u /* per-ROM boxart tiles */
+#define SNES_BOXART_SLOT 0x25000u    /* bytes per tile slot (>= 224*224*3) */
+#define SNES_BOXART_CAP  90          /* 90 * 0x25000 = ~13.8MB -> ends ~0x55A02000 */
+#define SNES_CTILE2_PA   0x55A40000u /* enlarged card-tile cache (12 * 320*360*4 = 5.4MB) */
+#define SNES_CTILE2_CAP  12
 /* the decompressed blob must stay strictly inside [BLOB_PA, HOME_PA); cap it 2MB
  * short of the 24MB region so it can never overrun the home node pool */
 #define SNES_RAW_MAX   ((SNES_HOME_PA - SNES_BLOB_PA) - 2u * 1024 * 1024)  /* 22MB */
@@ -399,16 +412,43 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	snes_menu_set_gba_roster(&s_menu, s_nameptr, nrom, cart);
 	if (start_sel >= 0 && start_sel < nrom) s_menu.focus = start_sel;
 
-	/* Every GBA card body is the identical cart placeholder, so ONE cached tile
-	 * serves all games (cap 1); that frees the DRAM for the 10.4MB warped-wallpaper
-	 * cache, which turns the 4:3 wallpaper draw into a per-row memcpy (the per-pixel
-	 * gather straddled the 60fps budget on device). */
+	/* Card-tile cache: cap SNES_CTILE2_CAP slots. Without boxart every GBA card body
+	 * is the identical placeholder and the engine keeps its single-shared-tile fast
+	 * path (only slot 0 used); with per-ROM boxart each card is distinct, so the extra
+	 * slots absorb a scroll without thrashing. */
 	{
-		static int s_ctile_gi[1];
-		snes_menu_set_ctile(&s_menu, (uint32_t *)SNES_CTILE_PA, s_ctile_gi, 1);
+		static int s_ctile_gi[SNES_CTILE2_CAP];
+		snes_menu_set_ctile(&s_menu, (uint32_t *)SNES_CTILE2_PA, s_ctile_gi, SNES_CTILE2_CAP);
 	}
 	snes_menu_set_fct(&s_menu, (uint32_t *)SNES_FCT_PA);
 	snes_menu_set_wp43(&s_menu, (uint32_t *)SNES_WP43_PA);
+
+	/* Load each ROM's box art from the SD card (/roms/gba/boxart/<romstem>.ART) into
+	 * the boxart DRAM region and hand the menu the per-game image table. A missing or
+	 * oversized tile leaves w=0 -> that card falls back to the placeholder cartridge.
+	 * One-time at menu init (snes_menu is pure and cannot read the SD lazily); the raw
+	 * .ART is read through the deflate staging (free after load_pack). */
+	{
+		static snes_img_entry s_boxart[128];
+		static snes_pack s_boxart_pk;
+		unsigned char *region = (unsigned char *)SNES_BOXART_PA;
+		unsigned char *scratch = (unsigned char *)SNES_COMP_PA;
+		fat_vol *vol = gba_sd_menu_vol();
+		int i, any = 0;
+		s_boxart_pk.base = region;
+		for (i = 0; i < nrom && i < 128; i++) {
+			s_boxart[i].w = 0;			/* default: no art */
+			if (vol && i < SNES_BOXART_CAP) {
+				unsigned off = (unsigned)i * SNES_BOXART_SLOT;
+				if (gba_boxart_load_sd(vol, roms[i].name, scratch, SNES_COMP_MAX,
+						       region + off, SNES_BOXART_SLOT, off,
+						       &s_boxart[i]) == 0)
+					any = 1;
+			}
+		}
+		if (any)
+			snes_menu_set_gba_boxart(&s_menu, s_boxart, &s_boxart_pk);
+	}
 
 	/* Repurpose the top two cosmetic Options toggles as functional, persisted
 	 * audio-mute settings: relabel them (fall back to a shorter label if the

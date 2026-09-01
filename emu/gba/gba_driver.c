@@ -957,6 +957,10 @@ static unsigned char s_sd_bios[16384];
 static fat_vol s_sd_vol;
 static gba_rom_entry s_roms[128];   /* enumerated /roms/gba, sorted (task d/e) */
 static int s_nrom;
+
+/* The mounted SD volume, for the menu's per-ROM boxart loader; 0 if not in SD mode
+ * (the plain-list/never-brick fallback then just shows placeholders). */
+fat_vol *gba_sd_menu_vol(void) { return s_sd_mode ? &s_sd_vol : 0; }
 static int s_sel_rom = -1;          /* chosen ROM index (for save/state paths) */
 
 #include "rom_select_nav.h"   /* rs_move / rs_scroll (host-tested nav math) */
