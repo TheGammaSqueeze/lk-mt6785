@@ -63,7 +63,8 @@ We implemented run-ahead first, then tried preemptive (cheaper, and exact 1x
 speed - see section 5), but on-hardware testing showed preemptive's committed-
 timeline modification causes audio popping and its variable cost causes pacing
 judder (section 8). We shipped run-ahead: continuous pristine audio and steady
-pacing, with the 0.34% speed offset absorbed by the audio clock-recovery.
+pacing, and its original 0.34% speed offset is fully eliminated by the exact-1x
+re-entry fix (section 5), so it runs at true 1x with no audio-clamp workaround.
 
 ## 3. Architecture-specific mechanisms
 
