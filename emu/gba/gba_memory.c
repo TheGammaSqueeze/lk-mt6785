@@ -3506,9 +3506,16 @@ void gba_load_state(const void* src)
        convert_palette(current_color);
    }
 
-   // Oops, these contain raw pointers
-   for(i = 0; i < 4; i++)
-      gbc_sound_channel[i].sample_data = square_pattern_duty[2];
+   /* These are raw pointers (into square_pattern_duty / wave RAM / noise tables).
+    * A cross-session disk savestate can't trust the saved pointer, so it is reset
+    * to a placeholder and the game re-derives it on its next sound-register write.
+    * But run-ahead loads a state saved THIS session (g_gba_load_light) where the
+    * pointer is still valid - and it loads every frame, so resetting the wave
+    * channel to an 8-sample square table each frame made sustained PSG notes play
+    * at the wrong waveform/pitch. Keep the saved pointer for the run-ahead rewind. */
+   if (!g_gba_load_light)
+      for(i = 0; i < 4; i++)
+         gbc_sound_channel[i].sample_data = square_pattern_duty[2];
 
    instruction_count = 0;
 
