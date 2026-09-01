@@ -187,6 +187,7 @@ volatile unsigned int g_dbg_emu_us;
 volatile unsigned int g_dbg_frame_ticks;	/* GBA cycles advanced by the committed frame */
 volatile unsigned int g_dbg_asub_calls, g_dbg_asub_done, g_dbg_asub_frames;	/* audio submit counters */
 volatile int g_dbg_eff_pf;			/* last effective run-ahead depth */
+volatile unsigned int g_dbg_boot_mhz;	/* ARM-PLL freq the preloader left the cores at */
 volatile int g_dbg_force_close;		/* fastboot `oem close`: trigger the close path for testing */
 static int s_settings_dirty;		/* volume/brightness changed: persist is deferred (see poll_volume) */
 static unsigned s_settings_tick;	/* 13 MHz tick of the last volume/brightness change */
@@ -794,6 +795,9 @@ static void poll_led(void)
 	set_charge_led(chr, 50);
 }
 
+/* Manual CPU-clock OPPs, selectable in the CPU Clock menu all the way up to 2 GHz.
+ * NOTE: these are ARM-PLL frequencies (ayaneo_set_cpu_mhz reprograms the PCW); LK
+ * does NOT scale core voltage with them (see the escalation note below). */
 static const unsigned s_cpu_opp[] = { 600, 800, 1000, 1200, 1400, 1600, 1800, 2000 };
 static int s_cpu_idx = -1;
 static int s_cpu_dirty = 1;
@@ -816,27 +820,24 @@ static void cpu_step(int dir)
 	s_cpu_dirty = 1;
 }
 
-/* Per-tier CPU-clock escalation: a deeper look-ahead runs more emulations per
- * display frame, so give it more headroom. Off stays at the low-power default;
- * Balanced/Responsive/Max step the clock up so the closed-loop depth controller
- * sustains the requested depth in more scenes. (An earlier "audio silent at
- * 1000 MHz" report turned out to be the sound-ring corruption bug, not the clock;
- * with the ring now snapshot/restored across the look-ahead the escalation is
- * back.) The CPU Clock menu item still lets a user fine-tune afterward. */
-static unsigned preempt_target_mhz(int pf)
-{
-	switch (pf) {
-	case 1:  return 999;	/* Balanced   */
-	case 2:  return 1199;	/* Responsive */
-	case 3:  return 1299;	/* Max        */
-	default: return 600;	/* Off (low-power default) */
-	}
-}
-
+/* Per-tier CPU escalation, aligned to the manual OPP grid: Off = low-power
+ * 600 MHz, Balanced 999, Responsive 1199, Max 1400 (the next OPP up from
+ * Responsive). NOTE: ayaneo_set_cpu_mhz only reprograms the ARM-PLL PCW - it does
+ * NOT change core voltage (LK has no DVFS voltage table), so the clock the
+ * preloader left the cores at (g_dbg_boot_mhz, the boot Vproc-backed point) is the
+ * highest guaranteed-stable frequency; higher OPPs run at that same fixed voltage
+ * and are the user's call. */
 static void preempt_apply_cpu(int pf)
 {
-	ayaneo_set_cpu_mhz(preempt_target_mhz(pf));
-	s_cpu_idx = -1;		/* re-derive the CPU-menu index from the actual clock */
+	unsigned mhz;
+	switch (pf) {
+	case 1:  mhz = 999; break;	/* Balanced   */
+	case 2:  mhz = 1199; break;	/* Responsive */
+	case 3:  mhz = 1400; break;	/* Max (next OPP up from Responsive) */
+	default: mhz = 600; break;	/* Off        */
+	}
+	ayaneo_set_cpu_mhz(mhz);
+	s_cpu_idx = -1;			/* re-derive the CPU-menu index from the actual clock */
 	s_cpu_dirty = 1;
 }
 
@@ -1354,6 +1355,10 @@ static int emu_thread(void *arg)
 #endif
 	mtk_wdt_disable();
 
+	/* Capture the ARM-PLL frequency the preloader left the cores at BEFORE we touch
+	 * it - that is a real, voltage-backed operating point (a known-stable clock at
+	 * the boot Vproc), unlike the raw PLL targets we program afterward. */
+	g_dbg_boot_mhz = ayaneo_get_cpu_mhz();
 	/* Clock to match the persisted Preemptive Frames tier (Off = low-power 600 MHz,
 	 * Balanced/Responsive/Max escalate for the deeper look-ahead). */
 	preempt_apply_cpu(ayaneo_get_preempt_frames());
