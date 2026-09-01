@@ -516,6 +516,14 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 
 	{
 	unsigned int prev_frame = 0;
+	/* Swallow A/Start that are still HELD when the menu opens - e.g. carried over
+	 * from selecting "Close" in the in-game menu, or from the A that launched the
+	 * game - so re-entering the menu does not instantly re-launch the focused ROM.
+	 * The menu edge-detects a launch (A pressed this frame, not last), and a held
+	 * button on the first frame reads as a fresh edge. Gate until both are released
+	 * once. (Tighter input debounce made the close land a frame sooner, so the
+	 * button is more often still down on entry - this fixes it for any debounce.) */
+	int launch_gate = 1;
 	for (;;) {
 		unsigned int pitch, W, H;
 		unsigned int *fb = ayaneo_canvas_back(&pitch, &W, &H);
@@ -555,6 +563,13 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			}
 		}
 		in.lb = PRESSED(K_LB); in.rb = PRESSED(K_RB);
+
+		/* entry gate: while a launch button (A / Start) is still held from the close
+		 * or launch, force it off so no launch edge fires; clear once both release. */
+		if (launch_gate) {
+			if (in.a || in.start) { in.a = 0; in.start = 0; }
+			else launch_gate = 0;
+		}
 
 		/* fastboot-injected key: OR one button on for g_dbg_key_hold frames. */
 		if (g_dbg_key_hold > 0) {
