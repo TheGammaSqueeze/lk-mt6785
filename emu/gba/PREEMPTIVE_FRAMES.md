@@ -10,7 +10,7 @@ persisted in the settings blob. Default is **Off**.
 
 > **Dynamic Preemptive Frames (the shippable feature).** The tier is a *max desired*
 > look-ahead. Two loops keep it honest so it can never backfire: a closed loop
-> that adapts the actual depth every frame to hold a locked 60 fps (section 9), and
+> that adapts the actual depth every frame to hold a locked 60 fps (section 11), and
 > a per-tier CPU-clock escalation (Off 600 MHz / Balanced 999 / Responsive 1199 /
 > Max 1299) that gives the deeper look-ahead the headroom to actually run. Net: the
 > lowest input latency the game and hardware can sustain, without ever dropping a
@@ -141,7 +141,7 @@ at the vsync-paced present point:
 run_one_frame()                 # committed frame, audio ON, advances 1 frame
 
 preempt_present():
-  pf = preempt_effective_depth()         # closed-loop adaptive cap (section 9)
+  pf = preempt_effective_depth()         # closed-loop adaptive cap (section 11)
   if pf == 0: show(committed); return
   save committed state S ; save sound ring       # ring is NOT in the savestate
   suppress audio
@@ -297,7 +297,61 @@ Takeaways:
   that real hardware still has. Responsive/Max put a GBA game in the ~2-frame
   button-to-photon range - about as low as an LCD handheld can go.
 
-## 10. Limitations / future
+## 10. Versus real GBA hardware and the Analogue Pocket
+
+Real GBA hardware and the Analogue Pocket (a field-programmable-gate-array
+re-implementation) are the two low-latency, high-accuracy references people compare
+against. Here is where this LK gpSP build sits against each, on the three axes that
+matter.
+
+### Frame timing - matched to the GBA exactly
+
+The panel is driven at the GBA's OWN refresh rate, 16777216 / 280896 =
+**59.7275 Hz**, tuned there with a fractional MIPI data-rate PLL (and spread-
+spectrum disabled so the rate is rock-solid); measured 59.727 Hz, within ~0.0005 Hz
+of the target. So every emulated frame maps 1:1 to exactly one panel refresh:
+
+- no 60.0 Hz vs 59.73 Hz pull-down cadence, no duplicated or dropped frames, no
+  tearing or beat-frequency judder - the same clean cadence real hardware has;
+- audio is locked to that same measured panel rate, so pitch is exactly right.
+
+Most software emulators run on a fixed 60.0 Hz display, which forces GBA content to
+either play ~0.46% fast or stutter one frame every ~2 s. This build does neither -
+it matches the original timing that real GBA and the Pocket's original-rate modes
+also target.
+
+### Emulation accuracy
+
+Real GBA and the Pocket's FPGA core are cycle-accurate. gpSP is a dynamic-
+recompiler emulator: very high compatibility and accuracy across the library, but
+NOT cycle-perfect - a few games with unusual mid-scanline or timing tricks can
+differ. For the overwhelming majority of titles it is indistinguishable. This is
+the one axis where the two references have the edge.
+
+### Input latency - where LK can go LOWER than both
+
+This is the key point. Real hardware and a cycle-accurate FPGA faithfully reproduce
+the game's OWN internal input lag (the 1-3 frames the game takes to read the pad,
+run its logic, and render the reaction). They cannot remove it - removing it would
+break accuracy. Run-ahead (Preemptive Frames) does exactly that: it advances the
+emulator ahead of the display and shows the reaction 1-3 frames sooner.
+
+| Reference                 | Frame timing            | Game internal lag        | Est. button-to-photon |
+|---------------------------|-------------------------|--------------------------|-----------------------|
+| Real GBA hardware         | 59.7275 Hz (native)     | present (1-3 fr) + slow AGB LCD | ~70-90 ms      |
+| Analogue Pocket (FPGA)    | 60 Hz / original modes  | present (1-3 fr), fast LCD | ~55-70 ms            |
+| **Our LK, Off**           | **59.7275 Hz (matched)**| present (1-3 fr)          | ~65-70 ms             |
+| **Our LK, Responsive/Max**| **59.7275 Hz (matched)**| **REMOVED (run-ahead)**   | **~30-38 ms**         |
+
+- **At Off**, LK is in the same class as real hardware and the Pocket: the same
+  emulated game lag, the exact GBA cadence, on a fast panel - the authentic feel.
+- **With Preemptive Frames on**, LK is LOWER-latency than both, because it removes
+  the game's own processing lag that neither the original nor the FPGA reproduction
+  can. The trade is authenticity vs responsiveness, and it is a per-user choice
+  live in the menu (Off = original feel; higher tiers = more responsive than real
+  hardware).
+
+## 11. Limitations / future
 
 - **Per-frame rewind cost + adaptive depth.** Run-ahead runs N+1 emulations + a
   512 KB save/load every frame; the emulation cost is scene-dependent (~2.3 ms
@@ -327,7 +381,7 @@ Takeaways:
   smooth, click-free behavior we want; preemptive's theoretical win (exact speed,
   lower average CPU) did not survive contact with real audio/pacing on hardware.
 
-## 11. Source map
+## 12. Source map
 
 - `emu/gba/gba_driver.c` - `preempt_present()` (the shipped run-ahead),
   `preempt_effective_depth`/`preempt_adapt` (predictive adaptive depth),
