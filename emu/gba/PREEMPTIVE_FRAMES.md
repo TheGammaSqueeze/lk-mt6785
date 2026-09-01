@@ -7,14 +7,16 @@ architecture-specific hazards we hit, and the on-device benchmarks.
 Configurable via the GammaOS Pico in-game menu item **Preemptive Frames**
 (Off / 1 / 2 / 3), persisted in the settings blob. Default is **Off**.
 
-> **Shipped approach: run-ahead.** We implemented and measured both run-ahead and
-> true preemptive. Preemptive was tried on hardware but reverted: it modifies the
-> committed timeline on every input edge (audio trajectory discontinuity = audible
-> popping) and has a variable per-frame cost (heavy only on edge frames = frame
-> pacing judder). Run-ahead keeps the committed timeline pristine (continuous,
-> click-free audio) and has a constant per-frame cost (smooth pacing); its only
-> drawback, a ~0.34% fast game speed, is absorbed by the audio clock-recovery.
-> Sections 4-6 keep the full analysis of both; section 8 has the benchmarks.
+> **Shipped approach: run-ahead, at exact 1x speed.** We implemented and measured
+> both run-ahead and true preemptive. Preemptive was tried on hardware but
+> reverted: it modifies the committed timeline on every input edge (audio
+> trajectory discontinuity = audible popping) and has a variable per-frame cost
+> (heavy only on edge frames = frame pacing judder). Run-ahead keeps the committed
+> timeline pristine (continuous, click-free audio) and has a constant per-frame
+> cost (smooth pacing). Its original ~0.34% fast skew (the dynarec re-entry stub)
+> is now fully eliminated by `gba_frame_boundary_finish` (section 5), so the
+> committed frame advances an exact 280896 cycles and no audio-clamp workaround is
+> needed. Sections 4-6 keep the full analysis; section 8 has the benchmarks.
 
 ## 1. Motivation
 
@@ -124,24 +126,32 @@ preempt_present():
   for i in 0..pf-1: run_one_frame()      # look-ahead frames (muted)
   unsuppress audio
   show(current screen)                   # present the look-ahead frame
-  load S (light flush) ; s_cpu_restart_req = 1
-  run_one_frame()                        # priming re-entry (audio ON)
+  load S (light flush) ; s_cpu_clean_boundary = 1 ; s_cpu_restart_req = 1
+  # no priming frame: the NEXT committed run_one_frame is the clean re-entry
 ```
 
 The committed timeline is never modified by input injection, so its audio is
-pristine and continuous. The look-ahead frames are muted; the priming re-entry
-(the ~960-cycle stub) runs with audio ON so the committed audio stream stays
-continuous. Cost is constant every frame (N+1 emulations), giving steady pacing.
-The 512 KB `s_ahead_state` snapshot lives in BSS (free versus the 2 MB lk_a image
-limit).
+pristine and continuous. The look-ahead frames are muted. Cost is constant every
+frame (N+1 emulations), giving steady pacing. The 512 KB `s_ahead_state` snapshot
+lives in BSS (free versus the 2 MB lk_a image limit).
 
-### The 0.34% offset
+### Exact 1x (the priming stub, eliminated)
 
-The committed timeline advances 280896 + 960 = 281856 cycles/frame. The audio
-clock-recovery clamp in `ayaneo_audio.c` is widened from ~0.25% to ~0.67% so it
-absorbs that (plus panel/boot-measure error) instead of saturating and firing the
-emergency sample-repeat snap (the periodic pop). Audio and video both run ~0.34%
-fast, in sync, at an inaudible pitch offset.
+The rewind's dynarec flush forces a longjmp re-entry (the parked translated block
+is stale). That longjmp jumps out of `switch_to_main_thread()` BEFORE `update_gba`
+runs the tail of its `vcount==228` block (update_gbc_sound / process_cheats /
+VCOUNT=0), so `io_registers[REG_VCOUNT]` stays at 227 and the re-entered frame is
+a degenerate ~960-cycle stub. Left uncorrected that stub is additive with the
+committed frame (280896+960 = ~0.34% fast).
+
+`gba_frame_boundary_finish()` (main.c) runs that skipped tail on the run-ahead
+re-entry only (gated by `s_cpu_clean_boundary`), including restoring the one
+hblank (272 cyc) the mid-wrap snapshot omits, so the re-entry starts a clean
+vcount=0 boundary and runs a FULL frame. The separate priming frame is therefore
+removed - the next committed frame IS the clean re-entry. Measured: committed
+cpu_ticks over a 60-frame window = exactly 59*280896 at pf=1/2/3 = true 1x, no
+audio-clamp workaround needed. Normal play / reset / close / intro re-enter
+unchanged (they are one-shot, so the harmless stub is left in place for them).
 
 ## 6. The preemptive alternative (implemented, then reverted)
 
@@ -179,13 +189,12 @@ frame), `em` is average emulation wall time per frame. Frame budget at 60 fps is
 | 2       | 59721  | 280896 | 60 fps, constant cost (smooth)  |
 | 3       | 56150  | 280896 | ~56 fps in heavy scenes (extreme) |
 
-`ft` is the committed frame (280896); the per-frame rewind adds a ~960-cycle
-priming stub, so the committed timeline advances 281856 cycles/frame = ~0.34%
-fast. That offset is absorbed by the widened audio clock-recovery clamp (~0.67%),
-so audio and video both run ~0.34% fast, in sync, at an inaudible pitch offset.
-Cost is constant every frame (N+1 emulations), so pacing is steady and the
-committed audio is pristine and click-free. pf=1/2 hold a locked 60 fps; pf=3
-(4 emulations/frame) grazes or exceeds the budget in heavy scenes.
+`ft` is the committed frame = an exact 280896 cycles at every setting, and the
+committed cpu_ticks over a 60-frame window is exactly 59*280896 = 16572864 = true
+1x speed (the re-entry stub is eliminated, section 5). Cost is constant every
+frame (N+1 emulations), so pacing is steady and the committed audio is pristine
+and click-free. pf=1/2 hold a locked 60 fps; pf=3 (4 emulations/frame) grazes or
+exceeds the budget in heavy scenes.
 
 ### Why not preemptive (measured, then reverted)
 
@@ -200,7 +209,7 @@ the committed timeline and its cost is constant.
 
 | Approach          | speed               | audio            | pacing                 |
 |-------------------|---------------------|------------------|------------------------|
-| Run-ahead (ship)  | 1.003x (absorbed)   | pristine/continuous | constant cost, smooth |
+| Run-ahead (ship)  | 1.000x (exact)      | pristine/continuous | constant cost, smooth |
 | Preemptive        | 1.000x              | pops on edges    | variable cost, judder  |
 
 ## 9. Limitations / future
@@ -209,10 +218,6 @@ the committed timeline and its cost is constant.
   every frame. pf=1/2 fit the budget; pf=3 can exceed it in heavy scenes on this
   downclocked part. Bumping the CPU clock while a game runs would give pf=3 more
   headroom (future work).
-- The 0.34% speed offset is inherent to the dynarec longjmp re-entry (the priming
-  stub); it is absorbed in audio and imperceptible in video, but a from-scratch
-  fix would require the re-entry to run gpSP's post-yield cleanup so the stub runs
-  a full frame instead of a degenerate one.
 - Run-ahead reduces latency every frame (display is always N ahead), which is the
   smooth, click-free behavior we want; preemptive's theoretical win (exact speed,
   lower average CPU) did not survive contact with real audio/pacing on hardware.
@@ -225,9 +230,10 @@ the committed timeline and its cost is constant.
   `gba_core_cpu_ticks()`.
 - `emu/gba/gba_memory.c` - `g_gba_load_light` (RAM-only flush path in
   `gba_load_state`).
+- `emu/gba/main.c` - `gba_frame_boundary_finish()` (the exact-1x re-entry tail).
 - `emu/gba/menu_fastboot.c` - `oem preempt:` / `oem diag`.
-- `platform/mt6785/ayaneo_audio.c` - `ayaneo_get/set_preempt_frames` + persistence;
-  widened clock-recovery clamp.
+- `platform/mt6785/ayaneo_audio.c` - `ayaneo_get/set_preempt_frames` + persistence.
 
 Commits: `a65f445`, `7cff000` (run-ahead + light flush), `bb19959` + `3470ec0`
-(preemptive, later reverted), `2983a57` (revert to run-ahead + widen audio clamp).
+(preemptive, later reverted), `2983a57` (revert to run-ahead), `63afe03`
+(exact-1x re-entry fix).
