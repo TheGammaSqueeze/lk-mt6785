@@ -245,57 +245,76 @@ the committed timeline and its cost is constant.
 
 ## 9. Input latency comparison
 
-"Input latency" here is button-press to on-screen reaction (button-to-photon),
-the sum of four parts:
+"Input latency" here is button-press to on-screen reaction (button-to-photon). It
+is cleanest in FRAMES (1 frame = 16.74 ms at the GBA's 59.7275 Hz); the frame
+counts are the rigorous part, the millisecond conversions are estimates (see
+"Sources and method" at the end). Our pipeline, per fresh button press:
 
-- **Input sampling** - the pad is polled once per frame, so a press lands on
-  average half a frame later (~8 ms).
-- **The game's own internal lag** - the game reads the pad, runs its logic, and
-  only renders the reaction 1-3 frames later. This is inherent to the game (it is
-  present on real hardware too) and is exactly what run-ahead removes.
-- **Render + vsync present** - the emulator renders the frame and shows it at the
-  next panel refresh (~1 frame, ~17 ms).
-- **LCD response** - the panel's pixel response (~5-15 ms, panel-dependent).
+- **Input poll** - the pad is sampled once per frame -> avg +0.5 frame.
+- **Debounce (ours)** - a press is accepted only after two consecutive reads agree
+  (rejects contact bounce / line glitches) -> +1 frame on a fresh press. This is
+  ours, not the game's - a tunable trade (a 1-frame or raw filter would shave it at
+  the cost of glitch rejection).
+- **Game internal lag** - the game reads the pad, runs logic, and renders the
+  reaction 1-3 frames later. Inherent to the game (real hardware has it too); this
+  is the part run-ahead removes.
+- **Present + scanout** - the rendered frame is shown at the next refresh and
+  scanned out -> ~1 frame.
+- **LCD response** - the panel's pixel response -> ~0.5 frame (~5-15 ms).
 
-Run-ahead advances the emulator N frames past what it displays, so the game's
-reaction appears N frames sooner - up to the game's actual internal lag (it cannot
-remove lag that is not there; going deeper than the internal lag gives no gain).
+So button-to-photon ~= a **~3-frame fixed pipeline** (poll + debounce + present +
+LCD) **plus (game_lag - run_ahead_depth) frames**. Run-ahead removes up to the
+game's actual internal lag; deeper gives no gain, and the adaptive controller may
+cap the effective depth in heavy scenes.
 
-> The ABSOLUTE figures below are pipeline ESTIMATES (a photodiode / high-speed
-> camera pass would pin exact numbers on this panel). The PER-TIER deltas are
-> exact by construction: each tier advances the visible frame one game-frame
-> (~16.7 ms) earlier, bounded by the game's internal lag and, in heavy scenes, by
-> the adaptive-depth controller.
+### Our LK per preemptive tier (game with ~2-3 frame internal lag)
 
-### Our LK per preemptive tier (representative game, ~2-3 frame internal lag)
+| Tier        | Run-ahead | Frames (fixed + game) | Est. button-to-photon |
+|-------------|-----------|-----------------------|-----------------------|
+| Off         | 0         | ~3 + 2-3 = 5-6        | ~85-100 ms            |
+| Balanced    | 1         | ~3 + 1-2 = 4-5        | ~67-84 ms             |
+| Responsive  | 2         | ~3 + 0-1 = 3-4        | ~50-67 ms             |
+| Max         | 3         | ~3 + 0   = 3          | ~50 ms                |
 
-| Tier        | Look-ahead | Game lag left | Est. button-to-photon |
-|-------------|------------|---------------|-----------------------|
-| Off         | 0 frames   | 2-3 frames    | ~65-70 ms             |
-| Balanced    | 1 frame    | 1-2 frames    | ~48-52 ms             |
-| Responsive  | 2 frames   | 0-1 frame     | ~33-38 ms             |
-| Max         | 3 frames   | 0 frames      | ~30-35 ms             |
+The per-tier DELTA is exact: each tier removes one game-frame (16.74 ms), bounded
+by the game's internal lag (and our +1-frame debounce is a fixed offset on every
+row, not something run-ahead removes).
 
-### Versus other platforms (same class of game)
+### Versus real hardware, FPGA, and other emulation
 
-| Platform                                | Why                                                 | Est. button-to-photon |
-|-----------------------------------------|-----------------------------------------------------|-----------------------|
-| Android retro handheld (stock emulator) | OS compositor + input stack + audio/vsync buffering | ~100-160 ms           |
-| RetroArch on PC (no run-ahead)          | emulator frame buffering                            | ~85-115 ms            |
-| Original GBA hardware                    | game internal lag + slow AGB LCD                    | ~70-90 ms             |
-| Analogue Pocket (FPGA)                   | cycle-accurate logic + fast modern LCD              | ~55-70 ms             |
-| **Our LK, Off**                          | bare-metal, no OS overhead                          | **~65-70 ms**         |
-| **Our LK, Responsive / Max**             | + run-ahead removing the game's internal lag        | **~30-38 ms**         |
+| Platform                          | Fixed pipeline                              | Game lag | Est. button-to-photon |
+|-----------------------------------|---------------------------------------------|----------|-----------------------|
+| Android handheld (stock emulator) | + OS compositor + input stack + buffering   | present  | ~100-160 ms           |
+| RetroArch on PC (no run-ahead)    | emulator frame buffering                    | present  | ~85-115 ms            |
+| Original GBA hardware             | poll + scanout + SLOW AGB LCD               | present  | ~85-100 ms            |
+| Analogue Pocket (FPGA)            | poll + scanout + fast LCD                   | present  | ~65-85 ms             |
+| **Our LK, Off**                   | poll + debounce + present + fast LCD        | present  | **~85-100 ms**        |
+| **Our LK, Responsive / Max**      | same fixed pipeline                         | REMOVED  | **~50-58 ms**         |
 
-Takeaways:
+- At **Off**, LK sits with real hardware: the same game lag, and our +1-frame
+  debounce roughly offsets the original GBA's much slower LCD.
+- With **Responsive/Max**, LK is lower-latency than real GBA AND the Analogue
+  Pocket, because run-ahead removes 2-3 frames of the game's own lag (more than our
+  1-frame debounce costs) - which neither the original nor a cycle-accurate FPGA
+  can do without breaking accuracy.
 
-- Even with preemptive **Off**, bare-metal LK is roughly ~40-90 ms ahead of the
-  same emulator on an Android handheld: there is no compositor, input stack, or
-  extra frame buffering between the pad and the panel.
-- With preemptive frames on, LK undercuts **original hardware** and even the FPGA
-  **Analogue Pocket**, because it removes the game's own internal processing lag
-  that real hardware still has. Responsive/Max put a GBA game in the ~2-frame
-  button-to-photon range - about as low as an LCD handheld can go.
+### Sources and method
+
+- **Run-ahead principle** (it removes the game's internal lag and can drop latency
+  *below* original hardware): the RetroArch / libretro Run-Ahead feature and its
+  documentation (docs.libretro.com, "Run-Ahead"), which is where this technique and
+  result are established.
+- **Frame model**: latency = frame_count x 16.74 ms is exact; the frame COUNTS
+  (0.5 poll, 1 debounce, 1-3 game internal lag, ~1 present/scanout, ~0.5 LCD) are
+  the defensible part - from this build's own pipeline plus the community-
+  established 1-3-frame GBA internal-lag figure.
+- **The absolute ms for OTHER platforms are ESTIMATES, not our measurements** -
+  community-reported ranges run through the same frame model. We have not
+  lab-measured our own device or the competitors here; exact figures need a
+  high-speed camera (240-1000 fps) or a photodiode on the actual panel (the
+  standard method, e.g. WydD's inputlag.science or a Leo Bodnar-style tester). The
+  RELATIVE claims (each tier -1 frame; Responsive/Max beat original hardware) hold
+  regardless of the exact absolutes.
 
 ## 10. Versus real GBA hardware and the Analogue Pocket
 
@@ -336,18 +355,23 @@ run its logic, and render the reaction). They cannot remove it - removing it wou
 break accuracy. Run-ahead (Preemptive Frames) does exactly that: it advances the
 emulator ahead of the display and shows the reaction 1-3 frames sooner.
 
+Estimated button-to-photon (frame model of section 9; absolute ms are estimates,
+not lab measurements - see section 9 "Sources and method"):
+
 | Reference                 | Frame timing            | Game internal lag        | Est. button-to-photon |
 |---------------------------|-------------------------|--------------------------|-----------------------|
-| Real GBA hardware         | 59.7275 Hz (native)     | present (1-3 fr) + slow AGB LCD | ~70-90 ms      |
-| Analogue Pocket (FPGA)    | 60 Hz / original modes  | present (1-3 fr), fast LCD | ~55-70 ms            |
-| **Our LK, Off**           | **59.7275 Hz (matched)**| present (1-3 fr)          | ~65-70 ms             |
-| **Our LK, Responsive/Max**| **59.7275 Hz (matched)**| **REMOVED (run-ahead)**   | **~30-38 ms**         |
+| Real GBA hardware         | 59.7275 Hz (native)     | present (1-3 fr) + slow AGB LCD | ~85-100 ms     |
+| Analogue Pocket (FPGA)    | 60 Hz / original modes  | present (1-3 fr), fast LCD | ~65-85 ms           |
+| **Our LK, Off**           | **59.7275 Hz (matched)**| present (1-3 fr)          | ~85-100 ms            |
+| **Our LK, Responsive/Max**| **59.7275 Hz (matched)**| **REMOVED (run-ahead)**   | **~50-58 ms**         |
 
 - **At Off**, LK is in the same class as real hardware and the Pocket: the same
-  emulated game lag, the exact GBA cadence, on a fast panel - the authentic feel.
-- **With Preemptive Frames on**, LK is LOWER-latency than both, because it removes
-  the game's own processing lag that neither the original nor the FPGA reproduction
-  can. The trade is authenticity vs responsiveness, and it is a per-user choice
+  emulated game lag, the exact GBA cadence, on a fast panel (our +1-frame debounce
+  roughly offsets the original's slower LCD) - the authentic feel.
+- **With Preemptive Frames on**, LK is LOWER-latency than both, because run-ahead
+  removes 2-3 frames of the game's own processing lag - more than the debounce
+  costs - which neither the original nor the FPGA reproduction can, without
+  breaking accuracy. The trade is authenticity vs responsiveness, a per-user choice
   live in the menu (Off = original feel; higher tiers = more responsive than real
   hardware).
 
