@@ -175,6 +175,12 @@ static int s_ready;
 static volatile int s_fast_forward;
 static volatile int s_close_req;	/* in-game menu "Close": save + back to the SNES selector */
 static volatile int s_reset_req;	/* soft reset: restart the current game (menu Reset / hotkey) */
+/* Per-frame emulation cost (run_one_frame wall time, us) averaged over 16 frames.
+ * The emulator is single-core, so run_one_frame blocks the main thread while the
+ * CPU thread emulates one frame - its wall time IS the emulation cost. Exposed via
+ * oem diag `em=` to size the run-ahead/preemptive-frames headroom (each extra
+ * predicted frame costs one more of these). */
+volatile unsigned int g_dbg_emu_us;
 volatile int g_dbg_force_close;		/* fastboot `oem close`: trigger the close path for testing */
 static int s_settings_dirty;		/* volume/brightness changed: persist is deferred (see poll_volume) */
 static unsigned s_settings_tick;	/* 13 MHz tick of the last volume/brightness change */
@@ -1329,7 +1335,15 @@ static int emu_thread(void *arg)
 			}
 
 			update_buttons();
-			run_one_frame();		/* runs one GBA frame + submits its audio */
+			{
+				unsigned int em0 = gpt4_get_current_tick();
+				run_one_frame();	/* runs one GBA frame + submits its audio */
+				{	/* average the emulation wall time over 16 frames -> us */
+					static unsigned int acc; static int cnt;
+					acc += gpt4_get_current_tick() - em0;	/* 13 MHz ticks */
+					if (++cnt >= 16) { g_dbg_emu_us = acc / (16u * 13u); acc = 0; cnt = 0; }
+				}
+			}
 			if (frame == 0)		/* first frame done => dynarec executed OK */
 				gba_dbg("GBA 7: first frame rendered (dynarec ok)");
 
