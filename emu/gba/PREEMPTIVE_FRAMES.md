@@ -11,8 +11,8 @@ persisted in the settings blob. Default is **Off**.
 > **Dynamic Preemptive Frames (the shippable feature).** The tier is a *max desired*
 > look-ahead. Two loops keep it honest so it can never backfire: a closed loop
 > that adapts the actual depth every frame to hold a locked 60 fps (section 9), and
-> a per-tier CPU-clock escalation (Off 600 MHz / Balanced 1000 / Responsive 1400 /
-> Max 1800) that gives the deeper look-ahead the headroom to actually run. Net: the
+> a per-tier CPU-clock escalation (Off 600 MHz / Balanced 800 / Responsive 900 /
+> Max 1000) that gives the deeper look-ahead the headroom to actually run. Net: the
 > lowest input latency the game and hardware can sustain, without ever dropping a
 > frame or starving audio. The menu shows the live adaptive depth in parens
 > (e.g. "Max (3)") so the player sees it working.
@@ -181,7 +181,9 @@ constant cost feel better. The code is in git history (commits `bb19959`,
   (0..3), persisted (settings VER 5, offset 48; `ayaneo_get/set_preempt_frames`).
   The value shows the live adaptive depth, e.g. "Max (3)".
 - Each tier escalates the CPU clock (`preempt_apply_cpu`, applied in the game loop
-  on any tier change): Off 600 MHz / Balanced 1000 / Responsive 1400 / Max 1800.
+  on any tier change): Off 600 / Balanced 800 / Responsive 900 / Max 1000 MHz.
+  These stay in a voltage-stable band (ayaneo_set_cpu_mhz sets only the ARM PLL,
+  not core voltage, so higher clocks can undervolt-glitch some silicon).
   The CPU Clock menu item can fine-tune afterward.
 - `oem preempt:<0..3>` - set the tier live over fastboot (for measurement).
 - `oem diag` - reports `hz1000=` (panel Hz*1000), `em=` (avg committed-frame us),
@@ -243,7 +245,7 @@ the committed timeline and its cost is constant.
   audio), light scenes get the configured depth. The menu setting is a "max
   desired depth".
 - **Per-tier CPU-clock escalation raises that ceiling.** Each tier bumps the ARM
-  PLL (Off 600 / Balanced 1000 / Responsive 1400 / Max 1800 MHz via
+  PLL (Off 600 / Balanced 800 / Responsive 900 / Max 1000 MHz via
   `ayaneo_set_cpu_mhz`), which lowers the per-frame emulation cost so the closed
   loop sustains the requested depth instead of backing off. Device-measured in a
   heavy scene (committed em ~5 ms at 600 MHz -> epf 0): Balanced 999 MHz -> epf 1,
