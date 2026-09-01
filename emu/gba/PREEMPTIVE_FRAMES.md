@@ -4,8 +4,18 @@ This document describes how "Preemptive Frames" is implemented in the bare-metal
 LK gpSP GBA emulator (AYANEO pairmini, MT6785 / k85v1_64), why it exists, the
 architecture-specific hazards we hit, and the on-device benchmarks.
 
-Configurable via the GammaOS Pico in-game menu item **Preemptive Frames**
-(Off / 1 / 2 / 3), persisted in the settings blob. Default is **Off**.
+Configurable via the GammaOS Pico in-game menu item **Preemptive Frames**, with
+named tiers **Off / Balanced / Responsive / Max** (internally 0 / 1 / 2 / 3),
+persisted in the settings blob. Default is **Off**.
+
+> **Dynamic Preemptive Frames (the shippable feature).** The tier is a *max desired*
+> look-ahead. Two loops keep it honest so it can never backfire: a closed loop
+> that adapts the actual depth every frame to hold a locked 60 fps (section 9), and
+> a per-tier CPU-clock escalation (Off 600 MHz / Balanced 1000 / Responsive 1400 /
+> Max 1800) that gives the deeper look-ahead the headroom to actually run. Net: the
+> lowest input latency the game and hardware can sustain, without ever dropping a
+> frame or starving audio. The menu shows the live adaptive depth in parens
+> (e.g. "Max (3)") so the player sees it working.
 
 > **Shipped approach: run-ahead, at exact 1x speed.** We implemented and measured
 > both run-ahead and true preemptive. Preemptive was tried on hardware but
@@ -167,11 +177,16 @@ constant cost feel better. The code is in git history (commits `bb19959`,
 
 ## 7. Configuration and diagnostics
 
-- Pico menu item **Preemptive Frames** (Off/1/2/3), persisted (settings VER 5,
-  offset 48; `ayaneo_get/set_preempt_frames`).
-- `oem preempt:<0..3>` - set the depth live over fastboot (for measurement).
-- `oem diag` - reports `hz1000=` (panel Hz*1000), `em=` (avg emulation us/frame),
-  `ft=` (committed frame's GBA cycles = 280896).
+- Pico menu item **Preemptive Frames**, tiers Off / Balanced / Responsive / Max
+  (0..3), persisted (settings VER 5, offset 48; `ayaneo_get/set_preempt_frames`).
+  The value shows the live adaptive depth, e.g. "Max (3)".
+- Each tier escalates the CPU clock (`preempt_apply_cpu`, applied in the game loop
+  on any tier change): Off 600 MHz / Balanced 1000 / Responsive 1400 / Max 1800.
+  The CPU Clock menu item can fine-tune afterward.
+- `oem preempt:<0..3>` - set the tier live over fastboot (for measurement).
+- `oem diag` - reports `hz1000=` (panel Hz*1000), `em=` (avg committed-frame us),
+  `ft=` (committed GBA cycles = 280896), `epf=` (live adaptive depth), `mhz=` (CPU
+  clock), `afr=` (cumulative audio frames submitted - climbs = audio flowing).
 
 ## 8. Benchmarks (on-device, AYANEO pairmini, Pokemon-class ROM)
 
@@ -180,21 +195,22 @@ panel refresh, `ft` is the committed frame's GBA cycles (280896 = one exact
 frame), `em` is average emulation wall time per frame. Frame budget at 60 fps is
 ~16.6 ms. `em` is scene-dependent (~2 to ~5.5 ms base).
 
-### Run-ahead (shipped)
+### Dynamic Preemptive Frames (shipped) - heavy scene, per-tier CPU escalation
 
-| Preempt | hz1000 | ft     | Result                          |
-|---------|--------|--------|---------------------------------|
-| Off (0) | 59727  | 280896 | 60 fps baseline                 |
-| 1       | 59729  | 280896 | 60 fps, constant cost (smooth)  |
-| 2       | 59721  | 280896 | 60 fps, constant cost (smooth)  |
-| 3       | 56150  | 280896 | ~56 fps in heavy scenes (extreme) |
+| Tier       | CPU MHz | em (us) | epf (live depth) | hz1000 | ft     |
+|------------|---------|---------|------------------|--------|--------|
+| Off        | 599     | 5057    | 0                | 59725  | 280896 |
+| Balanced   | 999     | 2741    | 1                | 59730  | 280896 |
+| Responsive | 1399    | 2187    | 2                | 59729  | 280896 |
+| Max        | 1799    | 1795    | 3                | 59728  | 280896 |
 
-`ft` is the committed frame = an exact 280896 cycles at every setting, and the
-committed cpu_ticks over a 60-frame window is exactly 59*280896 = 16572864 = true
-1x speed (the re-entry stub is eliminated, section 5). Cost is constant every
-frame (N+1 emulations), so pacing is steady and the committed audio is pristine
-and click-free. pf=1/2 hold a locked 60 fps; pf=3 (4 emulations/frame) grazes or
-exceeds the budget in heavy scenes.
+Same demanding scene at every tier. The CPU escalation drops the per-frame
+emulation cost (`em`), so the closed loop sustains the tier's full look-ahead
+(`epf` = the configured depth) while holding a locked 60 fps - at 600 MHz that
+scene only afforded epf=0. `ft` stays an exact 280896 (true 1x; the committed
+cpu_ticks over a 60-frame window is exactly 59*280896 = 16572864). The committed
+audio is pristine and click-free and `afr` (audio frames submitted) climbs
+steadily at every tier.
 
 ### Why not preemptive (measured, then reverted)
 
@@ -225,8 +241,15 @@ the committed timeline and its cost is constant.
   frame is absorbed by the audio ring, so it settles at the deepest depth that
   holds 60 fps - heavy scenes fall to 0 (run-ahead off, full 60 fps + solid
   audio), light scenes get the configured depth. The menu setting is a "max
-  desired depth". A CPU-clock bump during gameplay would raise the ceiling so the
-  full depth holds in more scenes (future work).
+  desired depth".
+- **Per-tier CPU-clock escalation raises that ceiling.** Each tier bumps the ARM
+  PLL (Off 600 / Balanced 1000 / Responsive 1400 / Max 1800 MHz via
+  `ayaneo_set_cpu_mhz`), which lowers the per-frame emulation cost so the closed
+  loop sustains the requested depth instead of backing off. Device-measured in a
+  heavy scene (committed em ~5 ms at 600 MHz -> epf 0): Balanced 999 MHz -> epf 1,
+  Responsive 1399 MHz -> epf 2, Max 1799 MHz -> epf 3, all at hz=59.73 / ft=280896.
+  Higher clock costs power/heat, which is why it scales with the tier the user
+  chose rather than running maxed by default.
 - Run-ahead reduces latency every frame (display is always N ahead), which is the
   smooth, click-free behavior we want; preemptive's theoretical win (exact speed,
   lower average CPU) did not survive contact with real audio/pacing on hardware.
