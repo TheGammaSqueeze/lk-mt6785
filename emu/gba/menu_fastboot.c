@@ -92,12 +92,12 @@ static void cmd_preempt(const char *arg, void *data, unsigned sz)
 {
 	extern void ayaneo_set_preempt_frames(int v);
 	extern int ayaneo_get_preempt_frames(void);
-	extern void ayaneo_settings_save(void);
+	extern void ayaneo_menu_settings_persist(void);	/* eMMC + SD (SD-mode boot reads SD) */
 	(void)data; (void)sz;
 	while (*arg == ' ' || *arg == ':') arg++;
 	if (*arg >= '0' && *arg <= '9') {
 		ayaneo_set_preempt_frames(*arg - '0');
-		ayaneo_settings_save();
+		ayaneo_menu_settings_persist();
 	}
 	snprintf(lbuf, sizeof lbuf, "preempt=%d", ayaneo_get_preempt_frames());
 	fastboot_info(lbuf);
