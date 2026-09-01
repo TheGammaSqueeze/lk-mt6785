@@ -1054,8 +1054,11 @@ void ayaneo_display_prepare_white(void)
 	ayaneo_display_prepare_fill(0xFFFFFFFFu);
 }
 
+volatile unsigned int g_dbg_blit_us;	/* show_frame blit+composite us (excl vsync wait) */
 void ayaneo_gbc_show_frame(const unsigned short *pix)
 {
+	extern unsigned int gpt4_get_current_tick(void);
+	unsigned int t_blit0 = gpt4_get_current_tick();
 	static int inited = 0;
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
@@ -1097,6 +1100,21 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 				unsigned int dk = 0xFF000000u |
 					((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
 
+				if (!filt) {
+					/* Fast path (no LCD filter, the common case): the whole
+					 * GBC_SCALE x GBC_SCALE block is the solid pixel, so write it
+					 * with no per-subpixel branch. Byte-identical to the filtered
+					 * path below when filt==0. This is the dominant per-frame cost
+					 * (measured ~7.6 ms/frame at 600 MHz), so hoisting the branch
+					 * out of ~1M inner iterations is a large win. */
+					for (iy = 0; iy < GBC_SCALE; iy++) {
+						unsigned int *o = dst +
+							(yoff + sy * GBC_SCALE + iy) * pitch_w +
+							(xoff + sx * GBC_SCALE);
+						for (ix = 0; ix < GBC_SCALE; ix++)
+							o[ix] = px;
+					}
+				} else
 				for (iy = 0; iy < GBC_SCALE; iy++) {
 					unsigned int *o = dst +
 						(yoff + sy * GBC_SCALE + iy) * pitch_w +
@@ -1128,6 +1146,7 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		ayaneo_text(dst, pitch_w, xoff + 8, yoff + 6, 2, 0xFF30FF60u, s);
 	}
 	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
+	g_dbg_blit_us = (gpt4_get_current_tick() - t_blit0) / 13u;	/* work before the vsync wait */
 	ayaneo_present(dpa, W, H, pitch_w);
 	s_fb_flip ^= 1;
 }

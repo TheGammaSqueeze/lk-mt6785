@@ -52,9 +52,10 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		extern volatile unsigned int g_dbg_asub_done, g_dbg_asub_frames;
 		extern volatile int g_dbg_eff_pf;
 		extern unsigned int ayaneo_get_cpu_mhz(void);
+		extern volatile unsigned int g_dbg_blit_us;
 		snprintf(lbuf, sizeof lbuf,
-			 "hz1000=%u em=%u ft=%u epf=%d mhz=%u afr=%u",
-			 g_dbg_hz1000, g_dbg_emu_us, g_dbg_frame_ticks,
+			 "hz1000=%u em=%u blit=%u epf=%d mhz=%u afr=%u",
+			 g_dbg_hz1000, g_dbg_emu_us, g_dbg_blit_us,
 			 g_dbg_eff_pf, ayaneo_get_cpu_mhz(), g_dbg_asub_frames);
 	}
 	fastboot_info(lbuf);
