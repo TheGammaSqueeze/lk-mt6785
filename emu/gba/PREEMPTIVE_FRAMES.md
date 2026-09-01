@@ -31,11 +31,13 @@ Press a button and the reaction does not appear instantly, even on a real consol
 game samples the pad at the top of a frame, runs its logic, then renders the reaction
 one to three frames later. That "internal lag" is baked into the game, not the display.
 
-It is real and measurable. One latency study measured a Game Boy Advance at **30 to 90
-ms** button-to-screen depending on the game and the action, with demanding titles the
-worst ([SingleLunch, "Can game emulation feel good?"][singlelunch]). A frame at the
-GBA's 59.7275 Hz is 16.74 ms, so that spread is largely the game's own one-to-three
-frames of thinking, plus scanout and the LCD.
+This is the dominant term on real GBA hardware: the console's own polling and display
+path adds very little, so what you feel is mostly the game thinking. RetroRGB's
+1000 fps-camera lag tests across every GBA handheld bear this out, an original GBA/GBA SP
+sits at the floor and even the Analogue Pocket's FPGA only matches it, adding essentially
+nothing ([RetroRGB][retrorgb-handheld]). A frame at the GBA's 59.7275 Hz is 16.74 ms, so
+that one-to-three-frame internal lag is roughly 17 to 50 ms that no faithful reproduction
+can touch.
 
 An emulator cannot make the game's code think faster. But it *can* do something the real
 console cannot: run the game slightly into its own future and show you that future now.
@@ -145,8 +147,8 @@ real FAIL if the state or the audio ring diverge.
 Latency is cleanest counted in frames; the millisecond conversions below are frame-model
 estimates from our own measured pipeline, not lab captures (to nail absolutes you need a
 high-speed camera or a photodiode on the panel, the methodology WydD documents at
-[inputlag.science][inputlag] and RetroRGB collects for GBA hardware
-[here][retrorgb-gba]).
+[inputlag.science][inputlag] and the LED-and-1000fps-camera approach RetroRGB used for
+GBA handhelds [here][retrorgb-handheld]).
 
 Our fixed pipeline is about four frames: half a frame of polling, two frames of input
 debounce (a deliberate reliability choice on this unit, which had phantom inputs slip
@@ -171,19 +173,27 @@ Analogue Pocket, which reimplements the console on an FPGA
 
 - **Frame timing.** We drive the panel at the GBA's own 59.7275 Hz (measured 59.727 Hz),
   not a rounded 60.0 Hz, so there is no pull-down cadence, no duplicated or dropped
-  frames, and audio pitch is exactly right. Real hardware and the Pocket's original-rate
-  modes target the same cadence; most 60.0 Hz software emulators do not.
+  frames, and audio pitch is exactly right. The Pocket reaches the same goal from the
+  other direction: it ships a variable-refresh display and a per-core "GBA VRR" mode that
+  slews the panel to the core's native rate, exactly to kill the 60.0 Hz-vs-59.7 Hz
+  micro-stutter (write-up of the Pocket's GBA VRR firmware feature [here][gbatemp-vrr]).
+  Most 60.0 Hz software emulators do neither.
 - **Accuracy.** Real hardware and the Pocket's FPGA core are cycle-accurate. gpSP is a
   dynamic recompiler: extremely compatible, but not cycle-perfect on a handful of games
   with unusual timing tricks. This is the one axis where the two references have the edge,
   and we do not claim otherwise.
 - **Input latency.** This is the interesting one. Real hardware and a cycle-accurate FPGA
   faithfully *reproduce* the game's own 1-3 frames of internal lag; they cannot remove it
-  without breaking accuracy. That is why a real GBA measured 30-90 ms
-  ([SingleLunch][singlelunch]) and the Pocket, being faithful, is effectively
-  original-hardware latency plus a fast modern panel. Run-ahead is the one trick that
-  removes the game's internal lag instead of reproducing it, which is how RetroArch
-  demonstrated latency below original hardware ([libretro][libretro-medium]).
+  without breaking accuracy. RetroRGB tested lag and ghosting across every GBA handheld
+  with an LED and a 1000 fps camera, and found the Analogue Pocket's FPGA has **virtually
+  zero added lag** over an original GBA, with the original GBA/GBA SP at the low end and
+  emulation-based handhelds like the DS/3DS adding roughly a frame on top
+  ([RetroRGB, "Comparing Lag and Ghosting for Every GBA handheld"][retrorgb-handheld]; the
+  crowd-sourced hardware-lag-tester database is [here][retrorgb-lagdb]). So the Pocket sits
+  right at original-hardware latency: it reproduces the game's internal lag exactly. That
+  is the bar. Run-ahead is the one trick that *removes* that internal lag instead of
+  reproducing it, which is how RetroArch demonstrated latency below original hardware
+  ([libretro][libretro-medium]).
 
 So the honest positioning: with Preemptive Frames **Off** we are in the same class as
 real hardware and the Pocket, minus cycle-perfect accuracy, plus our two-frame debounce.
@@ -216,19 +226,23 @@ with no GPU. That last part is the point we are proudest of.
 
 ## Sources
 
-- SingleLunch, *Can game emulation feel good? Latency analysis* (GBA measured 30-90 ms):
-  [singlelunch]
+- RetroRGB, *Comparing Lag and Ghosting for Every GBA handheld* (GBA-specific: LED +
+  1000 fps camera; Analogue Pocket FPGA = virtually zero lag over original GBA, DS/3DS
+  add ~1 frame): [retrorgb-handheld]
+- RetroRGB, crowd-sourced hardware-lag-tester database (Time Sleuth / Leo Bodnar):
+  [retrorgb-lagdb]
+- Analogue Pocket GBA variable-refresh (VRR) display timing feature: [gbatemp-vrr]
+- Analogue Pocket, FPGA background: [pocket-wiki]
 - libretro, *RetroArch 1.7.2: better latency than original hardware through run-ahead*:
   [libretro-medium]
 - libretro Run-Ahead guide [libretro-runahead] and Latency guide [libretro-latency]
 - WydD / inputlag.science, latency measurement methodology: [inputlag]
-- RetroRGB, lag testing GBA hardware: [retrorgb-gba]
-- Analogue Pocket (FPGA background): [pocket-wiki]
 
-[singlelunch]: https://singlelunch.com/2018/06/12/can-game-emulation-feel-good-latency-analysis/
+[retrorgb-handheld]: https://retrorgb.com/comparing-lag-and-ghosting-for-every-gba-handheld.html
+[retrorgb-lagdb]: https://retrorgb.com/lagtest.html
+[gbatemp-vrr]: https://gbatemp.net/threads/what-is-variable-refresh-rate-for-gba-feature-of-analogue-pocket.673346/
+[pocket-wiki]: https://en.wikipedia.org/wiki/Analogue_Pocket
 [libretro-runahead]: https://docs.libretro.com/guides/runahead/
 [libretro-latency]: https://docs.libretro.com/guides/latency/
 [libretro-medium]: https://medium.com/@libretro/retroarch-1-7-2-achieving-better-latency-than-original-hardware-through-new-runahead-method-1b80d26bb5d1
 [inputlag]: https://inputlag.science/controller/methodology
-[retrorgb-gba]: https://retrorgb.com/lag-testing-every-game-boy-advance-consolizer.html
-[pocket-wiki]: https://en.wikipedia.org/wiki/Analogue_Pocket
