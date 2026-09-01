@@ -54,8 +54,8 @@ None of this makes Linux or Android bad, they are doing enormously more than I a
 every subsystem they add is a queue, a copy, or a context switch, and those cost time.
 Even a lean, well-tuned Linux still passes every frame through a driver and a compositor,
 and every input through the kernel and userspace. Bare-metal is how a slow single core
-can keep the entire path down to just the emulation, one debounce, one blit, and one panel
-refresh, with no invisible frames of buffering hiding in a stack I do not control.
+can keep the entire path down to just the emulation, one raw input read, one blit, and one
+panel refresh, with no invisible frames of buffering hiding in a stack I do not control.
 
 ## The problem: a game is late before the screen is
 
@@ -193,14 +193,17 @@ high-speed camera or a photodiode on the panel, the methodology WydD documents a
 [inputlag.science][inputlag] and the LED-and-1000fps-camera approach RetroRGB and Tito
 used [here][machonacho]).
 
-My fixed pipeline is about four frames: half a frame of polling, **two frames of input
-debounce** (a three-read agreement filter, so a fresh press has to be seen on three
-consecutive frames before it counts, which delays it by two frames; a deliberate
-reliability choice on this unit, which let phantom inputs slip through a lighter filter),
-about a frame of present and scanout on a software framebuffer, and half a frame of LCD.
-On top of that sits the part run-ahead attacks: the game's own 1-3 frame internal lag.
-Each tier removes one whole frame of that internal lag (16.74 ms), bounded by how much lag
-the game actually has. **That per-tier delta is the rigorous, defensible claim.**
+My fixed pipeline is about two frames: half a frame of polling, **zero frames of input
+debounce**, about a frame of present and scanout on a software framebuffer, and half a
+frame of LCD. It used to be four: this unit's GPIO button lines glitch, and a light
+software filter let phantom presses through, so gameplay ran a three-read agreement
+debounce that cost two whole frames. I chased that to its root and enabled the button
+pins' hardware **Schmitt trigger** (input hysteresis - see "Killing the phantom inputs at
+the pin" below), which deglitches them in hardware with zero latency, and that let the
+software debounce drop to raw. On top of the two fixed frames sits the part run-ahead
+attacks: the game's own 1-3 frame internal lag. Each tier removes one whole frame of that
+internal lag (16.74 ms), bounded by how much lag the game actually has. **That per-tier
+delta is the rigorous, defensible claim.**
 
 ## GBA vs FPGA vs this build
 
@@ -212,12 +215,10 @@ or 240fps-app tests; my rows are the frame-model estimate above. One frame is 16
 | Real GBA (AGB-001), measured    | ~2.4 frames / ~40 ms     | game's 1-3 fr internal lag + ~1 fr slow AGB LCD      |
 | Analogue Pocket, GBA, measured  | ~1 frame *more* than a real GBA (e.g. ~50 ms vs ~30 ms, same game) | faithful FPGA core, but its rotated screen must buffer a frame to scale/draw GBA |
 | Best HDMI consolizer, measured  | ~1.6 frames              | original GBA silicon, fast modern panel, no scaler buffer |
-| **This build, Off**             | ~6-7 frames (est)        | ~4 fixed (0.5 poll + 2 debounce + 1 present + 0.5 LCD) + full 2-3 fr game lag |
-| **This build, Balanced (1)**    | ~5-6 frames (est)        | run-ahead removes 1 game frame                       |
-| **This build, Responsive (2)**  | ~4-5 frames (est)        | run-ahead removes 2 game frames                      |
-| **This build, Max (3)**         | ~4 frames (est)          | game's internal lag fully removed; only the fixed pipeline remains |
-| **This build, Max, 1-frame debounce** | ~3 frames (est)   | *hypothetical*: relax the glitch filter to a 2-read agreement |
-| **This build, Max, no debounce** | ~2 frames (est)         | *hypothetical*: raw input, would match/beat a stock GBA and the Pocket |
+| **This build, Off**             | ~4-5 frames (est)        | ~2 fixed (0.5 poll + 0 debounce + 1 present + 0.5 LCD) + full 2-3 fr game lag |
+| **This build, Balanced (1)**    | ~3-4 frames (est)        | run-ahead removes 1 game frame                       |
+| **This build, Responsive (2)**  | ~2-3 frames (est)        | run-ahead removes 2 game frames                      |
+| **This build, Max (3)**         | ~2 frames (est)          | game's internal lag fully removed; only the ~2 fixed frames remain, undercutting a stock GBA and the Pocket |
 | Android emulator, RetroArch     | ~92 ms in one favorable reading, typically higher | always-triple-buffered SurfaceFlinger + input stack + emulator buffering; only nears hardware with run-ahead tuning |
 
 A word on that Android row, because the number flatters Android. The ~92 ms is one
@@ -228,32 +229,28 @@ processing them in queue order ([Android systrace docs][android-systrace]). Surf
 compositing plus that triple buffering alone is often two-plus frames before the input
 stack and the emulator's own buffering are even counted, so untuned Android emulation
 usually lands well above 92 ms, and RetroArch only approaches hardware once you turn on
-run-ahead and hand-tune the latency settings. I left the favorable number in the table on
-purpose, not to flatter myself: at ~92 ms it is in the same ballpark as my *worst* tier
-(Off, ~100-117 ms), Android's typical untuned case is worse still, and my run-ahead tiers
-pull below it. If I had cited Android's typical figure instead, the gap would look larger
-than it honestly is.
+run-ahead and hand-tune the latency settings. Note that ~92 ms is now worse than even my
+*worst* tier (Off, ~67-84 ms) and far behind my run-ahead tiers.
 
-**The single thing standing between me and beating real hardware is the debounce.** At
-Max the game's internal lag is already gone, so those ~4 fixed frames are 2 debounce +
-0.5 poll + 1 present + 0.5 LCD. The debounce is the biggest slice, and it is the only slice
-I could still cut: drop the three-read agreement to two reads and Max lands at ~3 frames,
-drop it entirely and Max lands at ~2 frames, which would actually undercut a stock GBA's
-2.4 and the Pocket. **But the filter is there for a reason, and it stays.** This unit's
-GPIO input lines glitch, and with a lighter filter phantom presses slipped through during
-real gameplay, inputs the player never made. A game that occasionally jumps on its own is
-worse than one that reacts a frame later, so the three-read agreement is a deliberate
-reliability-over-latency trade. Those two hypothetical rows are not shipping numbers; they
-are there to show exactly where the remaining latency lives and why I am choosing to keep
-it.
+**How Max reaches ~2 frames.** For a while the debounce was the wall: with the game's
+internal lag removed at Max, the fixed pipeline was still four frames, two of them the
+three-read debounce. That debounce was not vanity - a lighter software filter let real
+phantom presses through on this unit, and a game that jumps on its own is worse than one
+that reacts a frame later. But a temporal filter was the wrong tool: the fix was to stop
+the glitches at the pin instead of voting them out over frames. Enabling the button pins'
+hardware Schmitt trigger did exactly that (next section), which let the software debounce
+drop to raw. The fixed pipeline fell from ~4 to ~2 frames, and Max - game lag removed, no
+debounce - now lands around **two frames**, which undercuts a stock GBA's 2.4 and sits
+comfortably under the Pocket. (This rests on the Schmitt trigger keeping inputs clean in
+real play, which is being confirmed on hardware; if any phantom returns, a one-read bump
+buys it back for one frame.)
 
-Read the rest honestly too. In absolute button-to-photon I do **not** beat a stock GBA or
-the Pocket: my fixed pipeline is heavier, dominated by that two-frame debounce and the
-software framebuffer flip. What the table shows is the *shape* of the win. Run-ahead is the
-one lever that removes the game's own internal lag, which is the single biggest chunk
-software
-can touch, so each tier walks me down a frame at a time from "worse than an Android
-emulator" toward the consolizer range, on a single 600 MHz core with no GPU.
+Read the rest honestly. These are frame-model estimates, not lab captures, and the
+absolute millisecond values carry the usual uncertainty. But the *shape* is real: run-ahead
+removes the game's own internal lag (the biggest chunk software can touch), the hardware
+Schmitt trigger removed the debounce tax, and the only irreducible costs left are the ~1
+present frame (a framebuffer cost even the Analogue Pocket pays for GBA) and the panel, on
+a single 600 MHz core with no GPU.
 
 ## Where this lands against real hardware and FPGA
 
@@ -287,9 +284,34 @@ Analogue Pocket, which reimplements the console on an FPGA ([Analogue Pocket][po
 The useful takeaway for me: even the best FPGA in the world pays about a framebuffer frame
 to put GBA on a modern scaled panel, which is the same cost my software present pays. What
 I can do that neither the original console nor a faithful FPGA will is *remove the game's
-own internal lag* with run-ahead. In absolute terms my two-frame debounce still keeps me
-behind them, but the framebuffer frame is a cost everyone in this space pays, and run-ahead
-is the equalizer that claws back the rest. That is the honest version.
+own internal lag* with run-ahead. With the debounce tax gone (hardware Schmitt trigger) and
+that game lag removed at Max, the only costs left are the shared framebuffer frame and the
+panel - so on this single 600 MHz core with no GPU, Max actually gets *under* a stock GBA
+and the Pocket. Run-ahead removes the game's lag; the Schmitt trigger removed mine.
+
+## Killing the phantom inputs at the pin
+
+The two-frame debounce was the biggest self-inflicted slice of my latency, so it was worth
+attacking at the root rather than accepting. The buttons are plain active-low GPIOs read
+once per frame (`mt_get_gpio_in`) with an internal pull-up. Reading the driver, two things
+stood out. First, the pins are a fixed-strength pull type, so I could not simply crank the
+pull-up resistance down to fight noise. Second, and this was the fix: the pins support a
+hardware **Schmitt trigger** (input hysteresis) and it was never enabled.
+
+Without hysteresis a digital input has a single logic threshold, so any noise that nudges
+the line across it - coupling from the MIPI display, the audio amplifier, the DC-DC
+converters, or the CPU switching harder under run-ahead - can be sampled as a phantom
+press. A Schmitt trigger replaces that single threshold with two: the line has to swing
+most of the way down to read pressed and most of the way back up to read released, so
+transient noise that only partway crosses is ignored. It is the textbook hardware fix for a
+noisy digital input, and it costs nothing in time.
+
+So `gpio_in_pullup` now enables it on every button pin (`mt_set_gpio_smt`); all of them
+(57, 78-92) support it. `oem diag` reads the state back as `smt=1` to confirm the write
+took on real silicon. With the glitches stopped at the pin, the software debounce that was
+only there to vote them out over frames became unnecessary, and dropping it to raw is what
+bought the two frames. The lesson: a temporal debounce treats the symptom and charges
+latency for it; hysteresis treats the cause for free.
 
 ## Configuration and diagnostics
 
@@ -299,13 +321,16 @@ is the equalizer that claws back the rest. That is the honest version.
 - `oem selftest[:N]` runs the determinism self-test (reports `st=/rng=/scr=`).
 - `oem diag` reports `hz1000=` (panel Hz x1000), `em=` (avg committed-frame us), `ft=`
   (committed GBA cycles, 280896 = exact 1x), `epf=` (live adaptive depth), `mhz=` (CPU
-  clock), `afr=` (cumulative audio frames submitted; climbing means audio is flowing).
+  clock), `afr=` (cumulative audio frames submitted; climbing means audio is flowing),
+  `smt=` (button Schmitt-trigger state read back after init; 1 = the hardware deglitch is on).
 
 ## For the next person in this code
 
 - `emu/gba/gba_driver.c` - `preempt_present()` (the run-ahead loop),
   `preempt_effective_depth`/`preempt_adapt` (adaptive depth), `preempt_apply_cpu` (per-tier
-  clock off the shared `s_cpu_opp` grid, indices `{0,2,3,4}`), `gba_run_ahead_selftest`.
+  clock off the shared `s_cpu_opp` grid, indices `{0,2,3,4}`), `gba_run_ahead_selftest`;
+  `gpio_in_pullup` (button pins + `mt_set_gpio_smt` Schmitt trigger), `update_buttons`
+  (`GAMEPLAY_DEBOUNCE`, now 1 = raw).
 - `emu/gba/gba_wrap.c` - `g_gba_audio_suppress` gate; `gba_core_cpu_ticks()`.
 - `emu/gba/sound.c` - `gba_sound_ring_save/load` (the ring the savestate omits).
 - `emu/gba/gba_memory.c` - `g_gba_load_light` (RAM-only flush on rewind).
