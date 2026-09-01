@@ -696,7 +696,20 @@ static void preempt_adapt(int menu_open)
 
 static void preempt_present(void)
 {
-	int pf = preempt_effective_depth();
+	int pf;
+	/* While the Pico menu is open the game is not being played (input is zeroed) and
+	 * the overlay makes the present blit heavier. Running the look-ahead frames on top
+	 * of that overran the 16.7 ms budget and starved the audio ring = the skipping heard
+	 * with the menu open + Preemptive Frames on. Present the committed frame directly (no
+	 * look-ahead, no rewind), which frees the budget for the overlay. Leave g_dbg_eff_pf
+	 * at the last gameplay value so the menu still shows the chosen depth (e.g. "Max (3)")
+	 * rather than flipping to "(0)". */
+	if (s_menu_open) {
+		g_dbg_preempt_emu_us = 0;
+		ayaneo_gbc_show_frame(gba_core_screen());
+		return;
+	}
+	pf = preempt_effective_depth();
 	g_dbg_eff_pf = pf;
 	if (pf <= 0) {
 		g_dbg_preempt_emu_us = 0;
@@ -1179,10 +1192,15 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	default: changed = 0; break;
 	}
 	if (changed) {
-		ayaneo_settings_save();
-#ifdef AYANEO_GBA_SD
-		sd_settings_mirror();
-#endif
+		/* DEFER the persist. ayaneo_settings_save() + sd_settings_mirror() do an eMMC +
+		 * SD/FAT write that stalls this loop for ~1 s; done inline on every menu change
+		 * (brightness, LCD filter, ...) that stall stutters the game and skips audio
+		 * WHILE the menu is open. Mark dirty + timestamp instead and let the game loop
+		 * flush ONCE, ~0.7 s after the last change, with the audio ring silenced across
+		 * the write (same deferral the in-game volume/brightness already use). Rapid
+		 * changes (holding the key) coalesce into a single write. */
+		s_settings_dirty = 1;
+		s_settings_tick = gpt4_get_current_tick();
 	}
 	return 0;
 }
