@@ -550,6 +550,7 @@ static thread_t *s_cpu_thread;
  * execute_arm re-enters cleanly - exactly like the very first start. */
 static void *s_cpu_jb[8];
 static volatile int s_cpu_restart_req;
+static volatile int s_cpu_clean_boundary;	/* run-ahead re-entry: finish the vblank tail first */
 
 static void gba_dbg(const char *msg);	/* on-screen status (defined below) */
 
@@ -577,6 +578,11 @@ void gba_yield_to_main(void)
 	event_wait(&ev_cpu);
 	if (s_cpu_restart_req) {		/* a core reset happened while we were parked */
 		s_cpu_restart_req = 0;
+		if (s_cpu_clean_boundary) {	/* run-ahead rewind: run the skipped vblank tail so */
+			extern void gba_frame_boundary_finish(void);
+			s_cpu_clean_boundary = 0;	/* the re-entry starts a FULL frame, not a ~960cyc stub */
+			gba_frame_boundary_finish();
+		}
 		__builtin_longjmp(s_cpu_jb, 1);	/* re-enter gba_core_cpu_loop from the top */
 	}
 }
@@ -611,11 +617,11 @@ static void run_one_frame(void)
  * frame pacing steady (constant cost every frame) and audio click-free.
  *
  * gba_core_state_load flushes the dynarec, so the parked CPU thread cannot resume
- * a stale translated block - it re-enters via longjmp (s_cpu_restart_req). That
- * re-entry from a frame boundary yields after a ~960-cycle priming stub, which we
- * spend here (audio ON). The net committed advance is 280896 + 960 = 0.34% fast;
- * the audio clock-recovery clamp (ayaneo_audio.c) is widened to absorb that drift
- * so pitch tracks the game cleanly (audio and video both 0.34% fast, in sync). */
+ * a stale translated block - the NEXT committed frame re-enters via longjmp
+ * (s_cpu_restart_req). We set s_cpu_clean_boundary so that re-entry first runs the
+ * skipped vblank tail (gba_frame_boundary_finish), starting a FULL frame instead
+ * of a degenerate ~960-cycle stub - so the committed timeline advances exactly one
+ * frame per display, at true 1x speed (no priming frame, no 0.34% skew). */
 static void preempt_present(void)
 {
 	int pf = ayaneo_get_preempt_frames();
@@ -636,8 +642,8 @@ static void preempt_present(void)
 		g_gba_load_light = 1;	/* ROM/BIOS caches stay valid across a same-ROM rewind */
 		gba_core_state_load(s_ahead_state);
 		g_gba_load_light = 0;
+		s_cpu_clean_boundary = 1;	/* next committed frame re-enters as a full frame */
 		s_cpu_restart_req = 1;
-		run_one_frame();		/* priming re-entry after the flush (audio ON) */
 	}
 }
 
@@ -1390,9 +1396,8 @@ static int emu_thread(void *arg)
 				unsigned int ct0 = gba_core_cpu_ticks();
 				unsigned int em0 = gpt4_get_current_tick();
 				run_one_frame();	/* runs one GBA frame + submits its audio */
-				/* committed GBA cycles this display frame: 280896 on a static frame
-				 * (exact 1x, no speed skew), 281856 on a preempt edge (the +960 dynarec
-				 * re-entry priming stub, rare - only on real input changes). */
+				/* committed GBA cycles this display frame = one full frame (280896);
+				 * run-ahead re-enters as a full frame (no priming stub) so no skew. */
 				g_dbg_frame_ticks = gba_core_cpu_ticks() - ct0;
 				{	/* average the emulation wall time over 16 frames -> us */
 					static unsigned int acc; static int cnt;

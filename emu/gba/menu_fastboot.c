@@ -52,8 +52,7 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		snprintf(lbuf, sizeof lbuf,
 			 "p=%u f=%u hz1000=%u bx=%u/%u em=%u ft=%u",
 			 g_dbg_peak_us, g_dbg_fps, g_dbg_hz1000,
-			 g_dbg_boxart_ok, g_dbg_boxart_tot, g_dbg_emu_us,
-			 g_dbg_frame_ticks);
+			 g_dbg_boxart_ok, g_dbg_boxart_tot, g_dbg_emu_us, g_dbg_frame_ticks);
 	}
 	fastboot_info(lbuf);
 	fastboot_okay("");

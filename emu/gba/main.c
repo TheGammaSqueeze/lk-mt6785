@@ -272,6 +272,30 @@ u32 update_gba(void)
   return execute_cycles;
 }
 
+/* Finish the vblank->new-frame boundary: the tail of update_gba's vcount==228
+ * block (update_gbc_sound / process_cheats / vcount=0) that normally runs right
+ * after switch_to_main_thread() returns. The run-ahead re-entry longjmps OUT of
+ * switch_to_main_thread before that tail runs, so io_registers[REG_VCOUNT] would
+ * stay at 227 and the re-entered frame would be a degenerate ~960-cycle stub
+ * (making run-ahead advance 280896+960 = ~0.34% fast). The driver calls this on
+ * the run-ahead re-entry BEFORE the longjmp so the re-entry starts at a clean
+ * vcount=0 boundary and runs a FULL frame = exactly one frame per display, no
+ * phantom cycles. Only the run-ahead re-entry uses it; normal play, reset, close
+ * and the intro re-enter unchanged. */
+void gba_frame_boundary_finish(void)
+{
+  update_gbc_sound(cpu_ticks);
+  gbc_sound_update = 0;
+  process_cheats();
+  io_registers[REG_VCOUNT] = 0;
+  io_registers[REG_DISPSTAT] &= ~0x01;   /* leave vblank (matches the vcount==228 path) */
+  /* The state was saved mid-vcount==228 handling, one hblank into the wrap; a
+   * re-entry from vcount 0 then runs the frame one hblank (272 cyc) short. Add it
+   * back so the committed frame is exactly 280896 = true 1x (measured). */
+  video_count += 272;
+  execute_cycles = video_count;
+}
+
 void reset_gba(void)
 {
   init_main();
