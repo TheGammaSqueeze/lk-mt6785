@@ -161,6 +161,10 @@ void gba_core_post_frame(void) { render_audio(); }
 
 const unsigned short *gba_core_screen(void) { return (const unsigned short *)s_screen; }
 
+/* committed GBA cycle counter (gpSP main.c global) - used to verify a frame
+ * actually advanced a full frame's worth of cycles under run-ahead. */
+unsigned int gba_core_cpu_ticks(void) { extern u32 cpu_ticks; return (unsigned int)cpu_ticks; }
+
 /* Wipe the core screen to a solid colour. Used before the launch punch-in warmup so a
  * stale previous-game frame (still in s_screen when switching ROMs) is cleared: the
  * warmup then runs the NEW game until it renders real content, instead of opening onto

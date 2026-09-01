@@ -3469,6 +3469,13 @@ void bios_region_read_protect(void)
 const u8 *state_mem_read_ptr;
 u8 *state_mem_write_ptr;
 
+/* Run-ahead rewinds to a state captured earlier THIS session from the SAME ROM,
+ * so the ROM and BIOS translation caches are still valid across the rewind - only
+ * the writable RAM regions (which the discarded look-ahead frames mutated) need
+ * their translations flushed. Skipping the ROM/BIOS flush keeps that hot code
+ * warm and avoids a full cold retranslate on every committed frame. Set by the
+ * driver only around the per-frame run-ahead rewind. */
+int g_gba_load_light;
 void gba_load_state(const void* src)
 {
    u32 i;
@@ -3481,8 +3488,11 @@ void gba_load_state(const void* src)
    if (dynarec_enable)
    {
       flush_translation_cache_ram();
-      flush_translation_cache_rom();
-      flush_translation_cache_bios();
+      if (!g_gba_load_light)
+      {
+         flush_translation_cache_rom();
+         flush_translation_cache_bios();
+      }
    }
 #endif
 

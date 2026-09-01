@@ -184,6 +184,7 @@ static volatile int s_reset_req;	/* soft reset: restart the current game (menu R
  * oem diag `em=` to size the run-ahead/preemptive-frames headroom (each extra
  * predicted frame costs one more of these). */
 volatile unsigned int g_dbg_emu_us;
+volatile unsigned int g_dbg_frame_ticks;	/* GBA cycles advanced by the committed frame */
 volatile int g_dbg_force_close;		/* fastboot `oem close`: trigger the close path for testing */
 static int s_settings_dirty;		/* volume/brightness changed: persist is deferred (see poll_volume) */
 static unsigned s_settings_tick;	/* 13 MHz tick of the last volume/brightness change */
@@ -1344,8 +1345,12 @@ static int emu_thread(void *arg)
 
 			update_buttons();
 			{
+				extern volatile unsigned int g_dbg_frame_ticks;
+				extern unsigned int gba_core_cpu_ticks(void);
+				unsigned int ct0 = gba_core_cpu_ticks();
 				unsigned int em0 = gpt4_get_current_tick();
 				run_one_frame();	/* runs one GBA frame + submits its audio */
+				g_dbg_frame_ticks = gba_core_cpu_ticks() - ct0;	/* GBA cycles this frame */
 				{	/* average the emulation wall time over 16 frames -> us */
 					static unsigned int acc; static int cnt;
 					acc += gpt4_get_current_tick() - em0;	/* 13 MHz ticks */
@@ -1543,14 +1548,34 @@ static int emu_thread(void *arg)
 					static unsigned char s_ahead_state[512 * 1024]
 						__attribute__((aligned(8)));
 					int i;
+					/* The committed real frame above resumed the CPU thread
+					 * NORMALLY (parked mid-vblank), so it ran a full frame with
+					 * audio. Snapshot that committed boundary, then run pf extra
+					 * frames forward with the same held input and audio muted to
+					 * produce the look-ahead image. */
 					gba_core_state_save(s_ahead_state);
 					g_gba_audio_suppress = 1;
 					for (i = 0; i < pf; i++)
 						run_one_frame();
 					g_gba_audio_suppress = 0;
 					ayaneo_gbc_show_frame(gba_core_screen());
-					gba_core_state_load(s_ahead_state);
-					s_cpu_restart_req = 1;	/* CPU thread rewinds to committed PC */
+					/* Rewind memory+regs to the committed boundary. This flushes
+					 * the dynarec, so the parked CPU thread cannot resume into a
+					 * stale translated block - it must re-enter via longjmp. A
+					 * longjmp re-entry from a frame-boundary state yields again
+					 * almost immediately (~960 cycles), so we spend that priming
+					 * step HERE (audio on: it is legitimate new committed time) to
+					 * leave the CPU thread parked cleanly mid-vblank again. The
+					 * next real frame then resumes normally and runs the remaining
+					 * ~279936 cycles, netting exactly one frame per display. */
+					{
+						extern int g_gba_load_light;
+						g_gba_load_light = 1;	/* ROM/BIOS caches stay valid across a same-ROM rewind */
+						gba_core_state_load(s_ahead_state);
+						g_gba_load_light = 0;
+					}
+					s_cpu_restart_req = 1;
+					run_one_frame();
 				} else {
 					ayaneo_gbc_show_frame(gba_core_screen());
 				}
