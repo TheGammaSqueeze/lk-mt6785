@@ -258,8 +258,9 @@ static int s_hud_combo;  /* edge-latch for the toggle combo */
 static short s_mixbuf[16384 * 2];
 
 /* roster name storage (stripped ".gba"), + a pointer table for the menu */
-static char        s_names[128][128];
-static const char *s_nameptr[128];
+static char          s_names[128][128];
+static const char   *s_nameptr[128];
+static unsigned char s_types[128];   /* per-ROM console type (GBA_CONSOLE_*) for badges */
 
 static uint32_t rd32(const unsigned char *p)
 { return (uint32_t)p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
@@ -298,6 +299,7 @@ static void build_names(const gba_rom_entry *roms, int nrom)
 			s_names[i][L] = 0;                       /* fall back to the raw name */
 		}
 		s_nameptr[i] = s_names[i];
+		s_types[i] = roms[i].type;                      /* GB / GBC / GBA badge */
 	}
 }
 
@@ -427,6 +429,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	build_names(roms, nrom);
 	cart = snes_res_img(&s_pk, snes_hash("gba_cart"));
 	snes_menu_set_gba_roster(&s_menu, s_nameptr, nrom, cart);
+	/* console-type badges (GB / GBC / GBA logo bottom-right of each card) */
+	snes_menu_set_console_badges(&s_menu, s_types,
+				     snes_res_img(&s_pk, snes_hash("logo_gb")),
+				     snes_res_img(&s_pk, snes_hash("logo_gbc")),
+				     snes_res_img(&s_pk, snes_hash("logo_gba")));
 	if (start_sel >= 0 && start_sel < nrom) s_menu.focus = start_sel;
 
 	/* Card-tile cache: cap SNES_CTILE2_CAP slots. Without boxart every GBA card body

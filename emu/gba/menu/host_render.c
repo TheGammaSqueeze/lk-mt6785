@@ -113,6 +113,22 @@ int main(int argc, char **argv)
 		snes_menu_set_gba_roster(&menu, mock, gn, cart);
 		if (!cart) fprintf(stderr, "WARN gba_cart image not in pack\n");
 
+		/* console-type badges: cycle GB/GBC/GBA across the mock roster so the
+		 * bottom-right badge render can be eyeballed / regression-checked. Opt-in
+		 * (GBA_BADGES) so the default states are unchanged. */
+		if (getenv("GBA_BADGES")) {
+			static unsigned char types[128];
+			const snes_img_entry *lg  = snes_res_img(&pk, snes_hash("logo_gb"));
+			const snes_img_entry *lgc = snes_res_img(&pk, snes_hash("logo_gbc"));
+			const snes_img_entry *lga = snes_res_img(&pk, snes_hash("logo_gba"));
+			int k;
+			const char *force = getenv("GBA_BADGE_FORCE");
+			for (k = 0; k < gn && k < 128; k++)
+				types[k] = force ? (unsigned char)atoi(force) : (unsigned char)(k % 3);
+			snes_menu_set_console_badges(&menu, types, lg, lgc, lga);
+			if (!lg || !lgc || !lga) fprintf(stderr, "WARN a console logo image is not in pack\n");
+		}
+
 		/* GBA_BOXART: exercise the per-ROM boxart path with mock tiles - a distinct
 		 * solid-colour RGB565 tile per game index, in a private "pack" whose base is
 		 * the tile buffer (snes_img_pixels resolves base + pixels). Proves the per-gi

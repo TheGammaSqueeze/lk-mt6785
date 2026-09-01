@@ -863,6 +863,32 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 			iy = (impk != m->pk) ? cy : cy - m->screen_oy * sc;
 			snes_blit_tex_tint(t, impk, im, cx, iy, bw, bh, 1.0f, dim, dim, dim);
 		}
+		/* console-type badge (bottom-right): the GB / GBC / GBA logo for this ROM,
+		 * mirroring the SNES web menu's controller icon. Fit the logo into a fixed
+		 * card-unit box (preserving aspect) and anchor its bottom-right corner near
+		 * the card's bottom-right. Only in GBA/SD mode (SNES mode draws player_icon
+		 * here instead). */
+		if (m->gba_mode && m->gba_types && m->ngames > 0) {
+			int gidx = m->order[((gi % m->ngames) + m->ngames) % m->ngames];
+			int ty = m->gba_types[gidx];
+			const snes_img_entry *lg = (ty >= 0 && ty < 3) ? m->console_logo[ty] : 0;
+			if (lg && lg->w && lg->h) {
+				float maxW = 72.0f, maxH = 22.0f;      /* card-unit badge box */
+				float bs = maxW / (float)lg->w, bsh = maxH / (float)lg->h;
+				float lwc, lhc, ccx, ccy;
+				if (bsh < bs) bs = bsh;
+				lwc = lg->w * bs; lhc = lg->h * bs;
+				/* anchor the badge's bottom-right corner near the card corner */
+				ccx = 106.0f - lwc * 0.5f;
+				ccy = 104.0f - lhc * 0.5f;
+				/* dark backing plate so a light logo stays legible over bright art */
+				snes_fill_quad(t, cx + ccx * sc, cy + ccy * sc,
+					       (lwc + 10.0f) * sc, (lhc + 8.0f) * sc,
+					       0.0f, 0.0f, 0.0f, 0.55f * dim);
+				snes_blit_tex_tint(t, m->pk, lg, cx + ccx * sc, cy + ccy * sc,
+						   lwc * sc, lhc * sc, 1.0f, dim, dim, dim);
+			}
+		}
 		/* player-count icon (bottom-right): 1P / 2P-simultaneous / 1P-2P, chosen
 		 * by players+simultaneous (sys_game_card_show.setPlayers). The player_icon
 		 * node authors three sprite comps differing only in atlas sy (icon_1P=661,
@@ -945,7 +971,7 @@ static const uint32_t *fct_get(snes_menu *m, int gi)
 	/* with per-ROM boxart the focused body differs per game, so rebuild when the
 	 * focused index changes; otherwise it is identical for all cards (build once). */
 	if (!m->fct_ready || m->fct_aspect != m->aspect ||
-	    (m->gba_boxart && m->fct_gi != gi)) {
+	    ((m->gba_boxart || m->gba_types) && m->fct_gi != gi)) {
 		render_card_tile(m, gi, m->fct, 1.0f);         /* blue_a=1 -> active body */
 		m->fct_ready = 1;
 		m->fct_aspect = m->aspect;
@@ -976,7 +1002,10 @@ static const uint32_t *ctile_get(snes_menu *m, int gi)
 	 * same tile once per visible card per frame - the direct-mapped cap-1 slot thrashes
 	 * and a scroll-from-rest that brings a fresh index into view spikes the frame. Cache
 	 * ONE shared body tile (slot 0, sentinel key) and return it for every card. */
-	if (m->gba_mode && !m->gba_boxart) {
+	/* Shared single-tile fast path only when EVERY card is truly identical: no
+	 * per-ROM box art AND no per-card console badge. With badges active the cards
+	 * differ (GB/GBC/GBA logo), so fall through to the per-gi direct-mapped cache. */
+	if (m->gba_mode && !m->gba_boxart && !m->gba_types) {
 		if (m->ctile_gi[0] != 0x40000000) {
 			render_card_tile(m, gi, m->ctile, 0.0f);
 			m->ctile_gi[0] = 0x40000000;
@@ -1041,6 +1070,20 @@ void snes_menu_set_gba_boxart(snes_menu *m, const snes_img_entry *img, const sne
 	/* per-ROM art makes every card distinct: invalidate the shared/keyed tile caches */
 	m->ctile_aspect = -1;
 	m->fct_ready = 0; m->fct_gi = -1;
+	if (m->ctile_gi) for (i = 0; i < m->ctile_cap; i++) m->ctile_gi[i] = -1;
+}
+
+void snes_menu_set_console_badges(snes_menu *m, const unsigned char *types,
+				  const snes_img_entry *gb, const snes_img_entry *gbc,
+				  const snes_img_entry *gba)
+{
+	int i;
+	m->gba_types = types;
+	m->console_logo[0] = gb;
+	m->console_logo[1] = gbc;
+	m->console_logo[2] = gba;
+	/* the badge is baked into the per-card tile cache: invalidate so it repaints */
+	m->ctile_aspect = -1;
 	if (m->ctile_gi) for (i = 0; i < m->ctile_cap; i++) m->ctile_gi[i] = -1;
 }
 
@@ -1644,6 +1687,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->sub_ready = 0; m->sub_key = 0; m->sub_op0 = 0; m->sub_op1 = 0;
 	m->wp_skip0 = 0; m->wp_skip1 = 0;
 	m->gba_mode = 0; m->gba_names = 0; m->gba_cart_img = 0; m->launch = -1; m->sysreset = 0; m->pstart = 0;
+	m->gba_types = 0; m->console_logo[0] = m->console_logo[1] = m->console_logo[2] = 0;
 	m->ctile = 0; m->ctile_gi = 0; m->ctile_cap = 0; m->ctile_aspect = -1;
 	m->fct = 0; m->fct_ready = 0; m->fct_aspect = -1; m->no_cursor = 0;
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;

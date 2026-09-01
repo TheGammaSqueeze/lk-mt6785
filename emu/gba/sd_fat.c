@@ -1,5 +1,6 @@
 /* On-device SD -> FAT glue (LK only). See sd_fat.h. */
 #include "sd_fat.h"
+#include "fat_wr.h"   /* fat_wr_mkpath for gba_sd_make_rom_dirs */
 
 /* LK MMC block-read: reads blkcnt 512B sectors at LBA blknr from mmc device
  * dev_num, partition part_id, into dst. Returns blkcnt on success. Declared here
@@ -132,32 +133,54 @@ int gba_sd_load_bios(fat_vol *v, unsigned char *dst)
 static char lc(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
 static int name_ci_cmp(const char *a, const char *b)
 { while (*a && *b) { char x = lc(*a), y = lc(*b); if (x != y) return x - y; a++; b++; } return lc(*a) - lc(*b); }
-static int ends_dot_gba(const char *n)
+/* case-insensitive suffix match: does name end with the given dotted extension
+ * (e.g. ".gb", ".gbc", ".gba")? Both are ASCII; ext must include the leading dot. */
+static int ends_ext(const char *n, const char *ext)
 {
-	int L = 0; while (n[L]) L++;
-	if (L < 4) return 0;
-	{ const char *e = n + L - 4;
-	  return e[0] == '.' && lc(e[1]) == 'g' && lc(e[2]) == 'b' && lc(e[3]) == 'a'; }
+	int L = 0, E = 0, i;
+	while (n[L]) L++;
+	while (ext[E]) E++;
+	if (L < E + 1) return 0;                    /* need at least one char before the ext */
+	{ const char *e = n + L - E;
+	  for (i = 0; i < E; i++) if (lc(e[i]) != lc(ext[i])) return 0; }
+	return 1;
 }
 
-int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
+/* Append every <ext> file in <path> to out[], tagged with <type>. n is the count
+ * already stored; returns the new count. *tot is bumped for every match (even past
+ * the cap) so the caller can detect truncation. A missing folder is not an error. */
+static int scan_rom_folder(fat_vol *v, const char *path, const char *ext,
+			   unsigned char type, gba_rom_entry *out, int max, int n, int *tot)
 {
-	fat_dir d; fat_dirent e; int n = 0, i, j, tot = 0;
-	if (total) *total = 0;
-	if (max <= 0 || fat_opendir(v, "/roms/gba", &d) != 0) return 0;
+	fat_dir d; fat_dirent e;
+	if (fat_opendir(v, path, &d) != 0) return n;   /* folder absent -> nothing to add */
 	while (fat_readdir(&d, &e)) {
-		if (e.is_dir || !ends_dot_gba(e.name)) continue;
-		if (e.size == 0) continue;          /* skip empty/placeholder files */
-		tot++;                              /* count every match, even past the cap */
+		if (e.is_dir || !ends_ext(e.name, ext)) continue;
+		if (e.size == 0) continue;              /* skip empty/placeholder files */
+		(*tot)++;
 		if (n < max) {
 			int k = 0;
 			while (e.name[k] && k < 127) { out[n].name[k] = e.name[k]; k++; }
 			out[n].name[k] = 0;
 			out[n].first_clus = e.first_clus;
 			out[n].size = e.size;
+			out[n].type = type;
 			n++;
 		}
 	}
+	return n;
+}
+
+int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
+{
+	int n = 0, i, j, tot = 0;
+	if (total) *total = 0;
+	if (max <= 0) return 0;
+	/* Merge all three consoles into one roster; each entry keeps its type so the
+	 * menu can badge it and the launcher can pick the right core. */
+	n = scan_rom_folder(v, "/roms/gb",  ".gb",  GBA_CONSOLE_GB,  out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/gbc", ".gbc", GBA_CONSOLE_GBC, out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/gba", ".gba", GBA_CONSOLE_GBA, out, max, n, &tot);
 	if (total) *total = tot;
 	for (i = 1; i < n; i++) {           /* insertion sort, case-insensitive by name */
 		gba_rom_entry t = out[i];
@@ -166,6 +189,15 @@ int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
 		out[j + 1] = t;
 	}
 	return n;
+}
+
+int gba_sd_make_rom_dirs(fat_vol *v)
+{
+	int rc = 0;
+	if (fat_wr_mkpath(v, "/roms/gb")  != 0) rc = -1;
+	if (fat_wr_mkpath(v, "/roms/gbc") != 0) rc = -1;
+	if (fat_wr_mkpath(v, "/roms/gba") != 0) rc = -1;
+	return rc;
 }
 
 uint32_t gba_sd_load_rom(fat_vol *v, const gba_rom_entry *r, unsigned char *dst, uint32_t cap)

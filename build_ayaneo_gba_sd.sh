@@ -60,9 +60,12 @@ if [ -d "$SNES_ASSETS" ]; then
 	echo ">> Generating GBA cartridge placeholder"
 	python3 tools/ayaneo/gba/gen_gba_cart.py out/gba_cart.png
 
-	echo ">> Packing SNES menu assets (with GBA cart placeholder)"
+	echo ">> Packing SNES menu assets (with GBA cart placeholder + console badges)"
 	python3 tools/ayaneo/snes/pack_snes.py "$SNES_ASSETS" out/snes_pack.bin \
-		--rgb565 --gba-cart out/gba_cart.png
+		--rgb565 --gba-cart out/gba_cart.png \
+		--logo-gb  tools/ayaneo/snes/logos/gb.png \
+		--logo-gbc tools/ayaneo/snes/logos/gbc.png \
+		--logo-gba tools/ayaneo/snes/logos/gba.png
 
 	echo ">> Packaging boot_b (animation + chime + SNES pack)"
 	python3 tools/ayaneo/gba/build_snes_boot_b.py out/snes_pack.bin out/gba_menu_boot_b.img

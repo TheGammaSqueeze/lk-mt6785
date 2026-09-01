@@ -2202,6 +2202,9 @@ int ayaneo_gba_sd_boot(void)
 		return -3;
 	}
 	g_dbg_bt_bios = BT_MS();
+	/* Ensure /roms/gb, /roms/gbc, /roms/gba exist so the user has a place to drop
+	 * each console's ROMs (idempotent; harmless if already present or read-only). */
+	gba_sd_make_rom_dirs(&s_sd_vol);
 	{
 		int total = 0;
 		s_nrom = gba_sd_list_roms(&s_sd_vol, s_roms, 128, &total);
