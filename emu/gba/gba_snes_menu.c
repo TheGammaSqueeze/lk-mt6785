@@ -76,6 +76,11 @@ extern void ayaneo_gbc_audio_init(void);
 extern int  ayaneo_menu_audio_room(void);
 extern void ayaneo_menu_audio_submit(const short *stereo, unsigned frames);
 extern void ayaneo_menu_audio_silence(void);
+extern int  ayaneo_get_mute_menu(void);
+extern int  ayaneo_get_mute_bios(void);
+extern void ayaneo_set_mute_menu(int v);
+extern void ayaneo_set_mute_bios(int v);
+extern void ayaneo_settings_save(void);
 extern int  ayaneo_present_skip_framedone;         /* 0 = present blocks on vsync */
 extern int  ayaneo_wait_frame_done(void);          /* block one vsync WITHOUT re-latching the OVL */
 extern unsigned int gpt4_get_current_tick(void);   /* 13 MHz free-running counter */
@@ -281,12 +286,17 @@ static void pump_audio(void)
 {
 	uint32_t h;
 	int need;
+	int mute = ayaneo_get_mute_menu();	/* mute the menu music + SFX (persisted) */
 	while ((h = snes_menu_next_sound(&s_menu)) != 0)
-		play_sound(h, 0);
+		if (!mute) play_sound(h, 0);	/* drop queued SFX while muted */
 	need = ayaneo_menu_audio_room();
 	if (need > 16384) need = 16384;
 	if (need > 0) {
+		/* still mix (advances the BGM loop cursors) then zero the output when
+		 * muted, so the ring is fed silence - no underrun, no looped tail. */
 		snes_audio_mix(&s_mix, s_mixbuf, (unsigned)need);
+		if (mute)
+			memset(s_mixbuf, 0, (unsigned)need * 2u * sizeof(s_mixbuf[0]));
 		ayaneo_menu_audio_submit(s_mixbuf, (unsigned)need);
 	}
 }
@@ -399,6 +409,19 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	}
 	snes_menu_set_fct(&s_menu, (uint32_t *)SNES_FCT_PA);
 	snes_menu_set_wp43(&s_menu, (uint32_t *)SNES_WP43_PA);
+
+	/* Repurpose the top two cosmetic Options toggles as functional, persisted
+	 * audio-mute settings: relabel them (fall back to a shorter label if the
+	 * authored pool slot is too small) and seed the toggle state from the saved
+	 * values. setting2 stays the untouched third cosmetic toggle. */
+	if (snes_menu_relabel_option(&s_menu, 0, "Mute BIOS Audio") != 0)
+		snes_menu_relabel_option(&s_menu, 0, "Mute BIOS");
+	if (snes_menu_relabel_option(&s_menu, 1, "Mute Menu Audio") != 0)
+		snes_menu_relabel_option(&s_menu, 1, "Mute Menu");
+	s_menu.opt_on = (s_menu.opt_on & ~3u)
+		| (ayaneo_get_mute_bios() ? 1u : 0u)
+		| (ayaneo_get_mute_menu() ? 2u : 0u);
+	snes_menu_apply_options(&s_menu);	/* show the saved toggle state on open */
 	/* Resume-panel overlay cache: reuse the deflate staging (free after load_pack).
 	 * fb-size = pitch*960*4 <= 1536*960*4 = 5.9MB < the 8MB comp region. */
 	snes_menu_set_rcache(&s_menu, (uint32_t *)SNES_COMP_PA);
@@ -496,6 +519,23 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		}
 
 		snes_menu_update(&s_menu, &in, dt);
+
+		/* Persist + apply the two audio-mute toggles when the user flips them in
+		 * the Options screen (setting0 = BIOS chime, setting1 = menu audio). Only
+		 * writes on an actual change; the initial state was seeded from the saved
+		 * values so this does not fire on entry. */
+		{
+			static int mute_last = -1;
+			int mb = (int)(s_menu.opt_on & 3u);
+			if (mb != mute_last) {
+				if (mute_last >= 0) {
+					ayaneo_set_mute_bios(mb & 1);
+					ayaneo_set_mute_menu((mb >> 1) & 1);
+					ayaneo_settings_save();
+				}
+				mute_last = mb;
+			}
+		}
 		/* TEMP diagnostic top-left: "R<render> P<peak> <fps>f". R = current
 		 * snes_menu_render ms; P = the PEAK render ms over the last ~2s (the worst
 		 * frame is what breaks vsync and causes the flicker, not the average). Both

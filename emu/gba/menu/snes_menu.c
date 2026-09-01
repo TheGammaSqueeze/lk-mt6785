@@ -2099,6 +2099,53 @@ static void resolve_opt_items(snes_menu *m, snes_rnode *out[4])
 	int i;
 	for (i = 0; i < 4; i++) out[i] = m->overlay[1] ? desc(m->pk, m->overlay[1], nm[i]) : 0;
 }
+/* Find the first COMP_LABEL in node n's subtree and overwrite its text in place
+ * (<= the authored pool length, clearing the @key so the literal is drawn).
+ * Returns the label found (0 if none). Mutates the DRAM blob (see disable_labels). */
+static snes_comp_label *relabel_subtree(snes_menu *m, snes_rnode *n, const char *text)
+{
+	snes_rnode *ch;
+	unsigned i;
+	if (!n) return 0;
+	for (i = 0; i < n->def->comp_count; i++) {
+		snes_comp *c = (snes_comp *)snes_node_comp(&m->home, n->def, i);
+		if (c->type == COMP_LABEL) {
+			snes_comp_label *cl = (snes_comp_label *)c;
+			char *dst;
+			unsigned cap = 0, ln = 0, k;
+			if (!cl->text) continue;
+			dst = (char *)(m->pk->strpool + cl->text);
+			while (dst[cap]) cap++;
+			while (text[ln]) ln++;
+			if (ln > cap) return 0;		/* would overflow the pool slot */
+			for (k = 0; k < ln; k++) dst[k] = text[k];
+			dst[ln] = 0;
+			cl->text_key = 0;		/* draw the literal, not the @key */
+			return cl;
+		}
+	}
+	for (ch = n->child; ch; ch = ch->sib) {
+		snes_comp_label *r = relabel_subtree(m, ch, text);
+		if (r) return r;
+	}
+	return 0;
+}
+
+/* Repurpose one of the three Options toggle rows (idx 0..2): overwrite its label.
+ * Public so the LK layer can turn the cosmetic toggles into functional settings.
+ * Returns 0 on success, <0 if the row/label is missing or the text does not fit. */
+int snes_menu_relabel_option(snes_menu *m, int idx, const char *text)
+{
+	static const char *nm[3] = { "setting0", "setting1", "setting2" };
+	snes_rnode *row;
+	if (idx < 0 || idx > 2 || !m->overlay[1] || !text)
+		return -1;
+	row = desc(m->pk, m->overlay[1], nm[idx]);
+	if (!row)
+		return -1;
+	return relabel_subtree(m, row, text) ? 0 : -1;
+}
+
 /* Reflect opt_cur (cursor_area) + opt_on bits (switch_on 481,755 / switch_off
  * 481,737 under each toggle) onto the Options rows. */
 static void apply_options_state(snes_menu *m)
@@ -2123,6 +2170,10 @@ static void apply_options_state(snes_menu *m)
 		}
 	}
 }
+
+/* Public: re-apply the Options toggle sprites after the LK layer seeds opt_on
+ * from persisted settings, so the switches show the saved state on first open. */
+void snes_menu_apply_options(snes_menu *m) { apply_options_state(m); }
 
 /* Language 2D grid, row-major [row*2+col]: col0 (wx -492) = language01/02/03/04
  * top->bottom, col1 (wx 36) = language05/06/07/08. Index 0 = English (top-left). */

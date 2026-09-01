@@ -195,6 +195,12 @@ void snes_menu_set_gba_roster(snes_menu *m, const char *const *names, int n,
 /* If A/Start launched a ROM, returns its index and clears the flag; else -1. */
 int snes_menu_take_launch(snes_menu *m);
 
+/* Overwrite the label of Options toggle row idx (0..2) in place; lets the LK layer
+ * repurpose the cosmetic toggles as real settings. 0 ok, <0 if it does not fit. */
+int snes_menu_relabel_option(snes_menu *m, int idx, const char *text);
+/* Re-apply the Options toggle sprites after the LK layer seeds opt_on. */
+void snes_menu_apply_options(snes_menu *m);
+
 /* wallpaper cache dims (caller allocates WP_CACHE_W*WP_CACHE_H u32). */
 #define WP_CACHE_W 1536
 #define WP_CACHE_H 720
