@@ -218,7 +218,21 @@ or 240fps-app tests; my rows are the frame-model estimate above. One frame is 16
 | **This build, Max (3)**         | ~4 frames (est)          | game's internal lag fully removed; only the fixed pipeline remains |
 | **This build, Max, 1-frame debounce** | ~3 frames (est)   | *hypothetical*: relax the glitch filter to a 2-read agreement |
 | **This build, Max, no debounce** | ~2 frames (est)         | *hypothetical*: raw input, would match/beat a stock GBA and the Pocket |
-| Android emulator (Retroid), measured | ~92 ms (~5.5 frames) | OS input stack + SurfaceFlinger compositor + buffering |
+| Android emulator, RetroArch     | ~92 ms in one favorable reading, typically higher | always-triple-buffered SurfaceFlinger + input stack + emulator buffering; only nears hardware with run-ahead tuning |
+
+A word on that Android row, because the number flatters Android. The ~92 ms is one
+person's favorable reading (a Retroid, a Game Boy game, default RetroArch). It is a floor,
+not a typical figure: Android apps are *always* triple-buffered and the graphics stack is
+built "for throughput rather than fast reaction," drawing frames as fast as possible and
+processing them in queue order ([Android systrace docs][android-systrace]). SurfaceFlinger
+compositing plus that triple buffering alone is often two-plus frames before the input
+stack and the emulator's own buffering are even counted, so untuned Android emulation
+usually lands well above 92 ms, and RetroArch only approaches hardware once you turn on
+run-ahead and hand-tune the latency settings. I left the favorable number in the table on
+purpose, not to flatter myself: at ~92 ms it is in the same ballpark as my *worst* tier
+(Off, ~100-117 ms), Android's typical untuned case is worse still, and my run-ahead tiers
+pull below it. If I had cited Android's typical figure instead, the gap would look larger
+than it honestly is.
 
 **The single thing standing between me and beating real hardware is the debounce.** At
 Max the game's internal lag is already gone, so those ~4 fixed frames are 2 debounce +
@@ -327,6 +341,7 @@ is the equalizer that claws back the rest. That is the honest version.
 [retrorgb-lagdb]: https://retrorgb.com/lagtest.html
 [gbatemp-vrr]: https://gbatemp.net/threads/what-is-variable-refresh-rate-for-gba-feature-of-analogue-pocket.673346/
 [pocket-wiki]: https://en.wikipedia.org/wiki/Analogue_Pocket
+[android-systrace]: https://source.android.com/docs/core/tests/debug/systrace
 [libretro-runahead]: https://docs.libretro.com/guides/runahead/
 [libretro-latency]: https://docs.libretro.com/guides/latency/
 [libretro-medium]: https://medium.com/@libretro/retroarch-1-7-2-achieving-better-latency-than-original-hardware-through-new-runahead-method-1b80d26bb5d1
