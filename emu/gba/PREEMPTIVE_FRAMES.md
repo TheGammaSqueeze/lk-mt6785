@@ -216,11 +216,15 @@ the committed timeline and its cost is constant.
 
 - **Per-frame rewind cost + adaptive depth.** Run-ahead runs N+1 emulations + a
   512 KB save/load every frame; the emulation cost is scene-dependent (~2.3 ms
-  light, ~5 ms heavy). At a fixed depth a heavy scene overruns the ~16.6 ms vsync
-  budget and the loop (which masters audio) drops into slow motion. So the depth
-  is ADAPTIVE: `preempt_effective_depth() = min(configured, 5000/em)`, calibrated
-  on device (pf=2 at em~2.5 ms, pf=1 at em~5 ms). Heavy scenes gracefully fall to
-  a lower depth (or off) and hold 60 fps; the menu setting is effectively a "max
+  light, ~5 ms heavy) and there is ~7 ms of fixed per-frame overhead (present +
+  battery/LED/volume polls). At a fixed depth a heavy scene overruns the ~16.7 ms
+  vsync budget and the loop (which masters audio) starves the AFE ring = slow
+  motion or silence. So the depth is a CLOSED LOOP on the measured full per-frame
+  period (`preempt_adapt`): shed one level the instant the period runs long
+  (>17.4 ms), ramp back up one level after ~4 s of clean frames. A lone probe
+  frame is absorbed by the audio ring, so it settles at the deepest depth that
+  holds 60 fps - heavy scenes fall to 0 (run-ahead off, full 60 fps + solid
+  audio), light scenes get the configured depth. The menu setting is a "max
   desired depth". A CPU-clock bump during gameplay would raise the ceiling so the
   full depth holds in more scenes (future work).
 - Run-ahead reduces latency every frame (display is always N ahead), which is the
