@@ -195,7 +195,8 @@ static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 		snprintf(lbuf, sizeof lbuf, "sd: /roms/gba count=%d (total=%d)", nr, tot);
 		fastboot_info(lbuf);
 	}
-	for (i = 0; i < nr && i < 8; i++) {
+	for (i = 0; i < nr; i++) {   /* list ALL found (up to the 16-entry probe cap) so the
+				      * full ROM list is obtainable for matching boxart names */
 		snprintf(lbuf, sizeof lbuf, "sd: rom[%d] %s (%u)", i, roms[i].name, roms[i].size);
 		fastboot_info(lbuf);
 	}
