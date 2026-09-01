@@ -105,6 +105,7 @@ extern int  ayaneo_get_lcd_filter(void);
 extern void ayaneo_set_lcd_filter(int v);
 extern int  ayaneo_get_color_correct(void);
 extern void ayaneo_set_color_correct(int v);
+extern int  ayaneo_get_mute_bios(void);
 extern void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
 			int x, int y, int w, int h, unsigned int argb);
 extern void ayaneo_fill_blend(unsigned int *buf, unsigned int pitch_w,
@@ -1238,6 +1239,10 @@ static int emu_thread(void *arg)
 			 * back on for the actual game below. */
 			dynarec_enable = 0;
 			ayaneo_gbc_blank();			/* black edges outside the cropped logo */
+			/* "Mute BIOS Audio" also silences the GBA BIOS boot-logo jingle (the
+			 * emulated BIOS runs through the game audio path here). Pause across the
+			 * intro, then unpause so the menu/game audio is restored. */
+			if (ayaneo_get_mute_bios()) ayaneo_gbc_audio_pause(1);
 			for (fi = 0; fi < intro_frames; fi++) {
 				update_buttons();
 				run_one_frame();
@@ -1245,6 +1250,7 @@ static int emu_thread(void *arg)
 				mtk_wdt_restart();		/* keep the armed watchdog fed during the intro */
 				if (PRESSED(GPIO_B)) break;	/* hold B to skip the logo */
 			}
+			if (ayaneo_get_mute_bios()) ayaneo_gbc_audio_pause(0);
 			if (s_nrom > 0) {
 				unsigned char *rp = gba_core_rom_ptr();
 				for (;;) {
