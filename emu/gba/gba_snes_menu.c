@@ -547,7 +547,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		{
 			extern unsigned ayaneo_menu_debounce(unsigned raw, unsigned *hist);
 			enum { DL=1, DR=2, DU=4, DD=8, DA=16, DB=32, DST=64, DSE=128, DLB=256, DRB=512 };
-			static unsigned mhist[3];	/* MENU_DEBOUNCE-1 = 3 */
+			static unsigned mhist[3];	/* >= MENU_DEBOUNCE-1 words */
 			unsigned raw = 0, deb;
 			if (PRESSED(K_LEFT))  raw |= DL;
 			if (PRESSED(K_RIGHT)) raw |= DR;

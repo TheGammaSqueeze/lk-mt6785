@@ -841,13 +841,12 @@ static void preempt_apply_cpu(int pf)
 }
 
 enum { MK_UP=1, MK_DOWN=2, MK_LEFT=4, MK_RIGHT=8, MK_A=16, MK_B=32, MK_AYA=64 };
-/* Maximum debounce for MENU navigation (Pico menu + SNES carousel): a bit only
- * counts as pressed after it read pressed on MENU_DEBOUNCE consecutive frames, so
- * contact bounce and single/multi-frame line glitches can never register a stray
- * menu press. Release is immediate. Menus are latency-insensitive, so this is
- * strictly better there; GAMEPLAY keeps its lighter 2-frame filter (update_buttons)
- * for responsiveness. */
-#define MENU_DEBOUNCE 4
+/* Debounce for MENU navigation (Pico menu + SNES carousel): a bit only counts as
+ * pressed after it read pressed on MENU_DEBOUNCE consecutive frames, rejecting
+ * contact bounce and single-frame line glitches. Release is immediate. 2-frame
+ * matches gameplay (proven glitch-free and responsive); a heavier filter (was 4)
+ * added ~50 ms of felt lag to menu presses, which is too much. */
+#define MENU_DEBOUNCE 2
 unsigned ayaneo_menu_debounce(unsigned raw, unsigned *hist)	/* hist: MENU_DEBOUNCE-1 words */
 {
 	unsigned deb = raw;
