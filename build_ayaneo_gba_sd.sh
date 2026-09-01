@@ -26,8 +26,11 @@ cd "$ROOT"
 
 JOBS="$(nproc 2>/dev/null || echo 4)"
 
-echo ">> Building gpSP core archive (dynarec)"
+echo ">> Building gpSP core objects (dynarec)"
 emu/gba/build_core_gba.sh >/dev/null
+
+echo ">> Linking gpSP core blob for boot_b (core is not in lk_a)"
+emu/gba/build_core_blob.sh >/dev/null
 
 echo ">> Building $PROJECT (AYANEO_GBA_SD=yes, jobs=$JOBS)"
 rm -f "build-$PROJECT/lk" "build-$PROJECT/lk.img"

@@ -33,26 +33,41 @@ extern int _dprintf(const char *fmt, ...);
 #define GBA_ATRACE(...)	do {} while (0)
 #endif
 
-/* ---- gpSP core bridge (emu/gba/gba_wrap.c) ---- */
-extern int  gba_core_init(void *arena, unsigned size);
-extern unsigned char *gba_core_rom_ptr(void);
-extern unsigned gba_core_rom_capacity(void);
-extern unsigned char *gba_core_scratch_ptr(void);
-extern unsigned gba_core_scratch_size(void);
-extern int  gba_core_start(unsigned romsz, const void *bios16k);
-extern void gba_core_enter_bios(void);	/* run the BIOS boot logo (start PC at 0x0) */
-extern void gba_core_cpu_loop(void);
-extern void gba_core_pre_frame(void);
-extern void gba_core_post_frame(void);
-extern const unsigned short *gba_core_screen(void);
-extern void gba_core_set_keys(unsigned gba_mask);
-extern void *gba_core_backup_ptr(void);
-extern unsigned gba_core_backup_size(void);
-extern unsigned gba_core_state_size(void);
-extern void gba_core_state_save(void *buf);
-extern void gba_core_state_load(const void *buf);
-extern int  dynarec_enable;	/* gpSP global (gba_wrap.c); 0 = pure interpreter */
-extern volatile int g_gba_audio_suppress;	/* mute the discarded run-ahead frames */
+/* ---- gpSP core bridge (loadable blob in boot_b, see gba_core_abi.h) ----
+ * The core is no longer linked into lk_a; gba_core_load() pulls the blob from boot_b into
+ * DRAM at boot and hands back this export table. The macros below keep every existing
+ * call site unchanged by routing it through the table, so gba_core_state_save(x) etc.
+ * become g_core->state_save(x), and the three shared flags become pointer derefs. */
+#include "gba_core_abi.h"
+extern const struct gba_core_exports *gba_core_load(void);	/* gba_core_loader.c */
+static const struct gba_core_exports *g_core;
+
+#define gba_core_init(...)          g_core->core_init(__VA_ARGS__)
+#define gba_core_start(...)         g_core->core_start(__VA_ARGS__)
+#define gba_core_enter_bios(...)    g_core->enter_bios(__VA_ARGS__)
+#define reset_gba(...)              g_core->reset(__VA_ARGS__)
+#define gba_core_cpu_loop(...)      g_core->cpu_loop(__VA_ARGS__)
+#define gba_core_pre_frame(...)     g_core->pre_frame(__VA_ARGS__)
+#define gba_core_post_frame(...)    g_core->post_frame(__VA_ARGS__)
+#define gba_frame_boundary_finish(...) g_core->frame_boundary_finish(__VA_ARGS__)
+#define gba_core_cpu_ticks(...)     g_core->cpu_ticks(__VA_ARGS__)
+#define gba_core_set_keys(...)      g_core->set_keys(__VA_ARGS__)
+#define gba_core_screen(...)        g_core->screen(__VA_ARGS__)
+#define gba_core_screen_fill(...)   g_core->screen_fill(__VA_ARGS__)
+#define gba_core_state_size(...)    g_core->state_size(__VA_ARGS__)
+#define gba_core_state_save(...)    g_core->state_save(__VA_ARGS__)
+#define gba_core_state_load(...)    g_core->state_load(__VA_ARGS__)
+#define gba_sound_ring_save(...)    g_core->sound_ring_save(__VA_ARGS__)
+#define gba_sound_ring_load(...)    g_core->sound_ring_load(__VA_ARGS__)
+#define gba_core_rom_ptr(...)       g_core->rom_ptr(__VA_ARGS__)
+#define gba_core_rom_capacity(...)  g_core->rom_capacity(__VA_ARGS__)
+#define gba_core_scratch_ptr(...)   g_core->scratch_ptr(__VA_ARGS__)
+#define gba_core_scratch_size(...)  g_core->scratch_size(__VA_ARGS__)
+#define gba_core_backup_ptr(...)    g_core->backup_ptr(__VA_ARGS__)
+#define gba_core_backup_size(...)   g_core->backup_size(__VA_ARGS__)
+#define dynarec_enable              (*g_core->dynarec_enable)
+#define g_gba_audio_suppress        (*g_core->audio_suppress)
+#define g_gba_load_light            (*g_core->load_light)
 
 /* ---- LK primitives ---- */
 extern void *memcpy(void *, const void *, unsigned int);
@@ -604,7 +619,6 @@ void gba_yield_to_main(void)
 	if (s_cpu_restart_req) {		/* a core reset happened while we were parked */
 		s_cpu_restart_req = 0;
 		if (s_cpu_clean_boundary) {	/* run-ahead rewind: run the skipped vblank tail so */
-			extern void gba_frame_boundary_finish(void);
 			s_cpu_clean_boundary = 0;	/* the re-entry starts a FULL frame, not a ~960cyc stub */
 			gba_frame_boundary_finish();
 		}
@@ -732,9 +746,6 @@ static void preempt_present(void)
 		return;
 	}
 	{
-		extern int g_gba_load_light;
-		extern void gba_sound_ring_save(void *dst);
-		extern void gba_sound_ring_load(const void *src);
 		static unsigned char s_ahead_state[512 * 1024] __attribute__((aligned(8)));
 		static unsigned char s_ahead_snd[128 * 1024] __attribute__((aligned(8)));	/* sound ring */
 		unsigned t0, t1, t2, t3;
@@ -775,7 +786,6 @@ static unsigned int fnv1a(unsigned int h, const unsigned char *p, unsigned long 
  * scratch. */
 static unsigned int gba_selftest_hash(unsigned char *tmp_state, unsigned char *tmp_snd)
 {
-	extern void gba_sound_ring_save(void *dst);
 	unsigned int h;
 	gba_core_state_save(tmp_state);
 	gba_sound_ring_save(tmp_snd);
@@ -788,7 +798,6 @@ static unsigned int gba_selftest_hash(unsigned char *tmp_state, unsigned char *t
 /* Component hashes (state / sound ring / screen) into out[3], for pinpointing a FAIL. */
 static void gba_selftest_hash3(unsigned char *tmp_state, unsigned char *tmp_snd, unsigned int out[3])
 {
-	extern void gba_sound_ring_save(void *dst);
 	gba_core_state_save(tmp_state);
 	gba_sound_ring_save(tmp_snd);
 	out[0] = fnv1a(2166136261u, tmp_state, 512u * 1024u);
@@ -801,8 +810,6 @@ static void gba_selftest_hash3(unsigned char *tmp_state, unsigned char *tmp_snd,
  * restore, clean-boundary longjmp) - the exact path a run-ahead committed frame uses. */
 static void gba_selftest_reenter(const unsigned char *state, const unsigned char *snd)
 {
-	extern int g_gba_load_light;
-	extern void gba_sound_ring_load(const void *src);
 	g_gba_load_light = 1;
 	gba_core_state_load(state);
 	gba_sound_ring_load(snd);
@@ -830,7 +837,6 @@ static void gba_selftest_reenter(const unsigned char *state, const unsigned char
  * then the game continues N frames past S0 (a valid advance). Zero cost when not run. */
 static void gba_run_ahead_selftest(int nframes)
 {
-	extern void gba_sound_ring_save(void *dst);
 	static unsigned char s0_state[512 * 1024] __attribute__((aligned(8)));
 	static unsigned char s0_snd[128 * 1024] __attribute__((aligned(8)));
 	static unsigned char tmp_state[512 * 1024] __attribute__((aligned(8)));
@@ -1505,6 +1511,15 @@ static int emu_thread(void *arg)
 
 	gba_disable_align_faults();		/* gpSP relies on unaligned host accesses */
 	ayaneo_display_prepare();		/* own the panel + backlight for on-screen debug */
+
+	/* Load the GBA core blob from boot_b into its DRAM slot and bind the export table.
+	 * The core is no longer part of lk_a; everything below drives it through g_core. */
+	g_core = gba_core_load();
+	if (!g_core) {
+		gba_dbg("Gerr blob");
+		return 0;
+	}
+
 #ifdef AYANEO_GBA_INTERP
 	dynarec_enable = 0;			/* diagnostic: pure interpreter, no JIT */
 	gba_dbg("GBA 1: emu start (INTERP, no dynarec)");
@@ -1747,7 +1762,6 @@ static int emu_thread(void *arg)
 			}
 			{
 				extern volatile unsigned int g_dbg_frame_ticks;
-				extern unsigned int gba_core_cpu_ticks(void);
 				unsigned int ct0 = gba_core_cpu_ticks();
 				unsigned int em0 = gpt4_get_current_tick();
 				run_one_frame();	/* runs one GBA frame + submits its audio */
@@ -1808,7 +1822,6 @@ static int emu_thread(void *arg)
 			 * NOT resume execute_arm in place - request a clean CPU-thread restart, which
 			 * the next run_one_frame triggers (same mechanism as the intro->game reset). */
 			if (s_reset_req) {
-				extern void reset_gba(void);
 				s_reset_req = 0;
 				s_menu_open = 0;
 				ayaneo_menu_audio_silence();	/* drop the stale ring so it does not loop */
@@ -1923,7 +1936,6 @@ static int emu_thread(void *arg)
 				 * fresh-boot BIOS and the stale-previous-game cases start white, and the
 				 * loop runs the NEW game until it renders its own real content. Resumed
 				 * games redraw on their first emulated frame => ~1 frame of warmup. */
-				extern void gba_core_screen_fill(unsigned short v);
 				gba_core_screen_fill(0xFFFFu);
 				for (w = 0; w < 150; w++) {
 					const unsigned short *s = gba_core_screen();

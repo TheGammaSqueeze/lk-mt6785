@@ -359,6 +359,8 @@ OBJS += \
 # In-LK emulator driver: GBA (gpSP) takes over the same hooks as the GBC build.
 ifeq ($(AYANEO_GBA),yes)
 OBJS += emu/gba/gba_driver.o
+OBJS += emu/gba/gba_core_loader.o
+OBJS += emu/gba/gba_cc_lut444.o		# color-correction LUT (LK display-side, not core)
 OBJS += emu/gba/gba_boxart.o
 OBJS += emu/gba/gba_boxart_sd.o
 OBJS += emu/gba/fat_ro.o

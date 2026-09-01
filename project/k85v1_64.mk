@@ -89,7 +89,11 @@ endif
 AYANEO_GBA ?= no
 ifeq ($(AYANEO_GBA),yes)
 DEFINES += AYANEO_GBA
-GBA_LIB := $(LK_TOP_DIR)/emu/gba/libgpsp.a
+# The gpSP core is NOT linked into lk_a anymore: it ships as a loadable blob in boot_b
+# (core_gba.blob) and gba_core_loader.c pulls it into DRAM at boot. This frees ~993 KiB
+# of the 2 MB partition. libgpsp.a is still built (build_core_gba.sh) to feed the blob
+# link (build_core_blob.sh), just not linked here. So GBA_LIB stays empty.
+GBA_LIB :=
 AYANEO_GBC := no
 # Diagnostic: force the pure interpreter (no ARM dynarec) to isolate JIT issues.
 ifeq ($(AYANEO_GBA_INTERP),yes)
