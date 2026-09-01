@@ -820,24 +820,21 @@ static void cpu_step(int dir)
 	s_cpu_dirty = 1;
 }
 
-/* Per-tier CPU escalation, aligned to the manual OPP grid: Off = low-power
- * 600 MHz, Balanced 999, Responsive 1199, Max 1400 (the next OPP up from
- * Responsive). NOTE: ayaneo_set_cpu_mhz only reprograms the ARM-PLL PCW - it does
- * NOT change core voltage (LK has no DVFS voltage table), so the clock the
- * preloader left the cores at (g_dbg_boot_mhz, the boot Vproc-backed point) is the
- * highest guaranteed-stable frequency; higher OPPs run at that same fixed voltage
- * and are the user's call. */
+/* Per-tier CPU escalation, driven from the SAME s_cpu_opp grid the manual CPU-Clock
+ * menu uses, so the two paths set identical values and read back identically
+ * (600->599, 1000->999, 1200->1199, 1400->1399): Off = idx0 600 (shows 599),
+ * Balanced = idx2 1000 (999), Responsive = idx3 1200 (1199), Max = idx4 1400
+ * (1399, the next OPP up from Responsive). NOTE: ayaneo_set_cpu_mhz only reprograms
+ * the ARM-PLL PCW - it does NOT change core voltage (LK has no DVFS voltage table),
+ * so the clock the preloader left the cores at (g_dbg_boot_mhz, the boot
+ * Vproc-backed point) is the highest guaranteed-stable frequency; higher OPPs run
+ * at that same fixed voltage and are the user's call. */
 static void preempt_apply_cpu(int pf)
 {
-	unsigned mhz;
-	switch (pf) {
-	case 1:  mhz = 999; break;	/* Balanced   */
-	case 2:  mhz = 1199; break;	/* Responsive */
-	case 3:  mhz = 1400; break;	/* Max (next OPP up from Responsive) */
-	default: mhz = 600; break;	/* Off        */
-	}
-	ayaneo_set_cpu_mhz(mhz);
-	s_cpu_idx = -1;			/* re-derive the CPU-menu index from the actual clock */
+	static const int tier_idx[] = { 0, 2, 3, 4 };	/* Off, Balanced, Responsive, Max */
+	int idx = (pf >= 1 && pf <= 3) ? tier_idx[pf] : tier_idx[0];
+	ayaneo_set_cpu_mhz(s_cpu_opp[idx]);
+	s_cpu_idx = idx;		/* keep the CPU-menu index in sync with the tier */
 	s_cpu_dirty = 1;
 }
 
