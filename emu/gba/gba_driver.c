@@ -739,18 +739,24 @@ static unsigned int fnv1a(unsigned int h, const unsigned char *p, unsigned long 
 /* Determinism self-test for the run-ahead rewind path (device-blind validation).
  * Called at a frame boundary (CPU thread parked at vblank) with the machine at a
  * committed state S0. It compares two one-frame advances FROM S0:
- *   REF  = a plain normal-resume frame (exactly what Off / no-run-ahead does), and
- *   TEST = a frame that first does the full run-ahead dance (save S0, run one muted
- *          look-ahead frame, rewind to S0 with the light flush + sound-ring restore)
- *          and THEN runs the committed frame, which re-enters via the longjmp
- *          clean-boundary path - exactly what a run-ahead committed frame does.
- * If the rewind restores EVERYTHING (savestate + the sound ring the savestate omits)
- * and the clean-boundary re-entry is truly exact-1x, the two resulting states are
- * byte-identical and the hashes match (PASS). If any cross-frame state is left on the
- * discarded trajectory (the class of bug the sound-ring fix closed) or the re-entry
- * is not a full frame, TEST diverges from REF (FAIL). The whole test runs audio-
- * MUTED so it does not disturb the live audio stream; it costs ~3 emulated frames
- * (~50 ms) of muted output, then the game continues one frame past S0 (a valid
+ *   REF  = from S0, rewind to S0 (save + light-flush load, sound-ring restore) and
+ *          run ONE committed frame via the clean-boundary longjmp re-entry, and
+ *   TEST = from S0, save, run N muted look-ahead frames, rewind to S0 the same way,
+ *          then run ONE committed frame via the same re-entry.
+ * REF and TEST are IDENTICAL except that TEST runs muted look-ahead frames between the
+ * save and the rewind. So the invariant under test is exactly the run-ahead promise:
+ * "running muted ahead frames then rewinding is a perfect no-op on the committed
+ * trajectory." Both sides re-enter through the SAME load path (so the OAM-driven sprite
+ * scratch is rebuilt identically on both - REF is deliberately NOT a normal-resume
+ * frame, which would render its sprite scratch differently from a post-load frame on
+ * games that skip their own oam_update, a false mismatch that is not a run-ahead bug).
+ * Each hash covers the 512 KB savestate + the 128 KB sound ring + the rendered 240x160
+ * framebuffer, so it validates VISUAL output too (a rendering divergence would slip
+ * past a state-only hash but not the screen hash). PASS (equal hashes) proves the ahead
+ * frames left NO residue in anything the rewind must restore - machine state, the sound
+ * ring the savestate omits (the sound-ring bug class), and the rendered frame. The whole
+ * test runs audio-MUTED so it does not disturb the live audio stream; it costs ~3
+ * emulated frames of muted output, then the game continues one frame past S0 (a valid
  * advance). Zero cost when not requested. */
 static void gba_run_ahead_selftest(void)
 {
@@ -761,7 +767,9 @@ static void gba_run_ahead_selftest(void)
 	static unsigned char s0_snd[128 * 1024] __attribute__((aligned(8)));
 	static unsigned char tmp_state[512 * 1024] __attribute__((aligned(8)));
 	static unsigned char tmp_snd[128 * 1024] __attribute__((aligned(8)));
+	const unsigned long scr_bytes = 240ul * 160ul * sizeof(unsigned short);
 	unsigned int rref, rtest;
+	int i;
 
 	/* snapshot S0 (the committed state we are standing on) */
 	gba_core_state_save(s0_state);
@@ -769,14 +777,22 @@ static void gba_run_ahead_selftest(void)
 
 	g_gba_audio_suppress = 1;			/* mute the whole probe */
 
-	/* REF: one plain normal-resume frame from S0, hash the resulting state */
+	/* REF: rewind to S0 with NO ahead frames, then one committed frame via the
+	 * clean-boundary re-entry (same load path TEST uses). */
+	g_gba_load_light = 1;
+	gba_core_state_load(s0_state);
+	gba_sound_ring_load(s0_snd);
+	g_gba_load_light = 0;
+	s_cpu_clean_boundary = 1;
+	s_cpu_restart_req = 1;
 	run_one_frame();
 	gba_core_state_save(tmp_state);
 	gba_sound_ring_save(tmp_snd);
 	rref = fnv1a(2166136261u, tmp_state, sizeof s0_state);
 	rref = fnv1a(rref, tmp_snd, sizeof s0_snd);
+	rref = fnv1a(rref, (const unsigned char *)gba_core_screen(), scr_bytes);
 
-	/* rewind to S0 (light flush), re-enter as a full frame on the next resume */
+	/* restore S0 again for the TEST leg */
 	g_gba_load_light = 1;
 	gba_core_state_load(s0_state);
 	gba_sound_ring_load(s0_snd);
@@ -784,22 +800,28 @@ static void gba_run_ahead_selftest(void)
 	s_cpu_clean_boundary = 1;
 	s_cpu_restart_req = 1;
 
-	/* TEST: the run-ahead dance from S0 (mirror of preempt_present) ... */
-	gba_core_state_save(tmp_state);
-	gba_sound_ring_save(tmp_snd);
-	run_one_frame();				/* one muted look-ahead frame */
-	g_gba_load_light = 1;
-	gba_core_state_load(tmp_state);			/* rewind back to S0 */
-	gba_sound_ring_load(tmp_snd);
-	g_gba_load_light = 0;
-	s_cpu_clean_boundary = 1;
-	s_cpu_restart_req = 1;
-	/* ... then the committed frame (re-enters via the clean-boundary longjmp) */
-	run_one_frame();
+	/* TEST: the run-ahead dance from S0 (mirror of preempt_present) - save, run the
+	 * muted look-ahead frames, rewind - then the SAME committed frame as REF. */
+	{
+		int pf = ayaneo_get_preempt_frames();
+		if (pf < 1) pf = 1;			/* always exercise at least depth 1 */
+		gba_core_state_save(tmp_state);
+		gba_sound_ring_save(tmp_snd);
+		for (i = 0; i < pf; i++)
+			run_one_frame();		/* muted look-ahead frames */
+		g_gba_load_light = 1;
+		gba_core_state_load(tmp_state);		/* rewind back to S0 */
+		gba_sound_ring_load(tmp_snd);
+		g_gba_load_light = 0;
+		s_cpu_clean_boundary = 1;
+		s_cpu_restart_req = 1;
+	}
+	run_one_frame();				/* committed frame (clean-boundary re-entry) */
 	gba_core_state_save(tmp_state);
 	gba_sound_ring_save(tmp_snd);
 	rtest = fnv1a(2166136261u, tmp_state, sizeof s0_state);
 	rtest = fnv1a(rtest, tmp_snd, sizeof s0_snd);
+	rtest = fnv1a(rtest, (const unsigned char *)gba_core_screen(), scr_bytes);
 
 	g_gba_audio_suppress = 0;
 
