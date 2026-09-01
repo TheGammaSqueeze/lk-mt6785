@@ -1768,8 +1768,12 @@ static int emu_thread(void *arg)
 			}
 			poll_led();
 			check_power(scratch);
-			if (!s_menu_open)
-				battery_poll(60000, 1);	/* gameplay: at most once/min, ring silenced */
+			/* NO battery read during gameplay: battery_read is 16 blocking BATADC
+			 * samples, and on this single audio-mastered core any such stall (even
+			 * silenced) leaves a ~1-frame audio gap - audible once a minute, worse with
+			 * Preemptive Frames on where the budget is tighter. The percentage is only
+			 * shown in the Pico menu, which refreshes it on open and every ~2 s while
+			 * open, so gameplay never needs it. "At most once a minute" here means zero. */
 			frame++;
 
 			if (aya_edge())
