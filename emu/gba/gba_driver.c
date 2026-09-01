@@ -670,6 +670,16 @@ static void preempt_step(void)
 	if (s_pf_fill < PF_RING_MAX - 1) s_pf_fill++;
 }
 
+/* Drop the preempt ring history. MUST be called whenever the committed timeline
+ * jumps discontinuously (soft reset, game switch, fresh launch) so the next input
+ * edge cannot rewind into a stale pre-jump / previous-game state. */
+static void preempt_invalidate(void)
+{
+	s_pf_fill = 0;
+	s_pf_head = 0;
+	s_pf_prev_in = 0;
+}
+
 /* ===================== GammaOS Pico overlay menu ===================== */
 static char *mi_puts(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *mi_putu(char *p, unsigned v)
@@ -1474,6 +1484,7 @@ static int emu_thread(void *arg)
 				ayaneo_menu_audio_silence();	/* drop the stale ring so it does not loop */
 				reset_gba();
 				s_cpu_restart_req = 1;
+				preempt_invalidate();		/* committed timeline jumped: drop preempt history */
 			}
 
 			/* in-game menu "Close": save the current game (state + battery sav) and
@@ -1515,6 +1526,7 @@ static int emu_thread(void *arg)
 							gba_core_backup_size());
 					if (!PRESSED(GPIO_B))
 						state_read(scratch);
+					preempt_invalidate();	/* new game loaded: drop preempt history */
 					/* no blank: keep the frozen menu on screen for the seamless
 					 * growing-circle opening (the punch composites the full frame). */
 					dynarec_enable = 1;
@@ -1561,6 +1573,7 @@ static int emu_thread(void *arg)
 			 * duration regardless of the per-frame composite cost). Fast-forward/
 			 * benchmark above skip this; once done, the normal game present resumes. */
 			if (gba_punch_ready) {
+				preempt_invalidate();	/* fresh launch: no carryover preempt history */
 				/* FRAME-paced fast opening (mirror of the smooth close): freeze +
 				 * pre-render the launch game frame once, then step a growing circle
 				 * over a fixed count with a memcpy-only composite = smooth 60fps. The
