@@ -811,34 +811,15 @@ static void cpu_step(int dir)
 	s_cpu_dirty = 1;
 }
 
-/* Dynamic Preemptive Frames escalate the CPU clock with the depth: a deeper
- * look-ahead runs more emulations per display frame, so give it more headroom.
- * Off stays at the low-power 600 MHz; Balanced/Responsive/Max step the clock up
- * so the closed-loop depth controller can actually sustain the requested depth
- * (higher clock -> lower per-frame us -> the loop keeps 60 fps at more depth).
- * The user can still fine-tune afterward via the CPU Clock menu item. */
-/* CONSERVATIVE clocks: ayaneo_set_cpu_mhz only rewrites the ARM PLL, it does NOT
- * raise the core voltage, so a high frequency can undervolt-glitch the cores on
- * some silicon (observed: audio cut out at 1800 MHz on a unit where 1000 MHz is
- * fine). Stay inside the proven-stable band (<= ~1000 MHz). The closed-loop depth
- * controller already keeps 60 fps at whatever clock is set, so a modest bump is
- * enough - it just lets the deeper tiers sustain a little more look-ahead. */
-static unsigned preempt_target_mhz(int pf)
-{
-	switch (pf) {
-	case 1:  return 800;	/* Balanced   */
-	case 2:  return 900;	/* Responsive */
-	case 3:  return 1000;	/* Max        */
-	default: return 600;	/* Off        */
-	}
-}
-
-static void preempt_apply_cpu(int pf)
-{
-	ayaneo_set_cpu_mhz(preempt_target_mhz(pf));
-	s_cpu_idx = -1;		/* re-derive the CPU-menu index from the actual clock */
-	s_cpu_dirty = 1;
-}
+/* NOTE: per-tier CPU-clock escalation was REMOVED. Raising the ARM PLL
+ * (ayaneo_set_cpu_mhz) does NOT raise core voltage, and on some silicon that
+ * undervolt-glitches the audio path: a unit that plays fine at 600 MHz went
+ * SILENT at 1000 MHz (and cut out entirely at 1800 MHz) with preempt on. Working
+ * audio matters far more than the extra headroom, so all tiers run at the stock
+ * 600 MHz. The leaner present blit + the adaptive-depth controller already
+ * deliver the look-ahead at 600 MHz (it just backs off sooner in the heaviest
+ * scenes). The CPU Clock menu item still lets a user opt into a higher clock
+ * MANUALLY if their unit tolerates it. */
 
 enum { MK_UP=1, MK_DOWN=2, MK_LEFT=4, MK_RIGHT=8, MK_A=16, MK_B=32, MK_AYA=64 };
 unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
@@ -1337,11 +1318,11 @@ static int emu_thread(void *arg)
 #endif
 	mtk_wdt_disable();
 
-	/* Clock to match the persisted Preemptive Frames depth: Off = the low-power
-	 * 600 MHz (the dynarec is ~300 fps-capable there and the emulator is vsync
-	 * locked to ~59.73 fps, so it sustains full speed at minimal power/heat);
-	 * Balanced/Responsive/Max escalate the clock for the deeper look-ahead. */
-	preempt_apply_cpu(ayaneo_get_preempt_frames());
+	/* Stock low-power 600 MHz for every tier: the dynarec is ~300 fps-capable
+	 * there and the loop is vsync-locked to ~59.73 fps, so it sustains full speed
+	 * at minimal power/heat, and it keeps the audio path stable (higher clocks
+	 * undervolt-glitch audio on some units - see the removed escalation note). */
+	ayaneo_set_cpu_mhz(600);
 
 	/* start the CPU thread (blocks on ev_cpu until the first frame kick) */
 	event_init(&ev_cpu, false, EVENT_FLAG_AUTOUNSIGNAL);
@@ -1497,12 +1478,6 @@ static int emu_thread(void *arg)
 			}
 
 			update_buttons();
-			{	/* escalate the CPU clock when the Preemptive Frames tier changes
-				 * (covers the Pico menu, oem preempt:, and the persisted boot value) */
-				static int s_pf_applied = -1;
-				int cur_pf = ayaneo_get_preempt_frames();
-				if (cur_pf != s_pf_applied) { s_pf_applied = cur_pf; preempt_apply_cpu(cur_pf); }
-			}
 			{
 				extern volatile unsigned int g_dbg_frame_ticks;
 				extern unsigned int gba_core_cpu_ticks(void);
