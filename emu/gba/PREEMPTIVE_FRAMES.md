@@ -1,11 +1,11 @@
 # Beating input lag on a bare-metal handheld: Preemptive Frames for GBA
 
-This is the story of how we made Game Boy Advance games feel *more* responsive than
-they do on some real hardware, running on a phone-grade chip in a bootloader, with no
-operating system, no GPU, and a single CPU core clocked as low as we could get away
-with. The feature is called **Preemptive Frames** in the menu. Under the hood it is
-run-ahead, and getting it to run at exactly the right speed, with clean audio, on this
-hardware took a few fights worth writing down.
+This is the story of how we clawed back the input lag baked into Game Boy Advance games,
+the 1-3 frames the game itself spends before it reacts, running on a phone-grade chip in a
+bootloader, with no operating system, no GPU, and a single CPU core clocked as low as we
+could get away with. The feature is called **Preemptive Frames** in the menu. Under the
+hood it is run-ahead, and getting it to run at exactly the right speed, with clean audio,
+on this hardware took a few fights worth writing down.
 
 ## The hardware we are working with
 
@@ -31,13 +31,14 @@ Press a button and the reaction does not appear instantly, even on a real consol
 game samples the pad at the top of a frame, runs its logic, then renders the reaction
 one to three frames later. That "internal lag" is baked into the game, not the display.
 
-This is the dominant term on real GBA hardware: the console's own polling and display
-path adds very little, so what you feel is mostly the game thinking. RetroRGB's
-1000 fps-camera lag tests across every GBA handheld bear this out, an original GBA/GBA SP
-sits at the floor and even the Analogue Pocket's FPGA only matches it, adding essentially
-nothing ([RetroRGB][retrorgb-handheld]). A frame at the GBA's 59.7275 Hz is 16.74 ms, so
-that one-to-three-frame internal lag is roughly 17 to 50 ms that no faithful reproduction
-can touch.
+How much is it, concretely? Tito (with Bob of RetroRGB's LED-and-1000fps-camera rig, six
+samples per unit) measured a completely stock, unmodified Game Boy Advance at an average
+of **2.4 frames** button-to-screen, and noted the GBA's own transflective LCD accounts
+for about a frame of that ([Lag Testing Every GBA Consolizer][machonacho]). So on real
+hardware you are looking at roughly 1.4 frames of the game and the console thinking, plus
+about a frame of that famously slow original screen. A frame at the GBA's 59.7275 Hz is
+16.74 ms, so a stock GBA is around 40 ms, and the internal part run-ahead can attack is
+the ~1.4 frames underneath the LCD.
 
 An emulator cannot make the game's code think faster. But it *can* do something the real
 console cannot: run the game slightly into its own future and show you that future now.
@@ -152,8 +153,9 @@ GBA handhelds [here][retrorgb-handheld]).
 
 Our fixed pipeline is about four frames: half a frame of polling, two frames of input
 debounce (a deliberate reliability choice on this unit, which had phantom inputs slip
-through a lighter filter), about a frame of present and scanout, and half a frame of LCD.
-On top of that sits the part run-ahead attacks: the game's own 1-3 frame internal lag.
+through a lighter filter), about a frame of present and scanout on a software framebuffer,
+and half a frame of LCD. On top of that sits the part run-ahead attacks: the game's own
+1-3 frame internal lag.
 
 | Preemptive Frames | Run-ahead depth | Frames to photon (fixed + game) |
 |-------------------|-----------------|---------------------------------|
@@ -163,7 +165,14 @@ On top of that sits the part run-ahead attacks: the game's own 1-3 frame interna
 | Max               | 3               | ~4 + 0                          |
 
 Each tier removes one whole frame of the game's internal lag (16.74 ms), bounded by how
-much lag the game actually has. That per-tier delta is the rigorous, defensible claim.
+much lag the game actually has. That per-tier delta is the rigorous, defensible claim. Be
+honest about the rest: our fixed four frames are dominated by the two-frame debounce and a
+full software framebuffer flip, so in absolute terms we are heavier than a stock GBA's
+measured 2.4 frames. Run-ahead is what keeps us in the fight, it deletes the game's own
+lag, which is the single biggest lever available to software, instead of stacking it on
+top of our pipeline. That lands us in the same range Tito measured for real HDMI
+consolizer kits (1.6 frames for the best, up to 6.2 for the worst,
+[here][machonacho]), rather than out beyond them.
 
 ## Where this lands against real hardware and FPGA
 
@@ -195,11 +204,16 @@ Analogue Pocket, which reimplements the console on an FPGA
   reproducing it, which is how RetroArch demonstrated latency below original hardware
   ([libretro][libretro-medium]).
 
-So the honest positioning: with Preemptive Frames **Off** we are in the same class as
-real hardware and the Pocket, minus cycle-perfect accuracy, plus our two-frame debounce.
-Turn it **on**, and for a game with real internal lag we hand back frames that neither
-the original console nor a faithful FPGA can, on a single small core at minimal clocks
-with no GPU. That last part is the point we are proudest of.
+So the honest positioning: we do not beat a stock GBA or the Pocket on absolute
+button-to-photon. Our two-frame debounce and software framebuffer flip put our fixed
+pipeline above the stock GBA's measured 2.4 frames, and an FPGA that faithfully reproduces
+the game reproduces its lag too. What we can do that neither the original console nor a
+cycle-accurate FPGA will is *remove the game's own internal lag* with run-ahead, on a
+single small core at minimal clocks with no GPU. That is what claws back most of what our
+pipeline spends and keeps us competitive with dedicated HDMI consolizer hardware, and it
+is the trick RetroArch used to show that, in a lean enough pipeline, run-ahead can push
+latency below original hardware entirely ([libretro][libretro-medium]). On this box it is
+the equalizer, not a magic win, and that is the honest version.
 
 ## Configuration and diagnostics
 
@@ -226,6 +240,9 @@ with no GPU. That last part is the point we are proudest of.
 
 ## Sources
 
+- Tito, *Lag Testing Every GBA Consolizer* (LED + 1000 fps camera per Bob of RetroRGB's
+  method, 6 samples each: stock GBA 2.4 frames, best consolizers 1.6, worst 6.2; the GBA
+  LCD alone adds ~1 frame): [machonacho]
 - RetroRGB, *Comparing Lag and Ghosting for Every GBA handheld* (GBA-specific: LED +
   1000 fps camera; Analogue Pocket FPGA = virtually zero lag over original GBA, DS/3DS
   add ~1 frame): [retrorgb-handheld]
@@ -238,6 +255,7 @@ with no GPU. That last part is the point we are proudest of.
 - libretro Run-Ahead guide [libretro-runahead] and Latency guide [libretro-latency]
 - WydD / inputlag.science, latency measurement methodology: [inputlag]
 
+[machonacho]: https://www.youtube.com/watch?v=TDxjd5d2Q8E
 [retrorgb-handheld]: https://retrorgb.com/comparing-lag-and-ghosting-for-every-gba-handheld.html
 [retrorgb-lagdb]: https://retrorgb.com/lagtest.html
 [gbatemp-vrr]: https://gbatemp.net/threads/what-is-variable-refresh-rate-for-gba-feature-of-analogue-pocket.673346/
