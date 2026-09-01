@@ -805,6 +805,32 @@ static void cpu_step(int dir)
 	s_cpu_dirty = 1;
 }
 
+/* Dynamic Preemptive Frames escalate the CPU clock with the depth: a deeper
+ * look-ahead runs more emulations per display frame, so give it more headroom.
+ * Off stays at the low-power 600 MHz; Balanced/Responsive/Max step the clock up
+ * so the closed-loop depth controller can actually sustain the requested depth
+ * (higher clock -> lower per-frame us -> the loop keeps 60 fps at more depth).
+ * The user can still fine-tune afterward via the CPU Clock menu item. */
+static unsigned preempt_target_mhz(int pf)
+{
+	switch (pf) {
+	case 1:  return 1000;	/* Balanced   */
+	case 2:  return 1400;	/* Responsive */
+	case 3:  return 1800;	/* Max        */
+	default: return 600;	/* Off        */
+	}
+}
+
+static void preempt_apply_cpu(int pf)
+{
+	unsigned mhz = preempt_target_mhz(pf);
+	int n = (int)(sizeof(s_cpu_opp) / sizeof(s_cpu_opp[0])), i;
+	ayaneo_set_cpu_mhz(mhz);
+	for (i = 0; i < n; i++)
+		if (s_cpu_opp[i] == mhz) { s_cpu_idx = i; break; }
+	s_cpu_dirty = 1;
+}
+
 enum { MK_UP=1, MK_DOWN=2, MK_LEFT=4, MK_RIGHT=8, MK_A=16, MK_B=32, MK_AYA=64 };
 unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 {
@@ -839,14 +865,20 @@ static const char *menu_value(int item, char *buf)
 	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter())); break;
 	case MI_COLORCORRECT: p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
 	case MI_PREEMPT: { int pf = ayaneo_get_preempt_frames();
-		/* Dynamic: show the configured max plus the depth the closed loop is
-		 * actually running right now (it backs off to hold 60 fps), so the user
-		 * sees it adapt - e.g. "3 (now 1)". */
-		if (pf <= 0) { p = mi_puts(p, "Off"); }
-		else { p = mi_putu(p, (unsigned)pf);
-		       p = mi_puts(p, " (now ");
-		       p = mi_putu(p, (unsigned)(g_dbg_eff_pf < 0 ? 0 : g_dbg_eff_pf));
-		       p = mi_puts(p, ")"); }
+		/* Named tiers (max desired depth) + the depth the closed loop is running
+		 * right now (it backs off to hold 60 fps), so the user sees it adapt -
+		 * e.g. "Max (1)". */
+		switch (pf) {
+		case 1:  p = mi_puts(p, "Balanced"); break;
+		case 2:  p = mi_puts(p, "Responsive"); break;
+		case 3:  p = mi_puts(p, "Max"); break;
+		default: p = mi_puts(p, "Off"); break;
+		}
+		if (pf > 0) {
+			p = mi_puts(p, " (");
+			p = mi_putu(p, (unsigned)(g_dbg_eff_pf < 0 ? 0 : g_dbg_eff_pf));
+			p = mi_puts(p, ")");
+		}
 		break; }
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
@@ -924,7 +956,10 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
 	case MI_COLORCORRECT: if (dir || act) ayaneo_set_color_correct(!ayaneo_get_color_correct()); else changed = 0; break;
 	case MI_PREEMPT:  if (dir || act) { int d = dir ? dir : 1;
-		ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + d + 4) % 4); } else changed = 0; break;
+		ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + d + 4) % 4);
+		/* CPU clock escalation is applied in the game loop on any level change,
+		 * so it also covers the oem preempt: path. */
+	} else changed = 0; break;
 	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;
 	case MI_SKIPBOOT: if (dir || act) ayaneo_set_skip_boot(!ayaneo_get_skip_boot()); else changed = 0; break;
 	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;
@@ -1293,10 +1328,11 @@ static int emu_thread(void *arg)
 #endif
 	mtk_wdt_disable();
 
-	/* Default to the LOWEST OPP: the dynarec is ~300 fps-capable even at 600 MHz,
-	 * and the emulator is vsync-locked to ~59.73 fps, so the lowest clock sustains
-	 * full speed while minimising power/heat. User can raise it via the AYA menu. */
-	ayaneo_set_cpu_mhz(600);
+	/* Clock to match the persisted Preemptive Frames depth: Off = the low-power
+	 * 600 MHz (the dynarec is ~300 fps-capable there and the emulator is vsync
+	 * locked to ~59.73 fps, so it sustains full speed at minimal power/heat);
+	 * Balanced/Responsive/Max escalate the clock for the deeper look-ahead. */
+	preempt_apply_cpu(ayaneo_get_preempt_frames());
 
 	/* start the CPU thread (blocks on ev_cpu until the first frame kick) */
 	event_init(&ev_cpu, false, EVENT_FLAG_AUTOUNSIGNAL);
@@ -1452,6 +1488,12 @@ static int emu_thread(void *arg)
 			}
 
 			update_buttons();
+			{	/* escalate the CPU clock when the Preemptive Frames tier changes
+				 * (covers the Pico menu, oem preempt:, and the persisted boot value) */
+				static int s_pf_applied = -1;
+				int cur_pf = ayaneo_get_preempt_frames();
+				if (cur_pf != s_pf_applied) { s_pf_applied = cur_pf; preempt_apply_cpu(cur_pf); }
+			}
 			{
 				extern volatile unsigned int g_dbg_frame_ticks;
 				extern unsigned int gba_core_cpu_ticks(void);
