@@ -186,7 +186,7 @@ static unsigned int s_audio_ms;
  * and the game, and to the backlight during the animation and in-game. */
 #define AYANEO_SET_OFF		0x01E00000u	/* 30 MB into boot_b */
 #define AYANEO_SET_MAGIC	0x54455341u	/* "ASET" LE */
-#define AYANEO_SET_VER		4u
+#define AYANEO_SET_VER		5u
 #define AYANEO_BL_MIN		16		/* keep the panel visible (never 0) */
 #define AYANEO_BL_MAX		255		/* mt65xx LCD level is 0-255 */
 #define AYANEO_BL_STEP		8		/* fine granularity (~30 steps) */
@@ -209,6 +209,7 @@ static volatile int s_dark_filter = 0;		/* 0-5 dark filter level */
 static volatile int s_skip_gba_intro = 0;	/* skip the GBA BIOS boot-logo intro (SD flow) */
 static volatile int s_mute_bios = 0;		/* mute the LK boot chime (boot_audio_lk) */
 static volatile int s_mute_menu = 0;		/* mute the SNES menu music + SFX */
+static volatile int s_preempt_frames = 0;	/* run-ahead / preemptive frames (0=off, 1-3) */
 static int s_settings_loaded;
 
 /* ---------- little-endian helpers ---------- */
@@ -270,6 +271,8 @@ int ayaneo_get_mute_bios(void)      { return s_mute_bios; }
 void ayaneo_set_mute_bios(int v)    { s_mute_bios = v ? 1 : 0; }
 int ayaneo_get_mute_menu(void)      { return s_mute_menu; }
 void ayaneo_set_mute_menu(int v)    { s_mute_menu = v ? 1 : 0; }
+int ayaneo_get_preempt_frames(void)   { return s_preempt_frames; }
+void ayaneo_set_preempt_frames(int v) { s_preempt_frames = (v < 0) ? 0 : (v > 3 ? 3 : v); }
 
 /* load the persisted settings from boot_b (once). Missing/invalid -> keep the
  * compile-time defaults. Does not touch the hardware; callers apply brightness. */
@@ -310,6 +313,8 @@ void ayaneo_settings_load(void)
 		s_mute_bios = rd32(b + 40) ? 1 : 0;
 		s_mute_menu = rd32(b + 44) ? 1 : 0;
 	}
+	if (ver >= 5)
+		ayaneo_set_preempt_frames((int)rd32(b + 48));
 }
 
 /* Serialize/deserialize the settings block so a caller can persist it elsewhere
@@ -332,6 +337,7 @@ int ayaneo_settings_serialize(unsigned char *b, int cap)
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
 	wr32(b + 40, (unsigned int)s_mute_bios);
 	wr32(b + 44, (unsigned int)s_mute_menu);
+	wr32(b + 48, (unsigned int)s_preempt_frames);
 	return 64;
 }
 void ayaneo_settings_deserialize(const unsigned char *b, int len)
@@ -358,6 +364,8 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 		s_mute_bios = rd32(b + 40) ? 1 : 0;
 		s_mute_menu = rd32(b + 44) ? 1 : 0;
 	}
+	if (ver >= 5)
+		ayaneo_set_preempt_frames((int)rd32(b + 48));
 	s_settings_loaded = 1;			/* SD values are authoritative from here */
 }
 
@@ -379,6 +387,7 @@ void ayaneo_settings_save(void)
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
 	wr32(b + 40, (unsigned int)s_mute_bios);
 	wr32(b + 44, (unsigned int)s_mute_menu);
+	wr32(b + 48, (unsigned int)s_preempt_frames);
 	s_settings_loaded = 1;			/* our value is now authoritative */
 	arch_clean_cache_range((addr_t)b, sizeof(b));
 	partition_write(AYANEO_AUDIO_PART, AYANEO_SET_OFF, b, sizeof(b));

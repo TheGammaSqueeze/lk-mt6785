@@ -105,6 +105,8 @@ extern int  ayaneo_get_lcd_filter(void);
 extern void ayaneo_set_lcd_filter(int v);
 extern int  ayaneo_get_color_correct(void);
 extern void ayaneo_set_color_correct(int v);
+extern int  ayaneo_get_preempt_frames(void);
+extern void ayaneo_set_preempt_frames(int v);
 extern int  ayaneo_get_mute_bios(void);
 extern void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
 			int x, int y, int w, int h, unsigned int argb);
@@ -720,7 +722,7 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_COLORCORRECT, MI_LOADBOOT, MI_SKIPBOOT, MI_SKIPINTRO,
-	MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
+	MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_PREEMPT, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
 };
 
 static const char *filter_name(int f)
@@ -734,6 +736,8 @@ static const char *menu_value(int item, char *buf)
 	case MI_VOLUME:   p = mi_putu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mi_puts(p, "%"); break;
 	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter())); break;
 	case MI_COLORCORRECT: p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
+	case MI_PREEMPT: { int pf = ayaneo_get_preempt_frames();
+		if (pf <= 0) p = mi_puts(p, "Off"); else p = mi_putu(p, (unsigned)pf); break; }
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
 	case MI_SKIPINTRO: p = mi_puts(p, ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
@@ -789,6 +793,7 @@ static const char *menu_label(int item)
 	case MI_BATTERY:   return "Battery";
 	case MI_CPU:       return "CPU Clock";
 	case MI_PANEL:     return "Panel Refresh";
+	case MI_PREEMPT:   return "Preemptive Frames";
 	case MI_BENCH:     return "Benchmark (Uncap)";
 	case MI_RESET:     return "Reset Game";
 	case MI_CLOSE:     return "Close";
@@ -808,6 +813,8 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_VOLUME:   if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
 	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
 	case MI_COLORCORRECT: if (dir || act) ayaneo_set_color_correct(!ayaneo_get_color_correct()); else changed = 0; break;
+	case MI_PREEMPT:  if (dir || act) { int d = dir ? dir : 1;
+		ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + d + 4) % 4); } else changed = 0; break;
 	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;
 	case MI_SKIPBOOT: if (dir || act) ayaneo_set_skip_boot(!ayaneo_get_skip_boot()); else changed = 0; break;
 	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;
