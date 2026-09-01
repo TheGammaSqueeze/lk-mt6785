@@ -55,6 +55,8 @@ def main():
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--min-score", type=float, default=0.6)
     ap.add_argument("--push", help="device serial: also push each tile via fastboot sd-put")
+    ap.add_argument("--max-push-name", type=int, default=32,
+                    help="skip sd-put for .ART names longer than this (LFN write can wedge USB)")
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
     roms = [l.strip() for l in open(a.roms) if l.strip()]
@@ -78,12 +80,21 @@ def main():
         im = Image.open(io.BytesIO(z.read(idx[best])))
         out = os.path.join(a.outdir, dr + ".ART")
         open(out, "wb").write(to_art(im))
+        artname = dr + ".ART"
         print("OK   %-40s -> %s (%.2f)" % (dr, idx[best].split("/")[-1], br))
         if a.push:
+            # A very long filename writes several LFN directory entries; that write
+            # can starve the fastboot USB thread and wedge the link mid-write (it
+            # stuck the device once). Skip wedge-prone names and tell the user to
+            # copy those with a card reader instead.
+            if len(artname) > a.max_push_name:
+                print("     SKIP push (%d chars > %d, wedge risk) - copy with a card reader"
+                      % (len(artname), a.max_push_name))
+                continue
             subprocess.run(["fastboot", "-s", a.push, "stage", out],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             r = subprocess.run(["fastboot", "-s", a.push,
-                                "oem", "sd-put:/roms/gba/boxart/%s.ART" % dr],
+                                "oem", "sd-put:/roms/gba/boxart/%s" % artname],
                                capture_output=True, text=True)
             print("     push:", (r.stdout + r.stderr).strip().splitlines()[-1] if (r.stdout + r.stderr).strip() else "?")
 
