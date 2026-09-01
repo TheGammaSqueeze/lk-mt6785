@@ -301,20 +301,30 @@ row, not something run-ahead removes).
 ### Sources and method
 
 - **Run-ahead principle** (it removes the game's internal lag and can drop latency
-  *below* original hardware): the RetroArch / libretro Run-Ahead feature and its
-  documentation (docs.libretro.com, "Run-Ahead"), which is where this technique and
-  result are established.
+  *below* original hardware): the RetroArch / libretro Run-Ahead feature, which is
+  where this technique and result are established.
+  - Run-Ahead guide: https://docs.libretro.com/guides/runahead/
+  - Latency guide (poll / frame-delay / run-ahead pipeline): https://docs.libretro.com/guides/latency/
+  - "Achieving better latency than original hardware through the new runahead
+    method" (libretro, RetroArch 1.7.2 announcement, the source of the
+    below-original-hardware claim): https://medium.com/@libretro/retroarch-1-7-2-achieving-better-latency-than-original-hardware-through-new-runahead-method-1b80d26bb5d1
 - **Frame model**: latency = frame_count x 16.74 ms is exact; the frame COUNTS
   (0.5 poll, 1 debounce, 1-3 game internal lag, ~1 present/scanout, ~0.5 LCD) are
   the defensible part - from this build's own pipeline plus the community-
-  established 1-3-frame GBA internal-lag figure.
-- **The absolute ms for OTHER platforms are ESTIMATES, not our measurements** -
-  community-reported ranges run through the same frame model. We have not
-  lab-measured our own device or the competitors here; exact figures need a
-  high-speed camera (240-1000 fps) or a photodiode on the actual panel (the
-  standard method, e.g. WydD's inputlag.science or a Leo Bodnar-style tester). The
-  RELATIVE claims (each tier -1 frame; Responsive/Max beat original hardware) hold
-  regardless of the exact absolutes.
+  established 1-3-frame game internal-lag figure.
+- **The absolute ms for OTHER platforms (Android / RetroArch-PC / original GBA /
+  Analogue Pocket) are ENGINEERING ESTIMATES, not our lab measurements.** They run
+  community-reported frame counts through the same frame model. We have NOT
+  instrumented our own device or the competitors with a latency rig here. A rigorous
+  absolute figure needs a high-speed camera (240-1000 fps) or a photodiode on the
+  actual panel driven by an instrumented button - the standard methodology:
+  - WydD, "Controller Input Lag - How to measure it?": https://medium.com/@WydD/controller-input-lag-how-to-measure-it-1ebfd2c9d60
+  - inputlag.science methodology: https://inputlag.science/controller/methodology
+- Only the **RELATIVE** claims are asserted as fact: each tier removes one game
+  frame (16.74 ms) bounded by the game's internal lag, and Responsive/Max beat
+  original hardware because run-ahead removes more game-lag frames than our
+  1-frame debounce adds. Those hold regardless of the exact absolute millisecond
+  values, which remain estimates until measured on a rig.
 
 ## 10. Versus real GBA hardware and the Analogue Pocket
 
@@ -391,12 +401,14 @@ not lab measurements - see section 9 "Sources and method"):
   audio), light scenes get the configured depth. Adaptation is PAUSED while the
   Pico menu is open (the overlay inflates the blit and would otherwise crash the
   displayed depth to 0). The menu setting is a "max desired depth".
-- **Per-tier CPU-clock escalation raises that ceiling.** Each tier bumps the ARM
-  PLL (Off 600 / Balanced 999 / Responsive 1199 / Max 1299 MHz via
-  `ayaneo_set_cpu_mhz`), which lowers the per-frame emulation cost so the closed
-  loop sustains the requested depth instead of backing off. Device-measured in a
-  heavy scene (committed em ~5 ms at 600 MHz -> epf 0): Balanced 999 MHz -> epf 1,
-  Responsive 1199 MHz -> epf 2, Max 1299 MHz -> epf 3, all at hz=59.73 / ft=280896.
+- **Per-tier CPU-clock escalation raises that ceiling.** Each tier selects a point
+  on the same OPP grid the manual CPU-Clock menu uses (Off 600 / Balanced 1000 /
+  Responsive 1200 / Max 1400 MHz via `ayaneo_set_cpu_mhz`; the quantized ARM PLL
+  reads those back as 599 / 999 / 1199 / 1399), which lowers the per-frame
+  emulation cost so the closed loop sustains the requested depth instead of backing
+  off. Device-measured in a heavy scene (committed em ~5 ms at 600 MHz -> epf 0):
+  Balanced 999 MHz -> epf 1, Responsive 1199 MHz -> epf 2, Max 1399 MHz -> epf 3,
+  all at hz=59.73 / ft=280896.
   Higher clock costs power/heat, which is why it scales with the tier the user
   chose rather than running maxed by default. (The clocks stay within a
   voltage-stable band: `ayaneo_set_cpu_mhz` moves only the ARM PLL, not core
@@ -409,8 +421,8 @@ not lab measurements - see section 9 "Sources and method"):
 
 - `emu/gba/gba_driver.c` - `preempt_present()` (the shipped run-ahead),
   `preempt_effective_depth`/`preempt_adapt` (predictive adaptive depth),
-  `preempt_target_mhz`/`preempt_apply_cpu` (per-tier CPU escalation), main-loop
-  integration, `ft=`/`blit=` probes.
+  `preempt_apply_cpu` (per-tier CPU escalation off the shared `s_cpu_opp` OPP grid,
+  indices `{0,2,3,4}`), main-loop integration, `ft=`/`blit=` probes.
 - `emu/gba/gba_wrap.c` - `g_gba_audio_suppress` gate in `gba_audio_cb`;
   `gba_core_cpu_ticks()`.
 - `emu/gba/sound.c` - `gba_sound_ring_save/load` (the sound-ring snapshot the
