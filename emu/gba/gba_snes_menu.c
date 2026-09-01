@@ -128,6 +128,8 @@ volatile unsigned int g_dbg_fps;           /* measured loop rate */
 volatile unsigned int g_dbg_present_cnt;   /* frames actually presented (re-latched) */
 volatile unsigned int g_dbg_hz1000;        /* measured panel refresh * 1000 (averaged) */
 volatile int          g_dbg_focus;         /* current focused game index */
+volatile unsigned int g_dbg_boxart_ok;     /* per-ROM boxart tiles that decoded from SD */
+volatile unsigned int g_dbg_boxart_tot;    /* ROMs the boxart preload attempted */
 
 /* Debug input injection (fastboot `oem key:<name>`): drive the live menu over USB.
  * One button at a time, held a few frames so the menu edge-detects a clean press.
@@ -434,18 +436,21 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		unsigned char *region = (unsigned char *)SNES_BOXART_PA;
 		unsigned char *scratch = (unsigned char *)SNES_COMP_PA;
 		fat_vol *vol = gba_sd_menu_vol();
-		int i, any = 0;
+		int i, any = 0, tot = 0;
 		s_boxart_pk.base = region;
 		for (i = 0; i < nrom && i < 128; i++) {
 			s_boxart[i].w = 0;			/* default: no art */
 			if (vol && i < SNES_BOXART_CAP) {
 				unsigned off = (unsigned)i * SNES_BOXART_SLOT;
+				tot++;
 				if (gba_boxart_load_sd(vol, roms[i].name, scratch, SNES_COMP_MAX,
 						       region + off, SNES_BOXART_SLOT, off,
 						       &s_boxart[i]) == 0)
-					any = 1;
+					any++;
 			}
 		}
+		g_dbg_boxart_ok = (unsigned)any;	/* reported via oem diag bx=ok/tot */
+		g_dbg_boxart_tot = (unsigned)tot;
 		if (any)
 			snes_menu_set_gba_boxart(&s_menu, s_boxart, &s_boxart_pk);
 	}
