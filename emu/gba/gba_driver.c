@@ -855,9 +855,13 @@ static void menu_tick(unsigned char *state)
 void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 			   unsigned int W, unsigned int H)
 {
-	int panelW = 660, panelH = 620;
+	int rowH = 38;
+	/* panel height scales with the item count (title band 84 + rows + 42 for the
+	 * status/help footer) so the backdrop always covers every row - adding menu
+	 * items (Color Correction, Reset Game) used to push Close below the fixed panel. */
+	int panelW = 660, panelH = 84 + MI_COUNT * rowH + 42;
 	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2;
-	int rowH = 38, x = px + 28, y = py + 84, i;
+	int x = px + 28, y = py + 84, i;
 	char val[48];
 
 	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
