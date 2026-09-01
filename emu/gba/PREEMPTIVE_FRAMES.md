@@ -7,6 +7,15 @@ architecture-specific hazards we hit, and the on-device benchmarks.
 Configurable via the GammaOS Pico in-game menu item **Preemptive Frames**
 (Off / 1 / 2 / 3), persisted in the settings blob. Default is **Off**.
 
+> **Shipped approach: run-ahead.** We implemented and measured both run-ahead and
+> true preemptive. Preemptive was tried on hardware but reverted: it modifies the
+> committed timeline on every input edge (audio trajectory discontinuity = audible
+> popping) and has a variable per-frame cost (heavy only on edge frames = frame
+> pacing judder). Run-ahead keeps the committed timeline pristine (continuous,
+> click-free audio) and has a constant per-frame cost (smooth pacing); its only
+> drawback, a ~0.34% fast game speed, is absorbed by the audio clock-recovery.
+> Sections 4-6 keep the full analysis of both; section 8 has the benchmarks.
+
 ## 1. Motivation
 
 A game has internal input lag: a button press is sampled at the top of a frame,
@@ -38,10 +47,11 @@ with the new input held, so the game has "seen" the new input N frames earlier a
 its reaction surfaces that much sooner. Cost: 1 emulation on the (vast majority of)
 static frames, N+1 only on the rare input-edge frame.
 
-We implemented run-ahead first to validate the mechanism, then moved to preemptive
-because it is both cheaper (lower average CPU / heat on a handheld) and, as
-explained in section 5, the only one that keeps the game running at exactly 1x
-speed on this architecture.
+We implemented run-ahead first, then tried preemptive (cheaper, and exact 1x
+speed - see section 5), but on-hardware testing showed preemptive's committed-
+timeline modification causes audio popping and its variable cost causes pacing
+judder (section 8). We shipped run-ahead: continuous pristine audio and steady
+pacing, with the 0.34% speed offset absorbed by the audio clock-recovery.
 
 ## 3. Architecture-specific mechanisms
 
@@ -98,68 +108,52 @@ in `oem diag` reads a clean 280896 or 281856 and is the reliable probe;
 cross-frame `cpu_ticks` window probes proved unreliable (the counter
 wraps/rebases over long windows).
 
-## 5. Why preemptive fixes it
+## 5. The shipped run-ahead loop (`preempt_present`, gba_driver.c)
 
-In preemptive, a static frame is literally one `run_one_frame()` with no rewind,
-so it advances exactly 280896 cycles = no priming stub, no speed skew. The 960
-phantom only occurs on the rare input-edge frame, where it does not accumulate in
-the audio (only the final replayed frame feeds audio) and is imperceptible.
-
-## 6. The preemptive algorithm (`preempt_step`, gba_driver.c)
-
-State:
-
-- `s_pf_ring[PF_RING_MAX=4][512 KB]` (BSS; BSS is free versus the 2 MB lk_a image
-  limit) - a ring of committed states, `s_pf_ring[head]` = state ENTERING the
-  current frame.
-- `s_pf_head`, `s_pf_fill` (count of valid consecutive past states),
-  `s_pf_prev_in` (GBA button mask applied last frame).
-
-Per displayed frame, after `update_buttons()` latches the mask:
+The main loop runs the committed frame normally, then calls `preempt_present()`
+at the vsync-paced present point:
 
 ```
-pf   = ayaneo_get_preempt_frames()
-cur  = s_keys
-changed = (cur != s_pf_prev_in)
+run_one_frame()                 # committed frame, audio ON, advances 1 frame
 
-if pf == 0 or menu/fast-forward/benchmark:
-    invalidate ring; run_one_frame(); return      # plain, exact 1x
-
-save current state -> s_pf_ring[head]              # state entering this frame
-
-if changed and fill >= pf:                         # INPUT EDGE
-    back = head - pf
-    load s_pf_ring[back]  (light flush) ; s_cpu_restart_req = 1
-    suppress audio
-    run_one_frame()                                # priming stub
-    for i in 0..pf-1:                              # replay pf historical frames
-        run_one_frame()
-        save state -> ring slot (back+1+i)         # refresh ring on new trajectory
-    unsuppress audio
-    run_one_frame()                                # the current frame, audio ON
-else:
-    run_one_frame()                                # static frame, audio ON
-
-head++ (mod RING) ; fill = min(fill+1, RING-1)
+preempt_present():
+  pf = ayaneo_get_preempt_frames()
+  if pf == 0: show(committed); return
+  save committed state S
+  suppress audio
+  for i in 0..pf-1: run_one_frame()      # look-ahead frames (muted)
+  unsuppress audio
+  show(current screen)                   # present the look-ahead frame
+  load S (light flush) ; s_cpu_restart_req = 1
+  run_one_frame()                        # priming re-entry (audio ON)
 ```
 
-The new input is held (via `s_keys`) throughout the replay, so the game "sees" it
-`pf` frames earlier. Only the final replayed frame feeds audio; the replayed
-history was already heard, so it is muted. The ring is refreshed along the new
-trajectory during the replay so back-to-back edges stay correct. Net committed
-advance is exactly one frame per displayed frame (plus the ~960 phantom on an
-edge frame only). The present at the bottom of the loop shows
-`gba_core_screen()`, which after `preempt_step` holds the current frame.
+The committed timeline is never modified by input injection, so its audio is
+pristine and continuous. The look-ahead frames are muted; the priming re-entry
+(the ~960-cycle stub) runs with audio ON so the committed audio stream stays
+continuous. Cost is constant every frame (N+1 emulations), giving steady pacing.
+The 512 KB `s_ahead_state` snapshot lives in BSS (free versus the 2 MB lk_a image
+limit).
 
-### Ring invalidation
+### The 0.34% offset
 
-`preempt_invalidate()` (clears fill/head/prev-input) is called at every
-discontinuous jump of the committed timeline so a later edge cannot rewind into a
-stale or previous-game state:
+The committed timeline advances 280896 + 960 = 281856 cycles/frame. The audio
+clock-recovery clamp in `ayaneo_audio.c` is widened from ~0.25% to ~0.67% so it
+absorbs that (plus panel/boot-measure error) instead of saturating and firing the
+emergency sample-repeat snap (the periodic pop). Audio and video both run ~0.34%
+fast, in sync, at an inaudible pitch offset.
 
-- soft reset (Pico menu "Reset Game" item AND the Select+Start+L+R hotkey),
-- game switch via in-game "Close" (after the new ROM loads),
-- a fresh launch punch.
+## 6. The preemptive alternative (implemented, then reverted)
+
+We also implemented true preemptive: a ring of the last few committed states, and
+on an input EDGE rewind pf frames and replay them + the current frame with the new
+input held (muted except the last), so static frames run exactly 1x (no stub) and
+only edges pay the rewind. It measured clean (exact speed, held 60 fps, no crash
+under a forced-edge stress) but on hardware produced audio popping (the committed
+timeline is re-simulated per edge, so the game audio trajectory jumps) and pacing
+judder (variable per-frame cost). We reverted it; run-ahead's continuous audio and
+constant cost feel better. The code is in git history (commits `bb19959`,
+`3470ec0`) if the tradeoff is ever revisited (e.g. with a CPU-clock bump).
 
 ## 7. Configuration and diagnostics
 
@@ -167,78 +161,73 @@ stale or previous-game state:
   offset 48; `ayaneo_get/set_preempt_frames`).
 - `oem preempt:<0..3>` - set the depth live over fastboot (for measurement).
 - `oem diag` - reports `hz1000=` (panel Hz*1000), `em=` (avg emulation us/frame),
-  `ft=` (committed GBA cycles the last frame: 280896 static, 281856 on an edge).
-- `oem pretest:<n>` - self-test: force the rewind+replay edge path for the next
-  `n` frames without needing real input, to stress it device-blind.
+  `ft=` (committed frame's GBA cycles = 280896).
 
 ## 8. Benchmarks (on-device, AYANEO pairmini, Pokemon-class ROM)
 
 Panel refresh is locked to the GBA rate (59.7275 Hz); `hz1000` is the measured
-panel refresh, `ft` is committed GBA cycles per frame, `em` is average emulation
-wall time per frame. Frame budget at 60 fps is ~16.6 ms.
+panel refresh, `ft` is the committed frame's GBA cycles (280896 = one exact
+frame), `em` is average emulation wall time per frame. Frame budget at 60 fps is
+~16.6 ms. `em` is scene-dependent (~2 to ~5.5 ms base).
 
-### Static play (the real-world case)
+### Run-ahead (shipped)
 
-| Preempt | hz1000  | ft (cycles/frame) | Result          |
-|---------|---------|-------------------|-----------------|
-| Off (0) | 59727   | 280896            | 60 fps, 1.000x  |
-| 1       | 59728   | 280896            | 60 fps, 1.000x  |
-| 2       | 59731   | 280896            | 60 fps, 1.000x  |
-| 3       | 58286   | 280896            | ~58 fps (edge)  |
+| Preempt | hz1000 | ft     | Result                          |
+|---------|--------|--------|---------------------------------|
+| Off (0) | 59727  | 280896 | 60 fps baseline                 |
+| 1       | 59729  | 280896 | 60 fps, constant cost (smooth)  |
+| 2       | 59721  | 280896 | 60 fps, constant cost (smooth)  |
+| 3       | 56150  | 280896 | ~56 fps in heavy scenes (extreme) |
 
-`ft` is a constant 280896 at every setting = exact 1x game speed, no skew.
-Static frames hold a locked 60 fps at pf=1 and pf=2; pf=3 occasionally grazes the
-budget and dips slightly.
+`ft` is the committed frame (280896); the per-frame rewind adds a ~960-cycle
+priming stub, so the committed timeline advances 281856 cycles/frame = ~0.34%
+fast. That offset is absorbed by the widened audio clock-recovery clamp (~0.67%),
+so audio and video both run ~0.34% fast, in sync, at an inaudible pitch offset.
+Cost is constant every frame (N+1 emulations), so pacing is steady and the
+committed audio is pristine and click-free. pf=1/2 hold a locked 60 fps; pf=3
+(4 emulations/frame) grazes or exceeds the budget in heavy scenes.
 
-`em` (emulation cost) is scene-dependent (~2.3-5.5 ms base). Enabling preemptive
-adds ~1.3-1.8 ms per frame for the per-frame 512 KB ring save (kept warm so any
-frame can become a rewind origin). Even in heavy scenes this stays well under the
-16.6 ms budget.
+### Why not preemptive (measured, then reverted)
 
-### Input-edge frames (rare) and worst case
+Preemptive was implemented and measured: static frames ran exactly 280896 (1.000x,
+no skew) and held 60 fps, and a forced-every-frame edge stress (`oem pretest:`)
+never crashed (hz dipped to ~46-53 under that pathological load, recovering
+cleanly). But in real play it produced **audio popping** (the committed timeline
+is re-simulated on each input edge, so the game audio trajectory jumps) and
+**pacing judder** (edge frames cost `pf+1` emulations while static frames cost 1,
+so per-frame time is variable). Run-ahead has neither because it never modifies
+the committed timeline and its cost is constant.
 
-A real input edge costs `pf+1` emulations + one priming stub for that single
-frame. To bound the worst case we forced EVERY frame to take the edge path
-(`oem pretest:`), which never happens in real play:
-
-| Test                         | Preempt | hz1000     | ft      | Notes                     |
-|------------------------------|---------|------------|---------|---------------------------|
-| Forced edge every frame      | 2       | 46000-53000| 281856  | pathological, no crash    |
-| Recovery after test          | 2       | 59730      | 280896  | clean return to 1x/60 fps |
-
-Even hammering the rewind+replay path on every single frame never crashed or hung
-and recovered cleanly; real gameplay only takes edges on actual button presses
-(a handful per second), so the average overhead is close to the static numbers.
-
-### Run-ahead vs preemptive (why we switched)
-
-| Approach          | committed cycles/frame | speed | avg cost                 |
-|-------------------|------------------------|-------|--------------------------|
-| Run-ahead (N=1/2) | 281856                 | 1.003x (0.34% fast) | N+1 emu every frame |
-| Preemptive (ship) | 280896 static          | 1.000x | 1 emu static, N+1 on edge |
+| Approach          | speed               | audio            | pacing                 |
+|-------------------|---------------------|------------------|------------------------|
+| Run-ahead (ship)  | 1.003x (absorbed)   | pristine/continuous | constant cost, smooth |
+| Preemptive        | 1.000x              | pops on edges    | variable cost, judder  |
 
 ## 9. Limitations / future
 
-- **Per-frame ring save cost** (~1.3-1.8 ms) is paid on every frame even when
-  input never changes, because any frame may become a rewind origin. It fits the
-  budget but is power/heat the idle case does not strictly need; a cheaper or
-  lazier ring is possible future work.
-- **Autofire** toggles the button mask every few frames, so it triggers frequent
-  edges (higher CPU + a tiny non-accumulating drift) while autofiring. Acceptable.
-- Preemptive reduces perceived latency at the moment of an input change (when it
-  matters); a continuously held direction does not get run-ahead's constant lead.
-  For button-tap responsiveness the two are equivalent.
+- **Per-frame rewind cost.** Run-ahead runs N+1 emulations + a 512 KB save/load
+  every frame. pf=1/2 fit the budget; pf=3 can exceed it in heavy scenes on this
+  downclocked part. Bumping the CPU clock while a game runs would give pf=3 more
+  headroom (future work).
+- The 0.34% speed offset is inherent to the dynarec longjmp re-entry (the priming
+  stub); it is absorbed in audio and imperceptible in video, but a from-scratch
+  fix would require the re-entry to run gpSP's post-yield cleanup so the stub runs
+  a full frame instead of a degenerate one.
+- Run-ahead reduces latency every frame (display is always N ahead), which is the
+  smooth, click-free behavior we want; preemptive's theoretical win (exact speed,
+  lower average CPU) did not survive contact with real audio/pacing on hardware.
 
 ## 10. Source map
 
-- `emu/gba/gba_driver.c` - `preempt_step()`, `preempt_invalidate()`, the ring, the
-  main-loop integration, `ft=` probe, `oem pretest` plumbing.
+- `emu/gba/gba_driver.c` - `preempt_present()` (the shipped run-ahead), main-loop
+  integration, `ft=` probe.
 - `emu/gba/gba_wrap.c` - `g_gba_audio_suppress` gate in `gba_audio_cb`;
   `gba_core_cpu_ticks()`.
 - `emu/gba/gba_memory.c` - `g_gba_load_light` (RAM-only flush path in
   `gba_load_state`).
-- `emu/gba/menu_fastboot.c` - `oem preempt:` / `oem pretest:` / `oem diag`.
-- `platform/mt6785/ayaneo_audio.c` - `ayaneo_get/set_preempt_frames`, persistence.
+- `emu/gba/menu_fastboot.c` - `oem preempt:` / `oem diag`.
+- `platform/mt6785/ayaneo_audio.c` - `ayaneo_get/set_preempt_frames` + persistence;
+  widened clock-recovery clamp.
 
-Commits: `a65f445`, `7cff000` (run-ahead + light flush), `bb19959` (preemptive
-replacing run-ahead), `3470ec0` (ring invalidation).
+Commits: `a65f445`, `7cff000` (run-ahead + light flush), `bb19959` + `3470ec0`
+(preemptive, later reverted), `2983a57` (revert to run-ahead + widen audio clamp).
