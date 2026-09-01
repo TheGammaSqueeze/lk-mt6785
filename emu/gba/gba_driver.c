@@ -185,8 +185,6 @@ static volatile int s_reset_req;	/* soft reset: restart the current game (menu R
  * predicted frame costs one more of these). */
 volatile unsigned int g_dbg_emu_us;
 volatile unsigned int g_dbg_frame_ticks;	/* GBA cycles advanced by the committed frame */
-volatile int g_dbg_force_edge;			/* self-test: force N preempt edge paths */
-volatile unsigned int g_dbg_preempt_fires;	/* count of preempt edge-path executions */
 volatile int g_dbg_force_close;		/* fastboot `oem close`: trigger the close path for testing */
 static int s_settings_dirty;		/* volume/brightness changed: persist is deferred (see poll_volume) */
 static unsigned s_settings_tick;	/* 13 MHz tick of the last volume/brightness change */
@@ -603,81 +601,44 @@ static void run_one_frame(void)
 	gba_core_post_frame();		/* drain audio */
 }
 
-/* ===================== preemptive frames (input latency) =====================
+/* ===================== run-ahead ("Preemptive Frames") =======================
  * "Preemptive Frames" (Pico menu, ayaneo_get_preempt_frames 0..3) hides the
- * game's internal 1-3 frame input lag WITHOUT the every-frame rollback that a
- * classic run-ahead needs (that rollback costs a dynarec-flush re-entry whose
- * ~960-cycle priming stub makes the game run ~0.34% fast - measured). Instead we
- * keep a ring of the last few committed states and ONLY act on an input EDGE:
- * rewind pf frames and replay them plus the current frame with the new input
- * held, so the game has "seen" the new input pf frames earlier and its reaction
- * surfaces that much sooner. Static frames (the vast majority) just run one
- * normal frame, so the committed timeline advances exactly 280896 cycles/frame
- * = no speed skew; the rare edge frame pays the pf+1 emulations + one priming
- * stub (a negligible, non-accumulating-in-audio cost). Only the final replayed
- * frame feeds audio; the replayed history is muted (it was already heard). */
-#define PF_RING_MAX 4			/* max preempt depth (3) + 1 */
-static unsigned char s_pf_ring[PF_RING_MAX][512 * 1024] __attribute__((aligned(8)));
-static int s_pf_head;			/* ring slot for the state ENTERING the current frame */
-static int s_pf_fill;			/* count of valid consecutive past states in the ring */
-static unsigned s_pf_prev_in;		/* GBA mask applied on the previous committed frame */
-
-static void preempt_step(void)
+ * game's internal 1-3 frame input lag. The committed real frame ran above (audio
+ * ON, advancing state exactly 1/display frame). Here we snapshot it, run pf extra
+ * frames forward with the SAME held input and audio MUTED, present that look-ahead
+ * frame, then rewind to the committed snapshot so the committed timeline (and its
+ * audio) stays pristine and continuous - no per-edge trajectory jump. This keeps
+ * frame pacing steady (constant cost every frame) and audio click-free.
+ *
+ * gba_core_state_load flushes the dynarec, so the parked CPU thread cannot resume
+ * a stale translated block - it re-enters via longjmp (s_cpu_restart_req). That
+ * re-entry from a frame boundary yields after a ~960-cycle priming stub, which we
+ * spend here (audio ON). The net committed advance is 280896 + 960 = 0.34% fast;
+ * the audio clock-recovery clamp (ayaneo_audio.c) is widened to absorb that drift
+ * so pitch tracks the game cleanly (audio and video both 0.34% fast, in sync). */
+static void preempt_present(void)
 {
-	extern int g_gba_load_light;
-	extern volatile int g_dbg_force_edge; extern volatile unsigned int g_dbg_preempt_fires;
 	int pf = ayaneo_get_preempt_frames();
-	unsigned cur = s_keys;		/* mask update_buttons just latched into the core */
-	int changed = (cur != s_pf_prev_in);
-	s_pf_prev_in = cur;
-	if (g_dbg_force_edge > 0) { changed = 1; g_dbg_force_edge--; }	/* self-test: force the edge path */
-
-	/* preempt disabled or a non-gameplay mode: plain frame, drop stale history
-	 * (the input path differs, so a later rewind must not span the gap). */
-	if (pf <= 0 || pf >= PF_RING_MAX || s_menu_open || s_fast_forward || s_benchmark) {
-		s_pf_fill = 0; s_pf_head = 0;
-		run_one_frame();
+	if (pf <= 0) {
+		ayaneo_gbc_show_frame(gba_core_screen());
 		return;
 	}
-
-	gba_core_state_save(s_pf_ring[s_pf_head]);	/* state entering the current frame */
-
-	if (changed && s_pf_fill >= pf) {
-		int back = s_pf_head - pf; if (back < 0) back += PF_RING_MAX;
+	{
+		extern int g_gba_load_light;
+		static unsigned char s_ahead_state[512 * 1024] __attribute__((aligned(8)));
 		int i;
-		g_dbg_preempt_fires++;
-		/* rewind pf committed frames. Same-session same-ROM state, so only RAM
-		 * translations need flushing (ROM/BIOS stay valid). The flush forces a
-		 * clean longjmp re-entry, whose first frame is a ~960-cycle priming stub. */
-		g_gba_load_light = 1;
-		gba_core_state_load(s_pf_ring[back]);
+		gba_core_state_save(s_ahead_state);
+		g_gba_audio_suppress = 1;
+		for (i = 0; i < pf; i++)
+			run_one_frame();		/* look-ahead frames (muted) */
+		g_gba_audio_suppress = 0;
+		ayaneo_gbc_show_frame(gba_core_screen());	/* present the look-ahead frame */
+		g_gba_load_light = 1;	/* ROM/BIOS caches stay valid across a same-ROM rewind */
+		gba_core_state_load(s_ahead_state);
 		g_gba_load_light = 0;
 		s_cpu_restart_req = 1;
-		g_gba_audio_suppress = 1;
-		run_one_frame();			/* priming stub (muted) */
-		for (i = 0; i < pf; i++) {		/* replay the pf historical frames (muted) */
-			int idx = back + 1 + i; if (idx >= PF_RING_MAX) idx -= PF_RING_MAX;
-			run_one_frame();
-			gba_core_state_save(s_pf_ring[idx]);	/* refresh ring on the new trajectory */
-		}
-		g_gba_audio_suppress = 0;
-		run_one_frame();			/* the current frame, audio ON */
-	} else {
-		run_one_frame();
+		run_one_frame();		/* priming re-entry after the flush (audio ON) */
 	}
-
-	s_pf_head++; if (s_pf_head >= PF_RING_MAX) s_pf_head = 0;
-	if (s_pf_fill < PF_RING_MAX - 1) s_pf_fill++;
-}
-
-/* Drop the preempt ring history. MUST be called whenever the committed timeline
- * jumps discontinuously (soft reset, game switch, fresh launch) so the next input
- * edge cannot rewind into a stale pre-jump / previous-game state. */
-static void preempt_invalidate(void)
-{
-	s_pf_fill = 0;
-	s_pf_head = 0;
-	s_pf_prev_in = 0;
 }
 
 /* ===================== GammaOS Pico overlay menu ===================== */
@@ -1428,7 +1389,7 @@ static int emu_thread(void *arg)
 				extern unsigned int gba_core_cpu_ticks(void);
 				unsigned int ct0 = gba_core_cpu_ticks();
 				unsigned int em0 = gpt4_get_current_tick();
-				preempt_step();		/* advance exactly one committed frame (+ input-edge preemption) */
+				run_one_frame();	/* runs one GBA frame + submits its audio */
 				/* committed GBA cycles this display frame: 280896 on a static frame
 				 * (exact 1x, no speed skew), 281856 on a preempt edge (the +960 dynarec
 				 * re-entry priming stub, rare - only on real input changes). */
@@ -1484,7 +1445,6 @@ static int emu_thread(void *arg)
 				ayaneo_menu_audio_silence();	/* drop the stale ring so it does not loop */
 				reset_gba();
 				s_cpu_restart_req = 1;
-				preempt_invalidate();		/* committed timeline jumped: drop preempt history */
 			}
 
 			/* in-game menu "Close": save the current game (state + battery sav) and
@@ -1526,7 +1486,6 @@ static int emu_thread(void *arg)
 							gba_core_backup_size());
 					if (!PRESSED(GPIO_B))
 						state_read(scratch);
-					preempt_invalidate();	/* new game loaded: drop preempt history */
 					/* no blank: keep the frozen menu on screen for the seamless
 					 * growing-circle opening (the punch composites the full frame). */
 					dynarec_enable = 1;
@@ -1573,7 +1532,6 @@ static int emu_thread(void *arg)
 			 * duration regardless of the per-frame composite cost). Fast-forward/
 			 * benchmark above skip this; once done, the normal game present resumes. */
 			if (gba_punch_ready) {
-				preempt_invalidate();	/* fresh launch: no carryover preempt history */
 				/* FRAME-paced fast opening (mirror of the smooth close): freeze +
 				 * pre-render the launch game frame once, then step a growing circle
 				 * over a fixed count with a memcpy-only composite = smooth 60fps. The
@@ -1619,11 +1577,9 @@ static int emu_thread(void *arg)
 				ayaneo_gbc_show_frame(gba_core_screen());
 				continue;
 			}
-			/* Preemptive frames (input latency) are handled in preempt_step()
-			 * above: on an input edge it rewinds pf committed frames and replays
-			 * them with the new input so the reaction surfaces sooner. The current
-			 * frame is already in gba_core_screen(); present it paced to vsync. */
-			ayaneo_gbc_show_frame(gba_core_screen());
+			/* run-ahead present: look-ahead pf frames then rewind (or a plain
+			 * present when Off), paced to the panel vsync. */
+			preempt_present();
 		}
 	}
 	return 0;

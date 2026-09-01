@@ -49,12 +49,11 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		extern volatile unsigned int g_dbg_boxart_ok, g_dbg_boxart_tot;
 		extern volatile unsigned int g_dbg_emu_us;
 		extern volatile unsigned int g_dbg_frame_ticks;
-		extern volatile unsigned int g_dbg_preempt_fires;
 		snprintf(lbuf, sizeof lbuf,
-			 "p=%u f=%u hz1000=%u bx=%u/%u em=%u ft=%u pfire=%u",
+			 "p=%u f=%u hz1000=%u bx=%u/%u em=%u ft=%u",
 			 g_dbg_peak_us, g_dbg_fps, g_dbg_hz1000,
 			 g_dbg_boxart_ok, g_dbg_boxart_tot, g_dbg_emu_us,
-			 g_dbg_frame_ticks, g_dbg_preempt_fires);
+			 g_dbg_frame_ticks);
 	}
 	fastboot_info(lbuf);
 	fastboot_okay("");
@@ -102,27 +101,9 @@ static void cmd_preempt(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem pretest:<n> - force the preemptive edge (rewind+replay) path for the next
- * n frames to exercise it without in-game input; read pfire via oem diag. */
-static void cmd_pretest(const char *arg, void *data, unsigned sz)
-{
-	extern volatile int g_dbg_force_edge;
-	(void)data; (void)sz;
-	while (*arg == ' ' || *arg == ':') arg++;
-	{
-		int n = 0;
-		while (*arg >= '0' && *arg <= '9') { n = n * 10 + (*arg - '0'); arg++; }
-		if (n <= 0) n = 120;
-		g_dbg_force_edge = n;
-	}
-	fastboot_info("pretest armed");
-	fastboot_okay("");
-}
-
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
 	fastboot_register("oem preempt:", cmd_preempt, 1, 0);
-	fastboot_register("oem pretest:", cmd_pretest, 1, 0);
 }
