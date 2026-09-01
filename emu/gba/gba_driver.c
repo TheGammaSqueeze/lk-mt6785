@@ -254,7 +254,7 @@ static volatile int s_sel_modifier;
 /* refresh the button state once per frame (debounced across two reads) */
 static void update_buttons(void)
 {
-	static unsigned prev_raw, prev2_raw;
+	static unsigned prev_raw;
 	unsigned raw = 0, deb, m, i;
 	int af;
 
@@ -265,12 +265,10 @@ static void update_buttons(void)
 	if (PRESSED(GPIO_Y))  raw |= RB_Y;
 	if (PRESSED(GPIO_R2)) raw |= RB_FF;
 
-	/* 3-frame agreement debounce: a bit is only accepted when it read pressed on
-	 * three consecutive frames. The old 2-frame AND let 2-frame line glitches
-	 * through as phantom presses; a third sample rejects them for one extra frame
-	 * (~16 ms) of press latency, which is a fair trade against false inputs. */
-	deb = raw & prev_raw & prev2_raw;
-	prev2_raw = prev_raw;
+	/* 2-frame agreement debounce: a bit is accepted when it read pressed on two
+	 * consecutive frames. This rejects single-frame line glitches while keeping the
+	 * lowest press latency (one frame, ~16 ms less than a 3-frame filter). */
+	deb = raw & prev_raw;
 	prev_raw = raw;
 
 	m = deb & 0x3ffu;			/* the 10 GBA buttons */
