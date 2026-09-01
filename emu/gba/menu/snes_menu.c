@@ -1075,8 +1075,12 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 		 * resume/suspend-list state the card is DIMMED (ndim) and RAISED (cy), both
 		 * handled at blit time (dim is an exact uniform tint, cy is a translation), so
 		 * the cache serves that state too. Only the outgoing crossfade card (blue_a>0)
-		 * falls through to the live draw_card. */
-		if (blue_a <= 0.003f) {
+		 * falls through to the live draw_card. With per-ROM box art a live draw is a
+		 * full box-art blit (~4.5ms), and there are two live cards during the 0.2s
+		 * crossfade after every nav = a sustained ~27ms spike; so in box-art mode use
+		 * the cached (dark) tile for the outgoing card too - the frame-colour crossfade
+		 * snaps but the card slide is unchanged, and it holds 60fps. */
+		if (blue_a <= 0.003f || m->gba_boxart) {
 			const uint32_t *tile = ctile_get(m, j);
 			if (tile) {
 				float cyr = CAR_CY - RESUME_CARD_DY * m->resume_dim;
@@ -1094,7 +1098,10 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 		 * mid-nav) its body is the identical cached fct tile - blit it and draw
 		 * only the pulsing cursor live, skipping the ~2.7ms live card render. The
 		 * outgoing crossfade (prog>0) falls through to the live draw_card. */
-		const uint32_t *fct = (prog <= 0.003f) ? fct_get(m, m->focus) : 0;
+		/* box-art mode: use the cached fct even mid-crossfade (fct_get rebuilds once
+		 * on the focus change, then it is a cache hit) so the focused card is not a
+		 * live box-art blit every crossfade frame. */
+		const uint32_t *fct = (prog <= 0.003f || m->gba_boxart) ? fct_get(m, m->focus) : 0;
 		if (fct) {
 			const snes_spr_entry *cf = m->card_norm ? m->card_norm : m->card_act;
 			snes_blit_raw(t, fct, SNES_CT_W, SNES_CT_H, fcx, CAR_CY, 1.0f);
