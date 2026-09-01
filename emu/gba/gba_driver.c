@@ -640,8 +640,9 @@ static void run_one_frame(void)
  * clock, so a fixed estimate is fragile. Instead measure the ACTUAL total
  * emulation time each frame and step the cap +-1 with hysteresis so it always
  * settles at the deepest depth that fits. */
-static unsigned int s_frame_period_us = 16743u;		/* full loop-iteration period us */
 static int s_pf_cap = 3;				/* closed-loop depth ceiling */
+static unsigned int s_committed_us;			/* committed frame emu us (this frame) */
+static volatile unsigned int g_dbg_preempt_emu_us;	/* ahead+save+load us (excl present) */
 
 static int preempt_effective_depth(void)
 {
@@ -651,26 +652,24 @@ static int preempt_effective_depth(void)
 	return s_pf_cap < cfg ? s_pf_cap : cfg;
 }
 
-/* Closed-loop on the ACTUAL full per-frame period (emulation + present + the
- * battery/LED/volume polls), not just emulation - the overhead is a few ms and
- * varies, and it is what makes even a low depth overrun in a heavy scene. When a
- * vsync is missed (period jumps from ~16.7 ms to ~33 ms) the loop can no longer
- * feed audio in real time, so shed depth immediately; ramp back up slowly after a
- * sustained clean stretch so a too-deep setting only ever costs a rare 1-frame
- * probe, never sustained slow motion or silence. */
-static void preempt_adapt(unsigned frame_period_us)
+/* PREDICTIVE closed loop on the measured per-frame BUSY time (committed frame +
+ * the ahead frames/save/load + the present blit) - everything except the vsync
+ * idle. Because it predicts the cost of one more level (busy + one committed-frame
+ * worth) it never has to "probe" a too-deep setting and eat an overrun frame, so
+ * there is no periodic audio hiccup. Paused while the Pico menu is open: the menu
+ * overlay inflates the blit, which would otherwise crash the depth to 0 (what the
+ * player was seeing as "(0)") - the depth should reflect gameplay, not the menu. */
+static void preempt_adapt(int menu_open)
 {
-	static int up;
-	/* One panel frame is ~16.74 ms. A fitting loop settles at ~16.6-16.8 ms; a
-	 * loop that cannot keep up runs a steadily LONGER period (the present here is
-	 * not a hard vsync latch, so an overrun shows as ~18 ms, not a doubled 33 ms).
-	 * Shed depth the moment the period runs long, so audio is never starved; ramp
-	 * back slowly (a lone probe frame is absorbed by the audio ring). */
-	if (frame_period_us > 17400u) {		/* over one frame = overrun */
+	extern volatile unsigned int g_dbg_blit_us;
+	unsigned busy, step;
+	if (menu_open)
+		return;
+	busy = s_committed_us + g_dbg_preempt_emu_us + g_dbg_blit_us;
+	step = s_committed_us ? s_committed_us : 2500u;	/* cost of one more ahead frame (cold est) */
+	if (busy > 15500u) {			/* over the ~16.7 ms budget (with margin) */
 		if (s_pf_cap > 0) s_pf_cap--;
-		up = 0;
-	} else if (++up >= 240) {		/* ~4 s clean: probe one deeper */
-		up = 0;
+	} else if (busy + step < 15500u) {	/* room for one more whole frame: allow it */
 		if (s_pf_cap < 3) s_pf_cap++;
 	}
 }
@@ -680,24 +679,31 @@ static void preempt_present(void)
 	int pf = preempt_effective_depth();
 	g_dbg_eff_pf = pf;
 	if (pf <= 0) {
+		g_dbg_preempt_emu_us = 0;
 		ayaneo_gbc_show_frame(gba_core_screen());
 		return;
 	}
 	{
 		extern int g_gba_load_light;
 		static unsigned char s_ahead_state[512 * 1024] __attribute__((aligned(8)));
+		unsigned t0, t1, t2, t3;
 		int i;
+		t0 = gpt4_get_current_tick();
 		gba_core_state_save(s_ahead_state);
 		g_gba_audio_suppress = 1;
 		for (i = 0; i < pf; i++)
 			run_one_frame();		/* look-ahead frames (muted) */
 		g_gba_audio_suppress = 0;
-		ayaneo_gbc_show_frame(gba_core_screen());	/* present the look-ahead frame */
+		t1 = gpt4_get_current_tick();
+		ayaneo_gbc_show_frame(gba_core_screen());	/* present (blit timed separately) */
+		t2 = gpt4_get_current_tick();
 		g_gba_load_light = 1;	/* ROM/BIOS caches stay valid across a same-ROM rewind */
 		gba_core_state_load(s_ahead_state);
 		g_gba_load_light = 0;
 		s_cpu_clean_boundary = 1;	/* next committed frame re-enters as a full frame */
 		s_cpu_restart_req = 1;
+		t3 = gpt4_get_current_tick();
+		g_dbg_preempt_emu_us = ((t1 - t0) + (t3 - t2)) / 13u;	/* excl the present/blit */
 	}
 }
 
@@ -1506,14 +1512,10 @@ static int emu_thread(void *arg)
 				/* committed GBA cycles this display frame = one full frame (280896);
 				 * run-ahead re-enters as a full frame (no priming stub) so no skew. */
 				g_dbg_frame_ticks = gba_core_cpu_ticks() - ct0;
-				{	/* full per-frame period (em0 to em0) for the closed-loop depth */
-					static unsigned int prev_em0;
-					s_frame_period_us = prev_em0 ? (em0 - prev_em0) / 13u : 16743u;
-					prev_em0 = em0;
-				}
+				s_committed_us = (gpt4_get_current_tick() - em0) / 13u;	/* this frame us */
 				{	/* average the emulation wall time over 16 frames -> us */
 					static unsigned int acc; static int cnt;
-					acc += gpt4_get_current_tick() - em0;	/* 13 MHz ticks */
+					acc += s_committed_us * 13u;	/* 13 MHz ticks */
 					if (++cnt >= 16) { g_dbg_emu_us = acc / (16u * 13u); acc = 0; cnt = 0; }
 				}
 			}
@@ -1699,7 +1701,7 @@ static int emu_thread(void *arg)
 			preempt_present();
 			/* closed-loop: shed run-ahead depth if the full frame period shows
 			 * the loop overrunning vsync (which would starve audio). */
-			preempt_adapt(s_frame_period_us);
+			preempt_adapt(s_menu_open);
 		}
 	}
 	return 0;
