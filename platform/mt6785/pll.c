@@ -122,7 +122,12 @@ unsigned int ayaneo_get_cpu_mhz(void)
 
 	f >>= 14;
 	f >>= posdiv;
-	return (unsigned int)(f / 1000000ull);
+	/* ROUND to the nearest MHz, not truncate: the PCW is quantized so a requested
+	 * 999 MHz programs the nearest achievable ~998.99 MHz. Truncating showed 998
+	 * (and 599 for a 600 request, 1198 for 1199, ...), one digit low and
+	 * inconsistent. Rounding shows the true nearest-MHz value and matches the
+	 * requested clock on both the escalation and manual CPU-menu paths. */
+	return (unsigned int)((f + 500000ull) / 1000000ull);
 }
 
 /*
