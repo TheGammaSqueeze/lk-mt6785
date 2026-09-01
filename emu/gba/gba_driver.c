@@ -811,23 +811,26 @@ static void cpu_step(int dir)
  * so the closed-loop depth controller can actually sustain the requested depth
  * (higher clock -> lower per-frame us -> the loop keeps 60 fps at more depth).
  * The user can still fine-tune afterward via the CPU Clock menu item. */
+/* CONSERVATIVE clocks: ayaneo_set_cpu_mhz only rewrites the ARM PLL, it does NOT
+ * raise the core voltage, so a high frequency can undervolt-glitch the cores on
+ * some silicon (observed: audio cut out at 1800 MHz on a unit where 1000 MHz is
+ * fine). Stay inside the proven-stable band (<= ~1000 MHz). The closed-loop depth
+ * controller already keeps 60 fps at whatever clock is set, so a modest bump is
+ * enough - it just lets the deeper tiers sustain a little more look-ahead. */
 static unsigned preempt_target_mhz(int pf)
 {
 	switch (pf) {
-	case 1:  return 1000;	/* Balanced   */
-	case 2:  return 1400;	/* Responsive */
-	case 3:  return 1800;	/* Max        */
+	case 1:  return 800;	/* Balanced   */
+	case 2:  return 900;	/* Responsive */
+	case 3:  return 1000;	/* Max        */
 	default: return 600;	/* Off        */
 	}
 }
 
 static void preempt_apply_cpu(int pf)
 {
-	unsigned mhz = preempt_target_mhz(pf);
-	int n = (int)(sizeof(s_cpu_opp) / sizeof(s_cpu_opp[0])), i;
-	ayaneo_set_cpu_mhz(mhz);
-	for (i = 0; i < n; i++)
-		if (s_cpu_opp[i] == mhz) { s_cpu_idx = i; break; }
+	ayaneo_set_cpu_mhz(preempt_target_mhz(pf));
+	s_cpu_idx = -1;		/* re-derive the CPU-menu index from the actual clock */
 	s_cpu_dirty = 1;
 }
 
