@@ -202,9 +202,15 @@ int16_t gba_input_cb(unsigned port, unsigned device, unsigned index, unsigned id
 /* ================= audio ================= */
 /* render_audio() drains gpSP's internal ring in 256-frame chunks through this
  * callback (s16 interleaved L,R at sound_frequency). Forward to the LK sink. */
+/* Run-ahead suppresses audio on the discarded look-ahead frames: only the one
+ * committed real frame per display frame feeds the AFE ring, so audio stays 1x.
+ * The gpSP ring is still drained (this callback is still invoked) so the core
+ * does not desync - we simply do not forward the samples to the sink. */
+volatile int g_gba_audio_suppress;
 size_t gba_audio_cb(const int16_t *data, size_t frames)
 {
-	ayaneo_gba_audio_submit((const short *)data, (unsigned)frames);
+	if (!g_gba_audio_suppress)
+		ayaneo_gba_audio_submit((const short *)data, (unsigned)frames);
 	return frames;
 }
 

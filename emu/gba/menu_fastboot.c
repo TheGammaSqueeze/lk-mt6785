@@ -79,8 +79,28 @@ static void cmd_nav(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");   /* read the resulting peak via `oem diag` */
 }
 
+/* oem preempt:<0..3> - set the run-ahead ("Preemptive Frames") depth live so the
+ * latency mechanism can be exercised + measured (via oem diag) without the Pico
+ * menu. Persists like the menu toggle. */
+static void cmd_preempt(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_set_preempt_frames(int v);
+	extern int ayaneo_get_preempt_frames(void);
+	extern void ayaneo_settings_save(void);
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg >= '0' && *arg <= '9') {
+		ayaneo_set_preempt_frames(*arg - '0');
+		ayaneo_settings_save();
+	}
+	snprintf(lbuf, sizeof lbuf, "preempt=%d", ayaneo_get_preempt_frames());
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
+	fastboot_register("oem preempt:", cmd_preempt, 1, 0);
 }

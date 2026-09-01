@@ -52,6 +52,7 @@ extern unsigned gba_core_state_size(void);
 extern void gba_core_state_save(void *buf);
 extern void gba_core_state_load(const void *buf);
 extern int  dynarec_enable;	/* gpSP global (gba_wrap.c); 0 = pure interpreter */
+extern volatile int g_gba_audio_suppress;	/* mute the discarded run-ahead frames */
 
 /* ---- LK primitives ---- */
 extern void *memcpy(void *, const void *, unsigned int);
@@ -1528,7 +1529,32 @@ static int emu_thread(void *arg)
 				ayaneo_gbc_show_frame(gba_core_screen());
 				continue;
 			}
-			ayaneo_gbc_show_frame(gba_core_screen());
+			/* Run-ahead ("Preemptive Frames"): the committed real frame ran above
+			 * (audio ON, advancing state by exactly 1/display-frame). To hide the
+			 * game's internal 1-3 frame input lag, snapshot that committed state,
+			 * run pf extra frames forward with the SAME held input and audio muted,
+			 * present the look-ahead frame, then rewind to the committed snapshot so
+			 * audio and game speed stay 1x. gba_core_state_load flushes the dynarec
+			 * and reg[PC] is restored, so the parked CPU thread re-enters cleanly at
+			 * the committed PC on the next run_one_frame (same path as close/reset). */
+			{
+				int pf = ayaneo_get_preempt_frames();
+				if (pf > 0) {
+					static unsigned char s_ahead_state[512 * 1024]
+						__attribute__((aligned(8)));
+					int i;
+					gba_core_state_save(s_ahead_state);
+					g_gba_audio_suppress = 1;
+					for (i = 0; i < pf; i++)
+						run_one_frame();
+					g_gba_audio_suppress = 0;
+					ayaneo_gbc_show_frame(gba_core_screen());
+					gba_core_state_load(s_ahead_state);
+					s_cpu_restart_req = 1;	/* CPU thread rewinds to committed PC */
+				} else {
+					ayaneo_gbc_show_frame(gba_core_screen());
+				}
+			}
 		}
 	}
 	return 0;
