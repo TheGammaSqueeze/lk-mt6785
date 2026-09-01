@@ -954,6 +954,30 @@ static void poll_led(void)
 	set_charge_led(chr, 50);
 }
 
+/* Refresh s_batt_pct (shown in the Pico menu) at most once per interval_ms.
+ * battery_read() averages 16 BATADC samples and each sample is a blocking pwrap spin,
+ * so it must NOT run every frame on the audio-mastered game loop (that stall starves
+ * the AFE ring and loops the last samples - the same reason the near-full LED cue was
+ * dropped above). The Pico menu refreshes it every couple of seconds while OPEN (the
+ * player is looking at it); during gameplay it refreshes at most once a minute in the
+ * background, with the audio ring silenced across that one read so the stall cannot
+ * loop. One shared timestamp, so "time since last read" is honoured regardless of which
+ * path triggered it. */
+static void battery_poll(unsigned interval_ms, int silence)
+{
+	static unsigned last_tick;
+	static int primed;
+	unsigned now = gpt4_get_current_tick();
+	int chr;
+	if (primed && (now - last_tick) < interval_ms * 13000u)	/* 13 MHz tick */
+		return;
+	primed = 1;
+	last_tick = now;
+	if (silence) ayaneo_gbc_audio_pause(1);
+	s_batt_pct = battery_read(&chr);
+	if (silence) ayaneo_gbc_audio_pause(0);
+}
+
 /* Manual CPU-clock OPPs, selectable in the CPU Clock menu all the way up to 2 GHz.
  * NOTE: these are ARM-PLL frequencies (ayaneo_set_cpu_mhz reprograms the PCW); LK
  * does NOT scale core voltage with them (see the escalation note below). */
@@ -1174,16 +1198,15 @@ static void menu_toggle(void)
 {
 	s_menu_open = !s_menu_open;
 	s_menu_status[0] = 0;
-	if (s_menu_open) {
-		int c;
-		s_batt_pct = battery_read(&c);
-	}
+	if (s_menu_open)
+		battery_poll(2000, 0);	/* refresh the shown % on open (throttled, no stall) */
 	menu_keys();		/* drop the AYA edge */
 }
 
 static void menu_tick(unsigned char *state)
 {
 	unsigned k = menu_keys();
+	battery_poll(2000, 0);	/* menu is open: keep the shown % live (throttled ~2 s) */
 	if (k & MK_UP)    { s_menu_sel = (s_menu_sel + MI_COUNT - 1) % MI_COUNT; s_menu_status[0] = 0; }
 	if (k & MK_DOWN)  { s_menu_sel = (s_menu_sel + 1) % MI_COUNT; s_menu_status[0] = 0; }
 	if (k & MK_LEFT)  { if (menu_change(s_menu_sel, -1, 0, state, s_menu_status)) s_menu_open = 0; }
@@ -1727,6 +1750,8 @@ static int emu_thread(void *arg)
 			}
 			poll_led();
 			check_power(scratch);
+			if (!s_menu_open)
+				battery_poll(60000, 1);	/* gameplay: at most once/min, ring silenced */
 			frame++;
 
 			if (aya_edge())
