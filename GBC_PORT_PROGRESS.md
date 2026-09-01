@@ -36,18 +36,32 @@ never-brick / boot-to-OS / SELECT-return flow.
 - [x] Launch: GB/GBC stubbed (Phase 2) until Phase 2 (GBA path unchanged).
 
 ## Phase 2 — gambatte GB/GBC core as a boot_b blob
-- [ ] Build gambatte (emu/gbc) as a flat blob at a fixed VMA (reuse the gpSP blob
-      ABI pattern: exports/imports struct, blob_libc, .ld, build script). C++ so
-      keep gbc_shim.cpp runtime. Load from boot_b via a gbc_core_loader.
-- [ ] Port gbc_driver ROM/save/state I/O from boot_b to the SD card (roms/gb[c],
-      saves, states) — reuse gba_sd_load_rom / gba_sd_write_sav / _state.
-- [ ] Dispatch at launch by rom type: GBA -> existing gpSP; GB/GBC -> gambatte.
-- [ ] Runahead (preempt frames) + reset options wired for the GBC core, matching
-      the GBA core's Pico menu options.
-- [ ] GB (non-color) ROMs forced to GB mode (not CGB); L/R cycle GB palettes.
-- [ ] Shared display (ayaneo_gbc_show_frame 6x), audio, input already exist.
+- [x] Build gambatte (emu/gbc) as a flat blob at a fixed VMA (0x4E800000) + loader.
+- [x] Port ROM + .sav I/O to SD (gbc_sd_run.c: gba_sd_load_rom/load_sav/write_sav).
+      Save STATES to SD still TODO (tie to the in-game menu below).
+- [x] Dispatch at launch by rom type: GBA -> gpSP; GB/GBC -> gbc_sd_session().
+      Both ROM-select sites branch; s_gpsp_dirty rebuilds the gpSP arena after a
+      GB/GBC session (the session reuses the 0x50000000 arena). GBA flow untouched.
+- [ ] Runahead (preempt frames) + reset options for GBC, matching the GBA in-game
+      menu. NOT DONE: gbc_sd_session currently has AYA = save+exit only, no in-game
+      menu/runahead/reset. NEXT.
+- [x] GB (.gb) forced to DMG via gambatte FORCE_DMG; L/R cycle 5 DMG palettes.
+- [x] Shared display (ayaneo_gbc_show_frame 6x) + audio (ayaneo_gbc_audio_*) reused.
+- [ ] ON-DEVICE TEST with real GB/GBC ROMs (couldn't test headless): verify a game
+      runs, audio, L/R palette, AYA exit, and GB/GBC<->GBA switching (arena rebuild).
 
 ## Status log (newest first)
+- 2026-09-02: Phase 2.2 (launch dispatch + gambatte session). New gbc_sd_run.c:
+  gbc_sd_session(vol, rom) loads the blob (cached), loads ROM+.sav from SD into the
+  reused gpSP arena (0x50000000: rom@0, heap@8MB, vbuf/snd@48MB), gbc_create/load
+  (FORCE_DMG for .gb), runs the frame loop (gbc_run -> ayaneo_gbc_show_frame +
+  audio_submit, 13 MHz cumulative pacing), AYA = save .sav + exit, L/R cycle 5 DMG
+  palettes (mono games). gba_driver.c: both ROM-select sites dispatch by type; a
+  s_gpsp_dirty flag re-runs gba_core_init after a GB/GBC session (arena reuse) so
+  the next GBA game is clean. rules.mk +gbc_sd_run.o. Build green, lk_a 2 MB, GBA
+  flow + fast cold boot verified intact on device (dispatch only fires for GB/GBC
+  ROMs, which may be absent). Could NOT test GB/GBC gameplay headless. TODO next:
+  GBC in-game menu with runahead + reset (+ save states), then on-device GB/GBC test.
 - 2026-09-02: Phase 2 milestone 1 (GBC blob builds + packs + loader in lk_a).
   Created emu/gbc/: gbc_core_abi.h (imports read_buttons+host_time; exports the
   gbc_* API incl load(flags) for FORCE_DMG), gbc_core_exports.cpp (blob entry +

@@ -373,6 +373,7 @@ OBJS += emu/gba/menu_fastboot.o
 # GB/GBC (gambatte) loadable core: only the tiny lk_a-side loader lives in the image;
 # the C++ core itself is a boot_b blob (emu/gbc/core_gbc.blob), like the gpSP GBA core.
 OBJS += emu/gbc/gbc_core_loader.o
+OBJS += emu/gbc/gbc_sd_run.o
 # SNES-Classic-mini-style carousel menu engine (imported from lk-snes-menu). The
 # software renderer is float-heavy, so build the render/scene/audio modules with
 # hardware NEON FP (LK default -mfloat-abi=soft would make every op an aeabi call).

@@ -1385,6 +1385,12 @@ static fat_vol s_sd_vol;
 static gba_rom_entry s_roms[128];   /* enumerated /roms/gba, sorted (task d/e) */
 static int s_nrom;
 
+/* GB/GBC games run through the gambatte core blob (gbc_sd_run.c); it reuses the gpSP
+ * arena at 0x50000000, so after a GB/GBC session the gpSP arena must be rebuilt
+ * (gba_core_init) before the next GBA game. s_gpsp_dirty tracks that. */
+extern void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom);
+static int s_gpsp_dirty;
+
 /* Cold-start stage timings (ms since the SD gate started), read via `fastboot oem
  * diag` as the bt=... line. Pinpoints where the black-backlight time-to-first-BIOS-
  * frame goes (SD mount / bios read / rom list / core blob load / core init / core
@@ -1714,6 +1720,15 @@ static int emu_thread(void *arg)
 				for (;;) {
 					int sel = gba_sd_rom_select();
 					s_sel_rom = sel;
+					if (s_roms[sel].type != GBA_CONSOLE_GBA) {
+						gbc_sd_session(&s_sd_vol, &s_roms[sel]);   /* GB/GBC via gambatte */
+						s_gpsp_dirty = 1;                          /* arena clobbered */
+						continue;                                  /* back to the selector */
+					}
+					if (s_gpsp_dirty) {   /* rebuild the gpSP arena a GB/GBC session reused */
+						gba_core_init((void *)GBA_ARENA_PA, GBA_ARENA_SZ - GBA_DRV_RESERVE);
+						s_gpsp_dirty = 0;
+					}
 					romsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp, gba_core_rom_capacity());
 					if (romsz) break;
 					gba_dbg("GBA ERR: SD ROM load failed, back to selector");
@@ -1888,6 +1903,15 @@ static int emu_thread(void *arg)
 					for (;;) {
 						int sel = gba_sd_rom_select();
 						s_sel_rom = sel;
+						if (s_roms[sel].type != GBA_CONSOLE_GBA) {
+							gbc_sd_session(&s_sd_vol, &s_roms[sel]);
+							s_gpsp_dirty = 1;
+							continue;
+						}
+						if (s_gpsp_dirty) {
+							gba_core_init((void *)GBA_ARENA_PA, GBA_ARENA_SZ - GBA_DRV_RESERVE);
+							s_gpsp_dirty = 0;
+						}
 						rsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp,
 								      gba_core_rom_capacity());
 						if (rsz) break;
