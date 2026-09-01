@@ -733,21 +733,14 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 
 #if defined(AYANEO_GBA_SD)
 	/*
-	 * GBA-from-SD flow: if a FAT microSD with /gba_bios.bin + /roms/gba is present,
-	 * run the emulator from the card (bios intro -> ROM select -> game) and never
-	 * return. If there is no card, it is not FAT, or the assets are missing, the
-	 * gate returns < 0 and we FALL THROUGH to the normal kernel boot below - the
-	 * always-safe default (the device is never bricked into a non-booting state).
+	 * GBA-from-SD flow: the emulator gate now runs at the TOP of
+	 * boot_linux_from_storage(), BEFORE the Android boot image is loaded/verified,
+	 * so the GBA BIOS intro paints right after backlight instead of waiting on the
+	 * ~1s kernel load. Reaching here means that early gate fell through (no SD card /
+	 * boot-to-OS sticky), so just continue the normal kernel boot below. This branch
+	 * stays (as a no-op) only so the AYANEO_GBA #elif below does not fire for the SD
+	 * build, which also defines AYANEO_GBA.
 	 */
-	{
-		extern int ayaneo_gba_sd_boot(void);
-		if (ayaneo_gba_sd_boot() >= 0)
-			for (;;)
-				thread_sleep(1000);
-		/* else (no card / assets / boot-to-OS one-shot): fall through to normal boot.
-		 * "Boot to OS" reboots via ayaneo_boot_to_os(); the one-shot marker then makes
-		 * ayaneo_gba_sd_boot() return skip on the next boot, landing here cleanly. */
-	}
 #elif defined(AYANEO_GBC) || defined(AYANEO_GBA)
 	/*
 	 * Experiment: instead of booting the kernel, hand the panel to the GBC/GBA
@@ -1647,6 +1640,26 @@ int boot_linux_from_storage(void)
 #define CMDLINE_TMP_CONCAT_SIZE 110
 	char cmdline_tmpbuf[CMDLINE_TMP_CONCAT_SIZE];
 #endif
+
+#if defined(AYANEO_GBA_SD)
+	/*
+	 * EARLY GBA-from-SD gate. Run BEFORE load_vfy_boot() reads and verifies the
+	 * Android boot image from eMMC (~1s the emulator never needs), so the GBA BIOS
+	 * intro appears as soon as the panel/backlight are up. If a FAT microSD with
+	 * /gba_bios.bin + /roms/gba is present it spawns the emulator and never returns;
+	 * otherwise (no card / not FAT / assets missing / boot-to-OS sticky) it returns
+	 * < 0 and we fall through to the normal kernel boot below - the always-safe
+	 * default. The display/backlight and eMMC partitions are already up at platform
+	 * init, so nothing here depends on the kernel having been loaded first.
+	 */
+	{
+		extern int ayaneo_gba_sd_boot(void);
+		if (ayaneo_gba_sd_boot() >= 0)
+			for (;;)
+				thread_sleep(1000);
+	}
+#endif
+
 	switch (g_boot_mode) {
 	case NORMAL_BOOT:
 	case META_BOOT:

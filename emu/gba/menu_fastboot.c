@@ -59,6 +59,17 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			 g_dbg_eff_pf, ayaneo_get_cpu_mhz(), g_dbg_btn_smt, g_dbg_asub_frames);
 	}
 	fastboot_info(lbuf);
+	{
+		/* cold-start stage timings (ms since the SD gate started) - where the
+		 * black-backlight time-to-first-BIOS-frame goes. */
+		extern volatile unsigned int g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list;
+		extern volatile unsigned int g_dbg_bt_coreload, g_dbg_bt_coreinit, g_dbg_bt_start, g_dbg_bt_frame1;
+		snprintf(lbuf, sizeof lbuf,
+			 "bt: mount=%u bios=%u list=%u coreload=%u coreinit=%u start=%u frame1=%u ms",
+			 g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list,
+			 g_dbg_bt_coreload, g_dbg_bt_coreinit, g_dbg_bt_start, g_dbg_bt_frame1);
+		fastboot_info(lbuf);
+	}
 	fastboot_okay("");
 }
 

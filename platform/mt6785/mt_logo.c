@@ -144,15 +144,20 @@ void mt_disp_show_boot_logo(void)
 	dprintf(INFO, "[lk logo: %s %d]\n",__FUNCTION__,__LINE__);
 #ifdef AYANEO_RAINBOW_BOOT
 #if defined(AYANEO_GBA_SD)
-	/* "Boot to OS" reboots into Android: show the real eMMC boot logo (the normal
-	 * Android boot look), not the emulator's rainbow animation. The sticky marker is
-	 * only peeked here; it is cleared only when the user holds SELECT to return. */
+	/*
+	 * Two paths:
+	 *  - Emulator boot: do NOT play the AYANEO logo animation. The GBA-from-SD gate
+	 *    runs early (top of boot_linux_from_storage) and the emulator's GBA BIOS
+	 *    intro is the first thing painted after backlight, so any logo animation here
+	 *    would just be a delay competing with it for the panel. Return immediately.
+	 *  - "Boot to OS" (sticky marker set): fall through to the real eMMC boot logo so
+	 *    it looks like a normal Android boot. The marker is only peeked here; it is
+	 *    cleared only when the user holds SELECT to return.
+	 */
 	{
 		extern int ayaneo_boot_to_os_pending(void);
-		if (!ayaneo_boot_to_os_pending()) {
-			video_rainbow_boot_start();
+		if (!ayaneo_boot_to_os_pending())
 			return;
-		}
 	}
 #else
 	/* non-blocking: spawn the animation thread and let boot continue */

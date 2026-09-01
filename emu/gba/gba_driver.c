@@ -1367,6 +1367,15 @@ static fat_vol s_sd_vol;
 static gba_rom_entry s_roms[128];   /* enumerated /roms/gba, sorted (task d/e) */
 static int s_nrom;
 
+/* Cold-start stage timings (ms since the SD gate started), read via `fastboot oem
+ * diag` as the bt=... line. Pinpoints where the black-backlight time-to-first-BIOS-
+ * frame goes (SD mount / bios read / rom list / core blob load / core init / core
+ * start / first drawn frame). */
+static unsigned int s_bt_t0;
+volatile unsigned int g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list;
+volatile unsigned int g_dbg_bt_coreload, g_dbg_bt_coreinit, g_dbg_bt_start, g_dbg_bt_frame1;
+#define BT_MS() ((gpt4_get_current_tick() - s_bt_t0) / 13000u)
+
 /* The mounted SD volume, for the menu's per-ROM boxart loader; 0 if not in SD mode
  * (the plain-list/never-brick fallback then just shows placeholders). */
 fat_vol *gba_sd_menu_vol(void) { return s_sd_mode ? &s_sd_vol : 0; }
@@ -1519,6 +1528,7 @@ static int emu_thread(void *arg)
 		gba_dbg("Gerr blob");
 		return 0;
 	}
+	g_dbg_bt_coreload = BT_MS();
 
 #ifdef AYANEO_GBA_INTERP
 	dynarec_enable = 0;			/* diagnostic: pure interpreter, no JIT */
@@ -1531,6 +1541,7 @@ static int emu_thread(void *arg)
 		gba_dbg("GBA ERR: arena too small");
 		return 0;
 	}
+	g_dbg_bt_coreinit = BT_MS();
 #ifdef AYANEO_GBA_SD
 	if (s_sd_mode) {
 		unsigned char *rp = gba_core_rom_ptr();
@@ -1551,6 +1562,7 @@ static int emu_thread(void *arg)
 			return 0;
 		}
 		gba_core_enter_bios();			/* start at the BIOS so its logo plays */
+		g_dbg_bt_start = BT_MS();
 	} else
 #endif
 	{
@@ -1674,6 +1686,7 @@ static int emu_thread(void *arg)
 				update_buttons();
 				run_one_frame();
 				ayaneo_gba_show_intro_frame(gba_core_screen());	/* 6x fill-height */
+				if (!g_dbg_bt_frame1) g_dbg_bt_frame1 = BT_MS();  /* first BIOS frame on screen */
 				mtk_wdt_restart();		/* keep the armed watchdog fed during the intro */
 				if (PRESSED(GPIO_B)) break;	/* hold B to skip the logo */
 			}
@@ -2170,6 +2183,7 @@ int ayaneo_gba_sd_boot(void)
 		}
 	}
 
+	s_bt_t0 = gpt4_get_current_tick();		/* cold-start clock base (~backlight time) */
 	rc = gba_sd_mount(&s_sd_vol);
 	if (rc != 0) {
 		if (rc == -4)
@@ -2178,6 +2192,7 @@ int ayaneo_gba_sd_boot(void)
 			GBA_LOG("gba-sd: no FAT microSD (rc=%d) -> normal boot\n", rc);
 		return -1;
 	}
+	g_dbg_bt_mount = BT_MS();
 	if (!gba_sd_assets_ok(&s_sd_vol)) {
 		GBA_LOG("gba-sd: microSD present but /gba_bios.bin + /roms/gba missing -> normal boot\n");
 		return -2;
@@ -2186,9 +2201,11 @@ int ayaneo_gba_sd_boot(void)
 		GBA_LOG("gba-sd: /gba_bios.bin present but not a 16KB readable BIOS -> normal boot\n");
 		return -3;
 	}
+	g_dbg_bt_bios = BT_MS();
 	{
 		int total = 0;
 		s_nrom = gba_sd_list_roms(&s_sd_vol, s_roms, 128, &total);
+		g_dbg_bt_list = BT_MS();
 		if (total > s_nrom)
 			GBA_LOG("gba-sd: WARNING %d roms present, showing first %d (cap)\n", total, s_nrom);
 		GBA_LOG("gba-sd: microSD + assets OK (fat32=%d, %d roms in /roms/gba) - running BIOS intro from SD\n",

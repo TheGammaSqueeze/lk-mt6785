@@ -1098,20 +1098,31 @@ extern int mt6360_ldo_i2c_probe(void);
 void msdc_ext_sd_power_on(void)
 {
 	unsigned char en5 = 0, en3 = 0;
+	unsigned char pre_vmch = 0;
 	/* MUST probe first: it populates the CRC8 table used to frame every I2C
 	 * write/read. Without it the MT6360 rejects the packet (bad CRC) and the
 	 * rails never come up. */
 	mt6360_ldo_i2c_probe();
+	/* Was the card VDD (VMCH/LDO5, enable = 0x0b bit6) already on when we got here?
+	 * On a COLD boot (power-on from off) LK/preloader never turned it on, so the
+	 * card is already unpowered and the long collapse delay below is pure latency
+	 * (~250ms of black backlight). Only pay it on a WARM reboot where a previous
+	 * emulator session left the card powered - that is the case the delay exists
+	 * for (a card interrupted mid-read must fully discharge for a clean reset). */
+	mt6360_ldo_read_interface(0x0b, &pre_vmch, 0xff, 0);
 	/* Cold power cycle so the card starts from a known-off state. Drop both
 	 * rails, let the card fully discharge, then bring VMCH (card VDD) up first,
 	 * let it settle, then VMC (IO). SD cards require stable VDD before the first
 	 * command; a too-short ramp leaves the card unresponsive (RESP timeout). */
 	mt6360_ldo_config_interface(0x05, 0x00, 0x40, 0); /* VMC  disable */
 	mt6360_ldo_config_interface(0x0b, 0x00, 0x40, 0); /* VMCH disable */
-	/* Long off so the card VDD fully collapses and the card does a clean
-	 * power-on reset. A short off leaves a card that was interrupted mid-read
-	 * stuck in the data state, which hangs the next read (no data-done IRQ). */
-	mdelay(250);
+	/* Long off so the card VDD fully collapses and the card does a clean power-on
+	 * reset - but only when the card was actually powered. Already-off (cold boot)
+	 * just needs a brief settle for the disable writes. */
+	if (pre_vmch & 0x40)
+		mdelay(250);
+	else
+		mdelay(5);
 	/* set voltages first (VOSEL) */
 	mt6360_ldo_config_interface(0x0f, 0x2a, 0x7f, 0); /* VMCH (LDO5) = 3.0V */
 	mt6360_ldo_config_interface(0x09, 0xaa, 0xff, 0); /* VMC  (LDO3) = 3.0V */
