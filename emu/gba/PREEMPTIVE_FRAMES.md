@@ -216,12 +216,28 @@ or 240fps-app tests; my rows are the frame-model estimate above. One frame is 16
 | **This build, Balanced (1)**    | ~5-6 frames (est)        | run-ahead removes 1 game frame                       |
 | **This build, Responsive (2)**  | ~4-5 frames (est)        | run-ahead removes 2 game frames                      |
 | **This build, Max (3)**         | ~4 frames (est)          | game's internal lag fully removed; only the fixed pipeline remains |
+| **This build, Max, 1-frame debounce** | ~3 frames (est)   | *hypothetical*: relax the glitch filter to a 2-read agreement |
+| **This build, Max, no debounce** | ~2 frames (est)         | *hypothetical*: raw input, would match/beat a stock GBA and the Pocket |
 | Android emulator (Retroid), measured | ~92 ms (~5.5 frames) | OS input stack + SurfaceFlinger compositor + buffering |
 
-Read that honestly. In absolute button-to-photon I do **not** beat a stock GBA or the
-Pocket: my fixed pipeline is heavier, dominated by the two-frame debounce and the software
-framebuffer flip. What the table shows is the *shape* of the win. Run-ahead is the one
-lever that removes the game's own internal lag, which is the single biggest chunk software
+**The single thing standing between me and beating real hardware is the debounce.** At
+Max the game's internal lag is already gone, so those ~4 fixed frames are 2 debounce +
+0.5 poll + 1 present + 0.5 LCD. The debounce is the biggest slice, and it is the only slice
+I could still cut: drop the three-read agreement to two reads and Max lands at ~3 frames,
+drop it entirely and Max lands at ~2 frames, which would actually undercut a stock GBA's
+2.4 and the Pocket. **But the filter is there for a reason, and it stays.** This unit's
+GPIO input lines glitch, and with a lighter filter phantom presses slipped through during
+real gameplay, inputs the player never made. A game that occasionally jumps on its own is
+worse than one that reacts a frame later, so the three-read agreement is a deliberate
+reliability-over-latency trade. Those two hypothetical rows are not shipping numbers; they
+are there to show exactly where the remaining latency lives and why I am choosing to keep
+it.
+
+Read the rest honestly too. In absolute button-to-photon I do **not** beat a stock GBA or
+the Pocket: my fixed pipeline is heavier, dominated by that two-frame debounce and the
+software framebuffer flip. What the table shows is the *shape* of the win. Run-ahead is the
+one lever that removes the game's own internal lag, which is the single biggest chunk
+software
 can touch, so each tier walks me down a frame at a time from "worse than an Android
 emulator" toward the consolizer range, on a single 600 MHz core with no GPU.
 
