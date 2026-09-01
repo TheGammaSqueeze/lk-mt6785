@@ -126,6 +126,8 @@ extern int  mt_set_gpio_mode(unsigned pin, unsigned mode);
 extern int  mt_set_gpio_dir(unsigned pin, unsigned dir);
 extern int  mt_set_gpio_pull_enable(unsigned pin, unsigned en);
 extern int  mt_set_gpio_pull_select(unsigned pin, unsigned sel);
+extern int  mt_set_gpio_smt(unsigned pin, unsigned enable);	/* Schmitt trigger (hysteresis) */
+extern int  mt_get_gpio_smt(unsigned pin);
 extern int  mt_get_gpio_in(unsigned pin);
 extern int  mtk_detect_key(unsigned short hwkey);
 
@@ -187,7 +189,7 @@ volatile unsigned int g_dbg_emu_us;
 volatile unsigned int g_dbg_frame_ticks;	/* GBA cycles advanced by the committed frame */
 volatile unsigned int g_dbg_asub_calls, g_dbg_asub_done, g_dbg_asub_frames;	/* audio submit counters */
 volatile int g_dbg_eff_pf;			/* last effective run-ahead depth */
-volatile unsigned int g_dbg_boot_mhz;	/* ARM-PLL freq the preloader left the cores at */
+volatile int g_dbg_btn_smt = -1;	/* button Schmitt-trigger state after init (oem diag, expect 1) */
 volatile int g_dbg_force_close;		/* fastboot `oem close`: trigger the close path for testing */
 static int s_settings_dirty;		/* volume/brightness changed: persist is deferred (see poll_volume) */
 static unsigned s_settings_tick;	/* 13 MHz tick of the last volume/brightness change */
@@ -233,10 +235,18 @@ static const struct { unsigned gpio; unsigned mask; } s_btn[] = {
 	{ GPIO_LB, GB_L },  { GPIO_RB, GB_R },
 };
 
+/* Configure a button pin as a glitch-hardened active-low input. Beyond the pull-up, this
+ * enables the pin's hardware SCHMITT TRIGGER (input hysteresis): it widens the gap between
+ * the high->low and low->high logic thresholds, so transient noise that only nudges the
+ * line partway (coupling from the MIPI display, the audio amp, the DC-DC converters, or
+ * the CPU switching harder under run-ahead) no longer registers as a phantom press. It is
+ * a hardware deglitch with ZERO added latency, unlike a multi-frame software debounce. All
+ * the button pins (57, 78-92) support SMT. */
 static void gpio_in_pullup(unsigned gpio)
 {
 	mt_set_gpio_mode(GP(gpio), 0);
 	mt_set_gpio_dir(GP(gpio), 0);
+	mt_set_gpio_smt(GP(gpio), 1);		/* hardware hysteresis / deglitch */
 	mt_set_gpio_pull_enable(GP(gpio), 1);
 	mt_set_gpio_pull_select(GP(gpio), 1);	/* pull-up */
 }
@@ -250,6 +260,7 @@ static void input_init(void)
 	gpio_in_pullup(GPIO_Y);
 	gpio_in_pullup(GPIO_R2);
 	gpio_in_pullup(GPIO_AYA);
+	g_dbg_btn_smt = mt_get_gpio_smt(GP(GPIO_A));	/* verify SMT took (expect 1) */
 }
 
 int ayaneo_gbc_select_held(void)
@@ -1555,10 +1566,6 @@ static int emu_thread(void *arg)
 #endif
 	mtk_wdt_disable();
 
-	/* Capture the ARM-PLL frequency the preloader left the cores at BEFORE we touch
-	 * it - that is a real, voltage-backed operating point (a known-stable clock at
-	 * the boot Vproc), unlike the raw PLL targets we program afterward. */
-	g_dbg_boot_mhz = ayaneo_get_cpu_mhz();
 	/* Clock to match the persisted Preemptive Frames tier (Off = low-power 600 MHz,
 	 * Balanced/Responsive/Max escalate for the deeper look-ahead). */
 	preempt_apply_cpu(ayaneo_get_preempt_frames());
