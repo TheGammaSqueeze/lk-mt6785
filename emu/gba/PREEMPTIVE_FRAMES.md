@@ -11,8 +11,8 @@ persisted in the settings blob. Default is **Off**.
 > **Dynamic Preemptive Frames (the shippable feature).** The tier is a *max desired*
 > look-ahead. Two loops keep it honest so it can never backfire: a closed loop
 > that adapts the actual depth every frame to hold a locked 60 fps (section 9), and
-> a per-tier CPU-clock escalation (Off 600 MHz / Balanced 800 / Responsive 900 /
-> Max 1000) that gives the deeper look-ahead the headroom to actually run. Net: the
+> a per-tier CPU-clock escalation (Off 600 MHz / Balanced 999 / Responsive 1199 /
+> Max 1299) that gives the deeper look-ahead the headroom to actually run. Net: the
 > lowest input latency the game and hardware can sustain, without ever dropping a
 > frame or starving audio. The menu shows the live adaptive depth in parens
 > (e.g. "Max (3)") so the player sees it working.
@@ -93,6 +93,15 @@ Key primitives, all pre-existing:
   `gba_audio_cb` (gba_wrap.c). When set, the gpSP audio ring is still drained (so
   the core does not desync) but the samples are NOT forwarded to the AFE sink.
   We do NOT latch `ayaneo_gbc_audio_pause` (that would mute everything).
+- **Sound ring snapshot/restore** (`gba_sound_ring_save/load`, sound.c): the gpSP
+  savestate captures the sound ring INDICES but NOT its 64K-sample CONTENTS. The
+  muted look-ahead frames' `render_audio` drains that ring (advances the read
+  cursor, zeroes samples) and the mixer accumulates into it, so restoring only the
+  indices on rewind left the committed audio garbled. The driver snapshots the
+  whole ring right after the state save and restores it right after the state load,
+  so the audio is byte-identical to the committed timeline across every rewind.
+  (Audited: the ring was the last piece of state the savestate did not cover; sound
+  channels/indices are saved, video sprite lists rebuild via `oam_update` on load.)
 - **Light flush**: `g_gba_load_light` makes `gba_load_state()` flush only the RAM
   translation cache. The rewind restores a state captured earlier this session
   from the SAME ROM, so the ROM/BIOS caches are still valid; keeping that hot code
@@ -129,14 +138,15 @@ at the vsync-paced present point:
 run_one_frame()                 # committed frame, audio ON, advances 1 frame
 
 preempt_present():
-  pf = ayaneo_get_preempt_frames()
+  pf = preempt_effective_depth()         # closed-loop adaptive cap (section 9)
   if pf == 0: show(committed); return
-  save committed state S
+  save committed state S ; save sound ring       # ring is NOT in the savestate
   suppress audio
   for i in 0..pf-1: run_one_frame()      # look-ahead frames (muted)
   unsuppress audio
   show(current screen)                   # present the look-ahead frame
-  load S (light flush) ; s_cpu_clean_boundary = 1 ; s_cpu_restart_req = 1
+  load S (light flush) ; restore sound ring      # audio byte-identical to committed
+  s_cpu_clean_boundary = 1 ; s_cpu_restart_req = 1
   # no priming frame: the NEXT committed run_one_frame is the clean re-entry
 ```
 
@@ -181,7 +191,7 @@ constant cost feel better. The code is in git history (commits `bb19959`,
   (0..3), persisted (settings VER 5, offset 48; `ayaneo_get/set_preempt_frames`).
   The value shows the live adaptive depth, e.g. "Max (3)".
 - Each tier escalates the CPU clock (`preempt_apply_cpu`, applied in the game loop
-  on any tier change): Off 600 / Balanced 800 / Responsive 900 / Max 1000 MHz.
+  on any tier change): Off 600 / Balanced 999 / Responsive 1199 / Max 1299 MHz.
   These stay in a voltage-stable band (ayaneo_set_cpu_mhz sets only the ARM PLL,
   not core voltage, so higher clocks can undervolt-glitch some silicon).
   The CPU Clock menu item can fine-tune afterward.
@@ -201,10 +211,10 @@ frame), `em` is average emulation wall time per frame. Frame budget at 60 fps is
 
 | Tier       | CPU MHz | em (us) | epf (live depth) | hz1000 | ft     |
 |------------|---------|---------|------------------|--------|--------|
-| Off        | 599     | 5057    | 0                | 59725  | 280896 |
-| Balanced   | 999     | 2741    | 1                | 59730  | 280896 |
-| Responsive | 1399    | 2187    | 2                | 59729  | 280896 |
-| Max        | 1799    | 1795    | 3                | 59728  | 280896 |
+| Off        | 600     | 5057    | 0                | 59724  | 280896 |
+| Balanced   | 999     | 3346    | 1                | 59724  | 280896 |
+| Responsive | 1199    | 2746    | 2                | 59730  | 280896 |
+| Max        | 1299    | 2675    | 3                | 59731  | 280896 |
 
 Same demanding scene at every tier. The CPU escalation drops the per-frame
 emulation cost (`em`), so the closed loop sustains the tier's full look-ahead
@@ -237,37 +247,49 @@ the committed timeline and its cost is constant.
   light, ~5 ms heavy) and there is ~7 ms of fixed per-frame overhead (present +
   battery/LED/volume polls). At a fixed depth a heavy scene overruns the ~16.7 ms
   vsync budget and the loop (which masters audio) starves the AFE ring = slow
-  motion or silence. So the depth is a CLOSED LOOP on the measured full per-frame
-  period (`preempt_adapt`): shed one level the instant the period runs long
-  (>17.4 ms), ramp back up one level after ~4 s of clean frames. A lone probe
-  frame is absorbed by the audio ring, so it settles at the deepest depth that
-  holds 60 fps - heavy scenes fall to 0 (run-ahead off, full 60 fps + solid
-  audio), light scenes get the configured depth. The menu setting is a "max
-  desired depth".
+  motion or silence. So the depth is a PREDICTIVE closed loop (`preempt_adapt`):
+  it measures the actual per-frame busy time (committed frame + ahead/save/load +
+  the present blit, all excluding vsync idle) and only steps up when
+  busy + one-more-frame still fits the budget, so it settles at the deepest depth
+  that fits with no probe/overrun (an earlier probe-based version caused a periodic
+  audio hitch). Heavy scenes fall toward 0 (run-ahead off, full 60 fps + solid
+  audio), light scenes get the configured depth. Adaptation is PAUSED while the
+  Pico menu is open (the overlay inflates the blit and would otherwise crash the
+  displayed depth to 0). The menu setting is a "max desired depth".
 - **Per-tier CPU-clock escalation raises that ceiling.** Each tier bumps the ARM
-  PLL (Off 600 / Balanced 800 / Responsive 900 / Max 1000 MHz via
+  PLL (Off 600 / Balanced 999 / Responsive 1199 / Max 1299 MHz via
   `ayaneo_set_cpu_mhz`), which lowers the per-frame emulation cost so the closed
   loop sustains the requested depth instead of backing off. Device-measured in a
   heavy scene (committed em ~5 ms at 600 MHz -> epf 0): Balanced 999 MHz -> epf 1,
-  Responsive 1399 MHz -> epf 2, Max 1799 MHz -> epf 3, all at hz=59.73 / ft=280896.
+  Responsive 1199 MHz -> epf 2, Max 1299 MHz -> epf 3, all at hz=59.73 / ft=280896.
   Higher clock costs power/heat, which is why it scales with the tier the user
-  chose rather than running maxed by default.
+  chose rather than running maxed by default. (The clocks stay within a
+  voltage-stable band: `ayaneo_set_cpu_mhz` moves only the ARM PLL, not core
+  voltage, and pushing too high undervolt-glitched audio on one unit.)
 - Run-ahead reduces latency every frame (display is always N ahead), which is the
   smooth, click-free behavior we want; preemptive's theoretical win (exact speed,
   lower average CPU) did not survive contact with real audio/pacing on hardware.
 
 ## 10. Source map
 
-- `emu/gba/gba_driver.c` - `preempt_present()` (the shipped run-ahead), main-loop
-  integration, `ft=` probe.
+- `emu/gba/gba_driver.c` - `preempt_present()` (the shipped run-ahead),
+  `preempt_effective_depth`/`preempt_adapt` (predictive adaptive depth),
+  `preempt_target_mhz`/`preempt_apply_cpu` (per-tier CPU escalation), main-loop
+  integration, `ft=`/`blit=` probes.
 - `emu/gba/gba_wrap.c` - `g_gba_audio_suppress` gate in `gba_audio_cb`;
   `gba_core_cpu_ticks()`.
+- `emu/gba/sound.c` - `gba_sound_ring_save/load` (the sound-ring snapshot the
+  savestate omits).
 - `emu/gba/gba_memory.c` - `g_gba_load_light` (RAM-only flush path in
   `gba_load_state`).
 - `emu/gba/main.c` - `gba_frame_boundary_finish()` (the exact-1x re-entry tail).
+- `platform/mt6785/mt_disp_drv.c` - the no-filter blit fast path.
+- `platform/mt6785/pll.c` - `ayaneo_set/get_cpu_mhz` (get rounds to nearest MHz).
 - `emu/gba/menu_fastboot.c` - `oem preempt:` / `oem diag`.
 - `platform/mt6785/ayaneo_audio.c` - `ayaneo_get/set_preempt_frames` + persistence.
 
-Commits: `a65f445`, `7cff000` (run-ahead + light flush), `bb19959` + `3470ec0`
+Key commits: `7cff000` (run-ahead + light flush), `bb19959`+`3470ec0`
 (preemptive, later reverted), `2983a57` (revert to run-ahead), `63afe03`
-(exact-1x re-entry fix).
+(exact-1x re-entry), `61a0e12` (adaptive depth), `0179e62` (blit fast path),
+`769c9d8` (sound-ring fix), `2690f50` (predictive controller + menu-pause),
+`aa5b4c3` (CPU escalation), `6cceb69` (menu debounce), `cab87f5` (clock rounding).
