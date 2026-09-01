@@ -736,7 +736,14 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		mtk_wdt_restart();
 		{
 			int p = pmic_detect_powerkey();
-			if (!p) pwr_armed = 1; else if (pwr_armed) mt_power_off();
+			if (!p) pwr_armed = 1;
+			else if (pwr_armed) {
+				/* Flush a pending volume/brightness change BEFORE powering off, so a
+				 * change made within the ~0.7s deferred-flush window is not lost. The
+				 * settings write is synchronous, so it completes before mt_power_off. */
+				if (s_av_dirty) { s_av_dirty = 0; ayaneo_menu_settings_persist(); }
+				mt_power_off();
+			}
 		}
 	}
 	}
