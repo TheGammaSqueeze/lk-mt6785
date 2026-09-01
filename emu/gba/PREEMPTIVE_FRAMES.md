@@ -320,6 +320,16 @@ only there to vote them out over frames became unnecessary, and dropping it to r
 bought the two frames. The lesson: a temporal debounce treats the symptom and charges
 latency for it; hysteresis treats the cause for free.
 
+If a phantom ever does resurface in long real-world play, there is a fallback ladder that
+keeps latency in mind. The first rung costs nothing: **intra-frame multi-sampling** - read
+each button two or three times back-to-back inside `update_buttons` (microseconds apart)
+and require agreement. That rejects a sub-frame glitch that happens to align with a single
+read, without adding any *frame* of latency, so it is strictly better than reaching for the
+frame debounce. Only if a disturbance is long enough to survive that (which the Schmitt
+trigger is specifically there to prevent) would it be worth paying a frame by raising
+`GAMEPLAY_DEBOUNCE` back to 2. Raw plus the hardware Schmitt trigger is the home; the frame
+debounce is the last resort, not the first.
+
 ## The result
 
 Add it up. Run-ahead deletes the game's own 1-3 frames of internal input lag. The hardware
