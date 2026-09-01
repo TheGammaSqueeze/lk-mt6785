@@ -1,0 +1,233 @@
+[
+ {
+  "code": "CLV-P-SAAAE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SAAAE/CLV-P-SAAAE.sfrom --volume 100 -rollback-snapshot-period 600",
+  "Name": "Super Mario World",
+  "Players": "2",
+  "Simultaneous": "0",
+  "ReleaseDate": "1991-08-18",
+  "SortRawTitle": "super mario world",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "Super Mario World\u00e2\u0084\u00a2 \u00c2\u00a91990-1991 Nintendo"
+ },
+ {
+  "code": "CLV-P-SAABE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SAABE/CLV-P-SAABE.sfrom --volume 80 -rollback-snapshot-period 600",
+  "Name": "F-ZERO",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "1991-08-23",
+  "SortRawTitle": "f-zero",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "F-ZERO\u00e2\u0084\u00a2 \u00c2\u00a91990-1991 Nintendo"
+ },
+ {
+  "code": "CLV-P-SAAEE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SAAEE/CLV-P-SAAEE.sfrom --volume 85 -rollback-snapshot-period 600",
+  "Name": "The Legend of Zelda: A Link to the Past",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "1992-04-13",
+  "SortRawTitle": "the legend of zelda: a link to the past",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "The Legend of Zelda\u00e2\u0084\u00a2: A Link to the Past\u00e2\u0084\u00a2 \u00c2\u00a91991-1992 Nintendo"
+ },
+ {
+  "code": "CLV-P-SAAFE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SAAFE/CLV-P-SAAFE.sfrom --volume 70 -rollback-snapshot-period 600",
+  "Name": "Super Mario Kart",
+  "Players": "2",
+  "Simultaneous": "1",
+  "ReleaseDate": "1992-09-01",
+  "SortRawTitle": "super mario kart",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "Super Mario Kart\u00e2\u0084\u00a2 \u00c2\u00a91992 Nintendo"
+ },
+ {
+  "code": "CLV-P-SAAHE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SAAHE/CLV-P-SAAHE.sfrom --volume 100 -rollback-snapshot-period 600",
+  "Name": "Super Metroid",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "1994-04-18",
+  "SortRawTitle": "super metroid",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "Super Metroid\u00e2\u0084\u00a2 \u00c2\u00a91994 Nintendo"
+ },
+ {
+  "code": "CLV-P-SAAJE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SAAJE/CLV-P-SAAJE.sfrom --volume 85 -rollback-snapshot-period 3600",
+  "Name": "EarthBound",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "1995-06-05",
+  "SortRawTitle": "earthbound",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "EarthBound\u00e2\u0084\u00a2 \u00c2\u00a91994 Nintendo/APE inc. Scenario:\u00c2\u00a91994 SHIGESATO ITOI"
+ },
+ {
+  "code": "CLV-P-SAAKE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SAAKE/CLV-P-SAAKE.sfrom --volume 85 -rollback-snapshot-period 600",
+  "Name": "Kirby's Dream Course",
+  "Players": "2",
+  "Simultaneous": "1",
+  "ReleaseDate": "1995-02-01",
+  "SortRawTitle": "kirby's dream course",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "Kirby's Dream Course\u00e2\u0084\u00a2 \u00c2\u00a91994-1995 HAL Laboratory, Inc. / Nintendo"
+ },
+ {
+  "code": "CLV-P-SAALE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SAALE/CLV-P-SAALE.sfrom --volume 100 -rollback-snapshot-period 600",
+  "Name": "Donkey Kong Country",
+  "Players": "2",
+  "Simultaneous": "1",
+  "ReleaseDate": "1994-11-24",
+  "SortRawTitle": "donkey kong country",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "Donkey Kong Country\u00e2\u0084\u00a2 \u00c2\u00a91994 Nintendo"
+ },
+ {
+  "code": "CLV-P-SAAQE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SAAQE/CLV-P-SAAQE.sfrom --volume 80 -rollback-snapshot-period 600",
+  "Name": "Kirby Super Star",
+  "Players": "2",
+  "Simultaneous": "1",
+  "ReleaseDate": "1996-09-20",
+  "SortRawTitle": "kirby super star",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "Kirby\u00e2\u0084\u00a2 Super Star \u00c2\u00a91995-1996 HAL Laboratory, Inc. /\u00e3\u0080\u0080Nintendo"
+ },
+ {
+  "code": "CLV-P-SAAXE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SAAXE/CLV-P-SAAXE.sfrom --volume 100 -rollback-snapshot-period 600",
+  "Name": "Super Punch-Out!!",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "1994-09-14",
+  "SortRawTitle": "super punch-out!!",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "Super Punch-Out!!\u00e2\u0084\u00a2 \u00c2\u00a91994 Nintendo"
+ },
+ {
+  "code": "CLV-P-SABCE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SABCE/CLV-P-SABCE.sfrom --volume 85 -rollback-snapshot-period 600",
+  "Name": "Mega Man X",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "1993-12-20",
+  "SortRawTitle": "mega man x",
+  "SortRawPublisher": "CAPCOM",
+  "Copyright": "Mega Man\u00e2\u0084\u00a2 X \u00c2\u00a9CAPCOM CO., LTD. 1993, 2017 ALL RIGHTS RESERVED."
+ },
+ {
+  "code": "CLV-P-SABDE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SABDE/CLV-P-SABDE.sfrom --volume 37 -rollback-snapshot-period 600",
+  "Name": "Super Ghouls'n Ghosts",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "1991-11-28",
+  "SortRawTitle": "super ghouls 'n ghosts",
+  "SortRawPublisher": "CAPCOM",
+  "Copyright": "Super Ghouls'n Ghosts\u00e2\u0084\u00a2 \u00c2\u00a9CAPCOM CO., LTD. 1991, 2017 ALL RIGHTS RESERVED."
+ },
+ {
+  "code": "CLV-P-SABHE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SABHE/CLV-P-SABHE.sfrom --volume 100 -rollback-snapshot-period 600",
+  "Name": "Street Fighter II Turbo: Hyper Fighting",
+  "Players": "2",
+  "Simultaneous": "1",
+  "ReleaseDate": "1993-08-01",
+  "SortRawTitle": "street fighter ii' turbo: hyper fighting",
+  "SortRawPublisher": "CAPCOM",
+  "Copyright": "Street Fighter\u00e2\u0084\u00a2 II Turbo: Hyper Fighting \u00c2\u00a9CAPCOM U.S.A., INC. 1993, 2017 ALL RIGHTS RESERVED."
+ },
+ {
+  "code": "CLV-P-SABQE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SABQE/CLV-P-SABQE.sfrom --volume 60 -rollback-snapshot-period 3600",
+  "Name": "Super Mario RPG: Legend of the Seven Stars",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "1996-05-13",
+  "SortRawTitle": "super mario rpg: legend of the seven stars",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "Super Mario RPG: Legend of the Seven Stars\u00e2\u0084\u00a2 \u00c2\u00a91996 Nintendo/ SQUARE ENIX CO., LTD. All Rights Reserved. CHARACTER\u00ef\u00bc\u009a\u00c2\u00a9Nintendo, \u00c2\u00a9SQUARE ENIX CO., LTD. All Rights Reserved."
+ },
+ {
+  "code": "CLV-P-SABRE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SABRE/CLV-P-SABRE.sfrom --volume 75 -rollback-snapshot-period 3600",
+  "Name": "Secret of Mana",
+  "Players": "3",
+  "Simultaneous": "1",
+  "ReleaseDate": "1993-10-03",
+  "SortRawTitle": "secret of mana",
+  "SortRawPublisher": "SQUARE ENIX",
+  "Copyright": "Secret of Mana \u00c2\u00a91993 SQUARE ENIX CO., LTD. All Rights Reserved. SECRET OF MANA is a registered trademark or trademark of Square Enix Co., Ltd. SQUARE ENIX and the SQUARE ENIX logo are registered trademarks or trademarks of Square Enix Holdings Co., Ltd."
+ },
+ {
+  "code": "CLV-P-SABTE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SABTE/CLV-P-SABTE.sfrom --volume 85 -rollback-snapshot-period 3600",
+  "Name": "Final Fantasy III",
+  "Players": "2",
+  "Simultaneous": "1",
+  "ReleaseDate": "1994-10-11",
+  "SortRawTitle": "final fantasy iii",
+  "SortRawPublisher": "SQUARE ENIX",
+  "Copyright": "Final Fantasy III \u00c2\u00a91994 SQUARE ENIX CO., LTD. All Rights Reserved. ILLUSTRATION : \u00c2\u00a91994 YOSHITAKA AMANO. FINAL FANTASY, SQUARE ENIX, and the SQUARE ENIX logo are registered trademarks or trademarks of Square Enix Holdings Co., Ltd."
+ },
+ {
+  "code": "CLV-P-SACBE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SACBE/CLV-P-SACBE.sfrom --volume 85 -rollback-snapshot-period 600",
+  "Name": "Super Castlevania IV",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "1991-12-01",
+  "SortRawTitle": "super castlevania iv",
+  "SortRawPublisher": "KONAMI",
+  "Copyright": "Super Castlevania IV \u00c2\u00a91991 Konami Digital Entertainment"
+ },
+ {
+  "code": "CLV-P-SACCE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SACCE/CLV-P-SACCE.sfrom --volume 70 -rollback-snapshot-period 600",
+  "Name": "CONTRA III THE ALIEN WARS",
+  "Players": "2",
+  "Simultaneous": "1",
+  "ReleaseDate": "1992-04-01",
+  "SortRawTitle": "contra iii the alien wars",
+  "SortRawPublisher": "KONAMI",
+  "Copyright": "CONTRA III THE ALIEN WARS \u00c2\u00a91992 Konami Digital Entertainment"
+ },
+ {
+  "code": "CLV-P-SADGE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SADGE/CLV-P-SADGE.sfrom --volume 65 -rollback-snapshot-period 600 -output-dir /var/lib/clover/profiles/0/",
+  "Name": "Star Fox",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "1993-03-01",
+  "SortRawTitle": "star fox",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "Star Fox\u00e2\u0084\u00a2 \u00c2\u00a91993 Nintendo"
+ },
+ {
+  "code": "CLV-P-SADJE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SADJE/CLV-P-SADJE.sfrom --volume 70 -rollback-snapshot-period 600",
+  "Name": "Yoshi's Island",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "1995-10-04",
+  "SortRawTitle": "yoshi's island",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "Yoshi's Island\u00e2\u0084\u00a2 \u00c2\u00a91995 Nintendo"
+ },
+ {
+  "code": "CLV-P-SADKE",
+  "Exec": "/usr/bin/clover-canoe-shvc -rom /usr/share/games/CLV-P-SADKE/CLV-P-SADKE.sfrom --volume 65 -rollback-snapshot-period 600",
+  "Name": "Star Fox 2",
+  "Players": "1",
+  "Simultaneous": "0",
+  "ReleaseDate": "2017-01-01",
+  "SortRawTitle": "star fox 2",
+  "SortRawPublisher": "NINTENDO",
+  "Copyright": "Star Fox\u00e2\u0084\u00a2 2 \u00c2\u00a92017 Nintendo"
+ }
+]

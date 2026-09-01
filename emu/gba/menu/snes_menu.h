@@ -192,6 +192,7 @@ typedef struct {
 	const snes_img_entry *gba_boxart;
 	const snes_pack *gba_boxart_pk;
 	int launch;                         /* focused ROM index to launch, -1 = none */
+	int sysreset;                       /* set when "System Reset" is confirmed (-> boot OS) */
 	int pstart;                         /* prev-frame Start (edge detect for launch) */
 } snes_menu;
 
@@ -206,6 +207,7 @@ void snes_menu_set_gba_roster(snes_menu *m, const char *const *names, int n,
 void snes_menu_set_gba_boxart(snes_menu *m, const snes_img_entry *img, const snes_pack *pk);
 /* If A/Start launched a ROM, returns its index and clears the flag; else -1. */
 int snes_menu_take_launch(snes_menu *m);
+int snes_menu_take_sysreset(snes_menu *m);
 
 /* Overwrite the label of Options toggle row idx (0..2) in place; lets the LK layer
  * repurpose the cosmetic toggles as real settings. 0 ok, <0 if it does not fit. */

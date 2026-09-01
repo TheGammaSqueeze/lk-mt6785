@@ -1,0 +1,1 @@
+CLOVER_UI_PLATFORM = "hvc"

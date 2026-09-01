@@ -744,7 +744,9 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 		if (ayaneo_gba_sd_boot() >= 0)
 			for (;;)
 				thread_sleep(1000);
-		/* else: fall through to the normal kernel boot */
+		/* else (no card / assets / boot-to-OS one-shot): fall through to normal boot.
+		 * "Boot to OS" reboots via ayaneo_boot_to_os(); the one-shot marker then makes
+		 * ayaneo_gba_sd_boot() return skip on the next boot, landing here cleanly. */
 	}
 #elif defined(AYANEO_GBC) || defined(AYANEO_GBA)
 	/*

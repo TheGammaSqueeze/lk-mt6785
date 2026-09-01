@@ -49,10 +49,13 @@ mkdir -p out
 echo ">> Signing LK"
 python3 tools/ayaneo/sign_lk.py "$BUILT" out/lk_a_gba_sd_signed.img
 
-# The ROM-select screen is the REAL SNES-Classic-mini menu; its asset pack is
-# built from the (copyright, user-supplied) snes-mini firmware asset tree. Point
-# SNES_ASSETS at it (the same dist/assets or web/public tree the web app uses).
-SNES_ASSETS="${SNES_ASSETS:-/work/snesmini/snes-mini-emu/web/public/assets}"
+# The ROM-select screen is the REAL SNES-Classic-mini menu. Its asset pack is
+# built from the non-ROM SNES-mini firmware assets vendored into this tree
+# (tools/ayaneo/snes/assets) so a fresh GitHub checkout builds self-contained -
+# no external asset tree needed. The copyrighted .sfrom ROMs and box art are NOT
+# vendored (ROMs come from the SD card); only the menu UI assets are. Override
+# SNES_ASSETS to point at a full firmware tree if you want the SNES box art too.
+SNES_ASSETS="${SNES_ASSETS:-$ROOT/tools/ayaneo/snes/assets}"
 if [ -d "$SNES_ASSETS" ]; then
 	echo ">> Generating GBA cartridge placeholder"
 	python3 tools/ayaneo/gba/gen_gba_cart.py out/gba_cart.png

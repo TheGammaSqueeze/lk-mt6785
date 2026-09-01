@@ -1051,6 +1051,13 @@ int snes_menu_take_launch(snes_menu *m)
 	return r;
 }
 
+int snes_menu_take_sysreset(snes_menu *m)
+{
+	int r = m->sysreset;
+	m->sysreset = 0;
+	return r;
+}
+
 static void draw_carousel(snes_menu *m, snes_target *t)
 {
 	int n = m->ngames, j;
@@ -1636,7 +1643,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->rcache = 0; m->rcache_ready = 0; m->rcache_sel = -1e9f;
 	m->sub_ready = 0; m->sub_key = 0; m->sub_op0 = 0; m->sub_op1 = 0;
 	m->wp_skip0 = 0; m->wp_skip1 = 0;
-	m->gba_mode = 0; m->gba_names = 0; m->gba_cart_img = 0; m->launch = -1; m->pstart = 0;
+	m->gba_mode = 0; m->gba_names = 0; m->gba_cart_img = 0; m->launch = -1; m->sysreset = 0; m->pstart = 0;
 	m->ctile = 0; m->ctile_gi = 0; m->ctile_cap = 0; m->ctile_aspect = -1;
 	m->fct = 0; m->fct_ready = 0; m->fct_aspect = -1; m->no_cursor = 0;
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;
@@ -2565,7 +2572,8 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		 * confirm dialog (sys_button_longpress + sys_dialog, ported below). */
 		if (m->open == 1 && !m->closing && m->reset_dlg_open) {
 			/* confirm dialog input: L focuses Cancel, R focuses Reset, A commits
-			 * (both just close - Reset would reboot, out of scope), B cancels.
+			 * (Reset focused -> set m->sysreset so the caller boots the OS/kernel;
+			 * Cancel focused -> just close), B cancels.
 			 * Ease the dialog slide-in (-720 -> 0) each frame. */
 			/* slide the dialog up from -720 to 0 over 0.2s outExpo (Tween.moveTo,
 			 * matches the submenu-open easing) */
@@ -2576,7 +2584,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			if (dl) dl->tf[5] = m->reset_dlg_y;
 			if (el && m->dlg_focus != 0) { set_dialog_focus(m, 0); push_snd(m, m->sfx_move); }
 			else if (er && m->dlg_focus != 1) { set_dialog_focus(m, 1); push_snd(m, m->sfx_move); }
-			else if (ea) { push_snd(m, m->sfx_decide); close_reset_dialog(m); }
+			else if (ea) { push_snd(m, m->sfx_decide); if (m->dlg_focus == 1) m->sysreset = 1; close_reset_dialog(m); }
 			else if (eb) { push_snd(m, m->sfx_cancel); close_reset_dialog(m); }
 		} else if (m->open == 1 && !m->closing) {
 			int c = sub_navfire(m, in, dt, 15, SUB_HOLD_DELAY, SUB_HOLD_RATE);
@@ -2598,19 +2606,15 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				apply_options_state(m);
 				push_snd(m, m->sfx_decide);
 			}
-			/* System Reset row: OK held fills the gauge over RESET_LONGPRESS_SEC,
-			 * then opens the confirm dialog; releasing early cancels the fill. */
-			if (m->opt_cur == 3) {
-				if (in->a) {
-					if (ea) { m->reset_armed = 1; m->reset_t = 0.0f; }
-					else if (m->reset_armed) {
-						m->reset_t += dt;
-						if (m->reset_t >= RESET_LONGPRESS_SEC) { set_reset_gauge(m, 1.0f); open_reset_dialog(m); }
-						else set_reset_gauge(m, m->reset_t / RESET_LONGPRESS_SEC);
-					}
-				} else if (m->reset_armed || m->reset_t > 0.0f) {
-					m->reset_armed = 0; m->reset_t = 0.0f; set_reset_gauge(m, 0.0f);
-				}
+			/* Boot-to-OS row: a plain A boots the OS directly. The SNES factory-reset
+			 * used a 5 s hold + a Yes/No confirm dialog because it wiped data; booting
+			 * the OS is not destructive (progress is on the SD card), and the ported
+			 * confirm dialog is an unexercised render path, so we skip both and signal
+			 * the boot straight away. */
+			if (m->opt_cur == 3 && ea) {
+				m->reset_armed = 0; m->reset_t = 0.0f; set_reset_gauge(m, 0.0f);
+				push_snd(m, m->sfx_decide);
+				m->sysreset = 1;
 			}
 		}
 		/* Language screen (cm3): 2D radio grid (4 rows x 2 cols). U/D/L/R move the

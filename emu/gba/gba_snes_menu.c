@@ -619,6 +619,15 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 
 		snes_menu_update(&s_menu, &in, dt);
 
+		/* Settings > "Boot to OS": drop the sticky marker and hard-reset. Falling
+		 * through to boot_linux in-place hangs (the emulator owns the clocks, DMA,
+		 * caches and watchdog), so we reboot clean; from then on the device boots
+		 * Android until the user holds SELECT at boot to return to the emulator. */
+		if (snes_menu_take_sysreset(&s_menu)) {
+			extern void ayaneo_boot_to_os(void);
+			ayaneo_boot_to_os();   /* never returns */
+		}
+
 		/* Persist + apply the two audio-mute toggles when the user flips them in
 		 * the Options screen (setting0 = BIOS chime, setting1 = menu audio). Only
 		 * writes on an actual change; the initial state was seeded from the saved

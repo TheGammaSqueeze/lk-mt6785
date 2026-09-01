@@ -143,9 +143,22 @@ void mt_disp_show_boot_logo(void)
 {
 	dprintf(INFO, "[lk logo: %s %d]\n",__FUNCTION__,__LINE__);
 #ifdef AYANEO_RAINBOW_BOOT
+#if defined(AYANEO_GBA_SD)
+	/* "Boot to OS" reboots into Android: show the real eMMC boot logo (the normal
+	 * Android boot look), not the emulator's rainbow animation. The sticky marker is
+	 * only peeked here; it is cleared only when the user holds SELECT to return. */
+	{
+		extern int ayaneo_boot_to_os_pending(void);
+		if (!ayaneo_boot_to_os_pending()) {
+			video_rainbow_boot_start();
+			return;
+		}
+	}
+#else
 	/* non-blocking: spawn the animation thread and let boot continue */
 	video_rainbow_boot_start();
 	return;
+#endif /* AYANEO_GBA_SD */
 #endif
 	mt_logo_get_custom_if();
 

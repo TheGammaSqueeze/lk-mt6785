@@ -2064,6 +2064,53 @@ static int gba_sd_assets_ok(fat_vol *v)
 }
 
 /*
+ * Boot-to-OS marker (STICKY). The SNES menu's "Boot to OS" cannot simply fall
+ * through to boot_linux in the same boot: the emulator has already taken over the
+ * CPU clock, audio/display DMA, caches and the watchdog, so jumping into the kernel
+ * from that state hangs and the watchdog resets. Instead we drop a marker in the
+ * misc partition (raw eMMC, the standard bootloader-control block, kept out of the
+ * asset-only boot_b) and hard-reset. From then on every boot sees the marker and
+ * boots Android from a pristine state - the same path as if no SD card were present,
+ * which is already proven safe. The marker is NOT cleared on an OS boot: it persists
+ * so the OS target is remembered. Holding SELECT at boot clears it and returns to
+ * the emulator (see ayaneo_gba_sd_boot()).
+ */
+#define BOOTOS_PART	"misc"
+#define BOOTOS_OFF	0x10000u		/* 64 KB into misc: OEM vendor space, clear of the AOSP BCB */
+#define BOOTOS_MAGIC	0x424F544Fu		/* "OTOB" - boot-to-OS one-shot */
+
+/* Peek the sticky boot-to-OS marker WITHOUT clearing it. Called from the logo path
+ * so an OS boot shows the stock eMMC logo instead of the emulator's rainbow boot
+ * animation. Only SELECT-held in ayaneo_gba_sd_boot() clears the marker. */
+int ayaneo_boot_to_os_pending(void)
+{
+	unsigned char b[64];
+	if (partition_read(BOOTOS_PART, BOOTOS_OFF, b, sizeof b) != (ssize_t)sizeof b)
+		return 0;
+	return (unsigned)b[0] == (BOOTOS_MAGIC & 0xFF) &&
+	       (unsigned)b[1] == ((BOOTOS_MAGIC >> 8) & 0xFF) &&
+	       (unsigned)b[2] == ((BOOTOS_MAGIC >> 16) & 0xFF) &&
+	       (unsigned)b[3] == ((BOOTOS_MAGIC >> 24) & 0xFF);
+}
+
+void ayaneo_boot_to_os(void)
+{
+	extern void mtk_arch_reset(char mode);
+	unsigned char b[64];
+	unsigned i;
+	for (i = 0; i < sizeof b; i++) b[i] = 0;
+	b[0] = (unsigned char)BOOTOS_MAGIC;
+	b[1] = (unsigned char)(BOOTOS_MAGIC >> 8);
+	b[2] = (unsigned char)(BOOTOS_MAGIC >> 16);
+	b[3] = (unsigned char)(BOOTOS_MAGIC >> 24);
+	arch_clean_cache_range((unsigned long)b, sizeof b);
+	partition_write(BOOTOS_PART, BOOTOS_OFF, b, sizeof b);
+	mtk_wdt_restart();			/* keep alive across the flush + reset */
+	mtk_arch_reset(1);
+	for (;;) ;				/* not reached */
+}
+
+/*
  * SD boot gate. Returns < 0 to tell the boot hook to FALL THROUGH to the normal
  * kernel boot (no card / not FAT / assets missing / BIOS unreadable) - the always
  * safe default. On success (card + assets) it loads the SD BIOS, spawns the emu in
@@ -2073,13 +2120,47 @@ static int gba_sd_assets_ok(fat_vol *v)
 int ayaneo_gba_sd_boot(void)
 {
 	int rc;
+	/* Hold SELECT at boot to FORCE the emulator/menu - the deterministic "way back"
+	 * from Android. It overrides both the boot-to-OS one-shot and the watchdog guard
+	 * so the user can always reach the emulator regardless of any skip state. */
+	int force_emu = ayaneo_gbc_select_held();
+
+	/* Boot-to-OS is STICKY: once "Boot to OS" writes the marker, every boot goes to
+	 * Android until the user explicitly comes back by holding SELECT. So we do NOT
+	 * clear the marker on an OS boot - only SELECT clears it. This makes the boot
+	 * target a deliberate, remembered choice rather than a one-shot. */
+	{
+		unsigned char b[64];
+		int flag_set = (partition_read(BOOTOS_PART, BOOTOS_OFF, b, sizeof b) == (ssize_t)sizeof b &&
+				(unsigned)b[0] == (BOOTOS_MAGIC & 0xFF) &&
+				(unsigned)b[1] == ((BOOTOS_MAGIC >> 8) & 0xFF) &&
+				(unsigned)b[2] == ((BOOTOS_MAGIC >> 16) & 0xFF) &&
+				(unsigned)b[3] == ((BOOTOS_MAGIC >> 24) & 0xFF));
+		if (force_emu) {
+			/* Way back: clear the sticky flag so the device defaults to the emulator
+			 * again from now on, then fall through to start it. */
+			if (flag_set) {
+				unsigned i;
+				for (i = 0; i < sizeof b; i++) b[i] = 0;
+				arch_clean_cache_range((unsigned long)b, sizeof b);
+				partition_write(BOOTOS_PART, BOOTOS_OFF, b, sizeof b);
+				GBA_LOG("gba-sd: SELECT held -> cleared sticky boot-to-OS flag, forcing emulator\n");
+			} else {
+				GBA_LOG("gba-sd: SELECT held -> forcing emulator\n");
+			}
+		} else if (flag_set) {
+			GBA_LOG("gba-sd: sticky boot-to-OS flag set -> normal Android boot (hold SELECT to return)\n");
+			return -10;
+		}
+	}
 
 	/* NEVER-BRICK GUARD: if the previous boot was reset by the watchdog, the last
 	 * SD attempt may have crashed (data abort -> "halting" -> HW watchdog reset) or
 	 * hung. Skip the SD emulator path this boot and fall through to normal Android
 	 * boot, so the device always self-recovers instead of boot looping. A later
-	 * clean (non-watchdog) boot will retry the SD path automatically. */
-	{
+	 * clean (non-watchdog) boot will retry the SD path automatically. SELECT held
+	 * overrides this (the user is explicitly asking for the emulator). */
+	if (!force_emu) {
 		extern unsigned int mtk_wdt_check_status(void);
 		unsigned int wsta = mtk_wdt_check_status();
 		/* HWWDT_RST | SWWDT_RST | IRQWDT_RST */
