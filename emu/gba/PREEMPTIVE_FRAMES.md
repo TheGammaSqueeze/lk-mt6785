@@ -1,11 +1,14 @@
 # Beating input lag on a bare-metal handheld: Preemptive Frames for GBA
 
-This is the story of how I clawed back the input lag baked into Game Boy Advance games,
-the 1-3 frames the game itself spends before it reacts, running on a phone-grade chip in a
-bootloader, with no operating system, no GPU, and a single CPU core clocked as low as I
-could get away with. The feature is called **Preemptive Frames** in the menu. Under the
-hood it is run-ahead, and getting it to run at exactly the right speed, with clean audio,
-on this hardware took a few fights worth writing down.
+This is the story of how a *software* emulator ended up with **lower input latency than an
+FPGA** - the Analogue Pocket, the gold standard for retro accuracy - for Game Boy Advance,
+and did it on a deliberately modest machine: a single small CPU core, in **32-bit** ARM
+mode rather than 64, clocked as low as it could go to save battery, inside a bootloader,
+with no operating system and no GPU. The two moves that got it there were run-ahead (which
+removes the game's own 1-3 frames of internal input lag) and a hardware Schmitt trigger on
+the buttons (which removed the input debounce tax). The run-ahead feature is called
+**Preemptive Frames** in the menu; getting it to run at exactly the right speed, with clean
+audio, on this hardware took a few fights worth writing down.
 
 ## The hardware I am working with
 
@@ -15,6 +18,10 @@ It helps to be honest about the machine first, because the constraints shape eve
   MediaTek MT6785. There is no SMP here: the emulator's CPU thread and the frontend that
   draws and presents frames share a **single ARM core**. A look-ahead frame is not
   offloaded anywhere. It is pure extra serial work inside the same 16.7 ms budget.
+- **32-bit, not 64.** The gpSP core and its dynamic recompiler are built and run in
+  **32-bit ARM (AArch32, `-march=armv7-a -marm`)**, not AArch64. Narrower registers, the
+  older ABI, and a 32-bit dynarec - a self-imposed handicap next to a modern 64-bit core,
+  but it is what the emulator and its ARM code generator target here.
 - **Minimal clocks by default.** That core sits at the **lowest operating point, 600
   MHz**, out of the box, for battery and heat. I only raise it when the player asks for
   a deeper setting.
@@ -312,6 +319,30 @@ took on real silicon. With the glitches stopped at the pin, the software debounc
 only there to vote them out over frames became unnecessary, and dropping it to raw is what
 bought the two frames. The lesson: a temporal debounce treats the symptom and charges
 latency for it; hysteresis treats the cause for free.
+
+## The result
+
+Add it up. Run-ahead deletes the game's own 1-3 frames of internal input lag. The hardware
+Schmitt trigger deleted the two-frame software debounce. What is left at Max is about two
+frames: half a frame of polling, one frame of the software present, half a frame of the
+fast panel - and that one present frame is the same framebuffer cost even the Analogue
+Pocket pays to put GBA on a modern scaled display. So a software dynamic-recompiler
+emulator, running **32-bit on a single small core at 600 MHz to save battery**, with no GPU
+and no operating system, comes out *under* both a stock Game Boy Advance (~2.4 frames
+measured) and the Pocket's FPGA (about a frame slower still, from its rotated-screen
+framebuffer).
+
+That is the part I did not expect going in. The conventional wisdom is that FPGA beats
+software on latency, full stop. It holds for the reproduction itself - an FPGA reproduces
+the console cycle-for-cycle and a recompiler does not. But latency is a different axis, and
+it turns on the one trick the accurate reproductions cannot use without ceasing to be
+accurate: running the game ahead of itself. Do that, stop the input glitches in hardware
+instead of filtering them in software, and drive the panel at the console's exact rate, and
+software wins the latency race even from a 32-bit single core at a battery-saving clock. The
+honest asterisks still apply - the absolute milliseconds are frame-model estimates, gpSP is
+not cycle-perfect on a few games, and the raw-input win rests on the Schmitt trigger holding
+in real play - but the shape of the result stands: lower latency than the FPGA, from
+software, on far less.
 
 ## Configuration and diagnostics
 
