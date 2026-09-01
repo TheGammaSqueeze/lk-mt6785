@@ -38,8 +38,9 @@ int gba_punch_ready = 0;            /* set on launch; consumed by the driver loo
 /* Reverse punch-hole transition (in-game "Close" -> back to the SNES selector): the
  * driver freezes the last game frame here and arms it; on re-entry the menu renders
  * one frame, then shrinks the frozen game into a hole that reveals the menu. Both
- * buffers sit in the free scratch above the menu caches (wp43 ends ~0x54A50000, ctile
- * /fct to 0x54D00000), clear of the 240x160 game freeze and the fb-size menu reveal. */
+ * buffers sit in the free scratch above the menu caches. These three transition
+ * buffers are FIXED; the boxart + card-tile caches are packed into the disjoint gaps
+ * around them (see the SNES_CTILE2_PA/SNES_BOXART_PA/SNES_FCT_PA layout below). */
 #include "menu/gba_punch.h"         /* gba_punch_composite */
 extern unsigned int gpt4_get_current_tick(void);
 #define GBA_REVERSE_SNAP_PA 0x55000000u   /* rendered menu frame (fb-size) = reveal */
@@ -215,19 +216,30 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
 #define SNES_COMP_PA   0x52A00000u   /* compressed staging (deflate, <=8MB) */
 #define SNES_WP_PA     0x53200000u   /* wallpaper cache (1536*720*4 = 4.2MB) */
 #define SNES_CHROME_PA 0x53700000u   /* static chrome cache (1280*960*4 = 4.7MB) */
-#define SNES_WP43_PA   0x54000000u   /* 4:3 warped-wallpaper cache (2701*960*4 = 10.4MB) */
+#define SNES_WP43_PA   0x54000000u   /* 4:3 warped-wallpaper cache (2701*960*4 = 10.4MB, ends ~0x549E4400) */
 #define SNES_CTILE_PA  0x54C00000u   /* (legacy cap-1 shared-tile region; unused with boxart) */
-#define SNES_FCT_PA    0x54C80000u   /* focused (blue) card-body tile (320*360*4 = 450KB) */
-/* Per-ROM boxart lives in the WB-mapped [0x4E,0x56)M window (0x56000000+ faults).
- * Decoded 565+a8 tiles (<=224*224*3=150528, slot rounded to 0x25000) in a region,
- * plus an ENLARGED card-tile cache (cap 12, so a scroll showing several distinct
- * cards does not thrash the direct-mapped slots). Both sit in the ~19MB free after
- * WP43/FCT. Boxart tiles are on the SD card, never in lk_a. */
-#define SNES_BOXART_PA   0x54D00000u /* per-ROM boxart tiles */
-#define SNES_BOXART_SLOT 0x25000u    /* bytes per tile slot (>= 224*224*3) */
-#define SNES_BOXART_CAP  90          /* 90 * 0x25000 = ~13.8MB -> ends ~0x55A02000 */
-#define SNES_CTILE2_PA   0x55A40000u /* enlarged card-tile cache (12 * 320*360*4 = 5.4MB) */
+/*
+ * Per-ROM boxart + the enlarged card-tile cache live in the WB-mapped
+ * [0x4E,0x56)M window (0x56000000+ faults), and MUST NOT overlap the game/close
+ * transition buffers, which are FIXED: reveal 0x55000000..+fb (fb=1280*960*4=
+ * 0x4B0000), game freeze 0x55800000 (tiny), game-full 0x55900000..+fb. Earlier
+ * these were sized into that territory (boxart at 0x54D00000 cap 90, ctile at
+ * 0x55A40000), so a game->menu reverse-punch overwrote the tiles = corrupted
+ * cards on exit. Repack into the disjoint gaps around the transition buffers:
+ *   ctile   0x54A80000 .. 0x54FC6000  (cap 12, below the reveal buffer)
+ *   reveal  0x55000000 .. 0x554B0000  (fixed)
+ *   boxart  0x55500000 .. 0x557E4000  (cap 20, between reveal end and freeze)
+ *   freeze  0x55800000                (fixed, tiny)
+ *   full    0x55900000 .. 0x55DB0000  (fixed)
+ *   fct     0x55E00000 .. 0x55E70800  (after game-full)
+ * Boxart tiles are on the SD card, never in lk_a.
+ */
+#define SNES_CTILE2_PA   0x54A80000u /* enlarged card-tile cache (12 * 320*360*4 = 5.4MB) */
 #define SNES_CTILE2_CAP  12
+#define SNES_BOXART_PA   0x55500000u /* per-ROM boxart tiles (between reveal and freeze) */
+#define SNES_BOXART_SLOT 0x25000u    /* bytes per tile slot (>= 224*224*3) */
+#define SNES_BOXART_CAP  20          /* 20 * 0x25000 = 0x2E4000 -> ends 0x557E4000 < freeze */
+#define SNES_FCT_PA      0x55E00000u /* focused (blue) card-body tile (320*360*4 = 450KB) */
 /* the decompressed blob must stay strictly inside [BLOB_PA, HOME_PA); cap it 2MB
  * short of the 24MB region so it can never overrun the home node pool */
 #define SNES_RAW_MAX   ((SNES_HOME_PA - SNES_BLOB_PA) - 2u * 1024 * 1024)  /* 22MB */
