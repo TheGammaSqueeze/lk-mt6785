@@ -275,16 +275,18 @@ static volatile int s_sel_modifier;
 #define RB_Y	0x2000u
 #define RB_FF	0x4000u
 
-/* refresh the button state once per frame (debounced across GAMEPLAY_DEBOUNCE reads).
- * A bit is accepted only after it read pressed on that many CONSECUTIVE frames, which
- * rejects contact bounce and multi-frame line glitches (release is immediate). 3
- * frames rejects both single- AND two-frame glitches (the phantom-input class seen in
- * real gameplay) at the cost of ~1 extra frame (~17 ms) of press latency vs a 2-frame
- * filter - a deliberate trade toward input reliability during play. */
-#define GAMEPLAY_DEBOUNCE 3
+/* refresh the button state once per frame. GAMEPLAY_DEBOUNCE = N-read agreement: a bit
+ * is accepted only after it read pressed on N CONSECUTIVE frames, adding N-1 frames of
+ * press latency (release is immediate). N=1 is RAW (zero debounce, lowest latency); N=2
+ * rejects single-frame glitches (+1 frame); N=3 rejects single- AND two-frame glitches
+ * (+2 frames). Now that the button pins run with a hardware Schmitt trigger (gpio_in_pullup)
+ * deglitching them at the pin, the software filter can be dialed down - testing N=1 (raw). */
+#define GAMEPLAY_DEBOUNCE 1
 static void update_buttons(void)
 {
+#if GAMEPLAY_DEBOUNCE > 1
 	static unsigned hist[GAMEPLAY_DEBOUNCE - 1];	/* the last N-1 raw reads */
+#endif
 	unsigned raw = 0, deb, m, i;
 	int af;
 
@@ -296,11 +298,13 @@ static void update_buttons(void)
 	if (PRESSED(GPIO_R2)) raw |= RB_FF;
 
 	/* N-frame agreement: accept a bit only when this read AND the previous N-1 reads
-	 * all had it pressed. */
+	 * all had it pressed. At N=1 this is a pure raw pass (no history). */
 	deb = raw;
+#if GAMEPLAY_DEBOUNCE > 1
 	for (i = 0; i < GAMEPLAY_DEBOUNCE - 1; i++) deb &= hist[i];
 	for (i = GAMEPLAY_DEBOUNCE - 2; i > 0; i--) hist[i] = hist[i - 1];
 	hist[0] = raw;
+#endif
 
 	m = deb & 0x3ffu;			/* the 10 GBA buttons */
 
