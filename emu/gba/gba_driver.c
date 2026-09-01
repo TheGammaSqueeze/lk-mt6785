@@ -621,10 +621,34 @@ static void run_one_frame(void)
  * (s_cpu_restart_req). We set s_cpu_clean_boundary so that re-entry first runs the
  * skipped vblank tail (gba_frame_boundary_finish), starting a FULL frame instead
  * of a degenerate ~960-cycle stub - so the committed timeline advances exactly one
- * frame per display, at true 1x speed (no priming frame, no 0.34% skew). */
+ * frame per display, at true 1x speed (no priming frame, no 0.34% skew).
+ *
+ * ADAPTIVE depth: run-ahead costs (pf+1) emulations + a 512 KB save/load per
+ * display frame. em (per-frame emulation us) is scene-dependent (~2.3 ms light,
+ * ~5 ms heavy). In a heavy scene the full configured depth would overrun the
+ * ~16.6 ms vsync budget and the game would drop into slow motion. So cap the
+ * effective depth to what fits (budget ~13 ms emulation, ~3 ms save/load): heavy
+ * scenes gracefully fall to pf=1 or 0, light scenes get the full setting. The
+ * latency benefit matters least exactly when the scene is heavy. */
+static int preempt_effective_depth(void)
+{
+	int cfg = ayaneo_get_preempt_frames();
+	unsigned em;
+	int cap;
+	if (cfg <= 0)
+		return 0;
+	em = g_dbg_emu_us ? g_dbg_emu_us : 2500u;	/* committed (cold) frame us */
+	/* Calibrated on device: the full per-frame cost (committed cold frame + pf
+	 * warm ahead frames + 512 KB save/load + present) fits the ~16.6 ms budget
+	 * only up to ~5000/em ahead frames (pf=2 at em~2.5 ms, pf=1 at em~5 ms). Above
+	 * that the loop overruns vsync into slow motion, so cap there. */
+	cap = (int)(5000u / em);
+	return cap < cfg ? cap : cfg;
+}
+
 static void preempt_present(void)
 {
-	int pf = ayaneo_get_preempt_frames();
+	int pf = preempt_effective_depth();
 	if (pf <= 0) {
 		ayaneo_gbc_show_frame(gba_core_screen());
 		return;
