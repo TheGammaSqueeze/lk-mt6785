@@ -1,29 +1,61 @@
 # Beating input lag on a bare-metal handheld: Preemptive Frames for GBA
 
-This is the story of how we clawed back the input lag baked into Game Boy Advance games,
+This is the story of how I clawed back the input lag baked into Game Boy Advance games,
 the 1-3 frames the game itself spends before it reacts, running on a phone-grade chip in a
-bootloader, with no operating system, no GPU, and a single CPU core clocked as low as we
+bootloader, with no operating system, no GPU, and a single CPU core clocked as low as I
 could get away with. The feature is called **Preemptive Frames** in the menu. Under the
 hood it is run-ahead, and getting it to run at exactly the right speed, with clean audio,
 on this hardware took a few fights worth writing down.
 
-## The hardware we are working with
+## The hardware I am working with
 
 It helps to be honest about the machine first, because the constraints shape everything:
 
-- **One small core.** This runs inside LK (Little Kernel, the bootloader) on an
+- **One small core.** This runs inside LK (Little Kernel, the bootloader) on a
   MediaTek MT6785. There is no SMP here: the emulator's CPU thread and the frontend that
   draws and presents frames share a **single ARM core**. A look-ahead frame is not
   offloaded anywhere. It is pure extra serial work inside the same 16.7 ms budget.
 - **Minimal clocks by default.** That core sits at the **lowest operating point, 600
-  MHz**, out of the box, for battery and heat. We only raise it when the player asks for
+  MHz**, out of the box, for battery and heat. I only raise it when the player asks for
   a deeper setting.
 - **No GPU.** There is no 3D block, no compositor, no hardware scaler in the path. The
   240x160 GBA frame is upscaled to the panel and pushed to the framebuffer entirely in
-  software on that same CPU core. The blit is one of the most expensive things we do.
+  software on that same CPU core. The blit is one of the most expensive things I do.
 
-So every millisecond of latency we claw back is clawed back on a small, slow, lonely
+So every millisecond of latency I claw back is clawed back on a small, slow, lonely
 core doing everything itself. That is the fun of it.
+
+## Close to the metal: no OS in the way
+
+Part of why this is even possible on a 600 MHz core is that there is almost nothing
+between the emulator and the hardware. This runs in LK, the bootloader, not under an
+operating system. It is worth spelling out what that removes, because it is the whole
+reason a run-ahead win is visible here instead of drowned in stack latency. Follow a
+button press and a frame through each environment:
+
+- **Input.** Here, I read the keypad/GPIO registers directly, a single MMIO read, and
+  hand the bits straight to the core on the same frame. On Linux that press travels
+  through a keypad driver, the input subsystem (evdev), a wakeup and a context switch into
+  userspace; on Android it goes further still, through the input HAL,
+  InputReader/InputDispatcher, and the app's own event loop, each one a queue and a
+  scheduler boundary.
+- **Frames.** Here, the core renders into a buffer and I blit it straight to the MIPI
+  framebuffer and kick the panel myself, one present per vblank, and nothing else ever
+  touches those pixels. On Linux you hand a buffer to DRM/KMS and wait for an atomic
+  commit; on Android SurfaceFlinger composites your surface together with everything else
+  on screen and double- or triple-buffers the result, which by itself is one to two frames
+  of latency before the panel even sees your image.
+- **Scheduling.** Here, my two threads (the emulated CPU and the frontend) are the only
+  things running; nothing preempts them. Under a general-purpose OS the scheduler
+  time-slices you against dozens of other processes, and without a real-time kernel a
+  frame can miss its deadline simply because something unrelated got the core.
+
+None of this makes Linux or Android bad, they are doing enormously more than I am. But
+every subsystem they add is a queue, a copy, or a context switch, and those cost time.
+Even a lean, well-tuned Linux still passes every frame through a driver and a compositor,
+and every input through the kernel and userspace. Bare-metal is how a slow single core
+can keep the entire path down to just the emulation, one debounce, one blit, and one panel
+refresh, with no invisible frames of buffering hiding in a stack I do not control.
 
 ## The problem: a game is late before the screen is
 
@@ -43,22 +75,38 @@ the ~1.4 frames underneath the LCD.
 An emulator cannot make the game's code think faster. But it *can* do something the real
 console cannot: run the game slightly into its own future and show you that future now.
 
-## Run-ahead in one paragraph
+## Two ways to do it, and why I shipped run-ahead
 
-Every displayed frame, run the real frame with audio on, snapshot the machine, then run
-N more frames with the same buttons held and audio muted, show that Nth "ahead" frame,
-and roll the machine back to the snapshot. The picture on screen is always N frames
-ahead of the committed timeline, so the game's internal lag is hidden by up to N frames,
-every frame. This is exactly the technique RetroArch shipped in 2018, where it was shown
-to reach latency *below original hardware* ([libretro][libretro-runahead],
-[announcement][libretro-medium]).
+There are two ways to hide the game's internal lag, and I built both before choosing.
 
-The catch is cost: N+1 emulations per displayed frame, every frame, on our one small
-core.
+**Run-ahead (what I shipped).** Every displayed frame: run the real frame with audio on,
+snapshot the machine, run N more frames with the same buttons held and audio muted, show
+that Nth "ahead" frame, then roll the machine back to the snapshot. The picture is always
+N frames ahead of the committed/audio timeline, so the game's internal lag is hidden by up
+to N frames, every frame. Cost: N+1 emulations per displayed frame, every frame. This is
+the technique RetroArch shipped in 2018, where it reached latency *below original hardware*
+([libretro][libretro-runahead], [announcement][libretro-medium]).
+
+**True preemptive (built, then reverted).** Keep a ring of recent committed states and only
+re-simulate when the input actually *changes*: on an input edge, rewind N frames and replay
+them plus the current frame with the new button held. Static frames (the majority) cost a
+single 1x emulation, and only edges pay the N+1. On paper it is cheaper and it measured at
+exact 1x speed with no priming stub.
+
+I shipped run-ahead anyway. On hardware, true preemptive **popped the audio on every input
+edge**, because it re-simulates the committed timeline and the game's audio trajectory
+jumps at each edge, and it **juddered the frame pacing**, because its per-frame cost is
+variable (heavy on edge frames, light on static ones). Run-ahead has neither problem: it
+never touches the committed timeline, so the audio stays continuous and click-free, and its
+cost is the same every frame, so pacing is smooth. On a single core mastering its own audio
+ring, a steady, slightly higher constant cost beat a spiky average every time. The menu
+still carries the name "Preemptive Frames," but the mechanism underneath is run-ahead, and
+the preemptive code is preserved in git history if the tradeoff is ever worth revisiting
+(say, with a second core to hide the replay).
 
 ## Making it work on a threaded, OS-less core
 
-gpSP (our GBA core, with an ARM dynarec) runs its CPU on one thread that yields at
+gpSP (my GBA core, with an ARM dynarec) runs its CPU on one thread that yields at
 vblank, while the driver thread kicks it once per frame. That split is where the
 interesting bugs live.
 
@@ -70,16 +118,16 @@ interesting bugs live.
   reset already used.
 - **Muting the ahead frames.** The look-ahead frames must not reach the speakers. A
   flag (`g_gba_audio_suppress`) drops their samples at the sink while still draining the
-  core's audio ring so it does not desync. We do *not* latch the global audio pause,
+  core's audio ring so it does not desync. I do *not* latch the global audio pause,
   which would mute everything.
-- **The sound ring the savestate forgot.** This one bit us. The 512 KB savestate stores
+- **The sound ring the savestate forgot.** This one bit me. The 512 KB savestate stores
   the sound ring's read/write *indices* but not its 64K-sample *contents*. The muted
   ahead frames drain and mix into that buffer, so restoring only the indices left the
   committed audio garbled. The fix snapshots the whole ring alongside the state and
   restores it on rewind, so the audio is byte-identical to the committed timeline across
   every rewind.
 - **A light flush.** A rewind restores a state from the same ROM this session, so the
-  ROM and BIOS translation caches are still valid. We flush only the RAM translations,
+  ROM and BIOS translation caches are still valid. I flush only the RAM translations,
   which roughly halves the committed-frame cost after a rewind.
 
 ### The 0.34% that would not go away
@@ -113,15 +161,9 @@ keep it honest:
   afforded depth 0 at 600 MHz, Balanced reached depth 1, Responsive depth 2, and Max
   depth 3, all holding a locked 60 fps.
 
-We also built true preemptive frames (rewind only on an input change, so static frames
-cost 1x) and reverted it: on hardware it popped the audio on every input edge (it
-re-simulates the committed timeline) and juddered the pacing (variable per-frame cost).
-Run-ahead's continuous audio and constant cost simply feel better. The preemptive code
-is in git history if the tradeoff is ever worth revisiting.
-
 ## Does the rewind actually restore everything?
 
-We are blind to the panel from the build machine, so correctness cannot be eyeballed. It
+I am blind to the panel from the build machine, so correctness cannot be eyeballed. It
 has to be proven. There is an on-device self-test (`oem selftest:N`) that runs two
 N-frame trajectories from the same starting state: one clean, one where every single
 frame does the full run-ahead dance (save, run muted ahead frames, rewind), and then
@@ -145,75 +187,79 @@ real FAIL if the state or the audio ring diverge.
 
 ## The payoff, in frames
 
-Latency is cleanest counted in frames; the millisecond conversions below are frame-model
-estimates from our own measured pipeline, not lab captures (to nail absolutes you need a
+Latency is cleanest counted in frames; the millisecond conversions are frame-model
+estimates from my own measured pipeline, not lab captures (to nail absolutes you need a
 high-speed camera or a photodiode on the panel, the methodology WydD documents at
-[inputlag.science][inputlag] and the LED-and-1000fps-camera approach RetroRGB used for
-GBA handhelds [here][retrorgb-handheld]).
+[inputlag.science][inputlag] and the LED-and-1000fps-camera approach RetroRGB and Tito
+used [here][machonacho]).
 
-Our fixed pipeline is about four frames: half a frame of polling, two frames of input
-debounce (a deliberate reliability choice on this unit, which had phantom inputs slip
-through a lighter filter), about a frame of present and scanout on a software framebuffer,
-and half a frame of LCD. On top of that sits the part run-ahead attacks: the game's own
-1-3 frame internal lag.
+My fixed pipeline is about four frames: half a frame of polling, **two frames of input
+debounce** (a three-read agreement filter, so a fresh press has to be seen on three
+consecutive frames before it counts, which delays it by two frames; a deliberate
+reliability choice on this unit, which let phantom inputs slip through a lighter filter),
+about a frame of present and scanout on a software framebuffer, and half a frame of LCD.
+On top of that sits the part run-ahead attacks: the game's own 1-3 frame internal lag.
+Each tier removes one whole frame of that internal lag (16.74 ms), bounded by how much lag
+the game actually has. **That per-tier delta is the rigorous, defensible claim.**
 
-| Preemptive Frames | Run-ahead depth | Frames to photon (fixed + game) |
-|-------------------|-----------------|---------------------------------|
-| Off               | 0               | ~4 + 2-3                        |
-| Balanced          | 1               | ~4 + 1-2                        |
-| Responsive        | 2               | ~4 + 0-1                        |
-| Max               | 3               | ~4 + 0                          |
+## GBA vs FPGA vs this build
 
-Each tier removes one whole frame of the game's internal lag (16.74 ms), bounded by how
-much lag the game actually has. That per-tier delta is the rigorous, defensible claim. Be
-honest about the rest: our fixed four frames are dominated by the two-frame debounce and a
-full software framebuffer flip, so in absolute terms we are heavier than a stock GBA's
-measured 2.4 frames. Run-ahead is what keeps us in the fight, it deletes the game's own
-lag, which is the single biggest lever available to software, instead of stacking it on
-top of our pipeline. That lands us in the same range Tito measured for real HDMI
-consolizer kits (1.6 frames for the best, up to 6.2 for the worst,
-[here][machonacho]), rather than out beyond them.
+Here is everything side by side. Measured rows are button-to-photon from high-speed-camera
+or 240fps-app tests; my rows are the frame-model estimate above. One frame is 16.74 ms.
+
+| System                          | Button-to-photon         | How it gets there                                   |
+|---------------------------------|--------------------------|-----------------------------------------------------|
+| Real GBA (AGB-001), measured    | ~2.4 frames / ~40 ms     | game's 1-3 fr internal lag + ~1 fr slow AGB LCD      |
+| Analogue Pocket, GBA, measured  | ~1 frame *more* than a real GBA (e.g. ~50 ms vs ~30 ms, same game) | faithful FPGA core, but its rotated screen must buffer a frame to scale/draw GBA |
+| Best HDMI consolizer, measured  | ~1.6 frames              | original GBA silicon, fast modern panel, no scaler buffer |
+| **This build, Off**             | ~6-7 frames (est)        | ~4 fixed (0.5 poll + 2 debounce + 1 present + 0.5 LCD) + full 2-3 fr game lag |
+| **This build, Balanced (1)**    | ~5-6 frames (est)        | run-ahead removes 1 game frame                       |
+| **This build, Responsive (2)**  | ~4-5 frames (est)        | run-ahead removes 2 game frames                      |
+| **This build, Max (3)**         | ~4 frames (est)          | game's internal lag fully removed; only the fixed pipeline remains |
+| Android emulator (Retroid), measured | ~92 ms (~5.5 frames) | OS input stack + SurfaceFlinger compositor + buffering |
+
+Read that honestly. In absolute button-to-photon I do **not** beat a stock GBA or the
+Pocket: my fixed pipeline is heavier, dominated by the two-frame debounce and the software
+framebuffer flip. What the table shows is the *shape* of the win. Run-ahead is the one
+lever that removes the game's own internal lag, which is the single biggest chunk software
+can touch, so each tier walks me down a frame at a time from "worse than an Android
+emulator" toward the consolizer range, on a single 600 MHz core with no GPU.
 
 ## Where this lands against real hardware and FPGA
 
 Two references matter to people who care about this: original GBA hardware, and the
-Analogue Pocket, which reimplements the console on an FPGA
-([Analogue Pocket][pocket-wiki]).
+Analogue Pocket, which reimplements the console on an FPGA ([Analogue Pocket][pocket-wiki]).
 
-- **Frame timing.** We drive the panel at the GBA's own 59.7275 Hz (measured 59.727 Hz),
+- **Frame timing.** I drive the panel at the GBA's own 59.7275 Hz (measured 59.727 Hz),
   not a rounded 60.0 Hz, so there is no pull-down cadence, no duplicated or dropped
   frames, and audio pitch is exactly right. The Pocket reaches the same goal from the
   other direction: it ships a variable-refresh display and a per-core "GBA VRR" mode that
-  slews the panel to the core's native rate, exactly to kill the 60.0 Hz-vs-59.7 Hz
-  micro-stutter (write-up of the Pocket's GBA VRR firmware feature [here][gbatemp-vrr]).
-  Most 60.0 Hz software emulators do neither.
+  slews the panel to the core's native rate, to kill the 60.0 Hz-vs-59.7 Hz micro-stutter
+  ([write-up of the Pocket's GBA VRR feature][gbatemp-vrr]). Most 60.0 Hz software
+  emulators do neither.
 - **Accuracy.** Real hardware and the Pocket's FPGA core are cycle-accurate. gpSP is a
   dynamic recompiler: extremely compatible, but not cycle-perfect on a handful of games
   with unusual timing tricks. This is the one axis where the two references have the edge,
-  and we do not claim otherwise.
-- **Input latency.** This is the interesting one. Real hardware and a cycle-accurate FPGA
-  faithfully *reproduce* the game's own 1-3 frames of internal lag; they cannot remove it
-  without breaking accuracy. RetroRGB tested lag and ghosting across every GBA handheld
-  with an LED and a 1000 fps camera, and found the Analogue Pocket's FPGA has **virtually
-  zero added lag** over an original GBA, with the original GBA/GBA SP at the low end and
-  emulation-based handhelds like the DS/3DS adding roughly a frame on top
-  ([RetroRGB, "Comparing Lag and Ghosting for Every GBA handheld"][retrorgb-handheld]; the
-  crowd-sourced hardware-lag-tester database is [here][retrorgb-lagdb]). So the Pocket sits
-  right at original-hardware latency: it reproduces the game's internal lag exactly. That
-  is the bar. Run-ahead is the one trick that *removes* that internal lag instead of
-  reproducing it, which is how RetroArch demonstrated latency below original hardware
-  ([libretro][libretro-medium]).
+  and I do not claim otherwise.
+- **Input latency.** Here is the wrinkle I did not expect. A cycle-accurate FPGA faithfully
+  *reproduces* the game's own internal lag, and cannot remove it without breaking accuracy.
+  But the Analogue Pocket, the gold-standard FPGA, actually *adds* about a frame for GBA
+  specifically: its display is effectively rotated and scans right-to-left, so a GBA frame
+  has to be drawn into a framebuffer before it can go to the panel (the visible right-to-
+  left "jelly scroll"). Measured with a 240 fps app, a GBA game that is ~30 ms on a real
+  AGB-001 comes out ~50 ms on the Pocket, a full 60 Hz frame slower, consistently
+  ([r/AnaloguePocket][pocket-lag-reddit]). Palmer Luckey's own high-speed comparison put
+  the Pocket "more than a frame behind" a Game Boy Color and the ModRetro Chromatic, and
+  RetroRGB's Bob traced it to exactly that rotated-screen framebuffer
+  ([RetroRGB][retrorgb-chromatic]). For GB/GBC, where the Pocket scales natively, it is
+  much closer to original.
 
-So the honest positioning: we do not beat a stock GBA or the Pocket on absolute
-button-to-photon. Our two-frame debounce and software framebuffer flip put our fixed
-pipeline above the stock GBA's measured 2.4 frames, and an FPGA that faithfully reproduces
-the game reproduces its lag too. What we can do that neither the original console nor a
-cycle-accurate FPGA will is *remove the game's own internal lag* with run-ahead, on a
-single small core at minimal clocks with no GPU. That is what claws back most of what our
-pipeline spends and keeps us competitive with dedicated HDMI consolizer hardware, and it
-is the trick RetroArch used to show that, in a lean enough pipeline, run-ahead can push
-latency below original hardware entirely ([libretro][libretro-medium]). On this box it is
-the equalizer, not a magic win, and that is the honest version.
+The useful takeaway for me: even the best FPGA in the world pays about a framebuffer frame
+to put GBA on a modern scaled panel, which is the same cost my software present pays. What
+I can do that neither the original console nor a faithful FPGA will is *remove the game's
+own internal lag* with run-ahead. In absolute terms my two-frame debounce still keeps me
+behind them, but the framebuffer frame is a cost everyone in this space pays, and run-ahead
+is the equalizer that claws back the rest. That is the honest version.
 
 ## Configuration and diagnostics
 
@@ -240,12 +286,16 @@ the equalizer, not a magic win, and that is the honest version.
 
 ## Sources
 
-- Tito, *Lag Testing Every GBA Consolizer* (LED + 1000 fps camera per Bob of RetroRGB's
-  method, 6 samples each: stock GBA 2.4 frames, best consolizers 1.6, worst 6.2; the GBA
-  LCD alone adds ~1 frame): [machonacho]
-- RetroRGB, *Comparing Lag and Ghosting for Every GBA handheld* (GBA-specific: LED +
-  1000 fps camera; Analogue Pocket FPGA = virtually zero lag over original GBA, DS/3DS
-  add ~1 frame): [retrorgb-handheld]
+- Tito, *Lag Testing Every GBA Consolizer* (Bob of RetroRGB's LED + 1000 fps camera method,
+  6 samples each: stock GBA 2.4 frames, best consolizers 1.6, worst 6.2; the GBA LCD alone
+  adds ~1 frame): [machonacho]
+- r/AnaloguePocket, *Analogue Pocket adds input lag* (240 fps-app measurements: a GBA game
+  ~30 ms on a real AGB-001 vs ~50 ms on the Pocket, ~1 frame more, from the rotated-screen
+  framebuffer; also a Retroid Android RetroArch reading of ~92 ms): [pocket-lag-reddit]
+- RetroRGB (Bob), *Modretro Chromatic - In Stock & Lag Tested* (Palmer Luckey's high-speed
+  comparison: Chromatic matches original GBA and is faster than the Pocket, which is "more
+  than a frame behind"; Bob attributes the Pocket's extra frame to its rotated screen
+  needing a framebuffer): [retrorgb-chromatic]
 - RetroRGB, crowd-sourced hardware-lag-tester database (Time Sleuth / Leo Bodnar):
   [retrorgb-lagdb]
 - Analogue Pocket GBA variable-refresh (VRR) display timing feature: [gbatemp-vrr]
@@ -256,7 +306,8 @@ the equalizer, not a magic win, and that is the honest version.
 - WydD / inputlag.science, latency measurement methodology: [inputlag]
 
 [machonacho]: https://www.youtube.com/watch?v=TDxjd5d2Q8E
-[retrorgb-handheld]: https://retrorgb.com/comparing-lag-and-ghosting-for-every-gba-handheld.html
+[pocket-lag-reddit]: https://www.reddit.com/r/AnaloguePocket/comments/tqtn91/analogue_pocket_adds_input_lag/
+[retrorgb-chromatic]: https://retrorgb.com/modretro-chromatic-in-stock-lag-tested.html
 [retrorgb-lagdb]: https://retrorgb.com/lagtest.html
 [gbatemp-vrr]: https://gbatemp.net/threads/what-is-variable-refresh-rate-for-gba-feature-of-analogue-pocket.673346/
 [pocket-wiki]: https://en.wikipedia.org/wiki/Analogue_Pocket
