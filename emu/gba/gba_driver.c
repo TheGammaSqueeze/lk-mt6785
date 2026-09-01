@@ -1457,6 +1457,17 @@ static void sd_settings_mirror(void)
 		gba_sd_settings_save(&s_sd_vol);
 }
 
+/* Persist GammaOS settings to BOTH stores: boot_b (eMMC) and, in SD mode, the SD card.
+ * The SNES ROM-select menu MUST use this instead of ayaneo_settings_save() alone: in SD
+ * mode the boot settings are LOADED from the SD card (gba_sd_settings_load), so a menu
+ * change written only to eMMC is overwritten by the stale SD copy on the next power-cycle
+ * (the "menu volume/brightness does not stick" bug). */
+void ayaneo_menu_settings_persist(void)
+{
+	ayaneo_settings_save();
+	sd_settings_mirror();
+}
+
 /* Build a minimal "logo cart" in the gpSP ROM buffer for the BIOS boot-logo
  * intro. The GBA BIOS renders its logo from the CART HEADER's Nintendo-logo
  * bytes and then boots the cart, so an empty cart makes the BIOS jump into

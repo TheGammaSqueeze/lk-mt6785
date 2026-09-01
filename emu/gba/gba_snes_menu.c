@@ -85,6 +85,7 @@ extern int  ayaneo_get_mute_bios(void);
 extern void ayaneo_set_mute_menu(int v);
 extern void ayaneo_set_mute_bios(int v);
 extern void ayaneo_settings_save(void);
+extern void ayaneo_menu_settings_persist(void);    /* persist to BOTH eMMC + SD (menu path) */
 extern int  ayaneo_present_skip_framedone;         /* 0 = present blocks on vsync */
 extern int  ayaneo_wait_frame_done(void);          /* block one vsync WITHOUT re-latching the OVL */
 extern unsigned int gpt4_get_current_tick(void);   /* 13 MHz free-running counter */
@@ -181,10 +182,12 @@ static void menu_av_poll(void)
 	}
 	up_prev = up; dn_prev = dn;
 
-	/* flush the persist ~0.7s after the last change (off the key-repeat hot path) */
+	/* flush the persist ~0.7s after the last change (off the key-repeat hot path).
+	 * Persist to BOTH eMMC AND the SD card: in SD mode the boot settings are loaded
+	 * from the SD card, so an eMMC-only write is lost on the next power-cycle. */
 	if (s_av_dirty && (gpt4_get_current_tick() - s_av_tick) >= 9100000u) {
 		s_av_dirty = 0;
-		ayaneo_settings_save();   /* eMMC persist; SD mirror stays a game-path detail */
+		ayaneo_menu_settings_persist();
 	}
 }
 
@@ -627,7 +630,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 				if (mute_last >= 0) {
 					ayaneo_set_mute_bios(mb & 1);
 					ayaneo_set_mute_menu((mb >> 1) & 1);
-					ayaneo_settings_save();
+					ayaneo_menu_settings_persist();	/* eMMC + SD (SD-mode boot reads SD) */
 				}
 				mute_last = mb;
 			}
