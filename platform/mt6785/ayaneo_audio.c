@@ -1078,12 +1078,16 @@ void ayaneo_gba_audio_set_rate(int panel_hz100)
 /* `frames` stereo frames, s16 interleaved [L,R,L,R,...] at GBA_SRC_HZ. */
 void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 {
+	extern volatile unsigned int g_dbg_asub_calls, g_dbg_asub_done, g_dbg_asub_frames;
 	int vol = s_gbc_vol;
 	unsigned q = (vol >= 100) ? 256u : ((unsigned)vol * 256u / 100u);
 	unsigned i;
 
+	g_dbg_asub_calls++;
 	if (!s_gbc_audio_on || s_gbc_paused)
 		return;
+	g_dbg_asub_done++;
+	g_dbg_asub_frames += frames;
 
 	/*
 	 * The resample rate is FIXED (calibrated once to the panel refresh by

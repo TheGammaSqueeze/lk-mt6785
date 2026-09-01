@@ -185,6 +185,8 @@ static volatile int s_reset_req;	/* soft reset: restart the current game (menu R
  * predicted frame costs one more of these). */
 volatile unsigned int g_dbg_emu_us;
 volatile unsigned int g_dbg_frame_ticks;	/* GBA cycles advanced by the committed frame */
+volatile unsigned int g_dbg_asub_calls, g_dbg_asub_done, g_dbg_asub_frames;	/* audio submit counters */
+volatile int g_dbg_eff_pf;			/* last effective run-ahead depth */
 volatile int g_dbg_force_close;		/* fastboot `oem close`: trigger the close path for testing */
 static int s_settings_dirty;		/* volume/brightness changed: persist is deferred (see poll_volume) */
 static unsigned s_settings_tick;	/* 13 MHz tick of the last volume/brightness change */
@@ -630,25 +632,53 @@ static void run_one_frame(void)
  * effective depth to what fits (budget ~13 ms emulation, ~3 ms save/load): heavy
  * scenes gracefully fall to pf=1 or 0, light scenes get the full setting. The
  * latency benefit matters least exactly when the scene is heavy. */
+/* Closed-loop run-ahead depth. Run-ahead's whole per-frame cost (committed cold
+ * frame + pf warm ahead frames + 512 KB save/load) must fit inside one vsync
+ * (~16.6 ms) minus the present/overhead, or the loop overruns, drops below 60 fps
+ * and STARVES the audio ring (the loop masters audio) = silence/slow motion. em
+ * is scene-dependent (~2.3 ms light, ~5 ms+ heavy) and also depends on the CPU
+ * clock, so a fixed estimate is fragile. Instead measure the ACTUAL total
+ * emulation time each frame and step the cap +-1 with hysteresis so it always
+ * settles at the deepest depth that fits. */
+static unsigned int s_frame_period_us = 16743u;		/* full loop-iteration period us */
+static int s_pf_cap = 3;				/* closed-loop depth ceiling */
+
 static int preempt_effective_depth(void)
 {
 	int cfg = ayaneo_get_preempt_frames();
-	unsigned em;
-	int cap;
 	if (cfg <= 0)
 		return 0;
-	em = g_dbg_emu_us ? g_dbg_emu_us : 2500u;	/* committed (cold) frame us */
-	/* Calibrated on device: the full per-frame cost (committed cold frame + pf
-	 * warm ahead frames + 512 KB save/load + present) fits the ~16.6 ms budget
-	 * only up to ~5000/em ahead frames (pf=2 at em~2.5 ms, pf=1 at em~5 ms). Above
-	 * that the loop overruns vsync into slow motion, so cap there. */
-	cap = (int)(5000u / em);
-	return cap < cfg ? cap : cfg;
+	return s_pf_cap < cfg ? s_pf_cap : cfg;
+}
+
+/* Closed-loop on the ACTUAL full per-frame period (emulation + present + the
+ * battery/LED/volume polls), not just emulation - the overhead is a few ms and
+ * varies, and it is what makes even a low depth overrun in a heavy scene. When a
+ * vsync is missed (period jumps from ~16.7 ms to ~33 ms) the loop can no longer
+ * feed audio in real time, so shed depth immediately; ramp back up slowly after a
+ * sustained clean stretch so a too-deep setting only ever costs a rare 1-frame
+ * probe, never sustained slow motion or silence. */
+static void preempt_adapt(unsigned frame_period_us)
+{
+	static int up;
+	/* One panel frame is ~16.74 ms. A fitting loop settles at ~16.6-16.8 ms; a
+	 * loop that cannot keep up runs a steadily LONGER period (the present here is
+	 * not a hard vsync latch, so an overrun shows as ~18 ms, not a doubled 33 ms).
+	 * Shed depth the moment the period runs long, so audio is never starved; ramp
+	 * back slowly (a lone probe frame is absorbed by the audio ring). */
+	if (frame_period_us > 17400u) {		/* over one frame = overrun */
+		if (s_pf_cap > 0) s_pf_cap--;
+		up = 0;
+	} else if (++up >= 240) {		/* ~4 s clean: probe one deeper */
+		up = 0;
+		if (s_pf_cap < 3) s_pf_cap++;
+	}
 }
 
 static void preempt_present(void)
 {
 	int pf = preempt_effective_depth();
+	g_dbg_eff_pf = pf;
 	if (pf <= 0) {
 		ayaneo_gbc_show_frame(gba_core_screen());
 		return;
@@ -1423,6 +1453,11 @@ static int emu_thread(void *arg)
 				/* committed GBA cycles this display frame = one full frame (280896);
 				 * run-ahead re-enters as a full frame (no priming stub) so no skew. */
 				g_dbg_frame_ticks = gba_core_cpu_ticks() - ct0;
+				{	/* full per-frame period (em0 to em0) for the closed-loop depth */
+					static unsigned int prev_em0;
+					s_frame_period_us = prev_em0 ? (em0 - prev_em0) / 13u : 16743u;
+					prev_em0 = em0;
+				}
 				{	/* average the emulation wall time over 16 frames -> us */
 					static unsigned int acc; static int cnt;
 					acc += gpt4_get_current_tick() - em0;	/* 13 MHz ticks */
@@ -1609,6 +1644,9 @@ static int emu_thread(void *arg)
 			/* run-ahead present: look-ahead pf frames then rewind (or a plain
 			 * present when Off), paced to the panel vsync. */
 			preempt_present();
+			/* closed-loop: shed run-ahead depth if the full frame period shows
+			 * the loop overrunning vsync (which would starve audio). */
+			preempt_adapt(s_frame_period_us);
 		}
 	}
 	return 0;
