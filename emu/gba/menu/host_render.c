@@ -118,21 +118,48 @@ int main(int argc, char **argv)
 		 * the tile buffer (snes_img_pixels resolves base + pixels). Proves the per-gi
 		 * render + per-gi ctile/fct caches without the on-device SD loader. */
 		if (getenv("GBA_BOXART")) {
-			enum { BXW = 48, BXH = 64 };
-			static unsigned char bx[128 * BXW * BXH * 3];
+			enum { BXMAX = 224 * 224 * 3 };
+			static unsigned char bx[128 * BXMAX];
 			static snes_img_entry bimg[128];
 			static snes_pack bpk;
+			const char *dir = getenv("GBA_BOXART_DIR");   /* real .ART tiles to render */
 			int gi2, j;
 			bpk.base = bx;
 			for (gi2 = 0; gi2 < gn; gi2++) {
-				unsigned off = (unsigned)gi2 * BXW * BXH * 3u;
-				unsigned short v = (unsigned short)((gi2 * 2113) & 0xFFFF); /* distinct */
-				for (j = 0; j < BXW * BXH; j++) {
-					bx[off + j * 3 + 0] = (unsigned char)(v & 0xFF);
-					bx[off + j * 3 + 1] = (unsigned char)(v >> 8);
-					bx[off + j * 3 + 2] = 0xFF;
+				unsigned off = (unsigned)gi2 * BXMAX;
+				int loaded = 0;
+				bimg[gi2].w = 0;
+				if (dir) {
+					/* load a real .ART (GART hdr + RGB565) and expand to 565+a8 */
+					char p[512]; FILE *f;
+					snprintf(p, sizeof p, "%s/tile%d.ART", dir, gi2);
+					f = fopen(p, "rb");
+					if (f) {
+						unsigned char hdr[12];
+						if (fread(hdr, 1, 12, f) == 12 && !memcmp(hdr, "GART", 4)) {
+							int w = hdr[8] | (hdr[9] << 8), h = hdr[10] | (hdr[11] << 8);
+							int np = w * h, ok = 1, q;
+							for (q = 0; q < np && ok; q++) {
+								unsigned char px[2];
+								if (fread(px, 1, 2, f) != 2) { ok = 0; break; }
+								bx[off + q * 3 + 0] = px[0];
+								bx[off + q * 3 + 1] = px[1];
+								bx[off + q * 3 + 2] = 0xFF;
+							}
+							if (ok) { bimg[gi2].w = w; bimg[gi2].h = h; loaded = 1; }
+						}
+						fclose(f);
+					}
 				}
-				bimg[gi2].w = BXW; bimg[gi2].h = BXH;
+				if (!loaded) {                 /* synthetic distinct fallback (48x64) */
+					unsigned short v = (unsigned short)((gi2 * 2113) & 0xFFFF);
+					for (j = 0; j < 48 * 64; j++) {
+						bx[off + j * 3 + 0] = (unsigned char)(v & 0xFF);
+						bx[off + j * 3 + 1] = (unsigned char)(v >> 8);
+						bx[off + j * 3 + 2] = 0xFF;
+					}
+					bimg[gi2].w = 48; bimg[gi2].h = 64;
+				}
 				bimg[gi2].flags = SNES_IMG_RGB565; bimg[gi2].pad = 0;
 				bimg[gi2].pixels = off;
 			}

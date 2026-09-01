@@ -821,9 +821,14 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 	const snes_img_entry *im;
 	if (m->gba_mode) {
 		im = m->gba_cart_img;
-		if (m->gba_boxart && gi >= 0 && gi < m->ngames && m->gba_boxart[gi].w) {
-			im = &m->gba_boxart[gi];
-			impk = m->gba_boxart_pk ? m->gba_boxart_pk : m->pk;
+		/* gi is the DISPLAY position; the game (and its art) at that slot is
+		 * order[gi], so a re-sort maps a slot to a different ROM's box front. */
+		if (m->gba_boxart && m->ngames > 0) {
+			int gidx = m->order[((gi % m->ngames) + m->ngames) % m->ngames];
+			if (m->gba_boxart[gidx].w) {
+				im = &m->gba_boxart[gidx];
+				impk = m->gba_boxart_pk ? m->gba_boxart_pk : m->pk;
+			}
 		}
 	} else {
 		im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
@@ -848,11 +853,15 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 				      blue_a > 1.0f ? 1.0f : blue_a, dim, dim, dim);
 		if (im) {
 			float sf = m->screen_w / (float)im->w, sfh = m->screen_w / (float)im->h;
-			float bw, bh;
+			float bw, bh, iy;
 			if (sfh < sf) sf = sfh;
 			if (sf > 1.0f) sf = 1.0f;
 			bw = im->w * sf * sc; bh = im->h * sf * sc;
-			snes_blit_tex_tint(t, impk, im, cx, cy - m->screen_oy * sc, bw, bh, 1.0f, dim, dim, dim);
+			/* Per-ROM box art is vertically centred on the card frame (cy). The
+			 * placeholder cart / SNES thumb keep the authored screen_oy up-shift,
+			 * which leaves room for the bottom info strip they were designed with. */
+			iy = (impk != m->pk) ? cy : cy - m->screen_oy * sc;
+			snes_blit_tex_tint(t, impk, im, cx, iy, bw, bh, 1.0f, dim, dim, dim);
 		}
 		/* player-count icon (bottom-right): 1P / 2P-simultaneous / 1P-2P, chosen
 		 * by players+simultaneous (sys_game_card_show.setPlayers). The player_icon
@@ -1119,10 +1128,20 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 		float cx = base + sp * (float)i;
 		if (cx < -40.0f || cx > SNES_VW + 40.0f) continue;   /* cull off-screen icons */
 		if (m->gba_mode) {
-			if (m->gba_cart_img) {   /* draw the cart at its native aspect (48 wide) */
-				const snes_img_entry *ci = m->gba_cart_img;
+			/* per-ROM box art (game order[i]) when loaded, else the placeholder cart;
+			 * drawn at its native aspect, 48 wide. */
+			const snes_img_entry *ci = m->gba_cart_img;
+			const snes_pack *cpk = m->pk;
+			if (m->gba_boxart && n > 0) {
+				int gidx = m->order[((i % n) + n) % n];
+				if (m->gba_boxart[gidx].w) {
+					ci = &m->gba_boxart[gidx];
+					cpk = m->gba_boxart_pk ? m->gba_boxart_pk : m->pk;
+				}
+			}
+			if (ci) {
 				float fw = 48.0f, fh = ci->w ? fw * (float)ci->h / (float)ci->w : 30.0f;
-				snes_blit_tex(t, m->pk, ci, cx, ccy, fw, fh, 1.0f);
+				snes_blit_tex(t, cpk, ci, cx, ccy, fw, fh, 1.0f);
 			}
 		} else {
 			const snes_game_rec *g = game(m, i);
@@ -2414,13 +2433,19 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			int n = m->ngames, k;
 			int cur = m->order[((m->focus % n) + n) % n];   /* focused ROM index */
 			/* the SD scan hands ROMs in case-insensitive A-Z order (sd_fat), which is
-			 * order[i]=i; reversing it gives Z-A. Cards are identical placeholders so
-			 * the tile cache stays valid. */
+			 * order[i]=i; reversing it gives Z-A. Without box art the cards are identical
+			 * placeholders so the tile cache stays valid; WITH per-ROM art each slot now
+			 * shows a different game, so the position-keyed caches must be invalidated. */
 			m->sort_rule ^= 1;                              /* 0 = A-Z, 1 = Z-A */
 			for (k = 0; k < n; k++)
 				m->order[k] = (unsigned short)(m->sort_rule ? (n - 1 - k) : k);
 			for (k = 0; k < n; k++)
 				if (m->order[k] == cur) { m->focus = k; m->car_x = k; break; }
+			if (m->gba_boxart) {
+				m->fct_ready = 0; m->fct_gi = -1;
+				if (m->ctile_gi)
+					for (k = 0; k < m->ctile_cap; k++) m->ctile_gi[k] = -1;
+			}
 			m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
 			m->sort_label_t = 1.5f;
 			push_snd(m, m->sfx_decide);
