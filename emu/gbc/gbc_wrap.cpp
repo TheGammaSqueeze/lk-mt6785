@@ -33,12 +33,13 @@ extern "C" int gbc_create(void)
 	return 0;
 }
 
-/* Load a ROM image from a memory buffer. flags=0 auto-detects CGB. */
-extern "C" int gbc_load(const void *rom, unsigned size)
+/* Load a ROM image from a memory buffer. flags=0 auto-detects CGB; pass
+ * gambatte::GB::FORCE_DMG (1) to force original Game Boy (DMG) mode for .gb ROMs. */
+extern "C" int gbc_load(const void *rom, unsigned size, unsigned flags)
 {
 	if (!g_gb)
 		return -1;
-	return g_gb->load(rom, size, 0);
+	return g_gb->load(rom, size, flags);
 }
 
 extern "C" void gbc_reset(void)

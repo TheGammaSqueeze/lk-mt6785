@@ -32,6 +32,10 @@ emu/gba/build_core_gba.sh >/dev/null
 echo ">> Linking gpSP core blob for boot_b (core is not in lk_a)"
 emu/gba/build_core_blob.sh >/dev/null
 
+echo ">> Building gambatte GB/GBC core objects + blob for boot_b"
+emu/gbc/build_core.sh >/dev/null
+emu/gbc/build_core_blob.sh >/dev/null 2>&1
+
 echo ">> Building $PROJECT (AYANEO_GBA_SD=yes, jobs=$JOBS)"
 rm -f "build-$PROJECT/lk" "build-$PROJECT/lk.img"
 make "$PROJECT" AYANEO_GBA_SD=yes -j"$JOBS"

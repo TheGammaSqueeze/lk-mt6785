@@ -266,6 +266,24 @@ static void gpio_in_pullup(unsigned gpio)
 	mt_set_gpio_pull_select(GP(gpio), 1);	/* pull-up */
 }
 
+/* Map the physical pad to gambatte's button mask (inputgetter.h:
+ * A=0x01 B=0x02 SELECT=0x04 START=0x08 RIGHT=0x10 LEFT=0x20 UP=0x40 DOWN=0x80).
+ * Imported by the GB/GBC core blob via the imports table. Active-low GPIOs; the
+ * pins are already configured (input_init) by the time a game runs. */
+unsigned ayaneo_gbc_pad_mask(void)
+{
+	unsigned m = 0;
+	if (PRESSED(GPIO_A))      m |= 0x01u;
+	if (PRESSED(GPIO_B))      m |= 0x02u;
+	if (PRESSED(GPIO_SELECT)) m |= 0x04u;
+	if (PRESSED(GPIO_START))  m |= 0x08u;
+	if (PRESSED(GPIO_RIGHT))  m |= 0x10u;
+	if (PRESSED(GPIO_LEFT))   m |= 0x20u;
+	if (PRESSED(GPIO_UP))     m |= 0x40u;
+	if (PRESSED(GPIO_DOWN))   m |= 0x80u;
+	return m;
+}
+
 static void input_init(void)
 {
 	unsigned i;

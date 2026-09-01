@@ -48,6 +48,20 @@ never-brick / boot-to-OS / SELECT-return flow.
 - [ ] Shared display (ayaneo_gbc_show_frame 6x), audio, input already exist.
 
 ## Status log (newest first)
+- 2026-09-02: Phase 2 milestone 1 (GBC blob builds + packs + loader in lk_a).
+  Created emu/gbc/: gbc_core_abi.h (imports read_buttons+host_time; exports the
+  gbc_* API incl load(flags) for FORCE_DMG), gbc_core_exports.cpp (blob entry +
+  forwarders: gbc_read_buttons/time/atexit), gbc_core_blob.ld (VMA 0x4E800000,
+  magic "GBC1"), gbc_blob_libc.c (mem*/strcmp/__errno; powf from libm, __aeabi from
+  libgcc), build_core_blob.sh -> core_gbc.blob (116 KiB, span 0x1d500).
+  gbc_core_loader.c (lk_a side, boot_b off 0x01900000). gbc_wrap.cpp: gbc_load now
+  takes flags. gba_driver.c: ayaneo_gbc_pad_mask() maps the pad to gambatte bits.
+  Wired: rules.mk (+gbc_core_loader.o under AYANEO_GBA_SD), build_snes_boot_b.py
+  (gbc blob @25MB, between pack and gpSP blob), build_ayaneo_gba_sd.sh (builds gbc
+  core+blob). Full build green, lk_a still 2MB, boot_b has the gbc blob. Loader is
+  dead code until dispatch (next). GBA flow unaffected. NEXT: wire launch dispatch
+  in emu_thread (GBA rom -> gpSP; GB/GBC rom -> gbc_core_load + gambatte frame
+  loop), then saves/states to SD, runahead+reset, GB FORCE_DMG + L/R palettes.
 - 2026-09-02: Badge rendering VALIDATED on host (GBA_BADGES=1 in host_render.c,
   cycles GB/GBC/GBA; GBA_BADGE_FORCE to test one). Fixed a real bug: the ctile
   shared-single-tile fast path (gba_mode && !gba_boxart) and fct_get assumed all

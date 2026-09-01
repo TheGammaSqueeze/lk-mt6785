@@ -1,2 +1,3 @@
 obj/
 libgbc.a
+core_gbc.blob
