@@ -42,15 +42,28 @@ never-brick / boot-to-OS / SELECT-return flow.
 - [x] Dispatch at launch by rom type: GBA -> gpSP; GB/GBC -> gbc_sd_session().
       Both ROM-select sites branch; s_gpsp_dirty rebuilds the gpSP arena after a
       GB/GBC session (the session reuses the 0x50000000 arena). GBA flow untouched.
-- [ ] Runahead (preempt frames) + reset options for GBC, matching the GBA in-game
-      menu. NOT DONE: gbc_sd_session currently has AYA = save+exit only, no in-game
-      menu/runahead/reset. NEXT.
+- [x] Runahead (preempt frames) + reset for GBC. Runahead uses gambatte state
+      save/load (its state carries the APU, so no separate sound-ring save): each
+      frame, present pf frames ahead with current input then rewind, honouring the
+      SHARED ayaneo_get_preempt_frames() setting. Reset = SELECT+START+L+R held
+      ~0.5 s (same hotkey as GBA) -> c->reset(). A full GBC in-game overlay menu +
+      save states is still open (optional refinement; the hotkeys deliver the two
+      options the user asked for).
 - [x] GB (.gb) forced to DMG via gambatte FORCE_DMG; L/R cycle 5 DMG palettes.
 - [x] Shared display (ayaneo_gbc_show_frame 6x) + audio (ayaneo_gbc_audio_*) reused.
 - [ ] ON-DEVICE TEST with real GB/GBC ROMs (couldn't test headless): verify a game
       runs, audio, L/R palette, AYA exit, and GB/GBC<->GBA switching (arena rebuild).
 
 ## Status log (newest first)
+- 2026-09-02: Phase 2.3 (GBC runahead + reset). gbc_sd_run.c frame loop now does
+  run-ahead: state_save -> run pf muted look-ahead frames -> present the future
+  frame -> state_load rewind, using the shared ayaneo_get_preempt_frames() (0..3).
+  gambatte's savestate includes the APU so committed audio (already submitted)
+  stays continuous; look-ahead audio is just not submitted. Soft reset via
+  SELECT+START+L+R held ~0.5 s (matches GBA) -> c->reset(); palette L/R is gated
+  off during the combo. Build green, lk_a 2 MB, GBA flow + fast cold boot intact on
+  device. Still open: optional GBC in-game overlay menu + save states, and the
+  on-device GB/GBC gameplay test (headless-blocked).
 - 2026-09-02: Phase 2.2 (launch dispatch + gambatte session). New gbc_sd_run.c:
   gbc_sd_session(vol, rom) loads the blob (cached), loads ROM+.sav from SD into the
   reused gpSP arena (0x50000000: rom@0, heap@8MB, vbuf/snd@48MB), gbc_create/load

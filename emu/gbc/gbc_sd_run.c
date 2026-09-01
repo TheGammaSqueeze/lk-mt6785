@@ -27,6 +27,7 @@ extern unsigned gpt4_get_current_tick(void);
 extern void     mtk_wdt_restart(void);
 extern void     mtk_wdt_disable(void);
 extern int      mt_get_gpio_in(unsigned pin);
+extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shared setting) */
 
 /* pad GPIOs (match gba_driver.c). Active-low; AYA/L/R are not GB buttons so they are
  * free for the session controls. */
@@ -35,6 +36,10 @@ extern int      mt_get_gpio_in(unsigned pin);
 #define GPIO_AYA       86      /* return to the selector */
 #define GPIO_LB        92      /* DMG palette prev */
 #define GPIO_RB        81      /* DMG palette next */
+#define GPIO_SELECT    90      /* + START + L + R held = soft reset */
+#define GPIO_START     91
+#define GBC_AHEAD_STATE (GBC_ARENA + 0x03600000u)   /* run-ahead savestate scratch (54 MB in) */
+#define RESET_HOLD_FRAMES 30    /* ~0.5 s at 59.7 Hz */
 
 /* GBA arena reuse (only one core runs at a time). */
 #define GBC_ARENA      0x50000000u
@@ -81,6 +86,9 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 	int is_dmg = (rom->type == GBA_CONSOLE_GB);
 	int pal_idx = 1;                            /* default to DMG green for .gb */
 	int aya_prev = 0, lb_prev = 0, rb_prev = 0;
+	int reset_hold = 0;
+	unsigned ahead_sz = 0;
+	unsigned char *ahead = (unsigned char *)GBC_AHEAD_STATE;
 	const unsigned long long TPF_NUM = 13000000ull * 35112ull;
 	const unsigned long long TPF_DEN = 2097152ull;
 	unsigned pace_base;
@@ -95,6 +103,8 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 	if (c->create() != 0) return;
 	flags = is_dmg ? GBC_FORCE_DMG : 0u;
 	if (c->load(rombuf, romsz, flags) != 0) return;
+	ahead_sz = c->state_size();
+	if (ahead_sz > 0x00A00000u) ahead_sz = 0;   /* sanity: must fit the 10 MB scratch gap */
 
 	/* cartridge battery save (.sav) from the card, if any */
 	if (c->savedata_ptr() && c->savedata_size())
@@ -114,21 +124,53 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 		ayaneo_gbc_audio_submit(snd, samples);
 
 		if (r >= 0) {                       /* a video frame completed */
-			int aya, lb, rb;
+			int aya, lb, rb, combo, pf;
 			mtk_wdt_restart();
-			ayaneo_gbc_show_frame(vbuf);
+
+			/* Soft reset: SELECT+START+L+R held ~0.5 s restarts the game (matches
+			 * the GBA hotkey). While that combo is held, do NOT cycle the palette. */
+			combo = PRESSED(GPIO_SELECT) && PRESSED(GPIO_START) &&
+				PRESSED(GPIO_LB) && PRESSED(GPIO_RB);
+			if (combo) {
+				if (++reset_hold >= RESET_HOLD_FRAMES) {
+					c->reset();
+					reset_hold = 0;
+				}
+			} else {
+				reset_hold = 0;
+			}
 
 			/* AYA -> save .sav and return to the selector */
 			aya = PRESSED(GPIO_AYA);
 			if (aya && !aya_prev) break;
 			aya_prev = aya;
 
-			/* L/R cycle the DMG palette (mono games only) */
-			if (is_dmg) {
+			/* L/R cycle the DMG palette (mono games only, not during a reset combo) */
+			if (is_dmg && !combo) {
 				lb = PRESSED(GPIO_LB); rb = PRESSED(GPIO_RB);
 				if (lb && !lb_prev) { pal_idx = (pal_idx + DMG_PAL_COUNT - 1) % DMG_PAL_COUNT; apply_dmg_palette(c, pal_idx); }
 				if (rb && !rb_prev) { pal_idx = (pal_idx + 1) % DMG_PAL_COUNT; apply_dmg_palette(c, pal_idx); }
 				lb_prev = lb; rb_prev = rb;
+			}
+
+			/* Run-ahead ("Preemptive Frames", shared setting): present a frame pf
+			 * steps into the future with the current input, then rewind, so input
+			 * latency drops by pf frames. gambatte's savestate carries the APU state,
+			 * so (unlike gpSP) no separate sound-ring save is needed: the committed
+			 * audio was already submitted above; the look-ahead runs are muted (their
+			 * samples are simply not submitted). */
+			pf = ayaneo_get_preempt_frames();
+			if (pf > 0 && ahead_sz) {
+				int i;
+				c->state_save(ahead);
+				for (i = 0; i < pf; i++) {
+					unsigned s2 = GBC_SND_MAX;
+					c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);   /* muted look-ahead */
+				}
+				ayaneo_gbc_show_frame(vbuf);          /* present the future frame */
+				c->state_load(ahead, ahead_sz);       /* rewind to the committed frame */
+			} else {
+				ayaneo_gbc_show_frame(vbuf);
 			}
 
 			/* pace to 59.7 Hz off the 13 MHz counter (cumulative, no drift) */
