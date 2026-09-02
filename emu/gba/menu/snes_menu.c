@@ -878,13 +878,11 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 				float lwc, lhc, ccx, ccy;
 				if (bsh < bs) bs = bsh;
 				lwc = lg->w * bs; lhc = lg->h * bs;
-				/* anchor the badge's bottom-right corner near the card corner */
+				/* anchor the badge's bottom-right corner near the card corner. The
+				 * logo carries its own white 1px stroke (baked into the asset) for
+				 * legibility, so no backing plate. */
 				ccx = 106.0f - lwc * 0.5f;
 				ccy = 104.0f - lhc * 0.5f;
-				/* dark backing plate so a light logo stays legible over bright art */
-				snes_fill_quad(t, cx + ccx * sc, cy + ccy * sc,
-					       (lwc + 10.0f) * sc, (lhc + 8.0f) * sc,
-					       0.0f, 0.0f, 0.0f, 0.55f * dim);
 				snes_blit_tex_tint(t, m->pk, lg, cx + ccx * sc, cy + ccy * sc,
 						   lwc * sc, lhc * sc, 1.0f, dim, dim, dim);
 			}
@@ -968,14 +966,26 @@ static void render_card_tile(snes_menu *m, int gi, uint32_t *tile, float blue_a)
 static const uint32_t *fct_get(snes_menu *m, int gi)
 {
 	if (!m->fct) return 0;
-	/* with per-ROM boxart the focused body differs per game, so rebuild when the
-	 * focused index changes; otherwise it is identical for all cards (build once). */
-	if (!m->fct_ready || m->fct_aspect != m->aspect ||
-	    ((m->gba_boxart || m->gba_types) && m->fct_gi != gi)) {
-		render_card_tile(m, gi, m->fct, 1.0f);         /* blue_a=1 -> active body */
-		m->fct_ready = 1;
-		m->fct_aspect = m->aspect;
-		m->fct_gi = gi;
+	/* Rebuild when: never built / aspect flipped / (per-ROM boxart) the focused game
+	 * changed / (console badges, no boxart) the focused TYPE changed. In the badge
+	 * case the focused body only depends on the console type, so scrolling within one
+	 * console reuses the tile and only a type boundary rebuilds it. fct_gi holds the
+	 * game index for boxart mode, or 0x40000000|type for the type-keyed badge case. */
+	{
+		int want = gi;
+		if (!m->gba_boxart && m->gba_types && m->ngames > 0) {
+			int gidx = m->order[((gi % m->ngames) + m->ngames) % m->ngames];
+			int ty = m->gba_types[gidx];
+			if (ty < 0 || ty > 2) ty = 2;
+			want = 0x40000000 | ty;
+		}
+		if (!m->fct_ready || m->fct_aspect != m->aspect ||
+		    ((m->gba_boxart || m->gba_types) && m->fct_gi != want)) {
+			render_card_tile(m, gi, m->fct, 1.0f);         /* blue_a=1 -> active body */
+			m->fct_ready = 1;
+			m->fct_aspect = m->aspect;
+			m->fct_gi = want;
+		}
 	}
 	return m->fct;
 }
@@ -1002,15 +1012,33 @@ static const uint32_t *ctile_get(snes_menu *m, int gi)
 	 * same tile once per visible card per frame - the direct-mapped cap-1 slot thrashes
 	 * and a scroll-from-rest that brings a fresh index into view spikes the frame. Cache
 	 * ONE shared body tile (slot 0, sentinel key) and return it for every card. */
-	/* Shared single-tile fast path only when EVERY card is truly identical: no
-	 * per-ROM box art AND no per-card console badge. With badges active the cards
-	 * differ (GB/GBC/GBA logo), so fall through to the per-gi direct-mapped cache. */
-	if (m->gba_mode && !m->gba_boxart && !m->gba_types) {
-		if (m->ctile_gi[0] != 0x40000000) {
-			render_card_tile(m, gi, m->ctile, 0.0f);
-			m->ctile_gi[0] = 0x40000000;
+	/* Shared-tile fast path (no per-ROM box art). Without console badges every card
+	 * is the IDENTICAL placeholder -> one shared tile. WITH badges the card body still
+	 * only depends on the CONSOLE TYPE (GB/GBC/GBA), not the game, so there are just
+	 * three distinct tiles: cache them in slots 0..2 keyed by type and reuse by type.
+	 * Either way a scroll never re-renders a tile per visible card (the regression the
+	 * naive per-gi fallback caused). */
+	if (m->gba_mode && !m->gba_boxart) {
+		if (!m->gba_types) {
+			if (m->ctile_gi[0] != 0x40000000) {
+				render_card_tile(m, gi, m->ctile, 0.0f);
+				m->ctile_gi[0] = 0x40000000;
+			}
+			return m->ctile;
 		}
-		return m->ctile;
+		if (m->ctile_cap >= 3) {
+			int n = m->ngames > 0 ? m->ngames : 1;
+			int gidx = m->order[((gi % n) + n) % n];
+			int ty = m->gba_types[gidx];
+			int key;
+			if (ty < 0 || ty > 2) ty = 2;
+			key = 0x40000000 | ty;               /* slot == console type (0..2) */
+			if (m->ctile_gi[ty] != key) {
+				render_card_tile(m, gi, m->ctile + (unsigned)ty * CT_PIX, 0.0f);
+				m->ctile_gi[ty] = key;
+			}
+			return m->ctile + (unsigned)ty * CT_PIX;
+		}
 	}
 	slot = gi % m->ctile_cap; if (slot < 0) slot += m->ctile_cap;
 	if (m->ctile_gi[slot] != gi) {
