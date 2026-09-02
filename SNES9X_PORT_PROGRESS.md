@@ -65,9 +65,10 @@ STRETCH aspect option added (user request): a 5th Aspect Ratio choice that fills
 it handles fractional vertical (224->960); normal modes keep integer vertical for clean
 scanlines. Persisted with the other aspect picks.
 
-Pico menu Up/Down now auto-repeat (press, then ~0.37 s delay -> ~0.08 s repeat) for the
-16-row menu; Left/Right stay single-tap. Settings persistence is DEBOUNCED (~0.5 s after the
-last change, or on menu close / session exit) so rapid value taps no longer burst flash
+Pico menu Up/Down AND Left/Right now auto-repeat (press, ~0.37 s delay -> ~0.08 s repeat) -
+holding cycles menu rows or values (slots 0-9, CPU clock, aspect...). Benchmark toggles on A
+only so repeating L/R never flips it. Settings persistence is DEBOUNCED (~0.5 s after the
+last change, or on menu close / session exit) so rapid value changes no longer burst flash
 writes; the value still applies in memory instantly.
 
 Verified (2026-09-02) the exit reverse-punch buffer 0x55800000 is writable during a SNES
