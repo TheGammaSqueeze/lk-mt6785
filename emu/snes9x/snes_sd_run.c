@@ -87,6 +87,8 @@ volatile unsigned g_snes_dbg_loadrc;  /* c->load() return (0 = ok, 0xFF = not re
 volatile unsigned g_snes_dbg_frames;
 volatile unsigned g_snes_dbg_w, g_snes_dbg_h;
 volatile unsigned g_snes_dbg_exit;    /* 0 running,1 aya-hold,2 blob,3 rom,4 load */
+volatile unsigned g_snes_dbg_pitch;   /* f.pitch of the last frame */
+volatile unsigned g_snes_dbg_nz;      /* non-zero pixels in a mid-row sample (0 = black frame) */
 
 /* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
  * menu is open so navigation keys do not leak into the game. */
@@ -255,7 +257,13 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		c->run(&f);
 		g_snes_dbg_frames++;
 		if (f.video && f.width && f.height) {
-			g_snes_dbg_w = f.width; g_snes_dbg_h = f.height;
+			g_snes_dbg_w = f.width; g_snes_dbg_h = f.height; g_snes_dbg_pitch = f.pitch;
+			{	/* sample the middle row: how many non-zero (non-black) pixels? */
+				const unsigned short *p = (const unsigned short *)f.video;
+				unsigned stride = f.pitch / 2u, row = f.height / 2u, x, nz = 0;
+				for (x = 0; x < f.width; x += 4) if (p[row * stride + x]) nz++;
+				g_snes_dbg_nz = nz;
+			}
 			ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
 		} else
 			priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
