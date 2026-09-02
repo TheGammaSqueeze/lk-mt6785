@@ -1264,58 +1264,60 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
-	unsigned int sx_scale = (sw <= 256) ? 4 : 2;          /* 256->4x, 512->2x => 1024 wide */
 	unsigned int sy_scale = (sh <= 240) ? 4 : 2;          /* 224/239->4x, 448/478->2x */
-	unsigned int dw = sw * sx_scale, dh = sh * sy_scale;
+	unsigned int dh = sh * sy_scale;                      /* displayed height (integer scale) */
+	/* Displayed WIDTH: honour the core-reported aspect (g_snes_aspect_x1000 = dw/dh*1000)
+	 * so 4:3/NTSC/PAL stretch and "Pixel" stays integer. 0 -> integer 4x/2x fallback. */
+	extern volatile unsigned g_snes_aspect_x1000;
+	unsigned int asp = g_snes_aspect_x1000;
+	unsigned int dw = asp ? (dh * asp) / 1000u : sw * ((sw <= 256) ? 4u : 2u);
+	if (dw > W) dw = W;
+	if (dw < 1) dw = 1;
 	int xoff = ((int)W - (int)dw) / 2, yoff = ((int)H - (int)dh) / 2;
+	unsigned int xstep = (sw << 16) / dw;                 /* 16.16 source-px per dest-px */
 	unsigned int *dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
 	unsigned int dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
-	unsigned int sx, sy, ix, iy;
+	unsigned int sy, x, iy;
 
 	if (!fb_addr || !pix) return;
 	if (xoff < 0) xoff = 0;
 	if (yoff < 0) yoff = 0;
 	/* Borders (the letterbox outside the game) are static black, so clear BOTH buffers
-	 * only when the source resolution changes (256<->512, 224<->239<->448 hi-res/interlace)
-	 * or on the first frame - not every frame. The per-frame game blit fully overwrites
-	 * the game area, so a full-panel memset each frame (4.9 MB @60fps) was pure waste and
-	 * ate into the 16.6 ms budget. Mirrors the GB path (ayaneo_gb_show_frame). */
+	 * only when the source resolution OR the displayed rect (aspect switch) changes, not
+	 * every frame. The per-frame game blit fully overwrites the game area. */
 	{
-		static unsigned int last_sw, last_sh;
-		if (sw != last_sw || sh != last_sh) {
+		static unsigned int last_sw, last_sh, last_dw;
+		if (sw != last_sw || sh != last_sh || dw != last_dw) {
 			memset(fb_addr, 0, fb_size);
 			memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
 			arch_clean_cache_range((unsigned int)fb_addr, fb_size * 2);
-			last_sw = sw; last_sh = sh;
+			last_sw = sw; last_sh = sh; last_dw = dw;
 		}
 	}
 	{
-	/* LCD filter (shared with GB/GBA): 1 scanlines (dim last row of each scale block),
-	 * 2/3 grid (dim last row + col). Cheap per-subpixel darkening; fast path when off. */
+	/* Fractional-horizontal / integer-vertical scale. LCD filter (shared with GB/GBA):
+	 * 1 scanlines (dim last dest row of each source row), 2/3 grid (also dim at source-
+	 * column boundaries). Fast path when the filter is off. */
 	int filt = ayaneo_get_lcd_filter();
 	for (sy = 0; sy < sh; sy++) {
 		const unsigned short *srow = pix + sy * spitch_px;
 		unsigned int dy0 = (unsigned int)yoff + sy * sy_scale;
-		for (sx = 0; sx < sw; sx++) {
-			unsigned int v = srow[sx];
+		unsigned int acc = 0;
+		for (x = 0; x < dw; x++) {
+			unsigned int src_x = acc >> 16; acc += xstep;
+			unsigned int v = srow[src_x];
 			unsigned int r = ((v >> 11) & 0x1f) << 3;
 			unsigned int g = ((v >> 5) & 0x3f) << 2;
 			unsigned int b = (v & 0x1f) << 3;
 			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
 			unsigned int dk = 0xFF000000u | ((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
-			unsigned int dx0 = (unsigned int)xoff + sx * sx_scale;
+			unsigned int dx = (unsigned int)xoff + x;
+			int colbound = (filt >= 2) && ((acc >> 16) != src_x);   /* source-column edge */
 			if (!filt) {
-				for (iy = 0; iy < sy_scale; iy++) {
-					unsigned int *o = dst + (dy0 + iy) * pitch_w + dx0;
-					for (ix = 0; ix < sx_scale; ix++) o[ix] = px;
-				}
+				for (iy = 0; iy < sy_scale; iy++) dst[(dy0 + iy) * pitch_w + dx] = px;
 			} else for (iy = 0; iy < sy_scale; iy++) {
-				unsigned int *o = dst + (dy0 + iy) * pitch_w + dx0;
 				int lastrow = (iy == sy_scale - 1);
-				for (ix = 0; ix < sx_scale; ix++) {
-					int lastcol = (ix == sx_scale - 1);
-					o[ix] = (filt == 1 ? lastrow : (lastrow || lastcol)) ? dk : px;
-				}
+				dst[(dy0 + iy) * pitch_w + dx] = (lastrow || colbound) ? dk : px;
 			}
 		}
 	}

@@ -174,11 +174,33 @@ static fat_vol             *s_menu_vol;
 static const gba_rom_entry *s_menu_rom;
 static int  s_msel;
 static char s_mstat[48];
-enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_CPU, SM_BENCH, SM_PANEL,
+enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
+       SM_CPU, SM_BENCH, SM_PANEL,
        SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
 
 static const char *snes_filter_name(int f)
 { return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : "Off"; }
+
+/* snes9x core-option choices exposed in the Pico menu: {label, libretro value}. The
+ * runner pushes the selected value with c->set_option(key, value); snes9x reflows on the
+ * next frame (geometry for aspect/overscan). Index per item is tracked in s_opt_idx[]. */
+struct snes_opt_choice { const char *label, *value; };
+static const struct snes_opt_choice s_asp_ch[]  = { {"4:3","4:3"}, {"Pixel","uncorrected"}, {"NTSC","ntsc"}, {"PAL","pal"} };
+static const struct snes_opt_choice s_ovs_ch[]  = { {"Crop 8px","enabled"}, {"Crop 12px","12_pixels"}, {"Crop 16px","16_pixels"}, {"Off","disabled"} };
+static const struct snes_opt_choice s_aud_ch[]  = { {"Gaussian","gaussian"}, {"Cubic","cubic"}, {"Sinc","sinc"}, {"Linear","linear"}, {"None","none"} };
+static const struct snes_opt_choice s_hib_ch[]  = { {"Off","disabled"}, {"Merge","merge"}, {"Blur","blur"} };
+enum { OI_ASPECT, OI_OVERSCAN, OI_AUDIO, OI_HIRES, OI_N };
+static struct { const char *key; const struct snes_opt_choice *ch; int n; } s_opt_def[OI_N] = {
+	{ "snes9x_aspect",              s_asp_ch, 4 },
+	{ "snes9x_overscan",           s_ovs_ch, 4 },
+	{ "snes9x_audio_interpolation", s_aud_ch, 5 },
+	{ "snes9x_hires_blend",        s_hib_ch, 3 },
+};
+static int s_opt_idx[OI_N];   /* current selection per option (defaults = index 0) */
+
+/* aspect ratio (x1000) the display should stretch to; 0 = integer/pixel. Updated by the
+ * runner from c->aspect_x1000() whenever aspect/overscan changes. Read by ayaneo_snes_show_frame. */
+volatile unsigned g_snes_aspect_x1000;
 
 static char *smput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *smputu(char *p, unsigned v) { char t[12]; int n = 0;
@@ -187,7 +209,10 @@ static char *smputu(char *p, unsigned v) { char t[12]; int n = 0;
 
 static const char *sm_label(int i) { switch (i) {
 	case SM_BRIGHT: return "Brightness"; case SM_VOLUME: return "Volume";
-	case SM_FILTER: return "LCD Filter"; case SM_CPU:    return "CPU Clock";
+	case SM_FILTER: return "LCD Filter";
+	case SM_ASPECT: return "Aspect Ratio"; case SM_OVERSCAN: return "Overscan";
+	case SM_AUDIO:  return "Audio Filter";  case SM_HIRES:    return "Hi-Res Blend";
+	case SM_CPU:    return "CPU Clock";
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
 	case SM_RESET:  return "Reset Game"; case SM_CLOSE:  return "Close"; } return ""; }
@@ -196,6 +221,8 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 	case SM_BRIGHT: p = smputu(p, (unsigned)ayaneo_brightness_pct()); p = smput(p, "%"); break;
 	case SM_VOLUME: p = smputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = smput(p, "%"); break;
 	case SM_FILTER: p = smput(p, snes_filter_name(ayaneo_get_lcd_filter())); break;
+	case SM_ASPECT: case SM_OVERSCAN: case SM_AUDIO: case SM_HIRES: {
+		int oi = i - SM_ASPECT; p = smput(p, s_opt_def[oi].ch[s_opt_idx[oi]].label); break; }
 	case SM_CPU: { static unsigned mhz, tick;   /* cache: PLL read-back low bits jitter */
 		if (!mhz || tick-- == 0) { mhz = ayaneo_get_cpu_mhz(); tick = 40; }
 		p = smputu(p, mhz); p = smput(p, " MHz"); break; }
@@ -238,6 +265,13 @@ static int sm_change(int i, int dir, int act)
 	case SM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); ayaneo_menu_settings_persist(); } break;
 	case SM_VOLUME: if (dir) { ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); ayaneo_menu_settings_persist(); } break;
 	case SM_FILTER: if (dir) { ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); ayaneo_menu_settings_persist(); } break;
+	case SM_ASPECT: case SM_OVERSCAN: case SM_AUDIO: case SM_HIRES:
+		if (dir && s_menu_c->set_option) {
+			int oi = i - SM_ASPECT, n = s_opt_def[oi].n;
+			s_opt_idx[oi] = (s_opt_idx[oi] + dir + n) % n;
+			s_menu_c->set_option(s_opt_def[oi].key, s_opt_def[oi].ch[s_opt_idx[oi]].value);
+		}
+		break;
 	case SM_CPU:    if (dir) snes_cpu_step(dir); break;   /* not persisted (session floors at 1400) */
 	case SM_BENCH:  if (dir || act) g_snes_benchmark = !g_snes_benchmark; break;
 	case SM_PANEL:  break;   /* read-only */
@@ -325,6 +359,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	/* hand the in-game menu this session's context */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
 	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0;
+	{ int oi; for (oi = 0; oi < OI_N; oi++) s_opt_idx[oi] = 0; }   /* options -> core defaults */
+	g_snes_aspect_x1000 = (c->aspect_x1000) ? c->aspect_x1000() : 0;
 
 	int reset_hold = 0, aya_prev = 0;
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
@@ -337,6 +373,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * is gated off in ayaneo_snes_pad_mask while the menu is open. */
 		c->run(&f);
 		g_snes_dbg_frames++;
+		/* keep the display's target aspect current (cheap; refreshed periodically) - it
+		 * changes when the player switches Aspect Ratio or Overscan in the menu. */
+		if (c->aspect_x1000 && (g_snes_dbg_frames & 15u) == 0) g_snes_aspect_x1000 = c->aspect_x1000();
 		if (c->dbg_pc) { unsigned pc = c->dbg_pc();
 			if (pc < g_snes_dbg_pcmin) g_snes_dbg_pcmin = pc;
 			if (pc > g_snes_dbg_pcmax) g_snes_dbg_pcmax = pc; }

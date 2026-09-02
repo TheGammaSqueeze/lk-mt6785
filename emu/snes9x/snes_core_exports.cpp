@@ -47,6 +47,36 @@ static unsigned    s_vw, s_vh, s_vpitch;
 static short    s_aud[SNES_AUD_MAX * 2];
 static unsigned s_aud_frames;
 
+/* ---- core-option store (LK sets these via snes_set_option; snes9x reads them through
+ * env_cb GET_VARIABLE). Only the handful of keys the Pico menu exposes are kept; every
+ * other key falls through to the core default. A tiny fixed table (no allocation). ---- */
+#define SNES_OPT_MAX 8
+static struct { char key[28]; char val[20]; } s_opt[SNES_OPT_MAX];
+static unsigned s_opt_n;
+static bool     s_opt_dirty;   /* set on any change; drives GET_VARIABLE_UPDATE */
+
+static bool str_eq(const char *a, const char *b)
+{ while (*a && *a == *b) { a++; b++; } return *a == *b; }
+static void str_cpy(char *d, const char *s, unsigned cap)
+{ unsigned i = 0; for (; s[i] && i < cap - 1; i++) d[i] = s[i]; d[i] = 0; }
+
+/* exported to LK: set an option by libretro key (e.g. "snes9x_aspect" = "4:3"). Stored and
+ * flagged so retro_run's GET_VARIABLE_UPDATE path re-reads it (geometry reflows for aspect/
+ * overscan). Returns 0 on success. */
+static int snes_set_option(const char *key, const char *value)
+{
+	unsigned i;
+	if (!key || !value) return -1;
+	for (i = 0; i < s_opt_n; i++) if (str_eq(s_opt[i].key, key)) {
+		str_cpy(s_opt[i].val, value, sizeof s_opt[i].val); s_opt_dirty = true; return 0;
+	}
+	if (s_opt_n >= SNES_OPT_MAX) return -1;
+	str_cpy(s_opt[s_opt_n].key, key, sizeof s_opt[s_opt_n].key);
+	str_cpy(s_opt[s_opt_n].val, value, sizeof s_opt[s_opt_n].val);
+	s_opt_n++; s_opt_dirty = true;
+	return 0;
+}
+
 /* ---- libretro callbacks ---- */
 static bool env_cb(unsigned cmd, void *data)
 {
@@ -55,9 +85,22 @@ static bool env_cb(unsigned cmd, void *data)
 		const enum retro_pixel_format *f = (const enum retro_pixel_format *)data;
 		return *f == RETRO_PIXEL_FORMAT_RGB565;   /* we render RGB565 only */
 	}
-	case RETRO_ENVIRONMENT_GET_VARIABLE:
-		if (data) ((struct retro_variable *)data)->value = 0;   /* use core defaults */
-		return false;
+	case RETRO_ENVIRONMENT_GET_VARIABLE: {
+		struct retro_variable *v = (struct retro_variable *)data;
+		unsigned i;
+		if (!v) return false;
+		v->value = 0;
+		for (i = 0; i < s_opt_n; i++) if (v->key && str_eq(s_opt[i].key, v->key)) {
+			v->value = s_opt[i].val; return true;   /* our override */
+		}
+		return false;   /* unknown key -> core default */
+	}
+	case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
+		if (data) *(bool *)data = s_opt_dirty;
+		s_opt_dirty = false;
+		return true;
+	case RETRO_ENVIRONMENT_SET_GEOMETRY:
+		return true;   /* accept; LK re-reads av_info (base_h/aspect) after option changes */
 	case RETRO_ENVIRONMENT_GET_CAN_DUPE:
 		if (data) *(bool *)data = true;
 		return true;
@@ -181,6 +224,15 @@ static void snes_av_info(unsigned *base_w, unsigned *base_h,
 	if (sr)     *sr     = (unsigned)av.timing.sample_rate;
 }
 
+static unsigned snes_aspect_x1000(void)
+{
+	struct retro_system_av_info av;
+	retro_get_system_av_info(&av);
+	float a = av.geometry.aspect_ratio;
+	if (a <= 0.0f) a = (float)av.geometry.base_width / (float)av.geometry.base_height;
+	return (unsigned)(a * 1000.0f + 0.5f);
+}
+
 static void    *snes_sram_ptr(void)  { return retro_get_memory_data(RETRO_MEMORY_SAVE_RAM); }
 static unsigned  snes_sram_size(void) { return (unsigned)retro_get_memory_size(RETRO_MEMORY_SAVE_RAM); }
 
@@ -217,6 +269,8 @@ static const struct snes_core_exports g_exports = {
 	snes_state_load,
 	snes_dbg_pc,
 	snes_dbg_get,
+	snes_set_option,
+	snes_aspect_x1000,
 };
 
 /* Blob entry: stash the imports and return the export table. NOTE: .init_array (libstdc++

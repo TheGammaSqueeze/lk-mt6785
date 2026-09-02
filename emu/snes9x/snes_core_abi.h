@@ -64,6 +64,13 @@ struct snes_core_exports {
 	 * snes_core_exports.cpp). Appended at struct end so the magic/version check is
 	 * unaffected; LK and the blob are always rebuilt together. */
 	unsigned (*dbg_get)(unsigned idx);
+
+	/* core options: set a libretro option by key (e.g. "snes9x_aspect"="4:3"). snes9x
+	 * re-reads it on the next run() (geometry reflows for aspect/overscan). 0 = ok. */
+	int (*set_option)(const char *key, const char *value);
+	/* current display aspect ratio * 1000 (e.g. 1333 = 4:3), from retro av_info geometry;
+	 * LK's blit stretches to honour it (see ayaneo_snes_show_frame). */
+	unsigned (*aspect_x1000)(void);
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);
