@@ -63,13 +63,22 @@ has no GBA logo -> "BIOS thinks no cartridge" (only the Game Boy text, no Ninten
 logo). Always pick the first ROM of type `GBA_CONSOLE_GBA` for the header. gambatte
 itself needs NO GBA BIOS; the intro is just the device's boot animation.
 
-## 6. Menu CPU clock: use 2000, never 2100
-The menu is a software NEON blitter and is clock-bound. Requesting **2100 MHz** is OFF
-the OPP grid (`s_cpu_opp` maxes at 2000); with the emulation clock's POSDIV it drives
-the ARM-PLL VCO out of range so the PLL never leaves ~600 MHz. The whole menu ran at
-600 MHz (carousel ~28 ms, janky scroll). Set **2000** (on-grid) and re-assert it once
-per menu frame if it has dropped below 1900 (a game-close restores the 600 MHz
-emulation clock). `ayaneo_get/set_cpu_mhz` read/write ARMPLL_CON1 @ 0x1000C204.
+## 6. Menu CPU clock: idle-aware boost, NEVER hold 2000 MHz continuously
+The menu is a software NEON blitter and is clock-bound. Two traps:
+- Requesting **2100 MHz** is OFF the OPP grid (`s_cpu_opp` maxes at 2000); with the
+  emulation clock's POSDIV it drives the ARM-PLL VCO out of range so the PLL never
+  leaves ~600 MHz. The whole menu ran at 600 MHz (carousel ~28 ms, janky scroll).
+- But HOLDING 2000 MHz continuously is worse: `ayaneo_set_cpu_mhz` only reprograms the
+  PLL, NOT the core voltage (LK has no DVFS table), so 2000 MHz runs at the fixed boot
+  Vproc point. Sustained 2000 MHz on an IDLE menu destabilised the core after a few
+  minutes -> silent hang, NO fault message (a marginal CPU cannot run the fault
+  handler). Brief 2000 MHz bursts (active scrolling) are fine; sustained idle is not.
+So: boost to **2000** only while the user is actively navigating (any raw button held),
+hold ~2 s past the last input to cover the scroll/settle animation, then drop back to
+the low **600 MHz** emulation clock when idle (gba_snes_menu.c, `active_frames`).
+`ayaneo_get/set_cpu_mhz` read/write ARMPLL_CON1 @ 0x1000C204. Symptom to remember: an
+idle-time crash with NO debug message == a sustained-high-clock stability problem, not
+a software bug.
 
 ## 7. Card-tile cache must key by whatever makes cards differ
 The carousel caches pre-rendered card tiles. Without per-ROM box art it used ONE shared

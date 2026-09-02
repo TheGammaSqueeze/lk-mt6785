@@ -565,6 +565,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * once. (Tighter input debounce made the close land a frame sooner, so the
 	 * button is more often still down on entry - this fixes it for any debounce.) */
 	int launch_gate = 1;
+	unsigned active_frames = 0;   /* idle-aware clock: frames left to hold the fast OPP */
 	for (;;) {
 		unsigned int pitch, W, H;
 		unsigned int *fb = ayaneo_canvas_back(&pitch, &W, &H);
@@ -572,11 +573,6 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		snes_input in;
 		int launch;
 		float dt;
-		/* Keep the menu at the fast OPP: the software renderer is clock-bound, and a
-		 * game-close restore (or the off-grid 2100 request that never locked) can leave
-		 * it at the 600 MHz emulation clock (carousel ~28 ms vs ~15 ms at 2000). Cheap:
-		 * a register read, only relocking the PLL when it has actually dropped. */
-		if (ayaneo_get_cpu_mhz() < 1900) ayaneo_set_cpu_mhz(2000);
 		/* real elapsed dt (not a fixed 1/60) so animations run at the correct
 		 * wall-clock speed even when the frame rate dips below 60. Clamp to a sane
 		 * range so a first frame / long stall does not jump the animations. */
@@ -606,6 +602,19 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			if (PRESSED(K_LB))    raw |= DLB;
 			if (PRESSED(K_RB))    raw |= DRB;
 			deb = ayaneo_menu_debounce(raw, mhist);
+			/* Idle-aware clock. The software renderer is clock-bound, so boost to
+			 * 2000 MHz WHILE THE USER IS ACTIVELY NAVIGATING (60fps scroll), and hold
+			 * it ~2 s past the last input to cover the scroll/settle animation. When
+			 * idle, drop back to the low 600 MHz emulation clock. Holding 2000 MHz
+			 * continuously (fixed boot voltage, LK has no DVFS) destabilised the core
+			 * after a few minutes of idle -> silent hang; brief scroll bursts are fine. */
+			if (raw) active_frames = 120; else if (active_frames) active_frames--;
+			{
+				unsigned want = active_frames ? 2000u : 600u;
+				unsigned cur = ayaneo_get_cpu_mhz();
+				if (want >= 2000u ? (cur < 1900u) : (cur > 900u))
+					ayaneo_set_cpu_mhz(want);
+			}
 		in.left = !!(deb & DL); in.right = !!(deb & DR);
 		in.up = !!(deb & DU); in.down = !!(deb & DD);
 		in.a = !!(deb & DA); in.b = !!(deb & DB);
