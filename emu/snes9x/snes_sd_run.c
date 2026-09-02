@@ -52,6 +52,12 @@ static const unsigned s_snes_ra_opp[4] = { 1400, 1600, 1800, 2000 };   /* clock 
 static const char *snes_ra_name(int pf)
 { return pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : pf == 3 ? "Max" : "Off"; }
 
+/* 1 if this game's save state fits the 2 MB look-ahead slot (SNES_AHEAD_CAP), so run-ahead
+ * can actually engage. Set once per session after state_size() is known. When 0, a selected
+ * tier is inert, so the Run-Ahead menu row shows it as unavailable rather than silently doing
+ * nothing (large-state carts: some SA-1 / big-SRAM titles). */
+static int s_snes_ra_avail = 1;
+
 /* Benchmark (uncap): run the emulator with no vsync pacing and no audio, counting
  * emulated frames per second so CPU-clock changes are measurable (mirrors the GBC/GBA
  * "Benchmark (Uncap)" item). ayaneo_snes_show_frame skips its vsync wait when this is set. */
@@ -317,7 +323,9 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 	case SM_CPU: { static unsigned mhz, tick;   /* cache: PLL read-back low bits jitter */
 		if (!mhz || tick-- == 0) { mhz = ayaneo_get_cpu_mhz(); tick = 40; }
 		p = smputu(p, mhz); p = smput(p, " MHz"); break; }
-	case SM_RUNAHEAD: p = smput(p, snes_ra_name(ayaneo_get_preempt_frames())); break;
+	case SM_RUNAHEAD: { int pf = ayaneo_get_preempt_frames();
+		if (!s_snes_ra_avail && pf > 0) { p = smput(p, snes_ra_name(pf)); p = smput(p, " (N/A: state>2M)"); }
+		else p = smput(p, snes_ra_name(pf)); break; }
 	case SM_TURBO: p = smput(p, snes_turbo_name(g_snes_turbo)); break;
 	case SM_BENCH: if (g_snes_benchmark) { p = smputu(p, (unsigned)s_snes_fps); p = smput(p, " fps"); }
 		else p = smput(p, "Off"); break;
@@ -531,6 +539,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * the real end regardless. */
 	unsigned ra_ssz = c->state_size();
 	if (ra_ssz == 0 || ra_ssz > SNES_AHEAD_CAP) ra_ssz = 0;
+	s_snes_ra_avail = (ra_ssz != 0);   /* surface in the Run-Ahead menu row when a tier is inert */
 	{ int pf0 = ayaneo_get_preempt_frames();   /* honour a persisted tier: escalate the clock */
 	  if (pf0 > 0 && pf0 <= 3 && ayaneo_get_cpu_mhz() < s_snes_ra_opp[pf0]) ayaneo_set_cpu_mhz(s_snes_ra_opp[pf0]); }
 

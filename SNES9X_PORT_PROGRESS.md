@@ -6,6 +6,18 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Status: UX POLISH - surface inert Run-Ahead tiers (2026-09-02)
+
+When a game's save state exceeds the 2 MB look-ahead slot (SNES_AHEAD_CAP), run-ahead is
+silently forced off (`ra_ssz = 0`), yet the Pico menu still showed the selected tier
+(Balanced/Responsive/Max) as if it were active - the player got no latency reduction and no
+indication why. The session now records availability once (`s_snes_ra_avail = (ra_ssz != 0)`)
+and the Run-Ahead row appends " (N/A: state>2M)" when a tier is selected but inert. SNES-only
+(menu render + run loop); no shared display/menu-carousel code touched. Verified: flashed lk_a,
+`oem snes-launch:400` -> frames=71973, snes-px nz=807 chg=83092 hz1000=60088 vfp=17,
+snes-ss core=1 sd=1 fast=1 heap=20215840 revmap=1 (the 256 KB test ROM's state fits, so it
+renders the normal tier - the N/A path engages only on large-state carts). boot_b unchanged.
+
 ## Status: PERF PASS 3 - throttle live-play diagnostic sampling (2026-09-02)
 
 The run loop's full-frame content-hash sample (~900 video reads + FNV steps per frame) only
