@@ -20,6 +20,8 @@
 
 extern const struct snes_core_exports *snes_core_load(void);   /* snes_core_loader.c */
 extern void     ayaneo_snes_show_frame(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px);
+extern unsigned int ayaneo_get_cpu_mhz(void);
+extern void         ayaneo_set_cpu_mhz(unsigned int mhz);   /* ARM-PLL OPP (see gba_driver s_cpu_opp) */
 extern void     ayaneo_gbc_audio_init(void);       /* 48 kHz AFE ring (shared with GB/GBC) */
 extern void     ayaneo_snes_audio_reset(void);
 extern void     ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz);
@@ -93,6 +95,7 @@ volatile unsigned g_snes_dbg_changed; /* count of frames whose content hash chan
 static   unsigned s_snes_dbg_lasthash;
 volatile unsigned g_snes_test_limit;  /* >0: run this many frames then exit (oem snes-launch) */
 volatile unsigned g_snes_dbg_pcmin = 0xFFFFFFFF, g_snes_dbg_pcmax; /* emulated 65816 PC range */
+volatile unsigned g_snes_dbg_audframes; /* total audio sample-pairs submitted (0 = APU silent) */
 
 /* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
  * menu is open so navigation keys do not leak into the game. */
@@ -196,9 +199,10 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	unsigned char *rombuf = (unsigned char *)SNES_ROM_BUF;
 	unsigned romsz;
 	unsigned bw = 0, bh = 0, mw = 0, mh = 0, sr = 0;
+	unsigned saved_mhz = 0;
 	int aya_hold = 0;
 
-	g_snes_dbg_stage = 1; g_snes_dbg_frames = 0; g_snes_dbg_exit = 0;
+	g_snes_dbg_stage = 1; g_snes_dbg_frames = 0; g_snes_dbg_exit = 0; g_snes_dbg_audframes = 0;
 	g_snes_dbg_w = g_snes_dbg_h = 0; g_snes_dbg_loadrc = 0xFF;
 
 	c = snes_core_load();
@@ -235,6 +239,15 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		unsigned n = gba_sd_read_named(vol, "/states/snes", rom->name, "st0", st, SNES_STATE_CAP);
 		if (n) c->state_load(st, n);
 	}
+
+	/* snes9x mainline is accuracy-first (full 65816 + SPC700 + PPU + DSP each frame), which
+	 * is heavy on the A55; the menu/other cores idle around 1200 MHz. Raise the ARM PLL to
+	 * at least 1400 MHz for the SNES session so plain-mapper games hit full speed, but never
+	 * downclock a user who manually picked a higher OPP. Restored on session exit. NOTE:
+	 * ayaneo_set_cpu_mhz only moves the PLL, not core voltage - 1400 is the OPP just above
+	 * the boot Vproc point, the same one the "Max" preempt tier uses. */
+	saved_mhz = ayaneo_get_cpu_mhz();
+	if (saved_mhz < 1400) ayaneo_set_cpu_mhz(1400);
 
 	ayaneo_display_prepare();
 	ayaneo_gbc_audio_init();
@@ -282,8 +295,10 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
 		} else
 			priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
-		if (f.audio && f.frames)
+		if (f.audio && f.frames) {
+			g_snes_dbg_audframes += f.frames;
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
+		}
 
 		/* AYA taps toggle the menu; holding AYA ~1.5 s force-exits to the selector. */
 		aya = PRESSED(GPIO_AYA);
@@ -315,6 +330,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	g_snes_test_limit = 0;
 
 	ayaneo_dsi_set_vfp(DEFAULT_VFP);   /* restore 59.749 Hz for the menu / other cores */
+	if (saved_mhz) ayaneo_set_cpu_mhz(saved_mhz);   /* restore the pre-session ARM clock */
 
 	/* Suspend: write a save STATE so the next launch resumes here (mirrors GB/GBC). */
 	{
