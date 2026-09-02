@@ -66,10 +66,17 @@ after restore). Runner now writes a save STATE to /states/snes/<rom>.st0 on exit
 it at launch (unless B held = start fresh), plus a SELECT+START+L+R soft-reset combo. State
 buffer at 0x53800000 (4 MB, just above the 48 MB heap, below the 0x54000000 snapshot).
 
-REMAINING: in-game menu (Pico) + run-ahead + launch/close transitions (mirror gbc), perf
-pass, hi-res/interlace + overscan polish, audio fine-trim if needed. STILL UNVALIDATED on HW
-(headless) - need a .sfc/.smc in /roms/snes to confirm the LK wiring (video/input/audio/vfp
-switch/badge/suspend).
+IN-GAME MENU: done (GammaOS Pico, gbc-style). AYA tap toggles a centred overlay
+(Brightness, Volume, Save State, Load State, Reset Game, Close); AYA-hold ~1.5 s exits to
+the selector. The game keeps running underneath with its input gated in
+ayaneo_snes_pad_mask (returns 0 while open); ayaneo_snes_show_frame paints the overlay via
+snes_menu_paint. Save/Load act on /states/snes/<rom>.st0 (same buffer/path as suspend).
+Brightness/Volume reuse the shared ayaneo helpers + persist.
+
+REMAINING: run-ahead + launch/close punch transitions (mirror gbc; run-ahead is heavy for
+SNES - 0.8 MB state/frame), perf pass, hi-res/interlace + overscan polish, audio fine-trim.
+STILL UNVALIDATED on HW (headless) - need a .sfc/.smc in /roms/snes to confirm the LK wiring
+(video/input/audio/vfp switch/badge/suspend/menu).
 
 ### (earlier) BLOB LINKS milestone
 

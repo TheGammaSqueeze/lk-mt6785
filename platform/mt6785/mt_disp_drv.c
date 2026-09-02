@@ -1293,6 +1293,13 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 			}
 		}
 	}
+	/* in-game overlay menu (GammaOS Pico), drawn over the whole panel when open */
+	{
+		extern int  snes_menu_open(void);
+		extern void snes_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H);
+		if (snes_menu_open())
+			snes_menu_paint(dst, pitch_w, W, H);
+	}
 	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
 	ayaneo_present(dpa, W, H, pitch_w);
 	/* Vsync-locked present: the SNES session runs the panel at ~60.11 Hz (vfp swap), so

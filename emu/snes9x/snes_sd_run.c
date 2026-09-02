@@ -69,10 +69,23 @@ extern int      mt_get_gpio_in(unsigned pin);
 #define RJ_L 10
 #define RJ_R 11
 
-/* Physical pad -> SNES button bitmask (imports.read_buttons). */
+/* ---- in-game overlay menu (GammaOS Pico), mirrors the GB/GBC one ---- */
+extern void ayaneo_fill(unsigned int *buf, unsigned int pitch, int x, int y, int w, int h, unsigned int argb);
+extern int  ayaneo_text(unsigned int *buf, unsigned int pitch, int x, int y, int scale, unsigned int argb, const char *s);
+extern int  ayaneo_brightness_pct(void);
+extern int  ayaneo_brightness_step(int dir);
+extern int  ayaneo_gbc_audio_get_volume(void);
+extern void ayaneo_gbc_audio_set_volume(int v);
+extern void ayaneo_menu_settings_persist(void);
+
+volatile int g_snes_menu_open;   /* gates ayaneo_snes_pad_mask so the game ignores menu input */
+
+/* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
+ * menu is open so navigation keys do not leak into the game. */
 unsigned ayaneo_snes_pad_mask(void)
 {
 	unsigned m = 0;
+	if (g_snes_menu_open) return 0;
 	if (PRESSED(GPIO_B))      m |= 1u << RJ_B;
 	if (PRESSED(GPIO_Y))      m |= 1u << RJ_Y;
 	if (PRESSED(GPIO_SELECT)) m |= 1u << RJ_SELECT;
@@ -96,6 +109,72 @@ unsigned ayaneo_snes_pad_mask(void)
 #define SNES_STATE_BUF 0x53800000u        /* just above the heap, below the 0x54000000 snapshot */
 #define SNES_STATE_CAP 0x00400000u        /* 4 MB (snes9x state ~0.8 MB, more with SA-1/SuperFX) */
 #define RESET_HOLD_FRAMES 30              /* SELECT+START+L+R held ~0.5 s = soft reset */
+
+/* ---- in-game menu: state, rendering, actions ---- */
+static const struct snes_core_exports *s_menu_c;
+static fat_vol             *s_menu_vol;
+static const gba_rom_entry *s_menu_rom;
+static int  s_msel;
+static char s_mstat[48];
+enum { SM_BRIGHT, SM_VOLUME, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
+
+static char *smput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+static char *smputu(char *p, unsigned v) { char t[12]; int n = 0;
+	if (!v) { *p++ = '0'; return p; } while (v) { t[n++] = '0' + v % 10; v /= 10; }
+	while (n) *p++ = t[--n]; return p; }
+
+static const char *sm_label(int i) { switch (i) {
+	case SM_BRIGHT: return "Brightness"; case SM_VOLUME: return "Volume";
+	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
+	case SM_RESET:  return "Reset Game"; case SM_CLOSE:  return "Close"; } return ""; }
+static const char *sm_value(int i, char *buf) { char *p = buf;
+	switch (i) {
+	case SM_BRIGHT: p = smputu(p, (unsigned)ayaneo_brightness_pct()); p = smput(p, "%"); break;
+	case SM_VOLUME: p = smputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = smput(p, "%"); break;
+	case SM_SAVE: case SM_LOAD: p = smput(p, "[A]"); break;
+	default: break; } *p = 0; return buf; }
+
+int snes_menu_open(void) { return g_snes_menu_open; }
+
+void snes_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
+{
+	int rowH = 38, panelW = 520, panelH = 84 + SM_COUNT * rowH + 42;
+	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2, x = px + 28, y = py + 84, i;
+	char val[48];
+	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
+	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
+	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "GammaOS Pico");
+	for (i = 0; i < SM_COUNT; i++, y += rowH) {
+		unsigned int fg = (i == s_msel) ? 0xFF101018u : 0xFFC8D0E0u; int vw;
+		if (i == s_msel) ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
+		ayaneo_text(buf, pitch, x, y, 2, fg, sm_label(i));
+		sm_value(i, val); for (vw = 0; val[vw]; vw++) ;
+		ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, val);
+	}
+	if (s_mstat[0]) ayaneo_text(buf, pitch, x, py + panelH - 40, 2, 0xFF80E080u, s_mstat);
+	ayaneo_text(buf, pitch, x, py + panelH - 16, 1, 0xFF8890A0u,
+		    "Up/Down move  Left/Right change  A select  B/AYA close");
+}
+
+/* returns 1 to close the menu (Reset/Close), else 0 */
+static int sm_change(int i, int dir, int act)
+{
+	s_mstat[0] = 0;
+	switch (i) {
+	case SM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); ayaneo_menu_settings_persist(); } break;
+	case SM_VOLUME: if (dir) { ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); ayaneo_menu_settings_persist(); } break;
+	case SM_SAVE: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF; unsigned ssz = s_menu_c->state_size();
+			if (ssz && ssz <= SNES_STATE_CAP && s_menu_c->state_save(st, ssz) == 0)
+				smput(s_mstat, gba_sd_write_named(s_menu_vol, "/states/snes", s_menu_rom->name, "st0", st, ssz) == 0 ? "State saved" : "Save failed");
+			else smput(s_mstat, "Save failed"); } break;
+	case SM_LOAD: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF;
+			unsigned n = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, "st0", st, SNES_STATE_CAP);
+			smput(s_mstat, (n && s_menu_c->state_load(st, n) == 0) ? "State loaded" : "No save state"); } break;
+	case SM_RESET: if (act) { s_menu_c->reset(); return 1; } break;
+	case SM_CLOSE: if (act) return 1; break;
+	}
+	return 0;
+}
 
 static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 {
@@ -142,12 +221,19 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * no 13 MHz busy-wait needed. Restored to 59.749 Hz on exit below. */
 	ayaneo_dsi_set_vfp(SNES_VFP);
 
-	int reset_hold = 0;
+	/* hand the in-game menu this session's context */
+	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
+	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0;
+
+	int reset_hold = 0, aya_prev = 0;
+	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	for (;;) {
 		struct snes_frame f;
-		int aya = PRESSED(GPIO_AYA);
+		int aya;
 		mtk_wdt_restart();
 
+		/* The game keeps running under the menu (frame + audio keep flowing); its input
+		 * is gated off in ayaneo_snes_pad_mask while the menu is open. */
 		c->run(&f);
 		if (f.video && f.width && f.height)
 			ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
@@ -156,13 +242,32 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		if (f.audio && f.frames)
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 
-		if (aya) { if (++aya_hold >= 60) break; } else aya_hold = 0;
+		/* AYA taps toggle the menu; holding AYA ~1.5 s force-exits to the selector. */
+		aya = PRESSED(GPIO_AYA);
+		if (aya && !aya_prev) { g_snes_menu_open = !g_snes_menu_open; s_mstat[0] = 0; }
+		aya_prev = aya;
+		if (aya) { if (++aya_hold >= 90) break; } else aya_hold = 0;
 
-		/* Soft reset: SELECT+START+L+R held ~0.5 s (mirrors GB/GBC/GBA). */
-		if (PRESSED(GPIO_SELECT) && PRESSED(GPIO_START) && PRESSED(GPIO_LB) && PRESSED(GPIO_RB)) {
-			if (++reset_hold >= RESET_HOLD_FRAMES) { c->reset(); reset_hold = 0; }
-		} else reset_hold = 0;
+		if (g_snes_menu_open) {
+			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
+			int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
+			int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);
+			if (up && !up_p) s_msel = (s_msel + SM_COUNT - 1) % SM_COUNT;
+			if (dn && !dn_p) s_msel = (s_msel + 1) % SM_COUNT;
+			if (lt && !lt_p) sm_change(s_msel, -1, 0);
+			if (rt && !rt_p) sm_change(s_msel, +1, 0);
+			if (a  && !a_p)  { if (sm_change(s_msel, 0, 1)) g_snes_menu_open = 0; }
+			if (b  && !b_p)  g_snes_menu_open = 0;
+			up_p = up; dn_p = dn; lt_p = lt; rt_p = rt; a_p = a; b_p = b;
+			reset_hold = 0;
+		} else {
+			/* Soft reset: SELECT+START+L+R held ~0.5 s (mirrors GB/GBC/GBA). */
+			if (PRESSED(GPIO_SELECT) && PRESSED(GPIO_START) && PRESSED(GPIO_LB) && PRESSED(GPIO_RB)) {
+				if (++reset_hold >= RESET_HOLD_FRAMES) { c->reset(); reset_hold = 0; }
+			} else reset_hold = 0;
+		}
 	}
+	g_snes_menu_open = 0;
 
 	ayaneo_dsi_set_vfp(DEFAULT_VFP);   /* restore 59.749 Hz for the menu / other cores */
 
