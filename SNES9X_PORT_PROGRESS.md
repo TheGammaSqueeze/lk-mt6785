@@ -73,9 +73,15 @@ ayaneo_snes_pad_mask (returns 0 while open); ayaneo_snes_show_frame paints the o
 snes_menu_paint. Save/Load act on /states/snes/<rom>.st0 (same buffer/path as suspend).
 Brightness/Volume reuse the shared ayaneo helpers + persist.
 
+PERF: ayaneo_snes_show_frame no longer memsets the whole 1280x960x4 panel (~4.9 MB) every
+frame; borders are static black so both buffers are cleared only on a resolution change
+(256<->512 / 224<->239<->448) or first frame, with ayaneo_display_prepare's session-start
+black-fill as the safety net. Removes ~295 MB/s of pointless memset from the 16.6 ms budget
+(matters for hitting 60 fps under vsync-lock). Mirrors the GB path.
+
 REMAINING: run-ahead + launch/close punch transitions (mirror gbc; run-ahead is heavy for
-SNES - 0.8 MB state/frame), perf pass, hi-res/interlace + overscan polish, audio fine-trim.
-STILL UNVALIDATED on HW (headless) - need a .sfc/.smc in /roms/snes to confirm the LK wiring
+SNES - 0.8 MB state/frame), hi-res/interlace + overscan polish, audio fine-trim. STILL
+UNVALIDATED on HW (headless) - need a .sfc/.smc in /roms/snes to confirm the LK wiring
 (video/input/audio/vfp switch/badge/suspend/menu).
 
 ### (earlier) BLOB LINKS milestone

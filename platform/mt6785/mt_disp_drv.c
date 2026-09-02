@@ -1275,8 +1275,20 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 	if (!fb_addr || !pix) return;
 	if (xoff < 0) xoff = 0;
 	if (yoff < 0) yoff = 0;
-	/* clear the whole target buffer first (borders); cheap vs a full-panel game */
-	memset(dst, 0, H * pitch_w * 4);
+	/* Borders (the letterbox outside the game) are static black, so clear BOTH buffers
+	 * only when the source resolution changes (256<->512, 224<->239<->448 hi-res/interlace)
+	 * or on the first frame - not every frame. The per-frame game blit fully overwrites
+	 * the game area, so a full-panel memset each frame (4.9 MB @60fps) was pure waste and
+	 * ate into the 16.6 ms budget. Mirrors the GB path (ayaneo_gb_show_frame). */
+	{
+		static unsigned int last_sw, last_sh;
+		if (sw != last_sw || sh != last_sh) {
+			memset(fb_addr, 0, fb_size);
+			memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
+			arch_clean_cache_range((unsigned int)fb_addr, fb_size * 2);
+			last_sw = sw; last_sh = sh;
+		}
+	}
 	for (sy = 0; sy < sh; sy++) {
 		const unsigned short *srow = pix + sy * spitch_px;
 		unsigned int dy0 = (unsigned int)yoff + sy * sy_scale;
