@@ -6,6 +6,23 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Status: ON-DEVICE PLAYABLE - renders + animates + audio + 1400 MHz (2026-09-02)
+
+Confirmed on device (`oem snes-launch:600` + `oem diag`, SMW): `nz=835` non-black,
+`chg=251` frames animating, `aud=319798` audio sample-pairs / 600 frames = 533/frame x
+60 fps ~= 31980 Hz (matches the ~32040 Hz SPC rate) => audio path is live, `pitch=2048`.
+User confirmed frames drawing on the panel. Perf: snes9x mainline is heavy on the A55, so
+the SNES session now raises the ARM PLL to >=1400 MHz (restored on exit); if still slow,
+next options are 1600 MHz or the faster snes9x2010 fork.
+
+RECURRING GOTCHA (bit me again this session): a stale/mismatched **boot_b** shows up as
+`oem snes-probe` reading `m=0x54455341` ("ASET", asset bytes) instead of `0x31534e53`
+("SNS1") at 0x01E00000, and `snes-launch` returns `exit=2 stage=1` (snes_core_load NULL).
+ALWAYS re-flash boot_b when the on-device blob magic is not "SNS1", even for a
+lk_a-only change, and probe first. Also: TESTING needs a NORMAL `fastboot reboot` (the
+menu thread that consumes `oem snes-launch` only runs then); `reboot-bootloader` is the
+low-level flashing mode with no menu (every launch returns ran=0).
+
 ## Status: ON-DEVICE FIXED - SNES renders + animates (APU handshake resolved)
 
 ROOT CAUSE (2026-09-02): **`.init_array` ran before `heap_init`**, so every global C++
