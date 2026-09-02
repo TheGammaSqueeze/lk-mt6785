@@ -30,6 +30,15 @@ extern "C" void snes_heap_init(void *base, unsigned size)
 }
 extern "C" unsigned snes_heap_used(void) { return (unsigned)(g_ptr - g_base); }
 
+/* Mark/reset the bump arena so a caller can free a burst of temporary allocations at once.
+ * Used by run-ahead: snes9x's serialize/unserialize `new` ~15 block buffers every call and
+ * this arena never frees, so per-frame save/load would leak ~0.5 MB/frame and exhaust the
+ * arena in under a second (new -> NULL -> crash). Marking before the save and resetting
+ * after the load reclaims exactly those temporaries. Safe because the game's persistent
+ * buffers are all allocated at load time, before any mark. */
+extern "C" void *snes_heap_mark(void)      { return g_ptr; }
+extern "C" void  snes_heap_reset(void *m)  { if (m >= (void *)g_base && m <= (void *)g_ptr) g_ptr = (uint8_t *)m; }
+
 static void *bump(size_t n)
 {
 	n = (n + 15u) & ~(size_t)15u;   /* 16-byte align */

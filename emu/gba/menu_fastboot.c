@@ -107,9 +107,9 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		fastboot_info(lbuf);
 	}
 	{
-		extern volatile unsigned g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd;
-		snprintf(lbuf, sizeof lbuf, "snes-ss: size=%u core=%u sd=%u",
-			 g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd);
+		extern volatile unsigned g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd, g_snes_dbg_heapused;
+		snprintf(lbuf, sizeof lbuf, "snes-ss: size=%u core=%u sd=%u heap=%u",
+			 g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd, g_snes_dbg_heapused);
 		fastboot_info(lbuf);
 	}
 	fastboot_okay("");
@@ -163,6 +163,21 @@ static void cmd_snes_launch(const char *arg, void *data, unsigned sz)
 		if (g_snes_dbg_exit != 0 && g_snes_test_limit == 0) break;
 	}
 	snprintf(lbuf, sizeof lbuf, "snes-launch: requested %u frames, ran=%u exit=%u", n, g_snes_dbg_frames, g_snes_dbg_exit);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem snes-ra:N - force run-ahead depth N (0..3) for the NEXT headless snes-launch, to
+ * verify run-ahead does not leak/crash the bump arena (watch snes-ss heap=... stay flat). */
+static void cmd_snes_ra(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_snes_dbg_ra;
+	int n = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg >= '0' && *arg <= '9') n = n * 10 + (*arg++ - '0');
+	g_snes_dbg_ra = (n < 0) ? 0 : (n > 3 ? 3 : n);
+	snprintf(lbuf, sizeof lbuf, "snes-ra: forced run-ahead depth=%d for next snes-launch", g_snes_dbg_ra);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -245,6 +260,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
+	fastboot_register("oem snes-ra", cmd_snes_ra, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
 	fastboot_register("oem preempt:", cmd_preempt, 1, 0);
 	fastboot_register("oem selftest", cmd_selftest, 1, 0);

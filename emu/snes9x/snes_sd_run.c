@@ -143,6 +143,8 @@ volatile unsigned g_snes_dbg_audframes; /* total audio sample-pairs submitted (0
  * ss_size = state_size bytes; ss_core = 1 if state_save then state_load both returned 0;
  * ss_sd = 1 if SD write -> read-back -> memcmp matched exactly (SD path integrity). */
 volatile unsigned g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd;
+volatile int      g_snes_dbg_ra;        /* forced run-ahead depth in the headless test (oem snes-ra) */
+volatile unsigned g_snes_dbg_heapused;  /* arena bytes in use at test end (run-ahead leak check) */
 
 /* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
  * menu is open so navigation keys do not leak into the game. */
@@ -326,6 +328,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	int aya_hold = 0;
 
 	g_snes_dbg_stage = 1; g_snes_dbg_frames = 0; g_snes_dbg_exit = 0; g_snes_dbg_audframes = 0;
+	g_snes_dbg_heapused = 0;
 	g_snes_dbg_w = g_snes_dbg_h = 0; g_snes_dbg_loadrc = 0xFF;
 
 	c = snes_core_load();
@@ -491,10 +494,17 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * under the menu (do not race ahead behind the overlay), while benchmarking/fast-
 		 * forwarding, or in the headless test. Look-ahead frames are muted. */
 		{
-			int pf = (!ff && !g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit && ra_ssz)
-				 ? ayaneo_get_preempt_frames() : 0;
+			extern volatile int g_snes_dbg_ra;   /* oem snes-ra:N forces run-ahead N in the headless test */
+			int pf = 0;
 			int i;
+			void *hmark = 0;
+			if (!ff && !g_snes_menu_open && !g_snes_benchmark && ra_ssz)
+				pf = g_snes_test_limit ? g_snes_dbg_ra : ayaneo_get_preempt_frames();
 			if (pf > 0) {
+				/* Reclaim serialize/unserialize temporaries each frame: snes9x `new`s ~15
+				 * block buffers per state op and the bump arena never frees, so without this
+				 * run-ahead leaks ~0.5 MB/frame and crashes when the arena runs out. */
+				if (c->heap_mark) hmark = c->heap_mark();
 				c->state_save((void *)SNES_AHEAD_BUF, ra_ssz);
 				for (i = 0; i < pf; i++) c->run(&f);
 			}
@@ -507,7 +517,16 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
 			else if (!g_snes_benchmark)
 				priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
-			if (pf > 0) c->state_load((const void *)SNES_AHEAD_BUF, ra_ssz);   /* rewind */
+			if (pf > 0) {
+				c->state_load((const void *)SNES_AHEAD_BUF, ra_ssz);   /* rewind */
+				if (hmark && c->heap_reset) c->heap_reset(hmark);      /* free the temporaries */
+			}
+			/* leak watch (headless test): peak arena usage should stay FLAT with run-ahead
+			 * on if the mark/reset works; without it, it climbs ~0.5 MB/frame. */
+			if (g_snes_test_limit && c->dbg_get) {
+				unsigned hu = c->dbg_get(0);
+				if (hu > g_snes_dbg_heapused) g_snes_dbg_heapused = hu;
+			}
 		}
 
 		/* Timing off the 13 MHz gpt4 counter (NOT 812.5 kHz - that was the bug that showed

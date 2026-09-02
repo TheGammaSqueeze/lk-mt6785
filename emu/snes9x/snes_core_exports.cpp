@@ -240,6 +240,8 @@ static unsigned snes_dbg_pc(void) { return 0; }   /* reserved debug hook (unused
 
 /* idx 0 = bump-arena high-water (bytes); other indices reserved for future diagnostics. */
 extern "C" unsigned snes_heap_used(void);   /* snes_shim.cpp */
+extern "C" void *snes_heap_mark(void);      /* snes_shim.cpp: arena mark/reset for run-ahead */
+extern "C" void  snes_heap_reset(void *m);
 static unsigned snes_dbg_get(unsigned idx)
 {
 	switch (idx) {
@@ -271,6 +273,8 @@ static const struct snes_core_exports g_exports = {
 	snes_dbg_get,
 	snes_set_option,
 	snes_aspect_x1000,
+	snes_heap_mark,
+	snes_heap_reset,
 };
 
 /* Blob entry: stash the imports and return the export table. NOTE: .init_array (libstdc++

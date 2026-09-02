@@ -71,6 +71,12 @@ struct snes_core_exports {
 	/* current display aspect ratio * 1000 (e.g. 1333 = 4:3), from retro av_info geometry;
 	 * LK's blit stretches to honour it (see ayaneo_snes_show_frame). */
 	unsigned (*aspect_x1000)(void);
+
+	/* bump-arena mark/reset: reclaim the temporary buffers snes9x's serialize/unserialize
+	 * allocate (and never free) so per-frame run-ahead save/load does not exhaust the arena.
+	 * Mark before state_save, reset after state_load. */
+	void *(*heap_mark)(void);
+	void  (*heap_reset)(void *mark);
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);
