@@ -1274,10 +1274,9 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 	if (dw > W) dw = W;
 	if (dw < 1) dw = 1;
 	int xoff = ((int)W - (int)dw) / 2, yoff = ((int)H - (int)dh) / 2;
-	unsigned int xstep = (sw << 16) / dw;                 /* 16.16 source-px per dest-px */
 	unsigned int *dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
 	unsigned int dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
-	unsigned int sy, x, iy;
+	unsigned int sy, sx, iy, cx;
 
 	if (!fb_addr || !pix) return;
 	if (xoff < 0) xoff = 0;
@@ -1295,30 +1294,41 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 		}
 	}
 	{
-	/* Fractional-horizontal / integer-vertical scale. LCD filter (shared with GB/GBA):
-	 * 1 scanlines (dim last dest row of each source row), 2/3 grid (also dim at source-
-	 * column boundaries). Fast path when the filter is off. */
+	/* Source-driven fractional-horizontal / integer-vertical scale: compute each source
+	 * pixel's colour ONCE, then fill its run of destination columns (Bresenham span, no
+	 * per-dest-pixel RGB decode - a big win over the old per-dest-column loop). LCD filter
+	 * (shared with GB/GBA): 1 scanlines (dim the last dest row of each source row), 2/3 grid
+	 * (also dim the last dest column of each source pixel's run). Fast path when off. */
 	int filt = ayaneo_get_lcd_filter();
+	unsigned int q = dw / sw, rr = dw % sw;     /* dest cols per source pixel + remainder */
 	for (sy = 0; sy < sh; sy++) {
 		const unsigned short *srow = pix + sy * spitch_px;
 		unsigned int dy0 = (unsigned int)yoff + sy * sy_scale;
-		unsigned int acc = 0;
-		for (x = 0; x < dw; x++) {
-			unsigned int src_x = acc >> 16; acc += xstep;
-			unsigned int v = srow[src_x];
+		unsigned int dx = (unsigned int)xoff, e = 0;
+		for (sx = 0; sx < sw; sx++) {
+			unsigned int v = srow[sx];
 			unsigned int r = ((v >> 11) & 0x1f) << 3;
 			unsigned int g = ((v >> 5) & 0x3f) << 2;
 			unsigned int b = (v & 0x1f) << 3;
 			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
 			unsigned int dk = 0xFF000000u | ((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
-			unsigned int dx = (unsigned int)xoff + x;
-			int colbound = (filt >= 2) && ((acc >> 16) != src_x);   /* source-column edge */
+			unsigned int span = q, ex;
+			e += rr; if (e >= sw) { e -= sw; span++; }
+			ex = dx + span;
 			if (!filt) {
-				for (iy = 0; iy < sy_scale; iy++) dst[(dy0 + iy) * pitch_w + dx] = px;
+				for (iy = 0; iy < sy_scale; iy++) {
+					unsigned int *o = dst + (dy0 + iy) * pitch_w;
+					for (cx = dx; cx < ex; cx++) o[cx] = px;
+				}
 			} else for (iy = 0; iy < sy_scale; iy++) {
+				unsigned int *o = dst + (dy0 + iy) * pitch_w;
 				int lastrow = (iy == sy_scale - 1);
-				dst[(dy0 + iy) * pitch_w + dx] = (lastrow || colbound) ? dk : px;
+				for (cx = dx; cx < ex; cx++) {
+					int lastcol = (filt >= 2) && (cx == ex - 1);
+					o[cx] = (lastrow || lastcol) ? dk : px;
+				}
 			}
+			dx = ex;
 		}
 	}
 	}
