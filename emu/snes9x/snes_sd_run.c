@@ -128,6 +128,8 @@ extern int  ayaneo_brightness_step(int dir);
 extern int  ayaneo_gbc_audio_get_volume(void);
 extern void ayaneo_gbc_audio_set_volume(int v);
 extern void ayaneo_menu_settings_persist(void);
+extern int  mtk_detect_key(unsigned short hwkey);   /* hardware volume rocker (0x11 up, 0x00 down) */
+extern void ayaneo_gbc_osd_show(int kind, int pct); /* transient on-screen bar: 0 brightness,1 volume */
 
 volatile int g_snes_menu_open;   /* gates ayaneo_snes_pad_mask so the game ignores menu input */
 volatile int g_snes_turbo;       /* auto-fire mask: bit0 = A, bit1 = B (0=off,1=A,2=B,3=A+B) */
@@ -218,6 +220,31 @@ static void snes_settings_tick(void)
 { if (s_settings_dirty > 0 && --s_settings_dirty == 0) ayaneo_menu_settings_persist(); }
 static void snes_settings_flush(void)
 { if (s_settings_dirty > 0) { s_settings_dirty = 0; ayaneo_menu_settings_persist(); } }
+
+/* Hardware volume rocker (mirrors gba_driver.c poll_volume). Volume-up = mtk_detect_key(0x11),
+ * volume-down = 0x00. Holding SELECT turns the rocker into a brightness control (matches the GBA
+ * path). Edge-detected so one press = one step; the on-screen bar shows the new level, and the
+ * change is debounced to disk via snes_settings_touch. Runs whether or not the menu is open. */
+static void snes_poll_volume(void)
+{
+	static int vu_p, vd_p;
+	int vu = mtk_detect_key(0x11), vd = mtk_detect_key(0x00);
+	int sel = PRESSED(GPIO_SELECT);
+	int dir = 0;
+	if (vu && !vu_p) dir = +1; else if (vd && !vd_p) dir = -1;
+	vu_p = vu; vd_p = vd;
+	if (!dir) return;
+	if (sel) {
+		ayaneo_brightness_step(dir);
+		ayaneo_gbc_osd_show(0, ayaneo_brightness_pct());
+	} else {
+		int v = ayaneo_gbc_audio_get_volume() + dir * 5;
+		if (v < 0) v = 0; if (v > 100) v = 100;
+		ayaneo_gbc_audio_set_volume(v);
+		ayaneo_gbc_osd_show(1, v);
+	}
+	snes_settings_touch();
+}
 
 /* build the "st<slot>" extension for a manual save-state slot. */
 static void snes_slot_ext(char *e) { e[0] = 's'; e[1] = 't'; e[2] = (char)('0' + s_save_slot); e[3] = 0; }
@@ -510,33 +537,42 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	int reset_hold = 0, aya_prev = 0, ff_prev = 0;
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	int up_h = 0, dn_h = 0, lt_h = 0, rt_h = 0;   /* hold-frame counters for nav auto-repeat */
+	struct snes_frame f;
+	f.video = 0; f.width = 0; f.height = 0; f.pitch = 0; f.audio = 0; f.frames = 0;
 	for (;;) {
-		struct snes_frame f;
 		int aya;
 		mtk_wdt_restart();
 
-		/* The game keeps running under the menu (frame + audio keep flowing); its input
-		 * is gated off in ayaneo_snes_pad_mask while the menu is open. */
-		c->run(&f);
-		g_snes_dbg_frames++;
-		/* keep the display's target aspect current (cheap; refreshed periodically) - it
-		 * changes when the player switches Aspect Ratio or Overscan in the menu. */
-		if (c->aspect_x1000 && (g_snes_dbg_frames & 15u) == 0) g_snes_aspect_x1000 = c->aspect_x1000();
-		if (g_snes_test_limit && g_snes_dbg_frames >= g_snes_test_limit) { g_snes_dbg_exit = 5; }
-		if (f.video && f.width && f.height) {
-			g_snes_dbg_w = f.width; g_snes_dbg_h = f.height; g_snes_dbg_pitch = f.pitch;
-			{	/* full-frame sample: non-zero pixel count + a content hash (to tell a
-				 * static black frame from live-but-mis-displayed content). */
-				const unsigned short *p = (const unsigned short *)f.video;
-				unsigned stride = f.pitch / 2u, y, x, nz = 0, hash = 2166136261u;
-				for (y = 0; y < f.height; y += 8)
-					for (x = 0; x < f.width; x += 8) {
-						unsigned v = p[y * stride + x];
-						if (v) nz++;
-						hash = (hash ^ v) * 16777619u;
-					}
-				g_snes_dbg_nz = nz;
-				if (hash != s_snes_dbg_lasthash) { g_snes_dbg_changed++; s_snes_dbg_lasthash = hash; }
+		/* Hardware volume rocker works whether or not the menu is open. */
+		snes_poll_volume();
+
+		/* Freeze emulation while the in-game menu is open: skip c->run so the overlay always
+		 * fits the frame budget. The game clock is pinned to the run-ahead tier (Off=1400 MHz),
+		 * so a menu opened with run-ahead disabled used to drop frames rendering game+overlay at
+		 * the low clock. The last frame f persists and is re-presented below under the overlay;
+		 * its input is gated off in ayaneo_snes_pad_mask regardless. */
+		if (!g_snes_menu_open) {
+			c->run(&f);
+			g_snes_dbg_frames++;
+			/* keep the display's target aspect current (cheap; refreshed periodically) - it
+			 * changes when the player switches Aspect Ratio or Overscan in the menu. */
+			if (c->aspect_x1000 && (g_snes_dbg_frames & 15u) == 0) g_snes_aspect_x1000 = c->aspect_x1000();
+			if (g_snes_test_limit && g_snes_dbg_frames >= g_snes_test_limit) { g_snes_dbg_exit = 5; }
+			if (f.video && f.width && f.height) {
+				g_snes_dbg_w = f.width; g_snes_dbg_h = f.height; g_snes_dbg_pitch = f.pitch;
+				{	/* full-frame sample: non-zero pixel count + a content hash (to tell a
+					 * static black frame from live-but-mis-displayed content). */
+					const unsigned short *p = (const unsigned short *)f.video;
+					unsigned stride = f.pitch / 2u, y, x, nz = 0, hash = 2166136261u;
+					for (y = 0; y < f.height; y += 8)
+						for (x = 0; x < f.width; x += 8) {
+							unsigned v = p[y * stride + x];
+							if (v) nz++;
+							hash = (hash ^ v) * 16777619u;
+						}
+					g_snes_dbg_nz = nz;
+					if (hash != s_snes_dbg_lasthash) { g_snes_dbg_changed++; s_snes_dbg_lasthash = hash; }
+				}
 			}
 		}
 		/* Fast-forward: hold R2 (second-stage right trigger, matches GBA) to run the
@@ -552,7 +588,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* Committed-frame audio submitted BEFORE any run-ahead look-ahead overwrites the
 		 * blob's audio buffer; muted while benchmarking or fast-forwarding so the ring never
 		 * throttles the uncapped loop. */
-		if (f.audio && f.frames && !g_snes_benchmark && !ff) {
+		if (f.audio && f.frames && !g_snes_benchmark && !ff && !g_snes_menu_open) {
 			g_snes_dbg_audframes += f.frames;
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 		}
@@ -626,7 +662,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* AYA taps toggle the menu; holding AYA ~1.5 s force-exits to the selector. */
 		aya = PRESSED(GPIO_AYA);
 		if (aya && !aya_prev) { g_snes_menu_open = !g_snes_menu_open; s_mstat[0] = 0;
-			if (!g_snes_menu_open) snes_settings_flush(); }   /* flush pending on menu close */
+			if (g_snes_menu_open) ayaneo_menu_audio_silence();   /* clear the ring: emulation is frozen */
+			else snes_settings_flush(); }                        /* flush pending on menu close */
 		aya_prev = aya;
 		if (aya) { if (++aya_hold >= 90) {
 			/* Arm the reverse punch: the menu re-entry shrinks this frozen frame back into

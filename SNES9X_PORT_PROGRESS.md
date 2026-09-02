@@ -6,6 +6,36 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Status: PERF PASS 2 - menu freezes emu, HW volume rocker, filter fast path (2026-09-02)
+
+Follow-up to the on-device perf/bug reports:
+
+- **HW volume rocker now works in-game.** The SNES run loop never polled the physical
+  volume keys (only the Pico menu's Volume row applied `s_gbc_vol`), so the rocker did
+  nothing during play. Added `snes_poll_volume()` (mirrors `gba_driver.c poll_volume`):
+  edge-detected `mtk_detect_key(0x11/0x00)`, SELECT modifier -> brightness else volume,
+  debounced persist via `snes_settings_touch`, transient on-screen bar via
+  `ayaneo_gbc_osd_show`. Called every loop iteration (works menu-open or closed).
+  `ayaneo_snes_show_frame` now also draws the OSD slider (`ayaneo_draw_osd`), which it
+  previously skipped (GBC/GBA-only), so the bar is visible during SNES.
+
+- **Menu freezes emulation (fixes the inverse-FPS report).** The game clock is pinned to
+  the run-ahead tier (Off=1400 MHz); opening the menu with run-ahead OFF rendered
+  game+overlay at only 1400 MHz and dropped frames. The loop now skips `c->run` (and audio
+  submit) while `g_snes_menu_open`; the last `snes_frame` persists and is re-presented under
+  the overlay, so the menu always fits the frame budget. Audio ring is silenced on the
+  menu-open edge (`ayaneo_menu_audio_silence`) so it does not drone the frozen buffer.
+
+- **LCD filter scaler fast path.** The scanline/grid branch tested `lastrow||lastcol` per
+  destination pixel. Hoisted out of the inner column loop: non-last rows are a tight `px`
+  fill with at most one `dk` patch (grid column); the last row is a straight `dk` fill. No
+  per-pixel branch, so Scanlines/Grid/Dot-Matrix cost far less.
+
+Verified (lk_a flashed, `oem snes-launch:400` + `oem diag`): frames=45264 exit=5,
+snes-px nz=807 chg=23803 hz1000=60088 vfp=17 (live, correct 60.088 Hz per-core refresh),
+snes-ss core=1 sd=1 fast=1 heap=20215840 (run-ahead leak-free) revmap=1. Menu path
+hz=59727 unchanged (no GBA/GBC/menu/cold-boot regression). boot_b unchanged (code-only).
+
 ## Status: FEATURE PARITY PASS - save states + Pico menu + core options (2026-09-02)
 
 Save states FIXED (was fully broken): root cause was the bundled `vsnprintf` computing

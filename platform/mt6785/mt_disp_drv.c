@@ -1333,12 +1333,21 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 					unsigned int *o = dst + iy * pitch_w;
 					for (cx = dx; cx < ex; cx++) o[cx] = px;
 				}
-			} else for (iy = dy; iy < dyend; iy++) {
-				unsigned int *o = dst + iy * pitch_w;
-				int lastrow = (iy == dyend - 1);
-				for (cx = dx; cx < ex; cx++) {
-					int lastcol = (filt >= 2) && (cx == ex - 1);
-					o[cx] = (lastrow || lastcol) ? dk : px;
+			} else {
+				/* Filter path, hoisted out of the inner column loop: the last dest row of
+				 * each source row is dimmed (scanlines); grid (filt>=2) also dims the last
+				 * dest column. Non-last rows are a tight px fill with at most one dk patch,
+				 * so there is no per-pixel branch. */
+				unsigned int lastr = dyend - 1;
+				int grid = (filt >= 2);
+				for (iy = dy; iy < dyend; iy++) {
+					unsigned int *o = dst + iy * pitch_w;
+					if (iy == lastr) {
+						for (cx = dx; cx < ex; cx++) o[cx] = dk;   /* scanline row */
+					} else {
+						for (cx = dx; cx < ex; cx++) o[cx] = px;
+						if (grid && ex > dx) o[ex - 1] = dk;       /* grid column */
+					}
 				}
 			}
 			dx = ex;
@@ -1353,6 +1362,7 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 		if (snes_menu_open())
 			snes_menu_paint(dst, pitch_w, W, H);
 	}
+	ayaneo_draw_osd(dst, pitch_w, W, H);	/* transient volume/brightness slider (HW rocker) */
 	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
 	ayaneo_present(dpa, W, H, pitch_w);
 	/* Vsync-locked present: the SNES session runs the panel at ~60.11 Hz (vfp swap), so
