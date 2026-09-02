@@ -204,13 +204,14 @@ static const char *snes_filter_name(int f)
  * runner pushes the selected value with c->set_option(key, value); snes9x reflows on the
  * next frame (geometry for aspect/overscan). Index per item is tracked in s_opt_idx[]. */
 struct snes_opt_choice { const char *label, *value; };
-static const struct snes_opt_choice s_asp_ch[]  = { {"4:3","4:3"}, {"Pixel","uncorrected"}, {"NTSC","ntsc"}, {"PAL","pal"} };
+static const struct snes_opt_choice s_asp_ch[]  = { {"4:3","4:3"}, {"Pixel","uncorrected"}, {"NTSC","ntsc"}, {"PAL","pal"}, {"Stretch","4:3"} };
+#define SNES_ASPECT_STRETCH 4   /* index of "Stretch": fill the whole 1280x960 panel, no bars */
 static const struct snes_opt_choice s_ovs_ch[]  = { {"Crop 8px","enabled"}, {"Crop 12px","12_pixels"}, {"Crop 16px","16_pixels"}, {"Off","disabled"} };
 static const struct snes_opt_choice s_aud_ch[]  = { {"Gaussian","gaussian"}, {"Cubic","cubic"}, {"Sinc","sinc"}, {"Linear","linear"}, {"None","none"} };
 static const struct snes_opt_choice s_hib_ch[]  = { {"Off","disabled"}, {"Merge","merge"}, {"Blur","blur"} };
 enum { OI_ASPECT, OI_OVERSCAN, OI_AUDIO, OI_HIRES, OI_N };
 static struct { const char *key; const struct snes_opt_choice *ch; int n; } s_opt_def[OI_N] = {
-	{ "snes9x_aspect",              s_asp_ch, 4 },
+	{ "snes9x_aspect",              s_asp_ch, 5 },
 	{ "snes9x_overscan",           s_ovs_ch, 4 },
 	{ "snes9x_audio_interpolation", s_aud_ch, 5 },
 	{ "snes9x_hires_blend",        s_hib_ch, 3 },
@@ -220,6 +221,8 @@ static int s_opt_idx[OI_N];   /* current selection per option (defaults = index 
 /* aspect ratio (x1000) the display should stretch to; 0 = integer/pixel. Updated by the
  * runner from c->aspect_x1000() whenever aspect/overscan changes. Read by ayaneo_snes_show_frame. */
 volatile unsigned g_snes_aspect_x1000;
+/* 1 = "Stretch": the display fills the whole panel (no bars), overriding g_snes_aspect_x1000. */
+volatile int g_snes_stretch;
 
 static char *smput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *smputu(char *p, unsigned v) { char t[12]; int n = 0;
@@ -291,8 +294,9 @@ static int sm_change(int i, int dir, int act)
 			unsigned packed = 0;
 			s_opt_idx[oi] = (s_opt_idx[oi] + dir + n) % n;
 			s_menu_c->set_option(s_opt_def[oi].key, s_opt_def[oi].ch[s_opt_idx[oi]].value);
+			if (oi == OI_ASPECT) g_snes_stretch = (s_opt_idx[OI_ASPECT] == SNES_ASPECT_STRETCH);
 			for (k = 0; k < OI_N; k++) packed |= (unsigned)(s_opt_idx[k] & 0xFF) << (k * 8);
-			ayaneo_set_snes_opts(packed);   /* persist all four picks */
+			ayaneo_set_snes_opts(packed);   /* persist all picks */
 			ayaneo_menu_settings_persist();
 		}
 		break;
@@ -306,12 +310,16 @@ static int sm_change(int i, int dir, int act)
 	case SM_BENCH:  if (dir || act) g_snes_benchmark = !g_snes_benchmark; break;
 	case SM_PANEL:  break;   /* read-only */
 	case SM_SAVE: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF; unsigned ssz = s_menu_c->state_size();
+			void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;   /* reclaim serialize temps */
 			if (ssz && ssz <= SNES_STATE_CAP && s_menu_c->state_save(st, ssz) == 0)
 				smput(s_mstat, gba_sd_write_named(s_menu_vol, "/states/snes", s_menu_rom->name, "st0", st, ssz) == 0 ? "State saved" : "Save failed");
-			else smput(s_mstat, "Save failed"); } break;
+			else smput(s_mstat, "Save failed");
+			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
 	case SM_LOAD: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF;
+			void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;
 			unsigned n = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, "st0", st, SNES_STATE_CAP);
-			smput(s_mstat, (n && s_menu_c->state_load(st, n) == 0) ? "State loaded" : "No save state"); } break;
+			smput(s_mstat, (n && s_menu_c->state_load(st, n) == 0) ? "State loaded" : "No save state");
+			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
 	case SM_RESET: if (act) { s_menu_c->reset(); return 1; } break;
 	case SM_CLOSE: if (act) return 1; break;
 	}
@@ -406,6 +414,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (idx != 0 && c->set_option)   /* index 0 == core default -> no need to push */
 				c->set_option(s_opt_def[oi].key, s_opt_def[oi].ch[idx].value);
 		}
+		g_snes_stretch = (s_opt_idx[OI_ASPECT] == SNES_ASPECT_STRETCH);
 	}
 	g_snes_aspect_x1000 = (c->aspect_x1000) ? c->aspect_x1000() : 0;
 

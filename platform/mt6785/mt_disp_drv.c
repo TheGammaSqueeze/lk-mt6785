@@ -1264,15 +1264,24 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
-	unsigned int sy_scale = (sh <= 240) ? 4 : 2;          /* 224/239->4x, 448/478->2x */
-	unsigned int dh = sh * sy_scale;                      /* displayed height (integer scale) */
-	/* Displayed WIDTH: honour the core-reported aspect (g_snes_aspect_x1000 = dw/dh*1000)
-	 * so 4:3/NTSC/PAL stretch and "Pixel" stays integer. 0 -> integer 4x/2x fallback. */
+	/* Displayed rect. "Stretch" fills the whole panel (no bars): dw=W, dh=H, both fractional.
+	 * Otherwise vertical is integer (4x/2x, so the LCD scanline filter has clean blocks) and
+	 * width honours the core-reported aspect (g_snes_aspect_x1000 = dw/dh*1000); 0 -> integer. */
 	extern volatile unsigned g_snes_aspect_x1000;
-	unsigned int asp = g_snes_aspect_x1000;
-	unsigned int dw = asp ? (dh * asp) / 1000u : sw * ((sw <= 256) ? 4u : 2u);
+	extern volatile int g_snes_stretch;
+	unsigned int sy_scale = (sh <= 240) ? 4 : 2;
+	unsigned int dh, dw;
+	if (g_snes_stretch) {
+		dw = W; dh = H;
+	} else {
+		unsigned int asp = g_snes_aspect_x1000;
+		dh = sh * sy_scale;
+		dw = asp ? (dh * asp) / 1000u : sw * ((sw <= 256) ? 4u : 2u);
+	}
 	if (dw > W) dw = W;
+	if (dh > H) dh = H;
 	if (dw < 1) dw = 1;
+	if (dh < 1) dh = 1;
 	int xoff = ((int)W - (int)dw) / 2, yoff = ((int)H - (int)dh) / 2;
 	unsigned int *dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
 	unsigned int dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
@@ -1285,26 +1294,30 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 	 * only when the source resolution OR the displayed rect (aspect switch) changes, not
 	 * every frame. The per-frame game blit fully overwrites the game area. */
 	{
-		static unsigned int last_sw, last_sh, last_dw;
-		if (sw != last_sw || sh != last_sh || dw != last_dw) {
+		static unsigned int last_sw, last_sh, last_dw, last_dh;
+		if (sw != last_sw || sh != last_sh || dw != last_dw || dh != last_dh) {
 			memset(fb_addr, 0, fb_size);
 			memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
 			arch_clean_cache_range((unsigned int)fb_addr, fb_size * 2);
-			last_sw = sw; last_sh = sh; last_dw = dw;
+			last_sw = sw; last_sh = sh; last_dw = dw; last_dh = dh;
 		}
 	}
 	{
-	/* Source-driven fractional-horizontal / integer-vertical scale: compute each source
-	 * pixel's colour ONCE, then fill its run of destination columns (Bresenham span, no
-	 * per-dest-pixel RGB decode - a big win over the old per-dest-column loop). LCD filter
-	 * (shared with GB/GBA): 1 scanlines (dim the last dest row of each source row), 2/3 grid
-	 * (also dim the last dest column of each source pixel's run). Fast path when off. */
+	/* Source-driven 2D scale: decode each source pixel's colour ONCE, then fill its run of
+	 * destination columns AND rows via Bresenham spans (no per-dest-pixel RGB decode). Handles
+	 * both integer-vertical (normal: qy = sy_scale, ry = 0) and fractional-vertical (Stretch:
+	 * dh = panel height) uniformly. LCD filter (shared with GB/GBA): 1 scanlines (dim the last
+	 * dest row of each source row), 2/3 grid (also dim the last dest column of each source
+	 * pixel's run). Fast path when off. */
 	int filt = ayaneo_get_lcd_filter();
-	unsigned int q = dw / sw, rr = dw % sw;     /* dest cols per source pixel + remainder */
+	unsigned int qx = dw / sw, rx = dw % sw;    /* dest cols per source pixel + remainder */
+	unsigned int qy = dh / sh, ry = dh % sh;    /* dest rows per source pixel + remainder */
+	unsigned int dy = (unsigned int)yoff, ey = 0;
 	for (sy = 0; sy < sh; sy++) {
 		const unsigned short *srow = pix + sy * spitch_px;
-		unsigned int dy0 = (unsigned int)yoff + sy * sy_scale;
-		unsigned int dx = (unsigned int)xoff, e = 0;
+		unsigned int vspan = qy, dyend, dx = (unsigned int)xoff, ex_e = 0;
+		ey += ry; if (ey >= sh) { ey -= sh; vspan++; }
+		dyend = dy + vspan;
 		for (sx = 0; sx < sw; sx++) {
 			unsigned int v = srow[sx];
 			unsigned int r = ((v >> 11) & 0x1f) << 3;
@@ -1312,17 +1325,17 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 			unsigned int b = (v & 0x1f) << 3;
 			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
 			unsigned int dk = 0xFF000000u | ((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
-			unsigned int span = q, ex;
-			e += rr; if (e >= sw) { e -= sw; span++; }
+			unsigned int span = qx, ex;
+			ex_e += rx; if (ex_e >= sw) { ex_e -= sw; span++; }
 			ex = dx + span;
 			if (!filt) {
-				for (iy = 0; iy < sy_scale; iy++) {
-					unsigned int *o = dst + (dy0 + iy) * pitch_w;
+				for (iy = dy; iy < dyend; iy++) {
+					unsigned int *o = dst + iy * pitch_w;
 					for (cx = dx; cx < ex; cx++) o[cx] = px;
 				}
-			} else for (iy = 0; iy < sy_scale; iy++) {
-				unsigned int *o = dst + (dy0 + iy) * pitch_w;
-				int lastrow = (iy == sy_scale - 1);
+			} else for (iy = dy; iy < dyend; iy++) {
+				unsigned int *o = dst + iy * pitch_w;
+				int lastrow = (iy == dyend - 1);
 				for (cx = dx; cx < ex; cx++) {
 					int lastcol = (filt >= 2) && (cx == ex - 1);
 					o[cx] = (lastrow || lastcol) ? dk : px;
@@ -1330,6 +1343,7 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 			}
 			dx = ex;
 		}
+		dy = dyend;
 	}
 	}
 	/* in-game overlay menu (GammaOS Pico), drawn over the whole panel when open */
