@@ -403,7 +403,13 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * panel - the game already owns the canvas - so the reverse punch reveals the menu
 	 * with no black/white flash in between. */
 	saved_mhz = ayaneo_get_cpu_mhz();
-	ayaneo_set_cpu_mhz(2100);            /* max OPP: faster decompress + build too */
+	/* Boost to the top OPP so the software renderer (blit-bound) and the pack
+	 * decompress run fast. Use 2000, the highest value on the OPP grid: the previous
+	 * 2100 is OFF-grid and, with the emulation clock's POSDIV, drives the VCO out of
+	 * range so the PLL never leaves ~600 MHz - which left the whole menu at 600 MHz
+	 * (carousel ~28 ms). The per-frame guard below re-asserts it if anything (e.g. a
+	 * game-close restore) drops it. */
+	ayaneo_set_cpu_mhz(2000);
 	ayaneo_present_skip_framedone = 0;
 	if (!do_reverse) {
 		unsigned int wp, ww, wh;
@@ -425,6 +431,13 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			   (snes_rnode *)SNES_BG_PA, BG_CAP, (uint32_t *)SNES_WP_PA,
 			   (uint32_t *)SNES_CHROME_PA) != 0)
 		{ ayaneo_set_cpu_mhz(saved_mhz); return -2; }
+
+	/* enable the per-phase render profiler (g_perf[]) so `oem diag` can show where
+	 * the frame time goes (wp / chrome / carousel / filmstrip / rest). */
+	{
+		extern unsigned (*g_perf_tick)(void);
+		g_perf_tick = gpt4_get_current_tick;
+	}
 
 	build_names(roms, nrom);
 	cart = snes_res_img(&s_pk, snes_hash("gba_cart"));
@@ -541,6 +554,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		snes_input in;
 		int launch;
 		float dt;
+		/* Keep the menu at the fast OPP: the software renderer is clock-bound, and a
+		 * game-close restore (or the off-grid 2100 request that never locked) can leave
+		 * it at the 600 MHz emulation clock (carousel ~28 ms vs ~15 ms at 2000). Cheap:
+		 * a register read, only relocking the PLL when it has actually dropped. */
+		if (ayaneo_get_cpu_mhz() < 1900) ayaneo_set_cpu_mhz(2000);
 		/* real elapsed dt (not a fixed 1/60) so animations run at the correct
 		 * wall-clock speed even when the frame rate dips below 60. Clamp to a sane
 		 * range so a first frame / long stall does not jump the animations. */

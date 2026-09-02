@@ -60,6 +60,21 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 	}
 	fastboot_info(lbuf);
 	{
+		/* menu render cost: last + peak snes_menu_render us and loop fps. Peak is the
+		 * worst frame over ~2s (reset by `oem nav`), the number that breaks 60fps. */
+		extern volatile unsigned int g_dbg_render_us, g_dbg_peak_us, g_dbg_fps;
+		snprintf(lbuf, sizeof lbuf, "render_us=%u peak_us=%u fps=%u",
+			 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps);
+		fastboot_info(lbuf);
+	}
+	{
+		/* per-phase render breakdown (us): where the frame goes. */
+		extern unsigned g_perf[8];
+		snprintf(lbuf, sizeof lbuf, "perf_us: wp=%u chrome=%u carousel=%u filmstrip=%u rest=%u",
+			 g_perf[0] / 13u, g_perf[1] / 13u, g_perf[2] / 13u, g_perf[3] / 13u, g_perf[4] / 13u);
+		fastboot_info(lbuf);
+	}
+	{
 		/* cold-start stage timings (ms since the SD gate started) - where the
 		 * black-backlight time-to-first-BIOS-frame goes. */
 		extern volatile unsigned int g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list;
