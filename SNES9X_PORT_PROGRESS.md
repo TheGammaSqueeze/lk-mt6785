@@ -51,6 +51,13 @@ compatible); restored + pushed to the core at session start, repacked/saved on c
 Feature set now at parity with GB/GBC/GBA. Optional leftovers: color-correction option
 (omitted as GB-specific); tuning the run-ahead tiers if Max is too heavy on some games.
 
+LCM refresh switch VALIDATED on device (2026-09-02) via oem diag: menu vfp 23 ->
+g_dbg_hz1000 = 59723 (59.723 Hz measured); SNES session vfp 17 -> g_snes_dbg_hz1000 = 60088
+(60.088 Hz measured, snes_vfp read-back = 17); reverts to 23 on exit. Added
+ayaneo_dsi_get_vfp() + measured-Hz diag fields. Also rewrote the SNES display scaler
+source-driven (decode each pixel once, Bresenham span fill) to cut per-frame render cost so
+the Pico menu overlay stops dropping frames.
+
 Timing readout bug fixed (2026-09-02): the Pico menu's Panel Refresh showed ~2.7 Hz and
 Benchmark FPS was wrong because the timing math assumed an 812.5 kHz counter / 128-frame
 window; gpt4 is 13 MHz and the 104000000000 constant is for an 8-frame window. Corrected to
