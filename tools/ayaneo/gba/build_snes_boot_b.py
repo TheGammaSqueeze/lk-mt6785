@@ -22,12 +22,15 @@ DEF_ANIM  = os.path.join(HERE, "..", "gba_anim", "logo_anim_mp4.bin")
 DEF_AUDIO = os.path.join(HERE, "..", "audio", "boot_audio.bin")
 DEF_BLOB  = os.path.join(HERE, "..", "..", "..", "emu", "gba", "core_gba.blob")
 DEF_GBC_BLOB = os.path.join(HERE, "..", "..", "..", "emu", "gbc", "core_gbc.blob")
+DEF_SNES_BLOB = os.path.join(HERE, "..", "..", "..", "emu", "snes9x", "core_snes.blob")
 
 AUDIO_OFF = 0x01000000
 PACK_OFF  = 0x01100000
 GBC_BLOB_OFF = 0x01900000         # gambatte GB/GBC core blob (matches GBC_CORE_BLOB_OFF)
 STATE_OFF = 0x01C00000
 BLOB_OFF  = 0x01C00000            # gpSP core blob (matches GBA_CORE_BLOB_OFF in the loader)
+SNES_BLOB_OFF = 0x01E00000        # snes9x core blob (matches SNES_CORE_BLOB_OFF in the loader)
+BOOT_B_END    = 0x02100000        # boot_b partition size (33 MB) - hard ceiling
 SNES_MAGIC = 0x5A534E53          # "SNSZ" little-endian
 
 
@@ -39,6 +42,7 @@ def main():
     ap.add_argument("--audio", default=DEF_AUDIO)
     ap.add_argument("--blob", default=DEF_BLOB)
     ap.add_argument("--gbc-blob", default=DEF_GBC_BLOB)
+    ap.add_argument("--snes-blob", default=DEF_SNES_BLOB)
     a = ap.parse_args()
 
     pack = open(a.pack, "rb").read()
@@ -46,6 +50,7 @@ def main():
     audio = open(a.audio, "rb").read() if os.path.exists(a.audio) else b""
     blob = open(a.blob, "rb").read() if os.path.exists(a.blob) else b""
     gbc = open(a.gbc_blob, "rb").read() if os.path.exists(a.gbc_blob) else b""
+    snes = open(a.snes_blob, "rb").read() if os.path.exists(a.snes_blob) else b""
     if not blob:
         raise SystemExit("core blob %s missing - run emu/gba/build_core_blob.sh first" % a.blob)
     if not gbc:
@@ -67,8 +72,14 @@ def main():
     if GBC_BLOB_OFF + len(gbc) > BLOB_OFF:
         raise SystemExit("GBC blob (%d B) overruns the gpSP blob region @0x%x by %d B" %
                          (len(gbc), BLOB_OFF, GBC_BLOB_OFF + len(gbc) - BLOB_OFF))
+    if BLOB_OFF + len(blob) > SNES_BLOB_OFF:
+        raise SystemExit("gpSP blob (%d B) overruns the SNES blob region @0x%x by %d B" %
+                         (len(blob), SNES_BLOB_OFF, BLOB_OFF + len(blob) - SNES_BLOB_OFF))
+    if SNES_BLOB_OFF + len(snes) > BOOT_B_END:
+        raise SystemExit("SNES blob (%d B) overruns the boot_b partition end @0x%x by %d B" %
+                         (len(snes), BOOT_B_END, SNES_BLOB_OFF + len(snes) - BOOT_B_END))
 
-    end = BLOB_OFF + len(blob)
+    end = (SNES_BLOB_OFF + len(snes)) if snes else (BLOB_OFF + len(blob))
     buf = bytearray(end)
     buf[0:len(anim)] = anim
     buf[AUDIO_OFF:AUDIO_OFF + len(audio)] = audio
@@ -76,6 +87,8 @@ def main():
     buf[PACK_OFF + len(hdr):pack_end] = comp
     buf[GBC_BLOB_OFF:GBC_BLOB_OFF + len(gbc)] = gbc
     buf[BLOB_OFF:BLOB_OFF + len(blob)] = blob
+    if snes:
+        buf[SNES_BLOB_OFF:SNES_BLOB_OFF + len(snes)] = snes
     open(a.out, "wb").write(buf)
 
     print("wrote %s (%d B):" % (a.out, end))
@@ -85,6 +98,7 @@ def main():
           (len(pack), len(comp), PACK_OFF, pack_end))
     print("  gbc   %8d B @0x%08x (gambatte GB/GBC core)" % (len(gbc), GBC_BLOB_OFF))
     print("  blob  %8d B @0x%08x (gpSP core)" % (len(blob), BLOB_OFF))
+    print("  snes9x %7d B @0x%08x (snes9x core)" % (len(snes), SNES_BLOB_OFF))
 
 
 if __name__ == "__main__":

@@ -1391,6 +1391,7 @@ static int s_nrom;
  * arena at 0x50000000, so after a GB/GBC session the gpSP arena must be rebuilt
  * (gba_core_init) before the next GBA game. s_gpsp_dirty tracks that. */
 extern void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom);
+extern void snes_sd_session(fat_vol *vol, const gba_rom_entry *rom);   /* snes9x via boot_b blob */
 static int s_gpsp_dirty;
 
 /* Cold-start stage timings (ms since the SD gate started), read via `fastboot oem
@@ -1734,6 +1735,11 @@ static int emu_thread(void *arg)
 				for (;;) {
 					int sel = gba_sd_rom_select();
 					s_sel_rom = sel;
+					if (s_roms[sel].type == GBA_CONSOLE_SNES) {
+						snes_sd_session(&s_sd_vol, &s_roms[sel]);  /* SNES via snes9x */
+						s_gpsp_dirty = 1;
+						continue;
+					}
 					if (s_roms[sel].type != GBA_CONSOLE_GBA) {
 						gbc_sd_session(&s_sd_vol, &s_roms[sel]);   /* GB/GBC via gambatte */
 						s_gpsp_dirty = 1;                          /* arena clobbered */
@@ -1917,6 +1923,11 @@ static int emu_thread(void *arg)
 					for (;;) {
 						int sel = gba_sd_rom_select();
 						s_sel_rom = sel;
+						if (s_roms[sel].type == GBA_CONSOLE_SNES) {
+							snes_sd_session(&s_sd_vol, &s_roms[sel]);
+							s_gpsp_dirty = 1;
+							continue;
+						}
 						if (s_roms[sel].type != GBA_CONSOLE_GBA) {
 							gbc_sd_session(&s_sd_vol, &s_roms[sel]);
 							s_gpsp_dirty = 1;

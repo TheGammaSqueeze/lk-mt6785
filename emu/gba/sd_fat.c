@@ -185,9 +185,11 @@ int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
 	if (max <= 0) return 0;
 	/* Merge all three consoles into one roster; each entry keeps its type so the
 	 * menu can badge it and the launcher can pick the right core. */
-	n = scan_rom_folder(v, "/roms/gb",  ".gb",  GBA_CONSOLE_GB,  out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/gbc", ".gbc", GBA_CONSOLE_GBC, out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/gba", ".gba", GBA_CONSOLE_GBA, out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/gb",   ".gb",   GBA_CONSOLE_GB,   out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/gbc",  ".gbc",  GBA_CONSOLE_GBC,  out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/gba",  ".gba",  GBA_CONSOLE_GBA,  out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/snes", ".sfc",  GBA_CONSOLE_SNES, out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/snes", ".smc",  GBA_CONSOLE_SNES, out, max, n, &tot);
 	if (total) *total = tot;
 	for (i = 1; i < n; i++) {           /* insertion sort, case-insensitive by name */
 		gba_rom_entry t = out[i];
@@ -201,9 +203,10 @@ int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
 int gba_sd_make_rom_dirs(fat_vol *v)
 {
 	int rc = 0;
-	if (fat_wr_mkpath(v, "/roms/gb")  != 0) rc = -1;
-	if (fat_wr_mkpath(v, "/roms/gbc") != 0) rc = -1;
-	if (fat_wr_mkpath(v, "/roms/gba") != 0) rc = -1;
+	if (fat_wr_mkpath(v, "/roms/gb")   != 0) rc = -1;
+	if (fat_wr_mkpath(v, "/roms/gbc")  != 0) rc = -1;
+	if (fat_wr_mkpath(v, "/roms/gba")  != 0) rc = -1;
+	if (fat_wr_mkpath(v, "/roms/snes") != 0) rc = -1;
 	return rc;
 }
 

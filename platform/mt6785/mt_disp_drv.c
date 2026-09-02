@@ -1256,6 +1256,48 @@ void ayaneo_gba_show_intro_frame(const unsigned short *pix)
 	s_fb_flip ^= 1;
 }
 
+/* SNES (snes9x) frame present. The core outputs RGB565 at 256xH (or 512xH hi-res); scale
+ * to 1024 wide (256->4x, 512->2x) centred on the 1280x960 panel with black borders. Height
+ * is 224/239 (progressive) or 448/478 (interlace) -> vertical scale chosen so 224/239 use
+ * 4x/2x and the interlaced modes 2x/1x, all centred. Double-buffered like the GB path. */
+void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned int sh, unsigned int spitch_px)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	unsigned int sx_scale = (sw <= 256) ? 4 : 2;          /* 256->4x, 512->2x => 1024 wide */
+	unsigned int sy_scale = (sh <= 240) ? 4 : 2;          /* 224/239->4x, 448/478->2x */
+	unsigned int dw = sw * sx_scale, dh = sh * sy_scale;
+	int xoff = ((int)W - (int)dw) / 2, yoff = ((int)H - (int)dh) / 2;
+	unsigned int *dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
+	unsigned int dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
+	unsigned int sx, sy, ix, iy;
+
+	if (!fb_addr || !pix) return;
+	if (xoff < 0) xoff = 0;
+	if (yoff < 0) yoff = 0;
+	/* clear the whole target buffer first (borders); cheap vs a full-panel game */
+	memset(dst, 0, H * pitch_w * 4);
+	for (sy = 0; sy < sh; sy++) {
+		const unsigned short *srow = pix + sy * spitch_px;
+		unsigned int dy0 = (unsigned int)yoff + sy * sy_scale;
+		for (sx = 0; sx < sw; sx++) {
+			unsigned int v = srow[sx];
+			unsigned int r = ((v >> 11) & 0x1f) << 3;
+			unsigned int g = ((v >> 5) & 0x3f) << 2;
+			unsigned int b = (v & 0x1f) << 3;
+			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+			unsigned int dx0 = (unsigned int)xoff + sx * sx_scale;
+			for (iy = 0; iy < sy_scale; iy++) {
+				unsigned int *o = dst + (dy0 + iy) * pitch_w + dx0;
+				for (ix = 0; ix < sx_scale; ix++) o[ix] = px;
+			}
+		}
+	}
+	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
+	ayaneo_present(dpa, W, H, pitch_w);
+	s_fb_flip ^= 1;
+}
+
 /* Blank BOTH game frame buffers to black. Called at the menu -> game transition
  * so no menu / BIOS-intro pixels linger in any area the game frame does not draw
  * (belt-and-suspenders now that the 6x game fills the panel). */

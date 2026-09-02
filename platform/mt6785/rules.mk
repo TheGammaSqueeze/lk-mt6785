@@ -374,6 +374,10 @@ OBJS += emu/gba/menu_fastboot.o
 # the C++ core itself is a boot_b blob (emu/gbc/core_gbc.blob), like the gpSP GBA core.
 OBJS += emu/gbc/gbc_core_loader.o
 OBJS += emu/gbc/gbc_sd_run.o
+# snes9x SNES core is a THIRD boot_b blob (emu/snes9x/core_snes.blob); lk_a carries only
+# the small loader + session runner (video/input/audio driver), like the gbc side.
+OBJS += emu/snes9x/snes_core_loader.o
+OBJS += emu/snes9x/snes_sd_run.o
 # SNES-Classic-mini-style carousel menu engine (imported from lk-snes-menu). The
 # software renderer is float-heavy, so build the render/scene/audio modules with
 # hardware NEON FP (LK default -mfloat-abi=soft would make every op an aeabi call).
@@ -402,6 +406,8 @@ $(BUILDDIR)/emu/gba/gba_sd_save.o:      CFLAGS += -Os
 $(BUILDDIR)/emu/gba/sd_fastboot.o:      CFLAGS += -Os
 $(BUILDDIR)/emu/gba/fat_ro.o:           CFLAGS += -Os
 $(BUILDDIR)/emu/gba/fat_wr.o:           CFLAGS += -Os
+$(BUILDDIR)/emu/snes9x/snes_core_loader.o: CFLAGS += -Os
+$(BUILDDIR)/emu/snes9x/snes_sd_run.o:      CFLAGS += -Os
 endif
 else
 OBJS += emu/gbc/gbc_driver.o

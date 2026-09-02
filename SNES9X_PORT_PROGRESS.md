@@ -6,7 +6,27 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
-## Status: BLOB LINKS (compiles + links as a flat freestanding blob)
+## Status: PHASE 2 WIRED + FLASHED (video/input path; audio + menu next)
+
+Full lk_a integration builds end-to-end and is flashed (lk_a + boot_b). Awaiting on-device
+validation (headless here - need a .sfc/.smc in /roms/snes to confirm a game renders).
+- `snes_core_loader.c`: loads core_snes.blob from boot_b @0x01E00000 -> VMA 0x4F000000.
+- `snes_sd_run.c`: session runner on its OWN `snes_emu` thread (262 KB); loads ROM into the
+  0x50000000 arena (8 MB ROM buf + 48 MB heap), inits core, per-frame run + display, ~60 Hz
+  pacing, AYA-hold exits, SRAM (.srm) load/save under /saves/snes. `ayaneo_snes_pad_mask`
+  maps the pad to RETRO joypad bit order.
+- `ayaneo_snes_show_frame` (mt_disp_drv.c): RGB565 256/512-wide -> 1024-wide integer scale
+  (256->4x, 512->2x), centred on the 1280x960 panel, double-buffered.
+- Dispatch: `GBA_CONSOLE_SNES` -> `snes_sd_session` at both ROM-select sites in gba_driver.c.
+- `/roms/snes` scan (.sfc + .smc) and auto-create in sd_fat.c.
+- boot_b packer: 3rd blob @0x01E00000 (33 MB partition, overrun-checked). Build script builds
+  the snes blob. boot_b now 31.8 MB, lk_a still fits 2 MB.
+
+REMAINING: audio (snes frame -> AFE, ~32 kHz resample), in-game menu/run-ahead/transition
+(mirror gbc), menu console badge + logo, perf pass, hi-res/interlace + overscan polish,
+pacing to exact 60.098 Hz.
+
+### (earlier) BLOB LINKS milestone
 
 `emu/snes9x/build_core.sh` -> `libsnes9x.a`; `emu/snes9x/build_core_blob.sh` ->
 `core_snes.blob` (1.83 MB flat, ~3.3 MB DRAM span incl BSS, header magic "SNS1",
