@@ -38,6 +38,7 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
 #define GPIO_RB        81      /* DMG palette next */
 #define GPIO_SELECT    90      /* + START + L + R held = soft reset */
 #define GPIO_START     91
+#define GPIO_B         82      /* held at launch = start fresh (skip resume) */
 #define GBC_AHEAD_STATE (GBC_ARENA + 0x03600000u)   /* run-ahead savestate scratch (54 MB in) */
 #define RESET_HOLD_FRAMES 30    /* ~0.5 s at 59.7 Hz */
 
@@ -109,6 +110,16 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 	/* cartridge battery save (.sav) from the card, if any */
 	if (c->savedata_ptr() && c->savedata_size())
 		gba_sd_load_sav(vol, rom->name, (unsigned char *)c->savedata_ptr(), c->savedata_size());
+
+	/* Suspend/resume: reload the save STATE written on the last exit so the game
+	 * resumes where it was left, unless B is held (start fresh). Mirrors the GBA
+	 * flow. The state file is keyed by the ROM name; gambatte validates it against
+	 * the loaded ROM and no-ops on a mismatch. */
+	if (!PRESSED(GPIO_B)) {
+		unsigned n = gba_sd_load_state(vol, rom->name, 0, ahead, 0x00A00000u);
+		if (n)
+			c->state_load(ahead, n);
+	}
 	if (is_dmg)
 		apply_dmg_palette(c, pal_idx);
 
@@ -183,8 +194,13 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 		}
 	}
 
-	/* persist the cartridge battery save, then hand the codec back to the menu */
+	/* persist the cartridge battery save + a suspend save STATE (so the next launch
+	 * resumes), then hand the codec back to the menu */
 	if (c->savedata_ptr() && c->savedata_size())
 		gba_sd_write_sav(vol, rom->name, (const unsigned char *)c->savedata_ptr(), c->savedata_size());
+	if (ahead_sz) {
+		c->state_save(ahead);
+		gba_sd_write_state(vol, rom->name, 0, ahead, ahead_sz);
+	}
 	ayaneo_menu_audio_silence();
 }
