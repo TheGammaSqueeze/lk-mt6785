@@ -99,6 +99,7 @@ extern int      mt_get_gpio_in(unsigned pin);
 #define GPIO_A         83
 #define GPIO_X         85      /* physical X (84/85 read swapped vs the caps) */
 #define GPIO_Y         84      /* physical Y */
+#define GPIO_R2        57      /* second-stage right trigger = fast-forward (matches GBA) */
 
 /* RETRO_DEVICE_ID_JOYPAD_* bit positions (what the core's input_state_cb reads). */
 #define RJ_B 0
@@ -468,25 +469,37 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (hash != s_snes_dbg_lasthash) { g_snes_dbg_changed++; s_snes_dbg_lasthash = hash; }
 			}
 		}
+		/* Fast-forward: hold R2 (second-stage right trigger, matches GBA) to run the
+		 * emulation flat out. Present sparsely (1 in 8) and skip the vsync wait on the other
+		 * frames so nothing paces the loop; audio and run-ahead are suppressed. Off under the
+		 * menu, while benchmarking, or in the headless test. */
+		int ff = PRESSED(GPIO_R2) && !g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit;
+
 		/* Committed-frame audio submitted BEFORE any run-ahead look-ahead overwrites the
-		 * blob's audio buffer; muted while benchmarking so the ring never throttles. */
-		if (f.audio && f.frames && !g_snes_benchmark) {
+		 * blob's audio buffer; muted while benchmarking or fast-forwarding so the ring never
+		 * throttles the uncapped loop. */
+		if (f.audio && f.frames && !g_snes_benchmark && !ff) {
 			g_snes_dbg_audframes += f.frames;
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 		}
 		/* Run-ahead: advance the DISPLAY pf frames into the future with the current input,
 		 * then rewind so the real emulation still advances exactly one frame per loop. Off
-		 * under the menu (do not race ahead behind the overlay), while benchmarking, or in the
-		 * headless test. Look-ahead frames are muted (committed audio already submitted). */
+		 * under the menu (do not race ahead behind the overlay), while benchmarking/fast-
+		 * forwarding, or in the headless test. Look-ahead frames are muted. */
 		{
-			int pf = (!g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit && ra_ssz)
+			int pf = (!ff && !g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit && ra_ssz)
 				 ? ayaneo_get_preempt_frames() : 0;
 			int i;
 			if (pf > 0) {
 				c->state_save((void *)SNES_AHEAD_BUF, ra_ssz);
 				for (i = 0; i < pf; i++) c->run(&f);
 			}
-			if (f.video && f.width && f.height)
+			if (ff) {
+				/* uncapped: present ~every 8th frame (one vsync per 8 emulated frames),
+				 * skip present/vsync otherwise so emulation runs as fast as the CPU allows. */
+				if ((g_snes_dbg_frames & 7u) == 0 && f.video && f.width && f.height)
+					ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
+			} else if (f.video && f.width && f.height)
 				ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
 			else if (!g_snes_benchmark)
 				priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
