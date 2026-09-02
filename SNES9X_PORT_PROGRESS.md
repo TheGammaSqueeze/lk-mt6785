@@ -37,8 +37,15 @@ FIXED a nasty recurring bug: the GammaOS settings block was written to boot_b at
 magic, SNES fails to load). Moved settings to a guarded tail slot (0x020FF000). See
 CORE_PORTING_NOTES 9d.
 
-Still TODO (optional): run-ahead (now feasible since save states work); color-correction
-option if wanted (currently omitted as GB-specific).
+Run-ahead DONE: Off/Balanced/Responsive/Max in the Pico menu (shared preempt-frames
+setting). Each frame commits one real frame, then saves state, runs pf muted look-ahead
+frames with the current input, presents the future frame, and rewinds - the display leads
+by pf frames to cut input latency. Clock escalates per tier (1400/1600/1800/2000 MHz) for
+the pf+1 emulations/frame. Off under the menu / benchmark / headless test; state in the
+0x53000000 scratch slot (disabled if the state exceeds 2 MB).
+
+Feature set now at parity with GB/GBC/GBA. Optional leftovers: color-correction option
+(omitted as GB-specific); tuning the run-ahead tiers if Max is too heavy on some games.
 
 ## Status: ON-DEVICE PLAYABLE - renders + animates + audio + 1400 MHz (2026-09-02)
 
