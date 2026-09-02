@@ -6,6 +6,30 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Status: FEATURE PARITY PASS - save states + Pico menu + core options (2026-09-02)
+
+Save states FIXED (was fully broken): root cause was the bundled `vsnprintf` computing
+`e = buf + (cap-1)`; sprintf passes cap=(size_t)-1 so on 32-bit that WRAPS below buf and
+`sprintf` returned an empty string - every snes9x block header was blank, so unfreeze
+rejected the state (only 64-bit host round-trips passed). Fixed the overflow; also split
+the auto-suspend slot ("sus") from the manual Save/Load slot ("st0"), and moved the state
+buffer into the session's mapped arena (0x52C00000, heap 48->36 MB) off the menu chrome
+cache. Verified on device: freeze -> SD -> unfreeze round-trip passes (oem diag
+`snes-ss: core=1 sd=1`). SD `/states/snes` + `/saves/snes` auto-created by fat_wr_mkpath.
+
+Pico in-game menu now near parity with GB/GBC/GBA: LCD Filter (Off/Scanlines/Grid/Dot
+Matrix, applied in ayaneo_snes_show_frame), CPU Clock (600..2000 MHz OPP step, session
+floors 1400), Benchmark (Uncap, skips vsync + audio, shows emulated FPS), Panel Refresh
+(128-frame measured ~60.11 Hz). PLUS snes9x core-option settings routed through a new
+blob env_cb option store + set_option export: Aspect Ratio (4:3/Pixel/NTSC/PAL, honoured
+by a fractional-horizontal/integer-vertical display scaler on the 1280x960 panel),
+Overscan (crop 8/12/16px/off), Audio Filter (Gaussian/Cubic/Sinc/Linear/None), Hi-Res
+Blend (Off/Merge/Blur). Color Correction intentionally omitted (GB-specific).
+
+Still TODO: enter/exit punch transitions for SNES (GBA/GBC have them; needs a SNES-aware
+prerender + care with MMU-mapped 0x54xxxxxx transition buffers during a SNES session), and
+optional run-ahead (now feasible since save states work).
+
 ## Status: ON-DEVICE PLAYABLE - renders + animates + audio + 1400 MHz (2026-09-02)
 
 Confirmed on device (`oem snes-launch:600` + `oem diag`, SMW): `nz=835` non-black,
