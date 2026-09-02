@@ -34,6 +34,8 @@ extern int      ayaneo_get_lcd_filter(void);            /* 0 Off,1 Scanlines,2 G
 extern void     ayaneo_set_lcd_filter(int f);
 extern int      ayaneo_get_preempt_frames(void);        /* run-ahead depth 0..3 (shared setting) */
 extern void     ayaneo_set_preempt_frames(int v);
+extern unsigned ayaneo_get_snes_opts(void);             /* packed aspect|overscan<<8|audio<<16|hires<<24 */
+extern void     ayaneo_set_snes_opts(unsigned v);
 
 /* Run-ahead: present pf frames into the future with the current input, then rewind to the
  * committed frame (mirrors GB/GBC/GBA "Preemptive Frames"). Runs pf+1 full emulations per
@@ -278,9 +280,13 @@ static int sm_change(int i, int dir, int act)
 	case SM_FILTER: if (dir) { ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); ayaneo_menu_settings_persist(); } break;
 	case SM_ASPECT: case SM_OVERSCAN: case SM_AUDIO: case SM_HIRES:
 		if (dir && s_menu_c->set_option) {
-			int oi = i - SM_ASPECT, n = s_opt_def[oi].n;
+			int oi = i - SM_ASPECT, n = s_opt_def[oi].n, k;
+			unsigned packed = 0;
 			s_opt_idx[oi] = (s_opt_idx[oi] + dir + n) % n;
 			s_menu_c->set_option(s_opt_def[oi].key, s_opt_def[oi].ch[s_opt_idx[oi]].value);
+			for (k = 0; k < OI_N; k++) packed |= (unsigned)(s_opt_idx[k] & 0xFF) << (k * 8);
+			ayaneo_set_snes_opts(packed);   /* persist all four picks */
+			ayaneo_menu_settings_persist();
 		}
 		break;
 	case SM_CPU:    if (dir) snes_cpu_step(dir); break;   /* not persisted (session floors at 1400) */
@@ -379,7 +385,19 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	/* hand the in-game menu this session's context */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
 	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0;
-	{ int oi; for (oi = 0; oi < OI_N; oi++) s_opt_idx[oi] = 0; }   /* options -> core defaults */
+	/* Restore the persisted snes9x option picks (aspect/overscan/audio/hires) and push them
+	 * to the core so a game launches with the player's last choices, not defaults. */
+	{
+		unsigned packed = ayaneo_get_snes_opts();
+		int oi;
+		for (oi = 0; oi < OI_N; oi++) {
+			int idx = (int)((packed >> (oi * 8)) & 0xFF);
+			if (idx < 0 || idx >= s_opt_def[oi].n) idx = 0;
+			s_opt_idx[oi] = idx;
+			if (idx != 0 && c->set_option)   /* index 0 == core default -> no need to push */
+				c->set_option(s_opt_def[oi].key, s_opt_def[oi].ch[idx].value);
+		}
+	}
 	g_snes_aspect_x1000 = (c->aspect_x1000) ? c->aspect_x1000() : 0;
 
 	/* Launch punch-hole (matches GBA/GBC): run a few frames so real gameplay is on screen
