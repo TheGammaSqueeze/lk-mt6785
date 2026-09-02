@@ -48,8 +48,12 @@ The four snes9x option picks (aspect/overscan/audio/hires) now PERSIST across se
 packed into one u32 at offset 52 of the GammaOS settings block (ver 5->6, backward
 compatible); restored + pushed to the core at session start, repacked/saved on change.
 
-Feature set now at parity with GB/GBC/GBA. Optional leftovers: color-correction option
-(omitted as GB-specific); tuning the run-ahead tiers if Max is too heavy on some games.
+R2 fast-forward added (parity with GBA): hold R2 (GPIO 57) to run flat out - present 1-in-8,
+skip vsync, suppress audio + run-ahead. Off under menu/benchmark/headless.
+
+Feature set now at parity with GB/GBC/GBA (incl. fast-forward). Optional leftovers:
+color-correction option (omitted as GB-specific); tuning the run-ahead tiers if Max is too
+heavy on some games.
 
 LCM refresh switch VALIDATED on device (2026-09-02) via oem diag: menu vfp 23 ->
 g_dbg_hz1000 = 59723 (59.723 Hz measured); SNES session vfp 17 -> g_snes_dbg_hz1000 = 60088
