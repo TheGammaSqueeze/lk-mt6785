@@ -128,8 +128,17 @@ extern "C" struct tm *localtime(const time_t *t)
 /* ---- exports ---- */
 extern "C" void snes_heap_init(void *base, unsigned size);   /* snes_shim.cpp */
 
+extern "C" void snes_run_init_array(void);   /* snes_shim.cpp (walks __init_array_*) */
+
 static void snes_init(void)
 {
+	/* Run C++ static constructors HERE, not in snes_core_blob_init: the global SNES::smp
+	 * ctor does `apuram = new uint8[64K]`, and operator new is the bump arena which is only
+	 * armed by heap_init(). LK calls heap_init() immediately before init(), so by now the
+	 * arena is live; running .init_array at blob-load time (before heap_init) made every
+	 * `new` return NULL - apuram=NULL sent all SPC RAM/port writes to physical 0 (lost,
+	 * read back 0), deadlocking the CPU<->APU $2140 handshake => frozen black, no audio. */
+	snes_run_init_array();
 	retro_set_environment(env_cb);
 	retro_set_video_refresh(video_cb);
 	retro_set_audio_sample(audio_sample_cb);
@@ -179,14 +188,7 @@ static unsigned  snes_sram_size(void) { return (unsigned)retro_get_memory_size(R
  * SNES::smp.port_read). At boot the IPL ROM writes $AA to port0 and $BB to port1 (ready
  * signal); if the CPU is stuck waiting on the APU handshake this should read 0xBBAA in the
  * low 16 bits - if it does, the SPC IS signalling and the stall is on the CPU-read path. */
-static unsigned snes_dbg_pc(void)
-{
-	/* [7:0] apuram[$00f4] (port0, should be $aa) | [15:8] SPC P reg (dp bit 0x20 => wrong bank)
-	 * | [23:16] apuram[$01f4] ($aa here => the write went to bank 1) | [31:24] SPC sp. */
-	/* [15:0] SPC700 PC, [23:16] apuram[$f4]. Clear-loop PC ~$ffc5-c7 => never wrote;
-	 * PC $ffcf with apuram[$f4]=0 => the store was lost. */
-	return ((unsigned)SNES::smp.regs.pc & 0xFFFFu) | ((unsigned)SNES::smp.apuram[0x00f4] << 16);
-}
+static unsigned snes_dbg_pc(void) { return 0; }   /* reserved debug hook (unused) */
 
 static unsigned snes_state_size(void) { return (unsigned)retro_serialize_size(); }
 static int snes_state_save(void *buf, unsigned size) { return retro_serialize(buf, size) ? 0 : -1; }
@@ -210,14 +212,12 @@ static const struct snes_core_exports g_exports = {
 	snes_dbg_pc,
 };
 
-/* Blob entry: run C++ static constructors (libstdc++ ios_base::Init etc. - unlike the
- * gambatte blob, snes9x uses std::string/stringstream/map so .init_array MUST run), stash
- * the imports, return the export table. */
-extern "C" void snes_run_init_array(void);   /* snes_shim.cpp (walks __init_array_*) */
-
+/* Blob entry: stash the imports and return the export table. NOTE: .init_array (libstdc++
+ * ios_base::Init + the global SNES::smp/Memory ctors) is NOT run here - it is deferred to
+ * snes_init(), which LK calls after heap_init() arms the bump allocator. Running it here
+ * (before heap_init) made operator new return NULL for those global ctors. */
 extern "C" const struct snes_core_exports *snes_core_blob_init(const struct snes_core_imports *imp)
 {
 	s_imp = imp;
-	snes_run_init_array();
 	return &g_exports;
 }

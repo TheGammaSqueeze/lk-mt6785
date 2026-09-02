@@ -6,7 +6,29 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
-## Status: ON-DEVICE BRING-UP - two device bugs found + fixed
+## Status: ON-DEVICE FIXED - SNES renders + animates (APU handshake resolved)
+
+ROOT CAUSE (2026-09-02): **`.init_array` ran before `heap_init`**, so every global C++
+constructor's `operator new` returned NULL from the still-unarmed bump arena. The worst
+victim was `SNES::smp`'s ctor (`apuram = new uint8[64*1024]`): with `apuram == NULL`, all
+SPC700 RAM/port writes went to physical address 0 (writes silently lost, reads back 0),
+so the IPL ROM's `mov $f4,#$aa` never landed in `apuram[$f4]`. The main 65816 spun on the
+`$2140` ready handshake forever -> frozen black + no audio. Invisible on host because the
+native `operator new` is always live regardless of order.
+
+Localization method (on-device, since host couldn't reproduce): instrumented
+`SMP::op_write`, published counters through the `snes_dbg_pc` export, decoded via
+`oem snes-launch:N` + `oem diag`'s `snes-px:` line. Sequence: store-vanishes-immediately
+(readback 0 on the same line) -> captured `apuram` pointer -> pointer read `0x0001aa00`
+(impossible for a `>=0x50800000` arena) => NULL/unarmed-arena allocation.
+
+FIX: `snes_core_blob_init` no longer runs `.init_array`; it is deferred to `snes_init()`,
+which LK calls immediately AFTER `heap_init()` arms the arena (snes_sd_run.c:213-214).
+After the fix, `oem snes-launch:600` on the reloaded blob: `apuram=0x50800000` (valid),
+`nz=835` (non-black), `chg=251` (frames animating) = real gameplay. Debug instrumentation
+removed; `snes_dbg_pc` stubbed to 0. Next: user visual confirmation of SMW on the panel.
+
+### (history) earlier bring-up steps
 
 On-device debugging via `oem diag` counters + `oem snes-probe`:
 1. exit=2 (blob load fail): STALE on-device boot_b. Re-flashing boot_b fixed it; the probe
