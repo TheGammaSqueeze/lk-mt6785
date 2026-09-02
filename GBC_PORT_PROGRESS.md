@@ -87,6 +87,16 @@ card-tile cache keying by console type, feature-gating untested extras, C++ blob
 build specifics, and device/workflow gotchas like oem sd-probe wedging USB).
 
 ## Status log (newest first)
+- 2026-09-02: GB/GBC launch punch-hole transition (like GBA). The selector already
+  captures the frozen menu snapshot (0x54000000) + sets gba_punch_ready for every
+  launch; the GBC session now consumes it: run a few frames for real content,
+  ayaneo_gb_punch_prerender (new, 160x144x6 - the GBA prerender bakes 240x160x5),
+  then grow the circle via the geometry-agnostic ayaneo_gba_punch_frame_pre. All
+  three requested items (menu, run-ahead, forward transition) are DONE. REMAINING:
+  the REVERSE (close) punch - gba_menu_arm_reverse is hardcoded to GBA 240x160 and
+  the reverse is rendered in the selector, so a GBC reverse needs a 160x144 variant
+  + selector changes; deferred as a follow-up. NEEDS USER TEST: the launch circle
+  opens onto the GB/GBC game at correct aspect.
 - 2026-09-02: GBC in-game Pico menu implemented (self-contained in gbc_sd_run.c,
   mirrors the GBA MI_* menu). AYA toggles it; game runs underneath with its input
   gated off (ayaneo_gbc_pad_mask returns 0 while g_gbc_menu_open). Items: Brightness,

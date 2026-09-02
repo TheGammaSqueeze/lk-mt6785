@@ -280,6 +280,34 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	ayaneo_gbc_audio_init();
 	mtk_wdt_disable();                          /* no kernel handoff; kick each frame */
 
+	/* Launch punch-hole transition (like GBA): the selector captured a frozen menu
+	 * snapshot (0x54000000) and set gba_punch_ready. Grow a circle over it revealing
+	 * the running game. Run a few frames first so the opening shows real content, not
+	 * the boot screen. Reuses the geometry-agnostic composite (frame_pre) with a GB
+	 * prerender (160x144x6). */
+	{
+		extern int  gba_punch_ready;
+		extern void ayaneo_gb_punch_prerender(const unsigned short *pix);
+		extern void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius);
+		extern void ayaneo_gbc_clear_letterbox(void);
+		if (gba_punch_ready) {
+			int i, w;
+			gba_punch_ready = 0;
+			for (w = 0; w < 20; w++) {
+				unsigned s2 = GBC_SND_MAX;
+				if (c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2) >= 0 && w >= 3) break;
+			}
+			ayaneo_gb_punch_prerender(vbuf);
+			for (i = 1; i <= 20; i++) {
+				int r = (int)((long long)820 * i / 20);   /* 820 = GBA_PUNCH_MAX_R */
+				if (r < 1) r = 1;
+				ayaneo_gba_punch_frame_pre((const unsigned int *)0x54000000u, r);
+				mtk_wdt_restart();
+			}
+			ayaneo_gbc_clear_letterbox();
+		}
+	}
+
 	/* hand the in-game menu this session's context */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
 	s_menu_ahead = ahead; s_menu_ahead_sz = ahead_sz;

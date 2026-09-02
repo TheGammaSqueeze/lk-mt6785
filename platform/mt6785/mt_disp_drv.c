@@ -1346,6 +1346,22 @@ void ayaneo_gba_punch_prerender(const unsigned short *pix)
 	arch_clean_cache_range(GBA_PUNCH_GAME_FULL_PA, pitch * H * 4);
 }
 
+/* Same prerender for a real GB/GBC frame (160x144 integer 6x), so the launch punch
+ * opens onto the correct GB geometry (ayaneo_gba_punch_prerender bakes the GBA
+ * 240x160x5 geometry in this build). Composite step reuses ayaneo_gba_punch_frame_pre. */
+void ayaneo_gb_punch_prerender(const unsigned short *pix)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	const int SW = 160, SH = 144, SC = 6;
+	int dw = SW * SC, dh = SH * SC;
+	if (!pix) return;
+	gba_punch_prerender((uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, (int)pitch,
+			    (int)W, (int)H, pix, SC, SW, SH,
+			    ((int)W - dw) / 2, ((int)H - dh) / 2);
+	arch_clean_cache_range(GBA_PUNCH_GAME_FULL_PA, pitch * H * 4);
+}
+
 void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
