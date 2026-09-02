@@ -6,6 +6,17 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Status: PERF PASS 3 - throttle live-play diagnostic sampling (2026-09-02)
+
+The run loop's full-frame content-hash sample (~900 video reads + FNV steps per frame) only
+feeds the `oem diag` / headless `snes-px` counters (`nz`/`changed`), a bootloader-side debug
+path that is never read during real play. It now samples EVERY frame only in the frame-limited
+headless test (so `chg`/`nz` stay exact for validation) and 1-in-16 in live play, removing the
+per-frame waste with zero visual/behavioural change. Verified: `oem snes-launch:400` ->
+frames=45383 exit=5, snes-px nz=806 chg=46731 (test-mode per-frame sampling intact),
+hz1000=60088 vfp=17, snes-ss core=1 sd=1 fast=1 heap=20215840 revmap=1. No GBA/GBC/menu
+regression (shared display code untouched; change is SNES-run-loop only). boot_b unchanged.
+
 ## Status: PERF PASS 2 - menu freezes emu, HW volume rocker, filter fast path (2026-09-02)
 
 Follow-up to the on-device perf/bug reports:

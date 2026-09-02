@@ -558,7 +558,13 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * changes when the player switches Aspect Ratio or Overscan in the menu. */
 			if (c->aspect_x1000 && (g_snes_dbg_frames & 15u) == 0) g_snes_aspect_x1000 = c->aspect_x1000();
 			if (g_snes_test_limit && g_snes_dbg_frames >= g_snes_test_limit) { g_snes_dbg_exit = 5; }
-			if (f.video && f.width && f.height) {
+			/* Diagnostic full-frame sample (non-zero pixel count + content hash) feeds only the
+			 * oem diag / headless snes-px counters - a bootloader-side debug path never read
+			 * during real play. So sample EVERY frame in the frame-limited test (keeps chg/nz
+			 * exact for validation) but only 1-in-16 in live play, where it is otherwise ~900
+			 * wasted video reads + hash steps per frame. */
+			if (f.video && f.width && f.height &&
+			    (g_snes_test_limit || (g_snes_dbg_frames & 15u) == 0)) {
 				g_snes_dbg_w = f.width; g_snes_dbg_h = f.height; g_snes_dbg_pitch = f.pitch;
 				{	/* full-frame sample: non-zero pixel count + a content hash (to tell a
 					 * static black frame from live-but-mis-displayed content). */
