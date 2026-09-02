@@ -31,6 +31,7 @@ void retro_set_controller_port_device(unsigned, unsigned);
 }
 
 static unsigned vw, vh, vpitch, vcalls;
+static unsigned minw = 9999, maxw = 0, minh = 9999, maxh = 0, maxpitch = 0;
 static uint64_t vhash;
 static bool env_cb(unsigned cmd, void *data) {
     if (cmd == RETRO_ENVIRONMENT_SET_PIXEL_FORMAT)
@@ -41,6 +42,9 @@ static bool env_cb(unsigned cmd, void *data) {
 }
 static void video_cb(const void *d, unsigned w, unsigned h, size_t pitch) {
     vw = w; vh = h; vpitch = pitch; vcalls++;
+    if (w < minw) minw = w; if (w > maxw) maxw = w;
+    if (h < minh) minh = h; if (h > maxh) maxh = h;
+    if (pitch > maxpitch) maxpitch = pitch;
     if (d) { uint64_t hs = 1469598103934665603ULL;
         for (unsigned y = 0; y < h; y++) { const uint16_t *row = (const uint16_t *)((const uint8_t *)d + y * pitch);
             for (unsigned x = 0; x < w; x++) hs = (hs ^ row[x]) * 1099511628211ULL; }
@@ -75,6 +79,8 @@ int main(int argc, char **argv) {
     unsigned distinct = 0; uint64_t prev = 0;
     for (int i = 0; i < frames; i++) { retro_run(); if (vhash != prev) { distinct++; prev = vhash; } }
     printf("ran %d frames: video_cb calls=%u last dims=%ux%u pitch=%u\n", frames, vcalls, vw, vh, vpitch);
+    printf("dims over run: w[%u..%u] h[%u..%u] maxpitch=%u  (display maps w 256/512 -> 1024, "
+           "h <=478 -> <=956; pitch/2=%u stride)\n", minw, maxw, minh, maxh, maxpitch, maxpitch / 2);
     printf("distinct frame hashes=%u (content is %s)\n", distinct, distinct > 2 ? "CHANGING (real gameplay)" : "static/blank");
     bool ok = vcalls > 0 && vw >= 200 && vw <= 600 && vh >= 200 && vh <= 512 && distinct > 2;
     printf("RESULT: %s\n", ok ? "PASS" : "FAIL");

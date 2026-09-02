@@ -79,10 +79,17 @@ frame; borders are static black so both buffers are cleared only on a resolution
 black-fill as the safety net. Removes ~295 MB/s of pointless memset from the 16.6 ms budget
 (matters for hitting 60 fps under vsync-lock). Mirrors the GB path.
 
+DISPLAY DIMS VALIDATED (host): host_test now reports the min/max video dims over a run.
+SMW/SF2 Turbo/Secret of Mana/Jurassic Park all output 256x224 pitch 2048 (= 1024px stride),
+confirming the display reads pitch/2=1024 stride and blits sx<sw correctly. The scale map
+(256->4x, 512->2x; <=240->4x, else 2x) sends every SNES mode to 1024 wide / <=956 tall by
+construction, so hi-res 512 + interlace 448/478 are correct too (they only trigger on
+in-game menus that need input to reach, so a passive run stays at 256x224). No code change.
+
 REMAINING: run-ahead + launch/close punch transitions (mirror gbc; run-ahead is heavy for
-SNES - 0.8 MB state/frame), hi-res/interlace + overscan polish, audio fine-trim. STILL
-UNVALIDATED on HW (headless) - need a .sfc/.smc in /roms/snes to confirm the LK wiring
-(video/input/audio/vfp switch/badge/suspend/menu).
+SNES - 0.8 MB state/frame), audio fine-trim. STILL UNVALIDATED on HW (headless) - need a
+.sfc/.smc in /roms/snes to confirm the LK wiring (video/input/audio/vfp switch/badge/
+suspend/menu). Feature-complete + host-proven; further polish wants real device feedback.
 
 ### (earlier) BLOB LINKS milestone
 
