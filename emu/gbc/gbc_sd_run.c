@@ -350,7 +350,11 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (a  && !a_prev)  res = gm_change(s_msel, 0, 1);
 				if (b  && !b_prev)  g_gbc_menu_open = 0;
 				up_prev = up; dn_prev = dn; lt_prev = lt; rt_prev = rt; a_prev = a; b_prev = b;
-				if (res == 2) break;               /* Close -> exit to the selector */
+				if (res == 2) {                    /* Close -> exit to the selector */
+					extern void gbc_menu_arm_reverse(const unsigned short *frame);
+					gbc_menu_arm_reverse(vbuf);   /* closing punch: shrink into the menu */
+					break;
+				}
 				if (res == 1) g_gbc_menu_open = 0; /* Reset -> close menu, game runs */
 			} else {
 				/* Soft reset hotkey: SELECT+START+L+R held ~0.5 s. */

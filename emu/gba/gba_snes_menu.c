@@ -48,6 +48,7 @@ extern unsigned int gpt4_get_current_tick(void);
 #define GBA_GAME_FULL_PA    0x55900000u   /* game pre-rendered full-screen BGRA (fast reverse) */
 #define GBA_REVERSE_MS      180u
 static int g_reverse_punch = 0;
+static int g_reverse_is_gbc = 0;   /* 0 = GBA 240x160x5, 1 = GB/GBC 160x144x6 */
 volatile int g_dbg_arm_cnt;   /* incremented each time the driver arms the reverse */
 
 /* Called by the driver on "Close" with the last game frame; armed here, consumed by
@@ -58,6 +59,18 @@ void gba_menu_arm_reverse(const unsigned short *game_frame)
 	if (game_frame) {
 		memcpy((void *)(uintptr_t)GBA_GAME_FREEZE_PA, game_frame, 240u * 160u * 2u);
 		g_reverse_punch = 1;
+		g_reverse_is_gbc = 0;
+	}
+}
+
+/* GB/GBC variant: the frozen frame is 160x144 (the reverse renders it at 6x). */
+void gbc_menu_arm_reverse(const unsigned short *game_frame)
+{
+	g_dbg_arm_cnt++;
+	if (game_frame) {
+		memcpy((void *)(uintptr_t)GBA_GAME_FREEZE_PA, game_frame, 160u * 144u * 2u);
+		g_reverse_punch = 1;
+		g_reverse_is_gbc = 1;
 	}
 }
 
@@ -356,9 +369,14 @@ static void play_reverse_punch(unsigned int ms)
 	/* Pre-convert the FROZEN game to a full-screen BGRA buffer ONCE, so each shrink
 	 * frame is just memcpy (gba_punch_composite_pre) = ~5ms not ~50ms. FRAME-paced
 	 * over a fixed count so the shrink is a smooth, visible 60fps sequence. */
-	gba_punch_prerender((uint32_t *)(uintptr_t)GBA_GAME_FULL_PA, (int)cp, (int)cw, (int)ch,
-			    (const unsigned short *)GBA_GAME_FREEZE_PA, 5, 240, 160,
-			    ((int)cw - 1200) / 2, ((int)ch - 800) / 2);
+	if (g_reverse_is_gbc)
+		gba_punch_prerender((uint32_t *)(uintptr_t)GBA_GAME_FULL_PA, (int)cp, (int)cw, (int)ch,
+				    (const unsigned short *)GBA_GAME_FREEZE_PA, 6, 160, 144,
+				    ((int)cw - 960) / 2, ((int)ch - 864) / 2);
+	else
+		gba_punch_prerender((uint32_t *)(uintptr_t)GBA_GAME_FULL_PA, (int)cp, (int)cw, (int)ch,
+				    (const unsigned short *)GBA_GAME_FREEZE_PA, 5, 240, 160,
+				    ((int)cw - 1200) / 2, ((int)ch - 800) / 2);
 	{
 		int i, N = 20;
 		for (i = 1; i <= N; i++) {
