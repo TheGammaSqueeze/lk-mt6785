@@ -120,6 +120,17 @@ bad length can never drive a runaway DMA.
   in `gbc_shim.cpp` (bump allocator over the arena, delete is a no-op).
 - Flat link at a fixed VMA with a 20-byte header (magic/version/entry/load/span); the
   loader zeroes BSS and does DCCMVAU/ICIMVAU cache maintenance before entry.
+- **CTOR-VS-HEAP ORDER (bit snes9x hard, cost a day):** if the core has global C++
+  objects whose constructors allocate (e.g. snes9x's `SNES::smp` does
+  `apuram = new uint8[64K]` in its ctor), you MUST run `.init_array` AFTER `heap_init()`
+  arms the bump arena, NOT at blob-load time in `*_core_blob_init`. If ctors run first,
+  `operator new` returns NULL and the object silently allocates at address 0 - on this
+  SoC, writes to phys 0 are lost and read back 0, so the failure looks like emulation
+  logic bugs (snes9x: SPC700 RAM writes vanished -> APU `$2140` handshake deadlock ->
+  frozen black, no audio), never a crash. Host builds never show it (native `new` is
+  always live). Fix pattern: `*_core_blob_init` just stashes imports + returns the
+  export table; call `run_init_array()` at the top of the `init()` export, which LK
+  invokes right after `heap_init()`.
 
 ## 10. Device / workflow gotchas
 - NEVER run `fastboot oem sd-probe` on the live device: it re-inits the microSD host
