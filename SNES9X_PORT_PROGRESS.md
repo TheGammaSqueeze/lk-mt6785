@@ -81,6 +81,12 @@ Multiple save-state slots added: a "Save Slot" (0-9) menu item; manual Save/Load
 and the Save Slot item shows used/empty (cheap 16-byte SD probe on slot change / save, not
 per frame).
 
+Run-ahead now uses FAST savestates (direct-memory unfreeze, no per-block new/memcpy) via a
+set_ra_fast export + RETRO_AV_ENABLE_FAST_SAVESTATES in env_cb, toggled only around the
+run-ahead save/load (SD saves stay portable). Verified: video renders (env change is a no-op
+for rendering), core=1 sd=1, fast round-trip fast=1, and depth 3 now finishes 600 frames in
+the test window (was ~591) while staying leak-free. Higher run-ahead tiers are now usable.
+
 Turbo (auto-fire) added: a Pico-menu item cycling Off / A / B / A+B; holding the turbo'd
 button rapid-fires it at ~15 Hz (pulse in ayaneo_snes_pad_mask). Persisted (settings ver 8,
 offset 60).
