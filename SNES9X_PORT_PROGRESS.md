@@ -35,9 +35,17 @@ write-cursor snap near under/overrun rather than audio-mastered pacing; a fine-t
 recovery like the GBA path can be added later if the periodic snap is audible. Wired in
 snes_sd_run.c (ayaneo_gbc_audio_init + reset at session start, submit each frame). lk_a-only.
 
-REMAINING: in-game menu/run-ahead/transition (mirror gbc), menu console badge + logo, perf
-pass, hi-res/interlace + overscan polish, audio fine-trim if needed. STILL UNVALIDATED on HW
-(headless) - need a .sfc/.smc in /roms/snes to confirm video+input+audio.
+MENU BADGE: done. SNES cards now show a console badge bottom-right like GB/GBC/GBA.
+console_logo[3]->[4], set_console_badges takes a 4th (snes) logo, draw gate ty<3 -> ty<4;
+the ctile cache is type-keyed with cap 12 so a 4th type has ample room (no scroll regression
+- resolves item 7). pack_snes.py --logo-snes -> resource "logo_snes"; build passes it;
+host_render cycles 4 types. Asset tools/ayaneo/snes/logos/snes.png is a CLEAN PLACEHOLDER
+("SNES" wordmark, slate-purple + white stroke, 198x70 to match the others) - swap for an
+official logo when available. Changed the SNES pack -> boot_b re-flashed.
+
+REMAINING: in-game menu/run-ahead/transition (mirror gbc), perf pass, hi-res/interlace +
+overscan polish, audio fine-trim if needed. STILL UNVALIDATED on HW (headless) - need a
+.sfc/.smc in /roms/snes to confirm video+input+audio (and eyeball the badge).
 
 ### (earlier) BLOB LINKS milestone
 

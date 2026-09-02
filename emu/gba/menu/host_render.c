@@ -121,12 +121,13 @@ int main(int argc, char **argv)
 			const snes_img_entry *lg  = snes_res_img(&pk, snes_hash("logo_gb"));
 			const snes_img_entry *lgc = snes_res_img(&pk, snes_hash("logo_gbc"));
 			const snes_img_entry *lga = snes_res_img(&pk, snes_hash("logo_gba"));
+			const snes_img_entry *lgs = snes_res_img(&pk, snes_hash("logo_snes"));
 			int k;
 			const char *force = getenv("GBA_BADGE_FORCE");
 			for (k = 0; k < gn && k < 128; k++)
-				types[k] = force ? (unsigned char)atoi(force) : (unsigned char)(k % 3);
-			snes_menu_set_console_badges(&menu, types, lg, lgc, lga);
-			if (!lg || !lgc || !lga) fprintf(stderr, "WARN a console logo image is not in pack\n");
+				types[k] = force ? (unsigned char)atoi(force) : (unsigned char)(k % 4);
+			snes_menu_set_console_badges(&menu, types, lg, lgc, lga, lgs);
+			if (!lg || !lgc || !lga || !lgs) fprintf(stderr, "WARN a console logo image is not in pack\n");
 		}
 
 		/* GBA_BOXART: exercise the per-ROM boxart path with mock tiles - a distinct

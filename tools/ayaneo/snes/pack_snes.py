@@ -474,6 +474,8 @@ def main():
                     help="PNG registered as resource 'logo_gbc' (Game Boy Color card badge)")
     ap.add_argument("--logo-gba", dest="logo_gba", default=None,
                     help="PNG registered as resource 'logo_gba' (Game Boy Advance card badge)")
+    ap.add_argument("--logo-snes", dest="logo_snes", default=None,
+                    help="PNG registered as resource 'logo_snes' (SNES card badge)")
     args = ap.parse_args()
 
     asset_dir = args.asset_dir
@@ -871,7 +873,7 @@ def main():
 
     # ---- console-type badges (bottom-right of each card, per ROM type) ----
     for key, path in (("logo_gb", args.logo_gb), ("logo_gbc", args.logo_gbc),
-                      ("logo_gba", args.logo_gba)):
+                      ("logo_gba", args.logo_gba), ("logo_snes", args.logo_snes)):
         if path:
             lidx = add_image(path, tile=False)
             if lidx is not None:

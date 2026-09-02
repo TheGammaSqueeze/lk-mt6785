@@ -194,7 +194,7 @@ typedef struct {
 	/* Per-ROM console type (0=GB, 1=GBC, 2=GBA; indexed by game index) and the three
 	 * console-badge logos, drawn bottom-right of each card. gba_types=0 -> no badge. */
 	const unsigned char *gba_types;
-	const snes_img_entry *console_logo[3];   /* [GBA_CONSOLE_GB/_GBC/_GBA] */
+	const snes_img_entry *console_logo[4];   /* [GBA_CONSOLE_GB/_GBC/_GBA/_SNES] */
 	int launch;                         /* focused ROM index to launch, -1 = none */
 	int sysreset;                       /* set when "System Reset" is confirmed (-> boot OS) */
 	int pstart;                         /* prev-frame Start (edge detect for launch) */
@@ -210,11 +210,11 @@ void snes_menu_set_gba_roster(snes_menu *m, const char *const *names, int n,
  * .ART tiles were decoded into). Pass img=0 to revert to the shared placeholder. */
 void snes_menu_set_gba_boxart(snes_menu *m, const snes_img_entry *img, const snes_pack *pk);
 /* Provide per-ROM console types (types[0..ngames), values GBA_CONSOLE_*) and the
- * three badge logos (gb/gbc/gba, any may be 0). The correct badge is drawn in the
+ * badge logos (gb/gbc/gba/snes, any may be 0). The correct badge is drawn in the
  * bottom-right of each card. Pass types=0 to disable badges. */
 void snes_menu_set_console_badges(snes_menu *m, const unsigned char *types,
 				  const snes_img_entry *gb, const snes_img_entry *gbc,
-				  const snes_img_entry *gba);
+				  const snes_img_entry *gba, const snes_img_entry *snes);
 /* If A/Start launched a ROM, returns its index and clears the flag; else -1. */
 int snes_menu_take_launch(snes_menu *m);
 int snes_menu_take_sysreset(snes_menu *m);

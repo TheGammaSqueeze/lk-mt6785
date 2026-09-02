@@ -871,7 +871,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		if (m->gba_mode && m->gba_types && m->ngames > 0) {
 			int gidx = m->order[((gi % m->ngames) + m->ngames) % m->ngames];
 			int ty = m->gba_types[gidx];
-			const snes_img_entry *lg = (ty >= 0 && ty < 3) ? m->console_logo[ty] : 0;
+			const snes_img_entry *lg = (ty >= 0 && ty < 4) ? m->console_logo[ty] : 0;
 			if (lg && lg->w && lg->h) {
 				float maxW = 72.0f, maxH = 22.0f;      /* card-unit badge box */
 				float bs = maxW / (float)lg->w, bsh = maxH / (float)lg->h;
@@ -1103,13 +1103,14 @@ void snes_menu_set_gba_boxart(snes_menu *m, const snes_img_entry *img, const sne
 
 void snes_menu_set_console_badges(snes_menu *m, const unsigned char *types,
 				  const snes_img_entry *gb, const snes_img_entry *gbc,
-				  const snes_img_entry *gba)
+				  const snes_img_entry *gba, const snes_img_entry *snes)
 {
 	int i;
 	m->gba_types = types;
 	m->console_logo[0] = gb;
 	m->console_logo[1] = gbc;
 	m->console_logo[2] = gba;
+	m->console_logo[3] = snes;
 	/* the badge is baked into the per-card tile cache: invalidate so it repaints */
 	m->ctile_aspect = -1;
 	if (m->ctile_gi) for (i = 0; i < m->ctile_cap; i++) m->ctile_gi[i] = -1;

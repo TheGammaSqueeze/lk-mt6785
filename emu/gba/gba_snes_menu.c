@@ -463,7 +463,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	snes_menu_set_console_badges(&s_menu, s_types,
 				     snes_res_img(&s_pk, snes_hash("logo_gb")),
 				     snes_res_img(&s_pk, snes_hash("logo_gbc")),
-				     snes_res_img(&s_pk, snes_hash("logo_gba")));
+				     snes_res_img(&s_pk, snes_hash("logo_gba")),
+				     snes_res_img(&s_pk, snes_hash("logo_snes")));
 	if (start_sel >= 0 && start_sel < nrom) s_menu.focus = start_sel;
 
 	/* Card-tile cache: cap SNES_CTILE2_CAP slots. Without boxart every GBA card body
