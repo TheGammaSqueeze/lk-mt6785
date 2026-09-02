@@ -54,7 +54,37 @@ never-brick / boot-to-OS / SELECT-return flow.
 - [ ] ON-DEVICE TEST with real GB/GBC ROMs (couldn't test headless): verify a game
       runs, audio, L/R palette, AYA exit, and GB/GBC<->GBA switching (arena rebuild).
 
+## COMPLETE — all requested features implemented (pending on-device validation)
+Every item the user asked for is built, host-checked where possible, and confirmed
+not to regress the GBA/menu/cold-boot flow on device. GB/GBC GAMEPLAY itself could
+not be validated headless (no screen access; no GB/GBC ROM confirmed on the SD).
+The autonomous cron is being stopped: nothing safe/testable remains to implement,
+and the rest needs the user to test on hardware.
+
+### For the user to test on device (drop a .gb into /roms/gb and a .gbc into /roms/gbc)
+1. Both appear in the carousel with the correct GB / GBC badge (bottom-right).
+2. Launch a .gbc: runs in colour, audio OK, AYA returns to the selector.
+3. Launch a .gb: runs in GB (mono) mode; L / R cycle the 5 palettes.
+4. Run-ahead: set Preemptive Frames (via a GBA game's menu) and confirm GB/GBC
+   input feels tighter; audio stays clean.
+5. Reset: SELECT+START+L+R held ~0.5 s restarts the game.
+6. Suspend/resume: exit with AYA, relaunch -> resumes; hold B at launch -> fresh.
+7. Switching GB/GBC <-> GBA repeatedly stays stable (gpSP arena rebuild).
+If any of these misbehave, the fix point is emu/gbc/gbc_sd_run.c (session) or the
+dispatch in emu/gba/gba_driver.c.
+
+### Optional future polish (not built, hotkeys already cover the options)
+- A GBC in-game overlay menu (brightness/volume/save-state rows) like the GBA one.
+- Per-console no-boxart placeholder art (today every no-art card shows the GBA
+  cart placeholder regardless of console).
+
 ## Status log (newest first)
+- 2026-09-02: Phase 2.4 (suspend/resume) done + committed (f1f0b45). All requested
+  features now implemented (Phases 1, 2.1-2.4). Attempted an on-device GB/GBC
+  smoke test but it needs a screen + a GB/GBC ROM on the card (headless-blocked);
+  sd-probe re-inits the SD host and disrupts the running emulator so it is not safe
+  to poke live. Stopping the autonomous cron: implementation complete, remaining
+  work is user on-device validation. See the checklist above.
 - 2026-09-02: Phase 2.3 (GBC runahead + reset). gbc_sd_run.c frame loop now does
   run-ahead: state_save -> run pf muted look-ahead frames -> present the future
   frame -> state_load rewind, using the shared ayaneo_get_preempt_frames() (0..3).
