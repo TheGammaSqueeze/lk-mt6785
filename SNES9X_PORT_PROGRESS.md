@@ -66,7 +66,9 @@ it handles fractional vertical (224->960); normal modes keep integer vertical fo
 scanlines. Persisted with the other aspect picks.
 
 Pico menu Up/Down now auto-repeat (press, then ~0.37 s delay -> ~0.08 s repeat) for the
-16-row menu; Left/Right stay single-tap (they persist to eMMC/SD per change).
+16-row menu; Left/Right stay single-tap. Settings persistence is DEBOUNCED (~0.5 s after the
+last change, or on menu close / session exit) so rapid value taps no longer burst flash
+writes; the value still applies in memory instantly.
 
 Verified (2026-09-02) the exit reverse-punch buffer 0x55800000 is writable during a SNES
 session (oem diag snes-ss revmap=1) - the AYA-hold exit-transition path is memory-safe (was
