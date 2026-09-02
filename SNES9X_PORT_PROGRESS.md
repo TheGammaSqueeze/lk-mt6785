@@ -51,6 +51,14 @@ compatible); restored + pushed to the core at session start, repacked/saved on c
 Feature set now at parity with GB/GBC/GBA. Optional leftovers: color-correction option
 (omitted as GB-specific); tuning the run-ahead tiers if Max is too heavy on some games.
 
+Timing readout bug fixed (2026-09-02): the Pico menu's Panel Refresh showed ~2.7 Hz and
+Benchmark FPS was wrong because the timing math assumed an 812.5 kHz counter / 128-frame
+window; gpt4 is 13 MHz and the 104000000000 constant is for an 8-frame window. Corrected to
+match the GBA path (8-frame average + outlier reject; benchmark frames*13e6/ticks). If a
+REAL framerate drop remains while the menu is open (SNES emulation + overlay near the 16.6
+ms budget), the fix is to freeze emulation under the menu (standard pause behaviour) -
+pending user confirmation that stutter persists after the readout fix.
+
 ## Status: ON-DEVICE PLAYABLE - renders + animates + audio + 1400 MHz (2026-09-02)
 
 Confirmed on device (`oem snes-launch:600` + `oem diag`, SMW): `nz=835` non-black,
