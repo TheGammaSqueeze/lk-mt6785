@@ -194,9 +194,10 @@ static fat_vol             *s_menu_vol;
 static const gba_rom_entry *s_menu_rom;
 static int  s_msel;
 static char s_mstat[48];
+static int  s_save_slot;   /* manual Save/Load state slot 0..9 (suspend uses a separate "sus") */
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
        SM_CPU, SM_RUNAHEAD, SM_BENCH, SM_PANEL,
-       SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
+       SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
 
 static const char *snes_filter_name(int f)
 { return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : "Off"; }
@@ -237,6 +238,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_AUDIO:  return "Audio Filter";  case SM_HIRES:    return "Hi-Res Blend";
 	case SM_CPU:    return "CPU Clock"; case SM_RUNAHEAD: return "Run-Ahead";
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
+	case SM_SLOT:   return "Save Slot";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
 	case SM_RESET:  return "Reset Game"; case SM_CLOSE:  return "Close"; } return ""; }
 static const char *sm_value(int i, char *buf) { char *p = buf;
@@ -256,6 +258,7 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 		p = smputu(p, hz / 1000); p = smput(p, ".");
 		{ unsigned f = (hz % 1000) / 10; if (f < 10) p = smput(p, "0"); p = smputu(p, f); }
 		p = smput(p, " Hz"); break; }
+	case SM_SLOT: p = smputu(p, (unsigned)s_save_slot); break;
 	case SM_SAVE: case SM_LOAD: p = smput(p, "[A]"); break;
 	default: break; } *p = 0; return buf; }
 
@@ -310,15 +313,19 @@ static int sm_change(int i, int dir, int act)
 	} break;
 	case SM_BENCH:  if (dir || act) g_snes_benchmark = !g_snes_benchmark; break;
 	case SM_PANEL:  break;   /* read-only */
+	case SM_SLOT: if (dir) s_save_slot = (s_save_slot + dir + 10) % 10; break;
 	case SM_SAVE: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF; unsigned ssz = s_menu_c->state_size();
-			void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;   /* reclaim serialize temps */
+			char ext[4]; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;   /* reclaim serialize temps */
+			ext[0] = 's'; ext[1] = 't'; ext[2] = (char)('0' + s_save_slot); ext[3] = 0;
 			if (ssz && ssz <= SNES_STATE_CAP && s_menu_c->state_save(st, ssz) == 0)
-				smput(s_mstat, gba_sd_write_named(s_menu_vol, "/states/snes", s_menu_rom->name, "st0", st, ssz) == 0 ? "State saved" : "Save failed");
+				smput(s_mstat, gba_sd_write_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, st, ssz) == 0 ? "State saved" : "Save failed");
 			else smput(s_mstat, "Save failed");
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
 	case SM_LOAD: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF;
-			void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;
-			unsigned n = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, "st0", st, SNES_STATE_CAP);
+			char ext[4]; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;
+			unsigned n;
+			ext[0] = 's'; ext[1] = 't'; ext[2] = (char)('0' + s_save_slot); ext[3] = 0;
+			n = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, st, SNES_STATE_CAP);
 			smput(s_mstat, (n && s_menu_c->state_load(st, n) == 0) ? "State loaded" : "No save state");
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
 	case SM_RESET: if (act) { s_menu_c->reset(); return 1; } break;
@@ -402,7 +409,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	/* hand the in-game menu this session's context */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
-	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0;
+	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0; s_save_slot = 0;
 	/* Restore the persisted snes9x option picks (aspect/overscan/audio/hires) and push them
 	 * to the core so a game launches with the player's last choices, not defaults. */
 	{
