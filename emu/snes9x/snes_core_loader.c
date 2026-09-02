@@ -42,6 +42,11 @@ static const struct snes_core_imports s_imports = {
 	gba_host_time,
 };
 
+/* diagnostics for `fastboot oem diag` (why did the blob load fail?) */
+volatile unsigned g_snes_dbg_loaderr;   /* 1 hdr read, 2 magic, 3 hdr sizes, 4 blob read, 5 init */
+volatile unsigned g_snes_dbg_hdr0;      /* magic word actually read from boot_b */
+volatile int      g_snes_dbg_prc;       /* partition_read return of the header */
+
 /* Load the SNES core blob and return its export table, or 0 on any failure. */
 const struct snes_core_exports *snes_core_load(void)
 {
@@ -50,23 +55,23 @@ const struct snes_core_exports *snes_core_load(void)
 	unsigned entry, load_size, total_span;
 	snes_core_blob_init_fn init;
 	const struct snes_core_exports *ex;
+	ssize_t prc;
 
-	if (partition_read(SNES_CORE_BLOB_PART, SNES_CORE_BLOB_OFF, (unsigned char *)hdr, sizeof hdr) != (ssize_t)sizeof hdr)
-		return 0;
-	if (hdr[0] != SNES_CORE_ABI_MAGIC || hdr[1] != SNES_CORE_ABI_VERSION)
-		return 0;
+	prc = partition_read(SNES_CORE_BLOB_PART, SNES_CORE_BLOB_OFF, (unsigned char *)hdr, sizeof hdr);
+	g_snes_dbg_prc = (int)prc;
+	g_snes_dbg_hdr0 = hdr[0];
+	if (prc != (ssize_t)sizeof hdr) { g_snes_dbg_loaderr = 1; return 0; }
+	if (hdr[0] != SNES_CORE_ABI_MAGIC || hdr[1] != SNES_CORE_ABI_VERSION) { g_snes_dbg_loaderr = 2; return 0; }
 	entry = hdr[2]; load_size = hdr[3]; total_span = hdr[4];
-	if (load_size < sizeof hdr || total_span < load_size)
-		return 0;
+	if (load_size < sizeof hdr || total_span < load_size) { g_snes_dbg_loaderr = 3; return 0; }
 
-	if (partition_read(SNES_CORE_BLOB_PART, SNES_CORE_BLOB_OFF, dst, load_size) != (ssize_t)load_size)
-		return 0;
+	if (partition_read(SNES_CORE_BLOB_PART, SNES_CORE_BLOB_OFF, dst, load_size) != (ssize_t)load_size) { g_snes_dbg_loaderr = 4; return 0; }
 	memset(dst + load_size, 0, total_span - load_size);   /* zero BSS */
 	core_sync_code(SNES_CORE_BLOB_VMA, load_size);
 
 	init = (snes_core_blob_init_fn)(void *)(dst + entry);
 	ex = init(&s_imports);
-	if (!ex || ex->magic != SNES_CORE_ABI_MAGIC || ex->version != SNES_CORE_ABI_VERSION)
-		return 0;
+	if (!ex || ex->magic != SNES_CORE_ABI_MAGIC || ex->version != SNES_CORE_ABI_VERSION) { g_snes_dbg_loaderr = 5; return 0; }
+	g_snes_dbg_loaderr = 0;
 	return ex;
 }

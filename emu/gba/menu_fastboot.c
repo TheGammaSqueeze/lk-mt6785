@@ -95,6 +95,13 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			 g_snes_dbg_frames, g_snes_dbg_w, g_snes_dbg_h, g_snes_dbg_exit);
 		fastboot_info(lbuf);
 	}
+	{
+		extern volatile unsigned g_snes_dbg_loaderr, g_snes_dbg_hdr0;
+		extern volatile int g_snes_dbg_prc;
+		snprintf(lbuf, sizeof lbuf, "snes-load: err=%u prc=%d hdr0=0x%08x (want 0x31534e53)",
+			 g_snes_dbg_loaderr, g_snes_dbg_prc, g_snes_dbg_hdr0);
+		fastboot_info(lbuf);
+	}
 	fastboot_okay("");
 }
 
