@@ -22,6 +22,11 @@ validation (headless here - need a .sfc/.smc in /roms/snes to confirm a game ren
 - boot_b packer: 3rd blob @0x01E00000 (33 MB partition, overrun-checked). Build script builds
   the snes blob. boot_b now 31.8 MB, lk_a still fits 2 MB.
 
+PACING: per-system, as requested. SNES emulation paced to its native 60.0988 Hz (NTSC)
+via the runner's TPF num/den; GB/GBC/GBA stay 59.7275 Hz (their own pacing); the carousel
+menu stays 59.7275 Hz (vsync-driven, untouched). When SNES audio lands its resampler must
+use 60.0988 Hz, not the 59.7275 the GBA path assumes.
+
 REMAINING: audio (snes frame -> AFE, ~32 kHz resample), in-game menu/run-ahead/transition
 (mirror gbc), menu console badge + logo, perf pass, hi-res/interlace + overscan polish,
 pacing to exact 60.098 Hz.

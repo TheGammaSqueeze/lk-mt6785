@@ -92,8 +92,11 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	int aya_hold = 0;
 	unsigned pace_base;
 	unsigned long long pace_n = 0;
-	const unsigned long long TPF_NUM = 13000000ull;   /* ~60 Hz pacing (refine to 60.098) */
-	const unsigned long long TPF_DEN = 60ull;
+	/* SNES runs at its native 60.0988 Hz (NTSC), NOT the 59.7275 Hz the GB/GBC/GBA cores
+	 * pace to. Ticks/frame @13 MHz = 13000000 / 60.0988 = 216309.5; express as a num/den
+	 * so the cumulative target (pace_base + pace_n*NUM/DEN) has no drift. */
+	const unsigned long long TPF_NUM = 130000000000ull;   /* 13000000 * 10000 */
+	const unsigned long long TPF_DEN = 600988ull;         /* 60.0988 Hz * 10000 */
 
 	c = snes_core_load();
 	if (!c) return;
