@@ -1151,6 +1151,60 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 	s_fb_flip ^= 1;
 }
 
+/* Real GB/GBC frame (gambatte): 160x144 native, integer 6x -> 960x864 centred on the
+ * 1280x960 panel. A DEDICATED path (not ayaneo_gbc_show_frame, which in the AYANEO_GBA
+ * build is compiled for the GBA game's 240x160x5 geometry and would stretch a 160x144
+ * frame to GBA aspect). No GBA colour-correction LUT (gambatte already outputs final
+ * RGB565); honours the LCD filter + volume OSD. Used by emu/gbc/gbc_sd_run.c. */
+void ayaneo_gb_show_frame(const unsigned short *pix)
+{
+	extern unsigned int gpt4_get_current_tick(void);
+	unsigned int t0 = gpt4_get_current_tick();
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	const unsigned int SW = 160, SH = 144, SC = 6;
+	unsigned int dw = SW * SC, dh = SH * SC;              /* 960 x 864 */
+	unsigned int xoff = (W - dw) / 2, yoff = (H - dh) / 2;
+	unsigned int *dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
+	unsigned int dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
+	int filt = ayaneo_get_lcd_filter();
+	unsigned int sx, sy, ix, iy;
+
+	for (sy = 0; sy < SH; sy++) {
+		const unsigned short *srow = pix + sy * SW;
+		for (sx = 0; sx < SW; sx++) {
+			unsigned int v = srow[sx];
+			unsigned int r = ((v >> 11) & 0x1f) << 3;
+			unsigned int g = ((v >> 5) & 0x3f) << 2;
+			unsigned int b = (v & 0x1f) << 3;
+			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+			unsigned int dk = 0xFF000000u | ((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
+			if (!filt) {
+				for (iy = 0; iy < SC; iy++) {
+					unsigned int *o = dst + (yoff + sy * SC + iy) * pitch_w + (xoff + sx * SC);
+					for (ix = 0; ix < SC; ix++) o[ix] = px;
+				}
+			} else {
+				for (iy = 0; iy < SC; iy++) {
+					unsigned int *o = dst + (yoff + sy * SC + iy) * pitch_w + (xoff + sx * SC);
+					int lastrow = (iy == (int)SC - 1);
+					for (ix = 0; ix < SC; ix++) {
+						unsigned int c = px; int lastcol = (ix == (int)SC - 1);
+						if (filt == 1 && lastrow) c = dk;
+						else if (filt >= 2 && (lastrow || lastcol)) c = dk;
+						o[ix] = c;
+					}
+				}
+			}
+		}
+	}
+	ayaneo_draw_osd(dst, pitch_w, W, H);                  /* volume/brightness slider */
+	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
+	g_dbg_blit_us = (gpt4_get_current_tick() - t0) / 13u;
+	ayaneo_present(dpa, W, H, pitch_w);
+	s_fb_flip ^= 1;
+}
+
 /* BIOS-logo intro only: scale the 240x160 frame 6x = 1440x960 to FILL the panel
  * HEIGHT, centred and cropped to the 1280 width (nearest neighbour). Efficient -
  * the visible source-column range is computed once so the inner loop has no

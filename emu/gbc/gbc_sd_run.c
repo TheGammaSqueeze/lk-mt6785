@@ -18,7 +18,7 @@
 
 /* ---- LK / driver primitives (externs; no LK headers here) ---- */
 extern const struct gbc_core_exports *gbc_core_load(void);   /* gbc_core_loader.c */
-extern void     ayaneo_gbc_show_frame(const unsigned short *pix);
+extern void     ayaneo_gb_show_frame(const unsigned short *pix);   /* dedicated 160x144x6 GB/GBC path */
 extern void     ayaneo_gbc_audio_init(void);
 extern void     ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count);
 extern void     ayaneo_menu_audio_silence(void);
@@ -120,9 +120,14 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 	ahead_sz = c->state_size();
 	if (ahead_sz > 0x00A00000u) ahead_sz = 0;   /* sanity: must fit the 10 MB scratch gap */
 
-	/* cartridge battery save (.sav) from the card, if any */
-	if (c->savedata_ptr() && c->savedata_size())
-		gba_sd_load_sav(vol, rom->name, (unsigned char *)c->savedata_ptr(), c->savedata_size());
+	/* cartridge battery save (.sav) from the card, if any. Clamp to the GB max SRAM
+	 * (128 KB) so a bad size can never drive a runaway SD DMA. */
+	{
+		unsigned savsz = c->savedata_size();
+		if (savsz > 128u * 1024u) savsz = 0;
+		if (c->savedata_ptr() && savsz)
+			gba_sd_load_sav(vol, rom->name, (unsigned char *)c->savedata_ptr(), savsz);
+	}
 
 	/* Suspend/resume: reload the save STATE written on the last exit so the game
 	 * resumes where it was left, unless B is held (start fresh). Mirrors the GBA
@@ -191,10 +196,10 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 					unsigned s2 = GBC_SND_MAX;
 					c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);   /* muted look-ahead */
 				}
-				ayaneo_gbc_show_frame(vbuf);          /* present the future frame */
+				ayaneo_gb_show_frame(vbuf);          /* present the future frame */
 				c->state_load(ahead, ahead_sz);       /* rewind to the committed frame */
 			} else {
-				ayaneo_gbc_show_frame(vbuf);
+				ayaneo_gb_show_frame(vbuf);
 			}
 
 			/* pace to 59.7 Hz off the 13 MHz counter (cumulative, no drift) */
@@ -209,8 +214,12 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 
 	/* persist the cartridge battery save + a suspend save STATE (so the next launch
 	 * resumes), then hand the codec back to the menu */
-	if (c->savedata_ptr() && c->savedata_size())
-		gba_sd_write_sav(vol, rom->name, (const unsigned char *)c->savedata_ptr(), c->savedata_size());
+	{
+		unsigned savsz = c->savedata_size();
+		if (savsz > 128u * 1024u) savsz = 0;
+		if (c->savedata_ptr() && savsz)
+			gba_sd_write_sav(vol, rom->name, (const unsigned char *)c->savedata_ptr(), savsz);
+	}
 	if (GBC_ADVANCED && ahead_sz) {
 		c->state_save(ahead);
 		gba_sd_write_state(vol, rom->name, 0, ahead, ahead_sz);

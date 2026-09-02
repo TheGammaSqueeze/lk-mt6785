@@ -2290,8 +2290,13 @@ void ayaneo_gbc_start(void)
 	ayaneo_gba_force_uart();
 	GBA_ATRACE("GBA: ayaneo_gbc_start (GBA build) - spawning emu thread\n");
 #endif
+	/* 256 KB stack: gpSP emulation runs on the separate gba_cpu thread, but the
+	 * gambatte GB/GBC core runs its frame loop (gbc_sd_session -> gbc_run, deep C++)
+	 * directly on THIS thread on top of the menu + SD/FAT orchestration frames. 64 KB
+	 * overflowed and corrupted the stack, surfacing as a data abort in the next SD
+	 * DMA (msdc_dma_transfer epilogue, sp = ~0xffffffxx) when switching GB/GBC games. */
 	thread_t *t = thread_create("ayaneo_gba", &emu_thread, NULL,
-				    DEFAULT_PRIORITY, 65536);
+				    DEFAULT_PRIORITY, 262144);
 	if (t)
 		thread_resume(t);
 }

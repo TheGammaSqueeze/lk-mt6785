@@ -13,7 +13,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 SVG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gba_cartridge.svg")
 SS = 4                      # supersample factor for anti-aliasing
-OUT_W = 228                 # final width (boxart window); height follows the cart aspect
+OUT_W = 114                 # half res: the placeholder cart does not need full resolution
+                            # (it is upscaled on the card), so store it at half the window width
 
 FONTS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
