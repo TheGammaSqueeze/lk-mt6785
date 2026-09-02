@@ -92,6 +92,7 @@ volatile unsigned g_snes_dbg_nz;      /* non-zero pixels in a full-frame sample 
 volatile unsigned g_snes_dbg_changed; /* count of frames whose content hash changed (0 = frozen) */
 static   unsigned s_snes_dbg_lasthash;
 volatile unsigned g_snes_test_limit;  /* >0: run this many frames then exit (oem snes-launch) */
+volatile unsigned g_snes_dbg_pcmin = 0xFFFFFFFF, g_snes_dbg_pcmax; /* emulated 65816 PC range */
 
 /* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
  * menu is open so navigation keys do not leak into the game. */
@@ -259,6 +260,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * is gated off in ayaneo_snes_pad_mask while the menu is open. */
 		c->run(&f);
 		g_snes_dbg_frames++;
+		if (c->dbg_pc) { unsigned pc = c->dbg_pc();
+			if (pc < g_snes_dbg_pcmin) g_snes_dbg_pcmin = pc;
+			if (pc > g_snes_dbg_pcmax) g_snes_dbg_pcmax = pc; }
 		if (g_snes_test_limit && g_snes_dbg_frames >= g_snes_test_limit) { g_snes_dbg_exit = 5; }
 		if (f.video && f.width && f.height) {
 			g_snes_dbg_w = f.width; g_snes_dbg_h = f.height; g_snes_dbg_pitch = f.pitch;

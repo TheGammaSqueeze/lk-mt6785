@@ -55,6 +55,10 @@ struct snes_core_exports {
 	unsigned (*state_size)(void);
 	int      (*state_save)(void *buf, unsigned size);
 	int      (*state_load)(const void *buf, unsigned size);
+
+	/* debug: the emulated 65816 program counter (Registers.PBPC), to see whether the CPU
+	 * is running game code (wide PC range) or stuck in a tight spin (e.g. APU handshake). */
+	unsigned (*dbg_pc)(void);
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);

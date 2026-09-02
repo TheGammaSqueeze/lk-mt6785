@@ -9,6 +9,9 @@
 #include <time.h>
 #include "libretro/libretro.h"
 #include "snes_core_abi.h"
+#include "snes9x.h"
+#include "65c816.h"   /* struct SRegisters Registers (the 65816 CPU registers) */
+#include "bapu/snes/snes.hpp"   /* SNES::smp (the SPC700 APU CPU) */
 
 /* ---- libretro public API (from libretro/libretro.cpp) ---- */
 extern "C" {
@@ -172,6 +175,10 @@ static void snes_av_info(unsigned *base_w, unsigned *base_h,
 static void    *snes_sram_ptr(void)  { return retro_get_memory_data(RETRO_MEMORY_SAVE_RAM); }
 static unsigned  snes_sram_size(void) { return (unsigned)retro_get_memory_size(RETRO_MEMORY_SAVE_RAM); }
 
+/* the SPC700 (APU CPU) program counter: if the APU is alive it sweeps the IPL ROM
+ * (0xffc0-0xffff) at boot, so a wide pcmin..pcmax range = running, a stuck value = dead. */
+static unsigned snes_dbg_pc(void) { return (unsigned)SNES::smp.regs.pc; }
+
 static unsigned snes_state_size(void) { return (unsigned)retro_serialize_size(); }
 static int snes_state_save(void *buf, unsigned size) { return retro_serialize(buf, size) ? 0 : -1; }
 static int snes_state_load(const void *buf, unsigned size) { return retro_unserialize(buf, size) ? 0 : -1; }
@@ -191,6 +198,7 @@ static const struct snes_core_exports g_exports = {
 	snes_state_size,
 	snes_state_save,
 	snes_state_load,
+	snes_dbg_pc,
 };
 
 /* Blob entry: run C++ static constructors (libstdc++ ios_base::Init etc. - unlike the
