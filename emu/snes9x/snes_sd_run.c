@@ -40,6 +40,8 @@ extern unsigned ayaneo_get_snes_opts(void);             /* packed aspect|oversca
 extern void     ayaneo_set_snes_opts(unsigned v);
 extern int      ayaneo_get_snes_slot(void);             /* persisted manual save-state slot 0..9 */
 extern void     ayaneo_set_snes_slot(int v);
+extern int      ayaneo_get_snes_turbo(void);            /* persisted auto-fire mask (bit0 A, bit1 B) */
+extern void     ayaneo_set_snes_turbo(int v);
 
 /* Run-ahead: present pf frames into the future with the current input, then rewind to the
  * committed frame (mirrors GB/GBC/GBA "Preemptive Frames"). Runs pf+1 full emulations per
@@ -128,6 +130,7 @@ extern void ayaneo_gbc_audio_set_volume(int v);
 extern void ayaneo_menu_settings_persist(void);
 
 volatile int g_snes_menu_open;   /* gates ayaneo_snes_pad_mask so the game ignores menu input */
+volatile int g_snes_turbo;       /* auto-fire mask: bit0 = A, bit1 = B (0=off,1=A,2=B,3=A+B) */
 
 /* diagnostics, read via `fastboot oem diag` after a launch (why did the session exit?) */
 volatile unsigned g_snes_dbg_stage;   /* 1 blob,2 rom,3 heap,4 loading,5 running */
@@ -154,9 +157,15 @@ volatile unsigned g_snes_dbg_heapused;  /* arena bytes in use at test end (run-a
  * menu is open so navigation keys do not leak into the game. */
 unsigned ayaneo_snes_pad_mask(void)
 {
+	/* Turbo (auto-fire): g_snes_turbo bit0 = A, bit1 = B. When set and the button is held,
+	 * the bit is gated by a ~15 Hz pulse (2 emulated frames on, 2 off) so it rapid-fires. */
 	unsigned m = 0;
+	int a_on = 1, b_on = 1;
 	if (g_snes_menu_open) return 0;
-	if (PRESSED(GPIO_B))      m |= 1u << RJ_B;
+	if (g_snes_turbo) { int pulse = (g_snes_dbg_frames & 3u) < 2u;
+		if (g_snes_turbo & 1) a_on = pulse;
+		if (g_snes_turbo & 2) b_on = pulse; }
+	if (PRESSED(GPIO_B) && b_on) m |= 1u << RJ_B;
 	if (PRESSED(GPIO_Y))      m |= 1u << RJ_Y;
 	if (PRESSED(GPIO_SELECT)) m |= 1u << RJ_SELECT;
 	if (PRESSED(GPIO_START))  m |= 1u << RJ_START;
@@ -164,7 +173,7 @@ unsigned ayaneo_snes_pad_mask(void)
 	if (PRESSED(GPIO_DOWN))   m |= 1u << RJ_DOWN;
 	if (PRESSED(GPIO_LEFT))   m |= 1u << RJ_LEFT;
 	if (PRESSED(GPIO_RIGHT))  m |= 1u << RJ_RIGHT;
-	if (PRESSED(GPIO_A))      m |= 1u << RJ_A;
+	if (PRESSED(GPIO_A) && a_on) m |= 1u << RJ_A;
 	if (PRESSED(GPIO_X))      m |= 1u << RJ_X;
 	if (PRESSED(GPIO_LB))     m |= 1u << RJ_L;
 	if (PRESSED(GPIO_RB))     m |= 1u << RJ_R;
@@ -221,8 +230,11 @@ static void snes_slot_check(void)
 	s_slot_used = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, tmp, sizeof tmp) > 0;
 }
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
-       SM_CPU, SM_RUNAHEAD, SM_BENCH, SM_PANEL,
+       SM_CPU, SM_RUNAHEAD, SM_TURBO, SM_BENCH, SM_PANEL,
        SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
+
+static const char *snes_turbo_name(int t)
+{ return t == 1 ? "A" : t == 2 ? "B" : t == 3 ? "A+B" : "Off"; }
 
 static const char *snes_filter_name(int f)
 { return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : "Off"; }
@@ -262,6 +274,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_ASPECT: return "Aspect Ratio"; case SM_OVERSCAN: return "Overscan";
 	case SM_AUDIO:  return "Audio Filter";  case SM_HIRES:    return "Hi-Res Blend";
 	case SM_CPU:    return "CPU Clock"; case SM_RUNAHEAD: return "Run-Ahead";
+	case SM_TURBO:  return "Turbo (auto-fire)";
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
 	case SM_SLOT:   return "Save Slot";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
@@ -277,6 +290,7 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 		if (!mhz || tick-- == 0) { mhz = ayaneo_get_cpu_mhz(); tick = 40; }
 		p = smputu(p, mhz); p = smput(p, " MHz"); break; }
 	case SM_RUNAHEAD: p = smput(p, snes_ra_name(ayaneo_get_preempt_frames())); break;
+	case SM_TURBO: p = smput(p, snes_turbo_name(g_snes_turbo)); break;
 	case SM_BENCH: if (g_snes_benchmark) { p = smputu(p, (unsigned)s_snes_fps); p = smput(p, " fps"); }
 		else p = smput(p, "Off"); break;
 	case SM_PANEL: { unsigned hz = s_snes_hz1000;   /* Hz*1000 -> "60.11 Hz" */
@@ -336,6 +350,8 @@ static int sm_change(int i, int dir, int act)
 		ayaneo_set_cpu_mhz(s_snes_ra_opp[pf]);   /* escalate the clock for pf+1 emulations/frame */
 		snes_settings_touch();
 	} break;
+	case SM_TURBO: if (dir) { g_snes_turbo = (g_snes_turbo + dir + 4) % 4;
+			ayaneo_set_snes_turbo(g_snes_turbo); snes_settings_touch(); } break;
 	case SM_BENCH:  if (act) g_snes_benchmark = !g_snes_benchmark; break;   /* A toggles (not L/R, which auto-repeat) */
 	case SM_PANEL:  break;   /* read-only */
 	case SM_SLOT: if (dir) { s_save_slot = (s_save_slot + dir + 10) % 10;
@@ -438,6 +454,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
 	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0;
 	s_save_slot = ayaneo_get_snes_slot();   /* restore the last-used manual save slot */
+	g_snes_turbo = ayaneo_get_snes_turbo(); /* restore the persisted auto-fire setting */
 	s_settings_dirty = 0;
 	snes_slot_check();                      /* seed the used/empty indicator for it */
 	/* Restore the persisted snes9x option picks (aspect/overscan/audio/hires) and push them
