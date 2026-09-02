@@ -81,9 +81,13 @@ Multiple save-state slots added: a "Save Slot" (0-9) menu item; manual Save/Load
 and the Save Slot item shows used/empty (cheap 16-byte SD probe on slot change / save, not
 per frame).
 
-Feature set now at parity with GB/GBC/GBA (incl. fast-forward). Optional leftovers:
-color-correction option (omitted as GB-specific); tuning the run-ahead tiers if Max is too
-heavy on some games.
+Turbo (auto-fire) added: a Pico-menu item cycling Off / A / B / A+B; holding the turbo'd
+button rapid-fires it at ~15 Hz (pulse in ayaneo_snes_pad_mask). Persisted (settings ver 8,
+offset 60).
+
+Feature set now at parity with GB/GBC/GBA (incl. fast-forward) and beyond (multi-slot saves,
+turbo). Optional leftovers: color-correction option (omitted as GB-specific); tuning the
+run-ahead tiers if Max is too heavy on some games.
 
 LCM refresh switch VALIDATED on device (2026-09-02) via oem diag: menu vfp 23 ->
 g_dbg_hz1000 = 59723 (59.723 Hz measured); SNES session vfp 17 -> g_snes_dbg_hz1000 = 60088
