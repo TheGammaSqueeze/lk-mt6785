@@ -46,6 +46,7 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
 #define GPIO_LEFT      78
 #define GPIO_RIGHT     80
 #define GPIO_A         83      /* menu select */
+#define GPIO_X         84      /* menu: reset the hovered option to its default */
 #define RESET_HOLD_FRAMES 30    /* ~0.5 s at 59.7 Hz */
 
 /* Run-ahead and suspend/resume are layered on basic emulation. The baseline (display,
@@ -61,7 +62,31 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
  * run-ahead runs (pf+1) emulations per displayed frame, so escalate the clock with pf.
  * The menu runs at 2000 MHz; the game does not need that, and a lower clock saves power. */
 extern void ayaneo_set_cpu_mhz(unsigned int mhz);
+extern unsigned int ayaneo_get_cpu_mhz(void);
 static const unsigned s_gbc_opp[4] = { 600, 1000, 1200, 1400 };
+
+/* Manual CPU-clock OPP grid for the in-game "CPU Clock" menu row (mirrors the GBA
+ * driver's grid). ayaneo_set_cpu_mhz only reprograms the ARM-PLL PCW, NOT the core
+ * voltage (LK has no DVFS table), so anything above the boot Vproc point is the user's
+ * call. s_cpu_idx is lazily seeded from the live clock on first use. */
+static const unsigned s_cpu_opp[] = { 600, 800, 1000, 1200, 1400, 1600, 1800, 2000 };
+static int s_cpu_idx = -1;
+static void gbc_cpu_step(int dir)
+{
+	int n = (int)(sizeof(s_cpu_opp) / sizeof(s_cpu_opp[0])), i;
+	if (s_cpu_idx < 0) {
+		unsigned cur = ayaneo_get_cpu_mhz(), bd = ~0u; int best = 0;
+		for (i = 0; i < n; i++) {
+			unsigned d = s_cpu_opp[i] > cur ? s_cpu_opp[i] - cur : cur - s_cpu_opp[i];
+			if (d < bd) { bd = d; best = i; }
+		}
+		s_cpu_idx = best;
+	}
+	s_cpu_idx += dir;
+	if (s_cpu_idx < 0) s_cpu_idx = 0;
+	if (s_cpu_idx >= n) s_cpu_idx = n - 1;
+	ayaneo_set_cpu_mhz(s_cpu_opp[s_cpu_idx]);
+}
 
 /* GBA arena reuse (only one core runs at a time). Non-overlapping regions with margin:
  * ROM (8 MB) | gambatte heap (24 MB) | video | audio | savestate scratch, all inside
@@ -138,8 +163,18 @@ static int                 *s_menu_pal;      /* -> session pal_idx */
 static int  s_msel;
 static char s_mstat[48];
 
+/* Palette LIST picker (A on the Palette row opens it): hold Up/Down to browse with
+ * accelerating auto-repeat, applied live each step; A applies, B restores the previous
+ * selection. State survives across sessions on the reused gbc thread, so it is reset at
+ * session start. */
+static int  s_pal_pick;         /* picker overlay active */
+static int  s_pal_pick_saved;   /* index to restore on cancel (B) */
+static int  s_pick_dir;         /* current held direction (-1/0/+1) */
+static int  s_pick_hold;        /* frames the direction has been held */
+static int  s_pick_tick;        /* frames since the last auto-repeat step */
+
 enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_PALETTE, GM_COLORCC, GM_CCMODE, GM_DARK,
-       GM_PREEMPT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
+       GM_PREEMPT, GM_CPU, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
 
 static char *mput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *mputu(char *p, unsigned v) { char t[12]; int n = 0;
@@ -157,6 +192,7 @@ static const char *gm_label(int i)
 	case GM_CCMODE:  return "Correction Mode";
 	case GM_DARK:    return "Dark Filter";
 	case GM_PREEMPT: return "Preemptive Frames";
+	case GM_CPU:     return "CPU Clock";
 	case GM_SAVE:    return "Save State";
 	case GM_LOAD:    return "Load State";
 	case GM_RESET:   return "Reset Game";
@@ -182,6 +218,7 @@ static const char *gm_value(int i, char *buf)
 	case GM_DARK:    if (s_dark <= 0) p = mput(p, "Off"); else { p = mputu(p, (unsigned)s_dark); p = mput(p, "%"); } break;
 	case GM_PREEMPT: { int pf = ayaneo_get_preempt_frames();
 			   p = mput(p, pf == 0 ? "Off" : pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : "Max"); } break;
+	case GM_CPU:     p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
 	case GM_SAVE: case GM_LOAD: p = mput(p, "[A]"); break;
 	default: break;
 	}
@@ -196,11 +233,21 @@ static int gm_change(int i, int dir, int act)
 	case GM_BRIGHT:  if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case GM_VOLUME:  if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
 	case GM_FILTER:  if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
-	case GM_PALETTE: if (dir && s_menu_is_dmg && s_menu_pal) { int n = dmg_pal_count(s_menu_c); *s_menu_pal = (*s_menu_pal + dir + n) % n; apply_dmg_palette(s_menu_c, *s_menu_pal); } changed = 0; break;
+	case GM_PALETTE: if (s_menu_is_dmg && s_menu_pal) {
+				 if (act == 1) {   /* A = open the full palette list picker */
+					 s_pal_pick_saved = *s_menu_pal;
+					 s_pick_dir = 0; s_pick_hold = 0; s_pick_tick = 0;
+					 s_pal_pick = 1;
+				 } else if (act == 2) {   /* X = reset to the default GBC (automatic) palette */
+					 *s_menu_pal = s_menu_c->dmg_palette_default ? (int)s_menu_c->dmg_palette_default() : 0;
+					 apply_dmg_palette(s_menu_c, *s_menu_pal);
+				 } else if (dir) { int n = dmg_pal_count(s_menu_c); *s_menu_pal = (*s_menu_pal + dir + n) % n; apply_dmg_palette(s_menu_c, *s_menu_pal); }
+			 } changed = 0; break;
 	case GM_COLORCC: if (dir) { s_cc_on = !s_cc_on; apply_color_knobs(s_menu_c); } changed = 0; break;
 	case GM_CCMODE:  if (dir) { s_cc_mode = !s_cc_mode; apply_color_knobs(s_menu_c); } changed = 0; break;
 	case GM_DARK:    if (dir) { s_dark += dir * 10; if (s_dark < 0) s_dark = 0; if (s_dark > 100) s_dark = 100; apply_color_knobs(s_menu_c); } changed = 0; break;
 	case GM_PREEMPT: if (dir) ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + dir + 4) % 4); else changed = 0; break;
+	case GM_CPU:     if (dir) gbc_cpu_step(dir); changed = 0; break;
 	case GM_SAVE:    if (act && s_menu_ahead_sz) { s_menu_c->state_save(s_menu_ahead);
 			     mput(s_mstat, gba_sd_write_state(s_menu_vol, s_menu_rom->name, 0, s_menu_ahead, s_menu_ahead_sz) == 0 ? "State saved" : "Save failed"); }
 			 changed = 0; break;
@@ -216,12 +263,47 @@ static int gm_change(int i, int dir, int act)
 }
 
 int gbc_menu_open(void) { return g_gbc_menu_open; }
+
+/* Palette LIST picker overlay: a scrolling window of palette names centred on the live
+ * selection (which is applied to the running game behind the panel, so the colours update
+ * as you browse). Drawn instead of the Pico menu while s_pal_pick. */
+static void gbc_pal_pick_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
+{
+	const struct gbc_core_exports *c = s_menu_c;
+	int n = dmg_pal_count(c);
+	int cur = s_menu_pal ? *s_menu_pal : 0;
+	const int rows = 11, half = rows / 2, rowH = 40;
+	int panelW = 760, panelH = 80 + rows * rowH + 40;
+	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2;
+	int r, y = py + 80;
+	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
+	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
+	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "Select Palette");
+	for (r = -half; r <= half; r++, y += rowH) {
+		int idx = cur + r; char line[64]; char *pp = line; const char *nm; int k;
+		unsigned int fg;
+		if (idx < 0 || idx >= n) continue;
+		fg = (r == 0) ? 0xFF101018u : 0xFFC8D0E0u;
+		if (r == 0) ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
+		nm = c->dmg_palette_name ? c->dmg_palette_name((unsigned)idx) : "";
+		pp = mputu(pp, (unsigned)(idx + 1)); pp = mput(pp, "  ");
+		for (k = 0; nm[k] && k < 34; k++) *pp++ = nm[k];
+		*pp = 0;
+		ayaneo_text(buf, pitch, px + 28, y, 2, fg, line);
+	}
+	ayaneo_text(buf, pitch, px + 28, py + panelH - 28, 1, 0xFF8890A0u,
+		    "Up/Down browse (hold to accelerate)   A apply   B cancel");
+}
+
 /* called by ayaneo_gb_show_frame (mt_disp_drv.c) after the game frame */
 void gbc_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
 {
-	int rowH = 38, panelW = 780, panelH = 84 + GM_COUNT * rowH + 42;   /* wide enough for long palette names */
-	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2;
-	int x = px + 28, y = py + 84, i; char val[48];
+	int rowH = 38, panelW = 780, panelH;
+	int px, py, x, y, i; char val[48];
+	if (s_pal_pick) { gbc_pal_pick_paint(buf, pitch, W, H); return; }
+	panelH = 84 + GM_COUNT * rowH + 42;   /* wide enough for long palette names */
+	px = ((int)W - panelW) / 2; py = ((int)H - panelH) / 2;
+	x = px + 28; y = py + 84;
 	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
 	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
 	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "GammaOS Pico");
@@ -348,11 +430,11 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
 	s_menu_ahead = ahead; s_menu_ahead_sz = ahead_sz;
 	s_menu_is_dmg = is_dmg; s_menu_pal = &pal_idx;
-	s_msel = 0; s_mstat[0] = 0; g_gbc_menu_open = 0;
+	s_msel = 0; s_mstat[0] = 0; g_gbc_menu_open = 0; s_pal_pick = 0;
 
 	pace_base = gpt4_get_current_tick();
 	{
-	int up_prev = 0, dn_prev = 0, lt_prev = 0, rt_prev = 0, a_prev = 0, b_prev = 0;
+	int up_prev = 0, dn_prev = 0, lt_prev = 0, rt_prev = 0, a_prev = 0, b_prev = 0, x_prev = 0;
 	int aya_hold = 0;
 	for (;;) {
 		unsigned samples = GBC_SND_MAX;
@@ -368,24 +450,58 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * Holding AYA ~1.5 s force-exits to the selector - a safety so a broken
 			 * menu can never soft-lock the game (the watchdog is disabled here). */
 			aya = PRESSED(GPIO_AYA);
-			if (aya && !aya_prev) { g_gbc_menu_open = !g_gbc_menu_open; s_mstat[0] = 0; }
+			if (aya && !aya_prev) { g_gbc_menu_open = !g_gbc_menu_open; s_mstat[0] = 0; if (!g_gbc_menu_open) s_pal_pick = 0; }
 			aya_prev = aya;
 			if (aya) { if (++aya_hold >= 90) break; } else aya_hold = 0;
 
-			if (g_gbc_menu_open) {
+			if (g_gbc_menu_open && s_pal_pick) {
+				/* Palette LIST picker: hold Up/Down to browse with accelerating
+				 * auto-repeat (applied live each step); A applies, B restores the
+				 * pre-open selection. Direction is polled every frame (not edge). */
+				int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
+				int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);
+				int dir = up ? -1 : dn ? +1 : 0;
+				int move = 0, step = 1;
+				if (dir == 0) { s_pick_dir = 0; s_pick_hold = 0; s_pick_tick = 0; }
+				else if (dir != s_pick_dir) {        /* fresh press = one immediate step */
+					s_pick_dir = dir; s_pick_hold = 0; s_pick_tick = 0; move = 1; step = 1;
+				} else {                             /* held: accelerate the repeat */
+					int interval, st;
+					s_pick_hold++;
+					if      (s_pick_hold < 16)  { interval = 0;  st = 0;  }   /* initial pause */
+					else if (s_pick_hold < 48)  { interval = 6;  st = 1;  }
+					else if (s_pick_hold < 96)  { interval = 3;  st = 2;  }
+					else if (s_pick_hold < 160) { interval = 2;  st = 5;  }
+					else                        { interval = 1;  st = 12; }
+					if (interval > 0 && ++s_pick_tick >= interval) { s_pick_tick = 0; move = 1; step = st; }
+				}
+				if (move && s_menu_pal) {
+					int n = dmg_pal_count(s_menu_c), v = *s_menu_pal + dir * step;
+					while (v < 0) v += n; while (v >= n) v -= n;   /* wrap */
+					*s_menu_pal = v; apply_dmg_palette(s_menu_c, v);
+				}
+				if (a && !a_prev) s_pal_pick = 0;                    /* apply (already live) */
+				if (b && !b_prev) {                                  /* cancel: restore */
+					if (s_menu_pal) { *s_menu_pal = s_pal_pick_saved; apply_dmg_palette(s_menu_c, s_pal_pick_saved); }
+					s_pal_pick = 0;
+				}
+				a_prev = a; b_prev = b;
+				up_prev = up; dn_prev = dn;   /* keep fresh so returning to nav is clean */
+			} else if (g_gbc_menu_open) {
 				/* menu nav: dpad move/change, A select, B close. The game's own
 				 * input is gated off in ayaneo_gbc_pad_mask while the menu is open. */
 				int res = 0;
 				int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
 				int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
-				int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);
+				int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B), x = PRESSED(GPIO_X);
 				if (up && !up_prev) s_msel = (s_msel + GM_COUNT - 1) % GM_COUNT;
 				if (dn && !dn_prev) s_msel = (s_msel + 1) % GM_COUNT;
 				if (lt && !lt_prev) res = gm_change(s_msel, -1, 0);
 				if (rt && !rt_prev) res = gm_change(s_msel, +1, 0);
 				if (a  && !a_prev)  res = gm_change(s_msel, 0, 1);
+				if (x  && !x_prev)  res = gm_change(s_msel, 0, 2);  /* X = reset option to default */
 				if (b  && !b_prev)  g_gbc_menu_open = 0;
-				up_prev = up; dn_prev = dn; lt_prev = lt; rt_prev = rt; a_prev = a; b_prev = b;
+				up_prev = up; dn_prev = dn; lt_prev = lt; rt_prev = rt; a_prev = a; b_prev = b; x_prev = x;
 				if (res == 2) {                    /* Close -> exit to the selector */
 					extern void gbc_menu_arm_reverse(const unsigned short *frame);
 					gbc_menu_arm_reverse(vbuf);   /* closing punch: shrink into the menu */

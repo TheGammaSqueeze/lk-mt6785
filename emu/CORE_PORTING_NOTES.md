@@ -151,6 +151,16 @@ ABI but unexposed; they are now Pico rows (Color Correction on/off, Correction M
 Accurate/Fast, Dark Filter 0..100%), applied at session start via `apply_color_knobs` and
 remembered in module statics for the LK boot (not yet in the SD-persisted settings block).
 
+The Pico menu also carries a "CPU Clock" row (manual OPP grid 600..2000, mirrors the GBA
+driver's `s_cpu_opp`/`cpu_step`; ayaneo_set_cpu_mhz reprograms the PLL only, so >boot-Vproc
+is the user's call) and, on the Palette row: X resets to the default GBC palette, and A
+opens a full-screen LIST PICKER. The picker polls Up/Down every frame (not edge) with
+accelerating auto-repeat (pause < 16 frames held, then interval 6/3/2/1 and step 1/2/5/12
+as the hold grows) so all ~600 palettes are reachable quickly while keeping fine control;
+each step applies live on the running game behind the panel; A confirms, B restores the
+pre-open selection. Picker state is a module static, so it is reset at session start and
+cleared when the menu closes (the gbc thread is reused across sessions).
+
 NOTE: the gambatte core blob lives in boot_b (off 0x01900000), so ANY core change
 (new exports, palette data) requires re-flashing BOTH lk_a AND boot_b. The build's "boot_b
 assets UNCHANGED" note only tracks the SNES menu pack, not the core blobs - ignore it when
