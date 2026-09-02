@@ -65,6 +65,13 @@ struct gbc_core_exports {
 	const char *(*dmg_palette_name)(unsigned idx);
 	void        (*dmg_palette_apply)(unsigned idx);
 	unsigned    (*dmg_palette_default)(void);
+
+	/* Auto-detect: pick the per-game palette gambatte would ("internal" colorization)
+	 * by matching the ROM's 16-byte header title (0x134) against gbcTitlePalettes, and
+	 * install it; falls back to the default GBC palette when the game is not listed.
+	 * The frontend passes the title (it holds the ROM buffer); returns the applied dir
+	 * index for display, or -1 if it fell back. This is the DEFAULT palette mode. */
+	int         (*dmg_palette_apply_auto)(const char *title);
 };
 
 typedef const struct gbc_core_exports *(*gbc_core_blob_init_fn)(const struct gbc_core_imports *imp);

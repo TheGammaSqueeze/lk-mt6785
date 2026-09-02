@@ -146,6 +146,15 @@ libretro-common `array/rhmap.h` (a title->palette hash we do NOT use), which dra
 `retro_common_api.h` and `#error`s under `-ffreestanding` ("inttypes.h is being screwy").
 Short-circuit it: before the include, `#define __LIBRETRO_SDK_ARRAY_RHMAP_H__`, `NULL`, and
 stub `RHMAP_SET_STR/GET_STR/FREE` so the (unused, compiler-dropped) map helpers still parse.
+Index 0 is a frontend-synthesised "Auto (Detect)" slot (the DEFAULT): it calls the core's
+`dmg_palette_apply_auto(title)`, which matches the ROM header title (0x134, up to 16 bytes,
+uppercase ASCII, ctrl-terminated - the frontend extracts it from its ROM buffer) against
+gambatte's per-game `gbcTitlePalettes` and installs that palette, falling back to
+"GBC - Dark Green" when the game is not listed. This is gambatte's "internal" colorization.
+The frontend maps its indices 1..N onto the core dir palettes 0..N-1, so `dmg_pal_count`
+returns core count + 1 and `dmg_pal_name(0)` is "Auto (Detect)". X on the Palette row resets
+to Auto.
+
 The CGB colour knobs (`set_color_correction`, `_mode`, `set_dark_filter`) were already in the
 ABI but unexposed; they are now Pico rows (Color Correction on/off, Correction Mode
 Accurate/Fast, Dark Filter 0..100%), applied at session start via `apply_color_knobs` and

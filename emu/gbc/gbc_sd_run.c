@@ -110,11 +110,24 @@ static void gbc_cpu_step(int dir)
 /* GB colorization palettes now come from the gambatte core catalogue (gbcpalettes.h:
  * the real GB/GBC/SGB/Special + TWB64/community list, ~600 entries) rather than a few
  * hand-picked presets. The core owns the data; we browse it by index (count/name) and
- * install one (apply). Only DMG (.gb) games use these; GBC/SGB carts colour themselves. */
+ * install one (apply). Only DMG (.gb) games use these; GBC/SGB carts colour themselves.
+ *
+ * The frontend reserves index 0 for "Auto (Detect)" - gambatte's per-game colorization,
+ * keyed on the ROM header title - and maps indices 1..N onto the core's dir palettes
+ * 0..N-1. Auto is the DEFAULT. s_rom_title is filled from the ROM header at session start
+ * and handed to the core's auto detector. */
+static char s_rom_title[20];
+
 static int dmg_pal_count(const struct gbc_core_exports *c)
 {
-	int n = c->dmg_palette_count ? (int)c->dmg_palette_count() : 1;
-	return n > 0 ? n : 1;
+	int n = c->dmg_palette_count ? (int)c->dmg_palette_count() : 0;
+	return n + 1;   /* +1 for the Auto slot at index 0 */
+}
+
+static const char *dmg_pal_name(const struct gbc_core_exports *c, int idx)
+{
+	if (idx == 0) return "Auto (Detect)";
+	return c->dmg_palette_name ? c->dmg_palette_name((unsigned)(idx - 1)) : "";
 }
 
 static void apply_dmg_palette(const struct gbc_core_exports *c, int idx)
@@ -122,7 +135,8 @@ static void apply_dmg_palette(const struct gbc_core_exports *c, int idx)
 	int n = dmg_pal_count(c);
 	if (idx < 0) idx = n - 1;
 	if (idx >= n) idx = 0;
-	if (c->dmg_palette_apply) c->dmg_palette_apply((unsigned)idx);
+	if (idx == 0) { if (c->dmg_palette_apply_auto) c->dmg_palette_apply_auto(s_rom_title); }
+	else          { if (c->dmg_palette_apply) c->dmg_palette_apply((unsigned)(idx - 1)); }
 }
 
 /* CGB colour knobs (mainly for GBC/colour games; harmless on DMG). Remembered across
@@ -210,8 +224,8 @@ static const char *gm_value(int i, char *buf)
 	case GM_BRIGHT:  p = mputu(p, (unsigned)ayaneo_brightness_pct()); p = mput(p, "%"); break;
 	case GM_VOLUME:  p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
 	case GM_FILTER:  p = mput(p, filt_name(ayaneo_get_lcd_filter())); break;
-	case GM_PALETTE: if (s_menu_is_dmg && s_menu_c && s_menu_c->dmg_palette_name) {
-				 const char *nm = s_menu_c->dmg_palette_name((unsigned)(s_menu_pal ? *s_menu_pal : 0));
+	case GM_PALETTE: if (s_menu_is_dmg && s_menu_c) {
+				 const char *nm = dmg_pal_name(s_menu_c, s_menu_pal ? *s_menu_pal : 0);
 				 int nl = 0; while (nm[nl] && nl < 30) nl++;   /* clamp long TWB64 names */
 				 p = mput(p, "< "); { int j; for (j = 0; j < nl; j++) *p++ = nm[j]; } p = mput(p, " >");
 			 } else p = mput(p, "CGB"); break;
@@ -240,8 +254,8 @@ static int gm_change(int i, int dir, int act)
 					 s_pal_pick_saved = *s_menu_pal;
 					 s_pick_dir = 0; s_pick_hold = 0; s_pick_tick = 0;
 					 s_pal_pick = 1;
-				 } else if (act == 2) {   /* X = reset to the default GBC (automatic) palette */
-					 *s_menu_pal = s_menu_c->dmg_palette_default ? (int)s_menu_c->dmg_palette_default() : 0;
+				 } else if (act == 2) {   /* X = reset to the default: Auto (Detect) */
+					 *s_menu_pal = 0;
 					 apply_dmg_palette(s_menu_c, *s_menu_pal);
 				 } else if (dir) { int n = dmg_pal_count(s_menu_c); *s_menu_pal = (*s_menu_pal + dir + n) % n; apply_dmg_palette(s_menu_c, *s_menu_pal); }
 			 } changed = 0; break;
@@ -287,7 +301,7 @@ static void gbc_pal_pick_paint(unsigned int *buf, unsigned int pitch, unsigned i
 		if (idx < 0 || idx >= n) continue;
 		fg = (r == 0) ? 0xFF101018u : 0xFFC8D0E0u;
 		if (r == 0) ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
-		nm = c->dmg_palette_name ? c->dmg_palette_name((unsigned)idx) : "";
+		nm = dmg_pal_name(c, idx);
 		pp = mputu(pp, (unsigned)(idx + 1)); pp = mput(pp, "  ");
 		for (k = 0; nm[k] && k < 34; k++) *pp++ = nm[k];
 		*pp = 0;
@@ -375,7 +389,15 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			c->state_load(ahead, n);
 	}
 	if (is_dmg) {
-		pal_idx = c->dmg_palette_default ? (int)c->dmg_palette_default() : 0;
+		/* Cartridge title (header 0x134, up to 16 bytes, uppercase ASCII, null/ctrl
+		 * terminated) for the core's per-game palette auto-detection. */
+		int ti; for (ti = 0; ti < 16; ti++) {
+			unsigned char ch = rombuf[0x134 + ti];
+			if (ch < 0x20 || ch > 0x7E) break;
+			s_rom_title[ti] = (char)ch;
+		}
+		s_rom_title[ti] = 0;
+		pal_idx = 0;                 /* index 0 = Auto (Detect), the default palette mode */
 		apply_dmg_palette(c, pal_idx);
 	}
 	apply_color_knobs(c);   /* CGB colour correction / dark filter (remembered settings) */

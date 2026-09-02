@@ -95,6 +95,34 @@ extern "C" unsigned gbc_dmg_palette_default(void)
 	return 0;
 }
 
+/* gambatte "internal" colorization: match the ROM header title against the per-game
+ * palette table (the palettes the CGB BIOS assigns by game). Returns the gbcDirPalettes
+ * index when the fallback is used (so the frontend can name it), else -1 for a real
+ * per-game hit. */
+static const unsigned GBC_TITLE_PAL_N =
+	(unsigned)(sizeof(gbcTitlePalettes) / sizeof(gbcTitlePalettes[0]));
+
+static void apply_pal_ptr(const unsigned short *p)
+{
+	for (unsigned pal = 0; pal < 3; pal++)
+		for (unsigned col = 0; col < 4; col++)
+			gbc_set_dmg_palette_color(pal, col, pack15_to_rgb32(p[pal * 4 + col]));
+}
+
+extern "C" int gbc_dmg_palette_apply_auto(const char *title)
+{
+	if (title) {
+		for (unsigned i = 0; i < GBC_TITLE_PAL_N; i++)
+			if (str_eq(gbcTitlePalettes[i].title, title)) {
+				apply_pal_ptr(gbcTitlePalettes[i].p);
+				return -1;                 /* per-game hit */
+			}
+	}
+	unsigned di = gbc_dmg_palette_default();    /* not listed -> default GBC palette */
+	apply_pal_ptr(gbcDirPalettes[di].p);
+	return (int)di;
+}
+
 /* ---- outward-call forwarders the bundled core references ---- */
 extern "C" unsigned gbc_read_buttons(void)      /* gambatte LkInput -> LK pad reader */
 {
@@ -131,6 +159,7 @@ static const struct gbc_core_exports g_exports = {
 	gbc_dmg_palette_name,
 	gbc_dmg_palette_apply,
 	gbc_dmg_palette_default,
+	gbc_dmg_palette_apply_auto,
 };
 
 /* Blob entry: LK calls this with the imports table and gets the export table back. */
