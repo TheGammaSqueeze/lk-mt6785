@@ -133,6 +133,29 @@ bad length can never drive a runaway DMA.
 - Cold-boot microSD mount skips a 250 ms VDD-collapse delay when the rail is already
   off (msdc_ext_sd_power_on) - do not "fix" that back to an unconditional delay.
 
+## 11. Palette catalogue + colour knobs live in the CORE, exposed by index
+The GB-colorization palettes (the real gambatte GB/GBC/SGB/Special + TWB64 list, ~600)
+come from `libgambatte/libretro/gbcpalettes.h`, compiled INTO the blob (gbc_core_exports.cpp)
+and exposed over the ABI as `dmg_palette_count/name/apply/default` (browse + install by
+index). The frontend keeps NO palette data; it just cycles the index (L/R shoulders or the
+Pico "Palette" row) and shows `dmg_palette_name`. Default is "GBC - Dark Green" (the CGB
+BIOS default). Palettes are PACK15 (15-bit 0bBGR) x 12 = 3 DMG palettes x 4 shades; the
+core converts to 0x00RRGGBB and drives the existing `set_dmg_palette_color`. Only DMG (.gb)
+games use these; GBC/SGB carts colour themselves. GOTCHA: gbcpalettes.h `#include`s
+libretro-common `array/rhmap.h` (a title->palette hash we do NOT use), which drags in
+`retro_common_api.h` and `#error`s under `-ffreestanding` ("inttypes.h is being screwy").
+Short-circuit it: before the include, `#define __LIBRETRO_SDK_ARRAY_RHMAP_H__`, `NULL`, and
+stub `RHMAP_SET_STR/GET_STR/FREE` so the (unused, compiler-dropped) map helpers still parse.
+The CGB colour knobs (`set_color_correction`, `_mode`, `set_dark_filter`) were already in the
+ABI but unexposed; they are now Pico rows (Color Correction on/off, Correction Mode
+Accurate/Fast, Dark Filter 0..100%), applied at session start via `apply_color_knobs` and
+remembered in module statics for the LK boot (not yet in the SD-persisted settings block).
+
+NOTE: the gambatte core blob lives in boot_b (off 0x01900000), so ANY core change
+(new exports, palette data) requires re-flashing BOTH lk_a AND boot_b. The build's "boot_b
+assets UNCHANGED" note only tracks the SNES menu pack, not the core blobs - ignore it when
+you touched a core.
+
 ## Still open (as of this doc)
 - Port the Pico in-game overlay menu + its settings from `lk-gbc-emu` into the GBC
   session (AYA currently just exits). Then re-enable `GBC_ADVANCED`.

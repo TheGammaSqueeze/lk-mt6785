@@ -55,6 +55,16 @@ struct gbc_core_exports {
 	void (*set_color_correction)(int enable);
 	void (*set_color_correction_mode)(unsigned mode);
 	void (*set_dark_filter)(unsigned level);
+
+	/* GB colorization palette catalogue (the real gambatte gbcpalettes.h list: GB,
+	 * GBC, SGB, Special and the TWB64/community packs). Only meaningful for DMG (.gb)
+	 * games; GBC/SGB carts colour themselves from the ROM. The frontend browses by
+	 * index (count/name) and installs a palette (apply, which sets all 3 DMG palettes).
+	 * default() returns the index of the standard "GBC - Dark Green" GBC palette. */
+	unsigned    (*dmg_palette_count)(void);
+	const char *(*dmg_palette_name)(unsigned idx);
+	void        (*dmg_palette_apply)(unsigned idx);
+	unsigned    (*dmg_palette_default)(void);
 };
 
 typedef const struct gbc_core_exports *(*gbc_core_blob_init_fn)(const struct gbc_core_imports *imp);

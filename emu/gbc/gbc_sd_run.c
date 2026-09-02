@@ -80,25 +80,36 @@ static const unsigned s_gbc_opp[4] = { 600, 1000, 1200, 1400 };
 #define GBC_SND_MAX    35208u   /* one 2097152 Hz frame of stereo samples */
 #define GBC_FORCE_DMG  1u       /* gambatte::GB::FORCE_DMG */
 
-/* DMG (monochrome) palette presets, lightest..darkest (0x00RRGGBB). Cycled with L/R on a
- * .gb game and applied to all three DMG palettes (BG, OBJ0, OBJ1). */
-static const unsigned s_dmg_pal[][4] = {
-	{ 0xFFFFFF, 0xAAAAAA, 0x555555, 0x000000 },   /* grayscale */
-	{ 0x9BBC0F, 0x8BAC0F, 0x306230, 0x0F380F },   /* DMG green */
-	{ 0xC4CFA1, 0x8B956D, 0x4D533C, 0x1F1F1F },   /* pocket */
-	{ 0xE0F8D0, 0x88C070, 0x346856, 0x081820 },   /* light green */
-	{ 0xD8E8F8, 0x8098C0, 0x506890, 0x182848 },   /* blue */
-};
-#define DMG_PAL_COUNT (int)(sizeof(s_dmg_pal) / sizeof(s_dmg_pal[0]))
+/* GB colorization palettes now come from the gambatte core catalogue (gbcpalettes.h:
+ * the real GB/GBC/SGB/Special + TWB64/community list, ~600 entries) rather than a few
+ * hand-picked presets. The core owns the data; we browse it by index (count/name) and
+ * install one (apply). Only DMG (.gb) games use these; GBC/SGB carts colour themselves. */
+static int dmg_pal_count(const struct gbc_core_exports *c)
+{
+	int n = c->dmg_palette_count ? (int)c->dmg_palette_count() : 1;
+	return n > 0 ? n : 1;
+}
 
 static void apply_dmg_palette(const struct gbc_core_exports *c, int idx)
 {
-	int p, col;
-	if (idx < 0) idx = DMG_PAL_COUNT - 1;
-	if (idx >= DMG_PAL_COUNT) idx = 0;
-	for (p = 0; p < 3; p++)
-		for (col = 0; col < 4; col++)
-			c->set_dmg_palette_color((unsigned)p, (unsigned)col, s_dmg_pal[idx][col]);
+	int n = dmg_pal_count(c);
+	if (idx < 0) idx = n - 1;
+	if (idx >= n) idx = 0;
+	if (c->dmg_palette_apply) c->dmg_palette_apply((unsigned)idx);
+}
+
+/* CGB colour knobs (mainly for GBC/colour games; harmless on DMG). Remembered across
+ * sessions in this LK boot. Color correction simulates the washed-out GBC LCD gamut;
+ * the mode is Accurate (gamut-correct) vs Fast; the dark filter dims the whole image. */
+static int s_cc_on   = 1;   /* color correction on by default (gambatte CGB default) */
+static int s_cc_mode = 0;   /* 0 = Accurate, 1 = Fast */
+static int s_dark    = 0;   /* dark filter level, 0..100 % */
+
+static void apply_color_knobs(const struct gbc_core_exports *c)
+{
+	if (c->set_color_correction)      c->set_color_correction(s_cc_on);
+	if (c->set_color_correction_mode) c->set_color_correction_mode((unsigned)s_cc_mode);
+	if (c->set_dark_filter)           c->set_dark_filter((unsigned)s_dark);
 }
 
 /* ---- in-game overlay menu (GammaOS Pico), mirrors the GBA menu in gba_driver.c.
@@ -127,7 +138,8 @@ static int                 *s_menu_pal;      /* -> session pal_idx */
 static int  s_msel;
 static char s_mstat[48];
 
-enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_PALETTE, GM_PREEMPT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
+enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_PALETTE, GM_COLORCC, GM_CCMODE, GM_DARK,
+       GM_PREEMPT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
 
 static char *mput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *mputu(char *p, unsigned v) { char t[12]; int n = 0;
@@ -141,6 +153,9 @@ static const char *gm_label(int i)
 	case GM_VOLUME:  return "Volume";
 	case GM_FILTER:  return "LCD Filter";
 	case GM_PALETTE: return "Palette";
+	case GM_COLORCC: return "Color Correction";
+	case GM_CCMODE:  return "Correction Mode";
+	case GM_DARK:    return "Dark Filter";
 	case GM_PREEMPT: return "Preemptive Frames";
 	case GM_SAVE:    return "Save State";
 	case GM_LOAD:    return "Load State";
@@ -157,8 +172,14 @@ static const char *gm_value(int i, char *buf)
 	case GM_BRIGHT:  p = mputu(p, (unsigned)ayaneo_brightness_pct()); p = mput(p, "%"); break;
 	case GM_VOLUME:  p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
 	case GM_FILTER:  p = mput(p, filt_name(ayaneo_get_lcd_filter())); break;
-	case GM_PALETTE: if (s_menu_is_dmg) { p = mput(p, "< "); p = mputu(p, (unsigned)((s_menu_pal ? *s_menu_pal : 0) + 1)); p = mput(p, " >"); }
-			 else p = mput(p, "CGB"); break;
+	case GM_PALETTE: if (s_menu_is_dmg && s_menu_c && s_menu_c->dmg_palette_name) {
+				 const char *nm = s_menu_c->dmg_palette_name((unsigned)(s_menu_pal ? *s_menu_pal : 0));
+				 int nl = 0; while (nm[nl] && nl < 30) nl++;   /* clamp long TWB64 names */
+				 p = mput(p, "< "); { int j; for (j = 0; j < nl; j++) *p++ = nm[j]; } p = mput(p, " >");
+			 } else p = mput(p, "CGB"); break;
+	case GM_COLORCC: p = mput(p, s_cc_on ? "On" : "Off"); break;
+	case GM_CCMODE:  p = mput(p, s_cc_mode ? "Fast" : "Accurate"); break;
+	case GM_DARK:    if (s_dark <= 0) p = mput(p, "Off"); else { p = mputu(p, (unsigned)s_dark); p = mput(p, "%"); } break;
 	case GM_PREEMPT: { int pf = ayaneo_get_preempt_frames();
 			   p = mput(p, pf == 0 ? "Off" : pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : "Max"); } break;
 	case GM_SAVE: case GM_LOAD: p = mput(p, "[A]"); break;
@@ -175,7 +196,10 @@ static int gm_change(int i, int dir, int act)
 	case GM_BRIGHT:  if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case GM_VOLUME:  if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
 	case GM_FILTER:  if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
-	case GM_PALETTE: if (dir && s_menu_is_dmg && s_menu_pal) { *s_menu_pal = (*s_menu_pal + dir + DMG_PAL_COUNT) % DMG_PAL_COUNT; apply_dmg_palette(s_menu_c, *s_menu_pal); } changed = 0; break;
+	case GM_PALETTE: if (dir && s_menu_is_dmg && s_menu_pal) { int n = dmg_pal_count(s_menu_c); *s_menu_pal = (*s_menu_pal + dir + n) % n; apply_dmg_palette(s_menu_c, *s_menu_pal); } changed = 0; break;
+	case GM_COLORCC: if (dir) { s_cc_on = !s_cc_on; apply_color_knobs(s_menu_c); } changed = 0; break;
+	case GM_CCMODE:  if (dir) { s_cc_mode = !s_cc_mode; apply_color_knobs(s_menu_c); } changed = 0; break;
+	case GM_DARK:    if (dir) { s_dark += dir * 10; if (s_dark < 0) s_dark = 0; if (s_dark > 100) s_dark = 100; apply_color_knobs(s_menu_c); } changed = 0; break;
 	case GM_PREEMPT: if (dir) ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + dir + 4) % 4); else changed = 0; break;
 	case GM_SAVE:    if (act && s_menu_ahead_sz) { s_menu_c->state_save(s_menu_ahead);
 			     mput(s_mstat, gba_sd_write_state(s_menu_vol, s_menu_rom->name, 0, s_menu_ahead, s_menu_ahead_sz) == 0 ? "State saved" : "Save failed"); }
@@ -195,7 +219,7 @@ int gbc_menu_open(void) { return g_gbc_menu_open; }
 /* called by ayaneo_gb_show_frame (mt_disp_drv.c) after the game frame */
 void gbc_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
 {
-	int rowH = 38, panelW = 660, panelH = 84 + GM_COUNT * rowH + 42;
+	int rowH = 38, panelW = 780, panelH = 84 + GM_COUNT * rowH + 42;   /* wide enough for long palette names */
 	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2;
 	int x = px + 28, y = py + 84, i; char val[48];
 	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
@@ -225,7 +249,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	unsigned int   *snd   = (unsigned int *)GBC_SND;
 	unsigned romsz, flags;
 	int is_dmg = (rom->type == GBA_CONSOLE_GB);
-	int pal_idx = 1;                            /* default to DMG green for .gb */
+	int pal_idx = 0;                            /* set to the core's default GBC palette once loaded */
 	int aya_prev = 0, lb_prev = 0, rb_prev = 0;
 	int reset_hold = 0;
 	unsigned ahead_sz = 0;
@@ -266,8 +290,11 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		if (n)
 			c->state_load(ahead, n);
 	}
-	if (is_dmg)
+	if (is_dmg) {
+		pal_idx = c->dmg_palette_default ? (int)c->dmg_palette_default() : 0;
 		apply_dmg_palette(c, pal_idx);
+	}
+	apply_color_knobs(c);   /* CGB colour correction / dark filter (remembered settings) */
 
 	/* Drop from the menu's 2000 MHz to the run-ahead-tier emulation clock (Off = 600,
 	 * escalating with pf so the (pf+1) emulations per frame still fit the 16.7 ms budget). */
@@ -373,9 +400,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				else reset_hold = 0;
 				/* L/R cycle the DMG palette (mono games only, not during the combo) */
 				if (is_dmg && !combo) {
-					int lb = PRESSED(GPIO_LB), rb = PRESSED(GPIO_RB);
-					if (lb && !lb_prev) { pal_idx = (pal_idx + DMG_PAL_COUNT - 1) % DMG_PAL_COUNT; apply_dmg_palette(c, pal_idx); }
-					if (rb && !rb_prev) { pal_idx = (pal_idx + 1) % DMG_PAL_COUNT; apply_dmg_palette(c, pal_idx); }
+					int lb = PRESSED(GPIO_LB), rb = PRESSED(GPIO_RB), n = dmg_pal_count(c);
+					if (lb && !lb_prev) { pal_idx = (pal_idx + n - 1) % n; apply_dmg_palette(c, pal_idx); }
+					if (rb && !rb_prev) { pal_idx = (pal_idx + 1) % n; apply_dmg_palette(c, pal_idx); }
 					lb_prev = lb; rb_prev = rb;
 				}
 			}

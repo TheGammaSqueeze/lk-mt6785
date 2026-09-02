@@ -8,6 +8,25 @@
  */
 #include "gbc_core_abi.h"
 
+/* The authentic gambatte GB-colorization palette catalogue (GB/GBC/SGB/Special +
+ * the TWB64/community packs). Compiled INTO the blob so the frontend does not have
+ * to duplicate ~600 palettes; it browses/applies by index over the ABI below.
+ *
+ * gbcpalettes.h pulls in libretro-common's array/rhmap.h for a title->palette hash
+ * lookup we do not use (index access only). rhmap.h drags in retro_common_api.h,
+ * which #errors under our freestanding -ffreestanding toolchain ("inttypes.h is
+ * being screwy"). We only need the palette TABLES, so short-circuit the rhmap include
+ * by pre-defining its guard and stubbing the three macros the (unused, dropped) map
+ * helpers reference so the header still parses. */
+#define __LIBRETRO_SDK_ARRAY_RHMAP_H__ 1
+#ifndef NULL
+#define NULL 0
+#endif
+#define RHMAP_SET_STR(b, k, v) ((void)(b), (void)(k), (void)(v))
+#define RHMAP_GET_STR(b, k)    ((void)(b), (void)(k), (const unsigned short *)0)
+#define RHMAP_FREE(b)          ((void)(b))
+#include "libgambatte/libretro/gbcpalettes.h"
+
 /* extern "C" core wrappers (gbc_wrap.cpp) */
 extern "C" {
 void     gbc_heap_init(void *base, unsigned size);
@@ -29,6 +48,52 @@ void     gbc_set_dark_filter(unsigned level);
 }
 
 static const struct gbc_core_imports *s_imp;
+
+/* ---- GB colorization palette catalogue over gbcDirPalettes[] (gbcpalettes.h) ----
+ * Each entry is a name plus 12 PACK15 (15-bit 0bBGR) colours = 3 DMG palettes (BG,
+ * OBJ0, OBJ1) x 4 shades. Convert PACK15 back to 0x00RRGGBB and drive the existing
+ * gbc_set_dmg_palette_color path so nothing else in the core needs to change. */
+static const unsigned GBC_DIR_PAL_N =
+	(unsigned)(sizeof(gbcDirPalettes) / sizeof(gbcDirPalettes[0]));
+
+static inline unsigned pack15_to_rgb32(unsigned short v)
+{
+	unsigned r5 = v & 0x1Fu, g5 = (v >> 5) & 0x1Fu, b5 = (v >> 10) & 0x1Fu;
+	unsigned r8 = (r5 << 3) | (r5 >> 2);
+	unsigned g8 = (g5 << 3) | (g5 >> 2);
+	unsigned b8 = (b5 << 3) | (b5 >> 2);
+	return (r8 << 16) | (g8 << 8) | b8;
+}
+
+static int str_eq(const char *a, const char *b)
+{
+	while (*a && *a == *b) { a++; b++; }
+	return *a == *b;
+}
+
+extern "C" unsigned gbc_dmg_palette_count(void) { return GBC_DIR_PAL_N; }
+
+extern "C" const char *gbc_dmg_palette_name(unsigned idx)
+{
+	return idx < GBC_DIR_PAL_N ? gbcDirPalettes[idx].title : "";
+}
+
+extern "C" void gbc_dmg_palette_apply(unsigned idx)
+{
+	if (idx >= GBC_DIR_PAL_N) return;
+	const unsigned short *p = gbcDirPalettes[idx].p;   /* 12 shorts: BG, OBJ0, OBJ1 */
+	for (unsigned pal = 0; pal < 3; pal++)
+		for (unsigned col = 0; col < 4; col++)
+			gbc_set_dmg_palette_color(pal, col, pack15_to_rgb32(p[pal * 4 + col]));
+}
+
+extern "C" unsigned gbc_dmg_palette_default(void)
+{
+	for (unsigned i = 0; i < GBC_DIR_PAL_N; i++)
+		if (str_eq(gbcDirPalettes[i].title, "GBC - Dark Green"))
+			return i;                          /* the CGB BIOS default GBC palette */
+	return 0;
+}
 
 /* ---- outward-call forwarders the bundled core references ---- */
 extern "C" unsigned gbc_read_buttons(void)      /* gambatte LkInput -> LK pad reader */
@@ -62,6 +127,10 @@ static const struct gbc_core_exports g_exports = {
 	gbc_set_color_correction,
 	gbc_set_color_correction_mode,
 	gbc_set_dark_filter,
+	gbc_dmg_palette_count,
+	gbc_dmg_palette_name,
+	gbc_dmg_palette_apply,
+	gbc_dmg_palette_default,
 };
 
 /* Blob entry: LK calls this with the imports table and gets the export table back. */

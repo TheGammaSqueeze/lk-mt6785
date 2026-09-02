@@ -159,9 +159,16 @@ static int scan_rom_folder(fat_vol *v, const char *path, const char *ext,
 		if (e.size == 0) continue;              /* skip empty/placeholder files */
 		(*tot)++;
 		if (n < max) {
-			int k = 0;
+			int k = 0, el = 0;
 			while (e.name[k] && k < 127) { out[n].name[k] = e.name[k]; k++; }
 			out[n].name[k] = 0;
+			/* Strip the trailing ".gb/.gbc/.gba" for DISPLAY: the roster name is
+			 * only used for the menu label and for sav/state keying (base_ext there
+			 * re-strips any extension anyway), and the ROM itself opens by cluster,
+			 * so dropping the ext here is safe and gives a clean title. ends_ext
+			 * already matched, so the name is guaranteed to end with <ext>. */
+			while (ext[el]) el++;
+			if (k >= el) out[n].name[k - el] = 0;
 			out[n].first_clus = e.first_clus;
 			out[n].size = e.size;
 			out[n].type = type;
