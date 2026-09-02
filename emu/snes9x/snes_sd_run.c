@@ -197,6 +197,19 @@ static const gba_rom_entry *s_menu_rom;
 static int  s_msel;
 static char s_mstat[48];
 static int  s_save_slot;   /* manual Save/Load state slot 0..9 (suspend uses a separate "sus") */
+static int  s_slot_used;   /* 1 if the current slot's file exists on the card (cached) */
+
+/* build the "st<slot>" extension for a manual save-state slot. */
+static void snes_slot_ext(char *e) { e[0] = 's'; e[1] = 't'; e[2] = (char)('0' + s_save_slot); e[3] = 0; }
+
+/* refresh s_slot_used by probing the current slot's file (16-byte read; cheap, menu-time only). */
+static void snes_slot_check(void)
+{
+	unsigned char tmp[16]; char ext[4];
+	if (!s_menu_vol || !s_menu_rom) { s_slot_used = 0; return; }
+	snes_slot_ext(ext);
+	s_slot_used = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, tmp, sizeof tmp) > 0;
+}
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
        SM_CPU, SM_RUNAHEAD, SM_BENCH, SM_PANEL,
        SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
@@ -260,7 +273,7 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 		p = smputu(p, hz / 1000); p = smput(p, ".");
 		{ unsigned f = (hz % 1000) / 10; if (f < 10) p = smput(p, "0"); p = smputu(p, f); }
 		p = smput(p, " Hz"); break; }
-	case SM_SLOT: p = smputu(p, (unsigned)s_save_slot); break;
+	case SM_SLOT: p = smputu(p, (unsigned)s_save_slot); p = smput(p, s_slot_used ? " used" : " empty"); break;
 	case SM_SAVE: case SM_LOAD: p = smput(p, "[A]"); break;
 	default: break; } *p = 0; return buf; }
 
@@ -316,18 +329,19 @@ static int sm_change(int i, int dir, int act)
 	case SM_BENCH:  if (dir || act) g_snes_benchmark = !g_snes_benchmark; break;
 	case SM_PANEL:  break;   /* read-only */
 	case SM_SLOT: if (dir) { s_save_slot = (s_save_slot + dir + 10) % 10;
-			ayaneo_set_snes_slot(s_save_slot); ayaneo_menu_settings_persist(); } break;
+			ayaneo_set_snes_slot(s_save_slot); ayaneo_menu_settings_persist();
+			snes_slot_check(); } break;   /* refresh used/empty for the new slot */
 	case SM_SAVE: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF; unsigned ssz = s_menu_c->state_size();
-			char ext[4]; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;   /* reclaim serialize temps */
-			ext[0] = 's'; ext[1] = 't'; ext[2] = (char)('0' + s_save_slot); ext[3] = 0;
-			if (ssz && ssz <= SNES_STATE_CAP && s_menu_c->state_save(st, ssz) == 0)
-				smput(s_mstat, gba_sd_write_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, st, ssz) == 0 ? "State saved" : "Save failed");
-			else smput(s_mstat, "Save failed");
+			char ext[4]; int ok; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;
+			snes_slot_ext(ext);
+			ok = (ssz && ssz <= SNES_STATE_CAP && s_menu_c->state_save(st, ssz) == 0 &&
+			      gba_sd_write_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, st, ssz) == 0);
+			smput(s_mstat, ok ? "State saved" : "Save failed");
+			if (ok) s_slot_used = 1;
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
 	case SM_LOAD: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF;
-			char ext[4]; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;
-			unsigned n;
-			ext[0] = 's'; ext[1] = 't'; ext[2] = (char)('0' + s_save_slot); ext[3] = 0;
+			char ext[4]; unsigned n; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;
+			snes_slot_ext(ext);
 			n = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, st, SNES_STATE_CAP);
 			smput(s_mstat, (n && s_menu_c->state_load(st, n) == 0) ? "State loaded" : "No save state");
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
@@ -414,6 +428,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
 	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0;
 	s_save_slot = ayaneo_get_snes_slot();   /* restore the last-used manual save slot */
+	snes_slot_check();                      /* seed the used/empty indicator for it */
 	/* Restore the persisted snes9x option picks (aspect/overscan/audio/hires) and push them
 	 * to the core so a game launches with the player's last choices, not defaults. */
 	{
