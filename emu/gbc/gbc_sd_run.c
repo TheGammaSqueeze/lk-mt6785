@@ -289,6 +289,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	pace_base = gpt4_get_current_tick();
 	{
 	int up_prev = 0, dn_prev = 0, lt_prev = 0, rt_prev = 0, a_prev = 0, b_prev = 0;
+	int aya_hold = 0;
 	for (;;) {
 		unsigned samples = GBC_SND_MAX;
 		long r = c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
@@ -299,10 +300,13 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			int combo, pf, aya;
 			mtk_wdt_restart();
 
-			/* AYA toggles the in-game menu (game keeps running underneath). */
+			/* AYA taps toggle the in-game menu (game keeps running underneath).
+			 * Holding AYA ~1.5 s force-exits to the selector - a safety so a broken
+			 * menu can never soft-lock the game (the watchdog is disabled here). */
 			aya = PRESSED(GPIO_AYA);
 			if (aya && !aya_prev) { g_gbc_menu_open = !g_gbc_menu_open; s_mstat[0] = 0; }
 			aya_prev = aya;
+			if (aya) { if (++aya_hold >= 90) break; } else aya_hold = 0;
 
 			if (g_gbc_menu_open) {
 				/* menu nav: dpad move/change, A select, B close. The game's own
