@@ -77,6 +77,10 @@ struct snes_core_exports {
 	 * Mark before state_save, reset after state_load. */
 	void *(*heap_mark)(void);
 	void  (*heap_reset)(void *mark);
+
+	/* run-ahead fast savestates: LK sets this around the per-frame save/load so snes9x
+	 * serializes with the fast (direct-memory) path; cleared for portable SD saves. */
+	void  (*set_ra_fast)(int on);
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);

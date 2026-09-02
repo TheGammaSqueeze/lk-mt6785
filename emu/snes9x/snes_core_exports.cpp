@@ -77,6 +77,14 @@ static int snes_set_option(const char *key, const char *value)
 	return 0;
 }
 
+/* Run-ahead fast-savestate toggle: when set, GET_AUDIO_VIDEO_ENABLE advertises
+ * RETRO_AV_ENABLE_FAST_SAVESTATES so snes9x's serialize/unserialize take the fast path
+ * (direct memory, no ~15 per-block new/memcpy). LK sets it around the run-ahead save/load
+ * only, so SD/manual saves stay in the portable normal format. Video/audio bits are always
+ * on and hard-disable is always off, so this never changes rendering or audio. */
+static volatile int s_ra_fast;
+static void snes_set_ra_fast(int on) { s_ra_fast = on ? 1 : 0; }
+
 /* ---- libretro callbacks ---- */
 static bool env_cb(unsigned cmd, void *data)
 {
@@ -85,6 +93,11 @@ static bool env_cb(unsigned cmd, void *data)
 		const enum retro_pixel_format *f = (const enum retro_pixel_format *)data;
 		return *f == RETRO_PIXEL_FORMAT_RGB565;   /* we render RGB565 only */
 	}
+	case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE:
+		/* VIDEO|AUDIO always on, HARD_DISABLE_AUDIO never (matches the prior declined
+		 * behaviour exactly); add FAST_SAVESTATES only during run-ahead. */
+		if (data) *(int *)data = (1 | 2) | (s_ra_fast ? 4 : 0);
+		return true;
 	case RETRO_ENVIRONMENT_GET_VARIABLE: {
 		struct retro_variable *v = (struct retro_variable *)data;
 		unsigned i;
@@ -275,6 +288,7 @@ static const struct snes_core_exports g_exports = {
 	snes_aspect_x1000,
 	snes_heap_mark,
 	snes_heap_reset,
+	snes_set_ra_fast,
 };
 
 /* Blob entry: stash the imports and return the export table. NOTE: .init_array (libstdc++
