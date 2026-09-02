@@ -30,6 +30,8 @@ GBC_BLOB_OFF = 0x01900000         # gambatte GB/GBC core blob (matches GBC_CORE_
 STATE_OFF = 0x01C00000
 BLOB_OFF  = 0x01C00000            # gpSP core blob (matches GBA_CORE_BLOB_OFF in the loader)
 SNES_BLOB_OFF = 0x01E00000        # snes9x core blob (matches SNES_CORE_BLOB_OFF in the loader)
+SETTINGS_OFF  = 0x020FF000        # 512 B GammaOS settings block (AYANEO_SET_OFF in ayaneo_audio.c);
+                                  # the snes blob MUST NOT reach it or a settings save corrupts the blob
 BOOT_B_END    = 0x02100000        # boot_b partition size (33 MB) - hard ceiling
 SNES_MAGIC = 0x5A534E53          # "SNSZ" little-endian
 
@@ -75,6 +77,9 @@ def main():
     if BLOB_OFF + len(blob) > SNES_BLOB_OFF:
         raise SystemExit("gpSP blob (%d B) overruns the SNES blob region @0x%x by %d B" %
                          (len(blob), SNES_BLOB_OFF, BLOB_OFF + len(blob) - SNES_BLOB_OFF))
+    if SNES_BLOB_OFF + len(snes) > SETTINGS_OFF:
+        raise SystemExit("SNES blob (%d B) overruns the settings block @0x%x by %d B" %
+                         (len(snes), SETTINGS_OFF, SNES_BLOB_OFF + len(snes) - SETTINGS_OFF))
     if SNES_BLOB_OFF + len(snes) > BOOT_B_END:
         raise SystemExit("SNES blob (%d B) overruns the boot_b partition end @0x%x by %d B" %
                          (len(snes), BOOT_B_END, SNES_BLOB_OFF + len(snes) - BOOT_B_END))

@@ -184,7 +184,13 @@ static unsigned int s_audio_ms;
  * Stored in a single 512-byte block in boot_b at 30 MB, past the ROM (20-28 MB)
  * and the save state (28-30 MB); boot_b is 32 MB. Applied to both the boot chime
  * and the game, and to the backlight during the animation and in-game. */
-#define AYANEO_SET_OFF		0x01E00000u	/* 30 MB into boot_b */
+/* Settings block offset in boot_b. MUST NOT be 0x01E00000 - that is where the snes9x core
+ * blob lives (SNES_BLOB_OFF), and writing settings there corrupted the blob on every
+ * brightness/volume/filter change (SNES then failed to load, magic read back as "ASET").
+ * Moved to a dedicated 512 B slot in the boot_b tail, past all three core blobs; the packer
+ * (build_snes_boot_b.py) guards the snes blob against overlapping it. Settings are also
+ * mirrored to the SD card, which stays authoritative, so this relocation loses nothing. */
+#define AYANEO_SET_OFF		0x020FF000u	/* ~33 MB into boot_b, after the snes blob */
 #define AYANEO_SET_MAGIC	0x54455341u	/* "ASET" LE */
 #define AYANEO_SET_VER		5u
 #define AYANEO_BL_MIN		16		/* keep the panel visible (never 0) */
