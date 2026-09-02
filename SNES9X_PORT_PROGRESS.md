@@ -6,6 +6,20 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Status: ON-DEVICE BRING-UP - two device bugs found + fixed
+
+On-device debugging via `oem diag` counters + `oem snes-probe`:
+1. exit=2 (blob load fail): STALE on-device boot_b. Re-flashing boot_b fixed it; the probe
+   then confirmed snes_core_load()=OK. LESSON: always re-flash boot_b after a blob change.
+2. black screen + no audio, but stage=5 / frames advancing / dim=256x224 / pitch=2048 / nz=0
+   (frames genuinely black): the core build scripts were MISSING `-fno-strict-aliasing`.
+   Upstream snes9x's Makefile sets it (lines 685-686); snes9x type-puns memory heavily, so
+   with strict aliasing on (default at -Os) the compiler reordered/elided those accesses and
+   the emulation ran but produced garbage/black. Added `-fno-strict-aliasing` to both
+   build_core.sh and build_core_blob.sh. (The host validation only worked because that build
+   command happened to include the flag - a false-positive that hid the bug.) Re-flashed.
+   Awaiting confirmation that SMW now renders.
+
 ## Status: CORE VALIDATED (host) + PHASE 2 WIRED/FLASHED (video/input/audio/badge)
 
 CORE PROVEN (2026-09-02, headless on host): `emu/snes9x/build_host_test.sh` builds the

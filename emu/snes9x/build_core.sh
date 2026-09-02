@@ -13,7 +13,7 @@ AR=arm-none-eabi-ar
 INC="-I$DIR -I$DIR/apu -I$DIR/apu/bapu -I$DIR/libretro -I$DIR/libretro/libretro-common/include"
 COMMON="-march=armv7-a -mfloat-abi=soft -mthumb-interwork -ffreestanding \
         -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit \
-        -fno-short-enums -mno-unaligned-access -Os -fno-common -D__LIBRETRO__ $INC"
+        -fno-short-enums -mno-unaligned-access -fno-strict-aliasing -Os -fno-common -D__LIBRETRO__ $INC"
 CXXFLAGS="$COMMON"
 CFLAGS="$COMMON -std=gnu99"
 
