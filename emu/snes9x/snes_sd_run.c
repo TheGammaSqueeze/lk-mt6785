@@ -491,20 +491,23 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (pf > 0) c->state_load((const void *)SNES_AHEAD_BUF, ra_ssz);   /* rewind */
 		}
 
-		/* Timing: 128-frame average panel refresh (vsync-locked, so this IS the emulated
-		 * rate) into s_snes_hz1000; and, when benchmarking, emulated FPS over ~0.5 s. */
+		/* Timing off the 13 MHz gpt4 counter (NOT 812.5 kHz - that was the bug that showed
+		 * ~2.7 Hz). Panel refresh: 8-frame average of the vsync-locked loop period, Hz*1000 =
+		 * 8*13e9/ticks; reject doubled/outlier frames (period outside 8..23 ms) exactly like
+		 * the GBA path. Benchmark FPS: frames * 13e6 / ticks over ~0.5 s. */
 		{
 			static unsigned h_acc, h_n, h_last;
 			static unsigned b_acc, b_n, b_last;
 			unsigned now = gpt4_get_current_tick();
-			if (h_last) { h_acc += now - h_last; if (++h_n >= 128) {
-				if (h_acc) s_snes_hz1000 = (unsigned)(104000000000ULL / (unsigned long long)h_acc);
-				h_acc = 0; h_n = 0; } }
+			if (h_last) { unsigned lt = now - h_last;
+				if (lt > 104000u && lt < 300000u) { h_acc += lt; if (++h_n >= 8) {
+					if (h_acc) s_snes_hz1000 = (unsigned)(104000000000ULL / (unsigned long long)h_acc);
+					h_acc = 0; h_n = 0; } } }
 			h_last = now;
 			if (g_snes_benchmark) {
 				if (b_last) { b_acc += now - b_last; b_n++;
-					if (b_acc >= 406250u) {   /* ~0.5 s at 812.5 kHz */
-						s_snes_fps = (int)((unsigned long long)b_n * 812500ULL / b_acc);
+					if (b_acc >= 6500000u) {   /* ~0.5 s at 13 MHz */
+						s_snes_fps = (int)((unsigned long long)b_n * 13000000ULL / b_acc);
 						b_acc = 0; b_n = 0; } }
 				b_last = now;
 			} else { b_last = 0; b_acc = 0; b_n = 0; }
