@@ -183,9 +183,9 @@ static unsigned snes_dbg_pc(void)
 {
 	/* [7:0] apuram[$00f4] (port0, should be $aa) | [15:8] SPC P reg (dp bit 0x20 => wrong bank)
 	 * | [23:16] apuram[$01f4] ($aa here => the write went to bank 1) | [31:24] SPC sp. */
-	unsigned p = (unsigned)SNES::smp.regs.p;
-	return (unsigned)SNES::smp.apuram[0x00f4] | ((p & 0xFF) << 8)
-	     | ((unsigned)SNES::smp.apuram[0x01f4] << 16) | ((unsigned)SNES::smp.regs.sp << 24);
+	/* [15:0] SPC700 PC, [23:16] apuram[$f4]. Clear-loop PC ~$ffc5-c7 => never wrote;
+	 * PC $ffcf with apuram[$f4]=0 => the store was lost. */
+	return ((unsigned)SNES::smp.regs.pc & 0xFFFFu) | ((unsigned)SNES::smp.apuram[0x00f4] << 16);
 }
 
 static unsigned snes_state_size(void) { return (unsigned)retro_serialize_size(); }
