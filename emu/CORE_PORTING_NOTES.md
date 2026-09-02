@@ -24,15 +24,21 @@ frame stretches it to GBA aspect (the "distorted screen" bug). A new core needs 
 OWN show function with its native dimensions. GB/GBC uses `ayaneo_gb_show_frame`
 (160x144 integer 6x -> 960x864 centred; no GBA colour-correction LUT).
 
-## 2. Emulation THREAD STACK - a core that runs on emu_thread needs a big stack
-gpSP runs its CPU on a SEPARATE `gba_cpu` thread (64 KB). gambatte instead runs its
-frame loop DIRECTLY on `emu_thread`, on top of the menu + SD/FAT orchestration frames.
-64 KB overflowed and corrupted the stack; the fault surfaced far away as a data abort
-in `msdc_dma_transfer`'s epilogue (`pc` in lk_a, `sp = ~0xffffffxx`, `dfar=0xfffffff8`)
-on the next SD DMA when switching games. Fix: `emu_thread` stack is now **256 KB**. If
-you add another core that emulates on emu_thread, keep it there or give it its own
-thread. Symptom to remember: a crash in unrelated code with a wild `sp` == stack
-overflow, not that code's bug.
+## 2. Every emulation core runs on its OWN thread (never on emu_thread)
+`emu_thread` only orchestrates (menu + SD + display) and stays at 64 KB. Each core
+emulates on a dedicated thread with its own large stack:
+- gpSP: `gba_cpu` thread (producer/consumer with emu_thread via `ev_cpu`/`ev_main`).
+- gambatte: `gbc_emu` thread (created lazily on first GB/GBC launch, 256 KB, REUSED via
+  `s_gbc_kick`/`s_gbc_done` events; this LK does not reap exited threads, so a
+  per-session thread would leak its stack). gambatte is synchronous (`gbc_run` = one
+  whole frame), so it is a single session thread, NOT gpSP's two-thread split.
+  emu_thread signals the kick and blocks on done, so exactly one core runs at a time.
+HISTORY / symptom to remember: gambatte first ran INLINE on emu_thread; its deep C++
+overflowed the 64 KB stack and the fault surfaced far away as a data abort in
+`msdc_dma_transfer`'s epilogue (`pc` in lk_a, `sp = ~0xffffffxx`, `dfar=0xfffffff8`) on
+the next SD DMA when switching games. A crash in unrelated code with a wild `sp` ==
+stack overflow, not that code's bug. Bumping emu_thread to 256 KB "fixed" it but was a
+workaround; the correct design is a dedicated per-core thread (above).
 
 ## 3. Reuse the arena, but assume it does NOT survive a menu visit
 The GB/GBC session lays out the arena as ROM (8 MB) | gambatte heap (24 MB) | video |

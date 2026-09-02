@@ -15,6 +15,8 @@
 #include "gbc_core_abi.h"
 #include "../gba/sd_fat.h"
 #include "../gba/gba_sd_save.h"
+#include <kernel/thread.h>
+#include <kernel/event.h>
 
 /* ---- LK / driver primitives (externs; no LK headers here) ---- */
 extern const struct gbc_core_exports *gbc_core_load(void);   /* gbc_core_loader.c */
@@ -86,8 +88,9 @@ static void apply_dmg_palette(const struct gbc_core_exports *c, int idx)
 			c->set_dmg_palette_color((unsigned)p, (unsigned)col, s_dmg_pal[idx][col]);
 }
 
-/* Run one GB/GBC game to completion (AYA returns to the selector). Blocking. */
-void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
+/* Run one GB/GBC game to completion (AYA returns to the selector). Runs on the
+ * dedicated gbc_emu thread (see gbc_sd_session below), not on emu_thread. */
+static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 {
 	const struct gbc_core_exports *c;   /* reloaded each session (cheap, ~20ms) so a
 					     * clobbered blob or stale core state can never carry
@@ -225,4 +228,47 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 		gba_sd_write_state(vol, rom->name, 0, ahead, ahead_sz);
 	}
 	ayaneo_menu_audio_silence();
+}
+
+/* ---- dedicated emulation thread ----
+ * For consistency with the gpSP core (which emulates on its own gba_cpu thread), the
+ * gambatte core runs its session on a DEDICATED thread with its own large stack,
+ * instead of on emu_thread (deep C++ on emu_thread's 64 KB overflowed and crashed the
+ * next SD DMA). Created LAZILY on the first GB/GBC launch and reused (this LK does not
+ * reap exited threads, so a per-session thread would leak its stack); emu_thread kicks
+ * it and blocks on the done event, so exactly one core emulates at a time. gambatte is
+ * a synchronous core (gbc_run does a whole frame), so a single session thread is the
+ * right shape - it does NOT need gpSP's producer/consumer CPU/main split. */
+static thread_t *s_gbc_thread;
+static event_t   s_gbc_kick, s_gbc_done;
+static fat_vol  *s_gbc_vol;
+static const gba_rom_entry *s_gbc_rom;
+
+static int gbc_thread_fn(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		event_wait(&s_gbc_kick);
+		gbc_session_body(s_gbc_vol, s_gbc_rom);
+		event_signal(&s_gbc_done, false);
+	}
+	return 0;
+}
+
+/* Called from emu_thread's ROM-select dispatch. Runs the game on the gbc_emu thread
+ * and blocks here until it returns to the selector (AYA). */
+void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
+{
+	if (!s_gbc_thread) {
+		event_init(&s_gbc_kick, false, EVENT_FLAG_AUTOUNSIGNAL);
+		event_init(&s_gbc_done, false, EVENT_FLAG_AUTOUNSIGNAL);
+		s_gbc_thread = thread_create("gbc_emu", &gbc_thread_fn, NULL,
+					     DEFAULT_PRIORITY, 262144);
+		if (!s_gbc_thread) { gbc_session_body(vol, rom); return; }  /* fallback: inline */
+		thread_resume(s_gbc_thread);
+	}
+	s_gbc_vol = vol;
+	s_gbc_rom = rom;
+	event_signal(&s_gbc_kick, false);   /* start the session on the emu thread */
+	event_wait(&s_gbc_done);            /* block until it returns to the selector */
 }
