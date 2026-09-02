@@ -43,6 +43,7 @@ extern void     ayaneo_set_snes_opts(unsigned v);
  * committed frame (mirrors GB/GBC/GBA "Preemptive Frames"). Runs pf+1 full emulations per
  * displayed frame, so escalate the ARM clock with the tier. Off while the menu is open. */
 #define SNES_AHEAD_BUF 0x53000000u   /* run-ahead state (shares the mapped-arena scratch slot) */
+#define SNES_AHEAD_CAP 0x00200000u   /* 2 MB room before the menu wallpaper cache (0x53200000) */
 static const unsigned s_snes_ra_opp[4] = { 1400, 1600, 1800, 2000 };   /* clock per pf tier */
 static const char *snes_ra_name(int pf)
 { return pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : pf == 3 ? "Max" : "Off"; }
@@ -442,11 +443,12 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 	}
 
-	/* Run-ahead state size (bytes). The buffer SNES_AHEAD_BUF (0x53000000) has ~2 MB of
-	 * mapped room before the menu wallpaper cache; if a game's state does not fit, run-ahead
-	 * stays disabled (ra_ssz = 0). */
+	/* Run-ahead enable gate: the state must fit in the 2 MB SNES_AHEAD_BUF slot. ra_ssz != 0
+	 * enables run-ahead; the save/load themselves pass the full buffer CAPACITY (not this
+	 * one-shot size) so a game whose state grows later never truncates - unfreeze stops at
+	 * the real end regardless. */
 	unsigned ra_ssz = c->state_size();
-	if (ra_ssz == 0 || ra_ssz > 0x00200000u) ra_ssz = 0;
+	if (ra_ssz == 0 || ra_ssz > SNES_AHEAD_CAP) ra_ssz = 0;
 	{ int pf0 = ayaneo_get_preempt_frames();   /* honour a persisted tier: escalate the clock */
 	  if (pf0 > 0 && pf0 <= 3 && ayaneo_get_cpu_mhz() < s_snes_ra_opp[pf0]) ayaneo_set_cpu_mhz(s_snes_ra_opp[pf0]); }
 
@@ -514,7 +516,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				 * block buffers per state op and the bump arena never frees, so without this
 				 * run-ahead leaks ~0.5 MB/frame and crashes when the arena runs out. */
 				if (c->heap_mark) hmark = c->heap_mark();
-				c->state_save((void *)SNES_AHEAD_BUF, ra_ssz);
+				c->state_save((void *)SNES_AHEAD_BUF, SNES_AHEAD_CAP);
 				for (i = 0; i < pf; i++) c->run(&f);
 			}
 			if (ff) {
@@ -527,7 +529,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			else if (!g_snes_benchmark)
 				priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
 			if (pf > 0) {
-				c->state_load((const void *)SNES_AHEAD_BUF, ra_ssz);   /* rewind */
+				c->state_load((const void *)SNES_AHEAD_BUF, SNES_AHEAD_CAP);   /* rewind */
 				if (hmark && c->heap_reset) c->heap_reset(hmark);      /* free the temporaries */
 			}
 			/* leak watch (headless test): peak arena usage should stay FLAT with run-ahead
