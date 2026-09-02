@@ -336,7 +336,7 @@ static int sm_change(int i, int dir, int act)
 		ayaneo_set_cpu_mhz(s_snes_ra_opp[pf]);   /* escalate the clock for pf+1 emulations/frame */
 		snes_settings_touch();
 	} break;
-	case SM_BENCH:  if (dir || act) g_snes_benchmark = !g_snes_benchmark; break;
+	case SM_BENCH:  if (act) g_snes_benchmark = !g_snes_benchmark; break;   /* A toggles (not L/R, which auto-repeat) */
 	case SM_PANEL:  break;   /* read-only */
 	case SM_SLOT: if (dir) { s_save_slot = (s_save_slot + dir + 10) % 10;
 			ayaneo_set_snes_slot(s_save_slot); snes_settings_touch();
@@ -491,7 +491,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	int reset_hold = 0, aya_prev = 0, ff_prev = 0;
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
-	int up_h = 0, dn_h = 0;   /* hold-frame counters for Up/Down auto-repeat */
+	int up_h = 0, dn_h = 0, lt_h = 0, rt_h = 0;   /* hold-frame counters for nav auto-repeat */
 	for (;;) {
 		struct snes_frame f;
 		int aya;
@@ -620,21 +620,23 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
 			int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
 			int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);
-			/* Up/Down (item navigation) auto-repeat: fire on press, then after ~0.37 s of
-			 * holding repeat every ~0.08 s - the real pain is scrolling 16 rows. Left/Right
-			 * stay single-tap: several value-change items persist to eMMC/SD on each change,
-			 * and auto-repeating those would spam flash writes. FIRE = press edge or repeat. */
+			/* Up/Down (navigate) and Left/Right (adjust value) auto-repeat: fire on press,
+			 * then after ~0.37 s of holding repeat every ~0.08 s - useful with 16 rows and
+			 * up-to-10-value items. The per-change eMMC/SD write is debounced (see
+			 * snes_settings_touch), and Benchmark toggles only on A, so repeating L/R is safe.
+			 * FIRE = press edge or repeat tick. */
 			#define NAV_DELAY 22
 			#define NAV_REP   5
 			#define FIRE(h)   ((h) == 1 || ((h) > NAV_DELAY && (((h) - NAV_DELAY) % NAV_REP) == 0))
 			up_h = up ? up_h + 1 : 0; dn_h = dn ? dn_h + 1 : 0;
+			lt_h = lt ? lt_h + 1 : 0; rt_h = rt ? rt_h + 1 : 0;
 			if (up && FIRE(up_h)) s_msel = (s_msel + SM_COUNT - 1) % SM_COUNT;
 			if (dn && FIRE(dn_h)) s_msel = (s_msel + 1) % SM_COUNT;
+			if (lt && FIRE(lt_h)) sm_change(s_msel, -1, 0);
+			if (rt && FIRE(rt_h)) sm_change(s_msel, +1, 0);
 			#undef NAV_DELAY
 			#undef NAV_REP
 			#undef FIRE
-			if (lt && !lt_p) sm_change(s_msel, -1, 0);
-			if (rt && !rt_p) sm_change(s_msel, +1, 0);
 			if (a  && !a_p)  { if (sm_change(s_msel, 0, 1)) { g_snes_menu_open = 0; snes_settings_flush(); } }
 			if (b  && !b_p)  { g_snes_menu_open = 0; snes_settings_flush(); }
 			up_p = up; dn_p = dn; lt_p = lt; rt_p = rt; a_p = a; b_p = b;
