@@ -28,6 +28,9 @@ bool retro_load_game(const struct retro_game_info *);
 void retro_run(void);
 void retro_get_system_av_info(struct retro_system_av_info *);
 void retro_set_controller_port_device(unsigned, unsigned);
+size_t retro_serialize_size(void);
+bool retro_serialize(void *, size_t);
+bool retro_unserialize(const void *, size_t);
 }
 
 static unsigned vw, vh, vpitch, vcalls;
@@ -83,6 +86,31 @@ int main(int argc, char **argv) {
            "h <=478 -> <=956; pitch/2=%u stride)\n", minw, maxw, minh, maxh, maxpitch, maxpitch / 2);
     printf("distinct frame hashes=%u (content is %s)\n", distinct, distinct > 2 ? "CHANGING (real gameplay)" : "static/blank");
     bool ok = vcalls > 0 && vw >= 200 && vw <= 600 && vh >= 200 && vh <= 512 && distinct > 2;
+
+    /* ---- save-state round-trip (mirrors the LK snes_sd_run.c sequence) ---- */
+    size_t ssz = retro_serialize_size();
+    printf("\nsave-state: serialize_size=%zu bytes\n", ssz);
+    bool ss_ok = false;
+    if (ssz > 0 && ssz < (16u << 20)) {
+        uint8_t *sbuf = (uint8_t *)malloc(ssz);
+        if (retro_serialize(sbuf, ssz)) {
+            retro_run(); uint64_t h_after = vhash;          /* deterministic next frame from the state */
+            for (int i = 0; i < 120; i++) retro_run();       /* advance; state should diverge */
+            uint64_t h_diverged = vhash;
+            if (!retro_unserialize(sbuf, ssz)) { printf("save-state: UNSERIALIZE FAILED\n"); }
+            else {
+                retro_run(); uint64_t h_restored = vhash;
+                printf("save-state: h_after=%016llx h_diverged=%016llx h_restored=%016llx\n",
+                       (unsigned long long)h_after, (unsigned long long)h_diverged,
+                       (unsigned long long)h_restored);
+                ss_ok = (h_restored == h_after) && (h_diverged != h_after);
+            }
+        } else printf("save-state: SERIALIZE FAILED\n");
+        free(sbuf);
+    }
+    printf("save-state RESULT: %s\n", ss_ok ? "PASS (deterministic round-trip)" : "FAIL");
+
+    ok = ok && ss_ok;
     printf("RESULT: %s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }

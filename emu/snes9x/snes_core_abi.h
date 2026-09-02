@@ -59,6 +59,11 @@ struct snes_core_exports {
 	/* debug: the emulated 65816 program counter (Registers.PBPC), to see whether the CPU
 	 * is running game code (wide PC range) or stuck in a tight spin (e.g. APU handshake). */
 	unsigned (*dbg_pc)(void);
+
+	/* debug: read a blob-side diagnostic counter by index (see snes_dbg_get in
+	 * snes_core_exports.cpp). Appended at struct end so the magic/version check is
+	 * unaffected; LK and the blob are always rebuilt together. */
+	unsigned (*dbg_get)(unsigned idx);
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);

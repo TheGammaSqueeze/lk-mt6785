@@ -104,6 +104,12 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			 g_snes_dbg_nz, g_snes_dbg_changed, g_snes_dbg_audframes, g_snes_dbg_pitch);
 		fastboot_info(lbuf);
 	}
+	{
+		extern volatile unsigned g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd;
+		snprintf(lbuf, sizeof lbuf, "snes-ss: size=%u core=%u sd=%u",
+			 g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd);
+		fastboot_info(lbuf);
+	}
 	fastboot_okay("");
 }
 

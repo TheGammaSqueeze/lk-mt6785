@@ -96,6 +96,10 @@ static   unsigned s_snes_dbg_lasthash;
 volatile unsigned g_snes_test_limit;  /* >0: run this many frames then exit (oem snes-launch) */
 volatile unsigned g_snes_dbg_pcmin = 0xFFFFFFFF, g_snes_dbg_pcmax; /* emulated 65816 PC range */
 volatile unsigned g_snes_dbg_audframes; /* total audio sample-pairs submitted (0 = APU silent) */
+/* headless save-state self-test (run at the end of an oem snes-launch frame-limited run):
+ * ss_size = state_size bytes; ss_core = 1 if state_save then state_load both returned 0;
+ * ss_sd = 1 if SD write -> read-back -> memcmp matched exactly (SD path integrity). */
+volatile unsigned g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd;
 
 /* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
  * menu is open so navigation keys do not leak into the game. */
@@ -122,9 +126,20 @@ unsigned ayaneo_snes_pad_mask(void)
 #define SNES_ROM_BUF   0x50000000u
 #define SNES_ROM_CAP   0x00800000u        /* 8 MB (largest SNES carts ~6 MB) */
 #define SNES_HEAP_BASE 0x50800000u
-#define SNES_HEAP_SZ   0x03000000u        /* 48 MB for snes9x's internal allocations */
-#define SNES_STATE_BUF 0x53800000u        /* just above the heap, below the 0x54000000 snapshot */
+#define SNES_HEAP_SZ   0x02400000u        /* 36 MB for snes9x (SMW peaks ~19 MB); shrunk from
+                                           * 48 MB to free mapped arena tail for the savestate
+                                           * buffer - see SNES_STATE_BUF. */
+/* Save-state buffer. The SNES session's MMU maps ONLY its own arena [0x50800000,0x53800000)
+ * as WB during a game; addresses at/above 0x53800000 (the old buffer spot, AND the menu's
+ * 0x54xxxxxx transition buffers) are UNMAPPED then - writes vanish and reads return a
+ * constant, which silently corrupted every savestate ("save states broken"). So the buffer
+ * MUST live inside the mapped arena. The heap is shrunk to 36 MB (ends 0x53000000), leaving
+ * the mapped tail [0x52C00000,0x53800000) free; put the 4 MB state buffer at 0x52C00000
+ * (ends 0x53000000) and the self-test scratch above it - both below the menu's wallpaper
+ * cache (0x53200000) so nothing overlaps. */
+#define SNES_STATE_BUF 0x52C00000u
 #define SNES_STATE_CAP 0x00400000u        /* 4 MB (snes9x state ~0.8 MB, more with SA-1/SuperFX) */
+#define SNES_STATE_SCRATCH 0x53000000u    /* self-test SD readback scratch (mapped arena tail) */
 #define RESET_HOLD_FRAMES 30              /* SELECT+START+L+R held ~0.5 s = soft reset */
 
 /* ---- in-game menu: state, rendering, actions ---- */
@@ -231,12 +246,15 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			gba_sd_read_named(vol, "/saves/snes", rom->name, "srm", (unsigned char *)p, sz);
 	}
 
-	/* Suspend/resume: reload the save STATE from the last exit so the game resumes where
-	 * it left off, unless B is held at launch (start fresh). Mirrors the GB/GBC flow; the
-	 * host round-trip proved snes9x serialize/unserialize is deterministic. */
+	/* Suspend/resume: reload the AUTO save STATE from the last exit so the game resumes
+	 * where it left off, unless B is held at launch (start fresh). Mirrors the GB/GBC flow.
+	 * IMPORTANT: the auto slot is "sus", SEPARATE from the manual "st0" slot the Pico menu
+	 * Save/Load use - otherwise every exit would clobber the player's manual save (that was
+	 * the "save states are broken" bug). The host round-trip proved snes9x
+	 * serialize/unserialize is deterministic. */
 	if (!PRESSED(GPIO_B)) {
 		unsigned char *st = (unsigned char *)SNES_STATE_BUF;
-		unsigned n = gba_sd_read_named(vol, "/states/snes", rom->name, "st0", st, SNES_STATE_CAP);
+		unsigned n = gba_sd_read_named(vol, "/states/snes", rom->name, "sus", st, SNES_STATE_CAP);
 		if (n) c->state_load(st, n);
 	}
 
@@ -326,18 +344,40 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 		if (g_snes_test_limit && g_snes_dbg_frames >= g_snes_test_limit) break;   /* oem snes-launch */
 	}
+
+	/* Headless save-state regression check - only in frame-limited (oem snes-launch) mode,
+	 * so it never touches normal play. Exercises the full chain: core freeze -> SD write ->
+	 * SD read-back byte-compare -> core unfreeze. ss_core=1 & ss_sd=1 means savestates work. */
+	if (g_snes_test_limit) {
+		unsigned char *st  = (unsigned char *)SNES_STATE_BUF;
+		unsigned char *st2 = (unsigned char *)SNES_STATE_SCRATCH;
+		unsigned ssz = c->state_size();
+		g_snes_dbg_ss_size = ssz; g_snes_dbg_ss_core = 0; g_snes_dbg_ss_sd = 0;
+		if (ssz && ssz <= SNES_STATE_CAP && c->state_save(st, ssz) == 0) {
+			int wr = gba_sd_write_named(vol, "/states/snes", rom->name, "sstst", st, ssz);
+			unsigned rd = gba_sd_read_named(vol, "/states/snes", rom->name, "sstst", st2, SNES_STATE_CAP);
+			if (wr == 0 && rd == ssz) {
+				unsigned i, diff = 0;
+				for (i = 0; i < ssz; i++) if (st[i] != st2[i]) { diff = 1; break; }
+				g_snes_dbg_ss_sd = diff ? 0 : 1;
+			}
+			g_snes_dbg_ss_core = (c->state_load(st, ssz) == 0) ? 1 : 0;
+		}
+	}
+
 	g_snes_menu_open = 0;
 	g_snes_test_limit = 0;
 
 	ayaneo_dsi_set_vfp(DEFAULT_VFP);   /* restore 59.749 Hz for the menu / other cores */
 	if (saved_mhz) ayaneo_set_cpu_mhz(saved_mhz);   /* restore the pre-session ARM clock */
 
-	/* Suspend: write a save STATE so the next launch resumes here (mirrors GB/GBC). */
+	/* Suspend: write the AUTO save STATE ("sus" slot) so the next launch resumes here. Kept
+	 * separate from the manual "st0" slot so exiting never overwrites a manual Save State. */
 	{
 		unsigned char *st = (unsigned char *)SNES_STATE_BUF;
 		unsigned ssz = c->state_size();
 		if (ssz && ssz <= SNES_STATE_CAP && c->state_save(st, ssz) == 0)
-			gba_sd_write_named(vol, "/states/snes", rom->name, "st0", st, ssz);
+			gba_sd_write_named(vol, "/states/snes", rom->name, "sus", st, ssz);
 	}
 
 	/* persist SRAM on exit */

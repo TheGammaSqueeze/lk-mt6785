@@ -89,7 +89,15 @@ static char *emit_num(char *o, char *e, unsigned long v, int base, int up, int n
 }
 int vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap)
 {
-	char *o=buf, *e=buf+(cap?cap-1:0);
+	/* End-of-writable pointer. sprintf() passes cap=(size_t)-1, and on 32-bit
+	 * buf+(cap-1) WRAPS past the top of the address space to below buf, which made
+	 * emit()'s `o<e` test always false => sprintf produced an EMPTY string (this broke
+	 * every snes9x savestate header). Clamp e to the top of the address space when
+	 * buf+cap would overflow. */
+	char *o=buf, *e;
+	if (cap == 0) e = buf;
+	else if ((uintptr_t)buf + (cap - 1) < (uintptr_t)buf) e = (char *)~(uintptr_t)0;
+	else e = buf + (cap - 1);
 	for(; *fmt; fmt++){
 		if(*fmt!='%'){ o=emit(o,e,*fmt); continue; }
 		fmt++;
