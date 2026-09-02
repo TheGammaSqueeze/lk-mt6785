@@ -67,7 +67,7 @@ scanlines. Persisted with the other aspect picks.
 
 Multiple save-state slots added: a "Save Slot" (0-9) menu item; manual Save/Load use
 /states/snes/<rom>.st<slot> (suspend stays on "sus", self-test on "sstst"). Beyond GB/GBC/GBA
-(single slot).
+(single slot). The selected slot PERSISTS across launches (settings block ver 7, offset 56).
 
 Feature set now at parity with GB/GBC/GBA (incl. fast-forward). Optional leftovers:
 color-correction option (omitted as GB-specific); tuning the run-ahead tiers if Max is too
