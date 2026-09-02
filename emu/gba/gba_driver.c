@@ -1519,13 +1519,25 @@ static unsigned gba_sd_build_logo_cart(unsigned char *rp)
 {
 	unsigned *w = (unsigned *)rp;
 	unsigned n = 0x8000u / 4u, j;
+	int hdr_rom = -1;
 	for (j = 0; j < n; j++)
 		w[j] = 0xEAFFFFFEu;			/* b . everywhere = safe self-loop */
-	if (s_nrom > 0) {
+	/* The header must come from a GBA cart: only .gba ROMs carry the GBA BIOS
+	 * Nintendo-logo bytes at 0x04-0x9F. Since the roster now merges /roms/gb,
+	 * /roms/gbc and /roms/gba (sorted), s_roms[0] may be a GB/GBC ROM whose header
+	 * has no GBA logo - copying it makes the BIOS show no cartridge logo. Pick the
+	 * first GBA ROM instead (fall back to s_roms[0] only if there is no GBA ROM). */
+	{
+		int i;
+		for (i = 0; i < s_nrom; i++)
+			if (s_roms[i].type == GBA_CONSOLE_GBA) { hdr_rom = i; break; }
+		if (hdr_rom < 0 && s_nrom > 0) hdr_rom = 0;
+	}
+	if (hdr_rom >= 0) {
 		fat_file f;
 		f.v = &s_sd_vol;
-		f.first_clus = s_roms[0].first_clus;
-		f.size = s_roms[0].size;
+		f.first_clus = s_roms[hdr_rom].first_clus;
+		f.size = s_roms[hdr_rom].size;
 		/* 0..0xC0 = real header: logo(0x04-0x9F) + checksum(0xBD) + entry(0x00,
 		 * which branches to 0x080000C0 -> our loop). Restores the loops beyond. */
 		fat_read(&f, 0, rp, 0xC0u);

@@ -39,17 +39,27 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
 #define GPIO_SELECT    90      /* + START + L + R held = soft reset */
 #define GPIO_START     91
 #define GPIO_B         82      /* held at launch = start fresh (skip resume) */
-#define GBC_AHEAD_STATE (GBC_ARENA + 0x03600000u)   /* run-ahead savestate scratch (54 MB in) */
 #define RESET_HOLD_FRAMES 30    /* ~0.5 s at 59.7 Hz */
 
-/* GBA arena reuse (only one core runs at a time). */
+/* Run-ahead + suspend/resume save states are layered on top of basic emulation and are
+ * untested for gambatte. While the basic GB/GBC display + relaunch path is being brought
+ * up on hardware, keep them OFF so they are not confounding variables (run-ahead does a
+ * state save/load every frame; the suspend load runs at launch). Flip to 1 to re-enable
+ * once the baseline is confirmed. */
+#define GBC_ADVANCED 0
+
+/* GBA arena reuse (only one core runs at a time). Non-overlapping regions with margin:
+ * ROM (8 MB) | gambatte heap (24 MB) | video | audio | savestate scratch, all inside
+ * [0x50000000, 0x53E00000) below the GBA driver's 2 MB tail reserve. The heap end
+ * (0x52000000) is well clear of the video buffer so a large ROM cannot spill into it. */
 #define GBC_ARENA      0x50000000u
-#define GBC_ROM_BUF    (GBC_ARENA + 0x00000000u)
+#define GBC_ROM_BUF    (GBC_ARENA + 0x00000000u)   /* 0x50000000, 8 MB */
 #define GBC_ROM_CAP    (8u * 1024 * 1024)
-#define GBC_HEAP_BASE  (GBC_ARENA + 0x00800000u)
-#define GBC_HEAP_SZ    (40u * 1024 * 1024)
-#define GBC_VBUF       (GBC_ARENA + 0x03000000u)
-#define GBC_SND        (GBC_ARENA + 0x03040000u)
+#define GBC_HEAP_BASE  (GBC_ARENA + 0x00800000u)   /* 0x50800000, 24 MB */
+#define GBC_HEAP_SZ    (24u * 1024 * 1024)
+#define GBC_VBUF       (GBC_ARENA + 0x02000000u)   /* 0x52000000 */
+#define GBC_SND        (GBC_ARENA + 0x02100000u)   /* 0x52100000 */
+#define GBC_AHEAD_STATE (GBC_ARENA + 0x02200000u)  /* 0x52200000, savestate scratch */
 #define GBC_W          160
 #define GBC_H          144
 #define GBC_SND_MAX    35208u   /* one 2097152 Hz frame of stereo samples */
@@ -79,7 +89,9 @@ static void apply_dmg_palette(const struct gbc_core_exports *c, int idx)
 /* Run one GB/GBC game to completion (AYA returns to the selector). Blocking. */
 void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 {
-	static const struct gbc_core_exports *c;   /* blob loaded once, reused */
+	const struct gbc_core_exports *c;   /* reloaded each session (cheap, ~20ms) so a
+					     * clobbered blob or stale core state can never carry
+					     * over between launches */
 	unsigned char *rombuf = (unsigned char *)GBC_ROM_BUF;
 	unsigned short *vbuf  = (unsigned short *)GBC_VBUF;
 	unsigned int   *snd   = (unsigned int *)GBC_SND;
@@ -95,7 +107,8 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 	unsigned pace_base;
 	unsigned long long pace_n = 0;
 
-	if (!c) { c = gbc_core_load(); if (!c) return; }
+	c = gbc_core_load();
+	if (!c) return;
 
 	romsz = gba_sd_load_rom(vol, rom, rombuf, GBC_ROM_CAP);
 	if (!romsz) return;
@@ -115,7 +128,7 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 	 * resumes where it was left, unless B is held (start fresh). Mirrors the GBA
 	 * flow. The state file is keyed by the ROM name; gambatte validates it against
 	 * the loaded ROM and no-ops on a mismatch. */
-	if (!PRESSED(GPIO_B)) {
+	if (GBC_ADVANCED && !PRESSED(GPIO_B)) {
 		unsigned n = gba_sd_load_state(vol, rom->name, 0, ahead, 0x00A00000u);
 		if (n)
 			c->state_load(ahead, n);
@@ -170,7 +183,7 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 			 * so (unlike gpSP) no separate sound-ring save is needed: the committed
 			 * audio was already submitted above; the look-ahead runs are muted (their
 			 * samples are simply not submitted). */
-			pf = ayaneo_get_preempt_frames();
+			pf = GBC_ADVANCED ? ayaneo_get_preempt_frames() : 0;
 			if (pf > 0 && ahead_sz) {
 				int i;
 				c->state_save(ahead);
@@ -198,7 +211,7 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 	 * resumes), then hand the codec back to the menu */
 	if (c->savedata_ptr() && c->savedata_size())
 		gba_sd_write_sav(vol, rom->name, (const unsigned char *)c->savedata_ptr(), c->savedata_size());
-	if (ahead_sz) {
+	if (GBC_ADVANCED && ahead_sz) {
 		c->state_save(ahead);
 		gba_sd_write_state(vol, rom->name, 0, ahead, ahead_sz);
 	}
