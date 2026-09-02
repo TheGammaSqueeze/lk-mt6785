@@ -154,6 +154,44 @@ static void apply_color_knobs(const struct gbc_core_exports *c)
 	if (c->set_dark_filter)           c->set_dark_filter((unsigned)s_dark);
 }
 
+/* ---- SD persistence (survives reboot) --------------------------------------
+ * Global CGB display prefs (colour correction / mode / dark filter) live in one
+ * small file /gba/gbcprefs.bin; the palette CHOICE is PER GAME (keyed by ROM name
+ * under /saves/gbpal), so overriding one game's palette does not disturb Auto on the
+ * rest. Both ride the generic gba_sd_read_named/write_named helpers (fat_wr). */
+static void gbc_prefs_load(fat_vol *vol)
+{
+	unsigned char b[4];
+	if (vol && gba_sd_read_named(vol, "/gba", "gbcprefs", "bin", b, sizeof b) >= 4 && b[0] == 0x9B) {
+		s_cc_on   = b[1] ? 1 : 0;
+		s_cc_mode = b[2] ? 1 : 0;
+		s_dark    = b[3] > 100 ? 100 : (int)b[3];
+	}
+}
+static void gbc_prefs_save(fat_vol *vol)
+{
+	unsigned char b[4];
+	b[0] = 0x9B; b[1] = (unsigned char)s_cc_on; b[2] = (unsigned char)s_cc_mode; b[3] = (unsigned char)s_dark;
+	if (vol) gba_sd_write_named(vol, "/gba", "gbcprefs", "bin", b, sizeof b);
+}
+static int gbc_pal_load(fat_vol *vol, const char *rom, int count)
+{
+	unsigned char b[4];
+	if (vol && gba_sd_read_named(vol, "/saves/gbpal", rom, "pal", b, sizeof b) >= 4) {
+		int v = (int)(b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24));
+		if (v < 0 || v >= count) v = 0;
+		return v;
+	}
+	return 0;   /* default: Auto (Detect) */
+}
+static void gbc_pal_save(fat_vol *vol, const char *rom, int idx)
+{
+	unsigned char b[4];
+	b[0] = (unsigned char)idx; b[1] = (unsigned char)(idx >> 8);
+	b[2] = (unsigned char)(idx >> 16); b[3] = (unsigned char)(idx >> 24);
+	if (vol && rom) gba_sd_write_named(vol, "/saves/gbpal", rom, "pal", b, sizeof b);
+}
+
 /* ---- in-game overlay menu (GammaOS Pico), mirrors the GBA menu in gba_driver.c.
  * AYA toggles it; the game keeps running underneath with its input suppressed. ---- */
 extern void ayaneo_fill(unsigned int *buf, unsigned int pitch, int x, int y, int w, int h, unsigned int argb);
@@ -267,11 +305,12 @@ static int gm_change(int i, int dir, int act)
 				 } else if (act == 2) {   /* X = reset to the default: Auto (Detect) */
 					 *s_menu_pal = 0;
 					 apply_dmg_palette(s_menu_c, *s_menu_pal);
+					 gbc_pal_save(s_menu_vol, s_menu_rom->name, *s_menu_pal);
 				 } else if (dir) { int n = dmg_pal_count(s_menu_c); *s_menu_pal = (*s_menu_pal + dir + n) % n; apply_dmg_palette(s_menu_c, *s_menu_pal); }
 			 } changed = 0; break;
-	case GM_COLORCC: if (dir) { s_cc_on = !s_cc_on; apply_color_knobs(s_menu_c); } changed = 0; break;
-	case GM_CCMODE:  if (dir) { s_cc_mode = !s_cc_mode; apply_color_knobs(s_menu_c); } changed = 0; break;
-	case GM_DARK:    if (dir) { s_dark += dir * 10; if (s_dark < 0) s_dark = 0; if (s_dark > 100) s_dark = 100; apply_color_knobs(s_menu_c); } changed = 0; break;
+	case GM_COLORCC: if (dir) { s_cc_on = !s_cc_on; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
+	case GM_CCMODE:  if (dir) { s_cc_mode = !s_cc_mode; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
+	case GM_DARK:    if (dir) { s_dark += dir * 10; if (s_dark < 0) s_dark = 0; if (s_dark > 100) s_dark = 100; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
 	case GM_PREEMPT: if (dir) ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + dir + 4) % 4); else changed = 0; break;
 	case GM_CPU:     if (dir) gbc_cpu_step(dir); changed = 0; break;
 	case GM_SAVE:    if (act && s_menu_ahead_sz) { s_menu_c->state_save(s_menu_ahead);
@@ -398,6 +437,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		if (n)
 			c->state_load(ahead, n);
 	}
+	gbc_prefs_load(vol);            /* remembered CGB colour correction / mode / dark filter */
 	if (is_dmg) {
 		/* Cartridge title (header 0x134, up to 16 bytes, uppercase ASCII, null/ctrl
 		 * terminated) for the core's per-game palette auto-detection. */
@@ -408,7 +448,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 		while (ti > 0 && s_rom_title[ti - 1] == ' ') ti--;   /* trim trailing pad spaces */
 		s_rom_title[ti] = 0;
-		pal_idx = 0;                 /* index 0 = Auto (Detect), the default palette mode */
+		pal_idx = gbc_pal_load(vol, rom->name, dmg_pal_count(c));  /* per-game choice, else Auto */
 		apply_dmg_palette(c, pal_idx);
 	}
 	apply_color_knobs(c);   /* CGB colour correction / dark filter (remembered settings) */
@@ -515,7 +555,10 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					while (v < 0) v += n; while (v >= n) v -= n;   /* wrap */
 					*s_menu_pal = v; apply_dmg_palette(s_menu_c, v);
 				}
-				if (a && !a_prev) s_pal_pick = 0;                    /* apply (already live) */
+				if (a && !a_prev) {                                  /* apply (already live) */
+					s_pal_pick = 0;
+					if (s_menu_pal) gbc_pal_save(s_menu_vol, s_menu_rom->name, *s_menu_pal);
+				}
 				if (b && !b_prev) {                                  /* cancel: restore */
 					if (s_menu_pal) { *s_menu_pal = s_pal_pick_saved; apply_dmg_palette(s_menu_c, s_pal_pick_saved); }
 					s_pal_pick = 0;
@@ -600,6 +643,8 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		c->state_save(ahead);
 		gba_sd_write_state(vol, rom->name, 0, ahead, ahead_sz);
 	}
+	gbc_prefs_save(vol);                            /* persist CGB colour prefs */
+	if (is_dmg) gbc_pal_save(vol, rom->name, pal_idx);   /* persist this game's palette */
 	ayaneo_menu_audio_silence();
 }
 

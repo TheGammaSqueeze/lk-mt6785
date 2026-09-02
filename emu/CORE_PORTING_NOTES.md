@@ -168,8 +168,15 @@ CGB games), which is fine - the palette IS the final colour.
 
 The CGB colour knobs (`set_color_correction`, `_mode`, `set_dark_filter`) were already in the
 ABI but unexposed; they are now Pico rows (Color Correction on/off, Correction Mode
-Accurate/Fast, Dark Filter 0..100%), applied at session start via `apply_color_knobs` and
-remembered in module statics for the LK boot (not yet in the SD-persisted settings block).
+Accurate/Fast, Dark Filter 0..100%), applied at session start via `apply_color_knobs`.
+
+PERSISTENCE (survives reboot): the colour knobs are GLOBAL, stored in `/gba/gbcprefs.bin`
+(4 bytes: magic 0x9B, cc_on, cc_mode, dark); the palette CHOICE is PER GAME, keyed by ROM
+name under `/saves/gbpal/<rom>.pal` (4-byte frontend index, 0 = Auto), so overriding one
+game does not disturb Auto on the rest. Both ride the generic `gba_sd_read_named`/
+`gba_sd_write_named` helpers (no new save-layer code). Loaded at session start, saved on
+each deliberate change (colour toggle, picker apply, X-reset) AND on session exit as a
+backstop. A stored palette index out of range (e.g. a shrunk catalogue) clamps back to Auto.
 
 The Pico menu also carries a "CPU Clock" row (manual OPP grid 600..2000, mirrors the GBA
 driver's `s_cpu_opp`/`cpu_step`; ayaneo_set_cpu_mhz reprograms the PLL only, so >boot-Vproc
