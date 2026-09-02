@@ -137,7 +137,6 @@ volatile unsigned g_snes_dbg_nz;      /* non-zero pixels in a full-frame sample 
 volatile unsigned g_snes_dbg_changed; /* count of frames whose content hash changed (0 = frozen) */
 static   unsigned s_snes_dbg_lasthash;
 volatile unsigned g_snes_test_limit;  /* >0: run this many frames then exit (oem snes-launch) */
-volatile unsigned g_snes_dbg_pcmin = 0xFFFFFFFF, g_snes_dbg_pcmax; /* emulated 65816 PC range */
 volatile unsigned g_snes_dbg_audframes; /* total audio sample-pairs submitted (0 = APU silent) */
 /* headless save-state self-test (run at the end of an oem snes-launch frame-limited run):
  * ss_size = state_size bytes; ss_core = 1 if state_save then state_load both returned 0;
@@ -452,9 +451,6 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* keep the display's target aspect current (cheap; refreshed periodically) - it
 		 * changes when the player switches Aspect Ratio or Overscan in the menu. */
 		if (c->aspect_x1000 && (g_snes_dbg_frames & 15u) == 0) g_snes_aspect_x1000 = c->aspect_x1000();
-		if (c->dbg_pc) { unsigned pc = c->dbg_pc();
-			if (pc < g_snes_dbg_pcmin) g_snes_dbg_pcmin = pc;
-			if (pc > g_snes_dbg_pcmax) g_snes_dbg_pcmax = pc; }
 		if (g_snes_test_limit && g_snes_dbg_frames >= g_snes_test_limit) { g_snes_dbg_exit = 5; }
 		if (f.video && f.width && f.height) {
 			g_snes_dbg_w = f.width; g_snes_dbg_h = f.height; g_snes_dbg_pitch = f.pitch;
