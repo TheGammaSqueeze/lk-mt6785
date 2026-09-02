@@ -88,7 +88,10 @@ volatile unsigned g_snes_dbg_frames;
 volatile unsigned g_snes_dbg_w, g_snes_dbg_h;
 volatile unsigned g_snes_dbg_exit;    /* 0 running,1 aya-hold,2 blob,3 rom,4 load */
 volatile unsigned g_snes_dbg_pitch;   /* f.pitch of the last frame */
-volatile unsigned g_snes_dbg_nz;      /* non-zero pixels in a mid-row sample (0 = black frame) */
+volatile unsigned g_snes_dbg_nz;      /* non-zero pixels in a full-frame sample (0 = black) */
+volatile unsigned g_snes_dbg_changed; /* count of frames whose content hash changed (0 = frozen) */
+static   unsigned s_snes_dbg_lasthash;
+volatile unsigned g_snes_test_limit;  /* >0: run this many frames then exit (oem snes-launch) */
 
 /* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
  * menu is open so navigation keys do not leak into the game. */
@@ -256,13 +259,21 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * is gated off in ayaneo_snes_pad_mask while the menu is open. */
 		c->run(&f);
 		g_snes_dbg_frames++;
+		if (g_snes_test_limit && g_snes_dbg_frames >= g_snes_test_limit) { g_snes_dbg_exit = 5; }
 		if (f.video && f.width && f.height) {
 			g_snes_dbg_w = f.width; g_snes_dbg_h = f.height; g_snes_dbg_pitch = f.pitch;
-			{	/* sample the middle row: how many non-zero (non-black) pixels? */
+			{	/* full-frame sample: non-zero pixel count + a content hash (to tell a
+				 * static black frame from live-but-mis-displayed content). */
 				const unsigned short *p = (const unsigned short *)f.video;
-				unsigned stride = f.pitch / 2u, row = f.height / 2u, x, nz = 0;
-				for (x = 0; x < f.width; x += 4) if (p[row * stride + x]) nz++;
+				unsigned stride = f.pitch / 2u, y, x, nz = 0, hash = 2166136261u;
+				for (y = 0; y < f.height; y += 8)
+					for (x = 0; x < f.width; x += 8) {
+						unsigned v = p[y * stride + x];
+						if (v) nz++;
+						hash = (hash ^ v) * 16777619u;
+					}
 				g_snes_dbg_nz = nz;
+				if (hash != s_snes_dbg_lasthash) { g_snes_dbg_changed++; s_snes_dbg_lasthash = hash; }
 			}
 			ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
 		} else
@@ -294,8 +305,10 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (++reset_hold >= RESET_HOLD_FRAMES) { c->reset(); reset_hold = 0; }
 			} else reset_hold = 0;
 		}
+		if (g_snes_test_limit && g_snes_dbg_frames >= g_snes_test_limit) break;   /* oem snes-launch */
 	}
 	g_snes_menu_open = 0;
+	g_snes_test_limit = 0;
 
 	ayaneo_dsi_set_vfp(DEFAULT_VFP);   /* restore 59.749 Hz for the menu / other cores */
 

@@ -14,11 +14,19 @@
 /* ---- bump allocator over a DRAM region set by the LK driver ---- */
 static uint8_t *g_base, *g_ptr, *g_end;
 
+extern "C" void *memset(void *, int, unsigned long);   /* bundled libc */
+
 extern "C" void snes_heap_init(void *base, unsigned size)
 {
 	g_base = (uint8_t *)base;
 	g_ptr  = g_base;
 	g_end  = g_base + size;
+	/* CRITICAL: snes9x relies on malloc'd memory being ZERO (host malloc returns zeroed
+	 * pages; a garbage-filled allocator crashes it - verified on host). This bump arena
+	 * never reuses freed memory, so zeroing the whole region once here guarantees every
+	 * allocation starts zeroed. Without this the emulation runs but produces frozen-black
+	 * output (uninitialised SNES RAM/APU state). */
+	memset(base, 0, (unsigned long)size);
 }
 extern "C" unsigned snes_heap_used(void) { return (unsigned)(g_ptr - g_base); }
 

@@ -150,6 +150,7 @@ volatile unsigned int g_dbg_boxart_tot;    /* ROMs the boxart preload attempted 
  * One button at a time, held a few frames so the menu edge-detects a clean press.
  * 0..9 = L R U D A B Select Start LB RB; -1 = none. */
 volatile int          g_dbg_force_launch;   /* fastboot `oem launch`: force-launch focused ROM */
+volatile int          g_dbg_snes_launch;    /* fastboot `oem snes-launch`: launch the first SNES ROM */
 
 /* fastboot `oem key:<name>`: inject one button into the live menu for a few frames so
  * the menu edge-detects a clean press. g_dbg_key = code 0..9 (L R U D A B Sel Start LB
@@ -743,6 +744,15 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 				int n = s_menu.ngames, f = ((s_menu.focus % n) + n) % n;
 				s_menu.launch = s_menu.order[f];
 			}
+		}
+		/* fastboot `oem snes-launch`: launch the FIRST SNES ROM (frame-limited via
+		 * g_snes_test_limit), so the SNES path can be validated over USB without
+		 * navigating to it or risking a wrong (non-SNES) force-launch. */
+		if (g_dbg_snes_launch) {
+			int i;
+			g_dbg_snes_launch = 0;
+			for (i = 0; i < nrom && i < 128; i++)
+				if (s_types[i] == GBA_CONSOLE_SNES) { s_menu.launch = i; break; }
 		}
 		launch = snes_menu_take_launch(&s_menu);
 		if (launch >= 0 && launch < nrom) {

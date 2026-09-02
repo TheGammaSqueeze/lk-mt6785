@@ -98,9 +98,9 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 	{
 		extern volatile unsigned g_snes_dbg_loaderr, g_snes_dbg_hdr0;
 		extern volatile int g_snes_dbg_prc;
-		extern volatile unsigned g_snes_dbg_pitch, g_snes_dbg_nz;
-		snprintf(lbuf, sizeof lbuf, "snes-load: err=%u prc=%d hdr0=0x%08x pitch=%u nz=%u",
-			 g_snes_dbg_loaderr, g_snes_dbg_prc, g_snes_dbg_hdr0, g_snes_dbg_pitch, g_snes_dbg_nz);
+		extern volatile unsigned g_snes_dbg_pitch, g_snes_dbg_nz, g_snes_dbg_changed;
+		snprintf(lbuf, sizeof lbuf, "snes-px: nz=%u chg=%u pitch=%u loaderr=%u",
+			 g_snes_dbg_nz, g_snes_dbg_changed, g_snes_dbg_pitch, g_snes_dbg_loaderr);
 		fastboot_info(lbuf);
 	}
 	fastboot_okay("");
@@ -130,6 +130,31 @@ static void cmd_snes_probe(const char *arg, void *data, unsigned sz)
 		snprintf(lbuf, sizeof lbuf, "probe load: ex=%s loaderr=%u", ex ? "OK" : "NULL", g_snes_dbg_loaderr);
 		fastboot_info(lbuf);
 	}
+	fastboot_okay("");
+}
+
+/* oem snes-launch[:N] - launch the FIRST SNES ROM for N frames (default 240) then return,
+ * via the menu thread (arena-safe), and report the result. Safe way to validate the SNES
+ * path over USB without navigating or risking a wrong non-SNES force-launch. Read the
+ * outcome on the next `oem diag` (frames/dim/nz/changed). */
+static void cmd_snes_launch(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_snes_launch;
+	extern volatile unsigned g_snes_test_limit, g_snes_dbg_frames, g_snes_dbg_exit;
+	unsigned n = 0, i;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg >= '0' && *arg <= '9') n = n * 10 + (unsigned)(*arg++ - '0');
+	if (n < 1) n = 240;
+	g_snes_test_limit = n;
+	g_dbg_snes_launch = 1;
+	/* wait for the menu to pick it up + the session to run n frames + return (~n/50 s) */
+	for (i = 0; i < 40 + n; i++) {
+		thread_sleep(50);
+		if (g_snes_dbg_exit != 0 && g_snes_test_limit == 0) break;
+	}
+	snprintf(lbuf, sizeof lbuf, "snes-launch: requested %u frames, ran=%u exit=%u", n, g_snes_dbg_frames, g_snes_dbg_exit);
+	fastboot_info(lbuf);
 	fastboot_okay("");
 }
 
@@ -210,6 +235,7 @@ void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
+	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
 	fastboot_register("oem preempt:", cmd_preempt, 1, 0);
 	fastboot_register("oem selftest", cmd_selftest, 1, 0);
