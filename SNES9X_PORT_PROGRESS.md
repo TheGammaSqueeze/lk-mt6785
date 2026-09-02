@@ -44,6 +44,10 @@ by pf frames to cut input latency. Clock escalates per tier (1400/1600/1800/2000
 the pf+1 emulations/frame. Off under the menu / benchmark / headless test; state in the
 0x53000000 scratch slot (disabled if the state exceeds 2 MB).
 
+The four snes9x option picks (aspect/overscan/audio/hires) now PERSIST across sessions:
+packed into one u32 at offset 52 of the GammaOS settings block (ver 5->6, backward
+compatible); restored + pushed to the core at session start, repacked/saved on change.
+
 Feature set now at parity with GB/GBC/GBA. Optional leftovers: color-correction option
 (omitted as GB-specific); tuning the run-ahead tiers if Max is too heavy on some games.
 
