@@ -46,7 +46,9 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
 #define GPIO_LEFT      78
 #define GPIO_RIGHT     80
 #define GPIO_A         83      /* menu select */
-#define GPIO_X         84      /* menu: reset the hovered option to its default */
+#define GPIO_X         85      /* PHYSICAL X button (GBA driver labels 84/85 X/Y for
+                                * autofire, which reads swapped vs the printed caps; the
+                                * menu uses the physically-labelled X to reset an option) */
 #define RESET_HOLD_FRAMES 30    /* ~0.5 s at 59.7 Hz */
 
 /* Run-ahead and suspend/resume are layered on basic emulation. The baseline (display,
