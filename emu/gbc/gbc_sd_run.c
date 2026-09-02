@@ -227,11 +227,12 @@ static const char *gm_value(int i, char *buf)
 	case GM_FILTER:  p = mput(p, filt_name(ayaneo_get_lcd_filter())); break;
 	case GM_PALETTE: if (s_menu_is_dmg && s_menu_c) {
 				 int sel = s_menu_pal ? *s_menu_pal : 0;
-				 if (sel == 0) {   /* Auto: show what it detected + whether it matched */
-					 p = mput(p, "< Auto:");
-					 if (s_rom_title[0]) { int j; for (j = 0; s_rom_title[j] && j < 16; j++) *p++ = s_rom_title[j]; }
-					 else p = mput(p, "?");
-					 p = mput(p, s_auto_hit ? " ok >" : " def >");
+				 if (sel == 0) {   /* Auto: name the detected per-game palette, else plain */
+					 if (s_auto_hit && s_rom_title[0]) {
+						 int j; p = mput(p, "< Auto: ");
+						 for (j = 0; s_rom_title[j] && j < 16; j++) *p++ = s_rom_title[j];
+						 p = mput(p, " >");
+					 } else p = mput(p, "< Auto (Detect) >");
 				 } else {
 					 const char *nm = dmg_pal_name(s_menu_c, sel);
 					 int nl = 0; while (nm[nl] && nl < 30) nl++;   /* clamp long TWB64 names */
