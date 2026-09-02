@@ -347,7 +347,10 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	saved_mhz = ayaneo_get_cpu_mhz();
 	if (saved_mhz < 1400) ayaneo_set_cpu_mhz(1400);
 
-	ayaneo_display_prepare();
+	/* If the menu armed a launch punch (snapshot at 0x54000000, gba_punch_ready), DON'T
+	 * clear to black - keep the frozen menu on screen so the growing gameplay circle opens
+	 * over it (matches GBA/GBC). Otherwise blank the panel. */
+	{ extern int gba_punch_ready; if (!gba_punch_ready) ayaneo_display_prepare(); }
 	ayaneo_gbc_audio_init();
 	ayaneo_snes_audio_reset();
 	mtk_wdt_disable();
@@ -361,6 +364,30 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0;
 	{ int oi; for (oi = 0; oi < OI_N; oi++) s_opt_idx[oi] = 0; }   /* options -> core defaults */
 	g_snes_aspect_x1000 = (c->aspect_x1000) ? c->aspect_x1000() : 0;
+
+	/* Launch punch-hole (matches GBA/GBC): run a few frames so real gameplay is on screen
+	 * (not a black/boot frame), pre-render it full-screen, then grow a circle from 0 to the
+	 * panel diagonal over the frozen menu snapshot at 0x54000000. Skipped if the menu didn't
+	 * arm it (e.g. oem snes-launch). */
+	{
+		extern int  gba_punch_ready;
+		extern void ayaneo_snes_punch_prerender(const unsigned short *, unsigned, unsigned, unsigned);
+		extern void ayaneo_gba_punch_frame_pre(const unsigned int *, int);
+		if (gba_punch_ready) {
+			struct snes_frame pf; int i, w; pf.video = 0;
+			gba_punch_ready = 0;
+			for (w = 0; w < 15; w++) { c->run(&pf); if (pf.video && pf.width && w >= 3) break; }
+			if (c->aspect_x1000) g_snes_aspect_x1000 = c->aspect_x1000();
+			if (pf.video && pf.width && pf.height) {
+				ayaneo_snes_punch_prerender((const unsigned short *)pf.video, pf.width, pf.height, pf.pitch / 2u);
+				for (i = 1; i <= 20; i++) {
+					int r = 820 * i / 20; if (r < 1) r = 1;
+					ayaneo_gba_punch_frame_pre((const unsigned int *)0x54000000u, r);
+					mtk_wdt_restart();
+				}
+			}
+		}
+	}
 
 	int reset_hold = 0, aya_prev = 0;
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
@@ -428,7 +455,14 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		aya = PRESSED(GPIO_AYA);
 		if (aya && !aya_prev) { g_snes_menu_open = !g_snes_menu_open; s_mstat[0] = 0; }
 		aya_prev = aya;
-		if (aya) { if (++aya_hold >= 90) { g_snes_dbg_exit = 1; break; } } else aya_hold = 0;
+		if (aya) { if (++aya_hold >= 90) {
+			/* Arm the reverse punch: the menu re-entry shrinks this frozen frame back into
+			 * the carousel (matches GBA/GBC). Not for the headless test-limit exit. */
+			extern void snes_menu_arm_reverse(const unsigned short *, unsigned, unsigned, unsigned);
+			if (!g_snes_test_limit && f.video && f.width && f.height)
+				snes_menu_arm_reverse((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
+			g_snes_dbg_exit = 1; break;
+		} } else aya_hold = 0;
 
 		if (g_snes_menu_open) {
 			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);

@@ -48,7 +48,8 @@ extern unsigned int gpt4_get_current_tick(void);
 #define GBA_GAME_FULL_PA    0x55900000u   /* game pre-rendered full-screen BGRA (fast reverse) */
 #define GBA_REVERSE_MS      180u
 static int g_reverse_punch = 0;
-static int g_reverse_is_gbc = 0;   /* 0 = GBA 240x160x5, 1 = GB/GBC 160x144x6 */
+static int g_reverse_is_gbc = 0;   /* 0 = GBA 240x160x5, 1 = GB/GBC 160x144x6, 2 = SNES (dims below) */
+static int g_reverse_snes_w, g_reverse_snes_h, g_reverse_snes_scale;
 volatile int g_dbg_arm_cnt;   /* incremented each time the driver arms the reverse */
 
 /* Called by the driver on "Close" with the last game frame; armed here, consumed by
@@ -71,6 +72,23 @@ void gbc_menu_arm_reverse(const unsigned short *game_frame)
 		memcpy((void *)(uintptr_t)GBA_GAME_FREEZE_PA, game_frame, 160u * 144u * 2u);
 		g_reverse_punch = 1;
 		g_reverse_is_gbc = 1;
+	}
+}
+
+/* SNES variant: the frozen frame is 256/512 wide (RGB565) with an arbitrary stride, so
+ * pack it CONTIGUOUS into GBA_GAME_FREEZE_PA (gba_punch_prerender assumes stride == width).
+ * The reverse renders it at integer scale (4x/2x) centred - a brief transition, so the
+ * slight width difference from the live aspect-stretched view is imperceptible. */
+void snes_menu_arm_reverse(const unsigned short *game_frame, unsigned sw, unsigned sh, unsigned spitch)
+{
+	g_dbg_arm_cnt++;
+	if (game_frame && sw && sh && sw <= 512 && sh <= 512) {
+		unsigned y; unsigned short *d = (unsigned short *)(uintptr_t)GBA_GAME_FREEZE_PA;
+		for (y = 0; y < sh; y++) memcpy(d + y * sw, game_frame + y * spitch, sw * 2u);
+		g_reverse_snes_w = (int)sw; g_reverse_snes_h = (int)sh;
+		g_reverse_snes_scale = (sw <= 256) ? 4 : 2;
+		g_reverse_punch = 1;
+		g_reverse_is_gbc = 2;
 	}
 }
 
@@ -370,7 +388,13 @@ static void play_reverse_punch(unsigned int ms)
 	/* Pre-convert the FROZEN game to a full-screen BGRA buffer ONCE, so each shrink
 	 * frame is just memcpy (gba_punch_composite_pre) = ~5ms not ~50ms. FRAME-paced
 	 * over a fixed count so the shrink is a smooth, visible 60fps sequence. */
-	if (g_reverse_is_gbc)
+	if (g_reverse_is_gbc == 2) {
+		int sc = g_reverse_snes_scale, sw = g_reverse_snes_w, sh = g_reverse_snes_h;
+		int dw = sw * sc, dh = sh * sc;
+		gba_punch_prerender((uint32_t *)(uintptr_t)GBA_GAME_FULL_PA, (int)cp, (int)cw, (int)ch,
+				    (const unsigned short *)GBA_GAME_FREEZE_PA, sc, sw, sh,
+				    ((int)cw - dw) / 2, ((int)ch - dh) / 2);
+	} else if (g_reverse_is_gbc == 1)
 		gba_punch_prerender((uint32_t *)(uintptr_t)GBA_GAME_FULL_PA, (int)cp, (int)cw, (int)ch,
 				    (const unsigned short *)GBA_GAME_FREEZE_PA, 6, 160, 144,
 				    ((int)cw - 960) / 2, ((int)ch - 864) / 2);

@@ -1445,6 +1445,42 @@ void ayaneo_gb_punch_prerender(const unsigned short *pix)
 	arch_clean_cache_range(GBA_PUNCH_GAME_FULL_PA, pitch * H * 4);
 }
 
+/* SNES variant: pre-convert a frozen SNES frame (256/512 wide, RGB565, stride spitch_px)
+ * to the full-screen BGRA game buffer the punch compositor reads, using the SAME aspect-
+ * aware scale as ayaneo_snes_show_frame so the launch circle opens onto matching geometry. */
+void ayaneo_snes_punch_prerender(const unsigned short *pix, unsigned int sw, unsigned int sh,
+				 unsigned int spitch_px)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	unsigned int *gf = (unsigned int *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA;
+	unsigned int sy_scale = (sh <= 240) ? 4 : 2;
+	unsigned int dh = sh * sy_scale;
+	extern volatile unsigned g_snes_aspect_x1000;
+	unsigned int asp = g_snes_aspect_x1000;
+	unsigned int dw = asp ? (dh * asp) / 1000u : sw * ((sw <= 256) ? 4u : 2u);
+	int xoff, yoff; unsigned int xstep, y, x;
+	if (!pix) return;
+	if (dw > W) dw = W; if (dw < 1) dw = 1;
+	xoff = ((int)W - (int)dw) / 2; yoff = ((int)H - (int)dh) / 2;
+	if (xoff < 0) xoff = 0; if (yoff < 0) yoff = 0;
+	xstep = (sw << 16) / dw;
+	for (y = 0; y < H; y++) {
+		unsigned int *orow = gf + y * pitch;
+		int in_gy = ((int)y >= yoff && y < (unsigned)yoff + dh);
+		const unsigned short *srow = in_gy ? (pix + ((y - (unsigned)yoff) / sy_scale) * spitch_px) : 0;
+		unsigned int acc = 0;
+		for (x = 0; x < W; x++) {
+			if (in_gy && (int)x >= xoff && x < (unsigned)xoff + dw) {
+				unsigned int v = srow[acc >> 16]; acc += xstep;
+				unsigned int r = ((v >> 11) & 0x1f) << 3, g = ((v >> 5) & 0x3f) << 2, b = (v & 0x1f) << 3;
+				orow[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+			} else orow[x] = 0xFF000000u;
+		}
+	}
+	arch_clean_cache_range(GBA_PUNCH_GAME_FULL_PA, pitch * H * 4);
+}
+
 void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
