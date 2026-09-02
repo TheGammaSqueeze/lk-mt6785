@@ -117,6 +117,7 @@ static void gbc_cpu_step(int dir)
  * 0..N-1. Auto is the DEFAULT. s_rom_title is filled from the ROM header at session start
  * and handed to the core's auto detector. */
 static char s_rom_title[20];
+static int  s_auto_hit;    /* 1 = auto found a per-game palette, 0 = fell back to default */
 
 static int dmg_pal_count(const struct gbc_core_exports *c)
 {
@@ -135,7 +136,7 @@ static void apply_dmg_palette(const struct gbc_core_exports *c, int idx)
 	int n = dmg_pal_count(c);
 	if (idx < 0) idx = n - 1;
 	if (idx >= n) idx = 0;
-	if (idx == 0) { if (c->dmg_palette_apply_auto) c->dmg_palette_apply_auto(s_rom_title); }
+	if (idx == 0) { int rr = c->dmg_palette_apply_auto ? c->dmg_palette_apply_auto(s_rom_title) : 0; s_auto_hit = (rr < 0); }
 	else          { if (c->dmg_palette_apply) c->dmg_palette_apply((unsigned)(idx - 1)); }
 }
 
@@ -225,9 +226,17 @@ static const char *gm_value(int i, char *buf)
 	case GM_VOLUME:  p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
 	case GM_FILTER:  p = mput(p, filt_name(ayaneo_get_lcd_filter())); break;
 	case GM_PALETTE: if (s_menu_is_dmg && s_menu_c) {
-				 const char *nm = dmg_pal_name(s_menu_c, s_menu_pal ? *s_menu_pal : 0);
-				 int nl = 0; while (nm[nl] && nl < 30) nl++;   /* clamp long TWB64 names */
-				 p = mput(p, "< "); { int j; for (j = 0; j < nl; j++) *p++ = nm[j]; } p = mput(p, " >");
+				 int sel = s_menu_pal ? *s_menu_pal : 0;
+				 if (sel == 0) {   /* Auto: show what it detected + whether it matched */
+					 p = mput(p, "< Auto:");
+					 if (s_rom_title[0]) { int j; for (j = 0; s_rom_title[j] && j < 16; j++) *p++ = s_rom_title[j]; }
+					 else p = mput(p, "?");
+					 p = mput(p, s_auto_hit ? " ok >" : " def >");
+				 } else {
+					 const char *nm = dmg_pal_name(s_menu_c, sel);
+					 int nl = 0; while (nm[nl] && nl < 30) nl++;   /* clamp long TWB64 names */
+					 p = mput(p, "< "); { int j; for (j = 0; j < nl; j++) *p++ = nm[j]; } p = mput(p, " >");
+				 }
 			 } else p = mput(p, "CGB"); break;
 	case GM_COLORCC: p = mput(p, s_cc_on ? "On" : "Off"); break;
 	case GM_CCMODE:  p = mput(p, s_cc_mode ? "Fast" : "Accurate"); break;
@@ -396,6 +405,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (ch < 0x20 || ch > 0x7E) break;
 			s_rom_title[ti] = (char)ch;
 		}
+		while (ti > 0 && s_rom_title[ti - 1] == ' ') ti--;   /* trim trailing pad spaces */
 		s_rom_title[ti] = 0;
 		pal_idx = 0;                 /* index 0 = Auto (Detect), the default palette mode */
 		apply_dmg_palette(c, pal_idx);

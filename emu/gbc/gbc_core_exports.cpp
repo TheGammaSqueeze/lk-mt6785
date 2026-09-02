@@ -50,19 +50,22 @@ void     gbc_set_dark_filter(unsigned level);
 static const struct gbc_core_imports *s_imp;
 
 /* ---- GB colorization palette catalogue over gbcDirPalettes[] (gbcpalettes.h) ----
- * Each entry is a name plus 12 PACK15 (15-bit 0bBGR) colours = 3 DMG palettes (BG,
- * OBJ0, OBJ1) x 4 shades. Convert PACK15 back to 0x00RRGGBB and drive the existing
- * gbc_set_dmg_palette_color path so nothing else in the core needs to change. */
+ * Each entry is a name plus 12 PACK15 (15-bit BGR555) colours = 3 DMG palettes (BG,
+ * OBJ0, OBJ1) x 4 shades. Convert BGR555 -> RGB565 (see pack15_to_rgb565) and drive the
+ * existing gbc_set_dmg_palette_color path so nothing else in the core needs to change. */
 static const unsigned GBC_DIR_PAL_N =
 	(unsigned)(sizeof(gbcDirPalettes) / sizeof(gbcDirPalettes[0]));
 
-static inline unsigned pack15_to_rgb32(unsigned short v)
+/* gbcpalettes.h PACK15 is 15-bit BGR555 (B<<10 | G<<5 | R). This core is built with
+ * -DVIDEO_RGB565, so gambatte's video_pixel_t is a 16-bit RGB565 value that
+ * setDmgPaletteColor stores DIRECTLY as the output pixel (it does NOT run our value
+ * through gbcToRgb32). So convert BGR555 -> RGB565 and hand THAT over; a 24-bit 0xRRGGBB
+ * would be truncated to 16 bits = garbage (the "every game the same green/blue" bug). */
+static inline unsigned pack15_to_rgb565(unsigned short v)
 {
 	unsigned r5 = v & 0x1Fu, g5 = (v >> 5) & 0x1Fu, b5 = (v >> 10) & 0x1Fu;
-	unsigned r8 = (r5 << 3) | (r5 >> 2);
-	unsigned g8 = (g5 << 3) | (g5 >> 2);
-	unsigned b8 = (b5 << 3) | (b5 >> 2);
-	return (r8 << 16) | (g8 << 8) | b8;
+	unsigned g6 = (g5 << 1) | (g5 >> 4);
+	return (r5 << 11) | (g6 << 5) | b5;
 }
 
 static int str_eq(const char *a, const char *b)
@@ -84,7 +87,7 @@ extern "C" void gbc_dmg_palette_apply(unsigned idx)
 	const unsigned short *p = gbcDirPalettes[idx].p;   /* 12 shorts: BG, OBJ0, OBJ1 */
 	for (unsigned pal = 0; pal < 3; pal++)
 		for (unsigned col = 0; col < 4; col++)
-			gbc_set_dmg_palette_color(pal, col, pack15_to_rgb32(p[pal * 4 + col]));
+			gbc_set_dmg_palette_color(pal, col, pack15_to_rgb565(p[pal * 4 + col]));
 }
 
 extern "C" unsigned gbc_dmg_palette_default(void)
@@ -106,7 +109,7 @@ static void apply_pal_ptr(const unsigned short *p)
 {
 	for (unsigned pal = 0; pal < 3; pal++)
 		for (unsigned col = 0; col < 4; col++)
-			gbc_set_dmg_palette_color(pal, col, pack15_to_rgb32(p[pal * 4 + col]));
+			gbc_set_dmg_palette_color(pal, col, pack15_to_rgb565(p[pal * 4 + col]));
 }
 
 extern "C" int gbc_dmg_palette_apply_auto(const char *title)

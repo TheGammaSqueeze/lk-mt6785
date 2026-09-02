@@ -155,6 +155,17 @@ The frontend maps its indices 1..N onto the core dir palettes 0..N-1, so `dmg_pa
 returns core count + 1 and `dmg_pal_name(0)` is "Auto (Detect)". X on the Palette row resets
 to Auto.
 
+GOTCHA (cost a full debug cycle): the blob is built `-DVIDEO_RGB565`, so gambatte's
+`video_pixel_t` is `uint16_t` and `setDmgPaletteColor` stores its argument DIRECTLY as the
+output pixel (it does NOT convert through `gbcToRgb32`). The gbcpalettes.h values are
+PACK15 = BGR555. So the palette must be handed over as **RGB565**, not 0x00RRGGBB - a
+24-bit value is silently truncated to 16 bits, which for every palette lands on a similar
+garbage green/blue, so EVERY game looked identical (and it read as "auto-detect is broken"
+when the title match was actually fine). `pack15_to_rgb565` does BGR555->RGB565. If a future
+build flips to a 32-bit `video_pixel_t`, this conversion has to change with it. Colour
+correction does NOT apply to DMG palettes on this path (only gambatte's own gbcToRgb32 for
+CGB games), which is fine - the palette IS the final colour.
+
 The CGB colour knobs (`set_color_correction`, `_mode`, `set_dark_filter`) were already in the
 ABI but unexposed; they are now Pico rows (Color Correction on/off, Correction Mode
 Accurate/Fast, Dark Filter 0..100%), applied at session start via `apply_color_knobs` and
