@@ -27,9 +27,17 @@ via the runner's TPF num/den; GB/GBC/GBA stay 59.7275 Hz (their own pacing); the
 menu stays 59.7275 Hz (vsync-driven, untouched). When SNES audio lands its resampler must
 use 60.0988 Hz, not the 59.7275 the GBA path assumes.
 
-REMAINING: audio (snes frame -> AFE, ~32 kHz resample), in-game menu/run-ahead/transition
-(mirror gbc), menu console badge + logo, perf pass, hi-res/interlace + overscan polish,
-pacing to exact 60.098 Hz.
+AUDIO: done (first cut). snes9x outputs stereo s16 at its native ~32040 Hz; new
+`ayaneo_snes_audio_submit` (ayaneo_audio.c) linear-interp UPSAMPLES that to the 48 kHz AFE
+ring (the GBA path box-DECIMATES 65536->48000; SNES needs the other direction), src rate
+from av_info. Video stays 60.0988 Hz-mastered (per user), so audio uses an emergency
+write-cursor snap near under/overrun rather than audio-mastered pacing; a fine-trim clock
+recovery like the GBA path can be added later if the periodic snap is audible. Wired in
+snes_sd_run.c (ayaneo_gbc_audio_init + reset at session start, submit each frame). lk_a-only.
+
+REMAINING: in-game menu/run-ahead/transition (mirror gbc), menu console badge + logo, perf
+pass, hi-res/interlace + overscan polish, audio fine-trim if needed. STILL UNVALIDATED on HW
+(headless) - need a .sfc/.smc in /roms/snes to confirm video+input+audio.
 
 ### (earlier) BLOB LINKS milestone
 

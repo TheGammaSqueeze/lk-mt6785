@@ -20,6 +20,9 @@
 
 extern const struct snes_core_exports *snes_core_load(void);   /* snes_core_loader.c */
 extern void     ayaneo_snes_show_frame(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px);
+extern void     ayaneo_gbc_audio_init(void);       /* 48 kHz AFE ring (shared with GB/GBC) */
+extern void     ayaneo_snes_audio_reset(void);
+extern void     ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz);
 extern void     ayaneo_menu_audio_silence(void);
 extern void     ayaneo_display_prepare(void);
 extern unsigned gpt4_get_current_tick(void);
@@ -118,6 +121,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	}
 
 	ayaneo_display_prepare();
+	ayaneo_gbc_audio_init();
+	ayaneo_snes_audio_reset();
 	mtk_wdt_disable();
 
 	pace_base = gpt4_get_current_tick();
@@ -129,6 +134,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		c->run(&f);
 		if (f.video && f.width && f.height)
 			ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
+		if (f.audio && f.frames)
+			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 
 		if (aya) { if (++aya_hold >= 60) break; } else aya_hold = 0;
 

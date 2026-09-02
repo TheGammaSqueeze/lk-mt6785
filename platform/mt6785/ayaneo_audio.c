@@ -1253,6 +1253,60 @@ void ayaneo_menu_audio_submit(const short *stereo, unsigned frames)
 	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
 }
 
+/* ---- SNES (snes9x) audio: linear-interp UPSAMPLE src_hz -> 48 kHz ring ----
+ * snes9x outputs stereo s16 at its native ~32040 Hz (below the 48 kHz ring), so we
+ * interpolate up rather than the GBA box-decimator. Video is paced at 60.0988 Hz off the
+ * 13 MHz counter (not audio-mastered), so a light lead check snaps the write cursor only
+ * near under/overrun; the fixed ratio keeps pitch constant in between. src_hz comes from
+ * the core's av_info so it tracks the real output rate. */
+static unsigned s_sn_phase;      /* 16.16 fractional position within the current input step */
+static int      s_sn_pl, s_sn_pr;
+static int      s_sn_prime;
+
+void ayaneo_snes_audio_reset(void) { s_sn_phase = 0; s_sn_pl = s_sn_pr = 0; s_sn_prime = 0; }
+
+void ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz)
+{
+	int vol = s_gbc_vol;
+	unsigned q = (vol >= 100) ? 256u : ((unsigned)vol * 256u / 100u);
+	unsigned step, i;
+
+	if (!s_gbc_audio_on || s_gbc_paused || !frames)
+		return;
+	if (src_hz < 8000u || src_hz > 96000u) src_hz = 32040u;   /* sanity */
+	step = (src_hz << 16) / GBC_DST_HZ;                        /* input samples per output (<1.0 => upsample) */
+
+	/* keep the write cursor sane vs the AFE read cursor (emergency snap only) */
+	{
+		unsigned cur  = afe_r(AFE_DL1_CUR);
+		unsigned base = (unsigned)(addr_t)s_gbc_ring;
+		unsigned rd   = (cur >= base) ? (cur - base) / 4u : 0u;
+		int lead = (int)((s_gbc_widx - rd) & (GBC_RING_FRAMES - 1));
+		if (lead >= (int)(GBC_RING_FRAMES / 2)) lead -= (int)GBC_RING_FRAMES;
+		if (lead < (int)(GBC_RING_FRAMES / 16) || lead > (int)((GBC_RING_FRAMES * 7) / 16))
+			s_gbc_widx = (rd + GBC_RING_FRAMES / 4) & (GBC_RING_FRAMES - 1);
+	}
+
+	if (!s_sn_prime) { s_sn_pl = interleaved[0]; s_sn_pr = interleaved[1]; s_sn_prime = 1; }
+
+	for (i = 0; i < frames; i++) {
+		int cl = interleaved[i * 2 + 0], cr = interleaved[i * 2 + 1];
+		while (s_sn_phase < 0x10000u) {
+			int fl = s_sn_pl + (((cl - s_sn_pl) * (int)s_sn_phase) >> 16);
+			int fr = s_sn_pr + (((cr - s_sn_pr) * (int)s_sn_phase) >> 16);
+			unsigned idx = s_gbc_widx & (GBC_RING_FRAMES - 1);
+			if (q < 256) { fl = (fl * (int)q) >> 8; fr = (fr * (int)q) >> 8; }
+			s_gbc_ring[idx * 2 + 0] = (short)fl;
+			s_gbc_ring[idx * 2 + 1] = (short)fr;
+			s_gbc_widx++;
+			s_sn_phase += step;
+		}
+		s_sn_phase -= 0x10000u;
+		s_sn_pl = cl; s_sn_pr = cr;
+	}
+	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
+}
+
 /* Zero the ENTIRE audio ring so the AFE DMA loops silence instead of replaying the
  * last BGM segment. Submitting silence at the write cursor is not enough (the DMA
  * wraps and re-reads older frames), so wipe the whole buffer. Used at the menu ->
