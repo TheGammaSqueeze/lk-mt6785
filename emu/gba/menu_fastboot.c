@@ -85,6 +85,16 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			 g_dbg_bt_coreload, g_dbg_bt_coreinit, g_dbg_bt_start, g_dbg_bt_frame1);
 		fastboot_info(lbuf);
 	}
+	{
+		/* last SNES session: how far it got + why it exited. */
+		extern volatile unsigned g_snes_dbg_stage, g_snes_dbg_romsz, g_snes_dbg_loadrc;
+		extern volatile unsigned g_snes_dbg_frames, g_snes_dbg_w, g_snes_dbg_h, g_snes_dbg_exit;
+		snprintf(lbuf, sizeof lbuf,
+			 "snes: stage=%u romsz=%u loadrc=%u frames=%u dim=%ux%u exit=%u",
+			 g_snes_dbg_stage, g_snes_dbg_romsz, g_snes_dbg_loadrc,
+			 g_snes_dbg_frames, g_snes_dbg_w, g_snes_dbg_h, g_snes_dbg_exit);
+		fastboot_info(lbuf);
+	}
 	fastboot_okay("");
 }
 

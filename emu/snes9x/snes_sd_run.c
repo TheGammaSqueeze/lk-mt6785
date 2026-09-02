@@ -80,6 +80,14 @@ extern void ayaneo_menu_settings_persist(void);
 
 volatile int g_snes_menu_open;   /* gates ayaneo_snes_pad_mask so the game ignores menu input */
 
+/* diagnostics, read via `fastboot oem diag` after a launch (why did the session exit?) */
+volatile unsigned g_snes_dbg_stage;   /* 1 blob,2 rom,3 heap,4 loading,5 running */
+volatile unsigned g_snes_dbg_romsz;
+volatile unsigned g_snes_dbg_loadrc;  /* c->load() return (0 = ok, 0xFF = not reached) */
+volatile unsigned g_snes_dbg_frames;
+volatile unsigned g_snes_dbg_w, g_snes_dbg_h;
+volatile unsigned g_snes_dbg_exit;    /* 0 running,1 aya-hold,2 blob,3 rom,4 load */
+
 /* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
  * menu is open so navigation keys do not leak into the game. */
 unsigned ayaneo_snes_pad_mask(void)
@@ -184,16 +192,26 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	unsigned bw = 0, bh = 0, mw = 0, mh = 0, sr = 0;
 	int aya_hold = 0;
 
+	g_snes_dbg_stage = 1; g_snes_dbg_frames = 0; g_snes_dbg_exit = 0;
+	g_snes_dbg_w = g_snes_dbg_h = 0; g_snes_dbg_loadrc = 0xFF;
+
 	c = snes_core_load();
-	if (!c) return;
+	if (!c) { g_snes_dbg_exit = 2; return; }   /* blob load failed */
+	g_snes_dbg_stage = 2;
 
 	romsz = gba_sd_load_rom(vol, rom, rombuf, SNES_ROM_CAP);
-	if (!romsz) return;
+	g_snes_dbg_romsz = romsz;
+	if (!romsz) { g_snes_dbg_exit = 3; return; }   /* ROM read failed */
+	g_snes_dbg_stage = 3;
 
 	c->heap_init((void *)SNES_HEAP_BASE, SNES_HEAP_SZ);
 	c->init();
-	if (c->load(rombuf, romsz) != 0) return;
+	g_snes_dbg_stage = 4;
+	g_snes_dbg_loadrc = (unsigned)c->load(rombuf, romsz);
+	if (g_snes_dbg_loadrc != 0) { g_snes_dbg_exit = 4; return; }   /* core load failed */
+	g_snes_dbg_stage = 5;
 	c->av_info(&bw, &bh, &mw, &mh, &sr);
+	g_snes_dbg_w = bw; g_snes_dbg_h = bh;
 
 	/* cartridge battery save (.srm) from the card, if any. */
 	{
@@ -235,9 +253,11 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* The game keeps running under the menu (frame + audio keep flowing); its input
 		 * is gated off in ayaneo_snes_pad_mask while the menu is open. */
 		c->run(&f);
-		if (f.video && f.width && f.height)
+		g_snes_dbg_frames++;
+		if (f.video && f.width && f.height) {
+			g_snes_dbg_w = f.width; g_snes_dbg_h = f.height;
 			ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
-		else
+		} else
 			priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
 		if (f.audio && f.frames)
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
@@ -246,7 +266,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		aya = PRESSED(GPIO_AYA);
 		if (aya && !aya_prev) { g_snes_menu_open = !g_snes_menu_open; s_mstat[0] = 0; }
 		aya_prev = aya;
-		if (aya) { if (++aya_hold >= 90) break; } else aya_hold = 0;
+		if (aya) { if (++aya_hold >= 90) { g_snes_dbg_exit = 1; break; } } else aya_hold = 0;
 
 		if (g_snes_menu_open) {
 			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
