@@ -276,7 +276,6 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		ayaneo_set_cpu_mhz(s_gbc_opp[(pf >= 0 && pf <= 3) ? pf : 0]);
 	}
 
-	ayaneo_display_prepare();
 	ayaneo_gbc_audio_init();
 	mtk_wdt_disable();                          /* no kernel handoff; kick each frame */
 
@@ -284,12 +283,22 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * snapshot (0x54000000) and set gba_punch_ready. Grow a circle over it revealing
 	 * the running game. Run a few frames first so the opening shows real content, not
 	 * the boot screen. Reuses the geometry-agnostic composite (frame_pre) with a GB
-	 * prerender (160x144x6). */
+	 * prerender (160x144x6).
+	 *
+	 * ayaneo_display_prepare() is DELIBERATELY skipped when a punch is pending: it
+	 * memsets BOTH fb buffers to black (including the one the OVL is scanning out),
+	 * which blanks the live frozen-menu snapshot to black for the ~20 silent emulation
+	 * frames before the punch starts = the menu->game flicker (GBA never calls it here,
+	 * so it did not flicker). The punch composite takes over the display seamlessly and
+	 * clear_letterbox blacks only the borders. Only when there is NO snapshot to punch
+	 * over do we fall back to the black-fill prepare. */
 	{
 		extern int  gba_punch_ready;
 		extern void ayaneo_gb_punch_prerender(const unsigned short *pix);
 		extern void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius);
 		extern void ayaneo_gbc_clear_letterbox(void);
+		if (!gba_punch_ready)
+			ayaneo_display_prepare();   /* fallback: no snapshot, clear to black */
 		if (gba_punch_ready) {
 			int i, w;
 			gba_punch_ready = 0;

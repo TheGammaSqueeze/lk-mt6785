@@ -85,6 +85,19 @@ and still gives a smooth carousel. `ayaneo_get/set_cpu_mhz` read/write ARMPLL_CO
 clock/voltage stability problem (too high a sustained clock, or churning the PLL), not a
 software bug.
 
+## 6b. Do NOT ayaneo_display_prepare() before a launch punch (black-flash)
+The SNES menu presents its frozen launch snapshot on `FB_LAYER` via
+`ayaneo_canvas_present` - the SAME layer + double-buffer the game uses (there is no
+separate always-on menu overlay for the SNES menu; `BOOT_MENU_LAYER` is the boot
+animation). So at launch the live on-screen image IS one of the two game fb buffers.
+`ayaneo_display_prepare()` memsets BOTH fb buffers to black, including the one the OVL
+is currently scanning out -> the frozen menu instantly goes black and stays black for
+the ~20 silent emulation frames run before the punch loop paints = a menu->game flicker.
+The GBA path never calls display_prepare at launch (only once at init, before the menu),
+so it never flickered. Fix: when `gba_punch_ready`, SKIP display_prepare; let the punch
+composite take over the display and `ayaneo_gbc_clear_letterbox` black only the borders.
+Call the black-fill prepare only as the no-snapshot fallback.
+
 ## 7. Card-tile cache must key by whatever makes cards differ
 The carousel caches pre-rendered card tiles. Without per-ROM box art it used ONE shared
 tile ("all GBA carts identical"). Adding per-card CONSOLE BADGES broke that assumption;
