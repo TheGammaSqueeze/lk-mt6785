@@ -93,6 +93,9 @@ unsigned ayaneo_snes_pad_mask(void)
 #define SNES_ROM_CAP   0x00800000u        /* 8 MB (largest SNES carts ~6 MB) */
 #define SNES_HEAP_BASE 0x50800000u
 #define SNES_HEAP_SZ   0x03000000u        /* 48 MB for snes9x's internal allocations */
+#define SNES_STATE_BUF 0x53800000u        /* just above the heap, below the 0x54000000 snapshot */
+#define SNES_STATE_CAP 0x00400000u        /* 4 MB (snes9x state ~0.8 MB, more with SA-1/SuperFX) */
+#define RESET_HOLD_FRAMES 30              /* SELECT+START+L+R held ~0.5 s = soft reset */
 
 static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 {
@@ -121,6 +124,15 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			gba_sd_read_named(vol, "/saves/snes", rom->name, "srm", (unsigned char *)p, sz);
 	}
 
+	/* Suspend/resume: reload the save STATE from the last exit so the game resumes where
+	 * it left off, unless B is held at launch (start fresh). Mirrors the GB/GBC flow; the
+	 * host round-trip proved snes9x serialize/unserialize is deterministic. */
+	if (!PRESSED(GPIO_B)) {
+		unsigned char *st = (unsigned char *)SNES_STATE_BUF;
+		unsigned n = gba_sd_read_named(vol, "/states/snes", rom->name, "st0", st, SNES_STATE_CAP);
+		if (n) c->state_load(st, n);
+	}
+
 	ayaneo_display_prepare();
 	ayaneo_gbc_audio_init();
 	ayaneo_snes_audio_reset();
@@ -130,6 +142,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * no 13 MHz busy-wait needed. Restored to 59.749 Hz on exit below. */
 	ayaneo_dsi_set_vfp(SNES_VFP);
 
+	int reset_hold = 0;
 	for (;;) {
 		struct snes_frame f;
 		int aya = PRESSED(GPIO_AYA);
@@ -144,9 +157,22 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 
 		if (aya) { if (++aya_hold >= 60) break; } else aya_hold = 0;
+
+		/* Soft reset: SELECT+START+L+R held ~0.5 s (mirrors GB/GBC/GBA). */
+		if (PRESSED(GPIO_SELECT) && PRESSED(GPIO_START) && PRESSED(GPIO_LB) && PRESSED(GPIO_RB)) {
+			if (++reset_hold >= RESET_HOLD_FRAMES) { c->reset(); reset_hold = 0; }
+		} else reset_hold = 0;
 	}
 
 	ayaneo_dsi_set_vfp(DEFAULT_VFP);   /* restore 59.749 Hz for the menu / other cores */
+
+	/* Suspend: write a save STATE so the next launch resumes here (mirrors GB/GBC). */
+	{
+		unsigned char *st = (unsigned char *)SNES_STATE_BUF;
+		unsigned ssz = c->state_size();
+		if (ssz && ssz <= SNES_STATE_CAP && c->state_save(st, ssz) == 0)
+			gba_sd_write_named(vol, "/states/snes", rom->name, "st0", st, ssz);
+	}
 
 	/* persist SRAM on exit */
 	{

@@ -60,9 +60,16 @@ host_render cycles 4 types. Asset tools/ayaneo/snes/logos/snes.png is a CLEAN PL
 ("SNES" wordmark, slate-purple + white stroke, 198x70 to match the others) - swap for an
 official logo when available. Changed the SNES pack -> boot_b re-flashed.
 
-REMAINING: in-game menu/run-ahead/transition (mirror gbc), perf pass, hi-res/interlace +
-overscan polish, audio fine-trim if needed. STILL UNVALIDATED on HW (headless) - need a
-.sfc/.smc in /roms/snes to confirm video+input+audio (and eyeball the badge).
+SUSPEND/RESUME + RESET: done (gbc parity). Host round-trip proved snes9x
+serialize/unserialize is DETERMINISTIC (state ~0.8 MB for SMW; frame sequence bit-identical
+after restore). Runner now writes a save STATE to /states/snes/<rom>.st0 on exit and reloads
+it at launch (unless B held = start fresh), plus a SELECT+START+L+R soft-reset combo. State
+buffer at 0x53800000 (4 MB, just above the 48 MB heap, below the 0x54000000 snapshot).
+
+REMAINING: in-game menu (Pico) + run-ahead + launch/close transitions (mirror gbc), perf
+pass, hi-res/interlace + overscan polish, audio fine-trim if needed. STILL UNVALIDATED on HW
+(headless) - need a .sfc/.smc in /roms/snes to confirm the LK wiring (video/input/audio/vfp
+switch/badge/suspend).
 
 ### (earlier) BLOB LINKS milestone
 
