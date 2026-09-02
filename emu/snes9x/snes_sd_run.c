@@ -30,6 +30,32 @@ extern void     ayaneo_display_prepare(void);
 extern void     ayaneo_dsi_set_vfp(unsigned int vfp);   /* per-core panel refresh (ddp_dsi.c) */
 extern int      priamry_display_wait_for_vsync(void);   /* primary_display.c (name has the typo) */
 extern unsigned gpt4_get_current_tick(void);
+extern int      ayaneo_get_lcd_filter(void);            /* 0 Off,1 Scanlines,2 Grid,3 Dot Matrix */
+extern void     ayaneo_set_lcd_filter(int f);
+
+/* Benchmark (uncap): run the emulator with no vsync pacing and no audio, counting
+ * emulated frames per second so CPU-clock changes are measurable (mirrors the GBC/GBA
+ * "Benchmark (Uncap)" item). ayaneo_snes_show_frame skips its vsync wait when this is set. */
+volatile int g_snes_benchmark;
+static volatile int s_snes_fps;
+int snes_benchmark_on(void) { return g_snes_benchmark; }
+
+/* Measured SNES panel refresh (Hz*1000), a 128-frame average from the vsync-locked present;
+ * shown read-only in the Pico menu. Same tick math as the menu's g_dbg_hz1000. */
+static volatile unsigned s_snes_hz1000;
+
+/* Manual CPU-clock OPP grid (matches gba_driver.c s_cpu_opp); the SNES session floors at
+ * 1400 MHz but the player can raise it here. Not persisted. */
+static const unsigned s_snes_cpu_opp[] = { 600, 800, 1000, 1200, 1400, 1600, 1800, 2000 };
+static void snes_cpu_step(int dir)
+{
+	int n = (int)(sizeof s_snes_cpu_opp / sizeof s_snes_cpu_opp[0]), i, best = 0;
+	unsigned cur = ayaneo_get_cpu_mhz(), bd = ~0u;
+	for (i = 0; i < n; i++) { unsigned d = s_snes_cpu_opp[i] > cur ? s_snes_cpu_opp[i] - cur : cur - s_snes_cpu_opp[i];
+		if (d < bd) { bd = d; best = i; } }
+	best += dir; if (best < 0) best = 0; if (best >= n) best = n - 1;
+	ayaneo_set_cpu_mhz(s_snes_cpu_opp[best]);
+}
 
 /* Panel vertical-front-porch per refresh rate. Stock vfp 23 -> vtotal 999 -> 59.749 Hz
  * (GB/GBC/GBA/menu). SNES uses vfp 17 -> vtotal 993 -> ~60.11 Hz (0.02% off its native
@@ -148,7 +174,11 @@ static fat_vol             *s_menu_vol;
 static const gba_rom_entry *s_menu_rom;
 static int  s_msel;
 static char s_mstat[48];
-enum { SM_BRIGHT, SM_VOLUME, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
+enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_CPU, SM_BENCH, SM_PANEL,
+       SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
+
+static const char *snes_filter_name(int f)
+{ return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : "Off"; }
 
 static char *smput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *smputu(char *p, unsigned v) { char t[12]; int n = 0;
@@ -157,12 +187,24 @@ static char *smputu(char *p, unsigned v) { char t[12]; int n = 0;
 
 static const char *sm_label(int i) { switch (i) {
 	case SM_BRIGHT: return "Brightness"; case SM_VOLUME: return "Volume";
+	case SM_FILTER: return "LCD Filter"; case SM_CPU:    return "CPU Clock";
+	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
 	case SM_RESET:  return "Reset Game"; case SM_CLOSE:  return "Close"; } return ""; }
 static const char *sm_value(int i, char *buf) { char *p = buf;
 	switch (i) {
 	case SM_BRIGHT: p = smputu(p, (unsigned)ayaneo_brightness_pct()); p = smput(p, "%"); break;
 	case SM_VOLUME: p = smputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = smput(p, "%"); break;
+	case SM_FILTER: p = smput(p, snes_filter_name(ayaneo_get_lcd_filter())); break;
+	case SM_CPU: { static unsigned mhz, tick;   /* cache: PLL read-back low bits jitter */
+		if (!mhz || tick-- == 0) { mhz = ayaneo_get_cpu_mhz(); tick = 40; }
+		p = smputu(p, mhz); p = smput(p, " MHz"); break; }
+	case SM_BENCH: if (g_snes_benchmark) { p = smputu(p, (unsigned)s_snes_fps); p = smput(p, " fps"); }
+		else p = smput(p, "Off"); break;
+	case SM_PANEL: { unsigned hz = s_snes_hz1000;   /* Hz*1000 -> "60.11 Hz" */
+		p = smputu(p, hz / 1000); p = smput(p, ".");
+		{ unsigned f = (hz % 1000) / 10; if (f < 10) p = smput(p, "0"); p = smputu(p, f); }
+		p = smput(p, " Hz"); break; }
 	case SM_SAVE: case SM_LOAD: p = smput(p, "[A]"); break;
 	default: break; } *p = 0; return buf; }
 
@@ -195,6 +237,10 @@ static int sm_change(int i, int dir, int act)
 	switch (i) {
 	case SM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); ayaneo_menu_settings_persist(); } break;
 	case SM_VOLUME: if (dir) { ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); ayaneo_menu_settings_persist(); } break;
+	case SM_FILTER: if (dir) { ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); ayaneo_menu_settings_persist(); } break;
+	case SM_CPU:    if (dir) snes_cpu_step(dir); break;   /* not persisted (session floors at 1400) */
+	case SM_BENCH:  if (dir || act) g_snes_benchmark = !g_snes_benchmark; break;
+	case SM_PANEL:  break;   /* read-only */
 	case SM_SAVE: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF; unsigned ssz = s_menu_c->state_size();
 			if (ssz && ssz <= SNES_STATE_CAP && s_menu_c->state_save(st, ssz) == 0)
 				smput(s_mstat, gba_sd_write_named(s_menu_vol, "/states/snes", s_menu_rom->name, "st0", st, ssz) == 0 ? "State saved" : "Save failed");
@@ -311,11 +357,32 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (hash != s_snes_dbg_lasthash) { g_snes_dbg_changed++; s_snes_dbg_lasthash = hash; }
 			}
 			ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
-		} else
+		} else if (!g_snes_benchmark)
 			priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
-		if (f.audio && f.frames) {
+		/* Audio flows during normal play (and under the menu); muted while benchmarking so
+		 * the AFE ring never throttles the uncapped loop. */
+		if (f.audio && f.frames && !g_snes_benchmark) {
 			g_snes_dbg_audframes += f.frames;
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
+		}
+
+		/* Timing: 128-frame average panel refresh (vsync-locked, so this IS the emulated
+		 * rate) into s_snes_hz1000; and, when benchmarking, emulated FPS over ~0.5 s. */
+		{
+			static unsigned h_acc, h_n, h_last;
+			static unsigned b_acc, b_n, b_last;
+			unsigned now = gpt4_get_current_tick();
+			if (h_last) { h_acc += now - h_last; if (++h_n >= 128) {
+				if (h_acc) s_snes_hz1000 = (unsigned)(104000000000ULL / (unsigned long long)h_acc);
+				h_acc = 0; h_n = 0; } }
+			h_last = now;
+			if (g_snes_benchmark) {
+				if (b_last) { b_acc += now - b_last; b_n++;
+					if (b_acc >= 406250u) {   /* ~0.5 s at 812.5 kHz */
+						s_snes_fps = (int)((unsigned long long)b_n * 812500ULL / b_acc);
+						b_acc = 0; b_n = 0; } }
+				b_last = now;
+			} else { b_last = 0; b_acc = 0; b_n = 0; }
 		}
 
 		/* AYA taps toggle the menu; holding AYA ~1.5 s force-exits to the selector. */

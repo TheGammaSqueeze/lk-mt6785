@@ -1289,6 +1289,10 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 			last_sw = sw; last_sh = sh;
 		}
 	}
+	{
+	/* LCD filter (shared with GB/GBA): 1 scanlines (dim last row of each scale block),
+	 * 2/3 grid (dim last row + col). Cheap per-subpixel darkening; fast path when off. */
+	int filt = ayaneo_get_lcd_filter();
 	for (sy = 0; sy < sh; sy++) {
 		const unsigned short *srow = pix + sy * spitch_px;
 		unsigned int dy0 = (unsigned int)yoff + sy * sy_scale;
@@ -1298,12 +1302,23 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 			unsigned int g = ((v >> 5) & 0x3f) << 2;
 			unsigned int b = (v & 0x1f) << 3;
 			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+			unsigned int dk = 0xFF000000u | ((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
 			unsigned int dx0 = (unsigned int)xoff + sx * sx_scale;
-			for (iy = 0; iy < sy_scale; iy++) {
+			if (!filt) {
+				for (iy = 0; iy < sy_scale; iy++) {
+					unsigned int *o = dst + (dy0 + iy) * pitch_w + dx0;
+					for (ix = 0; ix < sx_scale; ix++) o[ix] = px;
+				}
+			} else for (iy = 0; iy < sy_scale; iy++) {
 				unsigned int *o = dst + (dy0 + iy) * pitch_w + dx0;
-				for (ix = 0; ix < sx_scale; ix++) o[ix] = px;
+				int lastrow = (iy == sy_scale - 1);
+				for (ix = 0; ix < sx_scale; ix++) {
+					int lastcol = (ix == sx_scale - 1);
+					o[ix] = (filt == 1 ? lastrow : (lastrow || lastcol)) ? dk : px;
+				}
 			}
 		}
+	}
 	}
 	/* in-game overlay menu (GammaOS Pico), drawn over the whole panel when open */
 	{
@@ -1316,8 +1331,9 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 	ayaneo_present(dpa, W, H, pitch_w);
 	/* Vsync-locked present: the SNES session runs the panel at ~60.11 Hz (vfp swap), so
 	 * blocking one vsync here paces emulation to the real scan-out = smooth, tear-free,
-	 * and it guarantees the presented buffer is scanned before the renderer reuses it. */
-	priamry_display_wait_for_vsync();
+	 * and it guarantees the presented buffer is scanned before the renderer reuses it.
+	 * Benchmark (Uncap) mode skips the wait so the emulated FPS can exceed the panel rate. */
+	{ extern int snes_benchmark_on(void); if (!snes_benchmark_on()) priamry_display_wait_for_vsync(); }
 	s_fb_flip ^= 1;
 }
 
