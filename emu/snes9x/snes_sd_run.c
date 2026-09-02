@@ -481,6 +481,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	int reset_hold = 0, aya_prev = 0, ff_prev = 0;
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
+	int up_h = 0, dn_h = 0;   /* hold-frame counters for Up/Down auto-repeat */
 	for (;;) {
 		struct snes_frame f;
 		int aya;
@@ -606,8 +607,19 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
 			int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
 			int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);
-			if (up && !up_p) s_msel = (s_msel + SM_COUNT - 1) % SM_COUNT;
-			if (dn && !dn_p) s_msel = (s_msel + 1) % SM_COUNT;
+			/* Up/Down (item navigation) auto-repeat: fire on press, then after ~0.37 s of
+			 * holding repeat every ~0.08 s - the real pain is scrolling 16 rows. Left/Right
+			 * stay single-tap: several value-change items persist to eMMC/SD on each change,
+			 * and auto-repeating those would spam flash writes. FIRE = press edge or repeat. */
+			#define NAV_DELAY 22
+			#define NAV_REP   5
+			#define FIRE(h)   ((h) == 1 || ((h) > NAV_DELAY && (((h) - NAV_DELAY) % NAV_REP) == 0))
+			up_h = up ? up_h + 1 : 0; dn_h = dn ? dn_h + 1 : 0;
+			if (up && FIRE(up_h)) s_msel = (s_msel + SM_COUNT - 1) % SM_COUNT;
+			if (dn && FIRE(dn_h)) s_msel = (s_msel + 1) % SM_COUNT;
+			#undef NAV_DELAY
+			#undef NAV_REP
+			#undef FIRE
 			if (lt && !lt_p) sm_change(s_msel, -1, 0);
 			if (rt && !rt_p) sm_change(s_msel, +1, 0);
 			if (a  && !a_p)  { if (sm_change(s_msel, 0, 1)) g_snes_menu_open = 0; }
