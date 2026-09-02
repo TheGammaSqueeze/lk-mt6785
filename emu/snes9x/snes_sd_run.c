@@ -438,7 +438,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	{ int pf0 = ayaneo_get_preempt_frames();   /* honour a persisted tier: escalate the clock */
 	  if (pf0 > 0 && pf0 <= 3 && ayaneo_get_cpu_mhz() < s_snes_ra_opp[pf0]) ayaneo_set_cpu_mhz(s_snes_ra_opp[pf0]); }
 
-	int reset_hold = 0, aya_prev = 0;
+	int reset_hold = 0, aya_prev = 0, ff_prev = 0;
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	for (;;) {
 		struct snes_frame f;
@@ -474,6 +474,10 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * frames so nothing paces the loop; audio and run-ahead are suppressed. Off under the
 		 * menu, while benchmarking, or in the headless test. */
 		int ff = PRESSED(GPIO_R2) && !g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit;
+		/* On FF entry, clear the AFE ring once so the DMA loops SILENCE (audio is suppressed
+		 * while fast-forwarding); without this it drones the last 341 ms buffer. */
+		if (ff && !ff_prev) ayaneo_menu_audio_silence();
+		ff_prev = ff;
 
 		/* Committed-frame audio submitted BEFORE any run-ahead look-ahead overwrites the
 		 * blob's audio buffer; muted while benchmarking or fast-forwarding so the ring never
