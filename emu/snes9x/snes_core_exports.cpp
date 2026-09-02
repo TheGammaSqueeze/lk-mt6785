@@ -175,9 +175,18 @@ static void snes_av_info(unsigned *base_w, unsigned *base_h,
 static void    *snes_sram_ptr(void)  { return retro_get_memory_data(RETRO_MEMORY_SAVE_RAM); }
 static unsigned  snes_sram_size(void) { return (unsigned)retro_get_memory_size(RETRO_MEMORY_SAVE_RAM); }
 
-/* the SPC700 (APU CPU) program counter: if the APU is alive it sweeps the IPL ROM
- * (0xffc0-0xffff) at boot, so a wide pcmin..pcmax range = running, a stuck value = dead. */
-static unsigned snes_dbg_pc(void) { return (unsigned)SNES::smp.regs.pc; }
+/* the 4 SPC700 OUTPUT ports the main CPU reads at $2140-$2143 (S9xAPUReadPort returns
+ * SNES::smp.port_read). At boot the IPL ROM writes $AA to port0 and $BB to port1 (ready
+ * signal); if the CPU is stuck waiting on the APU handshake this should read 0xBBAA in the
+ * low 16 bits - if it does, the SPC IS signalling and the stall is on the CPU-read path. */
+static unsigned snes_dbg_pc(void)
+{
+	/* [7:0] apuram[$00f4] (port0, should be $aa) | [15:8] SPC P reg (dp bit 0x20 => wrong bank)
+	 * | [23:16] apuram[$01f4] ($aa here => the write went to bank 1) | [31:24] SPC sp. */
+	unsigned p = (unsigned)SNES::smp.regs.p;
+	return (unsigned)SNES::smp.apuram[0x00f4] | ((p & 0xFF) << 8)
+	     | ((unsigned)SNES::smp.apuram[0x01f4] << 16) | ((unsigned)SNES::smp.regs.sp << 24);
+}
 
 static unsigned snes_state_size(void) { return (unsigned)retro_serialize_size(); }
 static int snes_state_save(void *buf, unsigned size) { return retro_serialize(buf, size) ? 0 : -1; }
