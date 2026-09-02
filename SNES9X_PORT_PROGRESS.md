@@ -6,6 +6,18 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Validation note: `oem snes-launch` needs a WARM menu (2026-09-02)
+
+`cmd_snes_launch` only sets `g_snes_test_limit` + `g_dbg_snes_launch` and then waits for the
+**menu thread** to pick the flag up and run the session. After a direct `fastboot reboot
+bootloader`, LK enters fastboot WITHOUT running the menu loop, so nothing services the flag and
+the launch reports `ran=0 exit=0` with `oem diag` showing `stage=0 nz=0 ... core=0 sd=0`. That
+is the cold-bootloader "menu not running" condition, NOT a regression. To validate the SNES path
+headlessly, run `oem snes-launch` while the menu subsystem is warm (i.e. the device was already
+sitting at the menu when it dropped to fastboot), where a healthy result is `exit=5` with
+`snes-ss core=1 sd=1 fast=1 heap=~20.2M revmap=1`. A cold `reboot bootloader` needs the menu to
+run once first. (No code change; verified `2d24f34` still cold-boots to the menu cleanly.)
+
 ## Status: UX POLISH 2 - Run-Ahead inert label fits the row (2026-09-02)
 
 The previous pass appended " (N/A: state>2M)" to the tier name; for the longer tiers
