@@ -132,6 +132,31 @@ bad length can never drive a runaway DMA.
   export table; call `run_init_array()` at the top of the `init()` export, which LK
   invokes right after `heap_init()`.
 
+## 9b. Bundled-libc sprintf overflow (broke ALL snes9x savestates)
+
+The blob's `vsnprintf` (snes_blob_libc.c) computed its end pointer as `e = buf +
+(cap-1)`. `sprintf()` calls it with `cap = (size_t)-1`; on 32-bit ARM `buf +
+0xFFFFFFFE` WRAPS past the top of the address space to *below* `buf`, so the
+`if (o < e)` guard in `emit()` was always false and **sprintf silently produced an
+empty string**. snes9x writes every savestate block header with `sprintf`, so
+states came out headerless and `unfreeze` rejected them - but only on device: the
+host validator is 64-bit, `buf + 4GB` doesn't overflow, so the host round-trip
+passed and hid the bug. Fix: clamp `e` to `(char*)~0` when `buf + cap` overflows.
+Lesson: any freestanding libc `printf` family must guard the `buf + cap` end-pointer
+against pointer overflow, and host validation cannot catch 32-bit-only pointer bugs.
+Check the GB/GBC and gpSP bundled libcs for the same pattern before trusting their
+sprintf-dependent paths.
+
+## 9c. Per-core savestate buffers must live in the session's MAPPED arena
+
+A SNES session maps only its own heap arena `[heap_base, heap_base+heap_sz)` as WB;
+the menu's `0x54xxxxxx` transition buffers and even the arena's own end address are
+UNMAPPED during the game (writes vanish, reads return a constant). Put the savestate
+scratch INSIDE the mapped arena, below the menu caches (wallpaper 0x53200000, chrome
+0x53700000). We shrank the snes9x heap 48->36 MB (peak ~19 MB) to free the mapped
+tail at 0x52C00000 for the 4 MB state buffer. Also keep the auto-suspend slot
+separate from the manual Save/Load slot, or exiting clobbers the player's save.
+
 ## 10. Device / workflow gotchas
 - NEVER run `fastboot oem sd-probe` on the live device: it re-inits the microSD host
   and can wedge the fastboot USB endpoint (device still lists but every command says
