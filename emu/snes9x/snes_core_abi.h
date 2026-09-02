@@ -1,0 +1,62 @@
+/*
+ * snes_core_abi.h - contract between LK (frontend) and the loadable snes9x core.
+ *
+ * Mirrors emu/gbc/gbc_core_abi.h: the snes9x core lives in a boot_b blob loaded into a
+ * reserved DRAM slot, driven through the export table below. The core itself is the
+ * libretro snes9x build; these exports wrap its retro_* API (the blob installs the
+ * libretro callbacks internally and pumps retro_run per frame). Only ONE core runs at a
+ * time; snes9x reuses the shared emulator arena at 0x50000000 for its heap.
+ */
+#ifndef SNES_CORE_ABI_H
+#define SNES_CORE_ABI_H
+
+#define SNES_CORE_ABI_MAGIC   0x31534E53u   /* "SNS1" */
+#define SNES_CORE_ABI_VERSION 1u
+
+/* Services LK provides to the core (core -> LK). */
+struct snes_core_imports {
+	unsigned (*read_buttons)(void);   /* pad state as RETRO_DEVICE_ID_JOYPAD_* bit positions */
+	long     (*host_time)(void);      /* wall-clock seconds (SRTC / real-time-clock carts) */
+};
+
+/* One presented frame + its audio, returned by run(). video is RGB565. */
+struct snes_frame {
+	const void  *video;    /* RGB565 pixels, or NULL if the frame was dropped */
+	unsigned     width;    /* 256 or 512 (hi-res) */
+	unsigned     height;   /* 224/239 or 448/478 (interlace) */
+	unsigned     pitch;    /* bytes per row */
+	const short *audio;    /* interleaved stereo s16 */
+	unsigned     frames;   /* audio frame count (stereo pairs) */
+};
+
+struct snes_core_exports {
+	unsigned int magic;      /* SNES_CORE_ABI_MAGIC */
+	unsigned int version;    /* SNES_CORE_ABI_VERSION */
+
+	/* lifecycle */
+	void (*heap_init)(void *base, unsigned size);   /* bump arena (snes_shim.cpp) */
+	void (*init)(void);                             /* install callbacks + retro_init */
+	int  (*load)(const void *rom, unsigned size);   /* retro_load_game (buffer); 0 = ok */
+	void (*reset)(void);                            /* retro_reset */
+	void (*unload)(void);                           /* retro_unload_game + retro_deinit */
+
+	/* per-frame drive: pump one frame, fill *out with video + audio */
+	void (*run)(struct snes_frame *out);
+
+	/* geometry / timing (post-load) */
+	void (*av_info)(unsigned *base_w, unsigned *base_h,
+			unsigned *max_w, unsigned *max_h, unsigned *sample_rate);
+
+	/* cartridge battery save (SRAM) */
+	void     *(*sram_ptr)(void);
+	unsigned  (*sram_size)(void);
+
+	/* save states */
+	unsigned (*state_size)(void);
+	int      (*state_save)(void *buf, unsigned size);
+	int      (*state_load)(const void *buf, unsigned size);
+};
+
+typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);
+
+#endif /* SNES_CORE_ABI_H */

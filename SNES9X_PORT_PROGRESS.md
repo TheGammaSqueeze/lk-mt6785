@@ -6,7 +6,18 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
-## Status: FOUNDATION LAID (compiles + link surface characterized)
+## Status: BLOB LINKS (compiles + links as a flat freestanding blob)
+
+`emu/snes9x/build_core.sh` -> `libsnes9x.a`; `emu/snes9x/build_core_blob.sh` ->
+`core_snes.blob` (1.83 MB flat, ~3.3 MB DRAM span incl BSS, header magic "SNS1",
+VMA 0x4F000000). All blob-side files written: `snes_core_abi.h`, `snes_core_exports.cpp`
+(drives the libretro retro_* API + time/localtime via the LK host clock), `snes_shim.cpp`
+(bump alloc + malloc/free/calloc + init_array runner + LoadZip stub), `snes_blob_libc.c`
+(mem/str/ctype/number + compact vsnprintf), `snes_blob_stubs.c` (all file/zip/VFS I/O +
+libstdc++ locale/wide-char stubs), `snes_core_blob.ld` (keeps .init_array, empty exidx).
+libstdc++.a/libm.a/libgcc.a linked; std::__throw_* come from libstdc++ (not redefined).
+
+NEXT: lk_a integration (Phase 2 below) - none of this runs on device yet.
 
 ### Done
 - Vendored upstream `emu/snes9x/` (shallow clone, nested .git + non-libretro frontends
