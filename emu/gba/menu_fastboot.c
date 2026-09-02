@@ -105,6 +105,33 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem snes-probe - read the 20-byte blob header directly from boot_b at each core's
+ * offset (gbc 0x01900000, gpSP 0x01C00000, snes 0x01E00000) and report partition_read's
+ * return + the magic word. Runs on the fastboot thread (no game loop), so it safely tests
+ * whether the SNES blob is readable at its offset without launching anything. snes magic
+ * should be 0x31534e53 ("SNS1"). */
+static void cmd_snes_probe(const char *arg, void *data, unsigned sz)
+{
+	extern long partition_read(const char *part, long long off, unsigned char *buf, unsigned long len);
+	unsigned char b[20]; long r; unsigned m;
+	(void)arg; (void)data; (void)sz;
+	r = partition_read("boot_b", 0x01900000LL, b, 20); m = *(unsigned *)b;
+	snprintf(lbuf, sizeof lbuf, "probe gbc  @0x01900000 rc=%ld m=0x%08x", r, m); fastboot_info(lbuf);
+	r = partition_read("boot_b", 0x01C00000LL, b, 20); m = *(unsigned *)b;
+	snprintf(lbuf, sizeof lbuf, "probe gpsp @0x01C00000 rc=%ld m=0x%08x", r, m); fastboot_info(lbuf);
+	r = partition_read("boot_b", 0x01E00000LL, b, 20); m = *(unsigned *)b;
+	snprintf(lbuf, sizeof lbuf, "probe snes @0x01E00000 rc=%ld m=0x%08x (want 0x31534e53)", r, m); fastboot_info(lbuf);
+	/* actually load it (safe here: no game loop) and report which check passed/failed */
+	{
+		extern void *snes_core_load(void);   /* returns the exports table ptr, NULL on fail */
+		extern volatile unsigned g_snes_dbg_loaderr;
+		void *ex = snes_core_load();
+		snprintf(lbuf, sizeof lbuf, "probe load: ex=%s loaderr=%u", ex ? "OK" : "NULL", g_snes_dbg_loaderr);
+		fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
+
 /* oem launch - force-launch the focused ROM; oem nav:<L R U D A B S T [ ]> - inject one
  * clean nav press + report the peak render us for that movement (reset first) so the
  * flicker campaign can measure any state. g_dbg_force_launch when arg is empty. */
@@ -181,6 +208,7 @@ static void cmd_selftest(const char *arg, void *data, unsigned sz)
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
+	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
 	fastboot_register("oem preempt:", cmd_preempt, 1, 0);
 	fastboot_register("oem selftest", cmd_selftest, 1, 0);
