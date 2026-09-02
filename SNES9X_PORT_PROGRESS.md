@@ -6,7 +6,17 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
-## Status: PHASE 2 WIRED + FLASHED (video/input path; audio + menu next)
+## Status: CORE VALIDATED (host) + PHASE 2 WIRED/FLASHED (video/input/audio/badge)
+
+CORE PROVEN (2026-09-02, headless on host): `emu/snes9x/build_host_test.sh` builds the
+SAME core sources natively and `emu/snes9x/host_test.cpp` loads a ROM + runs frames.
+Super Mario World AND Street Fighter II Turbo both PASS: correct mapper (LoROM), av_info
+256x224 / max 1024x478 / fps 60.0988 / sr 32040, video_cb fires every frame with pitch
+2048 (= 1024px stride -> the display already reads pitch/2), and content CHANGES across
+frames (real gameplay, not a stuck APU handshake). This confirms my LK integration
+constants (60.0988 pacing, 32040 audio, 1024 stride) and de-risks the port: the only
+unproven part left is the LK wiring (blob load / present / GPIO / AFE ring), which mirrors
+the proven gambatte path. Reusable as a regression tool for future core updates.
 
 Full lk_a integration builds end-to-end and is flashed (lk_a + boot_b). Awaiting on-device
 validation (headless here - need a .sfc/.smc in /roms/snes to confirm a game renders).
