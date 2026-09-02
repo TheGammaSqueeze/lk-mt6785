@@ -1105,6 +1105,14 @@ void ayaneo_dsi_set_vfp(unsigned int vfp)
 	DSI_OUTREG32(NULL, DSI_REG_BASE[0] + DISP_REG_DSI_VFP_NL, vfp);
 }
 
+/* Read back the live DSI vertical-front-porch (drives vtotal, hence the panel refresh in
+ * VDO mode). Used to validate the per-core LCM refresh switch: 23 = menu/GB/GBC/GBA
+ * (59.749 Hz), 17 = SNES (60.11 Hz). */
+unsigned int ayaneo_dsi_get_vfp(void)
+{
+	return AS_UINT32(DSI_REG_BASE[0] + DISP_REG_DSI_VFP_NL);
+}
+
 void DSI_Config_VDO_Timing(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAMS *dsi_params)
 {
 	int i = 0;

@@ -28,6 +28,8 @@ extern void     ayaneo_snes_audio_submit(const short *interleaved, unsigned fram
 extern void     ayaneo_menu_audio_silence(void);
 extern void     ayaneo_display_prepare(void);
 extern void     ayaneo_dsi_set_vfp(unsigned int vfp);   /* per-core panel refresh (ddp_dsi.c) */
+extern unsigned int ayaneo_dsi_get_vfp(void);           /* read-back to validate the switch */
+volatile unsigned g_snes_dbg_vfp;                       /* the live DSI vfp during the session */
 extern int      priamry_display_wait_for_vsync(void);   /* primary_display.c (name has the typo) */
 extern unsigned gpt4_get_current_tick(void);
 extern int      ayaneo_get_lcd_filter(void);            /* 0 Off,1 Scanlines,2 Grid,3 Dot Matrix */
@@ -52,9 +54,12 @@ volatile int g_snes_benchmark;
 static volatile int s_snes_fps;
 int snes_benchmark_on(void) { return g_snes_benchmark; }
 
-/* Measured SNES panel refresh (Hz*1000), a 128-frame average from the vsync-locked present;
- * shown read-only in the Pico menu. Same tick math as the menu's g_dbg_hz1000. */
-static volatile unsigned s_snes_hz1000;
+/* Measured SNES panel refresh (Hz*1000), an 8-frame average from the vsync-locked present;
+ * shown read-only in the Pico menu and via oem diag. Same tick math as the menu's
+ * g_dbg_hz1000 - comparing the two validates the per-core LCM vfp switch (menu vfp 23 ~=
+ * 59.749 Hz vs SNES vfp 17 ~= 60.11 Hz). */
+volatile unsigned g_snes_dbg_hz1000;
+#define s_snes_hz1000 g_snes_dbg_hz1000
 
 /* Manual CPU-clock OPP grid (matches gba_driver.c s_cpu_opp); the SNES session floors at
  * 1400 MHz but the player can raise it here. Not persisted. */
@@ -381,6 +386,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * ayaneo_snes_show_frame then paces emulation to the panel scan - smooth, tear-free,
 	 * no 13 MHz busy-wait needed. Restored to 59.749 Hz on exit below. */
 	ayaneo_dsi_set_vfp(SNES_VFP);
+	g_snes_dbg_vfp = ayaneo_dsi_get_vfp();   /* read-back: should equal SNES_VFP (17) */
 
 	/* hand the in-game menu this session's context */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
