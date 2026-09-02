@@ -82,11 +82,19 @@ dispatch in emu/gba/gba_driver.c.
 See **emu/CORE_PORTING_NOTES.md** for the full list of non-obvious pitfalls hit
 during this port (per-console display geometry, emu-thread stack overflow surfacing
 as an msdc_dma_transfer crash, arena-does-not-survive-a-menu-visit, reload-blob-each-
-session, GBA boot-logo cart must use a GBA ROM header, menu clock 2000-not-2100,
+session, GBA boot-logo cart must use a GBA ROM header, menu clock fixed 1200 (not
+2000, not 2100, not idle-aware toggling),
 card-tile cache keying by console type, feature-gating untested extras, C++ blob
 build specifics, and device/workflow gotchas like oem sd-probe wedging USB).
 
 ## Status log (newest first)
+- 2026-09-02: Menu clock reverted to a FIXED 1200 MHz. The idle-aware boost
+  (600 idle / 2000 active) introduced in ccfc752 made the idle-time hang WORSE, not
+  better: churning the ARM-PLL per-frame at the fixed boot Vproc point is itself
+  destabilising. Per user, dropped the max menu OPP to a stable sustained 1200 MHz
+  (set once at setup, re-asserted at loop top only if drifted < 1100), removed the
+  active_frames idle logic. Built + flashed lk_a (code-only, boot_b unchanged).
+  See CORE_PORTING_NOTES.md item 6.
 - 2026-09-02: GB/GBC launch punch-hole transition (like GBA). The selector already
   captures the frozen menu snapshot (0x54000000) + sets gba_punch_ready for every
   launch; the GBC session now consumes it: run a few frames for real content,

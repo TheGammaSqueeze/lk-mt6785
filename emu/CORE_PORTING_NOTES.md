@@ -63,22 +63,27 @@ has no GBA logo -> "BIOS thinks no cartridge" (only the Game Boy text, no Ninten
 logo). Always pick the first ROM of type `GBA_CONSOLE_GBA` for the header. gambatte
 itself needs NO GBA BIOS; the intro is just the device's boot animation.
 
-## 6. Menu CPU clock: idle-aware boost, NEVER hold 2000 MHz continuously
-The menu is a software NEON blitter and is clock-bound. Two traps:
+## 6. Menu CPU clock: fixed 1200 MHz, NEVER 2000 MHz and NEVER toggle per-frame
+The menu is a software NEON blitter and is clock-bound. Three traps, learned in order:
 - Requesting **2100 MHz** is OFF the OPP grid (`s_cpu_opp` maxes at 2000); with the
   emulation clock's POSDIV it drives the ARM-PLL VCO out of range so the PLL never
   leaves ~600 MHz. The whole menu ran at 600 MHz (carousel ~28 ms, janky scroll).
-- But HOLDING 2000 MHz continuously is worse: `ayaneo_set_cpu_mhz` only reprograms the
+- HOLDING 2000 MHz continuously is worse: `ayaneo_set_cpu_mhz` only reprograms the
   PLL, NOT the core voltage (LK has no DVFS table), so 2000 MHz runs at the fixed boot
   Vproc point. Sustained 2000 MHz on an IDLE menu destabilised the core after a few
   minutes -> silent hang, NO fault message (a marginal CPU cannot run the fault
-  handler). Brief 2000 MHz bursts (active scrolling) are fine; sustained idle is not.
-So: boost to **2000** only while the user is actively navigating (any raw button held),
-hold ~2 s past the last input to cover the scroll/settle animation, then drop back to
-the low **600 MHz** emulation clock when idle (gba_snes_menu.c, `active_frames`).
-`ayaneo_get/set_cpu_mhz` read/write ARMPLL_CON1 @ 0x1000C204. Symptom to remember: an
-idle-time crash with NO debug message == a sustained-high-clock stability problem, not
-a software bug.
+  handler).
+- The idle-aware fix (boost to 2000 while navigating, drop to 600 when idle) was ALSO
+  unstable: toggling the PLL per-frame at a fixed voltage point stressed the core more,
+  not less. Reverted.
+So: the menu now holds a **fixed 1200 MHz** (`s_cpu_opp`'s "Responsive gameplay" tier),
+set once at setup and re-asserted at the loop top only if the clock has drifted below
+1100 (`if (ayaneo_get_cpu_mhz() < 1100) ayaneo_set_cpu_mhz(1200)`), then restored to the
+saved emulation clock on launch. 1200 MHz is a stable sustained point at the boot Vproc
+and still gives a smooth carousel. `ayaneo_get/set_cpu_mhz` read/write ARMPLL_CON1 @
+0x1000C204. Symptom to remember: an idle-time crash with NO debug message == a
+clock/voltage stability problem (too high a sustained clock, or churning the PLL), not a
+software bug.
 
 ## 7. Card-tile cache must key by whatever makes cards differ
 The carousel caches pre-rendered card tiles. Without per-ROM box art it used ONE shared

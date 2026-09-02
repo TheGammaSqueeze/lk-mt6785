@@ -421,13 +421,12 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * panel - the game already owns the canvas - so the reverse punch reveals the menu
 	 * with no black/white flash in between. */
 	saved_mhz = ayaneo_get_cpu_mhz();
-	/* Boost to the top OPP so the software renderer (blit-bound) and the pack
-	 * decompress run fast. Use 2000, the highest value on the OPP grid: the previous
-	 * 2100 is OFF-grid and, with the emulation clock's POSDIV, drives the VCO out of
-	 * range so the PLL never leaves ~600 MHz - which left the whole menu at 600 MHz
-	 * (carousel ~28 ms). The per-frame guard below re-asserts it if anything (e.g. a
-	 * game-close restore) drops it. */
-	ayaneo_set_cpu_mhz(2000);
+	/* Boost the software renderer + pack decompress above the 600 MHz emulation clock,
+	 * but cap at 1200 MHz. ayaneo_set_cpu_mhz only moves the PLL, not the core voltage
+	 * (LK has no DVFS), so 2000 MHz ran at the fixed boot voltage and was unstable at
+	 * idle; 1200 MHz (the Responsive gameplay tier) is a stable sustained point. The
+	 * per-frame guard below re-asserts it if a game-close restore drops it. */
+	ayaneo_set_cpu_mhz(1200);
 	ayaneo_present_skip_framedone = 0;
 	if (!do_reverse) {
 		unsigned int wp, ww, wh;
@@ -565,7 +564,6 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * once. (Tighter input debounce made the close land a frame sooner, so the
 	 * button is more often still down on entry - this fixes it for any debounce.) */
 	int launch_gate = 1;
-	unsigned active_frames = 0;   /* idle-aware clock: frames left to hold the fast OPP */
 	for (;;) {
 		unsigned int pitch, W, H;
 		unsigned int *fb = ayaneo_canvas_back(&pitch, &W, &H);
@@ -573,6 +571,13 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		snes_input in;
 		int launch;
 		float dt;
+		/* Keep the menu at a FIXED, stable OPP. The software renderer is clock-bound,
+		 * so run it above the 600 MHz emulation clock, but cap at 1200 MHz: 2000 MHz
+		 * runs at the fixed boot voltage (LK has no DVFS) and was unstable, and toggling
+		 * the clock per-frame was worse. 1200 MHz (the Responsive gameplay tier) is a
+		 * stable sustained point. Re-assert only when it has actually dropped (e.g. a
+		 * game-close restored the 600 MHz clock), so no per-frame PLL relock. */
+		if (ayaneo_get_cpu_mhz() < 1100) ayaneo_set_cpu_mhz(1200);
 		/* real elapsed dt (not a fixed 1/60) so animations run at the correct
 		 * wall-clock speed even when the frame rate dips below 60. Clamp to a sane
 		 * range so a first frame / long stall does not jump the animations. */
@@ -602,19 +607,6 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			if (PRESSED(K_LB))    raw |= DLB;
 			if (PRESSED(K_RB))    raw |= DRB;
 			deb = ayaneo_menu_debounce(raw, mhist);
-			/* Idle-aware clock. The software renderer is clock-bound, so boost to
-			 * 2000 MHz WHILE THE USER IS ACTIVELY NAVIGATING (60fps scroll), and hold
-			 * it ~2 s past the last input to cover the scroll/settle animation. When
-			 * idle, drop back to the low 600 MHz emulation clock. Holding 2000 MHz
-			 * continuously (fixed boot voltage, LK has no DVFS) destabilised the core
-			 * after a few minutes of idle -> silent hang; brief scroll bursts are fine. */
-			if (raw) active_frames = 120; else if (active_frames) active_frames--;
-			{
-				unsigned want = active_frames ? 2000u : 600u;
-				unsigned cur = ayaneo_get_cpu_mhz();
-				if (want >= 2000u ? (cur < 1900u) : (cur > 900u))
-					ayaneo_set_cpu_mhz(want);
-			}
 		in.left = !!(deb & DL); in.right = !!(deb & DR);
 		in.up = !!(deb & DU); in.down = !!(deb & DD);
 		in.a = !!(deb & DA); in.b = !!(deb & DB);
