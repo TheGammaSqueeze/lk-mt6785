@@ -157,6 +157,19 @@ scratch INSIDE the mapped arena, below the menu caches (wallpaper 0x53200000, ch
 tail at 0x52C00000 for the 4 MB state buffer. Also keep the auto-suspend slot
 separate from the manual Save/Load slot, or exiting clobbers the player's save.
 
+## 9d. boot_b offset map: new blobs must dodge the settings/state slots
+
+boot_b is shared by the animation, chime, asset pack, all core blobs, AND small runtime
+records written back at fixed eMMC offsets: the GammaOS settings block (was 0x01E00000)
+and the GBA save-state. The snes9x blob was placed at 0x01E00000 = the OLD settings offset,
+so every `ayaneo_menu_settings_persist()` (any brightness/volume/filter change) did
+`partition_write("boot_b", 0x01E00000, "ASET"...)` and stamped the settings header over the
+blob - SNES then failed to load with magic "ASET". Symptom: boot_b "randomly" reverts,
+`oem snes-probe` shows `m=0x54455341` at the blob offset. Before adding a blob at a new
+boot_b offset, grep for every `partition_write(..PART, <off>, ..)` and `*_OFF` in
+platform/mt6785 and emu/gba, and keep blobs clear of them. Settings moved to a guarded tail
+slot (0x020FF000); the packer now errors if the snes blob would reach it.
+
 ## 10. Device / workflow gotchas
 - NEVER run `fastboot oem sd-probe` on the live device: it re-inits the microSD host
   and can wedge the fastboot USB endpoint (device still lists but every command says

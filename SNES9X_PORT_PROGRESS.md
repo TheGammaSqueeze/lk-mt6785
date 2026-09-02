@@ -26,9 +26,19 @@ by a fractional-horizontal/integer-vertical display scaler on the 1280x960 panel
 Overscan (crop 8/12/16px/off), Audio Filter (Gaussian/Cubic/Sinc/Linear/None), Hi-Res
 Blend (Off/Merge/Blur). Color Correction intentionally omitted (GB-specific).
 
-Still TODO: enter/exit punch transitions for SNES (GBA/GBC have them; needs a SNES-aware
-prerender + care with MMU-mapped 0x54xxxxxx transition buffers during a SNES session), and
-optional run-ahead (now feasible since save states work).
+Enter/exit punch transitions DONE (parity with GBA/GBC): launch grows a gameplay circle
+over the frozen menu snapshot (ayaneo_snes_punch_prerender + shared compositor); AYA-hold
+exit shrinks the frozen frame back into the carousel (snes_menu_arm_reverse mode 2). The
+0x54xxxxxx/0x55xxxxxx transition buffers ARE mapped during a SNES session (GBC already uses
+them) - the earlier "unmapped" scare was actually the sprintf bug writing identical garbage.
+
+FIXED a nasty recurring bug: the GammaOS settings block was written to boot_b at
+0x01E00000 = the snes9x blob offset, so any settings change corrupted the blob ("ASET"
+magic, SNES fails to load). Moved settings to a guarded tail slot (0x020FF000). See
+CORE_PORTING_NOTES 9d.
+
+Still TODO (optional): run-ahead (now feasible since save states work); color-correction
+option if wanted (currently omitted as GB-specific).
 
 ## Status: ON-DEVICE PLAYABLE - renders + animates + audio + 1400 MHz (2026-09-02)
 
