@@ -324,7 +324,10 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 		if (!mhz || tick-- == 0) { mhz = ayaneo_get_cpu_mhz(); tick = 40; }
 		p = smputu(p, mhz); p = smput(p, " MHz"); break; }
 	case SM_RUNAHEAD: { int pf = ayaneo_get_preempt_frames();
-		if (!s_snes_ra_avail && pf > 0) { p = smput(p, snes_ra_name(pf)); p = smput(p, " (N/A: state>2M)"); }
+		/* When the state does not fit the look-ahead slot the tier is inert, so show a short
+		 * "N/A (>2MB)" (not the tier name, which would mislead AND, for the longer names, run
+		 * into the row label). */
+		if (!s_snes_ra_avail && pf > 0) p = smput(p, "N/A (>2MB)");
 		else p = smput(p, snes_ra_name(pf)); break; }
 	case SM_TURBO: p = smput(p, snes_turbo_name(g_snes_turbo)); break;
 	case SM_BENCH: if (g_snes_benchmark) { p = smputu(p, (unsigned)s_snes_fps); p = smput(p, " fps"); }

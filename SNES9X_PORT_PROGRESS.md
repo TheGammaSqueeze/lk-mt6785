@@ -6,6 +6,17 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Status: UX POLISH 2 - Run-Ahead inert label fits the row (2026-09-02)
+
+The previous pass appended " (N/A: state>2M)" to the tier name; for the longer tiers
+("Balanced"/"Responsive") the right-aligned value string (24-26 chars * 16 px) overran into
+the row label (label ends ~px+172, value would start ~px+76-108). The Run-Ahead row now shows
+a short "N/A (>2MB)" (10 chars, right-aligns to ~px+332, clear of the label) instead of the
+tier name when a tier is selected but inert - clearer (the tier value is meaningless when it
+cannot engage) and no overlap on any tier. Verified: flashed lk_a, oem snes-launch ->
+nz=806 chg=100821 hz1000=60088 vfp=17, snes-ss core=1 sd=1 fast=1 heap=20215840 revmap=1.
+boot_b unchanged.
+
 ## Status: UX POLISH - surface inert Run-Ahead tiers (2026-09-02)
 
 When a game's save state exceeds the 2 MB look-ahead slot (SNES_AHEAD_CAP), run-ahead is
