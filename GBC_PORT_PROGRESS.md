@@ -78,7 +78,26 @@ dispatch in emu/gba/gba_driver.c.
 - Per-console no-boxart placeholder art (today every no-art card shows the GBA
   cart placeholder regardless of console).
 
+## Lessons for future ports
+See **emu/CORE_PORTING_NOTES.md** for the full list of non-obvious pitfalls hit
+during this port (per-console display geometry, emu-thread stack overflow surfacing
+as an msdc_dma_transfer crash, arena-does-not-survive-a-menu-visit, reload-blob-each-
+session, GBA boot-logo cart must use a GBA ROM header, menu clock 2000-not-2100,
+card-tile cache keying by console type, feature-gating untested extras, C++ blob
+build specifics, and device/workflow gotchas like oem sd-probe wedging USB).
+
 ## Status log (newest first)
+- 2026-09-02: On-device GB/GBC bring-up. FIXED: GBA boot logo (logo cart now uses
+  first GBA ROM header, not s_roms[0] which the merged roster may make GB/GBC);
+  GBC display distortion (dedicated ayaneo_gb_show_frame 160x144x6 - was reusing the
+  GBA 240x160x5 path); relaunch crash (reload blob each session + clean arena);
+  switch-games + volume-relaunch crash (emu_thread stack 64K->256K: gambatte runs on
+  emu_thread, not a separate cpu_thread like gpSP, and overflowed -> data abort in
+  msdc_dma_transfer with corrupt sp); menu scroll perf (menu was stuck at 600 MHz
+  because it asked for off-grid 2100; now 2000, carousel 28->15 ms, scrolling 60fps);
+  card badge scroll perf (cache 3 tiles keyed by console type). Half-res gba_cart
+  placeholder. Gated run-ahead + suspend states behind GBC_ADVANCED (off) for
+  bring-up. Documented all in emu/CORE_PORTING_NOTES.md. NEXT: Pico in-game menu.
 - 2026-09-02: Phase 2.4 (suspend/resume) done + committed (f1f0b45). All requested
   features now implemented (Phases 1, 2.1-2.4). Attempted an on-device GB/GBC
   smoke test but it needs a screen + a GB/GBC ROM on the card (headless-blocked);
