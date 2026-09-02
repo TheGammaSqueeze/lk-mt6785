@@ -192,7 +192,7 @@ static unsigned int s_audio_ms;
  * mirrored to the SD card, which stays authoritative, so this relocation loses nothing. */
 #define AYANEO_SET_OFF		0x020FF000u	/* ~33 MB into boot_b, after the snes blob */
 #define AYANEO_SET_MAGIC	0x54455341u	/* "ASET" LE */
-#define AYANEO_SET_VER		6u
+#define AYANEO_SET_VER		7u
 #define AYANEO_BL_MIN		16		/* keep the panel visible (never 0) */
 #define AYANEO_BL_MAX		255		/* mt65xx LCD level is 0-255 */
 #define AYANEO_BL_STEP		8		/* fine granularity (~30 steps) */
@@ -218,6 +218,7 @@ static volatile int s_mute_menu = 0;		/* mute the SNES menu music + SFX */
 static volatile int s_preempt_frames = 0;	/* run-ahead / preemptive frames (0=off, 1-3) */
 static volatile unsigned s_snes_opts = 0;	/* packed snes9x menu picks: aspect | overscan<<8 |
 						 * audio_interp<<16 | hires_blend<<24 (each a small index) */
+static volatile int s_snes_slot = 0;		/* last-used SNES manual save-state slot (0..9) */
 static int s_settings_loaded;
 
 /* ---------- little-endian helpers ---------- */
@@ -283,6 +284,8 @@ int ayaneo_get_preempt_frames(void)   { return s_preempt_frames; }
 void ayaneo_set_preempt_frames(int v) { s_preempt_frames = (v < 0) ? 0 : (v > 3 ? 3 : v); }
 unsigned ayaneo_get_snes_opts(void)   { return s_snes_opts; }
 void ayaneo_set_snes_opts(unsigned v) { s_snes_opts = v; }
+int  ayaneo_get_snes_slot(void)       { return s_snes_slot; }
+void ayaneo_set_snes_slot(int v)      { s_snes_slot = (v < 0) ? 0 : (v > 9 ? 9 : v); }
 
 /* load the persisted settings from boot_b (once). Missing/invalid -> keep the
  * compile-time defaults. Does not touch the hardware; callers apply brightness. */
@@ -327,6 +330,8 @@ void ayaneo_settings_load(void)
 		ayaneo_set_preempt_frames((int)rd32(b + 48));
 	if (ver >= 6)
 		s_snes_opts = rd32(b + 52);
+	if (ver >= 7)
+		ayaneo_set_snes_slot((int)rd32(b + 56));
 }
 
 /* Serialize/deserialize the settings block so a caller can persist it elsewhere
@@ -351,6 +356,7 @@ int ayaneo_settings_serialize(unsigned char *b, int cap)
 	wr32(b + 44, (unsigned int)s_mute_menu);
 	wr32(b + 48, (unsigned int)s_preempt_frames);
 	wr32(b + 52, s_snes_opts);
+	wr32(b + 56, (unsigned int)s_snes_slot);
 	return 64;
 }
 void ayaneo_settings_deserialize(const unsigned char *b, int len)
@@ -381,6 +387,8 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 		ayaneo_set_preempt_frames((int)rd32(b + 48));
 	if (ver >= 6)
 		s_snes_opts = rd32(b + 52);
+	if (ver >= 7)
+		ayaneo_set_snes_slot((int)rd32(b + 56));
 	s_settings_loaded = 1;			/* SD values are authoritative from here */
 }
 
@@ -404,6 +412,7 @@ void ayaneo_settings_save(void)
 	wr32(b + 44, (unsigned int)s_mute_menu);
 	wr32(b + 48, (unsigned int)s_preempt_frames);
 	wr32(b + 52, s_snes_opts);
+	wr32(b + 56, (unsigned int)s_snes_slot);
 	s_settings_loaded = 1;			/* our value is now authoritative */
 	arch_clean_cache_range((addr_t)b, sizeof(b));
 	partition_write(AYANEO_AUDIO_PART, AYANEO_SET_OFF, b, sizeof(b));

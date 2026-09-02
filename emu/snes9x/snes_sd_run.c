@@ -38,6 +38,8 @@ extern int      ayaneo_get_preempt_frames(void);        /* run-ahead depth 0..3 
 extern void     ayaneo_set_preempt_frames(int v);
 extern unsigned ayaneo_get_snes_opts(void);             /* packed aspect|overscan<<8|audio<<16|hires<<24 */
 extern void     ayaneo_set_snes_opts(unsigned v);
+extern int      ayaneo_get_snes_slot(void);             /* persisted manual save-state slot 0..9 */
+extern void     ayaneo_set_snes_slot(int v);
 
 /* Run-ahead: present pf frames into the future with the current input, then rewind to the
  * committed frame (mirrors GB/GBC/GBA "Preemptive Frames"). Runs pf+1 full emulations per
@@ -313,7 +315,8 @@ static int sm_change(int i, int dir, int act)
 	} break;
 	case SM_BENCH:  if (dir || act) g_snes_benchmark = !g_snes_benchmark; break;
 	case SM_PANEL:  break;   /* read-only */
-	case SM_SLOT: if (dir) s_save_slot = (s_save_slot + dir + 10) % 10; break;
+	case SM_SLOT: if (dir) { s_save_slot = (s_save_slot + dir + 10) % 10;
+			ayaneo_set_snes_slot(s_save_slot); ayaneo_menu_settings_persist(); } break;
 	case SM_SAVE: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF; unsigned ssz = s_menu_c->state_size();
 			char ext[4]; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;   /* reclaim serialize temps */
 			ext[0] = 's'; ext[1] = 't'; ext[2] = (char)('0' + s_save_slot); ext[3] = 0;
@@ -409,7 +412,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	/* hand the in-game menu this session's context */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
-	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0; s_save_slot = 0;
+	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0;
+	s_save_slot = ayaneo_get_snes_slot();   /* restore the last-used manual save slot */
 	/* Restore the persisted snes9x option picks (aspect/overscan/audio/hires) and push them
 	 * to the core so a game launches with the player's last choices, not defaults. */
 	{
