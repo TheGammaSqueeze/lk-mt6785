@@ -107,9 +107,9 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		fastboot_info(lbuf);
 	}
 	{
-		extern volatile unsigned g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd, g_snes_dbg_heapused;
-		snprintf(lbuf, sizeof lbuf, "snes-ss: size=%u core=%u sd=%u heap=%u",
-			 g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd, g_snes_dbg_heapused);
+		extern volatile unsigned g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd, g_snes_dbg_heapused, g_snes_dbg_revmap;
+		snprintf(lbuf, sizeof lbuf, "snes-ss: size=%u core=%u sd=%u heap=%u revmap=%u",
+			 g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd, g_snes_dbg_heapused, g_snes_dbg_revmap);
 		fastboot_info(lbuf);
 	}
 	fastboot_okay("");

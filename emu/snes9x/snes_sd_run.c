@@ -147,6 +147,7 @@ volatile unsigned g_snes_dbg_audframes; /* total audio sample-pairs submitted (0
  * ss_sd = 1 if SD write -> read-back -> memcmp matched exactly (SD path integrity). */
 volatile unsigned g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd;
 volatile int      g_snes_dbg_ra;        /* forced run-ahead depth in the headless test (oem snes-ra) */
+volatile unsigned g_snes_dbg_revmap;    /* 1 = the exit reverse-punch buffer (0x55800000) is writable */
 volatile unsigned g_snes_dbg_heapused;  /* arena bytes in use at test end (run-ahead leak check) */
 
 /* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
@@ -639,6 +640,14 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				g_snes_dbg_ss_sd = diff ? 0 : 1;
 			}
 			g_snes_dbg_ss_core = (c->state_load(st, ssz) == 0) ? 1 : 0;
+		}
+		/* Verify the exit reverse-punch freeze buffer (GBA_GAME_FREEZE_PA = 0x55800000) is
+		 * mapped/writable DURING a SNES session - the AYA-hold exit writes the frozen frame
+		 * there, a path the frame-limit test never takes. revmap=1 => the write sticks. */
+		{
+			volatile unsigned *rp = (volatile unsigned *)0x55800000u;
+			*rp = 0xCAFEBABEu;   /* faults here if the region is unmapped during the session */
+			g_snes_dbg_revmap = (*rp == 0xCAFEBABEu) ? 1 : 0;
 		}
 	}
 
