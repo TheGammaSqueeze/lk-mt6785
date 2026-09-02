@@ -43,12 +43,20 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
 #define GPIO_B         82      /* held at launch = start fresh (skip resume) */
 #define RESET_HOLD_FRAMES 30    /* ~0.5 s at 59.7 Hz */
 
-/* Run-ahead + suspend/resume save states are layered on top of basic emulation and are
- * untested for gambatte. While the basic GB/GBC display + relaunch path is being brought
- * up on hardware, keep them OFF so they are not confounding variables (run-ahead does a
- * state save/load every frame; the suspend load runs at launch). Flip to 1 to re-enable
- * once the baseline is confirmed. */
-#define GBC_ADVANCED 0
+/* Run-ahead and suspend/resume are layered on basic emulation. The baseline (display,
+ * relaunch, switch) is now stable on the dedicated gbc_emu thread, so both are enabled.
+ * Kept as separate flags so either can be toggled if one misbehaves on hardware.
+ *  - GBC_RUNAHEAD: present pf frames into the future with the current input, then rewind
+ *    (per-frame gambatte state save/load; gambatte's state carries the APU).
+ *  - GBC_SUSPEND:  save a state on exit and reload it on launch (resume where you left). */
+#define GBC_RUNAHEAD 1
+#define GBC_SUSPEND  1
+
+/* Emulation CPU OPP by run-ahead tier (mirrors the GBA preempt tiers Off/Bal/Resp/Max):
+ * run-ahead runs (pf+1) emulations per displayed frame, so escalate the clock with pf.
+ * The menu runs at 2000 MHz; the game does not need that, and a lower clock saves power. */
+extern void ayaneo_set_cpu_mhz(unsigned int mhz);
+static const unsigned s_gbc_opp[4] = { 600, 1000, 1200, 1400 };
 
 /* GBA arena reuse (only one core runs at a time). Non-overlapping regions with margin:
  * ROM (8 MB) | gambatte heap (24 MB) | video | audio | savestate scratch, all inside
@@ -136,13 +144,20 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * resumes where it was left, unless B is held (start fresh). Mirrors the GBA
 	 * flow. The state file is keyed by the ROM name; gambatte validates it against
 	 * the loaded ROM and no-ops on a mismatch. */
-	if (GBC_ADVANCED && !PRESSED(GPIO_B)) {
+	if (GBC_SUSPEND && !PRESSED(GPIO_B)) {
 		unsigned n = gba_sd_load_state(vol, rom->name, 0, ahead, 0x00A00000u);
 		if (n)
 			c->state_load(ahead, n);
 	}
 	if (is_dmg)
 		apply_dmg_palette(c, pal_idx);
+
+	/* Drop from the menu's 2000 MHz to the run-ahead-tier emulation clock (Off = 600,
+	 * escalating with pf so the (pf+1) emulations per frame still fit the 16.7 ms budget). */
+	{
+		int pf = ayaneo_get_preempt_frames();
+		ayaneo_set_cpu_mhz(s_gbc_opp[(pf >= 0 && pf <= 3) ? pf : 0]);
+	}
 
 	ayaneo_display_prepare();
 	ayaneo_gbc_audio_init();
@@ -191,7 +206,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * so (unlike gpSP) no separate sound-ring save is needed: the committed
 			 * audio was already submitted above; the look-ahead runs are muted (their
 			 * samples are simply not submitted). */
-			pf = GBC_ADVANCED ? ayaneo_get_preempt_frames() : 0;
+			pf = GBC_RUNAHEAD ? ayaneo_get_preempt_frames() : 0;
 			if (pf > 0 && ahead_sz) {
 				int i;
 				c->state_save(ahead);
@@ -223,7 +238,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		if (c->savedata_ptr() && savsz)
 			gba_sd_write_sav(vol, rom->name, (const unsigned char *)c->savedata_ptr(), savsz);
 	}
-	if (GBC_ADVANCED && ahead_sz) {
+	if (GBC_SUSPEND && ahead_sz) {
 		c->state_save(ahead);
 		gba_sd_write_state(vol, rom->name, 0, ahead, ahead_sz);
 	}

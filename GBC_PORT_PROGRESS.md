@@ -87,6 +87,15 @@ card-tile cache keying by console type, feature-gating untested extras, C++ blob
 build specifics, and device/workflow gotchas like oem sd-probe wedging USB).
 
 ## Status log (newest first)
+- 2026-09-02: gambatte core moved to its own dedicated gbc_emu thread (256K, lazy +
+  reused via kick/done events; emu_thread back to 64K) - consistency with gpSP +
+  isolates the stack (fixes the switch-games overflow properly). Then enabled GBC
+  run-ahead + suspend/resume: split GBC_ADVANCED into GBC_RUNAHEAD + GBC_SUSPEND
+  (both 1), and set the emulation CPU clock by run-ahead tier (s_gbc_opp
+  600/1000/1200/1400 like GBA) so (pf+1) emulations/frame fit. Build green, GBA +
+  boot healthy. NEEDS USER TEST (headless-blind): run-ahead feel, suspend/resume,
+  and that GBC audio/video stay clean. NEXT (cron): Pico in-game menu (AYA overlay,
+  like GBA MI_* in gba_driver.c) + punch-hole launch transition.
 - 2026-09-02: On-device GB/GBC bring-up. FIXED: GBA boot logo (logo cart now uses
   first GBA ROM header, not s_roms[0] which the merged roster may make GB/GBC);
   GBC display distortion (dedicated ayaneo_gb_show_frame 160x144x6 - was reusing the
