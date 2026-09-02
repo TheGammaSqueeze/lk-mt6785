@@ -32,6 +32,16 @@ extern int      priamry_display_wait_for_vsync(void);   /* primary_display.c (na
 extern unsigned gpt4_get_current_tick(void);
 extern int      ayaneo_get_lcd_filter(void);            /* 0 Off,1 Scanlines,2 Grid,3 Dot Matrix */
 extern void     ayaneo_set_lcd_filter(int f);
+extern int      ayaneo_get_preempt_frames(void);        /* run-ahead depth 0..3 (shared setting) */
+extern void     ayaneo_set_preempt_frames(int v);
+
+/* Run-ahead: present pf frames into the future with the current input, then rewind to the
+ * committed frame (mirrors GB/GBC/GBA "Preemptive Frames"). Runs pf+1 full emulations per
+ * displayed frame, so escalate the ARM clock with the tier. Off while the menu is open. */
+#define SNES_AHEAD_BUF 0x53000000u   /* run-ahead state (shares the mapped-arena scratch slot) */
+static const unsigned s_snes_ra_opp[4] = { 1400, 1600, 1800, 2000 };   /* clock per pf tier */
+static const char *snes_ra_name(int pf)
+{ return pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : pf == 3 ? "Max" : "Off"; }
 
 /* Benchmark (uncap): run the emulator with no vsync pacing and no audio, counting
  * emulated frames per second so CPU-clock changes are measurable (mirrors the GBC/GBA
@@ -175,7 +185,7 @@ static const gba_rom_entry *s_menu_rom;
 static int  s_msel;
 static char s_mstat[48];
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
-       SM_CPU, SM_BENCH, SM_PANEL,
+       SM_CPU, SM_RUNAHEAD, SM_BENCH, SM_PANEL,
        SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
 
 static const char *snes_filter_name(int f)
@@ -212,7 +222,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_FILTER: return "LCD Filter";
 	case SM_ASPECT: return "Aspect Ratio"; case SM_OVERSCAN: return "Overscan";
 	case SM_AUDIO:  return "Audio Filter";  case SM_HIRES:    return "Hi-Res Blend";
-	case SM_CPU:    return "CPU Clock";
+	case SM_CPU:    return "CPU Clock"; case SM_RUNAHEAD: return "Run-Ahead";
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
 	case SM_RESET:  return "Reset Game"; case SM_CLOSE:  return "Close"; } return ""; }
@@ -226,6 +236,7 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 	case SM_CPU: { static unsigned mhz, tick;   /* cache: PLL read-back low bits jitter */
 		if (!mhz || tick-- == 0) { mhz = ayaneo_get_cpu_mhz(); tick = 40; }
 		p = smputu(p, mhz); p = smput(p, " MHz"); break; }
+	case SM_RUNAHEAD: p = smput(p, snes_ra_name(ayaneo_get_preempt_frames())); break;
 	case SM_BENCH: if (g_snes_benchmark) { p = smputu(p, (unsigned)s_snes_fps); p = smput(p, " fps"); }
 		else p = smput(p, "Off"); break;
 	case SM_PANEL: { unsigned hz = s_snes_hz1000;   /* Hz*1000 -> "60.11 Hz" */
@@ -273,6 +284,12 @@ static int sm_change(int i, int dir, int act)
 		}
 		break;
 	case SM_CPU:    if (dir) snes_cpu_step(dir); break;   /* not persisted (session floors at 1400) */
+	case SM_RUNAHEAD: if (dir) {
+		int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
+		ayaneo_set_preempt_frames(pf);
+		ayaneo_set_cpu_mhz(s_snes_ra_opp[pf]);   /* escalate the clock for pf+1 emulations/frame */
+		ayaneo_menu_settings_persist();
+	} break;
 	case SM_BENCH:  if (dir || act) g_snes_benchmark = !g_snes_benchmark; break;
 	case SM_PANEL:  break;   /* read-only */
 	case SM_SAVE: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF; unsigned ssz = s_menu_c->state_size();
@@ -389,6 +406,14 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 	}
 
+	/* Run-ahead state size (bytes). The buffer SNES_AHEAD_BUF (0x53000000) has ~2 MB of
+	 * mapped room before the menu wallpaper cache; if a game's state does not fit, run-ahead
+	 * stays disabled (ra_ssz = 0). */
+	unsigned ra_ssz = c->state_size();
+	if (ra_ssz == 0 || ra_ssz > 0x00200000u) ra_ssz = 0;
+	{ int pf0 = ayaneo_get_preempt_frames();   /* honour a persisted tier: escalate the clock */
+	  if (pf0 > 0 && pf0 <= 3 && ayaneo_get_cpu_mhz() < s_snes_ra_opp[pf0]) ayaneo_set_cpu_mhz(s_snes_ra_opp[pf0]); }
+
 	int reset_hold = 0, aya_prev = 0;
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	for (;;) {
@@ -422,14 +447,30 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				g_snes_dbg_nz = nz;
 				if (hash != s_snes_dbg_lasthash) { g_snes_dbg_changed++; s_snes_dbg_lasthash = hash; }
 			}
-			ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
-		} else if (!g_snes_benchmark)
-			priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
-		/* Audio flows during normal play (and under the menu); muted while benchmarking so
-		 * the AFE ring never throttles the uncapped loop. */
+		}
+		/* Committed-frame audio submitted BEFORE any run-ahead look-ahead overwrites the
+		 * blob's audio buffer; muted while benchmarking so the ring never throttles. */
 		if (f.audio && f.frames && !g_snes_benchmark) {
 			g_snes_dbg_audframes += f.frames;
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
+		}
+		/* Run-ahead: advance the DISPLAY pf frames into the future with the current input,
+		 * then rewind so the real emulation still advances exactly one frame per loop. Off
+		 * under the menu (do not race ahead behind the overlay), while benchmarking, or in the
+		 * headless test. Look-ahead frames are muted (committed audio already submitted). */
+		{
+			int pf = (!g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit && ra_ssz)
+				 ? ayaneo_get_preempt_frames() : 0;
+			int i;
+			if (pf > 0) {
+				c->state_save((void *)SNES_AHEAD_BUF, ra_ssz);
+				for (i = 0; i < pf; i++) c->run(&f);
+			}
+			if (f.video && f.width && f.height)
+				ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
+			else if (!g_snes_benchmark)
+				priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
+			if (pf > 0) c->state_load((const void *)SNES_AHEAD_BUF, ra_ssz);   /* rewind */
 		}
 
 		/* Timing: 128-frame average panel refresh (vsync-locked, so this IS the emulated
