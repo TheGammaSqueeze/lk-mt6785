@@ -40,7 +40,12 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
 #define GPIO_RB        81      /* DMG palette next */
 #define GPIO_SELECT    90      /* + START + L + R held = soft reset */
 #define GPIO_START     91
-#define GPIO_B         82      /* held at launch = start fresh (skip resume) */
+#define GPIO_B         82      /* held at launch = start fresh (skip resume); menu back */
+#define GPIO_UP        89
+#define GPIO_DOWN      79
+#define GPIO_LEFT      78
+#define GPIO_RIGHT     80
+#define GPIO_A         83      /* menu select */
 #define RESET_HOLD_FRAMES 30    /* ~0.5 s at 59.7 Hz */
 
 /* Run-ahead and suspend/resume are layered on basic emulation. The baseline (display,
@@ -96,7 +101,119 @@ static void apply_dmg_palette(const struct gbc_core_exports *c, int idx)
 			c->set_dmg_palette_color((unsigned)p, (unsigned)col, s_dmg_pal[idx][col]);
 }
 
-/* Run one GB/GBC game to completion (AYA returns to the selector). Runs on the
+/* ---- in-game overlay menu (GammaOS Pico), mirrors the GBA menu in gba_driver.c.
+ * AYA toggles it; the game keeps running underneath with its input suppressed. ---- */
+extern void ayaneo_fill(unsigned int *buf, unsigned int pitch, int x, int y, int w, int h, unsigned int argb);
+extern int  ayaneo_text(unsigned int *buf, unsigned int pitch, int x, int y, int scale, unsigned int argb, const char *s);
+extern int  ayaneo_brightness_pct(void);
+extern int  ayaneo_brightness_step(int dir);
+extern int  ayaneo_gbc_audio_get_volume(void);
+extern void ayaneo_gbc_audio_set_volume(int v);
+extern int  ayaneo_get_lcd_filter(void);
+extern void ayaneo_set_lcd_filter(int v);
+extern void ayaneo_set_preempt_frames(int v);
+extern void ayaneo_menu_settings_persist(void);
+
+volatile int g_gbc_menu_open;   /* read by ayaneo_gbc_pad_mask (gba_driver.c) to gate game input */
+
+/* session context the menu acts on, set at session start */
+static const struct gbc_core_exports *s_menu_c;
+static fat_vol             *s_menu_vol;
+static const gba_rom_entry *s_menu_rom;
+static unsigned char       *s_menu_ahead;
+static unsigned             s_menu_ahead_sz;
+static int                  s_menu_is_dmg;
+static int                 *s_menu_pal;      /* -> session pal_idx */
+static int  s_msel;
+static char s_mstat[48];
+
+enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_PALETTE, GM_PREEMPT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
+
+static char *mput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+static char *mputu(char *p, unsigned v) { char t[12]; int n = 0;
+	if (!v) { *p++ = '0'; return p; } while (v) { t[n++] = '0' + v % 10; v /= 10; }
+	while (n) *p++ = t[--n]; return p; }
+
+static const char *gm_label(int i)
+{
+	switch (i) {
+	case GM_BRIGHT:  return "Brightness";
+	case GM_VOLUME:  return "Volume";
+	case GM_FILTER:  return "LCD Filter";
+	case GM_PALETTE: return "Palette";
+	case GM_PREEMPT: return "Preemptive Frames";
+	case GM_SAVE:    return "Save State";
+	case GM_LOAD:    return "Load State";
+	case GM_RESET:   return "Reset Game";
+	case GM_CLOSE:   return "Close";
+	}
+	return "";
+}
+static const char *filt_name(int f) { return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : "Off"; }
+static const char *gm_value(int i, char *buf)
+{
+	char *p = buf;
+	switch (i) {
+	case GM_BRIGHT:  p = mputu(p, (unsigned)ayaneo_brightness_pct()); p = mput(p, "%"); break;
+	case GM_VOLUME:  p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
+	case GM_FILTER:  p = mput(p, filt_name(ayaneo_get_lcd_filter())); break;
+	case GM_PALETTE: if (s_menu_is_dmg) { p = mput(p, "< "); p = mputu(p, (unsigned)((s_menu_pal ? *s_menu_pal : 0) + 1)); p = mput(p, " >"); }
+			 else p = mput(p, "CGB"); break;
+	case GM_PREEMPT: { int pf = ayaneo_get_preempt_frames();
+			   p = mput(p, pf == 0 ? "Off" : pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : "Max"); } break;
+	case GM_SAVE: case GM_LOAD: p = mput(p, "[A]"); break;
+	default: break;
+	}
+	*p = 0; return buf;
+}
+/* returns 0 = stay in menu, 1 = close menu (resume game), 2 = exit to the selector */
+static int gm_change(int i, int dir, int act)
+{
+	int changed = 1;
+	s_mstat[0] = 0;
+	switch (i) {
+	case GM_BRIGHT:  if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
+	case GM_VOLUME:  if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
+	case GM_FILTER:  if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
+	case GM_PALETTE: if (dir && s_menu_is_dmg && s_menu_pal) { *s_menu_pal = (*s_menu_pal + dir + DMG_PAL_COUNT) % DMG_PAL_COUNT; apply_dmg_palette(s_menu_c, *s_menu_pal); } changed = 0; break;
+	case GM_PREEMPT: if (dir) ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + dir + 4) % 4); else changed = 0; break;
+	case GM_SAVE:    if (act && s_menu_ahead_sz) { s_menu_c->state_save(s_menu_ahead);
+			     mput(s_mstat, gba_sd_write_state(s_menu_vol, s_menu_rom->name, 0, s_menu_ahead, s_menu_ahead_sz) == 0 ? "State saved" : "Save failed"); }
+			 changed = 0; break;
+	case GM_LOAD:    if (act && s_menu_ahead_sz) { unsigned n = gba_sd_load_state(s_menu_vol, s_menu_rom->name, 0, s_menu_ahead, 0x00A00000u);
+			     mput(s_mstat, (n && s_menu_c->state_load(s_menu_ahead, n) == 0) ? "State loaded" : "No save state"); }
+			 changed = 0; break;
+	case GM_RESET:   if (act) { s_menu_c->reset(); return 1; } changed = 0; break;
+	case GM_CLOSE:   if (act) return 2; changed = 0; break;
+	default: changed = 0; break;
+	}
+	if (changed) ayaneo_menu_settings_persist();
+	return 0;
+}
+
+int gbc_menu_open(void) { return g_gbc_menu_open; }
+/* called by ayaneo_gb_show_frame (mt_disp_drv.c) after the game frame */
+void gbc_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
+{
+	int rowH = 38, panelW = 660, panelH = 84 + GM_COUNT * rowH + 42;
+	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2;
+	int x = px + 28, y = py + 84, i; char val[48];
+	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
+	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
+	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "GammaOS Pico");
+	for (i = 0; i < GM_COUNT; i++, y += rowH) {
+		unsigned int fg = (i == s_msel) ? 0xFF101018u : 0xFFC8D0E0u; int vw;
+		if (i == s_msel) ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
+		ayaneo_text(buf, pitch, x, y, 2, fg, gm_label(i));
+		gm_value(i, val); for (vw = 0; val[vw]; vw++) ;
+		ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, val);
+	}
+	if (s_mstat[0]) ayaneo_text(buf, pitch, x, py + panelH - 40, 2, 0xFF80E080u, s_mstat);
+	ayaneo_text(buf, pitch, x, py + panelH - 16, 1, 0xFF8890A0u,
+		    "Up/Down move  Left/Right change  A select  B/AYA close");
+}
+
+/* Run one GB/GBC game to completion (menu Close returns to the selector). Runs on the
  * dedicated gbc_emu thread (see gbc_sd_session below), not on emu_thread. */
 static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 {
@@ -163,7 +280,15 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	ayaneo_gbc_audio_init();
 	mtk_wdt_disable();                          /* no kernel handoff; kick each frame */
 
+	/* hand the in-game menu this session's context */
+	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
+	s_menu_ahead = ahead; s_menu_ahead_sz = ahead_sz;
+	s_menu_is_dmg = is_dmg; s_menu_pal = &pal_idx;
+	s_msel = 0; s_mstat[0] = 0; g_gbc_menu_open = 0;
+
 	pace_base = gpt4_get_current_tick();
+	{
+	int up_prev = 0, dn_prev = 0, lt_prev = 0, rt_prev = 0, a_prev = 0, b_prev = 0;
 	for (;;) {
 		unsigned samples = GBC_SND_MAX;
 		long r = c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
@@ -171,42 +296,50 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		ayaneo_gbc_audio_submit(snd, samples);
 
 		if (r >= 0) {                       /* a video frame completed */
-			int aya, lb, rb, combo, pf;
+			int combo, pf, aya;
 			mtk_wdt_restart();
 
-			/* Soft reset: SELECT+START+L+R held ~0.5 s restarts the game (matches
-			 * the GBA hotkey). While that combo is held, do NOT cycle the palette. */
-			combo = PRESSED(GPIO_SELECT) && PRESSED(GPIO_START) &&
-				PRESSED(GPIO_LB) && PRESSED(GPIO_RB);
-			if (combo) {
-				if (++reset_hold >= RESET_HOLD_FRAMES) {
-					c->reset();
-					reset_hold = 0;
-				}
-			} else {
-				reset_hold = 0;
-			}
-
-			/* AYA -> save .sav and return to the selector */
+			/* AYA toggles the in-game menu (game keeps running underneath). */
 			aya = PRESSED(GPIO_AYA);
-			if (aya && !aya_prev) break;
+			if (aya && !aya_prev) { g_gbc_menu_open = !g_gbc_menu_open; s_mstat[0] = 0; }
 			aya_prev = aya;
 
-			/* L/R cycle the DMG palette (mono games only, not during a reset combo) */
-			if (is_dmg && !combo) {
-				lb = PRESSED(GPIO_LB); rb = PRESSED(GPIO_RB);
-				if (lb && !lb_prev) { pal_idx = (pal_idx + DMG_PAL_COUNT - 1) % DMG_PAL_COUNT; apply_dmg_palette(c, pal_idx); }
-				if (rb && !rb_prev) { pal_idx = (pal_idx + 1) % DMG_PAL_COUNT; apply_dmg_palette(c, pal_idx); }
-				lb_prev = lb; rb_prev = rb;
+			if (g_gbc_menu_open) {
+				/* menu nav: dpad move/change, A select, B close. The game's own
+				 * input is gated off in ayaneo_gbc_pad_mask while the menu is open. */
+				int res = 0;
+				int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
+				int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
+				int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);
+				if (up && !up_prev) s_msel = (s_msel + GM_COUNT - 1) % GM_COUNT;
+				if (dn && !dn_prev) s_msel = (s_msel + 1) % GM_COUNT;
+				if (lt && !lt_prev) res = gm_change(s_msel, -1, 0);
+				if (rt && !rt_prev) res = gm_change(s_msel, +1, 0);
+				if (a  && !a_prev)  res = gm_change(s_msel, 0, 1);
+				if (b  && !b_prev)  g_gbc_menu_open = 0;
+				up_prev = up; dn_prev = dn; lt_prev = lt; rt_prev = rt; a_prev = a; b_prev = b;
+				if (res == 2) break;               /* Close -> exit to the selector */
+				if (res == 1) g_gbc_menu_open = 0; /* Reset -> close menu, game runs */
+			} else {
+				/* Soft reset hotkey: SELECT+START+L+R held ~0.5 s. */
+				combo = PRESSED(GPIO_SELECT) && PRESSED(GPIO_START) &&
+					PRESSED(GPIO_LB) && PRESSED(GPIO_RB);
+				if (combo) { if (++reset_hold >= RESET_HOLD_FRAMES) { c->reset(); reset_hold = 0; } }
+				else reset_hold = 0;
+				/* L/R cycle the DMG palette (mono games only, not during the combo) */
+				if (is_dmg && !combo) {
+					int lb = PRESSED(GPIO_LB), rb = PRESSED(GPIO_RB);
+					if (lb && !lb_prev) { pal_idx = (pal_idx + DMG_PAL_COUNT - 1) % DMG_PAL_COUNT; apply_dmg_palette(c, pal_idx); }
+					if (rb && !rb_prev) { pal_idx = (pal_idx + 1) % DMG_PAL_COUNT; apply_dmg_palette(c, pal_idx); }
+					lb_prev = lb; rb_prev = rb;
+				}
 			}
 
-			/* Run-ahead ("Preemptive Frames", shared setting): present a frame pf
-			 * steps into the future with the current input, then rewind, so input
-			 * latency drops by pf frames. gambatte's savestate carries the APU state,
-			 * so (unlike gpSP) no separate sound-ring save is needed: the committed
-			 * audio was already submitted above; the look-ahead runs are muted (their
-			 * samples are simply not submitted). */
-			pf = GBC_RUNAHEAD ? ayaneo_get_preempt_frames() : 0;
+			/* Run-ahead: present pf frames into the future then rewind. Off while the
+			 * menu is open (do not race the game ahead under the overlay, and a menu
+			 * Load State just replaced the state). ayaneo_gb_show_frame paints the
+			 * menu overlay on top when g_gbc_menu_open. */
+			pf = (!g_gbc_menu_open && GBC_RUNAHEAD) ? ayaneo_get_preempt_frames() : 0;
 			if (pf > 0 && ahead_sz) {
 				int i;
 				c->state_save(ahead);
@@ -229,6 +362,8 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			}
 		}
 	}
+	}
+	g_gbc_menu_open = 0;
 
 	/* persist the cartridge battery save + a suspend save STATE (so the next launch
 	 * resumes), then hand the codec back to the menu */

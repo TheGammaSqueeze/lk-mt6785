@@ -272,7 +272,9 @@ static void gpio_in_pullup(unsigned gpio)
  * pins are already configured (input_init) by the time a game runs. */
 unsigned ayaneo_gbc_pad_mask(void)
 {
+	extern volatile int g_gbc_menu_open;   /* gbc_sd_run.c: gate game input while the menu is open */
 	unsigned m = 0;
+	if (g_gbc_menu_open) return 0;
 	if (PRESSED(GPIO_A))      m |= 0x01u;
 	if (PRESSED(GPIO_B))      m |= 0x02u;
 	if (PRESSED(GPIO_SELECT)) m |= 0x04u;

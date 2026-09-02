@@ -1198,7 +1198,15 @@ void ayaneo_gb_show_frame(const unsigned short *pix)
 			}
 		}
 	}
-	ayaneo_draw_osd(dst, pitch_w, W, H);                  /* volume/brightness slider */
+	/* in-game overlay menu (GammaOS Pico) drawn over the whole panel when open */
+	{
+		extern int  gbc_menu_open(void);
+		extern void gbc_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H);
+		if (gbc_menu_open())
+			gbc_menu_paint(dst, pitch_w, W, H);
+		else
+			ayaneo_draw_osd(dst, pitch_w, W, H);         /* volume/brightness slider */
+	}
 	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
 	g_dbg_blit_us = (gpt4_get_current_tick() - t0) / 13u;
 	ayaneo_present(dpa, W, H, pitch_w);

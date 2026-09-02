@@ -87,6 +87,15 @@ card-tile cache keying by console type, feature-gating untested extras, C++ blob
 build specifics, and device/workflow gotchas like oem sd-probe wedging USB).
 
 ## Status log (newest first)
+- 2026-09-02: GBC in-game Pico menu implemented (self-contained in gbc_sd_run.c,
+  mirrors the GBA MI_* menu). AYA toggles it; game runs underneath with its input
+  gated off (ayaneo_gbc_pad_mask returns 0 while g_gbc_menu_open). Items: Brightness,
+  Volume, LCD Filter, Palette (DMG), Preemptive Frames, Save/Load State, Reset Game,
+  Close (Close exits to the selector; Reset resets + closes the menu). Overlay drawn
+  by ayaneo_gb_show_frame -> gbc_menu_paint (reuses ayaneo_fill/ayaneo_text). Run-ahead
+  suppressed while the menu is open. Build + GBA/boot healthy. NEEDS USER TEST
+  (headless): menu opens/looks right, nav works, Save/Load/Reset/Close behave. NEXT
+  (cron): punch-hole launch transition for GB/GBC (like the GBA growing-circle punch).
 - 2026-09-02: gambatte core moved to its own dedicated gbc_emu thread (256K, lazy +
   reused via kick/done events; emu_thread back to 64K) - consistency with gpSP +
   isolates the stack (fixes the switch-games overflow properly). Then enabled GBC
