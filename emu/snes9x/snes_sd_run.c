@@ -199,6 +199,15 @@ static int  s_msel;
 static char s_mstat[48];
 static int  s_save_slot;   /* manual Save/Load state slot 0..9 (suspend uses a separate "sus") */
 static int  s_slot_used;   /* 1 if the current slot's file exists on the card (cached) */
+static int  s_settings_dirty;   /* >0: a setting changed; counts down, persists to eMMC/SD at 0 */
+#define SNES_SETTINGS_DEBOUNCE 30   /* ~0.5 s after the last change before the disk write */
+/* Mark settings changed; the actual eMMC+SD write is debounced so holding a value key (or a
+ * rapid series of taps) does not spam flash writes. Flushed by snes_settings_tick / on exit. */
+static void snes_settings_touch(void) { s_settings_dirty = SNES_SETTINGS_DEBOUNCE; }
+static void snes_settings_tick(void)
+{ if (s_settings_dirty > 0 && --s_settings_dirty == 0) ayaneo_menu_settings_persist(); }
+static void snes_settings_flush(void)
+{ if (s_settings_dirty > 0) { s_settings_dirty = 0; ayaneo_menu_settings_persist(); } }
 
 /* build the "st<slot>" extension for a manual save-state slot. */
 static void snes_slot_ext(char *e) { e[0] = 's'; e[1] = 't'; e[2] = (char)('0' + s_save_slot); e[3] = 0; }
@@ -305,9 +314,9 @@ static int sm_change(int i, int dir, int act)
 {
 	s_mstat[0] = 0;
 	switch (i) {
-	case SM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); ayaneo_menu_settings_persist(); } break;
-	case SM_VOLUME: if (dir) { ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); ayaneo_menu_settings_persist(); } break;
-	case SM_FILTER: if (dir) { ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); ayaneo_menu_settings_persist(); } break;
+	case SM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); snes_settings_touch(); } break;
+	case SM_VOLUME: if (dir) { ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); snes_settings_touch(); } break;
+	case SM_FILTER: if (dir) { ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); snes_settings_touch(); } break;
 	case SM_ASPECT: case SM_OVERSCAN: case SM_AUDIO: case SM_HIRES:
 		if (dir && s_menu_c->set_option) {
 			int oi = i - SM_ASPECT, n = s_opt_def[oi].n, k;
@@ -317,7 +326,7 @@ static int sm_change(int i, int dir, int act)
 			if (oi == OI_ASPECT) g_snes_stretch = (s_opt_idx[OI_ASPECT] == SNES_ASPECT_STRETCH);
 			for (k = 0; k < OI_N; k++) packed |= (unsigned)(s_opt_idx[k] & 0xFF) << (k * 8);
 			ayaneo_set_snes_opts(packed);   /* persist all picks */
-			ayaneo_menu_settings_persist();
+			snes_settings_touch();
 		}
 		break;
 	case SM_CPU:    if (dir) snes_cpu_step(dir); break;   /* not persisted (session floors at 1400) */
@@ -325,12 +334,12 @@ static int sm_change(int i, int dir, int act)
 		int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
 		ayaneo_set_preempt_frames(pf);
 		ayaneo_set_cpu_mhz(s_snes_ra_opp[pf]);   /* escalate the clock for pf+1 emulations/frame */
-		ayaneo_menu_settings_persist();
+		snes_settings_touch();
 	} break;
 	case SM_BENCH:  if (dir || act) g_snes_benchmark = !g_snes_benchmark; break;
 	case SM_PANEL:  break;   /* read-only */
 	case SM_SLOT: if (dir) { s_save_slot = (s_save_slot + dir + 10) % 10;
-			ayaneo_set_snes_slot(s_save_slot); ayaneo_menu_settings_persist();
+			ayaneo_set_snes_slot(s_save_slot); snes_settings_touch();
 			snes_slot_check(); } break;   /* refresh used/empty for the new slot */
 	case SM_SAVE: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF; unsigned ssz = s_menu_c->state_size();
 			char ext[4]; int ok; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;
@@ -429,6 +438,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
 	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0;
 	s_save_slot = ayaneo_get_snes_slot();   /* restore the last-used manual save slot */
+	s_settings_dirty = 0;
 	snes_slot_check();                      /* seed the used/empty indicator for it */
 	/* Restore the persisted snes9x option picks (aspect/overscan/audio/hires) and push them
 	 * to the core so a game launches with the player's last choices, not defaults. */
@@ -590,9 +600,12 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			} else { b_last = 0; b_acc = 0; b_n = 0; }
 		}
 
+		snes_settings_tick();   /* debounced settings persist (~0.5 s after the last change) */
+
 		/* AYA taps toggle the menu; holding AYA ~1.5 s force-exits to the selector. */
 		aya = PRESSED(GPIO_AYA);
-		if (aya && !aya_prev) { g_snes_menu_open = !g_snes_menu_open; s_mstat[0] = 0; }
+		if (aya && !aya_prev) { g_snes_menu_open = !g_snes_menu_open; s_mstat[0] = 0;
+			if (!g_snes_menu_open) snes_settings_flush(); }   /* flush pending on menu close */
 		aya_prev = aya;
 		if (aya) { if (++aya_hold >= 90) {
 			/* Arm the reverse punch: the menu re-entry shrinks this frozen frame back into
@@ -622,8 +635,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			#undef FIRE
 			if (lt && !lt_p) sm_change(s_msel, -1, 0);
 			if (rt && !rt_p) sm_change(s_msel, +1, 0);
-			if (a  && !a_p)  { if (sm_change(s_msel, 0, 1)) g_snes_menu_open = 0; }
-			if (b  && !b_p)  g_snes_menu_open = 0;
+			if (a  && !a_p)  { if (sm_change(s_msel, 0, 1)) { g_snes_menu_open = 0; snes_settings_flush(); } }
+			if (b  && !b_p)  { g_snes_menu_open = 0; snes_settings_flush(); }
 			up_p = up; dn_p = dn; lt_p = lt; rt_p = rt; a_p = a; b_p = b;
 			reset_hold = 0;
 		} else {
@@ -665,6 +678,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	g_snes_menu_open = 0;
 	g_snes_test_limit = 0;
+	snes_settings_flush();   /* write any pending settings change before leaving the session */
 
 	ayaneo_dsi_set_vfp(DEFAULT_VFP);   /* restore 59.749 Hz for the menu / other cores */
 	if (saved_mhz) ayaneo_set_cpu_mhz(saved_mhz);   /* restore the pre-session ARM clock */
