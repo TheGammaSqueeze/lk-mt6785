@@ -65,6 +65,10 @@ STRETCH aspect option added (user request): a 5th Aspect Ratio choice that fills
 it handles fractional vertical (224->960); normal modes keep integer vertical for clean
 scanlines. Persisted with the other aspect picks.
 
+Verified (2026-09-02) the exit reverse-punch buffer 0x55800000 is writable during a SNES
+session (oem diag snes-ss revmap=1) - the AYA-hold exit-transition path is memory-safe (was
+never exercised by the frame-limited headless test).
+
 Multiple save-state slots added: a "Save Slot" (0-9) menu item; manual Save/Load use
 /states/snes/<rom>.st<slot> (suspend stays on "sus", self-test on "sstst"). Beyond GB/GBC/GBA
 (single slot). The selected slot PERSISTS across launches (settings block ver 7, offset 56),
