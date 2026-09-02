@@ -51,6 +51,20 @@ compatible); restored + pushed to the core at session start, repacked/saved on c
 R2 fast-forward added (parity with GBA): hold R2 (GPIO 57) to run flat out - present 1-in-8,
 skip vsync, suppress audio + run-ahead. Off under menu/benchmark/headless.
 
+RUN-AHEAD CRASH FIXED (2026-09-02): snes9x's serialize/unserialize new ~15 block buffers per
+call and the bump arena never frees, so per-frame run-ahead leaked ~0.5 MB/frame and
+exhausted the 36 MB arena -> new returns NULL -> LK crash mid-game. Added heap_mark/heap_reset
+exports; run-ahead (and manual save/load) now mark before the save and reset after the load
+to reclaim the temporaries. Verified headless (oem snes-ra:N forces run-ahead in the test):
+depth 3 for 600 frames keeps peak arena usage FLAT at 20.2 MB = baseline. Note: depth 3 (Max)
+is heavy (4 emulations + 2 serializes/frame) - stable but slow; use Balanced/Responsive on
+demanding games.
+
+STRETCH aspect option added (user request): a 5th Aspect Ratio choice that fills the whole
+1280x960 panel, no bars. Display scaler is now 2D source-driven (Bresenham on both axes) so
+it handles fractional vertical (224->960); normal modes keep integer vertical for clean
+scanlines. Persisted with the other aspect picks.
+
 Feature set now at parity with GB/GBC/GBA (incl. fast-forward). Optional leftovers:
 color-correction option (omitted as GB-specific); tuning the run-ahead tiers if Max is too
 heavy on some games.
