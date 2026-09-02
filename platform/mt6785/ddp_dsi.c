@@ -1091,6 +1091,20 @@ void DSI_CPHY_Calc_VDO_Timing(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAM
 	}
 }
 
+/* AYANEO: live vertical-front-porch change for PER-CORE refresh switching. In continuous
+ * VDO mode the DSI engine re-reads DSI_VFP_NL each frame, so writing it changes vtotal
+ * (hence the panel refresh) at the next frame boundary - MTK's dynamic-fps mechanism, no
+ * DSI reset needed. The SNES session runs the panel near its native 60.0988 Hz (vfp 17 ->
+ * vtotal 993 -> ~60.11 Hz, 0.02% off) so a vsync-locked present is smooth; GB/GBC/GBA and
+ * the menu restore the stock vfp 23 (vtotal 999 -> 59.749 Hz, ~= the 59.7275 GB/GBA rate).
+ * Single DSI (DSI0) panel. Clamped to a safe porch range. */
+void ayaneo_dsi_set_vfp(unsigned int vfp)
+{
+	if (vfp < 4u)   vfp = 4u;
+	if (vfp > 200u) vfp = 200u;
+	DSI_OUTREG32(NULL, DSI_REG_BASE[0] + DISP_REG_DSI_VFP_NL, vfp);
+}
+
 void DSI_Config_VDO_Timing(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAMS *dsi_params)
 {
 	int i = 0;

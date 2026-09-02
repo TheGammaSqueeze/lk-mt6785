@@ -1295,6 +1295,10 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 	}
 	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
 	ayaneo_present(dpa, W, H, pitch_w);
+	/* Vsync-locked present: the SNES session runs the panel at ~60.11 Hz (vfp swap), so
+	 * blocking one vsync here paces emulation to the real scan-out = smooth, tear-free,
+	 * and it guarantees the presented buffer is scanned before the renderer reuses it. */
+	priamry_display_wait_for_vsync();
 	s_fb_flip ^= 1;
 }
 

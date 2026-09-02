@@ -32,10 +32,17 @@ validation (headless here - need a .sfc/.smc in /roms/snes to confirm a game ren
 - boot_b packer: 3rd blob @0x01E00000 (33 MB partition, overrun-checked). Build script builds
   the snes blob. boot_b now 31.8 MB, lk_a still fits 2 MB.
 
-PACING: per-system, as requested. SNES emulation paced to its native 60.0988 Hz (NTSC)
-via the runner's TPF num/den; GB/GBC/GBA stay 59.7275 Hz (their own pacing); the carousel
-menu stays 59.7275 Hz (vsync-driven, untouched). When SNES audio lands its resampler must
-use 60.0988 Hz, not the 59.7275 the GBA path assumes.
+PACING / PER-CORE LCM REFRESH: the panel (st7703_hd720) runs at a FIXED rate set at boot
+(vfp 23 -> vtotal 999 -> 59.749 Hz, tuned to ~= the 59.7275 GB/GBA rate). LK now switches
+the panel refresh PER CORE via the DSI vertical-front-porch (MTK dynamic-fps): new
+`ayaneo_dsi_set_vfp` (ddp_dsi.c) writes DSI_VFP_NL live. SNES sets vfp 17 -> vtotal 993 ->
+~60.11 Hz (0.02% off its native 60.0988), then a VSYNC-LOCKED present in
+ayaneo_snes_show_frame (priamry_display_wait_for_vsync after present) paces emulation to the
+real scan-out - smooth + tear-free, replacing the 13 MHz busy-wait. On exit vfp is restored
+to 23 (59.749 Hz) for the menu / other cores. GB/GBC/GBA/menu/cold-boot paths are untouched
+(they never call the vfp switch and don't use the SNES show_frame). Audio resampler keys off
+the core's av_info rate; clock recovery absorbs the ~0.02% residual. NEEDS on-device check
+(headless): panel switches cleanly, no blank/tear, smooth scroll in-game.
 
 AUDIO: done (first cut). snes9x outputs stereo s16 at its native ~32040 Hz; new
 `ayaneo_snes_audio_submit` (ayaneo_audio.c) linear-interp UPSAMPLES that to the 48 kHz AFE

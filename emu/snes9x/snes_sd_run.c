@@ -25,7 +25,15 @@ extern void     ayaneo_snes_audio_reset(void);
 extern void     ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz);
 extern void     ayaneo_menu_audio_silence(void);
 extern void     ayaneo_display_prepare(void);
+extern void     ayaneo_dsi_set_vfp(unsigned int vfp);   /* per-core panel refresh (ddp_dsi.c) */
+extern int      priamry_display_wait_for_vsync(void);   /* primary_display.c (name has the typo) */
 extern unsigned gpt4_get_current_tick(void);
+
+/* Panel vertical-front-porch per refresh rate. Stock vfp 23 -> vtotal 999 -> 59.749 Hz
+ * (GB/GBC/GBA/menu). SNES uses vfp 17 -> vtotal 993 -> ~60.11 Hz (0.02% off its native
+ * 60.0988 Hz) so the vsync-locked present in ayaneo_snes_show_frame is smooth. */
+#define SNES_VFP      17u
+#define DEFAULT_VFP   23u
 extern void     mtk_wdt_restart(void);
 extern void     mtk_wdt_disable(void);
 extern int      mt_get_gpio_in(unsigned pin);
@@ -93,13 +101,6 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	unsigned romsz;
 	unsigned bw = 0, bh = 0, mw = 0, mh = 0, sr = 0;
 	int aya_hold = 0;
-	unsigned pace_base;
-	unsigned long long pace_n = 0;
-	/* SNES runs at its native 60.0988 Hz (NTSC), NOT the 59.7275 Hz the GB/GBC/GBA cores
-	 * pace to. Ticks/frame @13 MHz = 13000000 / 60.0988 = 216309.5; express as a num/den
-	 * so the cumulative target (pace_base + pace_n*NUM/DEN) has no drift. */
-	const unsigned long long TPF_NUM = 130000000000ull;   /* 13000000 * 10000 */
-	const unsigned long long TPF_DEN = 600988ull;         /* 60.0988 Hz * 10000 */
 
 	c = snes_core_load();
 	if (!c) return;
@@ -124,8 +125,11 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	ayaneo_gbc_audio_init();
 	ayaneo_snes_audio_reset();
 	mtk_wdt_disable();
+	/* Switch the panel to ~60.11 Hz for SNES (vfp swap). The vsync-locked present in
+	 * ayaneo_snes_show_frame then paces emulation to the panel scan - smooth, tear-free,
+	 * no 13 MHz busy-wait needed. Restored to 59.749 Hz on exit below. */
+	ayaneo_dsi_set_vfp(SNES_VFP);
 
-	pace_base = gpt4_get_current_tick();
 	for (;;) {
 		struct snes_frame f;
 		int aya = PRESSED(GPIO_AYA);
@@ -134,18 +138,15 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		c->run(&f);
 		if (f.video && f.width && f.height)
 			ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
+		else
+			priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
 		if (f.audio && f.frames)
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 
 		if (aya) { if (++aya_hold >= 60) break; } else aya_hold = 0;
-
-		pace_n++;
-		{
-			unsigned target = pace_base + (unsigned)(pace_n * TPF_NUM / TPF_DEN);
-			while ((int)(gpt4_get_current_tick() - target) < 0)
-				;
-		}
 	}
+
+	ayaneo_dsi_set_vfp(DEFAULT_VFP);   /* restore 59.749 Hz for the menu / other cores */
 
 	/* persist SRAM on exit */
 	{
