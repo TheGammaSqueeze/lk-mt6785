@@ -16,10 +16,14 @@ INC="-I$DIR -I$DIR/apu -I$DIR/apu/bapu -I$DIR/libretro -I$DIR/libretro/libretro-
 # HOT per-frame files (65816 CPU, PPU/GFX/DMA, SPC700/DSP, memmap) get -O2 for speed and the
 # cold chip/loader code stays -Os for size. Keeps the blob under budget while capturing the
 # bulk of the speedup. -ffunction/-fdata-sections + link --gc-sections trims dead code.
-COMMON="-march=armv7-a -mfloat-abi=soft -mthumb-interwork -ffreestanding \
+# -march=armv8-a: this device is a Cortex-A76+A55 (ARMv8-A); emulation runs on the A76 big
+# core at up to 2 GHz. vs the old armv7-a baseline this gives hardware integer divide
+# (sdiv/udiv - armv7-a emulates it in software) and A76-tuned scheduling. -mfloat-abi=soft is
+# KEPT (LK's ABI): only integer instruction selection changes, so no FPU/register-save risk.
+COMMON="-march=armv8-a -mtune=cortex-a76 -mfloat-abi=soft -mthumb-interwork -ffreestanding \
         -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit \
         -fno-short-enums -mno-unaligned-access -fno-strict-aliasing -fno-common \
-        -flto -ffat-lto-objects \
+        -flto -ffat-lto-objects -fno-ipa-icf \
         -ffunction-sections -fdata-sections -D__LIBRETRO__ $INC"
 CXXFLAGS="$COMMON"
 CFLAGS="$COMMON -std=gnu99"

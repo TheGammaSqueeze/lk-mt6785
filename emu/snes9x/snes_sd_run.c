@@ -178,6 +178,9 @@ volatile unsigned g_snes_dbg_ss_fast;   /* 1 = fast-savestate (run-ahead) round-
  * means the N-ahead frame genuinely differs from the committed 1-ahead frame (true look-ahead);
  * ra_depth = N tested. */
 volatile unsigned g_snes_dbg_ra_ok, g_snes_dbg_ra_ahead, g_snes_dbg_ra_depth;
+/* Clean display-independent cost breakdown (headless tight loops): us per headless frame,
+ * per fully-rendered frame, per fast state_save, and per fast state_load. fps = 1e6/us. */
+volatile unsigned g_snes_dbg_core_us, g_snes_dbg_render_us, g_snes_dbg_save_us, g_snes_dbg_load_us;
 volatile unsigned g_snes_dbg_heapused;  /* arena bytes in use at test end (run-ahead leak check) */
 
 /* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
@@ -884,6 +887,45 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				g_snes_dbg_ra_depth = (unsigned)N;
 				g_snes_dbg_ra_ok    = (h_full && h_full == h_skip) ? 1 : 0;
 				g_snes_dbg_ra_ahead = (h_full && h_full != h_committed) ? 1 : 0;
+			}
+			/* ---- CLEAN emulation cost breakdown (display-independent) ----
+			 * The live snes-bench runs through the real loop, so it is polluted by the vsync
+			 * pacing and the RSZ hardware present (the config_input frame-done wait) - it measures
+			 * the display path, not the emulator. Here we time TIGHT loops of just c->run() and the
+			 * state ops off the 13 MHz counter, no present, no vsync, so the numbers are pure core:
+			 *   core_us   = one headless frame (video+audio skipped) = the run-ahead look-ahead cost
+			 *   render_us = one fully-rendered frame                = normal committed-frame cost
+			 *   save_us   = one fast state_save   (run-ahead per-frame overhead)
+             *   load_us   = one fast state_load   (run-ahead per-frame overhead)
+			 * fps = 1e6 / us. A Max-run-ahead frame costs ~ render_us + (N-1)*core_us + save+load. */
+			if (c->set_av_skip && c->set_ra_fast && ssz && ssz <= SNES_STATE_CAP) {
+				extern unsigned int gpt4_get_current_tick(void);
+				int i; unsigned t0;
+				void *fm = c->heap_mark ? c->heap_mark() : 0;
+				struct snes_frame tf;
+				const int NB = 240, NS = 60;
+				c->set_ra_fast(1);
+				c->state_save(st, SNES_AHEAD_CAP);
+				c->set_av_skip(1, 1);                                  /* headless: skip video+audio */
+				t0 = gpt4_get_current_tick();
+				for (i = 0; i < NB; i++) c->run(&tf);
+				g_snes_dbg_core_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NB);
+				c->state_load(st, SNES_AHEAD_CAP);
+				c->set_av_skip(0, 0);                                  /* full render */
+				t0 = gpt4_get_current_tick();
+				for (i = 0; i < NB; i++) c->run(&tf);
+				g_snes_dbg_render_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NB);
+				c->state_load(st, SNES_AHEAD_CAP);
+				t0 = gpt4_get_current_tick();                          /* fast state_save cost */
+				for (i = 0; i < NS; i++) { void *m = c->heap_mark ? c->heap_mark() : 0;
+					c->state_save(st, SNES_AHEAD_CAP); if (m && c->heap_reset) c->heap_reset(m); }
+				g_snes_dbg_save_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NS);
+				t0 = gpt4_get_current_tick();                          /* fast state_load cost */
+				for (i = 0; i < NS; i++) c->state_load(st, SNES_AHEAD_CAP);
+				g_snes_dbg_load_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NS);
+				c->state_load(st, SNES_AHEAD_CAP);   /* restore committed */
+				c->set_ra_fast(0);
+				if (fm && c->heap_reset) c->heap_reset(fm);
 			}
 		}
 		/* Verify the exit reverse-punch freeze buffer (GBA_GAME_FREEZE_PA = 0x55800000) is

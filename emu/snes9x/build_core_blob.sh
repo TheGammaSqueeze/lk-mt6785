@@ -14,10 +14,12 @@ OC=arm-none-eabi-objcopy
 OBJDIR="$DIR/obj"
 
 INC="-I$DIR -I$DIR/apu -I$DIR/apu/bapu -I$DIR/libretro -I$DIR/libretro/libretro-common/include"
-COMMON="-march=armv7-a -mfloat-abi=soft -mthumb-interwork -ffreestanding \
+# Match build_core.sh: armv8-a + A76 tuning (the LTO re-optimizes at this link, so the ISA/tune
+# and -fno-ipa-icf must be set HERE too - a GCC 10.3 LTO ICF pass segfaults on armv8 without it).
+COMMON="-march=armv8-a -mtune=cortex-a76 -mfloat-abi=soft -mthumb-interwork -ffreestanding \
         -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit \
         -fno-short-enums -mno-unaligned-access -fno-strict-aliasing -Os -fno-common \
-        -flto -ffat-lto-objects \
+        -flto -ffat-lto-objects -fno-ipa-icf \
         -ffunction-sections -fdata-sections -D__LIBRETRO__ $INC"
 
 # core archive must exist (build_core.sh)

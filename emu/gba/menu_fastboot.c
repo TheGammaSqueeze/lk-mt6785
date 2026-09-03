@@ -119,6 +119,16 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			 g_snes_dbg_ra_ok, g_snes_dbg_ra_ahead, g_snes_dbg_ra_depth);
 		fastboot_info(lbuf);
 	}
+	{	/* clean display-independent cost breakdown (headless tight loops); fps = 1e6/us. */
+		extern volatile unsigned g_snes_dbg_core_us, g_snes_dbg_render_us, g_snes_dbg_save_us, g_snes_dbg_load_us;
+		unsigned cu = g_snes_dbg_core_us, ru = g_snes_dbg_render_us;
+		snprintf(lbuf, sizeof lbuf, "snes-perf: core=%uus(%ufps) render=%uus(%ufps)",
+			 cu, cu ? 1000000u / cu : 0, ru, ru ? 1000000u / ru : 0);
+		fastboot_info(lbuf);
+		snprintf(lbuf, sizeof lbuf, "snes-perf: save=%uus load=%uus",
+			 g_snes_dbg_save_us, g_snes_dbg_load_us);
+		fastboot_info(lbuf);
+	}
 	{
 		extern volatile unsigned g_snes_dbg_benchfps, g_snes_show_us;
 		extern volatile int g_snes_dbg_ra, g_snes_stretch;
