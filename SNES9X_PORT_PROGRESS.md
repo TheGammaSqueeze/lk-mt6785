@@ -6,6 +6,26 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Stretch-vs-Pixel display cost: root cause (2026-09-03)
+
+Why Stretch (fill-panel 1280x960) is slower than Pixel-perfect (letterboxed 1024x896):
+- Stretch writes 1.23M dest pixels vs Pixel 0.92M (+33%). Host scaler bench (tools/ayaneo/snes/
+  scaler_bench.c, the exact row-replication fast path): Pixel 0.128 ms, Stretch 0.148 ms (+15%
+  in the blit loop). The scaler is already optimal (decode-once + memcpy row replication).
+- On device the display cost is dominated by the FIXED per-frame full-panel cache flush
+  (arch_clean_cache_range ~4.9 MB). Measured via new g_snes_show_us (blit+flush, no vsync) during
+  a capped oem snes-launch: PIXEL show_us=2079 us (~2.08 ms/frame). Of that, the flush's dirty-
+  line writeback (~4 MB) is ~1.1-1.4 ms and the scale blit ~0.5-0.9 ms. Stretch pays ~15% more
+  because both the blit and the dirty writeback scale with pixel count.
+- CONCLUSION: Stretch being slower is INHERENT (33% more pixels), not a regression or a scaler
+  inefficiency. Software cannot make filling more pixels as cheap as fewer. A partial cache flush
+  (only the dirty game rows) would speed up Pixel/letterboxed modes ~7% but does NOT help Stretch
+  (its game area is the whole panel), so it does not close the gap. The only way to fully close it
+  is HARDWARE display-overlay scaling (upscale a small buffer via DISP-OVL) - a large change.
+- Instrumentation added for this (oem diag show_us, oem snes-stretch:N to force aspect). Stretch's
+  exact on-device show_us is still pending a clean re-measure (the first attempt wedged the fastboot
+  channel via concurrent polling; do NOT poll fastboot while a background fastboot task runs).
+
 ## Audio-interpolation speed knob is ALREADY user-controllable (2026-09-03)
 
 The DSP interpolation (per-voice per-sample, the bapu SPC_DSP) honours Settings.InterpolationMethod
