@@ -231,8 +231,12 @@ static int  s_pick_dir;         /* current held direction (-1/0/+1) */
 static int  s_pick_hold;        /* frames the direction has been held */
 static int  s_pick_tick;        /* frames since the last auto-repeat step */
 
-enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_PALETTE, GM_COLORCC, GM_CCMODE, GM_DARK,
+enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_ASPECT, GM_PALETTE, GM_COLORCC, GM_CCMODE, GM_DARK,
        GM_PREEMPT, GM_CPU, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
+
+/* Display aspect (0=Pixel integer, 1=Fit native-aspect fill, 2=Stretch full panel). Read by
+ * ayaneo_gb_show_frame (mt_disp_drv.c); session-scoped, defaults to Pixel = current behaviour. */
+extern volatile int g_gbc_aspect;
 
 /* Manual save-state slot (0..GBC_SLOT_COUNT-1). Session-scoped; the .st<slot> files persist.
  * Auto-resume (load-on-boot / exit) uses a separate ".sus" file so it never clobbers a slot. */
@@ -250,6 +254,7 @@ static const char *gm_label(int i)
 	case GM_BRIGHT:  return "Brightness";
 	case GM_VOLUME:  return "Volume";
 	case GM_FILTER:  return "LCD Filter";
+	case GM_ASPECT:  return "Aspect Ratio";
 	case GM_PALETTE: return "Palette";
 	case GM_COLORCC: return "Color Correction";
 	case GM_CCMODE:  return "Correction Mode";
@@ -272,6 +277,7 @@ static const char *gm_value(int i, char *buf)
 	case GM_BRIGHT:  p = mputu(p, (unsigned)ayaneo_brightness_pct()); p = mput(p, "%"); break;
 	case GM_VOLUME:  p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
 	case GM_FILTER:  p = mput(p, filt_name(ayaneo_get_lcd_filter())); break;
+	case GM_ASPECT:  p = mput(p, g_gbc_aspect == 2 ? "Stretch" : g_gbc_aspect == 1 ? "Fit" : "Pixel Perfect"); break;
 	case GM_PALETTE: if (s_menu_is_dmg && s_menu_c) {
 				 int sel = s_menu_pal ? *s_menu_pal : 0;
 				 if (sel == 0) {   /* Auto: name the detected per-game palette, else plain */
@@ -307,6 +313,7 @@ static int gm_change(int i, int dir, int act)
 	case GM_BRIGHT:  if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case GM_VOLUME:  if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
 	case GM_FILTER:  if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
+	case GM_ASPECT:  if (dir) g_gbc_aspect = (g_gbc_aspect + dir + 3) % 3; changed = 0; break;
 	case GM_PALETTE: if (s_menu_is_dmg && s_menu_pal) {
 				 if (act == 1) {   /* A = open the full palette list picker */
 					 s_pal_pick_saved = *s_menu_pal;

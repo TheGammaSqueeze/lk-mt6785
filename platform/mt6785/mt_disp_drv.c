@@ -935,6 +935,13 @@ const unsigned int *ayaneo_canvas_front(unsigned int *pitch_w, unsigned int *W, 
 /* flush the whole back buffer and present it, then flip */
 extern int priamry_display_wait_for_vsync(void);   /* primary_display.c (name has the typo) */
 void ayaneo_snes_rsz_restore(void);   /* defined with the SNES RSZ path below */
+/* Shared hardware-RSZ present + its state, used by the GBA/GBC show_frame paths above their
+ * definitions further down (SNES/GBA/GBC all route Fit/Stretch through this). */
+void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int sh, unsigned int spitch_px,
+			unsigned int dw, unsigned int dh, unsigned int xoff, unsigned int yoff,
+			int filt, int wait_vsync, const unsigned short *cc_lut);
+static int s_rsz_setup;               /* 1 while the RSZ path is configured (tentative def; also below) */
+extern volatile unsigned g_rsz_show_us;
 
 void ayaneo_canvas_present(void)
 {
@@ -1083,6 +1090,27 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		inited = 1;
 	}
 
+	/* Aspect modes (GBA 240x160): Fit / Stretch scale via the hardware RSZ; Pixel (0) uses the
+	 * sharp integer CPU blit below. RSZ only for pure game frames - the Pico menu overlay is
+	 * panel-sized and must go through the 1:1 CPU path, so restore RSZ when the menu opens. */
+	{
+		extern volatile int g_gba_aspect;
+		extern int gbc_menu_is_open(void);
+		extern int ayaneo_get_color_correct(void);
+		extern const unsigned short gba_cc_lut444[];
+		if (g_gba_aspect != 0 && !gbc_menu_is_open()) {
+			unsigned int dwr, dhr;
+			if (g_gba_aspect == 2) { dwr = W; dhr = H; }   /* Stretch: full panel */
+			else if (W * GBC_SRC_H <= H * GBC_SRC_W) { dwr = W; dhr = W * GBC_SRC_H / GBC_SRC_W; }
+			else { dhr = H; dwr = H * GBC_SRC_W / GBC_SRC_H; }   /* Fit: native aspect, max fill */
+			ayaneo_rsz_present(pix, GBC_SRC_W, GBC_SRC_H, GBC_SRC_W, dwr, dhr,
+					   (W - dwr) / 2u, (H - dhr) / 2u, ayaneo_get_lcd_filter(), 0,
+					   ayaneo_get_color_correct() ? gba_cc_lut444 : 0);
+			return;
+		}
+		if (s_rsz_setup) ayaneo_snes_rsz_restore();   /* menu open / Pixel: back to 1:1 (once) */
+	}
+
 	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
 	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
 
@@ -1175,10 +1203,29 @@ void ayaneo_gb_show_frame(const unsigned short *pix)
 	const unsigned int SW = 160, SH = 144, SC = 6;
 	unsigned int dw = SW * SC, dh = SH * SC;              /* 960 x 864 */
 	unsigned int xoff = (W - dw) / 2, yoff = (H - dh) / 2;
-	unsigned int *dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
-	unsigned int dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
+	unsigned int *dst;
+	unsigned int dpa;
 	int filt = ayaneo_get_lcd_filter();
 	unsigned int sx, sy, ix, iy;
+
+	/* Aspect modes (GB/GBC 160x144): Fit / Stretch via hardware RSZ; Pixel (0) uses the sharp
+	 * integer CPU blit below. No colour-correction LUT (gambatte already outputs final RGB565). */
+	{
+		extern volatile int g_gbc_aspect;
+		extern int gbc_menu_open(void);
+		if (g_gbc_aspect != 0 && !gbc_menu_open()) {
+			unsigned int dwr, dhr;
+			if (g_gbc_aspect == 2) { dwr = W; dhr = H; }   /* Stretch: full panel */
+			else if (W * SH <= H * SW) { dwr = W; dhr = W * SH / SW; }
+			else { dhr = H; dwr = H * SW / SH; }           /* Fit: native aspect, max fill */
+			ayaneo_rsz_present(pix, SW, SH, SW, dwr, dhr, (W - dwr) / 2u, (H - dhr) / 2u, filt, 0, 0);
+			return;
+		}
+		if (s_rsz_setup) ayaneo_snes_rsz_restore();   /* menu open / Pixel: back to 1:1 (once) */
+	}
+
+	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
+	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
 
 	for (sy = 0; sy < SH; sy++) {
 		const unsigned short *srow = pix + sy * SW;
@@ -1273,6 +1320,12 @@ void ayaneo_gba_show_intro_frame(const unsigned short *pix)
  * ddp_rsz.c is a clock-only stub) and present the small buffer. Default OFF; when off, the
  * proven CPU-blit path below runs unchanged. Toggle with `fastboot oem snes-rsz:1`. */
 volatile int g_snes_rsz = 1;                      /* 1 = hardware RSZ path (default ON for SNES) */
+/* GBA/GBC display aspect: 0=Pixel (integer CPU blit, sharp, RSZ off), 1=Fit (native aspect scaled
+ * to fill the panel, RSZ), 2=Stretch (full panel, RSZ). Set by each core's menu, read by its
+ * show_frame path. Default Pixel = today's behaviour, so nothing changes until the user opts in. */
+volatile int g_gba_aspect;
+volatile int g_gbc_aspect;
+enum { AR_PIXEL = 0, AR_FIT = 1, AR_STRETCH = 2 };
 volatile unsigned g_snes_rsz_dbg;                 /* readback of RSZ enable/in/out for oem diag */
 volatile unsigned g_rszdbg[12];                   /* live register readbacks captured at RSZ setup */
 #define SNES_RSZ_BUF   0x54000000u                /* native-res ARGB scratch (safe DRAM window) */
@@ -1328,11 +1381,10 @@ static void snes_rsz_program(unsigned iw, unsigned ih, unsigned ow, unsigned oh)
 	g_snes_rsz_dbg = RSZ0_R(0x000);
 }
 
-static int      s_rsz_setup;          /* 0 until the OVL/RSZ path is configured for the session */
+/* s_rsz_setup is forward-declared (tentative static) up near ayaneo_snes_rsz_restore's decl. */
 static unsigned s_rsz_sw, s_rsz_sh;   /* source geometry the path was configured for */
-static int      s_rsz_stretch;        /* g_snes_stretch value at last setup */
-static unsigned s_rsz_asp;            /* g_snes_aspect_x1000 at last setup */
-static unsigned s_rsz_dw, s_rsz_dh;  /* output rect at last setup (for border-clear detection) */
+static unsigned s_rsz_dw, s_rsz_dh;  /* output rect at last setup (source+rect key the reprogram) */
+volatile unsigned g_rsz_show_us;      /* generic RSZ present cost (us), for oem diag */
 
 /* Undo the RSZ path: disable the resizer and restore the OVL0_2L ROI to full panel, so the
  * menu / other cores render correctly after an RSZ SNES session. Called at SNES session exit
@@ -1401,32 +1453,29 @@ void ayaneo_snes_rsz_restore(void)
  * scanning a half-written buffer (the transition garble). primary_display_config_input runs
  * every frame: in video mode it waits frame-done before latching the new buffer, which both
  * paces the loop (no fast-forward) and hands the buffer over cleanly at the frame boundary. */
-static void ayaneo_snes_show_frame_rsz(const unsigned short *pix, unsigned int sw, unsigned int sh,
-				       unsigned int spitch_px)
+/* Core-agnostic hardware-RSZ present: scale source (sw x sh, RGB565) to the rect (dw x dh) at
+ * (xoff, yoff) on the 1280x960 panel via OVL0_2L -> RSZ0 -> OVL0. The source is integer-prescaled
+ * (crisp nearest) into a padded OVL0_2L input ROI with a black background, then RSZ uniformly
+ * scales the whole padded frame to the panel, so the game lands exactly at (xoff, yoff, dw, dh)
+ * with letterbox bars - centring falls out of the geometry, no OVL0 compositor pokes. Only the
+ * sub-integer residual is bilinear ("sharp bilinear"); integer-exact axes pass through untouched.
+ * filt = LCD filter level; wait_vsync=0 skips the vsync wait (benchmark/uncapped). Callers pass a
+ * target rect from their OWN aspect options; PIXEL-PERFECT (integer) modes should use the CPU
+ * integer blit instead (sharper, and RSZ 1:1 buys nothing). One core runs at a time, so the
+ * geometry-tracking statics are shared safely. */
+void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int sh, unsigned int spitch_px,
+			unsigned int dw, unsigned int dh, unsigned int xoff, unsigned int yoff,
+			int filt, int wait_vsync, const unsigned short *cc_lut)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
-	extern volatile unsigned g_snes_aspect_x1000;
-	extern volatile int g_snes_stretch;
 	extern unsigned int gpt4_get_current_tick(void);
-	extern volatile unsigned g_snes_show_us;
-	extern int ayaneo_get_lcd_filter(void);
 	unsigned int t0 = gpt4_get_current_tick();
 
-	if (!pix || !fb_addr) return;
-
-	/* Displayed rect from options: identical logic to the CPU blit path. */
-	unsigned int sy_scale = (sh <= 240u) ? 4u : 2u;
-	unsigned int dw, dh;
-	if (g_snes_stretch) {
-		dw = W; dh = H;
-	} else {
-		unsigned int asp = g_snes_aspect_x1000;
-		dh = sh * sy_scale;
-		dw = asp ? (dh * asp) / 1000u : sw * ((sw <= 256u) ? 4u : 2u);
-	}
+	if (!pix || !fb_addr || !sw || !sh) return;
 	if (dw > W) dw = W; if (dh > H) dh = H;
 	if (dw < 1u) dw = 1u; if (dh < 1u) dh = 1u;
-	unsigned int xoff = (W - dw) / 2u, yoff = (H - dh) / 2u;
+	if (xoff + dw > W) xoff = (W - dw) / 2u;
+	if (yoff + dh > H) yoff = (H - dh) / 2u;
 
 	/* Integer prescale factor: the largest integer whose product with the source stays within
 	 * the target rect, so RSZ only ever upscales the sub-integer residual (<2x, mild blur).
@@ -1451,8 +1500,6 @@ static void ayaneo_snes_show_frame_rsz(const unsigned short *pix, unsigned int s
 	if (ox + iw > wp) ox = wp - iw;
 	if (oy + ih > hp) oy = hp - ih;
 
-	int filt = ayaneo_get_lcd_filter();
-
 	/* Double-buffered scratch in the two idle menu-transition buffers (reveal 0x55000000 and
 	 * game-full 0x55900000, each fb-sized 4.9 MB, disjoint, both in the WB-mapped window). These
 	 * are free during gameplay and only reused by the exit reverse-punch AFTER RSZ is torn down.
@@ -1476,6 +1523,9 @@ static void ayaneo_snes_show_frame_rsz(const unsigned short *pix, unsigned int s
 			unsigned int *drow = vbuf + (y * pv) * fbpitch;
 			for (x = 0; x < sw; x++) {
 				unsigned int v = srow[x];
+				/* Optional GBA-style RGB444 colour-correction LUT (matches the CPU blit path);
+				 * NULL for SNES/GBC. Applied per SOURCE pixel, before the nearest prescale. */
+				if (cc_lut) v = cc_lut[(((v >> 12) & 0xFu) << 8) | (((v >> 7) & 0xFu) << 4) | ((v >> 1) & 0xFu)];
 				unsigned int r = ((v >> 11) & 0x1fu) << 3, g = ((v >> 5) & 0x3fu) << 2, b = (v & 0x1fu) << 3;
 				unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
 				unsigned int *o = drow + x * ph;
@@ -1497,10 +1547,9 @@ static void ayaneo_snes_show_frame_rsz(const unsigned short *pix, unsigned int s
 	}
 	arch_clean_cache_range((unsigned int)vbuf, ih * fbpitch * 4u);
 
-	/* Detect geometry changes (source res, stretch, aspect, or output rect) - only then is the
-	 * RSZ (a clock-only LK stub, so it persists across config_input) reprogrammed. */
+	/* Detect geometry changes (source res or output rect - dw/dh uniquely encode the aspect mode)
+	 * - only then is the RSZ (a clock-only LK stub, so it persists across config_input) reprogrammed. */
 	int geom_changed = (!s_rsz_setup || s_rsz_sw != sw || s_rsz_sh != sh ||
-	                    s_rsz_stretch != g_snes_stretch || s_rsz_asp != g_snes_aspect_x1000 ||
 	                    s_rsz_dw != dw || s_rsz_dh != dh);
 
 	/* Per-frame layer config: points OVL0_2L at the freshly written buffer, sized iw x ih,
@@ -1538,12 +1587,37 @@ static void ayaneo_snes_show_frame_rsz(const unsigned short *pix, unsigned int s
 		g_rszdbg[10] = (iw << 16) | ih;
 		g_rszdbg[11] = (wp << 16) | hp;
 		s_rsz_setup = 1; s_rsz_sw = sw; s_rsz_sh = sh;
-		s_rsz_stretch = g_snes_stretch; s_rsz_asp = g_snes_aspect_x1000;
 		s_rsz_dw = dw; s_rsz_dh = dh;
 	}
-	g_snes_show_us = (gpt4_get_current_tick() - t0) / 13u;
-	{ extern int snes_benchmark_on(void); if (!snes_benchmark_on()) priamry_display_wait_for_vsync(); }
+	g_rsz_show_us = (gpt4_get_current_tick() - t0) / 13u;
+	if (wait_vsync) priamry_display_wait_for_vsync();
 	s_fb_flip ^= 1;
+}
+
+/* SNES RSZ wrapper: compute the target rect from the SNES aspect options, then present via the
+ * shared hardware-RSZ path. */
+static void ayaneo_snes_show_frame_rsz(const unsigned short *pix, unsigned int sw, unsigned int sh,
+				       unsigned int spitch_px)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	extern volatile unsigned g_snes_aspect_x1000, g_snes_show_us;
+	extern volatile int g_snes_stretch;
+	extern int ayaneo_get_lcd_filter(void);
+	extern int snes_benchmark_on(void);
+	unsigned int sy_scale = (sh <= 240u) ? 4u : 2u, dw, dh;
+	if (!pix || !fb_addr) return;
+	if (g_snes_stretch) {
+		dw = W; dh = H;
+	} else {
+		unsigned int asp = g_snes_aspect_x1000;
+		dh = sh * sy_scale;
+		dw = asp ? (dh * asp) / 1000u : sw * ((sw <= 256u) ? 4u : 2u);
+	}
+	if (dw > W) dw = W; if (dh > H) dh = H;
+	if (dw < 1u) dw = 1u; if (dh < 1u) dh = 1u;
+	ayaneo_rsz_present(pix, sw, sh, spitch_px, dw, dh, (W - dw) / 2u, (H - dh) / 2u,
+			   ayaneo_get_lcd_filter(), !snes_benchmark_on(), 0);
+	g_snes_show_us = g_rsz_show_us;
 }
 
 /* SNES (snes9x) frame present. The core outputs RGB565 at 256xH (or 512xH hi-res); scale

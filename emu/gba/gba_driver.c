@@ -1148,9 +1148,13 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 }
 
 enum {
-	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_COLORCORRECT, MI_LOADBOOT, MI_SKIPBOOT, MI_SKIPINTRO,
+	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_SKIPBOOT, MI_SKIPINTRO,
 	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_PREEMPT, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
 };
+
+/* Display aspect (0=Pixel integer, 1=Fit native-aspect fill, 2=Stretch full panel). Read by
+ * ayaneo_gbc_show_frame (mt_disp_drv.c); session-scoped, defaults to Pixel = current behaviour. */
+extern volatile int g_gba_aspect;
 
 /* Manual save-state slot (0..GBA_SLOT_COUNT-1). Session-scoped; the .st<slot> files persist. */
 #define GBA_SLOT_COUNT 3
@@ -1186,6 +1190,7 @@ static const char *menu_value(int item, char *buf)
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
 	case MI_SKIPINTRO: p = mi_puts(p, ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
+	case MI_ASPECT:    p = mi_puts(p, g_gba_aspect == 2 ? "Stretch" : g_gba_aspect == 1 ? "Fit" : "Pixel Perfect"); break;
 	case MI_SLOT:      p = mi_putu(p, (unsigned)s_gba_slot); break;
 	case MI_LOADSTATE:
 	case MI_SAVESTATE:
@@ -1234,6 +1239,7 @@ static const char *menu_label(int item)
 	case MI_LOADBOOT:  return "Load State on Boot";
 	case MI_SKIPBOOT:  return "Skip Boot Anim/Chime";
 	case MI_SKIPINTRO: return "Skip BIOS Intro";
+	case MI_ASPECT:    return "Aspect Ratio";
 	case MI_SLOT:      return "Save Slot";
 	case MI_LOADSTATE: return "Load State";
 	case MI_SAVESTATE: return "Save State";
@@ -1270,6 +1276,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;
 	case MI_CPU:      if (dir) cpu_step(dir); changed = 0; break;
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
+	case MI_ASPECT:   if (dir) g_gba_aspect = (g_gba_aspect + dir + 3) % 3; changed = 0; break;
 	case MI_SLOT:     if (dir) s_gba_slot = (s_gba_slot + dir + GBA_SLOT_COUNT) % GBA_SLOT_COUNT; changed = 0; break;
 	case MI_LOADSTATE: if (act) mi_puts(status, manual_state_read(state) ? "State loaded" : "No save state"); changed = 0; break;
 	case MI_SAVESTATE: if (act) { int ok = manual_state_write(state); sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;
