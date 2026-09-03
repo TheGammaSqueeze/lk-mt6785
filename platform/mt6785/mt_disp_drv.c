@@ -1106,6 +1106,7 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 			ayaneo_rsz_present(pix, GBC_SRC_W, GBC_SRC_H, GBC_SRC_W, dwr, dhr,
 					   (W - dwr) / 2u, (H - dhr) / 2u, ayaneo_get_lcd_filter(), 0,
 					   ayaneo_get_color_correct() ? gba_cc_lut444 : 0);
+			g_dbg_blit_us = g_rsz_show_us;   /* keep GBA run-ahead sizing (preempt_adapt) fed */
 			return;
 		}
 		if (s_rsz_setup) ayaneo_snes_rsz_restore();   /* menu open / Pixel: back to 1:1 (once) */
@@ -1219,6 +1220,7 @@ void ayaneo_gb_show_frame(const unsigned short *pix)
 			else if (W * SH <= H * SW) { dwr = W; dhr = W * SH / SW; }
 			else { dhr = H; dwr = H * SW / SH; }           /* Fit: native aspect, max fill */
 			ayaneo_rsz_present(pix, SW, SH, SW, dwr, dhr, (W - dwr) / 2u, (H - dhr) / 2u, filt, 0, 0);
+			g_dbg_blit_us = g_rsz_show_us;
 			return;
 		}
 		if (s_rsz_setup) ayaneo_snes_rsz_restore();   /* menu open / Pixel: back to 1:1 (once) */
