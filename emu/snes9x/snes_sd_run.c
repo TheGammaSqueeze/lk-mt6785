@@ -178,6 +178,11 @@ volatile unsigned g_snes_dbg_heapused;  /* arena bytes in use at test end (run-a
 
 /* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
  * menu is open so navigation keys do not leak into the game. */
+/* Release-latch for the buttons that dismissed the Pico menu (A select / B close): the menu
+ * closes on the press edge, but the player is still holding the button that same frame, so
+ * without this the held A/B bleeds straight into the game as an unintended input. Set on close,
+ * cleared here once the button is physically released. */
+int g_snes_ab_latch;   /* bit0 = A held-over, bit1 = B held-over */
 unsigned ayaneo_snes_pad_mask(void)
 {
 	/* Turbo (auto-fire): g_snes_turbo bit0 = A, bit1 = B. When set and the button is held,
@@ -185,6 +190,11 @@ unsigned ayaneo_snes_pad_mask(void)
 	unsigned m = 0;
 	int a_on = 1, b_on = 1;
 	if (g_snes_menu_open) return 0;
+	/* Clear each latch once its button is up; while latched, gate that button out of the game. */
+	if (!PRESSED(GPIO_A)) g_snes_ab_latch &= ~1;
+	if (!PRESSED(GPIO_B)) g_snes_ab_latch &= ~2;
+	if (g_snes_ab_latch & 1) a_on = 0;
+	if (g_snes_ab_latch & 2) b_on = 0;
 	if (g_snes_turbo) { int pulse = (g_snes_dbg_frames & 3u) < 2u;
 		if (g_snes_turbo & 1) a_on = pulse;
 		if (g_snes_turbo & 2) b_on = pulse; }
@@ -231,7 +241,8 @@ static int                  s_menu_preview;   /* 1 = step the core one frame so 
                                                * Overscan/Hi-Res option previews live in the menu */
 static int  s_msel;
 static char s_mstat[48];
-static int  s_save_slot;   /* manual Save/Load state slot 0..9 (suspend uses a separate "sus") */
+#define SNES_SLOT_COUNT 3 /* manual save-state slots (0..2); the suspend point uses a separate "sus" */
+static int  s_save_slot;   /* manual Save/Load state slot 0..SNES_SLOT_COUNT-1 */
 static int  s_slot_used;   /* 1 if the current slot's file exists on the card (cached) */
 static int  s_settings_dirty;   /* >0: a setting changed; counts down, persists to eMMC/SD at 0 */
 #define SNES_SETTINGS_DEBOUNCE 30   /* ~0.5 s after the last change before the disk write */
@@ -423,7 +434,7 @@ static int sm_change(int i, int dir, int act)
 			ayaneo_set_snes_turbo(g_snes_turbo); snes_settings_touch(); } break;
 	case SM_BENCH:  if (act) g_snes_benchmark = !g_snes_benchmark; break;   /* A toggles (not L/R, which auto-repeat) */
 	case SM_PANEL:  break;   /* read-only */
-	case SM_SLOT: if (dir) { s_save_slot = (s_save_slot + dir + 10) % 10;
+	case SM_SLOT: if (dir) { s_save_slot = (s_save_slot + dir + SNES_SLOT_COUNT) % SNES_SLOT_COUNT;
 			ayaneo_set_snes_slot(s_save_slot); snes_settings_touch();
 			snes_slot_check(); } break;   /* refresh used/empty for the new slot */
 	case SM_SAVE: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF; unsigned ssz = s_menu_c->state_size();
@@ -532,6 +543,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
 	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0; g_snes_menu_exit = 0;
 	s_save_slot = ayaneo_get_snes_slot();   /* restore the last-used manual save slot */
+	if (s_save_slot < 0 || s_save_slot >= SNES_SLOT_COUNT) s_save_slot = 0;   /* clamp stale 0..9 values */
 	g_snes_turbo = ayaneo_get_snes_turbo(); /* restore the persisted auto-fire setting */
 	s_settings_dirty = 0;
 	snes_slot_check();                      /* seed the used/empty indicator for it */
@@ -772,8 +784,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			#undef NAV_DELAY
 			#undef NAV_REP
 			#undef FIRE
-			if (a  && !a_p)  { if (sm_change(s_msel, 0, 1)) { g_snes_menu_open = 0; snes_settings_flush(); } }
-			if (b  && !b_p)  { g_snes_menu_open = 0; snes_settings_flush(); }
+			if (a  && !a_p)  { if (sm_change(s_msel, 0, 1)) { g_snes_menu_open = 0; g_snes_ab_latch |= 1; snes_settings_flush(); } }
+			if (b  && !b_p)  { g_snes_menu_open = 0; g_snes_ab_latch |= 2; snes_settings_flush(); }
 			up_p = up; dn_p = dn; lt_p = lt; rt_p = rt; a_p = a; b_p = b;
 			reset_hold = 0;
 		} else {

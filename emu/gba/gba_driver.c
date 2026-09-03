@@ -212,6 +212,10 @@ static volatile int s_benchmark;
 static volatile int s_fps;
 static volatile int s_menu_open;
 static volatile unsigned s_keys;	/* GBA mask, refreshed once per frame */
+/* Release-latch for the A/B that dismissed the Pico menu: the menu closes on the press edge
+ * while the button is still held, so without this the held A/B bleeds into the game as an
+ * unintended input. Set on close (menu_tick), cleared once the button is released. */
+static volatile unsigned s_ab_latch;
 
 int gbc_benchmark_on(void) { return s_benchmark; }
 int gbc_get_fps(void) { return s_fps; }
@@ -273,10 +277,15 @@ static void gpio_in_pullup(unsigned gpio)
 unsigned ayaneo_gbc_pad_mask(void)
 {
 	extern volatile int g_gbc_menu_open;   /* gbc_sd_run.c: gate game input while the menu is open */
+	extern volatile int g_gbc_ab_latch;    /* held-over A/B from dismissing the menu */
 	unsigned m = 0;
 	if (g_gbc_menu_open) return 0;
-	if (PRESSED(GPIO_A))      m |= 0x01u;
-	if (PRESSED(GPIO_B))      m |= 0x02u;
+	/* Release-latch: clear each latched bit once its button is up; gate held-over A/B meanwhile
+	 * so dismissing the menu with A/B does not bleed a press into the game. */
+	if (!PRESSED(GPIO_A)) g_gbc_ab_latch &= ~0x01;
+	if (!PRESSED(GPIO_B)) g_gbc_ab_latch &= ~0x02;
+	if (PRESSED(GPIO_A) && !(g_gbc_ab_latch & 0x01)) m |= 0x01u;
+	if (PRESSED(GPIO_B) && !(g_gbc_ab_latch & 0x02)) m |= 0x02u;
 	if (PRESSED(GPIO_SELECT)) m |= 0x04u;
 	if (PRESSED(GPIO_START))  m |= 0x08u;
 	if (PRESSED(GPIO_RIGHT))  m |= 0x10u;
@@ -369,6 +378,11 @@ static void update_buttons(void)
 	s_fast_forward = (deb & RB_FF) ? 1 : 0;	/* R2 held = fast-forward */
 	if (s_menu_open)
 		m = 0;
+	/* Release-latch: gate a held A/B that just dismissed the menu out of the game until it is
+	 * physically released, so closing the menu never registers as an in-game button press. */
+	if (!PRESSED(GPIO_A)) s_ab_latch &= ~GB_A;
+	if (!PRESSED(GPIO_B)) s_ab_latch &= ~GB_B;
+	m &= ~s_ab_latch;
 	s_keys = m;
 	gba_core_set_keys(m);
 }
@@ -425,9 +439,13 @@ static void wr32le(unsigned char *p, unsigned v)
 static int  sd_mode_on(void);            /* defined after the SD globals below */
 static int  sd_state_write(unsigned char *scratch);
 static int  sd_state_read(unsigned char *scratch);
+static int  sd_manual_write(unsigned char *scratch);
+static int  sd_manual_read(unsigned char *scratch);
 static void sd_sav_write(void);
 static void sd_settings_mirror(void);    /* persist GammaOS settings to the SD card */
 #endif
+static int  manual_state_write(unsigned char *scratch);  /* menu Save State -> selected slot */
+static int  manual_state_read(unsigned char *scratch);   /* menu Load State -> selected slot */
 
 static int state_write(unsigned char *scratch)
 {
@@ -475,6 +493,23 @@ static int state_read(unsigned char *scratch)
 		return 0;
 	gba_core_state_load(scratch);
 	return 1;
+}
+
+/* Manual Save/Load wrappers (menu): SD uses the selected slot st0..2; the legacy partition path
+ * has a single fixed state region (no slots), so it falls back to the suspend state_write/read. */
+static int manual_state_write(unsigned char *scratch)
+{
+#ifdef AYANEO_GBA_SD
+	if (sd_mode_on()) return sd_manual_write(scratch);
+#endif
+	return state_write(scratch);
+}
+static int manual_state_read(unsigned char *scratch)
+{
+#ifdef AYANEO_GBA_SD
+	if (sd_mode_on()) return sd_manual_read(scratch);
+#endif
+	return state_read(scratch);
 }
 
 /* ---- cartridge battery save (.sav = gpSP gamepak_backup) ---- */
@@ -1114,8 +1149,12 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_COLORCORRECT, MI_LOADBOOT, MI_SKIPBOOT, MI_SKIPINTRO,
-	MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_PREEMPT, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
+	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_PREEMPT, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
 };
+
+/* Manual save-state slot (0..GBA_SLOT_COUNT-1). Session-scoped; the .st<slot> files persist. */
+#define GBA_SLOT_COUNT 3
+static int s_gba_slot;
 
 static const char *filter_name(int f)
 { return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : "Off"; }
@@ -1147,6 +1186,7 @@ static const char *menu_value(int item, char *buf)
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
 	case MI_SKIPINTRO: p = mi_puts(p, ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
+	case MI_SLOT:      p = mi_putu(p, (unsigned)s_gba_slot); break;
 	case MI_LOADSTATE:
 	case MI_SAVESTATE:
 	case MI_RESET:     p = mi_puts(p, "[A]"); break;
@@ -1194,12 +1234,13 @@ static const char *menu_label(int item)
 	case MI_LOADBOOT:  return "Load State on Boot";
 	case MI_SKIPBOOT:  return "Skip Boot Anim/Chime";
 	case MI_SKIPINTRO: return "Skip BIOS Intro";
+	case MI_SLOT:      return "Save Slot";
 	case MI_LOADSTATE: return "Load State";
 	case MI_SAVESTATE: return "Save State";
 	case MI_BATTERY:   return "Battery";
 	case MI_CPU:       return "CPU Clock";
 	case MI_PANEL:     return "Panel Refresh";
-	case MI_PREEMPT:   return "Preemptive Frames";
+	case MI_PREEMPT:   return "Run-Ahead";
 	case MI_BENCH:     return "Benchmark (Uncap)";
 	case MI_RESET:     return "Reset Game";
 	case MI_CLOSE:     return "Close";
@@ -1229,8 +1270,9 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;
 	case MI_CPU:      if (dir) cpu_step(dir); changed = 0; break;
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
-	case MI_LOADSTATE: if (act) mi_puts(status, state_read(state) ? "State loaded" : "No save state"); changed = 0; break;
-	case MI_SAVESTATE: if (act) { int ok = state_write(state); sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;
+	case MI_SLOT:     if (dir) s_gba_slot = (s_gba_slot + dir + GBA_SLOT_COUNT) % GBA_SLOT_COUNT; changed = 0; break;
+	case MI_LOADSTATE: if (act) mi_puts(status, manual_state_read(state) ? "State loaded" : "No save state"); changed = 0; break;
+	case MI_SAVESTATE: if (act) { int ok = manual_state_write(state); sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;
 	case MI_RESET:    if (act) { s_reset_req = 1; return 1; } changed = 0; break;
 	case MI_CLOSE:    if (act) { s_close_req = 1; return 1; } changed = 0; break;
 	default: changed = 0; break;
@@ -1273,8 +1315,8 @@ static void menu_tick(unsigned char *state)
 	if (k & MK_DOWN)  { s_menu_sel = (s_menu_sel + 1) % MI_COUNT; s_menu_status[0] = 0; }
 	if (k & MK_LEFT)  { if (menu_change(s_menu_sel, -1, 0, state, s_menu_status)) s_menu_open = 0; }
 	if (k & MK_RIGHT) { if (menu_change(s_menu_sel, +1, 0, state, s_menu_status)) s_menu_open = 0; }
-	if (k & MK_A)     { if (menu_change(s_menu_sel, 0, 1, state, s_menu_status)) s_menu_open = 0; }
-	if (k & MK_B)     s_menu_open = 0;
+	if (k & MK_A)     { if (menu_change(s_menu_sel, 0, 1, state, s_menu_status)) { s_menu_open = 0; s_ab_latch |= GB_A; } }
+	if (k & MK_B)     { s_menu_open = 0; s_ab_latch |= GB_B; }
 }
 
 /* called by ayaneo_gbc_show_frame() (mt_disp_drv.c) to paint the overlay */
@@ -1488,19 +1530,40 @@ static int gba_sd_rom_select(void)
 /* ---- save-state / .sav persistence to the SD, matched to the selected ROM ---- */
 static int sd_mode_on(void) { return s_sd_mode && s_sel_rom >= 0 && s_sel_rom < s_nrom; }
 
+/* SUSPEND state (load-on-boot / power-off / Close auto-save): a fixed ".sus" file, kept
+ * separate from the user-selectable manual slots so auto-resume never clobbers a manual save
+ * and vice-versa (mirrors the SNES "sus" vs st0..2 split). */
 static int sd_state_write(unsigned char *scratch)
 {
 	unsigned sz = gba_core_state_size();
 	if (!sz) return 0;
 	gba_core_state_save(scratch);   /* raw gpSP state (no boot_b header needed) */
-	return gba_sd_write_state(&s_sd_vol, s_roms[s_sel_rom].name, 0, scratch, sz) == 0;
+	return gba_sd_write_named(&s_sd_vol, "/states/gba", s_roms[s_sel_rom].name, "sus", scratch, sz) == 0;
 }
 
 static int sd_state_read(unsigned char *scratch)
 {
 	unsigned sz = gba_core_state_size();
-	uint32_t n = gba_sd_load_state(&s_sd_vol, s_roms[s_sel_rom].name, 0, scratch, GBA_STATE_MAX);
+	uint32_t n = gba_sd_read_named(&s_sd_vol, "/states/gba", s_roms[s_sel_rom].name, "sus", scratch, GBA_STATE_MAX);
 	if (!sz || n != sz) return 0;   /* absent or size mismatch (version guard) */
+	gba_core_state_load(scratch);
+	return 1;
+}
+
+/* MANUAL state (Pico menu Save/Load State): the user-selected slot st0..st2. */
+static int sd_manual_write(unsigned char *scratch)
+{
+	unsigned sz = gba_core_state_size();
+	if (!sz) return 0;
+	gba_core_state_save(scratch);
+	return gba_sd_write_state(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, sz) == 0;
+}
+
+static int sd_manual_read(unsigned char *scratch)
+{
+	unsigned sz = gba_core_state_size();
+	uint32_t n = gba_sd_load_state(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, GBA_STATE_MAX);
+	if (!sz || n != sz) return 0;
 	gba_core_state_load(scratch);
 	return 1;
 }
@@ -1900,6 +1963,13 @@ static int emu_thread(void *arg)
 
 			if (aya_edge())
 				menu_toggle();
+			/* Hold AYA ~1.5 s to exit straight back to the ROM selector (matches SNES/GBC).
+			 * A tap still just toggles the menu above; only a sustained hold requests Close. */
+			{
+				static int aya_hold;
+				if (PRESSED(GPIO_AYA)) { if (++aya_hold >= 90) { s_close_req = 1; aya_hold = 0; } }
+				else aya_hold = 0;
+			}
 			if (s_menu_open)
 				menu_tick(scratch);
 

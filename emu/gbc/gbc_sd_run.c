@@ -206,6 +206,9 @@ extern void ayaneo_set_preempt_frames(int v);
 extern void ayaneo_menu_settings_persist(void);
 
 volatile int g_gbc_menu_open;   /* read by ayaneo_gbc_pad_mask (gba_driver.c) to gate game input */
+/* Release-latch (gambatte mask: A=0x01, B=0x02) for the A/B that dismissed the menu, so the
+ * still-held button does not bleed into the game. Cleared in ayaneo_gbc_pad_mask on release. */
+volatile int g_gbc_ab_latch;
 
 /* session context the menu acts on, set at session start */
 static const struct gbc_core_exports *s_menu_c;
@@ -229,7 +232,12 @@ static int  s_pick_hold;        /* frames the direction has been held */
 static int  s_pick_tick;        /* frames since the last auto-repeat step */
 
 enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_PALETTE, GM_COLORCC, GM_CCMODE, GM_DARK,
-       GM_PREEMPT, GM_CPU, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
+       GM_PREEMPT, GM_CPU, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
+
+/* Manual save-state slot (0..GBC_SLOT_COUNT-1). Session-scoped; the .st<slot> files persist.
+ * Auto-resume (load-on-boot / exit) uses a separate ".sus" file so it never clobbers a slot. */
+#define GBC_SLOT_COUNT 3
+static int s_gbc_slot;
 
 static char *mput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *mputu(char *p, unsigned v) { char t[12]; int n = 0;
@@ -246,8 +254,9 @@ static const char *gm_label(int i)
 	case GM_COLORCC: return "Color Correction";
 	case GM_CCMODE:  return "Correction Mode";
 	case GM_DARK:    return "Dark Filter";
-	case GM_PREEMPT: return "Preemptive Frames";
+	case GM_PREEMPT: return "Run-Ahead";
 	case GM_CPU:     return "CPU Clock";
+	case GM_SLOT:    return "Save Slot";
 	case GM_SAVE:    return "Save State";
 	case GM_LOAD:    return "Load State";
 	case GM_RESET:   return "Reset Game";
@@ -283,6 +292,7 @@ static const char *gm_value(int i, char *buf)
 	case GM_PREEMPT: { int pf = ayaneo_get_preempt_frames();
 			   p = mput(p, pf == 0 ? "Off" : pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : "Max"); } break;
 	case GM_CPU:     p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
+	case GM_SLOT:    p = mputu(p, (unsigned)s_gbc_slot); break;
 	case GM_SAVE: case GM_LOAD: p = mput(p, "[A]"); break;
 	default: break;
 	}
@@ -313,10 +323,11 @@ static int gm_change(int i, int dir, int act)
 	case GM_DARK:    if (dir) { s_dark += dir * 10; if (s_dark < 0) s_dark = 0; if (s_dark > 100) s_dark = 100; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
 	case GM_PREEMPT: if (dir) ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + dir + 4) % 4); else changed = 0; break;
 	case GM_CPU:     if (dir) gbc_cpu_step(dir); changed = 0; break;
+	case GM_SLOT:    if (dir) s_gbc_slot = (s_gbc_slot + dir + GBC_SLOT_COUNT) % GBC_SLOT_COUNT; changed = 0; break;
 	case GM_SAVE:    if (act && s_menu_ahead_sz) { s_menu_c->state_save(s_menu_ahead);
-			     mput(s_mstat, gba_sd_write_state(s_menu_vol, s_menu_rom->name, 0, s_menu_ahead, s_menu_ahead_sz) == 0 ? "State saved" : "Save failed"); }
+			     mput(s_mstat, gba_sd_write_state(s_menu_vol, s_menu_rom->name, s_gbc_slot, s_menu_ahead, s_menu_ahead_sz) == 0 ? "State saved" : "Save failed"); }
 			 changed = 0; break;
-	case GM_LOAD:    if (act && s_menu_ahead_sz) { unsigned n = gba_sd_load_state(s_menu_vol, s_menu_rom->name, 0, s_menu_ahead, 0x00A00000u);
+	case GM_LOAD:    if (act && s_menu_ahead_sz) { unsigned n = gba_sd_load_state(s_menu_vol, s_menu_rom->name, s_gbc_slot, s_menu_ahead, 0x00A00000u);
 			     mput(s_mstat, (n && s_menu_c->state_load(s_menu_ahead, n) == 0) ? "State loaded" : "No save state"); }
 			 changed = 0; break;
 	case GM_RESET:   if (act) { s_menu_c->reset(); return 1; } changed = 0; break;
@@ -433,7 +444,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * flow. The state file is keyed by the ROM name; gambatte validates it against
 	 * the loaded ROM and no-ops on a mismatch. */
 	if (GBC_SUSPEND && !PRESSED(GPIO_B)) {
-		unsigned n = gba_sd_load_state(vol, rom->name, 0, ahead, 0x00A00000u);
+		unsigned n = gba_sd_read_named(vol, "/states/gba", rom->name, "sus", ahead, 0x00A00000u);
 		if (n)
 			c->state_load(ahead, n);
 	}
@@ -578,14 +589,14 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (rt && !rt_prev) res = gm_change(s_msel, +1, 0);
 				if (a  && !a_prev)  res = gm_change(s_msel, 0, 1);
 				if (x  && !x_prev)  res = gm_change(s_msel, 0, 2);  /* X = reset option to default */
-				if (b  && !b_prev)  g_gbc_menu_open = 0;
+				if (b  && !b_prev)  { g_gbc_menu_open = 0; g_gbc_ab_latch |= 0x02; }
 				up_prev = up; dn_prev = dn; lt_prev = lt; rt_prev = rt; a_prev = a; b_prev = b; x_prev = x;
 				if (res == 2) {                    /* Close -> exit to the selector */
 					extern void gbc_menu_arm_reverse(const unsigned short *frame);
 					gbc_menu_arm_reverse(vbuf);   /* closing punch: shrink into the menu */
 					break;
 				}
-				if (res == 1) g_gbc_menu_open = 0; /* Reset -> close menu, game runs */
+				if (res == 1) { g_gbc_menu_open = 0; g_gbc_ab_latch |= 0x01; } /* Reset (A) -> close menu, game runs */
 			} else {
 				/* Soft reset hotkey: SELECT+START+L+R held ~0.5 s. */
 				combo = PRESSED(GPIO_SELECT) && PRESSED(GPIO_START) &&
@@ -641,7 +652,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	}
 	if (GBC_SUSPEND && ahead_sz) {
 		c->state_save(ahead);
-		gba_sd_write_state(vol, rom->name, 0, ahead, ahead_sz);
+		gba_sd_write_named(vol, "/states/gba", rom->name, "sus", ahead, ahead_sz);
 	}
 	gbc_prefs_save(vol);                            /* persist CGB colour prefs */
 	if (is_dmg) gbc_pal_save(vol, rom->name, pal_idx);   /* persist this game's palette */
