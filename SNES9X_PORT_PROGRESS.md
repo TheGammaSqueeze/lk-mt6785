@@ -6,6 +6,19 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Audio-interpolation speed knob is ALREADY user-controllable (2026-09-03)
+
+The DSP interpolation (per-voice per-sample, the bapu SPC_DSP) honours Settings.InterpolationMethod
+and is EXPOSED as the Pico "Audio Filter" menu item (snes9x_audio_interpolation: Gaussian default,
+Cubic, Sinc, Linear, None). Measured cost at 1400 MHz on top of LTO: Gaussian 121 fps, Linear 128
+fps (+7, +5.8%). Net vs -Os baseline with Linear: 95 -> 128 (+35%). Gaussian is the authentic SNES
+timbre, so it stays the DEFAULT; the player opts into Linear/None for more fps via the menu - no
+code change. (A hardcode of Settings.InterpolationMethod in snes_load was tried as the measurement
+vehicle, then removed: it would override the menu selection.)
+
+Also confirmed no-op: LTO link -O3 vs -O2 produces a byte-identical blob - under -flto the link-time
+-O is ignored; the per-file compile opt (OPT_HOT -O2) drives LTO. Do not bother changing the link -O.
+
 ## EMULATION SPEEDUP pass 2 (2026-09-03): LTO whole-program -> 118 to 121 fps, smaller blob
 
 Switched the blob link to the g++ driver with -flto (-nostdlib/-nostartfiles, linker script via

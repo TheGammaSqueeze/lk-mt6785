@@ -210,6 +210,10 @@ static int snes_load(const void *rom, unsigned size)
 	struct retro_game_info info;
 	info.path = 0; info.data = rom; info.size = size; info.meta = 0;
 	return retro_load_game(&info) ? 0 : -1;
+	/* NOTE: DSP interpolation (Gaussian default) is user-selectable via the Pico "Audio Filter"
+	 * menu (snes9x_audio_interpolation). Measured cost at 1400 MHz: Gaussian 121 fps, Linear
+	 * 128 fps (+7). Left at the authentic Gaussian default; the player opts into Linear/None
+	 * for more speed. Do NOT hardcode it here - that overrides the menu choice. */
 }
 
 static void snes_reset_(void) { retro_reset(); }
