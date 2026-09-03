@@ -17,6 +17,7 @@ INC="-I$DIR -I$DIR/apu -I$DIR/apu/bapu -I$DIR/libretro -I$DIR/libretro/libretro-
 COMMON="-march=armv7-a -mfloat-abi=soft -mthumb-interwork -ffreestanding \
         -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit \
         -fno-short-enums -mno-unaligned-access -fno-strict-aliasing -Os -fno-common \
+        -flto -ffat-lto-objects \
         -ffunction-sections -fdata-sections -D__LIBRETRO__ $INC"
 
 # core archive must exist (build_core.sh)
@@ -31,11 +32,14 @@ LIBGCC=$($CC $COMMON -print-libgcc-file-name)
 LIBM=$($CC $COMMON -print-file-name=libm.a)
 LIBSTDCXX=$($CXX $COMMON -print-file-name=libstdc++.a)
 
-# Flat link at the fixed VMA. --gc-sections trims unreferenced libstdc++/core objects.
-# libstdc++/libm/libgcc are archives (pulled on demand); our objects + libsnes9x.a first.
-$LD -T "$DIR/snes_core_blob.ld" --gc-sections \
+# Flat link at the fixed VMA via the g++ DRIVER so the LTO plugin runs (whole-program inlining
+# of the hot memory-access path across TUs). -nostdlib/-nostartfiles keep it freestanding; our
+# objects + libsnes9x.a + on-demand libstdc++/libm/libgcc satisfy all refs. -O2 sets the LTO
+# link-time optimization level. --gc-sections trims dead code.
+$CXX $COMMON -O2 -nostdlib -nostartfiles \
+	-Wl,-T,"$DIR/snes_core_blob.ld" -Wl,--gc-sections \
 	"$OBJDIR/snes_core_exports.o" "$OBJDIR/snes_shim.o" "$OBJDIR/snes_blob_libc.o" "$OBJDIR/snes_blob_stubs.o" \
-	--start-group "$DIR/libsnes9x.a" "$LIBSTDCXX" "$LIBM" "$LIBGCC" --end-group \
+	-Wl,--start-group "$DIR/libsnes9x.a" "$LIBSTDCXX" "$LIBM" "$LIBGCC" -Wl,--end-group \
 	-o "$OBJDIR/core_snes.blob.elf"
 $OC -O binary "$OBJDIR/core_snes.blob.elf" "$DIR/core_snes.blob"
 

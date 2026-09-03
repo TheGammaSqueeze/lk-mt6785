@@ -6,6 +6,16 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## EMULATION SPEEDUP pass 2 (2026-09-03): LTO whole-program -> 118 to 121 fps, smaller blob
+
+Switched the blob link to the g++ driver with -flto (-nostdlib/-nostartfiles, linker script via
+-Wl,-T, -O2 link-time). LTO inlines across TUs (the hot memory-access path) AND its whole-program
+dead-code elimination removes unused chip support that --gc-sections alone could not - so the blob
+is SMALLER (1.97 MB, 129 KB spare) than selective -O2 (1.99 MB, 105 KB) even though LTO -O2 now
+optimizes EVERY file, not just the hot set. Measured @1400: 118 -> 121 fps, savestate core=1 sd=1
+fast=1. Net vs the original -Os baseline: 95 -> 121 fps (+27%). LTO is standard for libretro cores
+and -fno-strict-aliasing guards the usual LTO UB; -ffat-lto-objects keeps the ld fallback working.
+
 ## EMULATION SPEEDUP pass (2026-09-03): selective -O2 -> base 95 to 118 fps (+24%)
 
 The whole snes9x core was built with -Os (optimize for SIZE) + generic -march=armv7-a. The blob

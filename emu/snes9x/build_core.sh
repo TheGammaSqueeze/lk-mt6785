@@ -19,6 +19,7 @@ INC="-I$DIR -I$DIR/apu -I$DIR/apu/bapu -I$DIR/libretro -I$DIR/libretro/libretro-
 COMMON="-march=armv7-a -mfloat-abi=soft -mthumb-interwork -ffreestanding \
         -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit \
         -fno-short-enums -mno-unaligned-access -fno-strict-aliasing -fno-common \
+        -flto -ffat-lto-objects \
         -ffunction-sections -fdata-sections -D__LIBRETRO__ $INC"
 CXXFLAGS="$COMMON"
 CFLAGS="$COMMON -std=gnu99"
