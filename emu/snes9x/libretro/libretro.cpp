@@ -524,7 +524,7 @@ static void update_variables(void)
             Settings.InterpolationMethod = DSP_INTERPOLATION_NONE;
     }
     else
-        Settings.InterpolationMethod = DSP_INTERPOLATION_GAUSSIAN;
+        Settings.InterpolationMethod = DSP_INTERPOLATION_LINEAR;   /* LK default: Linear (faster than Gaussian) */
 
 
     Settings.OneClockCycle      = 6;

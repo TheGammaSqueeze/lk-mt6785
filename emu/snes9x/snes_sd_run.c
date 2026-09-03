@@ -294,7 +294,9 @@ struct snes_opt_choice { const char *label, *value; };
 static const struct snes_opt_choice s_asp_ch[]  = { {"4:3","4:3"}, {"Pixel","uncorrected"}, {"NTSC","ntsc"}, {"PAL","pal"}, {"Stretch","4:3"} };
 #define SNES_ASPECT_STRETCH 4   /* index of "Stretch": fill the whole 1280x960 panel, no bars */
 static const struct snes_opt_choice s_ovs_ch[]  = { {"Crop 8px","enabled"}, {"Crop 12px","12_pixels"}, {"Crop 16px","16_pixels"}, {"Off","disabled"} };
-static const struct snes_opt_choice s_aud_ch[]  = { {"Gaussian","gaussian"}, {"Cubic","cubic"}, {"Sinc","sinc"}, {"Linear","linear"}, {"None","none"} };
+/* Linear is index 0 = the DEFAULT (matches the core fallback set to linear in libretro.cpp): it
+ * is ~7 fps faster than Gaussian and index 0 is not pushed, so it relies on the core default. */
+static const struct snes_opt_choice s_aud_ch[]  = { {"Linear","linear"}, {"Gaussian","gaussian"}, {"Cubic","cubic"}, {"Sinc","sinc"}, {"None","none"} };
 static const struct snes_opt_choice s_hib_ch[]  = { {"Off","disabled"}, {"Merge","merge"}, {"Blur","blur"} };
 enum { OI_ASPECT, OI_OVERSCAN, OI_AUDIO, OI_HIRES, OI_N };
 static struct { const char *key; const struct snes_opt_choice *ch; int n; } s_opt_def[OI_N] = {
@@ -530,7 +532,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			int idx = (int)((packed >> (oi * 8)) & 0xFF);
 			if (idx < 0 || idx >= s_opt_def[oi].n) idx = 0;
 			s_opt_idx[oi] = idx;
-			if (idx != 0 && c->set_option)   /* index 0 == core default -> no need to push */
+			/* Push non-default options; ALWAYS push audio interpolation (even idx 0 = "linear")
+			 * so the core gets it explicitly instead of relying on its fallback default. */
+			if ((idx != 0 || oi == OI_AUDIO) && c->set_option)
 				c->set_option(s_opt_def[oi].key, s_opt_def[oi].ch[idx].value);
 		}
 		g_snes_stretch = (s_opt_idx[OI_ASPECT] == SNES_ASPECT_STRETCH);

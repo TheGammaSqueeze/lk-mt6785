@@ -116,8 +116,12 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		extern volatile unsigned g_snes_dbg_benchfps, g_snes_show_us;
 		extern volatile int g_snes_dbg_ra, g_snes_stretch;
 		extern unsigned int ayaneo_get_cpu_mhz(void);
+		extern unsigned ayaneo_get_snes_opts(void);
 		snprintf(lbuf, sizeof lbuf, "snes-bench: fps=%u ra=%d mhz=%u show_us=%u stretch=%d",
 			 g_snes_dbg_benchfps, g_snes_dbg_ra, ayaneo_get_cpu_mhz(), g_snes_show_us, g_snes_stretch);
+		fastboot_info(lbuf);
+		snprintf(lbuf, sizeof lbuf, "snes-opts: 0x%08x (audio byte=%u)",
+			 ayaneo_get_snes_opts(), (ayaneo_get_snes_opts() >> 16) & 0xFF);
 		fastboot_info(lbuf);
 	}
 	fastboot_okay("");

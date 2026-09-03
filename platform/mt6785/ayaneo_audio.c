@@ -192,7 +192,7 @@ static unsigned int s_audio_ms;
  * mirrored to the SD card, which stays authoritative, so this relocation loses nothing. */
 #define AYANEO_SET_OFF		0x020FF000u	/* ~33 MB into boot_b, after the snes blob */
 #define AYANEO_SET_MAGIC	0x54455341u	/* "ASET" LE */
-#define AYANEO_SET_VER		8u
+#define AYANEO_SET_VER		9u	/* v9: reset the SNES audio-interpolation byte once (default -> Linear) */
 #define AYANEO_BL_MIN		16		/* keep the panel visible (never 0) */
 #define AYANEO_BL_MAX		255		/* mt65xx LCD level is 0-255 */
 #define AYANEO_BL_STEP		8		/* fine granularity (~30 steps) */
@@ -331,8 +331,14 @@ void ayaneo_settings_load(void)
 	}
 	if (ver >= 5)
 		ayaneo_set_preempt_frames((int)rd32(b + 48));
-	if (ver >= 6)
+	if (ver >= 6) {
 		s_snes_opts = rd32(b + 52);
+		/* v9 migration: reset ONLY the SNES audio-interpolation byte (OI_AUDIO = byte 2) to the
+		 * new default (0 = Linear after the s_aud_ch reorder), preserving aspect/overscan/hires.
+		 * One-time: a subsequent save stamps v9 so this no longer fires. */
+		if (ver < 9)
+			s_snes_opts &= ~(0xFFu << 16);
+	}
 	if (ver >= 7)
 		ayaneo_set_snes_slot((int)rd32(b + 56));
 	if (ver >= 8)
@@ -391,8 +397,14 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 	}
 	if (ver >= 5)
 		ayaneo_set_preempt_frames((int)rd32(b + 48));
-	if (ver >= 6)
+	if (ver >= 6) {
 		s_snes_opts = rd32(b + 52);
+		/* v9 migration: reset ONLY the SNES audio-interpolation byte (OI_AUDIO = byte 2) to the
+		 * new default (0 = Linear after the s_aud_ch reorder), preserving aspect/overscan/hires.
+		 * One-time: a subsequent save stamps v9 so this no longer fires. */
+		if (ver < 9)
+			s_snes_opts &= ~(0xFFu << 16);
+	}
 	if (ver >= 7)
 		ayaneo_set_snes_slot((int)rd32(b + 56));
 	if (ver >= 8)
