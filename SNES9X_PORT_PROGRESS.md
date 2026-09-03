@@ -15,7 +15,12 @@ so whole-core -O2 (2.27 MB) overflows by ~170 KB. SELECTIVE -O2 instead: the HOT
 code + tile (1.2 MB at -O2: inlined template variants, memory-bound) + sa1/sa1cpu (SA-1 carts
 only) stay -Os. Plus -ffunction-sections/-fdata-sections with link --gc-sections. Blob = 1.99 MB
 (105 KB spare). Measured uncapped @1400: base ra0 95 -> 118 fps (+24%), run-ahead ra1 37 -> 46 fps.
-Savestate self-test still core=1 sd=1 fast=1 (no corruption). Failed abort-crash note: whole-core -O2 boot_b flash returns
+Savestate self-test still core=1 sd=1 fast=1 (no corruption).
+
+NEGATIVE RESULTS (tried, reverted - do not re-try without a division-heavy game):
+- -march=armv8-a (over armv7-a): 118 -> 119 fps = noise. AArch32 armv8 emits hardware sdiv
+  (vs __aeabi_idiv), but SMW is not division-bound so no measurable gain. Size-neutral, stable,
+  savestate clean - reverted per the "measurable win only" rule to keep the baseline disciplined. Failed abort-crash note: whole-core -O2 boot_b flash returns
 "size too large" - MUST keep blob < 2 MB; flash BOTH lk_a+boot_b when the blob changes.
 
 ## Perf/stability pass (2026-09-03): benchmark harness, clock, run-ahead RCA
