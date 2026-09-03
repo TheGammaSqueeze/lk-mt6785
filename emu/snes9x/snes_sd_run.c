@@ -173,6 +173,11 @@ volatile unsigned g_snes_dbg_ss_size, g_snes_dbg_ss_core, g_snes_dbg_ss_sd;
 volatile int      g_snes_dbg_ra;        /* forced run-ahead depth in the headless test (oem snes-ra) */
 volatile unsigned g_snes_dbg_revmap;    /* 1 = the exit reverse-punch buffer (0x55800000) is writable */
 volatile unsigned g_snes_dbg_ss_fast;   /* 1 = fast-savestate (run-ahead) round-trip succeeded */
+/* Run-ahead validation (headless test): ra_ok=1 means skipping the PPU render on look-ahead
+ * frames leaves emulation state bit-identical (the presented look-ahead is accurate); ra_ahead=1
+ * means the N-ahead frame genuinely differs from the committed 1-ahead frame (true look-ahead);
+ * ra_depth = N tested. */
+volatile unsigned g_snes_dbg_ra_ok, g_snes_dbg_ra_ahead, g_snes_dbg_ra_depth;
 volatile unsigned g_snes_dbg_heapused;  /* arena bytes in use at test end (run-ahead leak check) */
 
 /* Physical pad -> SNES button bitmask (imports.read_buttons). Returns 0 while the in-game
@@ -182,6 +187,20 @@ volatile unsigned g_snes_dbg_heapused;  /* arena bytes in use at test end (run-a
  * without this the held A/B bleeds straight into the game as an unintended input. Set on close,
  * cleared here once the button is physically released. */
 int g_snes_ab_latch;   /* bit0 = A held-over, bit1 = B held-over */
+/* FNV-1a hash of a returned frame's visible RGB565 pixels (0 if the frame had no video). Used
+ * by the headless run-ahead determinism check to compare a rendered look-ahead frame across
+ * the full-render and render-skip paths. */
+static unsigned snes_hash_frame(const struct snes_frame *fr)
+{
+	if (!fr || !fr->video || !fr->width || !fr->height) return 0;
+	const unsigned short *p = (const unsigned short *)fr->video;
+	unsigned stride = fr->pitch / 2u, y, x, h = 2166136261u;
+	for (y = 0; y < fr->height; y++)
+		for (x = 0; x < fr->width; x++)
+			h = (h ^ p[y * stride + x]) * 16777619u;
+	return h ? h : 1u;   /* never collide with the "no video" sentinel 0 */
+}
+
 unsigned ayaneo_snes_pad_mask(void)
 {
 	/* Turbo (auto-fire): g_snes_turbo bit0 = A, bit1 = B. When set and the button is held,
@@ -836,6 +855,35 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 						      c->state_load(st, SNES_AHEAD_CAP) == 0) ? 1 : 0;
 				c->set_ra_fast(0);
 				if (fm && c->heap_reset) c->heap_reset(fm);
+			}
+			/* ---- run-ahead correctness proof (the point of run-ahead) ----
+			 * From one saved committed state, produce the N-ahead frame TWICE: once rendering
+			 * every look-ahead frame, once skipping the render on all but the last (exactly what
+			 * live run-ahead does). If the two N-ahead frames are bit-identical, skipping the PPU
+			 * render did NOT perturb emulation state, i.e. the look-ahead the player sees is the
+			 * genuine future - run-ahead is working, not just burning CPU. Also confirm the N-ahead
+			 * frame differs from the committed 1-ahead frame (it is really looking ahead). */
+			if (c->set_ra_fast && c->set_av_skip && ssz && ssz <= SNES_STATE_CAP) {
+				int N = (g_snes_dbg_ra > 0) ? g_snes_dbg_ra : 3, i;
+				void *fm = c->heap_mark ? c->heap_mark() : 0;
+				struct snes_frame tf;
+				unsigned h_committed, h_full, h_skip;
+				c->set_ra_fast(1);
+				c->state_save(st, SNES_AHEAD_CAP);
+				c->set_av_skip(0, 0); c->run(&tf); h_committed = snes_hash_frame(&tf);   /* 1-ahead */
+				c->state_load(st, SNES_AHEAD_CAP);
+				for (i = 0; i < N; i++) { c->set_av_skip(0, 0); c->run(&tf); }            /* N-ahead, full render */
+				h_full = snes_hash_frame(&tf);
+				c->state_load(st, SNES_AHEAD_CAP);
+				for (i = 0; i < N; i++) { c->set_av_skip(i == N - 1 ? 0 : 1, 1); c->run(&tf); }  /* N-ahead, skip pattern */
+				h_skip = snes_hash_frame(&tf);
+				c->set_av_skip(0, 0);
+				c->state_load(st, SNES_AHEAD_CAP);   /* restore committed state */
+				c->set_ra_fast(0);
+				if (fm && c->heap_reset) c->heap_reset(fm);
+				g_snes_dbg_ra_depth = (unsigned)N;
+				g_snes_dbg_ra_ok    = (h_full && h_full == h_skip) ? 1 : 0;
+				g_snes_dbg_ra_ahead = (h_full && h_full != h_committed) ? 1 : 0;
 			}
 		}
 		/* Verify the exit reverse-punch freeze buffer (GBA_GAME_FREEZE_PA = 0x55800000) is

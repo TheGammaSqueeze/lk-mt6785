@@ -112,6 +112,13 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			 g_snes_dbg_ss_core, g_snes_dbg_ss_sd, g_snes_dbg_ss_fast, g_snes_dbg_heapused, g_snes_dbg_revmap);
 		fastboot_info(lbuf);
 	}
+	{	/* run-ahead correctness: ra_ok=1 -> render-skip is state-transparent (look-ahead accurate);
+		 * ahead=1 -> the N-ahead frame differs from committed (genuinely looking ahead). */
+		extern volatile unsigned g_snes_dbg_ra_ok, g_snes_dbg_ra_ahead, g_snes_dbg_ra_depth;
+		snprintf(lbuf, sizeof lbuf, "snes-ra: ok=%u ahead=%u depth=%u",
+			 g_snes_dbg_ra_ok, g_snes_dbg_ra_ahead, g_snes_dbg_ra_depth);
+		fastboot_info(lbuf);
+	}
 	{
 		extern volatile unsigned g_snes_dbg_benchfps, g_snes_show_us;
 		extern volatile int g_snes_dbg_ra, g_snes_stretch;
