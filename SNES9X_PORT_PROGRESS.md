@@ -55,9 +55,15 @@ Why Stretch (fill-panel 1280x960) is slower than Pixel-perfect (letterboxed 1024
   (only the dirty game rows) would speed up Pixel/letterboxed modes ~7% but does NOT help Stretch
   (its game area is the whole panel), so it does not close the gap. The only way to fully close it
   is HARDWARE display-overlay scaling (upscale a small buffer via DISP-OVL) - a large change.
-- Instrumentation added for this (oem diag show_us, oem snes-stretch:N to force aspect). Stretch's
-  exact on-device show_us is still pending a clean re-measure (the first attempt wedged the fastboot
-  channel via concurrent polling; do NOT poll fastboot while a background fastboot task runs).
+- FINAL on-device numbers (single snes-launch per boot, oem diag show_us): PIXEL 2133 us/frame,
+  STRETCH 2279 us/frame = +146 us (+6.8%). Smaller than the host blit-only +15% because the fixed
+  4.9MB cache flush (~1.2-1.5 ms) dominates both and only the pixel-count-dependent blit+writeback
+  differs. In a 16.6 ms frame budget the +146 us matters only when the budget is already tight
+  (heavy game + run-ahead). A partial cache flush (dirty rows only) would save ~20-50 us on Pixel
+  and 0 on Stretch, so it does not close the gap - not worth the dirty-region-tracking complexity.
+  CONCLUSION: Stretch slowdown is inherent (+6.8%, more pixels), no safe software fix; only a
+  hardware display-overlay scaler would eliminate it. Instrumentation (oem diag show_us, oem
+  snes-stretch:N) kept for future display work.
 
 ## Audio-interpolation speed knob is ALREADY user-controllable (2026-09-03)
 

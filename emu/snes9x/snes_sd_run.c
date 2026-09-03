@@ -310,6 +310,8 @@ static int s_opt_idx[OI_N];   /* current selection per option (defaults = index 
 volatile unsigned g_snes_aspect_x1000;
 /* 1 = "Stretch": the display fills the whole panel (no bars), overriding g_snes_aspect_x1000. */
 volatile int g_snes_stretch;
+volatile int g_snes_dbg_stretch = -1;   /* oem snes-stretch: -1 persisted, 0/1 force aspect for measurement */
+volatile unsigned g_snes_show_us;   /* last scale+flush time in us (set by ayaneo_snes_show_frame) */
 
 static char *smput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *smputu(char *p, unsigned v) { char t[12]; int n = 0;
@@ -532,6 +534,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				c->set_option(s_opt_def[oi].key, s_opt_def[oi].ch[idx].value);
 		}
 		g_snes_stretch = (s_opt_idx[OI_ASPECT] == SNES_ASPECT_STRETCH);
+		if (g_snes_dbg_stretch >= 0) g_snes_stretch = g_snes_dbg_stretch;   /* oem snes-stretch test override */
 	}
 	g_snes_aspect_x1000 = (c->aspect_x1000) ? c->aspect_x1000() : 0;
 

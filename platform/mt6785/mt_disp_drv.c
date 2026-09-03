@@ -1290,6 +1290,9 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 	if (!fb_addr || !pix) return;
 	if (xoff < 0) xoff = 0;
 	if (yoff < 0) yoff = 0;
+	extern unsigned int gpt4_get_current_tick(void);
+	extern volatile unsigned g_snes_show_us;   /* blit+flush time (excl. vsync wait), for oem diag */
+	unsigned int t_show0 = gpt4_get_current_tick();
 	/* Borders (the letterbox outside the game) are static black, so clear BOTH buffers
 	 * only when the source resolution OR the displayed rect (aspect switch) changes, not
 	 * every frame. The per-frame game blit fully overwrites the game area. */
@@ -1380,6 +1383,7 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 	}
 	ayaneo_draw_osd(dst, pitch_w, W, H);	/* transient volume/brightness slider (HW rocker) */
 	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
+	g_snes_show_us = (gpt4_get_current_tick() - t_show0) / 13u;   /* scale+flush cost (no vsync) */
 	ayaneo_present(dpa, W, H, pitch_w);
 	/* Vsync-locked present: the SNES session runs the panel at ~60.11 Hz (vfp swap), so
 	 * blocking one vsync here paces emulation to the real scan-out = smooth, tear-free,

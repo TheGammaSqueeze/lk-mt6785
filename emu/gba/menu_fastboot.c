@@ -113,11 +113,11 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		fastboot_info(lbuf);
 	}
 	{
-		extern volatile unsigned g_snes_dbg_benchfps;
-		extern volatile int g_snes_dbg_ra;
+		extern volatile unsigned g_snes_dbg_benchfps, g_snes_show_us;
+		extern volatile int g_snes_dbg_ra, g_snes_stretch;
 		extern unsigned int ayaneo_get_cpu_mhz(void);
-		snprintf(lbuf, sizeof lbuf, "snes-bench: fps=%u ra=%d mhz=%u",
-			 g_snes_dbg_benchfps, g_snes_dbg_ra, ayaneo_get_cpu_mhz());
+		snprintf(lbuf, sizeof lbuf, "snes-bench: fps=%u ra=%d mhz=%u show_us=%u stretch=%d",
+			 g_snes_dbg_benchfps, g_snes_dbg_ra, ayaneo_get_cpu_mhz(), g_snes_show_us, g_snes_stretch);
 		fastboot_info(lbuf);
 	}
 	fastboot_okay("");
@@ -197,6 +197,22 @@ static void cmd_snes_bench(const char *arg, void *data, unsigned sz)
 		if (g_snes_dbg_exit != 0 && g_snes_test_limit == 0) break;
 	}
 	snprintf(lbuf, sizeof lbuf, "snes-bench: %u frames, ran=%u fps=%u exit=%u", n, g_snes_dbg_frames, g_snes_dbg_benchfps, g_snes_dbg_exit);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem snes-stretch:N - force the display aspect for measurement: 1 = Stretch (fill panel),
+ * 0 = Pixel/aspect. Sets g_snes_stretch live so oem diag show_us can be compared per aspect
+ * during a capped oem snes-launch (which presents every frame). */
+static void cmd_snes_stretch(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_snes_dbg_stretch;   /* -1 = use persisted opt; 0/1 = force for the test */
+	int n = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg >= '0' && *arg <= '9') n = n * 10 + (*arg++ - '0');
+	g_snes_dbg_stretch = n ? 1 : 0;
+	snprintf(lbuf, sizeof lbuf, "snes-stretch: forced g_snes_dbg_stretch=%d for next snes-launch", g_snes_dbg_stretch);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -295,6 +311,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
 	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
+	fastboot_register("oem snes-stretch", cmd_snes_stretch, 1, 0);
 	fastboot_register("oem snes-ra", cmd_snes_ra, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
 	fastboot_register("oem preempt:", cmd_preempt, 1, 0);
