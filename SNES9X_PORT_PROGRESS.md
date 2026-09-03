@@ -6,6 +6,20 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Measurement gotchas learned the hard way (2026-09-03)
+
+- Back-to-back `oem snes-launch` (CAPPED) crashes the device on the 2nd launch (fastboot wedges
+  to ????, needs a power-cycle). But chained `oem snes-bench` (UNCAPPED) is fine - the run-ahead
+  sweep ran snes-bench x4 back-to-back cleanly. So: measure CORE fps with snes-bench (chains ok);
+  measure DISPLAY show_us with a SINGLE snes-launch per boot (reboot between aspects). Root cause
+  of the 2nd-capped-launch crash is unconfirmed (likely a session-teardown/re-arm issue in the
+  capped present path) - worth fixing but only with one-launch-per-boot testing.
+- NEVER poll `fastboot devices` (or any fastboot cmd) while a background task is holding the
+  fastboot channel - concurrent access corrupts the USB protocol and wedges it to ????.
+- Local core profiling needs a game ROM, which lives on the device SD card, not the dev box. The
+  host harness (build_host_test.sh) is ready but has no ROM to run here, so core hot-path work must
+  be measured on-device via snes-bench (safe, chains).
+
 ## Stretch-vs-Pixel display cost: root cause (2026-09-03)
 
 Why Stretch (fill-panel 1280x960) is slower than Pixel-perfect (letterboxed 1024x896):
