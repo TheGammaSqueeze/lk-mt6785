@@ -128,6 +128,21 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			snprintf(lbuf, sizeof lbuf, "snes-disp: show_us=%u flush_us=%u", g_snes_show_us, g_snes_flush_us);
 			fastboot_info(lbuf);
 		}
+		{
+			extern volatile unsigned g_rszdbg[12];
+			snprintf(lbuf, sizeof lbuf, "rszdbg: 2l_roi=%08x 2l_src=%08x", g_rszdbg[0], g_rszdbg[1]);
+			fastboot_info(lbuf);
+			snprintf(lbuf, sizeof lbuf, "rszdbg: 2l_pitch=%08x 2l_srccon=%08x", g_rszdbg[2], g_rszdbg[3]);
+			fastboot_info(lbuf);
+			snprintf(lbuf, sizeof lbuf, "rszdbg: rsz_en=%08x ctrl1=%08x", g_rszdbg[4], g_rszdbg[5]);
+			fastboot_info(lbuf);
+			snprintf(lbuf, sizeof lbuf, "rszdbg: rsz_in=%08x rsz_out=%08x", g_rszdbg[6], g_rszdbg[7]);
+			fastboot_info(lbuf);
+			snprintf(lbuf, sizeof lbuf, "rszdbg: dw_dh=%08x xoff_yoff=%08x", g_rszdbg[8], g_rszdbg[9]);
+			fastboot_info(lbuf);
+			snprintf(lbuf, sizeof lbuf, "rszdbg: iw_ih=%08x wp_hp=%08x", g_rszdbg[10], g_rszdbg[11]);
+			fastboot_info(lbuf);
+		}
 	}
 	fastboot_okay("");
 }
@@ -222,6 +237,23 @@ static void cmd_snes_stretch(const char *arg, void *data, unsigned sz)
 	while (*arg >= '0' && *arg <= '9') n = n * 10 + (*arg++ - '0');
 	g_snes_dbg_stretch = n ? 1 : 0;
 	snprintf(lbuf, sizeof lbuf, "snes-stretch: forced g_snes_dbg_stretch=%d for next snes-launch", g_snes_dbg_stretch);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem snes-rsz:N - toggle the EXPERIMENTAL hardware-resizer SNES display path (1 on, 0 off).
+ * Default off = the proven CPU-blit path. Live-effective from the next presented frame. */
+static void cmd_snes_rsz(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_snes_rsz;
+	extern volatile unsigned g_snes_rsz_dbg, g_snes_show_us;
+	int n = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg >= '0' && *arg <= '9') n = n * 10 + (*arg++ - '0');
+	g_snes_rsz = n ? 1 : 0;
+	if (!g_snes_rsz) { extern void ayaneo_snes_rsz_restore(void); ayaneo_snes_rsz_restore(); }
+	snprintf(lbuf, sizeof lbuf, "snes-rsz=%d rsz_en=0x%x show_us=%u", g_snes_rsz, g_snes_rsz_dbg, g_snes_show_us);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -321,6 +353,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
 	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
 	fastboot_register("oem snes-stretch", cmd_snes_stretch, 1, 0);
+	fastboot_register("oem snes-rsz", cmd_snes_rsz, 1, 0);
 	fastboot_register("oem snes-ra", cmd_snes_ra, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
 	fastboot_register("oem preempt:", cmd_preempt, 1, 0);

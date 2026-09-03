@@ -541,3 +541,28 @@ NEXT: lk_a integration (Phase 2 below) - none of this runs on device yet.
 - Blob VMA (proposed 0x4F000000).
 - Audio priority (bring up video/input first, audio second - as gambatte did).
 </content>
+
+## Ground-truth checkpoint (2026-09-03)
+On-device uncapped benchmark after LTO+selective-O2+Linear-default: **fps=117 at 1400MHz**
+(oem snes-bench:600, ra=0, stretch=0). Frame budget headroom is large: uncapped core =
+~8547us/frame, so 60fps (16667us budget) is met comfortably even paying the CPU blit
+(show_us=2802, flush_us=325). Conclusion: the blit is NOT on the 60fps critical path in
+normal capped play; it only bounds the >60fps uncapped ceiling. Linear interpolation is
+active (snes-opts audio byte=0). No regression from the RSZ-armed lk_a flash.
+
+Run-ahead is inherently pf+1 core emulations/frame (RA=3 -> ~4x compute -> cannot hit 60fps
+at any safe clock; 1800MHz browns out under 100% duty). The only structural lever is the
+no-audio/video throwaway-frame path (set_ra_noav): skip DSP audio on the pf look-ahead runs
+(safe because state_load rewinds the DSP timeline anyway; committed audio already submitted
+before look-ahead). Prior attempt crashed at 1400 and was reverted for a throwaway-path bug;
+re-fixing it is a BLOB change requiring on-device crash-testing, deferred until the user is
+present (a crash browns the core and needs a manual reboot).
+
+### RSZ hardware-scaling status (experimental, default OFF, flag-gated `oem snes-rsz:1`)
+Iteration 2 (config-once + post-trigger ROI/RSZ override, update-in-place) is built, signed,
+flashed to lk_a, and staged. It is NOT visually validated: iteration 1 froze the panel
+(OVL0_2L stayed panel-width -> 5x horizontal repeat). The register values (RSZ_CONTROL bits,
+coeff-step format, OVL0 output geometry/centering) are best-guesses that need eyes on the
+panel to tune. Recovery if it freezes: `oem snes-rsz:0` (ayaneo_snes_rsz_restore) then reboot.
+Since it is default-off it does not regress the shipping CPU-blit path. Kept as an off-by-
+default experiment pending a user visual test session.

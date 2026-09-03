@@ -8,3 +8,4 @@ out/
 __pycache__/
 emu/gba/menu/host_render
 emu/gba/menu/host_render_arm
+gmon.out

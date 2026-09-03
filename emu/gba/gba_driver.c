@@ -1350,8 +1350,12 @@ static char *gba_hex(char *p, unsigned v)
  * generated code itself faulted; dfar is the bad data address it touched. */
 void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsigned spsr)
 {
-	char l1[64], l2[80], *p;
+	char l1[64], l2[128], *p;
 	int i, n;
+	/* A SNES RSZ session may have left the display path resized/tiled, which would render this
+	 * screen as unreadable garbage. Restore the normal full-panel OVL path first. */
+	extern void ayaneo_snes_rsz_restore(void);
+	ayaneo_snes_rsz_restore();
 
 	/* l1 = the message (already short, e.g. "data abort, halting") */
 	for (n = 0; msg[n] && n < 40; n++) l1[n] = msg[n];
@@ -1359,20 +1363,37 @@ void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsign
 	/* strip trailing newline */
 	if (n && l1[n-1] == '\n') l1[n-1] = 0;
 
+	/* One combined diagnostic line: "FAULT <msg> pc=.. dfar=.. spsr=.." */
 	p = l2;
-	p = mi_puts(p, "pc="); p = gba_hex(p, pc);
+	p = mi_puts(p, "FAULT ");
+	for (n = 0; l1[n]; n++) *p++ = l1[n];
+	p = mi_puts(p, " pc="); p = gba_hex(p, pc);
 	p = mi_puts(p, " dfar="); p = gba_hex(p, addr);
 	p = mi_puts(p, " spsr="); p = gba_hex(p, spsr);
 	*p = 0;
 
-	for (i = 0; i < 2; i++) {
-		unsigned int pitch, W, H;
-		unsigned int *buf = ayaneo_canvas_back(&pitch, &W, &H);
-		ayaneo_fill(buf, pitch, 0, 0, (int)W, 120, 0xFF200000u);
-		ayaneo_text(buf, pitch, 20, 8, 3, 0xFFFF4040u, "GBA FAULT");
-		ayaneo_text(buf, pitch, 20, 48, 2, 0xFFFFC0C0u, l1);
-		ayaneo_text(buf, pitch, 20, 78, 2, 0xFFFFFFFFu, l2);
-		ayaneo_canvas_present();
+	/* Also dump the captured RSZ register readbacks (persist across the fault) so a photo of the
+	 * crash screen gives the full display-path state. */
+	{
+		extern volatile unsigned g_rszdbg[12];
+		char l3[128], l4[128], *q;
+		q = l3; q = mi_puts(q, "roi="); q = gba_hex(q, g_rszdbg[0]);
+		q = mi_puts(q, " pitch="); q = gba_hex(q, g_rszdbg[2]);
+		q = mi_puts(q, " in="); q = gba_hex(q, g_rszdbg[6]);
+		q = mi_puts(q, " out="); q = gba_hex(q, g_rszdbg[7]); *q = 0;
+		q = l4; q = mi_puts(q, "2lm="); q = gba_hex(q, g_rszdbg[8]);
+		q = mi_puts(q, " rszm="); q = gba_hex(q, g_rszdbg[9]);
+		q = mi_puts(q, " wcg="); q = gba_hex(q, g_rszdbg[10]);
+		q = mi_puts(q, " rszsel="); q = gba_hex(q, g_rszdbg[11]); *q = 0;
+		for (i = 0; i < 2; i++) {
+			unsigned int pitch, W, H;
+			unsigned int *buf = ayaneo_canvas_back(&pitch, &W, &H);
+			ayaneo_fill(buf, pitch, 0, 0, (int)W, 130, 0xFF200000u);
+			ayaneo_text(buf, pitch, 20, 20, 2, 0xFFFFFFFFu, l2);
+			ayaneo_text(buf, pitch, 20, 60, 2, 0xFFFFC0C0u, l3);
+			ayaneo_text(buf, pitch, 20, 92, 2, 0xFFFFC0C0u, l4);
+			ayaneo_canvas_present();
+		}
 	}
 }
 

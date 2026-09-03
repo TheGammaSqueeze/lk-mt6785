@@ -227,6 +227,8 @@ unsigned ayaneo_snes_pad_mask(void)
 static const struct snes_core_exports *s_menu_c;
 static fat_vol             *s_menu_vol;
 static const gba_rom_entry *s_menu_rom;
+static int                  s_menu_preview;   /* 1 = step the core one frame so a just-changed
+                                               * Overscan/Hi-Res option previews live in the menu */
 static int  s_msel;
 static char s_mstat[48];
 static int  s_save_slot;   /* manual Save/Load state slot 0..9 (suspend uses a separate "sus") */
@@ -395,7 +397,16 @@ static int sm_change(int i, int dir, int act)
 			unsigned packed = 0;
 			s_opt_idx[oi] = (s_opt_idx[oi] + dir + n) % n;
 			s_menu_c->set_option(s_opt_def[oi].key, s_opt_def[oi].ch[s_opt_idx[oi]].value);
-			if (oi == OI_ASPECT) g_snes_stretch = (s_opt_idx[OI_ASPECT] == SNES_ASPECT_STRETCH);
+			if (oi == OI_ASPECT) {
+				g_snes_stretch = (s_opt_idx[OI_ASPECT] == SNES_ASPECT_STRETCH);
+				/* Live preview: the display reads g_snes_aspect_x1000 every frame, so refresh it
+				 * now (the core's periodic refresh is skipped while the menu freezes emulation). */
+				if (s_menu_c->aspect_x1000) g_snes_aspect_x1000 = s_menu_c->aspect_x1000();
+			}
+			/* Overscan/Hi-Res change the CORE's rendered frame (height/blend); the frozen menu
+			 * frame won't reflect them until the core steps once. Flag a one-frame preview run so
+			 * the change is visible immediately behind the overlay. */
+			s_menu_preview = 1;
 			for (k = 0; k < OI_N; k++) packed |= (unsigned)(s_opt_idx[k] & 0xFF) << (k * 8);
 			ayaneo_set_snes_opts(packed);   /* persist all picks */
 			snes_settings_touch();
@@ -625,6 +636,13 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					if (hash != s_snes_dbg_lasthash) { g_snes_dbg_changed++; s_snes_dbg_lasthash = hash; }
 				}
 			}
+		} else if (s_menu_preview) {
+			/* Menu is open (emulation frozen) but an Overscan/Hi-Res option just changed - step
+			 * the core exactly one frame so f reflects the new crop/blend for a live preview.
+			 * Game input is masked while the menu is open, so this barely advances the game. */
+			s_menu_preview = 0;
+			c->run(&f);
+			if (c->aspect_x1000) g_snes_aspect_x1000 = c->aspect_x1000();
 		}
 		/* Fast-forward: hold R2 (second-stage right trigger, matches GBA) to run the
 		 * emulation flat out. Present sparsely (1 in 8) and skip the vsync wait on the other
@@ -820,6 +838,12 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	ayaneo_dsi_set_vfp(DEFAULT_VFP);   /* restore 59.749 Hz for the menu / other cores */
 	if (saved_mhz) ayaneo_set_cpu_mhz(saved_mhz);   /* restore the pre-session ARM clock */
+	{	/* If the session presented through the hardware resizer, put the display path back to
+		 * full-panel passthrough so the menu (which draws panel-sized frames) renders 1:1. */
+		extern volatile int g_snes_rsz;
+		extern void ayaneo_snes_rsz_restore(void);
+		if (g_snes_rsz) ayaneo_snes_rsz_restore();
+	}
 
 	/* Suspend: write the AUTO save STATE ("sus" slot) so the next launch resumes here. Kept
 	 * separate from the manual "st0" slot so exiting never overwrites a manual Save State. */
