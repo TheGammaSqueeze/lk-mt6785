@@ -178,6 +178,10 @@ volatile unsigned g_snes_dbg_ss_fast;   /* 1 = fast-savestate (run-ahead) round-
  * means the N-ahead frame genuinely differs from the committed 1-ahead frame (true look-ahead);
  * ra_depth = N tested. */
 volatile unsigned g_snes_dbg_ra_ok, g_snes_dbg_ra_ahead, g_snes_dbg_ra_depth;
+/* raw-snapshot validation: 1 = the RAW run-ahead freeze/rewind produces the SAME N-ahead frame as
+ * the trusted serialize + full-render path (raw snapshot is state-exact); 2 = unsupported cart
+ * (fell back to serialize); 0 = MISMATCH (raw snapshot is losing state - would be a bug). */
+volatile unsigned g_snes_dbg_ra_raw;
 /* Clean display-independent cost breakdown (headless tight loops): us per headless frame,
  * per fully-rendered frame, per fast state_save, and per fast state_load. fps = 1e6/us. */
 volatile unsigned g_snes_dbg_core_us, g_snes_dbg_render_us, g_snes_dbg_save_us, g_snes_dbg_load_us;
@@ -703,16 +707,21 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* Run-ahead: advance the DISPLAY pf frames into the future with the current input,
 		 * then rewind so the real emulation still advances exactly one frame per loop. */
 		{
-			int i;
+			int i, raw = 0;
 			void *hmark = 0;
 			if (pf > 0) {
-				/* Fast savestates for the (transient) run-ahead save/load: direct-memory
-				 * serialize, ~30-40% cheaper than the normal path. Reclaim serialize temps
-				 * each frame too: snes9x `new`s block buffers per state op and the bump arena
-				 * never frees, so without this run-ahead would leak and eventually crash. */
-				if (c->set_ra_fast) c->set_ra_fast(1);
-				if (c->heap_mark) hmark = c->heap_mark();
-				c->state_save((void *)SNES_AHEAD_BUF, SNES_AHEAD_CAP);
+				/* RAW run-ahead snapshot (state_save_ra) when the core offers it and the cart is
+				 * plain: an in-memory freeze with no big-endian byte-swap, no per-struct alloc, and
+				 * only the real SRAM extent - measured ~3-5x cheaper than the serialize. Returns 0
+				 * for special-chip carts; then fall back to the fast serialize (which leaks temps
+				 * into the bump arena, so bracket THAT path with heap_mark/reset + set_ra_fast). */
+				if (c->state_save_ra && c->state_load_ra)
+					raw = (int)c->state_save_ra((void *)SNES_AHEAD_BUF, SNES_AHEAD_CAP);
+				if (!raw) {
+					if (c->set_ra_fast) c->set_ra_fast(1);
+					if (c->heap_mark) hmark = c->heap_mark();
+					c->state_save((void *)SNES_AHEAD_BUF, SNES_AHEAD_CAP);
+				}
 				/* Only the LAST look-ahead frame is presented (needs video); NONE are heard
 				 * (audio hard-disabled). Skipping the PPU render on the throwaway frames and the
 				 * APU/DSP on all of them is the bulk of the run-ahead speedup - the emulated
@@ -738,9 +747,13 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			else
 				priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
 			if (pf > 0) {
-				c->state_load((const void *)SNES_AHEAD_BUF, SNES_AHEAD_CAP);   /* rewind */
-				if (hmark && c->heap_reset) c->heap_reset(hmark);      /* free the temporaries */
-				if (c->set_ra_fast) c->set_ra_fast(0);   /* back to portable format for SD saves */
+				if (raw) {
+					c->state_load_ra((const void *)SNES_AHEAD_BUF);   /* raw rewind */
+				} else {
+					c->state_load((const void *)SNES_AHEAD_BUF, SNES_AHEAD_CAP);   /* rewind */
+					if (hmark && c->heap_reset) c->heap_reset(hmark);      /* free the temporaries */
+					if (c->set_ra_fast) c->set_ra_fast(0);   /* back to portable format for SD saves */
+				}
 			}
 			/* leak watch (headless test): peak arena usage should stay FLAT with run-ahead
 			 * on if the mark/reset works; without it, it climbs ~0.5 MB/frame. */
@@ -887,6 +900,22 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				g_snes_dbg_ra_depth = (unsigned)N;
 				g_snes_dbg_ra_ok    = (h_full && h_full == h_skip) ? 1 : 0;
 				g_snes_dbg_ra_ahead = (h_full && h_full != h_committed) ? 1 : 0;
+				/* Validate the RAW snapshot against that trusted serialize truth: raw-save the
+				 * committed state, run the same skip pattern, and confirm the N-ahead frame matches
+				 * h_full. If it does, the raw freeze/rewind is state-exact (safe to use live). */
+				if (c->state_save_ra && c->state_load_ra) {
+					unsigned rn = c->state_save_ra((void *)SNES_STATE_SCRATCH, SNES_AHEAD_CAP);
+					if (rn) {
+						unsigned h_raw;
+						for (i = 0; i < N; i++) { c->set_av_skip(i == N - 1 ? 0 : 1, 1); c->run(&tf); }
+						h_raw = snes_hash_frame(&tf);
+						c->set_av_skip(0, 0);
+						c->state_load_ra((const void *)SNES_STATE_SCRATCH);   /* restore committed */
+						g_snes_dbg_ra_raw = (h_full && h_full == h_raw) ? 1 : 0;
+					} else {
+						g_snes_dbg_ra_raw = 2;   /* special-chip cart: run-ahead uses serialize */
+					}
+				}
 			}
 			/* ---- CLEAN emulation cost breakdown (display-independent) ----
 			 * The live snes-bench runs through the real loop, so it is polluted by the vsync
@@ -916,13 +945,24 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				for (i = 0; i < NB; i++) c->run(&tf);
 				g_snes_dbg_render_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NB);
 				c->state_load(st, SNES_AHEAD_CAP);
-				t0 = gpt4_get_current_tick();                          /* fast state_save cost */
-				for (i = 0; i < NS; i++) { void *m = c->heap_mark ? c->heap_mark() : 0;
-					c->state_save(st, SNES_AHEAD_CAP); if (m && c->heap_reset) c->heap_reset(m); }
-				g_snes_dbg_save_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NS);
-				t0 = gpt4_get_current_tick();                          /* fast state_load cost */
-				for (i = 0; i < NS; i++) c->state_load(st, SNES_AHEAD_CAP);
-				g_snes_dbg_load_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NS);
+				/* save/load cost: measure the RAW run-ahead path when available (what live run-ahead
+				 * uses now), else the fast serialize it falls back to. */
+				if (c->state_save_ra && c->state_load_ra && c->state_save_ra(st, SNES_AHEAD_CAP)) {
+					t0 = gpt4_get_current_tick();
+					for (i = 0; i < NS; i++) c->state_save_ra(st, SNES_AHEAD_CAP);
+					g_snes_dbg_save_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NS);
+					t0 = gpt4_get_current_tick();
+					for (i = 0; i < NS; i++) c->state_load_ra(st);
+					g_snes_dbg_load_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NS);
+				} else {
+					t0 = gpt4_get_current_tick();                          /* fast state_save cost */
+					for (i = 0; i < NS; i++) { void *m = c->heap_mark ? c->heap_mark() : 0;
+						c->state_save(st, SNES_AHEAD_CAP); if (m && c->heap_reset) c->heap_reset(m); }
+					g_snes_dbg_save_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NS);
+					t0 = gpt4_get_current_tick();                          /* fast state_load cost */
+					for (i = 0; i < NS; i++) c->state_load(st, SNES_AHEAD_CAP);
+					g_snes_dbg_load_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NS);
+				}
 				c->state_load(st, SNES_AHEAD_CAP);   /* restore committed */
 				c->set_ra_fast(0);
 				if (fm && c->heap_reset) c->heap_reset(fm);

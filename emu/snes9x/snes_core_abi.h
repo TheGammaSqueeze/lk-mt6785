@@ -87,6 +87,14 @@ struct snes_core_exports {
 	 * This is the core of the run-ahead speedup: only the presented frame needs video, only the
 	 * committed frame needs audio. Both cleared (0,0) for normal frames. */
 	void  (*set_av_skip)(int skip_video, int skip_audio);
+
+	/* run-ahead RAW in-memory snapshot: much faster than state_save/state_load (no big-endian
+	 * byte-swap, no per-struct alloc, copies only the cart's real SRAM extent). NOT a portable
+	 * save format - LK uses it ONLY for the transient run-ahead save/rewind. state_save_ra returns
+	 * bytes written, or 0 if unsupported (special-chip cart) so the caller falls back to state_save;
+	 * state_load_ra returns 0 on success, -1 if unsupported. */
+	unsigned (*state_save_ra)(void *buf, unsigned cap);
+	int      (*state_load_ra)(const void *buf);
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);

@@ -1032,6 +1032,85 @@ int S9xUnfreezeGameMem (const uint8 *buf, uint32 bufSize)
 	return S9xUnfreezeFromStream(&stream);
 }
 
+/* ---- run-ahead raw snapshot -----------------------------------------------------------------
+ * A transient in-memory freeze used ONLY by LK run-ahead. It captures the SAME state as
+ * S9xFreezeToStream and applies the SAME post-load fixups as S9xUnfreezeFromStream, but memcpy's
+ * the structs raw instead of allocating a per-struct buffer and byte-swapping every field to
+ * big-endian - pure waste when the snapshot is reloaded on the same machine the same frame. It
+ * also copies only the cart's real SRAM extent (SRAMMask+1) instead of the fixed 512 KB SRAM
+ * buffer. NOT a portable save format (build/host-specific layout); the SD/manual saves keep using
+ * S9xFreezeToStream. Only plain carts - if any special chip is active it returns 0 / -1 so LK
+ * falls back to the portable serialize. Correctness is proven by the headless snes-ra ok=1 test. */
+static bool ra_plain_cart(void)
+{
+	return !(Settings.SuperFX || Settings.DSP || Settings.SA1 || Settings.C4 ||
+		 Settings.SDD1 || Settings.SPC7110 || Settings.OBC1 || Settings.SETA ||
+		 Settings.SRTC || Settings.BS || Settings.MSU1);
+}
+
+extern "C" unsigned S9xFreezeRunAhead(uint8 *buf, unsigned cap)
+{
+	if (!ra_plain_cart()) return 0;
+	uint8 *p = buf, *end = buf + cap;
+	unsigned sram = Memory.SRAMMask ? (Memory.SRAMMask + 1u) : 0u;
+	#define RA_PUT(src, n) do { if (p + (unsigned)(n) > end) return 0; memcpy(p, (src), (n)); p += (n); } while (0)
+	RA_PUT(&CPU, sizeof(CPU));
+	RA_PUT(&Registers, sizeof(Registers));
+	RA_PUT(&PPU, sizeof(PPU));
+	RA_PUT(DMA, sizeof(DMA));
+	RA_PUT(Memory.VRAM, sizeof(Memory.VRAM));
+	RA_PUT(Memory.RAM, sizeof(Memory.RAM));
+	RA_PUT(Memory.FillRAM, 0x8000);
+	if (sram) RA_PUT(Memory.SRAM, sram);
+	if (p + SPC_SAVE_STATE_BLOCK_SIZE > end) return 0;
+	S9xAPUSaveState(p); p += SPC_SAVE_STATE_BLOCK_SIZE;
+	struct SControlSnapshot cs; S9xControlPreSaveState(&cs);
+	RA_PUT(&cs, sizeof(cs));
+	Timings.InterlaceField = S9xInterlaceField();
+	RA_PUT(&Timings, sizeof(Timings));
+	#undef RA_PUT
+	return (unsigned)(p - buf);
+}
+
+extern "C" int S9xUnfreezeRunAhead(const uint8 *buf)
+{
+	if (!ra_plain_cart()) return -1;
+	const uint8 *p = buf;
+	unsigned sram = Memory.SRAMMask ? (Memory.SRAMMask + 1u) : 0u;
+	#define RA_GET(dst, n) do { memcpy((dst), p, (n)); p += (n); } while (0)
+	RA_GET(&CPU, sizeof(CPU));
+	RA_GET(&Registers, sizeof(Registers));
+	RA_GET(&PPU, sizeof(PPU));
+	RA_GET(DMA, sizeof(DMA));
+	RA_GET(Memory.VRAM, sizeof(Memory.VRAM));
+	RA_GET(Memory.RAM, sizeof(Memory.RAM));
+	RA_GET(Memory.FillRAM, 0x8000);
+	if (sram) RA_GET(Memory.SRAM, sram);
+	S9xAPULoadState((uint8 *)p); p += SPC_SAVE_STATE_BLOCK_SIZE;
+	struct SControlSnapshot cs; RA_GET(&cs, sizeof(cs));
+	RA_GET(&Timings, sizeof(Timings));
+	#undef RA_GET
+	/* Same fixups as S9xUnfreezeFromStream (plain-cart subset): recompute derived CPU/PPU state
+	 * the raw copy did not (or that must be reseated) and reload controller state. */
+	ICPU.ShiftedPB = Registers.PB << 16;
+	ICPU.ShiftedDB = Registers.DB << 16;
+	S9xSetPCBase(Registers.PBPC);
+	S9xUnpackStatus();
+	S9xFixCycles();
+	CPU.InDMA = CPU.InHDMA = FALSE;
+	CPU.InDMAorHDMA = CPU.InWRAMDMAorHDMA = FALSE;
+	CPU.HDMARanInDMA = 0;
+	S9xFixColourBrightness();
+	S9xBuildDirectColourMaps();
+	IPPU.ColorsChanged = TRUE;
+	IPPU.OBJChanged = TRUE;
+	IPPU.RenderThisFrame = TRUE;
+	GFX.DoInterlace = 0;
+	S9xGraphicsScreenResize();
+	S9xControlPostLoadState(&cs);
+	return 0;
+}
+
 void S9xFreezeToStream (ByteStream *stream)
 {
 	char	buffer[8192];

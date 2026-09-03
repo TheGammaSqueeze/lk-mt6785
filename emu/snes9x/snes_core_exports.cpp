@@ -93,6 +93,12 @@ static void snes_set_ra_fast(int on) { s_ra_fast = on ? 1 : 0; }
 static volatile int s_ra_novideo, s_ra_noaudio;
 static void snes_set_av_skip(int nv, int na) { s_ra_novideo = nv ? 1 : 0; s_ra_noaudio = na ? 1 : 0; }
 
+/* Raw run-ahead snapshot (snapshot.cpp): fast in-memory freeze/rewind, not a portable format. */
+extern "C" unsigned S9xFreezeRunAhead(unsigned char *buf, unsigned cap);
+extern "C" int      S9xUnfreezeRunAhead(const unsigned char *buf);
+static unsigned snes_state_save_ra(void *buf, unsigned cap) { return S9xFreezeRunAhead((unsigned char *)buf, cap); }
+static int      snes_state_load_ra(const void *buf) { return S9xUnfreezeRunAhead((const unsigned char *)buf); }
+
 /* ---- libretro callbacks ---- */
 static bool env_cb(unsigned cmd, void *data)
 {
@@ -304,6 +310,8 @@ static const struct snes_core_exports g_exports = {
 	snes_heap_reset,
 	snes_set_ra_fast,
 	snes_set_av_skip,
+	snes_state_save_ra,
+	snes_state_load_ra,
 };
 
 /* Blob entry: stash the imports and return the export table. NOTE: .init_array (libstdc++

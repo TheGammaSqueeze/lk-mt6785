@@ -114,9 +114,9 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 	}
 	{	/* run-ahead correctness: ra_ok=1 -> render-skip is state-transparent (look-ahead accurate);
 		 * ahead=1 -> the N-ahead frame differs from committed (genuinely looking ahead). */
-		extern volatile unsigned g_snes_dbg_ra_ok, g_snes_dbg_ra_ahead, g_snes_dbg_ra_depth;
-		snprintf(lbuf, sizeof lbuf, "snes-ra: ok=%u ahead=%u depth=%u",
-			 g_snes_dbg_ra_ok, g_snes_dbg_ra_ahead, g_snes_dbg_ra_depth);
+		extern volatile unsigned g_snes_dbg_ra_ok, g_snes_dbg_ra_ahead, g_snes_dbg_ra_depth, g_snes_dbg_ra_raw;
+		snprintf(lbuf, sizeof lbuf, "snes-ra: ok=%u ahead=%u raw=%u depth=%u",
+			 g_snes_dbg_ra_ok, g_snes_dbg_ra_ahead, g_snes_dbg_ra_raw, g_snes_dbg_ra_depth);
 		fastboot_info(lbuf);
 	}
 	{	/* clean display-independent cost breakdown (headless tight loops); fps = 1e6/us. */
