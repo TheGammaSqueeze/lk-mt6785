@@ -314,6 +314,7 @@ volatile unsigned g_snes_aspect_x1000;
 volatile int g_snes_stretch;
 volatile int g_snes_dbg_stretch = -1;   /* oem snes-stretch: -1 persisted, 0/1 force aspect for measurement */
 volatile unsigned g_snes_show_us;   /* last scale+flush time in us (set by ayaneo_snes_show_frame) */
+volatile unsigned g_snes_flush_us;  /* isolated cache-clean time in us (subset of show_us) */
 
 static char *smput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *smputu(char *p, unsigned v) { char t[12]; int n = 0;

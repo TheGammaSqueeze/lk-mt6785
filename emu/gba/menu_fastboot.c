@@ -123,6 +123,11 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		snprintf(lbuf, sizeof lbuf, "snes-opts: 0x%08x (audio byte=%u)",
 			 ayaneo_get_snes_opts(), (ayaneo_get_snes_opts() >> 16) & 0xFF);
 		fastboot_info(lbuf);
+		{
+			extern volatile unsigned g_snes_flush_us;
+			snprintf(lbuf, sizeof lbuf, "snes-disp: show_us=%u flush_us=%u", g_snes_show_us, g_snes_flush_us);
+			fastboot_info(lbuf);
+		}
 	}
 	fastboot_okay("");
 }

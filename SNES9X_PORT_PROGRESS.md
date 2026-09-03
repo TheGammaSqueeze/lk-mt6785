@@ -39,6 +39,20 @@ savestate PASS locally, then confirm on device via snes-bench (uncapped, chains 
   host harness (build_host_test.sh) is ready but has no ROM to run here, so core hot-path work must
   be measured on-device via snes-bench (safe, chains).
 
+## Display cost breakdown: the FLUSH is NOT the bottleneck, the BLIT is (2026-09-03)
+
+Split-timed on device (oem diag snes-disp, Pixel): show_us=2136, flush_us=297. So the 4.9MB
+arch_clean_cache_range is only ~300 us; the SCALE BLIT is ~1840 us (86%). This CORRECTS the earlier
+assumption (and the cron premise) that the cache flush is the fixed cost to optimize - a partial
+(dirty-rows-only) flush would save ~20-50 us and is not worth the dirty-region tracking.
+The blit is memory-bound: it writes the ~3.7 MB game area to the write-back framebuffer every frame,
+dominated by write-allocate cache-line fills (RFO) since the 4.9 MB panel far exceeds L2. Real levers
+(both bigger changes, need care): (a) avoid the RFO via non-temporal/streaming stores or a
+write-combining framebuffer mapping (MMU attr, shared with GBC/GBA - risky); (b) HARDWARE display-
+overlay scaling (DISP-OVL) so the CPU copies only the 256x224 source and the controller upscales,
+eliminating the per-frame blit entirely. Stretch's +146 us over Pixel is this blit scaling with the
+extra pixels, as expected. Instrumentation kept: oem diag snes-disp show_us/flush_us.
+
 ## Stretch-vs-Pixel display cost: root cause (2026-09-03)
 
 Why Stretch (fill-panel 1280x960) is slower than Pixel-perfect (letterboxed 1024x896):

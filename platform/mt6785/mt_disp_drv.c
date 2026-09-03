@@ -1382,8 +1382,12 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 			snes_menu_paint(dst, pitch_w, W, H);
 	}
 	ayaneo_draw_osd(dst, pitch_w, W, H);	/* transient volume/brightness slider (HW rocker) */
+	extern volatile unsigned g_snes_flush_us;   /* isolated cache-clean cost, for oem diag */
+	unsigned int t_flush0 = gpt4_get_current_tick();
 	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
-	g_snes_show_us = (gpt4_get_current_tick() - t_show0) / 13u;   /* scale+flush cost (no vsync) */
+	unsigned int t_flush1 = gpt4_get_current_tick();
+	g_snes_flush_us = (t_flush1 - t_flush0) / 13u;               /* just the 4.9MB clean */
+	g_snes_show_us  = (t_flush1 - t_show0) / 13u;                /* scale+osd+flush (no vsync) */
 	ayaneo_present(dpa, W, H, pitch_w);
 	/* Vsync-locked present: the SNES session runs the panel at ~60.11 Hz (vfp swap), so
 	 * blocking one vsync here paces emulation to the real scan-out = smooth, tear-free,
