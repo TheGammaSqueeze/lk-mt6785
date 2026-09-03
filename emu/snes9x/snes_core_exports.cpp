@@ -85,6 +85,14 @@ static int snes_set_option(const char *key, const char *value)
 static volatile int s_ra_fast;
 static void snes_set_ra_fast(int on) { s_ra_fast = on ? 1 : 0; }
 
+/* Per-frame render/audio skip for run-ahead look-ahead frames (see snes_core_abi.h). When
+ * s_ra_novideo, GET_AUDIO_VIDEO_ENABLE clears the VIDEO bit -> IPPU.RenderThisFrame=false ->
+ * snes9x skips the PPU line render. When s_ra_noaudio, it sets HARD_DISABLE_AUDIO -> the APU/DSP
+ * skip sample generation. Both are output-only skips: emulated CPU/APU state still advances
+ * exactly, so a rewound look-ahead is bit-identical (the frame is discarded/restored anyway). */
+static volatile int s_ra_novideo, s_ra_noaudio;
+static void snes_set_av_skip(int nv, int na) { s_ra_novideo = nv ? 1 : 0; s_ra_noaudio = na ? 1 : 0; }
+
 /* ---- libretro callbacks ---- */
 static bool env_cb(unsigned cmd, void *data)
 {
@@ -94,9 +102,11 @@ static bool env_cb(unsigned cmd, void *data)
 		return *f == RETRO_PIXEL_FORMAT_RGB565;   /* we render RGB565 only */
 	}
 	case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE:
-		/* VIDEO|AUDIO always on, HARD_DISABLE_AUDIO never (matches the prior declined
-		 * behaviour exactly); add FAST_SAVESTATES only during run-ahead. */
-		if (data) *(int *)data = (1 | 2) | (s_ra_fast ? 4 : 0);
+		/* VIDEO (bit0) on unless a look-ahead render is being skipped; AUDIO (bit1) always
+		 * advertised (the core ignores it); FAST_SAVESTATES (bit2) during run-ahead;
+		 * HARD_DISABLE_AUDIO (bit3) when a look-ahead frame's audio is skipped. */
+		if (data) *(int *)data = (s_ra_novideo ? 0 : 1) | 2 |
+					 (s_ra_fast ? 4 : 0) | (s_ra_noaudio ? 8 : 0);
 		return true;
 	case RETRO_ENVIRONMENT_GET_VARIABLE: {
 		struct retro_variable *v = (struct retro_variable *)data;
@@ -293,6 +303,7 @@ static const struct snes_core_exports g_exports = {
 	snes_heap_mark,
 	snes_heap_reset,
 	snes_set_ra_fast,
+	snes_set_av_skip,
 };
 
 /* Blob entry: stash the imports and return the export table. NOTE: .init_array (libstdc++

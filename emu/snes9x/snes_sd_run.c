@@ -48,13 +48,12 @@ extern void     ayaneo_set_snes_turbo(int v);
  * displayed frame, so escalate the ARM clock with the tier. Off while the menu is open. */
 #define SNES_AHEAD_BUF 0x53000000u   /* run-ahead state (shares the mapped-arena scratch slot) */
 #define SNES_AHEAD_CAP 0x00200000u   /* 2 MB room before the menu wallpaper cache (0x53200000) */
-/* Clock per run-ahead tier. Off (pf=0) = 1800 for smooth 60 fps capped play. Any run-ahead
- * tier = 1400, the guaranteed-stable OPP: run-ahead runs pf+1 emulations/frame and CANNOT cap
- * to 60, so it sits at ~100% CPU duty; at 1800+ (no Vproc scaling in LK) that sustained load
- * browns the core out and data-aborts (the "LK crash after enabling runahead"). 1400 is stable
- * under 100% duty, at the cost of run-ahead running well under 60 fps - a hardware limit, not a
- * bug. Higher needs a lighter core or a Vproc bump. */
-static const unsigned s_snes_ra_opp[4] = { 1800, 1400, 1400, 1400 };
+/* Clock per run-ahead tier, escalating with depth so the pf+1 emulations/frame still fit the
+ * 16.7 ms budget: Off=1400, Balanced(1)=1600, Responsive(2)=1800, Max(3)=2000 (the ARM PLL
+ * reads back ~1 MHz low, i.e. 1399/1599/1799/1999). The render/audio skip on look-ahead frames
+ * cut the sustained duty enough that the higher tiers are stable now (previously any run-ahead
+ * was clamped to 1400 to avoid a brownout data-abort at ~100% duty). */
+static const unsigned s_snes_ra_opp[4] = { 1400, 1600, 1800, 2000 };
 static const char *snes_ra_name(int pf)
 { return pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : pf == 3 ? "Max" : "Off"; }
 
@@ -598,8 +597,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	if (ra_ssz == 0 || ra_ssz > SNES_AHEAD_CAP) ra_ssz = 0;
 	s_snes_ra_avail = (ra_ssz != 0);   /* surface in the Run-Ahead menu row when a tier is inert */
 	if (!g_snes_dbg_bench) {   /* bench pins 1400 itself; do not disturb it */
-		int pf0 = ayaneo_get_preempt_frames();   /* persisted run-ahead tier: pin its stable clock */
-		if (pf0 > 0 && pf0 <= 3) ayaneo_set_cpu_mhz(s_snes_ra_opp[pf0]);   /* clamp DOWN to 1400 for run-ahead */
+		int pf0 = ayaneo_get_preempt_frames();   /* persisted run-ahead tier: pin its escalated clock */
+		if (pf0 > 0 && pf0 <= 3) ayaneo_set_cpu_mhz(s_snes_ra_opp[pf0]);   /* 1600/1800/2000 by tier */
 	}
 
 	int reset_hold = 0, aya_prev = 0, ff_prev = 0;
@@ -619,7 +618,22 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * so a menu opened with run-ahead disabled used to drop frames rendering game+overlay at
 		 * the low clock. The last frame f persists and is re-presented below under the overlay;
 		 * its input is gated off in ayaneo_snes_pad_mask regardless. */
+		/* Compute fast-forward + run-ahead depth UP FRONT so the render/audio skip can be armed
+		 * before the committed frame runs. When run-ahead presents a look-ahead frame, the
+		 * committed frame's OWN video is thrown away, so skip rendering it (its audio is still the
+		 * committed audio, so keep that). The headless test keeps video so frame validation works. */
+		int ff = PRESSED(GPIO_R2) && !g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit;
+		if (ff && !ff_prev) ayaneo_menu_audio_silence();   /* clear the AFE ring once on FF entry */
+		ff_prev = ff;
+		int pf = 0;
+		{
+			extern volatile int g_snes_dbg_ra;   /* oem snes-ra:N forces run-ahead depth in the test */
+			if (!ff && !g_snes_menu_open && ra_ssz && (!g_snes_benchmark || g_snes_test_limit))
+				pf = g_snes_test_limit ? g_snes_dbg_ra : ayaneo_get_preempt_frames();
+		}
+
 		if (!g_snes_menu_open) {
+			if (c->set_av_skip) c->set_av_skip((pf > 0 && !g_snes_test_limit) ? 1 : 0, 0);
 			c->run(&f);
 			g_snes_dbg_frames++;
 			/* keep the display's target aspect current (cheap; refreshed periodically) - it
@@ -653,39 +667,22 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * the core exactly one frame so f reflects the new crop/blend for a live preview.
 			 * Game input is masked while the menu is open, so this barely advances the game. */
 			s_menu_preview = 0;
+			if (c->set_av_skip) c->set_av_skip(0, 0);   /* preview render must be visible */
 			c->run(&f);
 			if (c->aspect_x1000) g_snes_aspect_x1000 = c->aspect_x1000();
 		}
-		/* Fast-forward: hold R2 (second-stage right trigger, matches GBA) to run the
-		 * emulation flat out. Present sparsely (1 in 8) and skip the vsync wait on the other
-		 * frames so nothing paces the loop; audio and run-ahead are suppressed. Off under the
-		 * menu, while benchmarking, or in the headless test. */
-		int ff = PRESSED(GPIO_R2) && !g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit;
-		/* On FF entry, clear the AFE ring once so the DMA loops SILENCE (audio is suppressed
-		 * while fast-forwarding); without this it drones the last 341 ms buffer. */
-		if (ff && !ff_prev) ayaneo_menu_audio_silence();
-		ff_prev = ff;
-
 		/* Committed-frame audio submitted BEFORE any run-ahead look-ahead overwrites the
 		 * blob's audio buffer; muted while benchmarking or fast-forwarding so the ring never
-		 * throttles the uncapped loop. */
+		 * throttles the uncapped loop. (ff / pf were computed up front, above.) */
 		if (f.audio && f.frames && !g_snes_benchmark && !ff && !g_snes_menu_open) {
 			g_snes_dbg_audframes += f.frames;
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 		}
 		/* Run-ahead: advance the DISPLAY pf frames into the future with the current input,
-		 * then rewind so the real emulation still advances exactly one frame per loop. Off
-		 * under the menu (do not race ahead behind the overlay), while benchmarking/fast-
-		 * forwarding, or in the headless test. Look-ahead frames are muted. */
+		 * then rewind so the real emulation still advances exactly one frame per loop. */
 		{
-			extern volatile int g_snes_dbg_ra;   /* oem snes-ra:N forces run-ahead N in the headless test */
-			int pf = 0;
 			int i;
 			void *hmark = 0;
-			/* Run-ahead is off under interactive benchmark, but the HEADLESS benchmark keeps it
-			 * on (test_limit set) so oem snes-bench + snes-ra measures run-ahead depth cost. */
-			if (!ff && !g_snes_menu_open && ra_ssz && (!g_snes_benchmark || g_snes_test_limit))
-				pf = g_snes_test_limit ? g_snes_dbg_ra : ayaneo_get_preempt_frames();
 			if (pf > 0) {
 				/* Fast savestates for the (transient) run-ahead save/load: direct-memory
 				 * serialize, ~30-40% cheaper than the normal path. Reclaim serialize temps
@@ -694,7 +691,15 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (c->set_ra_fast) c->set_ra_fast(1);
 				if (c->heap_mark) hmark = c->heap_mark();
 				c->state_save((void *)SNES_AHEAD_BUF, SNES_AHEAD_CAP);
-				for (i = 0; i < pf; i++) c->run(&f);
+				/* Only the LAST look-ahead frame is presented (needs video); NONE are heard
+				 * (audio hard-disabled). Skipping the PPU render on the throwaway frames and the
+				 * APU/DSP on all of them is the bulk of the run-ahead speedup - the emulated
+				 * CPU/APU state still advances exactly, so the rewind is bit-identical. */
+				for (i = 0; i < pf; i++) {
+					if (c->set_av_skip) c->set_av_skip((i == pf - 1) ? 0 : 1, 1);
+					c->run(&f);
+				}
+				if (c->set_av_skip) c->set_av_skip(0, 0);
 			}
 			/* Uncapped presentation for BOTH fast-forward and Benchmark: present ~every 8th
 			 * frame and skip the blit entirely on the other 7. Benchmark previously blitted every

@@ -81,6 +81,12 @@ struct snes_core_exports {
 	/* run-ahead fast savestates: LK sets this around the per-frame save/load so snes9x
 	 * serializes with the fast (direct-memory) path; cleared for portable SD saves. */
 	void  (*set_ra_fast)(int on);
+
+	/* run-ahead render/audio skip: set before a run() to skip the PPU render (skip_video) and/or
+	 * hard-disable audio (skip_audio) for look-ahead frames that are never presented or heard.
+	 * This is the core of the run-ahead speedup: only the presented frame needs video, only the
+	 * committed frame needs audio. Both cleared (0,0) for normal frames. */
+	void  (*set_av_skip)(int skip_video, int skip_audio);
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);
