@@ -6,6 +6,18 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## EMULATION SPEEDUP pass (2026-09-03): selective -O2 -> base 95 to 118 fps (+24%)
+
+The whole snes9x core was built with -Os (optimize for SIZE) + generic -march=armv7-a. The blob
+must fit a fixed 2 MB slot in boot_b (partition boot_b = 32 MB, blob at 0x01E00000..0x02000000),
+so whole-core -O2 (2.27 MB) overflows by ~170 KB. SELECTIVE -O2 instead: the HOT per-frame files
+(cpu, cpuexec, cpuops, dma, gfx, ppu, memmap, apu/apu, sdsp, smp, smp_state) get -O2; cold chip
+code + tile (1.2 MB at -O2: inlined template variants, memory-bound) + sa1/sa1cpu (SA-1 carts
+only) stay -Os. Plus -ffunction-sections/-fdata-sections with link --gc-sections. Blob = 1.99 MB
+(105 KB spare). Measured uncapped @1400: base ra0 95 -> 118 fps (+24%), run-ahead ra1 37 -> 46 fps.
+Savestate self-test still core=1 sd=1 fast=1 (no corruption). Failed abort-crash note: whole-core -O2 boot_b flash returns
+"size too large" - MUST keep blob < 2 MB; flash BOTH lk_a+boot_b when the blob changes.
+
 ## Perf/stability pass (2026-09-03): benchmark harness, clock, run-ahead RCA
 
 User reports addressed: (1) Pico "Close" now EXITS to the ROM selector (relabeled "Exit Game",

@@ -16,7 +16,8 @@ OBJDIR="$DIR/obj"
 INC="-I$DIR -I$DIR/apu -I$DIR/apu/bapu -I$DIR/libretro -I$DIR/libretro/libretro-common/include"
 COMMON="-march=armv7-a -mfloat-abi=soft -mthumb-interwork -ffreestanding \
         -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit \
-        -fno-short-enums -mno-unaligned-access -fno-strict-aliasing -Os -fno-common -D__LIBRETRO__ $INC"
+        -fno-short-enums -mno-unaligned-access -fno-strict-aliasing -Os -fno-common \
+        -ffunction-sections -fdata-sections -D__LIBRETRO__ $INC"
 
 # core archive must exist (build_core.sh)
 [ -f "$DIR/libsnes9x.a" ] || { echo "missing $DIR/libsnes9x.a - run emu/snes9x/build_core.sh first" >&2; exit 1; }

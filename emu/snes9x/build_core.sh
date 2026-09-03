@@ -11,11 +11,25 @@ CC=arm-none-eabi-gcc
 AR=arm-none-eabi-ar
 
 INC="-I$DIR -I$DIR/apu -I$DIR/apu/bapu -I$DIR/libretro -I$DIR/libretro/libretro-common/include"
+# No optimization level in COMMON: it is chosen per file below. The blob must fit a fixed
+# 2 MB slot in boot_b, so whole-core -O2 (+150 KB over budget) is not an option. Instead the
+# HOT per-frame files (65816 CPU, PPU/GFX/DMA, SPC700/DSP, memmap) get -O2 for speed and the
+# cold chip/loader code stays -Os for size. Keeps the blob under budget while capturing the
+# bulk of the speedup. -ffunction/-fdata-sections + link --gc-sections trims dead code.
 COMMON="-march=armv7-a -mfloat-abi=soft -mthumb-interwork -ffreestanding \
         -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit \
-        -fno-short-enums -mno-unaligned-access -fno-strict-aliasing -Os -fno-common -D__LIBRETRO__ $INC"
+        -fno-short-enums -mno-unaligned-access -fno-strict-aliasing -fno-common \
+        -ffunction-sections -fdata-sections -D__LIBRETRO__ $INC"
 CXXFLAGS="$COMMON"
 CFLAGS="$COMMON -std=gnu99"
+OPT_HOT="-O2"
+OPT_COLD="-Os"
+
+# HOT files: executed every frame for typical games (space-separated, path form as below).
+# tile (1.2 MB at -O2: inlined template variants, memory-bound) and sa1/sa1cpu (SA-1 carts
+# only) stay -Os to fit the 2 MB slot; the CPU/PPU/DMA/APU/DSP hot paths get -O2.
+HOT_SET=" cpu cpuexec cpuops dma gfx ppu memmap apu/apu apu/bapu/dsp/sdsp apu/bapu/smp/smp apu/bapu/smp/smp_state "
+opt_for() { case "$HOT_SET" in *" $1 "*) echo "$OPT_HOT";; *) echo "$OPT_COLD";; esac; }
 
 OBJDIR="$DIR/obj"
 rm -rf "$OBJDIR"; mkdir -p "$OBJDIR"
@@ -29,11 +43,11 @@ CXX_SRCS="apu/apu apu/bapu/dsp/sdsp apu/bapu/smp/smp apu/bapu/smp/smp_state \
 
 for f in $C_SRCS; do
 	o="$OBJDIR/$(echo $f | tr '/' '_').o"
-	$CC $CFLAGS -c "$DIR/$f.c" -o "$o"
+	$CC $CFLAGS $(opt_for "$f") -c "$DIR/$f.c" -o "$o"
 done
 for f in $CXX_SRCS; do
 	o="$OBJDIR/$(echo $f | tr '/' '_').o"
-	$CXX $CXXFLAGS -c "$DIR/$f.cpp" -o "$o"
+	$CXX $CXXFLAGS $(opt_for "$f") -c "$DIR/$f.cpp" -o "$o"
 done
 
 rm -f "$DIR/libsnes9x.a"
