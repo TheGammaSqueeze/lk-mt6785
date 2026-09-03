@@ -106,7 +106,10 @@ NEGATIVE RESULTS (tried, reverted - do not re-try without a division-heavy game)
 - OPT_HOT -O3 (over -O2): 118 -> 120 fps = +1.7% (borderline noise). Cost: blob +66 KB (spare
   drops 105->38 KB), and -O3 bloats the cpuops opcode switch, risking icache thrashing on larger
   games not covered by the SMW bench. Marginal gain not worth the budget + untested-regression
-  risk; reverted. -O2 is the interpreter sweet spot here. Failed abort-crash note: whole-core -O2 boot_b flash returns
+  risk; reverted. -O2 is the interpreter sweet spot here.
+- -mtune=cortex-a55 (over default armv7-a scheduling, ISA unchanged): 121 -> 119 fps on both of
+  two runs = flat/slightly worse, savestate clean. gcc 10.3's A55 pipeline model does not help
+  this code (same instructions, reordered). Size-identical. Reverted. Failed abort-crash note: whole-core -O2 boot_b flash returns
 "size too large" - MUST keep blob < 2 MB; flash BOTH lk_a+boot_b when the blob changes.
 
 ## Perf/stability pass (2026-09-03): benchmark harness, clock, run-ahead RCA
