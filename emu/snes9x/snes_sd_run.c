@@ -48,7 +48,13 @@ extern void     ayaneo_set_snes_turbo(int v);
  * displayed frame, so escalate the ARM clock with the tier. Off while the menu is open. */
 #define SNES_AHEAD_BUF 0x53000000u   /* run-ahead state (shares the mapped-arena scratch slot) */
 #define SNES_AHEAD_CAP 0x00200000u   /* 2 MB room before the menu wallpaper cache (0x53200000) */
-static const unsigned s_snes_ra_opp[4] = { 1400, 1600, 1800, 2000 };   /* clock per pf tier */
+/* Clock per run-ahead tier. Off (pf=0) = 1800 for smooth 60 fps capped play. Any run-ahead
+ * tier = 1400, the guaranteed-stable OPP: run-ahead runs pf+1 emulations/frame and CANNOT cap
+ * to 60, so it sits at ~100% CPU duty; at 1800+ (no Vproc scaling in LK) that sustained load
+ * browns the core out and data-aborts (the "LK crash after enabling runahead"). 1400 is stable
+ * under 100% duty, at the cost of run-ahead running well under 60 fps - a hardware limit, not a
+ * bug. Higher needs a lighter core or a Vproc bump. */
+static const unsigned s_snes_ra_opp[4] = { 1800, 1400, 1400, 1400 };
 static const char *snes_ra_name(int pf)
 { return pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : pf == 3 ? "Max" : "Off"; }
 
@@ -64,6 +70,13 @@ static int s_snes_ra_avail = 1;
 volatile int g_snes_benchmark;
 static volatile int s_snes_fps;
 int snes_benchmark_on(void) { return g_snes_benchmark; }
+
+/* Headless benchmark harness (oem snes-bench:N): forces benchmark mode for a frame-limited
+ * run so the cron can measure UNCAPPED emulation FPS - combined with oem snes-ra:N it also
+ * measures run-ahead depth cost (run-ahead stays active under benchmark ONLY in the headless
+ * test). g_snes_dbg_benchfps holds the last measured FPS, read back via oem diag. */
+volatile int      g_snes_dbg_bench;
+volatile unsigned g_snes_dbg_benchfps;
 
 /* Measured SNES panel refresh (Hz*1000), an 8-frame average from the vsync-locked present;
  * shown read-only in the Pico menu and via oem diag. Same tick math as the menu's
@@ -138,6 +151,7 @@ extern int  mtk_detect_key(unsigned short hwkey);   /* hardware volume rocker (0
 extern void ayaneo_gbc_osd_show(int kind, int pct); /* transient on-screen bar: 0 brightness,1 volume */
 
 volatile int g_snes_menu_open;   /* gates ayaneo_snes_pad_mask so the game ignores menu input */
+volatile int g_snes_menu_exit;   /* Pico-menu "Exit Game" -> run loop breaks back to the selector */
 volatile int g_snes_turbo;       /* auto-fire mask: bit0 = A, bit1 = B (0=off,1=A,2=B,3=A+B) */
 
 /* diagnostics, read via `fastboot oem diag` after a launch (why did the session exit?) */
@@ -312,7 +326,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
 	case SM_SLOT:   return "Save Slot";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
-	case SM_RESET:  return "Reset Game"; case SM_CLOSE:  return "Close"; } return ""; }
+	case SM_RESET:  return "Reset Game"; case SM_CLOSE:  return "Exit Game"; } return ""; }
 static const char *sm_value(int i, char *buf) { char *p = buf;
 	switch (i) {
 	case SM_BRIGHT: p = smputu(p, (unsigned)ayaneo_brightness_pct()); p = smput(p, "%"); break;
@@ -337,7 +351,7 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 		{ unsigned f = (hz % 1000) / 10; if (f < 10) p = smput(p, "0"); p = smputu(p, f); }
 		p = smput(p, " Hz"); break; }
 	case SM_SLOT: p = smputu(p, (unsigned)s_save_slot); p = smput(p, s_slot_used ? " used" : " empty"); break;
-	case SM_SAVE: case SM_LOAD: p = smput(p, "[A]"); break;
+	case SM_SAVE: case SM_LOAD: case SM_RESET: case SM_CLOSE: p = smput(p, "[A]"); break;
 	default: break; } *p = 0; return buf; }
 
 int snes_menu_open(void) { return g_snes_menu_open; }
@@ -382,7 +396,7 @@ static int sm_change(int i, int dir, int act)
 			snes_settings_touch();
 		}
 		break;
-	case SM_CPU:    if (dir) snes_cpu_step(dir); break;   /* not persisted (session floors at 1400) */
+	case SM_CPU:    if (dir) snes_cpu_step(dir); break;   /* not persisted (session floors at 1800) */
 	case SM_RUNAHEAD: if (dir) {
 		int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
 		ayaneo_set_preempt_frames(pf);
@@ -411,7 +425,7 @@ static int sm_change(int i, int dir, int act)
 			smput(s_mstat, (n && s_menu_c->state_load(st, n) == 0) ? "State loaded" : "No save state");
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
 	case SM_RESET: if (act) { s_menu_c->reset(); return 1; } break;
-	case SM_CLOSE: if (act) return 1; break;
+	case SM_CLOSE: if (act) { g_snes_menu_exit = 1; return 1; } break;   /* exit to the ROM selector */
 	}
 	return 0;
 }
@@ -474,7 +488,16 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * ayaneo_set_cpu_mhz only moves the PLL, not core voltage - 1400 is the OPP just above
 	 * the boot Vproc point, the same one the "Max" preempt tier uses. */
 	saved_mhz = ayaneo_get_cpu_mhz();
-	if (saved_mhz < 1400) ayaneo_set_cpu_mhz(1400);
+	if (g_snes_dbg_bench) {
+		/* Headless uncapped benchmark: run at the guaranteed-stable 1400 MHz. Sustained 100%
+		 * duty at 1800+ (no Vproc scaling in LK) BROWNS OUT the core - the uncapped bench faulted
+		 * the device with dfar=0xffffffff. Normal play is vsync-capped (the CPU idles ~40% of each
+		 * frame) so 1800 is fine there, but the bench must never crash the device. */
+		g_snes_benchmark = 1;
+		ayaneo_set_cpu_mhz(1400);
+	} else if (saved_mhz < 1800) {
+		ayaneo_set_cpu_mhz(1800);   /* SNES default: 1800 MHz PLL (reads back 1799), capped play */
+	}
 
 	/* If the menu armed a launch punch (snapshot at 0x54000000, gba_punch_ready), DON'T
 	 * clear to black - keep the frozen menu on screen so the growing gameplay circle opens
@@ -491,7 +514,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	/* hand the in-game menu this session's context */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
-	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0;
+	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0; g_snes_menu_exit = 0;
 	s_save_slot = ayaneo_get_snes_slot();   /* restore the last-used manual save slot */
 	g_snes_turbo = ayaneo_get_snes_turbo(); /* restore the persisted auto-fire setting */
 	s_settings_dirty = 0;
@@ -543,8 +566,10 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	unsigned ra_ssz = c->state_size();
 	if (ra_ssz == 0 || ra_ssz > SNES_AHEAD_CAP) ra_ssz = 0;
 	s_snes_ra_avail = (ra_ssz != 0);   /* surface in the Run-Ahead menu row when a tier is inert */
-	{ int pf0 = ayaneo_get_preempt_frames();   /* honour a persisted tier: escalate the clock */
-	  if (pf0 > 0 && pf0 <= 3 && ayaneo_get_cpu_mhz() < s_snes_ra_opp[pf0]) ayaneo_set_cpu_mhz(s_snes_ra_opp[pf0]); }
+	if (!g_snes_dbg_bench) {   /* bench pins 1400 itself; do not disturb it */
+		int pf0 = ayaneo_get_preempt_frames();   /* persisted run-ahead tier: pin its stable clock */
+		if (pf0 > 0 && pf0 <= 3) ayaneo_set_cpu_mhz(s_snes_ra_opp[pf0]);   /* clamp DOWN to 1400 for run-ahead */
+	}
 
 	int reset_hold = 0, aya_prev = 0, ff_prev = 0;
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
@@ -619,7 +644,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			int pf = 0;
 			int i;
 			void *hmark = 0;
-			if (!ff && !g_snes_menu_open && !g_snes_benchmark && ra_ssz)
+			/* Run-ahead is off under interactive benchmark, but the HEADLESS benchmark keeps it
+			 * on (test_limit set) so oem snes-bench + snes-ra measures run-ahead depth cost. */
+			if (!ff && !g_snes_menu_open && ra_ssz && (!g_snes_benchmark || g_snes_test_limit))
 				pf = g_snes_test_limit ? g_snes_dbg_ra : ayaneo_get_preempt_frames();
 			if (pf > 0) {
 				/* Fast savestates for the (transient) run-ahead save/load: direct-memory
@@ -631,14 +658,19 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				c->state_save((void *)SNES_AHEAD_BUF, SNES_AHEAD_CAP);
 				for (i = 0; i < pf; i++) c->run(&f);
 			}
-			if (ff) {
-				/* uncapped: present ~every 8th frame (one vsync per 8 emulated frames),
-				 * skip present/vsync otherwise so emulation runs as fast as the CPU allows. */
+			/* Uncapped presentation for BOTH fast-forward and Benchmark: present ~every 8th
+			 * frame and skip the blit entirely on the other 7. Benchmark previously blitted every
+			 * frame, so the reported FPS was capped by the ~5 ms scaler+flush, not the emulator -
+			 * you could not see the real max. With the sparse present the loop measures pure
+			 * emulation throughput (ayaneo_snes_show_frame also skips the vsync wait when
+			 * snes_benchmark_on(), so nothing paces it). */
+			int uncapped = ff || g_snes_benchmark;
+			if (uncapped) {
 				if ((g_snes_dbg_frames & 7u) == 0 && f.video && f.width && f.height)
 					ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
 			} else if (f.video && f.width && f.height)
 				ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
-			else if (!g_snes_benchmark)
+			else
 				priamry_display_wait_for_vsync();   /* keep pacing if a frame was dropped */
 			if (pf > 0) {
 				c->state_load((const void *)SNES_AHEAD_BUF, SNES_AHEAD_CAP);   /* rewind */
@@ -670,6 +702,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (b_last) { b_acc += now - b_last; b_n++;
 					if (b_acc >= 6500000u) {   /* ~0.5 s at 13 MHz */
 						s_snes_fps = (int)((unsigned long long)b_n * 13000000ULL / b_acc);
+						g_snes_dbg_benchfps = (unsigned)s_snes_fps;   /* headless read-back */
 						b_acc = 0; b_n = 0; } }
 				b_last = now;
 			} else { b_last = 0; b_acc = 0; b_n = 0; }
@@ -723,6 +756,14 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (++reset_hold >= RESET_HOLD_FRAMES) { c->reset(); reset_hold = 0; }
 			} else reset_hold = 0;
 		}
+		/* Pico-menu "Exit Game" selected: leave the session like the AYA-hold exit, arming the
+		 * reverse-punch so the frozen frame shrinks back into the carousel (matches GBA/GBC). */
+		if (g_snes_menu_exit) {
+			extern void snes_menu_arm_reverse(const unsigned short *, unsigned, unsigned, unsigned);
+			if (!g_snes_test_limit && f.video && f.width && f.height)
+				snes_menu_arm_reverse((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
+			g_snes_dbg_exit = 1; break;
+		}
 		if (g_snes_test_limit && g_snes_dbg_frames >= g_snes_test_limit) break;   /* oem snes-launch */
 	}
 
@@ -766,6 +807,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	g_snes_menu_open = 0;
 	g_snes_test_limit = 0;
+	if (g_snes_dbg_bench) { g_snes_benchmark = 0; g_snes_dbg_bench = 0; }   /* headless bench: reset */
 	snes_settings_flush();   /* write any pending settings change before leaving the session */
 
 	ayaneo_dsi_set_vfp(DEFAULT_VFP);   /* restore 59.749 Hz for the menu / other cores */

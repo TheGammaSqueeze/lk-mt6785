@@ -112,6 +112,14 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			 g_snes_dbg_ss_core, g_snes_dbg_ss_sd, g_snes_dbg_ss_fast, g_snes_dbg_heapused, g_snes_dbg_revmap);
 		fastboot_info(lbuf);
 	}
+	{
+		extern volatile unsigned g_snes_dbg_benchfps;
+		extern volatile int g_snes_dbg_ra;
+		extern unsigned int ayaneo_get_cpu_mhz(void);
+		snprintf(lbuf, sizeof lbuf, "snes-bench: fps=%u ra=%d mhz=%u",
+			 g_snes_dbg_benchfps, g_snes_dbg_ra, ayaneo_get_cpu_mhz());
+		fastboot_info(lbuf);
+	}
 	fastboot_okay("");
 }
 
@@ -163,6 +171,32 @@ static void cmd_snes_launch(const char *arg, void *data, unsigned sz)
 		if (g_snes_dbg_exit != 0 && g_snes_test_limit == 0) break;
 	}
 	snprintf(lbuf, sizeof lbuf, "snes-launch: requested %u frames, ran=%u exit=%u", n, g_snes_dbg_frames, g_snes_dbg_exit);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem snes-bench[:N] - like snes-launch but forces UNCAPPED benchmark mode for N frames
+ * (default 600) so we measure the real max emulation FPS, not the 60 Hz vsync cap. Combine
+ * with oem snes-ra:N first to measure run-ahead depth cost. Read fps via oem diag snes-bench. */
+static void cmd_snes_bench(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_snes_launch, g_snes_dbg_bench;
+	extern volatile unsigned g_snes_test_limit, g_snes_dbg_frames, g_snes_dbg_exit, g_snes_dbg_benchfps;
+	unsigned n = 0, i;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg >= '0' && *arg <= '9') n = n * 10 + (unsigned)(*arg++ - '0');
+	if (n < 1) n = 600;
+	g_snes_dbg_benchfps = 0;
+	g_snes_dbg_bench = 1;      /* session forces g_snes_benchmark; cleared on session exit */
+	g_snes_test_limit = n;
+	g_dbg_snes_launch = 1;
+	/* uncapped, so it finishes far faster than n/50 s; generous ceiling still bounds the wait. */
+	for (i = 0; i < 40 + n; i++) {
+		thread_sleep(50);
+		if (g_snes_dbg_exit != 0 && g_snes_test_limit == 0) break;
+	}
+	snprintf(lbuf, sizeof lbuf, "snes-bench: %u frames, ran=%u fps=%u exit=%u", n, g_snes_dbg_frames, g_snes_dbg_benchfps, g_snes_dbg_exit);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -260,6 +294,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
+	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
 	fastboot_register("oem snes-ra", cmd_snes_ra, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
 	fastboot_register("oem preempt:", cmd_preempt, 1, 0);

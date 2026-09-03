@@ -6,6 +6,40 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Perf/stability pass (2026-09-03): benchmark harness, clock, run-ahead RCA
+
+User reports addressed: (1) Pico "Close" now EXITS to the ROM selector (relabeled "Exit Game",
+arms the reverse-punch); B / AYA-tap still just dismiss the overlay. (2) Benchmark is now truly
+UNCAPPED - it presented every frame before, so the reported FPS was the ~5 ms blit, not the
+emulator; now it sparse-presents (1-in-8) like fast-forward. (3) Scaler row-replication: the
+fast path renders ONE dest row then memcpy-replicates it to the rest, so Stretch/large scales
+no longer take the per-row scalar-store hit. (4) Default SNES clock is 1800 MHz (reads 1799).
+
+Headless benchmark harness added for the cron: `oem snes-bench:N` (uncapped, reports fps),
+combined with `oem snes-ra:N`, plus an `oem diag` "snes-bench: fps=.. ra=.. mhz=.." line.
+
+STABLE 1400 MHz benchmark sweep (uncapped, no crash - the safe harness clock):
+  ra=0 (off) 95 fps | ra=1 37 fps | ra=2 27 fps | ra=3 21 fps (all exit=5, no brownout).
+Base emulation is 95 fps at 1400 (10.5 ms/frame); run-ahead pf=1 = 2 emulations = ~47 fps
+ideal, 37 measured. To hit 60 with pf=1 you need ~120 fps base = a much faster core. Capped
+1800 no-run-ahead play verified STABLE (snes-launch:300 exit=5, hz=60088).
+
+RUN-AHEAD FINDING (root cause of "poor at all clocks" + the GBA FAULT the user saw):
+- Uncapped FPS at 1800 MHz: ra=1 -> 47, ra=2 -> 34, ra=3 -> 27. Each depth adds a FULL extra
+  emulation/frame; snes9x is heavy, so run-ahead cannot reach 60 fps at any safe clock. Serialize
+  overhead is small (~1.3 ms) - it's the extra emulations, i.e. compute-bound.
+- Because run-ahead can't cap to 60, it runs at ~100% CPU duty. At 1800/2000 MHz (LK has no Vproc
+  scaling; 1400 is the highest guaranteed-stable OPP) that sustained load BROWNS OUT the core:
+  data abort pc=0x4f00e5ec dfar=0xffffffff (a legit instruction dereferencing a pointer whose
+  VALUE glitched to ~0xffffffff). Reproduced by the uncapped bench at ra=0 AND ra=3 -> device
+  halts. This is the same mechanism as the earlier "LK crash mid-game after enabling runahead".
+- FIXES: run-ahead tiers clamped to the stable 1400 MHz (s_snes_ra_opp = {1800,1400,1400,1400};
+  Off=1800 capped play, any run-ahead tier=1400) so enabling it can no longer crash. The headless
+  bench also pins 1400. Normal capped play stays at 1800 (CPU idles ~40%/frame, stable).
+- OPEN DECISION for the user: run-ahead at stable 1400 is safe but well under 60 fps (choppy).
+  To get fast AND stable run-ahead needs either a lighter core (snes9x2010) or a Vproc bump
+  (PMIC over-volt, risky). Recommend evaluating snes9x2010; otherwise keep run-ahead off.
+
 ## Validation note: `oem snes-launch` needs a WARM menu (2026-09-02)
 
 `cmd_snes_launch` only sets `g_snes_test_limit` + `g_dbg_snes_launch` and then waits for the

@@ -1318,7 +1318,29 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 		unsigned int vspan = qy, dyend, dx = (unsigned int)xoff, ex_e = 0;
 		ey += ry; if (ey >= sh) { ey -= sh; vspan++; }
 		dyend = dy + vspan;
-		for (sx = 0; sx < sw; sx++) {
+		if (!filt) {
+			/* Fast path: render ONE destination row across all source pixels, then replicate
+			 * it to the remaining (vspan-1) rows with memcpy. memcpy issues wide burst stores,
+			 * so vertical scaling costs ~1 scalar row + N cheap copies instead of N scalar rows
+			 * - a big win at high output heights (e.g. Stretch's 960 rows), which is why
+			 * Stretch/large scales took a hard FPS hit before. */
+			unsigned int *o0 = dst + dy * pitch_w;
+			for (sx = 0; sx < sw; sx++) {
+				unsigned int v = srow[sx];
+				unsigned int r = ((v >> 11) & 0x1f) << 3;
+				unsigned int g = ((v >> 5) & 0x3f) << 2;
+				unsigned int b = (v & 0x1f) << 3;
+				unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+				unsigned int span = qx, ex;
+				ex_e += rx; if (ex_e >= sw) { ex_e -= sw; span++; }
+				ex = dx + span;
+				for (cx = dx; cx < ex; cx++) o0[cx] = px;
+				dx = ex;
+			}
+			for (iy = dy + 1; iy < dyend; iy++)
+				memcpy(dst + iy * pitch_w + (unsigned int)xoff,
+				       o0 + (unsigned int)xoff, (size_t)dw * 4u);
+		} else for (sx = 0; sx < sw; sx++) {
 			unsigned int v = srow[sx];
 			unsigned int r = ((v >> 11) & 0x1f) << 3;
 			unsigned int g = ((v >> 5) & 0x3f) << 2;
@@ -1328,16 +1350,10 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 			unsigned int span = qx, ex;
 			ex_e += rx; if (ex_e >= sw) { ex_e -= sw; span++; }
 			ex = dx + span;
-			if (!filt) {
-				for (iy = dy; iy < dyend; iy++) {
-					unsigned int *o = dst + iy * pitch_w;
-					for (cx = dx; cx < ex; cx++) o[cx] = px;
-				}
-			} else {
-				/* Filter path, hoisted out of the inner column loop: the last dest row of
-				 * each source row is dimmed (scanlines); grid (filt>=2) also dims the last
-				 * dest column. Non-last rows are a tight px fill with at most one dk patch,
-				 * so there is no per-pixel branch. */
+			/* Filter path, hoisted out of the inner column loop: the last dest row of each
+			 * source row is dimmed (scanlines); grid (filt>=2) also dims the last dest column.
+			 * Non-last rows are a tight px fill with at most one dk patch, no per-pixel branch. */
+			{
 				unsigned int lastr = dyend - 1;
 				int grid = (filt >= 2);
 				for (iy = dy; iy < dyend; iy++) {
