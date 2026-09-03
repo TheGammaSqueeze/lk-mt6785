@@ -20,7 +20,11 @@ Savestate self-test still core=1 sd=1 fast=1 (no corruption).
 NEGATIVE RESULTS (tried, reverted - do not re-try without a division-heavy game):
 - -march=armv8-a (over armv7-a): 118 -> 119 fps = noise. AArch32 armv8 emits hardware sdiv
   (vs __aeabi_idiv), but SMW is not division-bound so no measurable gain. Size-neutral, stable,
-  savestate clean - reverted per the "measurable win only" rule to keep the baseline disciplined. Failed abort-crash note: whole-core -O2 boot_b flash returns
+  savestate clean - reverted per the "measurable win only" rule to keep the baseline disciplined.
+- OPT_HOT -O3 (over -O2): 118 -> 120 fps = +1.7% (borderline noise). Cost: blob +66 KB (spare
+  drops 105->38 KB), and -O3 bloats the cpuops opcode switch, risking icache thrashing on larger
+  games not covered by the SMW bench. Marginal gain not worth the budget + untested-regression
+  risk; reverted. -O2 is the interpreter sweet spot here. Failed abort-crash note: whole-core -O2 boot_b flash returns
 "size too large" - MUST keep blob < 2 MB; flash BOTH lk_a+boot_b when the blob changes.
 
 ## Perf/stability pass (2026-09-03): benchmark harness, clock, run-ahead RCA
