@@ -934,11 +934,20 @@ const unsigned int *ayaneo_canvas_front(unsigned int *pitch_w, unsigned int *W, 
 
 /* flush the whole back buffer and present it, then flip */
 extern int priamry_display_wait_for_vsync(void);   /* primary_display.c (name has the typo) */
+void ayaneo_snes_rsz_restore(void);   /* defined with the SNES RSZ path below */
+
 void ayaneo_canvas_present(void)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
 	unsigned int dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
+
+	/* Self-heal: if a SNES RSZ session did not clean up (crash/odd exit), restore the
+	 * full-panel OVL path. Check both RSZ enable (older sessions) and OVL0_2L L0_ADDR
+	 * pointing at the scratch buffer 0x55800000 (current sessions that disable RSZ). */
+	if ((*(volatile unsigned int *)0x1401A000u & 1u) ||
+	    (*(volatile unsigned int *)0x14009040u == 0x55800000u))
+		ayaneo_snes_rsz_restore();
 
 	arch_clean_cache_range((unsigned int)((unsigned char *)fb_addr +
 			       (s_fb_flip ? fb_size : 0)), fb_size);
@@ -1256,12 +1265,241 @@ void ayaneo_gba_show_intro_frame(const unsigned short *pix)
 	s_fb_flip ^= 1;
 }
 
+/* ---- EXPERIMENTAL hardware-resizer path (oem snes-rsz toggle, default OFF) ----------------
+ * FB_LAYER (0) sits on OVL0_2L, which feeds RSZ0 in the DDP path (OVL0_2L -> RSZ0 -> OVL0). So
+ * instead of the CPU upscaling 256x224 -> 1024x896 (the ~1840us blit), hand the native 256x224
+ * frame to RSZ0 and let the hardware scale it. Iteration 1: program RSZ0 directly (the LK
+ * ddp_rsz.c is a clock-only stub) and present the small buffer. Default OFF; when off, the
+ * proven CPU-blit path below runs unchanged. Toggle with `fastboot oem snes-rsz:1`. */
+volatile int g_snes_rsz;                          /* 1 = try the RSZ hardware path */
+volatile unsigned g_snes_rsz_dbg;                 /* readback of RSZ enable/in/out for oem diag */
+volatile unsigned g_rszdbg[12];                   /* live register readbacks captured at RSZ setup */
+#define SNES_RSZ_BUF   0x54000000u                /* native-res ARGB scratch (safe DRAM window) */
+/* MDP_RSZ0 base: mt_reg_base.h (the authoritative APB map) puts mdp_rsz at 0x14003000 -
+ * 0x14002000 is MDP_RDMA1. project.h mislabels 0x14002000 as MDP_RSZ0, so programming there
+ * was poking an idle RDMA and the real RSZ0 stayed in passthrough (256-in-1280 -> 5x repeat).
+ * DISP_RSZ0 base is 0x1401A000 per the mt6785 vendor kernel dts ("mediatek,disp_rsz0") - NOT
+ * MDP_RSZ0 at 0x14003000 (a separate MDP-domain block that accepts config but is not in the
+ * display path; programming it configures cleanly and scales nothing).
+ * Register layout is DISP_RSZ (CONTROL_1 0x004, CONTROL_2 0x008, INPUT 0x010, OUTPUT 0x014,
+ * H/V coeff 0x018/0x01c, luma offsets 0x020..0x02c) per the vendor ddp_rsz.c. */
+#define RSZ0_R(off)    (*(volatile unsigned int *)(0x1401A000u + (off)))
+#define OVL0_2L_ROI    (*(volatile unsigned int *)(0x14009000u + 0x020u))
+
+/* Vendor coeff-step + init-phase math (ddp_rsz.c rsz_calc_tile_params, single-tile). UNIT is
+ * the 15-bit subpixel unit. Produces the polyphase step and the luma integer/subpixel offset
+ * that aligns the first output sample. */
+#define RSZ_UNIT 32768u
+static void rsz_calc(unsigned in_len, unsigned out_len, unsigned *pstep, unsigned *pint, unsigned *psub)
+{
+	unsigned step, offset0, init_phase, int_off;
+	if (out_len <= 1u || in_len <= 1u) { *pstep = RSZ_UNIT; *pint = 0; *psub = 0; return; }
+	step = (RSZ_UNIT * (in_len - 1u) + (out_len - 2u)) / (out_len - 1u);
+	offset0 = (step * (out_len - 1u) - RSZ_UNIT * (in_len - 1u)) / 2u;
+	init_phase = RSZ_UNIT - offset0;
+	int_off = init_phase / RSZ_UNIT;
+	*pstep = step; *pint = int_off; *psub = init_phase - RSZ_UNIT * int_off;
+}
+
+static void snes_rsz_program(unsigned iw, unsigned ih, unsigned ow, unsigned oh)
+{
+	unsigned hstep, hint, hsub, vstep, vint, vsub;
+	rsz_calc(iw, ow, &hstep, &hint, &hsub);
+	rsz_calc(ih, oh, &vstep, &vint, &vsub);
+	RSZ0_R(0x000) = 0;                                       /* ENABLE off while reprogramming */
+	RSZ0_R(0x004) = ((iw != ow) ? 1u : 0u) | ((ih != oh) ? 2u : 0u); /* CONTROL_1: H_EN|V_EN */
+	RSZ0_R(0x008) = (1u << 9) | (1u << 28);                  /* CONTROL_2: RGB888 (pwr_sv|rgb_bit) */
+	RSZ0_R(0x010) = (ih << 16) | iw;                         /* INPUT_IMAGE  = h<<16 | w */
+	RSZ0_R(0x014) = (oh << 16) | ow;                         /* OUTPUT_IMAGE = h<<16 | w */
+	RSZ0_R(0x018) = hstep;                                   /* HORIZONTAL_COEFF_STEP */
+	RSZ0_R(0x01c) = vstep;                                   /* VERTICAL_COEFF_STEP */
+	RSZ0_R(0x020) = hint;                                    /* LUMA_HORIZONTAL_INTEGER_OFFSET */
+	RSZ0_R(0x024) = hsub;                                    /* LUMA_HORIZONTAL_SUBPIXEL_OFFSET */
+	RSZ0_R(0x028) = vint;                                    /* LUMA_VERTICAL_INTEGER_OFFSET */
+	RSZ0_R(0x02c) = vsub;                                    /* LUMA_VERTICAL_SUBPIXEL_OFFSET */
+	RSZ0_R(0x044) = 0x3;                                     /* DEBUG_SEL (vendor rsz_start) */
+	RSZ0_R(0x000) = 0x1;                                     /* ENABLE: FLD_RSZ_EN */
+	/* Commit the working registers to the active (shadow) copy so scanout uses them. Vendor
+	 * rsz_start pulses FORCE_COMMIT (bit1 of SHADOW_CTRL) rather than bypassing shadow. */
+	RSZ0_R(0x0f0) = 0x2;
+	g_snes_rsz_dbg = RSZ0_R(0x000);
+}
+
+static int      s_rsz_setup;          /* 0 until the OVL/RSZ path is configured for the session */
+static unsigned s_rsz_sw, s_rsz_sh;   /* source geometry the path was configured for */
+static int      s_rsz_stretch;        /* g_snes_stretch value at last setup */
+static unsigned s_rsz_asp;            /* g_snes_aspect_x1000 at last setup */
+static unsigned s_rsz_dw, s_rsz_dh;  /* output rect at last setup (for border-clear detection) */
+
+/* Undo the RSZ path: disable the resizer and restore the OVL0_2L ROI to full panel, so the
+ * menu / other cores render correctly after an RSZ SNES session. Called at SNES session exit
+ * and by oem snes-rsz:0. Also clears the config-once latch so the next session reconfigures. */
+void ayaneo_snes_rsz_restore(void)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	RSZ0_R(0x000) = 0;   /* RSZ_ENABLE off (pass-through) */
+	RSZ0_R(0x0f0) = 0x2; /* FORCE_COMMIT so the disable reaches the active copy immediately */
+	OVL0_2L_ROI = (H << 16) | W;
+	/* Deterministically re-commit the default full-panel layer (not just the ROI) so the menu
+	 * renders 1:1 regardless of what the session left in the layer registers. */
+	if (fb_addr_pa) {
+		disp_input_config in;
+		memset(&in, 0, sizeof(in));
+		in.layer = FB_LAYER; in.layer_en = 1;
+		in.fmt = redoffset_32bit ? eBGRA8888 : eRGBA8888;
+		in.addr = (unsigned int)fb_addr_pa;
+		in.src_x = 0; in.src_y = 0; in.src_w = W; in.src_h = H;
+		in.src_pitch = ALIGN_TO(W, MTK_FB_ALIGNMENT) * 4;
+		in.dst_x = 0; in.dst_y = 0; in.dst_w = W; in.dst_h = H;
+		in.aen = 1; in.alpha = 0xff;
+		primary_display_config_input(&in);
+		primary_display_trigger(1);
+		OVL0_2L_ROI = (H << 16) | W;   /* re-assert post-commit (direct write is live) */
+	}
+	s_rsz_setup = 0;
+}
+
+static void ayaneo_snes_show_frame_rsz(const unsigned short *pix, unsigned int sw, unsigned int sh,
+				       unsigned int spitch_px)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	extern volatile unsigned g_snes_aspect_x1000;
+	extern volatile int g_snes_stretch;
+	extern unsigned int gpt4_get_current_tick(void);
+	extern volatile unsigned g_snes_show_us;
+	unsigned int t0 = gpt4_get_current_tick();
+
+	/* Compute displayed rect from options: same logic as the CPU blit path. */
+	unsigned int sy_scale = (sh <= 240u) ? 4u : 2u;
+	unsigned int dw, dh;
+	if (g_snes_stretch) {
+		dw = W; dh = H;
+	} else {
+		unsigned int asp = g_snes_aspect_x1000;
+		dh = sh * sy_scale;
+		dw = asp ? (dh * asp) / 1000u : sw * ((sw <= 256u) ? 4u : 2u);
+	}
+	if (dw > W) dw = W; if (dh > H) dh = H;
+	if (dw < 1u) dw = 1u; if (dh < 1u) dh = 1u;
+	int xoff = ((int)W - (int)dw) / 2, yoff = ((int)H - (int)dh) / 2;
+	if (xoff < 0) xoff = 0; if (yoff < 0) yoff = 0;
+
+	/* Pre-replication factors: integer multiples that fit within dw/dh. fh = dw/sw,
+	 * fv = dh/sh. For stretch (dw=1280, sw=256): fh=5, 256*5=1280. For 4x (dw=1024):
+	 * fh=4, 256*4=1024. Clamped to [1,5]/[1,4] so we never overshoot the panel. */
+	unsigned int fh = dw / sw; if (fh < 1u) fh = 1u; if (fh > 5u) fh = 5u;
+	unsigned int fv = dh / sh; if (fv < 1u) fv = 1u; if (fv > 4u) fv = 4u;
+	unsigned int swf = sw * fh;   /* game area width in scratch (pixels) */
+	unsigned int shf = sh * fv;   /* game area height in scratch (rows) */
+
+	/* Scratch buffer at 0x55800000: full panel 1280x960 ARGB (4.9 MB). Proven DMA-visible
+	 * DRAM. Reused from the exit-freeze buffer; its other use is written only AFTER the last
+	 * game frame, so reuse during play is safe. We own the full panel layout here - black
+	 * borders are pre-cleared on geometry change and stay black between frames. */
+	unsigned int *sb = (unsigned int *)0x55800000u;
+
+	if (!pix) return;
+
+	/* Detect geometry changes (source res, stretch mode, aspect, or output rect). On change:
+	 * zero the entire scratch so border strips are black and no stale content bleeds through. */
+	int geom_changed = (!s_rsz_setup || s_rsz_sw != sw || s_rsz_sh != sh ||
+	                    s_rsz_stretch != g_snes_stretch || s_rsz_asp != g_snes_aspect_x1000 ||
+	                    s_rsz_dw != dw || s_rsz_dh != dh);
+	if (geom_changed) {
+		memset(sb, 0, W * H * 4u);
+		arch_clean_cache_range(0x55800000u, W * H * 4u);
+	}
+
+	/* RGB565 -> ARGB8888 nearest pre-replication into scratch at (xoff, yoff).
+	 * Each source pixel replicates fh times horizontally; each source row fv times
+	 * vertically. The borders outside (xoff, yoff, swf, shf) stay black from the
+	 * memset above. Scratch pitch = W (full panel width). */
+	{
+		unsigned int y, x, k, r_;
+		for (y = 0; y < sh; y++) {
+			const unsigned short *srow = pix + y * spitch_px;
+			unsigned int dy_base = (unsigned int)yoff + y * fv;
+			unsigned int *drow = sb + dy_base * W + (unsigned int)xoff;
+			for (x = 0; x < sw; x++) {
+				unsigned int v = srow[x];
+				unsigned int r = ((v >> 11) & 0x1fu) << 3, g = ((v >> 5) & 0x3fu) << 2, b = (v & 0x1fu) << 3;
+				unsigned int px32 = 0xFF000000u | (r << 16) | (g << 8) | b;
+				unsigned int *o = drow + x * fh;
+				for (k = 0; k < fh; k++) o[k] = px32;
+			}
+			/* Replicate the first widened row down for fv rows. The full W-wide row is
+			 * copied so that the partial game-area stride is contiguous in memory. */
+			for (r_ = 1u; r_ < fv; r_++)
+				memcpy(sb + (dy_base + r_) * W + (unsigned int)xoff, drow, swf * 4u);
+		}
+	}
+	/* Flush only the game-area rows (yoff..yoff+shf-1) to DRAM; the border rows are
+	 * static black (flushed once on geometry change) and need not be re-cleaned each frame. */
+	arch_clean_cache_range(0x55800000u + (unsigned int)yoff * W * 4u, shf * W * 4u);
+
+	/* Configure OVL/RSZ path once per session (or on geometry change). The OVL0_2L layer
+	 * points at the full-panel scratch (1280x960). RSZ is disabled (pass-through: the scratch
+	 * is already at panel resolution, so no hardware scaling is needed). OVL registers are
+	 * double-buffered; commit via trigger. Per-frame trigger (below) re-latches the same state
+	 * each frame so the display manager's vsync event fires reliably. */
+	if (geom_changed) {
+		disp_input_config in;
+		memset(&in, 0, sizeof(in));
+		in.layer = FB_LAYER; in.layer_en = 1;
+		in.fmt = redoffset_32bit ? eBGRA8888 : eRGBA8888;
+		in.addr = 0x55800000u;
+		in.src_x = 0; in.src_y = 0; in.src_w = W; in.src_h = H;
+		in.src_pitch = W * 4u;   /* full panel pitch (1280*4 = 5120, aligned to MTK_FB_ALIGNMENT) */
+		in.dst_x = 0; in.dst_y = 0; in.dst_w = W; in.dst_h = H;
+		in.aen = 1; in.alpha = 0xff;
+		primary_display_config_input(&in);
+		primary_display_trigger(1);
+		OVL0_2L_ROI = (H << 16) | W;   /* full-panel ROI; must be post-trigger (direct write) */
+		RSZ0_R(0x000) = 0;              /* RSZ disabled - scratch is already at panel size */
+		RSZ0_R(0x0f0) = 0x2;           /* FORCE_COMMIT the disable immediately */
+		/* Capture live register readbacks for oem diag. */
+		g_rszdbg[0]  = OVL0_2L_ROI;
+		g_rszdbg[1]  = *(volatile unsigned int *)(0x14009038u);
+		g_rszdbg[2]  = *(volatile unsigned int *)(0x14009044u);
+		g_rszdbg[3]  = *(volatile unsigned int *)(0x1400902Cu);
+		g_rszdbg[4]  = RSZ0_R(0x000);
+		g_rszdbg[5]  = RSZ0_R(0x004);
+		g_rszdbg[6]  = RSZ0_R(0x010);
+		g_rszdbg[7]  = RSZ0_R(0x014);
+		g_rszdbg[8]  = *(volatile unsigned int *)(0x14000f04u);
+		g_rszdbg[9]  = *(volatile unsigned int *)(0x14000f10u);
+		g_rszdbg[10] = *(volatile unsigned int *)(0x14000f38u);
+		g_rszdbg[11] = *(volatile unsigned int *)(0x14000f7Cu);
+		s_rsz_setup = 1; s_rsz_sw = sw; s_rsz_sh = sh;
+		s_rsz_stretch = g_snes_stretch; s_rsz_asp = g_snes_aspect_x1000;
+		s_rsz_dw = dw; s_rsz_dh = dh;
+	} else {
+		/* Re-trigger each frame so the display manager fires a vsync event for the
+		 * priamry_display_wait_for_vsync() call below. The working registers are
+		 * unchanged (same scratch buffer, same geometry), so this is a no-op config-wise. */
+		primary_display_trigger(1);
+	}
+	g_snes_show_us = (gpt4_get_current_tick() - t0) / 13u;
+	{ extern int snes_benchmark_on(void); if (!snes_benchmark_on()) priamry_display_wait_for_vsync(); }
+}
+
 /* SNES (snes9x) frame present. The core outputs RGB565 at 256xH (or 512xH hi-res); scale
  * to 1024 wide (256->4x, 512->2x) centred on the 1280x960 panel with black borders. Height
  * is 224/239 (progressive) or 448/478 (interlace) -> vertical scale chosen so 224/239 use
  * 4x/2x and the interlaced modes 2x/1x, all centred. Double-buffered like the GB path. */
 void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned int sh, unsigned int spitch_px)
 {
+	{	/* RSZ path only for pure game frames. The in-game Pico menu composites a PANEL-sized
+		 * overlay frame - pushing that through a resizer configured for the small game input
+		 * distorts and can wedge the pipeline. While the menu is open, restore the panel path
+		 * and present normally; on close, the cleared config-once latch re-arms the RSZ path. */
+		extern int snes_menu_open(void);
+		if (g_snes_rsz && !snes_menu_open()) {
+			ayaneo_snes_show_frame_rsz(pix, sw, sh, spitch_px);
+			return;
+		}
+		if (g_snes_rsz && s_rsz_setup) ayaneo_snes_rsz_restore();   /* menu open: back to 1:1 (once) */
+	}
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
 	/* Displayed rect. "Stretch" fills the whole panel (no bars): dw=W, dh=H, both fractional.
