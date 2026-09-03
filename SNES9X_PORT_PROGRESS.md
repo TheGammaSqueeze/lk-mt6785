@@ -6,6 +6,25 @@ GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gamba
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 
+## Local core benchmark + profile (2026-09-03)
+
+Added tools/ayaneo/snes/core_bench.cpp + build_core_bench.sh: runs the REAL snes9x core natively
+against a SYNTHETIC in-memory LoROM (a tight 65816 loop), timing retro_run and checking a
+deterministic savestate round-trip. Enables local measure+correctness of core changes with no game
+ROM and no device (host: 0.281 ms/frame, savestate PASS). Build --prof for a gprof profile.
+
+gprof flat profile (synthetic ROM; video_cb is the harness hash, ignore). CORE hot spots:
+- SPC_DSP voice processing ~29% (voice_V3c = Gaussian interpolation 14.4% ALONE, + V8_V5_V2,
+  V4, V9_V6_V3, run). Runs all 8 voices every sample even when idle. THIS is why Audio Filter=
+  Linear gives +7 fps - it swaps voice_V3c's Gaussian for the cheap linear tap.
+- CPU ~31% (S9xMainLoop + Immediate8 7.2% + per-opcode; opcode mix is skewed by the synthetic
+  DEX/BNE loop so not representative for opcode-specific tuning).
+- SPC700 SMP ~13%. PPU ~3% (blank screen; real games higher).
+Takeaway: the audio DSP is the biggest single core cost and its one safe knob (interpolation) is
+already user-exposed. Further core gains need accuracy-affecting DSP/CPU edits (risky) - not doing
+those autonomously. The harness is ready for any future core change: measure host ms/frame + assert
+savestate PASS locally, then confirm on device via snes-bench (uncapped, chains safely).
+
 ## Measurement gotchas learned the hard way (2026-09-03)
 
 - Back-to-back `oem snes-launch` (CAPPED) crashes the device on the 2nd launch (fastboot wedges
