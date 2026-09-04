@@ -1388,6 +1388,60 @@ static unsigned s_rsz_sw, s_rsz_sh;   /* source geometry the path was configured
 static unsigned s_rsz_dw, s_rsz_dh;  /* output rect at last setup (source+rect key the reprogram) */
 volatile unsigned g_rsz_show_us;      /* generic RSZ present cost (us), for oem diag */
 
+/* ---- hardware overlay layer (foundation for the live-menu-over-running-game feature) ----------
+ * The menu will be composited by the OVL hardware as a SEPARATE layer over the game, so the game
+ * keeps running through its normal path (RSZ + run-ahead) with zero CPU composite cost. The game
+ * is on OVL0_2L L0 (global layer 0) -> RSZ -> OVL0 background; OVL0's own 4 layers (global 2..5)
+ * are free, so the overlay goes on OVL0 L0 = global layer 2, composited AFTER RSZ (not scaled),
+ * with per-pixel alpha (transparent outside the panel). config_input writes ovl_config[layer], so
+ * layer=2 targets OVL0 L0. Disable is a direct SRC_CON poke (config_input skips layer_en==0).
+ * OVL0 base 0x14008000: SRC_CON @0x02C (L0_EN bit0). This is the de-risk test path first. */
+#define OVL0_SRC_CON (*(volatile unsigned int *)(0x14008000u + 0x02Cu))
+void ayaneo_overlay_layer_set(unsigned int argb_pa, unsigned int w, unsigned int h,
+			      unsigned int dst_x, unsigned int dst_y, int enable)
+{
+	if (enable && argb_pa && w && h) {
+		disp_input_config in;
+		memset(&in, 0, sizeof(in));
+		in.layer = 2;                 /* global layer 2 = OVL0 L0 (over the RSZ background) */
+		in.layer_en = 1;
+		in.fmt = eBGRA8888;           /* per-pixel alpha */
+		in.addr = argb_pa;
+		in.src_x = 0; in.src_y = 0; in.src_w = w; in.src_h = h; in.src_pitch = w * 4u;
+		in.dst_x = dst_x; in.dst_y = dst_y; in.dst_w = w; in.dst_h = h;
+		in.aen = 1; in.alpha = 0xff;  /* aen + ARGB = per-pixel alpha blend over the game */
+		primary_display_config_input(&in);
+		primary_display_trigger(1);
+	} else {
+		OVL0_SRC_CON &= ~1u;          /* clear OVL0 L0 enable (config_input won't disable it) */
+		primary_display_trigger(1);
+	}
+}
+
+/* oem ovltest:N validation hook: fill a small semi-transparent square at 0x55800000 (free during
+ * a game) and composite it as OVL0 L0 over the running game, or disable. Proves the hardware
+ * overlay + alpha + topology before the full menu renderer is wired to it. */
+void ayaneo_overlay_test(int on)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	const unsigned int TW = 384, TH = 384;
+	unsigned int *b = (unsigned int *)0x55800000u;
+	if (on) {
+		unsigned int y, x;
+		for (y = 0; y < TH; y++)
+			for (x = 0; x < TW; x++) {
+				/* border opaque red, interior 50% blue - so we can see both the layer AND the
+				 * game showing through the alpha. */
+				int edge = (x < 8 || x >= TW - 8 || y < 8 || y >= TH - 8);
+				b[y * TW + x] = edge ? 0xFFFF0000u : 0x800000FFu;
+			}
+		arch_clean_cache_range(0x55800000u, TW * TH * 4u);
+		ayaneo_overlay_layer_set(0x55800000u, TW, TH, (W - TW) / 2u, (H - TH) / 2u, 1);
+	} else {
+		ayaneo_overlay_layer_set(0, 0, 0, 0, 0, 0);
+	}
+}
+
 /* Undo the RSZ path: disable the resizer and restore the OVL0_2L ROI to full panel, so the
  * menu / other cores render correctly after an RSZ SNES session. Called at SNES session exit
  * and by oem snes-rsz:0. Also clears the config-once latch so the next session reconfigures. */

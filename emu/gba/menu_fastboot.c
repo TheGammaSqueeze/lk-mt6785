@@ -275,6 +275,21 @@ static void cmd_snes_rsz(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem ovltest:N - de-risk the hardware-menu-layer feature: composite a semi-transparent test
+ * square as OVL0 L0 over the RUNNING game (1) or disable it (0). Validates OVL overlay + alpha. */
+static void cmd_ovltest(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_overlay_test(int on);
+	int n = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg >= '0' && *arg <= '9') n = n * 10 + (*arg++ - '0');
+	ayaneo_overlay_test(n ? 1 : 0);
+	snprintf(lbuf, sizeof lbuf, "ovltest=%d (OVL0 L0 overlay %s)", n, n ? "on" : "off");
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem snes-ra:N - force run-ahead depth N (0..3) for the NEXT headless snes-launch, to
  * verify run-ahead does not leak/crash the bump arena (watch snes-ss heap=... stay flat). */
 static void cmd_snes_ra(const char *arg, void *data, unsigned sz)
@@ -371,6 +386,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
 	fastboot_register("oem snes-stretch", cmd_snes_stretch, 1, 0);
 	fastboot_register("oem snes-rsz", cmd_snes_rsz, 1, 0);
+	fastboot_register("oem ovltest", cmd_ovltest, 1, 0);
 	fastboot_register("oem snes-ra", cmd_snes_ra, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
 	fastboot_register("oem preempt:", cmd_preempt, 1, 0);
