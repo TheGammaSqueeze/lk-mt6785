@@ -403,10 +403,46 @@ static void cmd_adcscan(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* Power the analog stick rail the way the Android mtk-gamepad driver does, then read the four
+ * stick axes. The DT (gamepad@48) maps io-channels lx/ly/rx/ry -> SoC AUXADC ch1/2/3/4, gated by
+ * vcc3v3-supply = mt6360 LDO1 ("VFP", 3.3V) + enable-gpios = GPIO15. Both are off in the bootloader,
+ * which is why a bare adcscan reads floor. Enable LDO1 (mt6360 reg 0x1b VOUT=0xd0=3.30V, reg 0x17
+ * bit0x40 = enable - same driver LK uses for the SD LDOs), drive GPIO15 high, settle, then read
+ * ch1-4. Run it, push each stick to its extremes, and the matching channel should swing (centre
+ * ~2500, raw range ~1000..4500 per the driver calibration). */
+static void cmd_stickscan(const char *arg, void *data, unsigned sz)
+{
+	extern int  iio_read_channel_processed(int channel, int *val);
+	extern int  mt6360_ldo_config_interface(unsigned char addr, unsigned char data,
+						unsigned char mask, unsigned char shift);
+	extern int  mt_set_gpio_mode(unsigned pin, unsigned mode);
+	extern int  mt_set_gpio_dir(unsigned pin, unsigned dir);
+	extern int  mt_set_gpio_out(unsigned pin, unsigned out);
+	extern void udelay(unsigned long usec);
+	int v1 = -1, v2 = -1, v3 = -1, v4 = -1, val;
+	(void)arg; (void)data; (void)sz;
+
+	mt6360_ldo_config_interface(0x1b, 0xd0, 0xff, 0);   /* LDO1 (VFP) VOUT = 3.30V */
+	mt6360_ldo_config_interface(0x17, 0x40, 0x40, 0);   /* LDO1 (VFP) enable */
+	mt_set_gpio_mode(15, 0);                            /* GPIO_MODE_00 (GPIO function) */
+	mt_set_gpio_dir(15, 1);                             /* GPIO_DIR_OUT */
+	mt_set_gpio_out(15, 1);                             /* GPIO_OUT_ONE (enable active-high) */
+	udelay(30000);                                     /* let the 3.3V rail + pots settle */
+
+	if (iio_read_channel_processed(1, &val) == 0) v1 = val;
+	if (iio_read_channel_processed(2, &val) == 0) v2 = val;
+	if (iio_read_channel_processed(3, &val) == 0) v3 = val;
+	if (iio_read_channel_processed(4, &val) == 0) v4 = val;
+	snprintf(lbuf, sizeof lbuf, "stick lx=%d ly=%d rx=%d ry=%d (ch1-4, centre~2500)", v1, v2, v3, v4);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem adcscan", cmd_adcscan, 1, 0);
+	fastboot_register("oem stickscan", cmd_stickscan, 1, 0);
 	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
 	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
