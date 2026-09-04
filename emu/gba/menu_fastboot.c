@@ -438,11 +438,30 @@ static void cmd_stickscan(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* Read both analog triggers from the SGM58031 ADC (I2C6 @ 0x48) - LEFT = AIN0, RIGHT = AIN1,
+ * per the reverse-engineered stock driver. Powers the rail (mt6360 LDO1 + GPIO15) first. Raw
+ * 16-bit, ~13500 released -> ~16500 fully squeezed. Proves the LK I2C trigger path before wiring
+ * L2/R2 into the cores (the digital L2/R2 microswitches never worked on this device). */
+static void cmd_trigscan(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_joypad_power(void);
+	extern int  ayaneo_joypad_trigger(int lr);
+	int lt, rt;
+	(void)arg; (void)data; (void)sz;
+	ayaneo_joypad_power();
+	lt = ayaneo_joypad_trigger(0);
+	rt = ayaneo_joypad_trigger(1);
+	snprintf(lbuf, sizeof lbuf, "trig LT=%d RT=%d (raw ~13500 rest .. ~16500 pressed)", lt, rt);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem adcscan", cmd_adcscan, 1, 0);
 	fastboot_register("oem stickscan", cmd_stickscan, 1, 0);
+	fastboot_register("oem trigscan", cmd_trigscan, 1, 0);
 	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
 	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
