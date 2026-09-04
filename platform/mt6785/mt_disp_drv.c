@@ -1489,7 +1489,15 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	unsigned int ph = dw / sw; if (ph < 1u) ph = 1u;
 	while (sw * ph > OVL_2L_TILE_W && ph > 1u) ph--;
 	unsigned int pv = dh / sh; if (pv < 1u) pv = 1u;
-	unsigned int iw = sw * ph, ih = sh * pv;   /* prescaled (crisp) game size */
+	unsigned int ih = sh * pv;   /* prescaled (crisp) game height */
+	/* When the RSZ also scales VERTICALLY (prescaled height ih < target dh), the 2D resizer's
+	 * input-width limit tightens to ~OVL_2L_TILE_W: SNES Stretch is clean at wp=1024, but GBC Fit
+	 * at wp=1152 (also 2D) showed a stale-scratch right bar. So in the 2D case cap the horizontal
+	 * prescale too, keeping wp = iw*W/dw <= OVL_2L_TILE_W. Horizontal-only modes (ih==dh, e.g. SNES
+	 * 4:3 at wp=1098) are UNAFFECTED - they scale one axis and tolerate the wider input. */
+	if (ih < dh)
+		while (ph > 1u && (sw * ph * W) / dw > OVL_2L_TILE_W) ph--;
+	unsigned int iw = sw * ph;   /* prescaled (crisp) game width */
 
 	/* Padded OVL0_2L input geometry so a uniform RSZ scale to the panel reproduces (xoff,dw)
 	 * and (yoff,dh). Guard the divides; round to nearest. */
