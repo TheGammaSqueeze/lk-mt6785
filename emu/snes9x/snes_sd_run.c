@@ -262,8 +262,6 @@ unsigned ayaneo_snes_pad_mask(void)
 static const struct snes_core_exports *s_menu_c;
 static fat_vol             *s_menu_vol;
 static const gba_rom_entry *s_menu_rom;
-static int                  s_menu_preview;   /* 1 = step the core one frame so a just-changed
-                                               * Overscan/Hi-Res option previews live in the menu */
 static int  s_msel;
 static char s_mstat[48];
 #define SNES_SLOT_COUNT 3 /* manual save-state slots (0..2); the suspend point uses a separate "sus" */
@@ -439,10 +437,8 @@ static int sm_change(int i, int dir, int act)
 				 * now (the core's periodic refresh is skipped while the menu freezes emulation). */
 				if (s_menu_c->aspect_x1000) g_snes_aspect_x1000 = s_menu_c->aspect_x1000();
 			}
-			/* Overscan/Hi-Res change the CORE's rendered frame (height/blend); the frozen menu
-			 * frame won't reflect them until the core steps once. Flag a one-frame preview run so
-			 * the change is visible immediately behind the overlay. */
-			s_menu_preview = 1;
+			/* Overscan/Hi-Res change the CORE's rendered frame (height/blend). The game now runs
+			 * every frame (no menu freeze), so the change previews live with no extra step. */
 			for (k = 0; k < OI_N; k++) packed |= (unsigned)(s_opt_idx[k] & 0xFF) << (k * 8);
 			ayaneo_set_snes_opts(packed);   /* persist all picks */
 			snes_settings_touch();
@@ -639,6 +635,15 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* Hardware volume rocker works whether or not the menu is open. */
 		snes_poll_volume();
 
+		/* Render/refresh the Pico menu as a hardware overlay layer (OVL0 L0) over the running game,
+		 * or disable it when closed - BEFORE the present, so g_overlay_active (which makes the RSZ
+		 * path single-buffer to free 0x55900000 for the overlay) is consistent with the layer state
+		 * on the frame it toggles. Reflects the previous frame's selection (1-frame lag, imperceptible). */
+		{
+			extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
+			ayaneo_menu_overlay(snes_menu_paint, g_snes_menu_open);
+		}
+
 		/* Freeze emulation while the in-game menu is open: skip c->run so the overlay always
 		 * fits the frame budget. The game clock is pinned to the run-ahead tier (Off=1400 MHz),
 		 * so a menu opened with run-ahead disabled used to drop frames rendering game+overlay at
@@ -658,7 +663,10 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				pf = g_snes_test_limit ? g_snes_dbg_ra : ayaneo_get_preempt_frames();
 		}
 
-		if (!g_snes_menu_open) {
+		{	/* Run the game EVERY frame - the Pico menu no longer freezes it (it is now an
+			 * independent hardware overlay). Run-ahead and fast-forward are already gated off
+			 * while the menu is open (pf=0, ff=0 above), so this is a single committed frame; the
+			 * game visibly keeps running under the menu and setting changes preview live. */
 			if (c->set_av_skip) c->set_av_skip((pf > 0 && !g_snes_test_limit) ? 1 : 0, 0);
 			c->run(&f);
 			g_snes_dbg_frames++;
@@ -688,14 +696,6 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					if (hash != s_snes_dbg_lasthash) { g_snes_dbg_changed++; s_snes_dbg_lasthash = hash; }
 				}
 			}
-		} else if (s_menu_preview) {
-			/* Menu is open (emulation frozen) but an Overscan/Hi-Res option just changed - step
-			 * the core exactly one frame so f reflects the new crop/blend for a live preview.
-			 * Game input is masked while the menu is open, so this barely advances the game. */
-			s_menu_preview = 0;
-			if (c->set_av_skip) c->set_av_skip(0, 0);   /* preview render must be visible */
-			c->run(&f);
-			if (c->aspect_x1000) g_snes_aspect_x1000 = c->aspect_x1000();
 		}
 		/* Committed-frame audio submitted BEFORE any run-ahead look-ahead overwrites the
 		 * blob's audio buffer; muted while benchmarking or fast-forwarding so the ring never

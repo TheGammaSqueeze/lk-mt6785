@@ -1449,12 +1449,45 @@ void ayaneo_overlay_test(int on)
 	}
 }
 
+/* ---- live in-game menu as a hardware overlay layer -------------------------------------------
+ * The Pico menu is rendered into a full-panel ARGB buffer (transparent everywhere the menu does
+ * not draw, opaque where it does) and composited as OVL0 L0 over the RUNNING game. The game keeps
+ * presenting through its normal path (RSZ/CPU) with the game changing live underneath, so aspect/
+ * filter/etc. preview in real time with no game pause and zero CPU composite cost. The overlay
+ * buffer is 0x55900000 (the "game-full" transition buffer, free during play); while the overlay
+ * is up g_overlay_active makes the RSZ path single-buffer at 0x55000000 so the two never collide.
+ * Enable the layer ONCE on open (the game's per-frame config_input keeps it in SRC_CON); just
+ * refresh the buffer content each frame for live menu values (the OVL re-scans it every vsync). */
+#define MENU_OVERLAY_PA 0x55900000u
+volatile int g_overlay_active;
+void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int *b = (unsigned int *)MENU_OVERLAY_PA;
+	if (open && paint) {
+		if (!g_overlay_active) {
+			memset(b, 0, W * H * 4u);   /* transparent (alpha=0) once; the panel region is
+						     * fully overdrawn opaque each frame, the rest stays clear */
+			arch_clean_cache_range(MENU_OVERLAY_PA, W * H * 4u);
+			g_overlay_active = 1;
+			ayaneo_overlay_layer_set(MENU_OVERLAY_PA, W, H, 0, 0, 1);
+		}
+		paint(b, W, W, H);   /* redraw the opaque panel (current selection/values) for live update */
+		arch_clean_cache_range(MENU_OVERLAY_PA, W * H * 4u);
+	} else if (g_overlay_active) {
+		ayaneo_overlay_layer_set(0, 0, 0, 0, 0, 0);
+		g_overlay_active = 0;
+	}
+}
+
 /* Undo the RSZ path: disable the resizer and restore the OVL0_2L ROI to full panel, so the
  * menu / other cores render correctly after an RSZ SNES session. Called at SNES session exit
  * and by oem snes-rsz:0. Also clears the config-once latch so the next session reconfigures. */
 void ayaneo_snes_rsz_restore(void)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	ayaneo_menu_overlay(0, 0);   /* also drop the menu overlay layer, so the carousel/reverse-punch
+				      * transition is clean (catch-all: exit, oem toggle, canvas self-heal) */
 	/* Reset the resizer to a clean 1:1 PANEL passthrough, not just "enable off": leaving the
 	 * session's INPUT_IMAGE (e.g. 1024x896) in place while the OVL0_2L feeds a full 1280x960
 	 * frame makes the disabled resizer mismatch its input and stall the pipe (no frame-done ->
@@ -1585,7 +1618,11 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	 * sheared the menu because the RSZ layer stride differed from the panel stride. */
 	#define RSZ_BUF0 0x55000000u
 	#define RSZ_BUF1 0x55900000u
-	unsigned int pbuf  = s_fb_flip ? RSZ_BUF1 : RSZ_BUF0;
+	/* While the menu overlay owns RSZ_BUF1 (0x55900000), single-buffer at RSZ_BUF0 so the game
+	 * present and the overlay never collide. The game is mostly behind the panel then, so the
+	 * lost double-buffering (minor tearing) is not noticeable. */
+	extern volatile int g_overlay_active;
+	unsigned int pbuf  = g_overlay_active ? RSZ_BUF0 : (s_fb_flip ? RSZ_BUF1 : RSZ_BUF0);
 	unsigned int *vbuf = (unsigned int *)pbuf;   /* identity-mapped in LK */
 
 	/* Prescale at the panel pitch so the game area is a clean, consistent layout. The game
@@ -1704,16 +1741,14 @@ static void ayaneo_snes_show_frame_rsz(const unsigned short *pix, unsigned int s
  * 4x/2x and the interlaced modes 2x/1x, all centred. Double-buffered like the GB path. */
 void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned int sh, unsigned int spitch_px)
 {
-	{	/* RSZ path only for pure game frames. The in-game Pico menu composites a PANEL-sized
-		 * overlay frame - pushing that through a resizer configured for the small game input
-		 * distorts and can wedge the pipeline. While the menu is open, restore the panel path
-		 * and present normally; on close, the cleared config-once latch re-arms the RSZ path. */
-		extern int snes_menu_open(void);
-		if (g_snes_rsz && !snes_menu_open()) {
+	{	/* The game always presents through its normal path, menu open or not - the Pico menu is now
+		 * an independent hardware overlay (OVL0 L0, see ayaneo_menu_overlay), so it no longer forces
+		 * the game onto the CPU path or pauses it. Aspect/filter changes preview live because the
+		 * game keeps re-presenting underneath the static menu layer. */
+		if (g_snes_rsz) {
 			ayaneo_snes_show_frame_rsz(pix, sw, sh, spitch_px);
 			return;
 		}
-		if (g_snes_rsz && s_rsz_setup) ayaneo_snes_rsz_restore();   /* menu open: back to 1:1 (once) */
 	}
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
@@ -1827,13 +1862,7 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 		dy = dyend;
 	}
 	}
-	/* in-game overlay menu (GammaOS Pico), drawn over the whole panel when open */
-	{
-		extern int  snes_menu_open(void);
-		extern void snes_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H);
-		if (snes_menu_open())
-			snes_menu_paint(dst, pitch_w, W, H);
-	}
+	/* The Pico menu is now an independent hardware overlay (ayaneo_menu_overlay), not drawn here. */
 	ayaneo_draw_osd(dst, pitch_w, W, H);	/* transient volume/brightness slider (HW rocker) */
 	extern volatile unsigned g_snes_flush_us;   /* isolated cache-clean cost, for oem diag */
 	unsigned int t_flush0 = gpt4_get_current_tick();
