@@ -1497,8 +1497,15 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	unsigned int hp = (dh ? (ih * H + dh / 2u) / dh : H);
 	if (wp < iw) wp = iw; if (wp > W) wp = W;
 	if (hp < ih) hp = ih; if (hp > H) hp = H;
+	/* The OVL0_2L padded ROI = the RSZ input; that width/height must be EVEN or the resizer
+	 * mishandles the trailing column/row and shows stale scratch (the GBC Fit purple right bar:
+	 * wp landed on the odd 1153). iw/ih are always even (even source * integer prescale), so
+	 * rounding wp/hp down to even keeps wp >= iw. Every working SNES mode already had even wp. */
+	wp &= ~1u; hp &= ~1u;
+	if (wp < iw) wp = iw; if (hp < ih) hp = ih;
 	unsigned int ox = (W ? (xoff * wp + W / 2u) / W : 0u);
 	unsigned int oy = (H ? (yoff * hp + H / 2u) / H : 0u);
+	ox &= ~1u; oy &= ~1u;   /* even layer offset too, for the same reason */
 	if (ox + iw > wp) ox = wp - iw;
 	if (oy + ih > hp) oy = hp - ih;
 
