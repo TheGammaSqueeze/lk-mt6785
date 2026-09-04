@@ -200,8 +200,8 @@ extern int  ayaneo_brightness_pct(void);
 extern int  ayaneo_brightness_step(int dir);
 extern int  ayaneo_gbc_audio_get_volume(void);
 extern void ayaneo_gbc_audio_set_volume(int v);
-extern int  ayaneo_get_lcd_filter(void);
-extern void ayaneo_set_lcd_filter(int v);
+extern int  ayaneo_get_lcd_filter_core(int c);
+extern void ayaneo_set_lcd_filter_core(int c, int v);
 extern void ayaneo_set_preempt_frames(int v);
 extern void ayaneo_menu_settings_persist(void);
 
@@ -276,7 +276,7 @@ static const char *gm_value(int i, char *buf)
 	switch (i) {
 	case GM_BRIGHT:  p = mputu(p, (unsigned)ayaneo_brightness_pct()); p = mput(p, "%"); break;
 	case GM_VOLUME:  p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
-	case GM_FILTER:  p = mput(p, filt_name(ayaneo_get_lcd_filter())); break;
+	case GM_FILTER:  p = mput(p, filt_name(ayaneo_get_lcd_filter_core(2))); break;
 	case GM_ASPECT:  p = mput(p, g_gbc_aspect == 2 ? "Stretch" : g_gbc_aspect == 1 ? "Fit" : "Pixel Perfect"); break;
 	case GM_PALETTE: if (s_menu_is_dmg && s_menu_c) {
 				 int sel = s_menu_pal ? *s_menu_pal : 0;
@@ -312,7 +312,7 @@ static int gm_change(int i, int dir, int act)
 	switch (i) {
 	case GM_BRIGHT:  if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case GM_VOLUME:  if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
-	case GM_FILTER:  if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
+	case GM_FILTER:  if (dir) ayaneo_set_lcd_filter_core(2, (ayaneo_get_lcd_filter_core(2) + dir + 4) % 4); else changed = 0; break;
 	case GM_ASPECT:  if (dir) g_gbc_aspect = (g_gbc_aspect + dir + 3) % 3; changed = 0; break;
 	case GM_PALETTE: if (s_menu_is_dmg && s_menu_pal) {
 				 if (act == 1) {   /* A = open the full palette list picker */
@@ -545,7 +545,13 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			aya = PRESSED(GPIO_AYA);
 			if (aya && !aya_prev) { g_gbc_menu_open = !g_gbc_menu_open; s_mstat[0] = 0; if (!g_gbc_menu_open) s_pal_pick = 0; }
 			aya_prev = aya;
-			if (aya) { if (++aya_hold >= 90) break; } else aya_hold = 0;
+			if (aya) { if (++aya_hold >= 90) {
+				/* Arm the reverse punch so the AYA-hold exit shrinks the live frame back
+				 * into the carousel, same as the menu "Close" path. */
+				extern void gbc_menu_arm_reverse(const unsigned short *frame);
+				gbc_menu_arm_reverse(vbuf);
+				break;
+			} } else aya_hold = 0;
 
 			if (g_gbc_menu_open && s_pal_pick) {
 				/* Palette LIST picker: hold Up/Down to browse with accelerating
@@ -619,10 +625,17 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				}
 			}
 
+			/* Refresh the Pico menu as a hardware overlay (OVL0 L0) over the running game, or
+			 * disable it when closed - so aspect/filter/etc. preview live with the game visible
+			 * underneath and no pause. Done BEFORE the present so the layer state matches the frame. */
+			{
+				extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
+				ayaneo_menu_overlay(gbc_menu_paint, g_gbc_menu_open);
+			}
+
 			/* Run-ahead: present pf frames into the future then rewind. Off while the
 			 * menu is open (do not race the game ahead under the overlay, and a menu
-			 * Load State just replaced the state). ayaneo_gb_show_frame paints the
-			 * menu overlay on top when g_gbc_menu_open. */
+			 * Load State just replaced the state). */
 			pf = (!g_gbc_menu_open && GBC_RUNAHEAD) ? ayaneo_get_preempt_frames() : 0;
 			if (pf > 0 && ahead_sz) {
 				int i;
@@ -648,6 +661,13 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	}
 	}
 	g_gbc_menu_open = 0;
+	/* Tear down the hardware menu overlay (OVL0 L0) before returning to the carousel: an
+	 * AYA-hold or "Close" exit can leave it enabled, which would composite the stale Pico
+	 * panel over the reverse-punch and the carousel. Done while the pipe is still active. */
+	{
+		extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
+		ayaneo_menu_overlay(0, 0);
+	}
 
 	/* persist the cartridge battery save + a suspend save STATE (so the next launch
 	 * resumes), then hand the codec back to the menu */

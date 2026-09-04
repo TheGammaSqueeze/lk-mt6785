@@ -700,7 +700,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* Committed-frame audio submitted BEFORE any run-ahead look-ahead overwrites the
 		 * blob's audio buffer; muted while benchmarking or fast-forwarding so the ring never
 		 * throttles the uncapped loop. (ff / pf were computed up front, above.) */
-		if (f.audio && f.frames && !g_snes_benchmark && !ff && !g_snes_menu_open) {
+		if (f.audio && f.frames && !g_snes_benchmark && !ff) {
 			g_snes_dbg_audframes += f.frames;
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 		}
@@ -791,8 +791,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* AYA taps toggle the menu; holding AYA ~1.5 s force-exits to the selector. */
 		aya = PRESSED(GPIO_AYA);
 		if (aya && !aya_prev) { g_snes_menu_open = !g_snes_menu_open; s_mstat[0] = 0;
-			if (g_snes_menu_open) ayaneo_menu_audio_silence();   /* clear the ring: emulation is frozen */
-			else snes_settings_flush(); }                        /* flush pending on menu close */
+			if (!g_snes_menu_open) snes_settings_flush(); }      /* flush pending on menu close; game keeps running + audio keeps playing */
 		aya_prev = aya;
 		if (aya) { if (++aya_hold >= 90) {
 			/* Arm the reverse punch: the menu re-entry shrinks this frozen frame back into

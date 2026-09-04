@@ -75,8 +75,8 @@ extern int  ayaneo_get_load_on_boot(void);
 extern void ayaneo_set_load_on_boot(int v);
 extern int  ayaneo_get_skip_boot(void);
 extern void ayaneo_set_skip_boot(int v);
-extern int  ayaneo_get_lcd_filter(void);
-extern void ayaneo_set_lcd_filter(int v);
+extern int  ayaneo_get_lcd_filter_core(int c);
+extern void ayaneo_set_lcd_filter_core(int c, int v);
 extern int  ayaneo_get_color_correct(void);
 extern void ayaneo_set_color_correct(int v);
 extern int  ayaneo_get_dark_filter(void);
@@ -649,7 +649,7 @@ static const char *gbc_menu_value(int item, char *buf, unsigned char *state)
 	switch (item) {
 	case MI_BRIGHT:   p = mi_putu(p, (unsigned)ayaneo_brightness_pct()); p = mi_puts(p, "%"); break;
 	case MI_VOLUME:   p = mi_putu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mi_puts(p, "%"); break;
-	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter())); break;
+	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter_core(2))); break;
 	case MI_COLORCC:  p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
 	case MI_DARKF:    p = mi_putu(p, (unsigned)ayaneo_get_dark_filter()); break;
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
@@ -710,7 +710,7 @@ static int gbc_menu_change(int item, int dir, int act, unsigned char *state, cha
 	switch (item) {
 	case MI_BRIGHT:   if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case MI_VOLUME:   if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
-	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
+	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter_core(2, (ayaneo_get_lcd_filter_core(2) + dir + 4) % 4); else changed = 0; break;
 	case MI_COLORCC:  if (dir || act) { ayaneo_set_color_correct(!ayaneo_get_color_correct()); gbc_apply_video_settings(); } else changed = 0; break;
 	case MI_DARKF:    if (dir) { ayaneo_set_dark_filter(ayaneo_get_dark_filter() + dir); gbc_apply_video_settings(); } else changed = 0; break;
 	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;

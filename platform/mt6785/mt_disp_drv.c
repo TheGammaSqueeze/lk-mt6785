@@ -1023,6 +1023,7 @@ static void ayaneo_draw_osd(unsigned int *dst, unsigned int pitch_w,
 }
 
 extern int ayaneo_get_lcd_filter(void);		/* ayaneo_audio.c */
+extern int ayaneo_get_lcd_filter_core(int c);	/* ayaneo_audio.c: 0=SNES 1=GBA 2=GBC */
 extern int ayaneo_get_color_correct(void);	/* ayaneo_audio.c */
 extern int gbc_menu_is_open(void);		/* gbc_driver.c */
 extern void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
@@ -1098,13 +1099,13 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		extern int gbc_menu_is_open(void);
 		extern int ayaneo_get_color_correct(void);
 		extern const unsigned short gba_cc_lut444[];
-		if (g_gba_aspect != 0 && !gbc_menu_is_open()) {
+		if (g_gba_aspect != 0) {
 			unsigned int dwr, dhr;
 			if (g_gba_aspect == 2) { dwr = W; dhr = H; }   /* Stretch: full panel */
 			else if (W * GBC_SRC_H <= H * GBC_SRC_W) { dwr = W; dhr = W * GBC_SRC_H / GBC_SRC_W; }
 			else { dhr = H; dwr = H * GBC_SRC_W / GBC_SRC_H; }   /* Fit: native aspect, max fill */
 			ayaneo_rsz_present(pix, GBC_SRC_W, GBC_SRC_H, GBC_SRC_W, dwr, dhr,
-					   (W - dwr) / 2u, (H - dhr) / 2u, ayaneo_get_lcd_filter(), 0,
+					   (W - dwr) / 2u, (H - dhr) / 2u, ayaneo_get_lcd_filter_core(1), 0,
 					   ayaneo_get_color_correct() ? gba_cc_lut444 : 0);
 			g_dbg_blit_us = g_rsz_show_us;   /* keep GBA run-ahead sizing (preempt_adapt) fed */
 			return;
@@ -1118,7 +1119,7 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 	{
 		/* LCD filter: 1 scanlines (dim last row of each 6x block), 2 grid
 		 * (dim last row + col), 3 both/heavier. Cheap per-subpixel darkening. */
-		int filt = ayaneo_get_lcd_filter();
+		int filt = ayaneo_get_lcd_filter_core(1);   /* GBA */
 		/* gpSP color correction: map each source pixel through the GBA LCD gamma
 		 * LUT (indexed by RGB555, red high) so colors match real hardware instead
 		 * of the oversaturated raw output. Applied once per 240x160 source pixel
@@ -1171,9 +1172,7 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 			}
 		}
 	}
-	if (gbc_menu_is_open())			/* opaque panel sits within the game area */
-		gbc_menu_draw_overlay(dst, pitch_w, W, H);
-	else
+	if (!gbc_menu_is_open())			/* menu is now a hardware overlay (OVL0 L0); only the OSD paints in-frame */
 		ayaneo_draw_osd(dst, pitch_w, W, H);	/* volume/brightness slider */
 	if (gbc_benchmark_on()) {		/* FPS counter, top-left of the game area */
 		char s[16]; int fps = gbc_get_fps(), n = 0, t[8], k = 0;
@@ -1206,7 +1205,7 @@ void ayaneo_gb_show_frame(const unsigned short *pix)
 	unsigned int xoff = (W - dw) / 2, yoff = (H - dh) / 2;
 	unsigned int *dst;
 	unsigned int dpa;
-	int filt = ayaneo_get_lcd_filter();
+	int filt = ayaneo_get_lcd_filter_core(2);   /* GBC */
 	unsigned int sx, sy, ix, iy;
 
 	/* Aspect modes (GB/GBC 160x144): Fit / Stretch via hardware RSZ; Pixel (0) uses the sharp
@@ -1214,7 +1213,7 @@ void ayaneo_gb_show_frame(const unsigned short *pix)
 	{
 		extern volatile int g_gbc_aspect;
 		extern int gbc_menu_open(void);
-		if (g_gbc_aspect != 0 && !gbc_menu_open()) {
+		if (g_gbc_aspect != 0) {
 			unsigned int dwr, dhr;
 			if (g_gbc_aspect == 2) { dwr = W; dhr = H; }   /* Stretch: full panel */
 			else if (W * SH <= H * SW) { dwr = W; dhr = W * SH / SW; }
@@ -1257,13 +1256,10 @@ void ayaneo_gb_show_frame(const unsigned short *pix)
 			}
 		}
 	}
-	/* in-game overlay menu (GammaOS Pico) drawn over the whole panel when open */
+	/* The Pico menu is now a hardware overlay (OVL0 L0); only the OSD paints in-frame. */
 	{
-		extern int  gbc_menu_open(void);
-		extern void gbc_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H);
-		if (gbc_menu_open())
-			gbc_menu_paint(dst, pitch_w, W, H);
-		else
+		extern int gbc_menu_open(void);
+		if (!gbc_menu_open())
 			ayaneo_draw_osd(dst, pitch_w, W, H);         /* volume/brightness slider */
 	}
 	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
@@ -1466,12 +1462,14 @@ void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned in
 	unsigned int *b = (unsigned int *)MENU_OVERLAY_PA;
 	if (open && paint) {
 		if (!g_overlay_active) {
-			memset(b, 0, W * H * 4u);   /* transparent (alpha=0) once; the panel region is
-						     * fully overdrawn opaque each frame, the rest stays clear */
-			arch_clean_cache_range(MENU_OVERLAY_PA, W * H * 4u);
 			g_overlay_active = 1;
 			ayaneo_overlay_layer_set(MENU_OVERLAY_PA, W, H, 0, 0, 1);
 		}
+		/* Clear to transparent (alpha=0) EACH frame, then draw the opaque panel. GBA/GBC menus
+		 * swap between differently-sized panels (menu vs palette/aspect pickers), so a paint-once
+		 * clear would leave stale opaque pixels where a larger panel shrank. The clear+flush only
+		 * runs while the menu is open (interactive, not perf-critical), so it costs nothing in play. */
+		memset(b, 0, W * H * 4u);
 		paint(b, W, W, H);   /* redraw the opaque panel (current selection/values) for live update */
 		arch_clean_cache_range(MENU_OVERLAY_PA, W * H * 4u);
 	} else if (g_overlay_active) {
@@ -1731,7 +1729,7 @@ static void ayaneo_snes_show_frame_rsz(const unsigned short *pix, unsigned int s
 	if (dw > W) dw = W; if (dh > H) dh = H;
 	if (dw < 1u) dw = 1u; if (dh < 1u) dh = 1u;
 	ayaneo_rsz_present(pix, sw, sh, spitch_px, dw, dh, (W - dw) / 2u, (H - dh) / 2u,
-			   ayaneo_get_lcd_filter(), !snes_benchmark_on(), 0);
+			   ayaneo_get_lcd_filter_core(0), !snes_benchmark_on(), 0);
 	g_snes_show_us = g_rsz_show_us;
 }
 
@@ -1800,7 +1798,7 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 	 * dh = panel height) uniformly. LCD filter (shared with GB/GBA): 1 scanlines (dim the last
 	 * dest row of each source row), 2/3 grid (also dim the last dest column of each source
 	 * pixel's run). Fast path when off. */
-	int filt = ayaneo_get_lcd_filter();
+	int filt = ayaneo_get_lcd_filter_core(0);   /* SNES */
 	unsigned int qx = dw / sw, rx = dw % sw;    /* dest cols per source pixel + remainder */
 	unsigned int qy = dh / sh, ry = dh % sh;    /* dest rows per source pixel + remainder */
 	unsigned int dy = (unsigned int)yoff, ey = 0;

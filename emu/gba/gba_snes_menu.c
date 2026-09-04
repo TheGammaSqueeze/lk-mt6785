@@ -43,6 +43,7 @@ int gba_punch_ready = 0;            /* set on launch; consumed by the driver loo
  * around them (see the SNES_CTILE2_PA/SNES_BOXART_PA/SNES_FCT_PA layout below). */
 #include "menu/gba_punch.h"         /* gba_punch_composite */
 extern unsigned int gpt4_get_current_tick(void);
+extern void arch_clean_cache_range(unsigned long start, unsigned int len);
 #define GBA_REVERSE_SNAP_PA 0x55000000u   /* rendered menu frame (fb-size) = reveal */
 #define GBA_GAME_FREEZE_PA  0x55800000u   /* frozen 240x160 RGB565 game frame */
 #define GBA_GAME_FULL_PA    0x55900000u   /* game pre-rendered full-screen BGRA (fast reverse) */
@@ -59,6 +60,7 @@ void gba_menu_arm_reverse(const unsigned short *game_frame)
 	g_dbg_arm_cnt++;
 	if (game_frame) {
 		memcpy((void *)(uintptr_t)GBA_GAME_FREEZE_PA, game_frame, 240u * 160u * 2u);
+		arch_clean_cache_range(GBA_GAME_FREEZE_PA, 240u * 160u * 2u);
 		g_reverse_punch = 1;
 		g_reverse_is_gbc = 0;
 	}
@@ -70,6 +72,7 @@ void gbc_menu_arm_reverse(const unsigned short *game_frame)
 	g_dbg_arm_cnt++;
 	if (game_frame) {
 		memcpy((void *)(uintptr_t)GBA_GAME_FREEZE_PA, game_frame, 160u * 144u * 2u);
+		arch_clean_cache_range(GBA_GAME_FREEZE_PA, 160u * 144u * 2u);
 		g_reverse_punch = 1;
 		g_reverse_is_gbc = 1;
 	}
@@ -85,6 +88,10 @@ void snes_menu_arm_reverse(const unsigned short *game_frame, unsigned sw, unsign
 	if (game_frame && sw && sh && sw <= 512 && sh <= 512) {
 		unsigned y; unsigned short *d = (unsigned short *)(uintptr_t)GBA_GAME_FREEZE_PA;
 		for (y = 0; y < sh; y++) memcpy(d + y * sw, game_frame + y * spitch, sw * 2u);
+		/* Flush to DRAM: this runs on the SNES emulation thread, but the reverse-punch that
+		 * reads GBA_GAME_FREEZE_PA runs on the menu thread. Without the write-back the menu
+		 * thread could read a stale (e.g. launch-time) copy from DRAM = the stale-frame bug. */
+		arch_clean_cache_range(GBA_GAME_FREEZE_PA, sw * sh * 2u);
 		g_reverse_snes_w = (int)sw; g_reverse_snes_h = (int)sh;
 		g_reverse_snes_scale = (sw <= 256) ? 4 : 2;
 		g_reverse_punch = 1;
@@ -100,6 +107,10 @@ extern void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
 extern void ayaneo_fill_blend(unsigned int *buf, unsigned int pitch_w,
 			      int x, int y, int w, int h, unsigned int argb, int alpha);
 extern void mtk_wdt_restart(void);
+/* Aspect-aware full-screen prerender (writes GBA_GAME_FULL_PA = 0x55900000), identical to the
+ * launch forward-punch and the live SNES display geometry - reused for the reverse so the frozen
+ * frame shrinks from EXACTLY what was last on screen (same size/aspect), not a centred integer box. */
+extern void ayaneo_snes_punch_prerender(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px);
 extern void thread_sleep(unsigned);
 extern int  zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstlen, int offset);
 extern int  partition_read(const char *name, unsigned long long off, void *buf, unsigned long len);
@@ -389,11 +400,12 @@ static void play_reverse_punch(unsigned int ms)
 	 * frame is just memcpy (gba_punch_composite_pre) = ~5ms not ~50ms. FRAME-paced
 	 * over a fixed count so the shrink is a smooth, visible 60fps sequence. */
 	if (g_reverse_is_gbc == 2) {
-		int sc = g_reverse_snes_scale, sw = g_reverse_snes_w, sh = g_reverse_snes_h;
-		int dw = sw * sc, dh = sh * sc;
-		gba_punch_prerender((uint32_t *)(uintptr_t)GBA_GAME_FULL_PA, (int)cp, (int)cw, (int)ch,
-				    (const unsigned short *)GBA_GAME_FREEZE_PA, sc, sw, sh,
-				    ((int)cw - dw) / 2, ((int)ch - dh) / 2);
+		/* SNES: render the frozen frame with the SAME aspect-aware geometry as the live display
+		 * (ayaneo_snes_punch_prerender reads g_snes_aspect_x1000), so the reverse shrinks the exact
+		 * last on-screen frame instead of a centred integer-scaled box. */
+		int sw = g_reverse_snes_w, sh = g_reverse_snes_h;
+		ayaneo_snes_punch_prerender((const unsigned short *)GBA_GAME_FREEZE_PA,
+					    (unsigned)sw, (unsigned)sh, (unsigned)sw);
 	} else if (g_reverse_is_gbc == 1)
 		gba_punch_prerender((uint32_t *)(uintptr_t)GBA_GAME_FULL_PA, (int)cp, (int)cw, (int)ch,
 				    (const unsigned short *)GBA_GAME_FREEZE_PA, 6, 160, 144,

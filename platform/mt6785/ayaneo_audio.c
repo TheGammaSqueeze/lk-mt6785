@@ -209,7 +209,7 @@ static volatile int s_gbc_vol = AYANEO_AUDIO_VOLUME;	/* audio level, 0-100 */
 static volatile int s_brightness = AYANEO_BL_DEFAULT;	/* LCD level, 0-255 */
 static volatile int s_load_on_boot = 1;		/* resume save state after boot */
 static volatile int s_skip_boot = 0;		/* skip the animation + chime */
-static volatile int s_lcd_filter = 0;		/* 0 off, 1 scanlines, 2 grid, 3 both */
+static volatile int s_lcd_filter[3] = { 0, 0, 0 };	/* per core [0]=SNES [1]=GBA [2]=GBC; each 0 off,1 scanlines,2 grid,3 both */
 static volatile int s_color_correct = 0;	/* CGB colour correction on/off */
 static volatile int s_dark_filter = 0;		/* 0-5 dark filter level */
 static volatile int s_skip_gba_intro = 0;	/* skip the GBA BIOS boot-logo intro (SD flow) */
@@ -271,8 +271,10 @@ int ayaneo_get_skip_boot(void)      { return s_skip_boot; }
 void ayaneo_set_skip_boot(int v)    { s_skip_boot = v ? 1 : 0; }
 int ayaneo_get_skip_gba_intro(void)   { return s_skip_gba_intro; }
 void ayaneo_set_skip_gba_intro(int v) { s_skip_gba_intro = v ? 1 : 0; }
-int ayaneo_get_lcd_filter(void)     { return s_lcd_filter; }
-void ayaneo_set_lcd_filter(int v)   { s_lcd_filter = (v < 0) ? 0 : (v > 3 ? 3 : v); }
+int ayaneo_get_lcd_filter(void)     { return s_lcd_filter[0]; }           /* legacy alias -> SNES */
+void ayaneo_set_lcd_filter(int v)   { s_lcd_filter[0] = (v < 0) ? 0 : (v > 3 ? 3 : v); }
+int ayaneo_get_lcd_filter_core(int c)      { if (c < 0 || c > 2) c = 0; return s_lcd_filter[c]; }
+void ayaneo_set_lcd_filter_core(int c, int v) { if (c < 0 || c > 2) c = 0; s_lcd_filter[c] = (v < 0) ? 0 : (v > 3 ? 3 : v); }
 int ayaneo_get_color_correct(void)  { return s_color_correct; }
 void ayaneo_set_color_correct(int v){ s_color_correct = v ? 1 : 0; }
 int ayaneo_get_dark_filter(void)    { return s_dark_filter; }
@@ -319,7 +321,10 @@ void ayaneo_settings_load(void)
 	if (ver >= 2) {			/* new fields; older blobs keep the defaults */
 		s_load_on_boot  = rd32(b + 16) ? 1 : 0;
 		s_skip_boot     = rd32(b + 20) ? 1 : 0;
-		ayaneo_set_lcd_filter((int)rd32(b + 24));
+		{ unsigned int pk = rd32(b + 24);   /* packed: bits0-1 SNES, 2-3 GBA, 4-5 GBC (old blobs stored plain SNES value) */
+		  ayaneo_set_lcd_filter_core(0, (int)(pk & 3));
+		  ayaneo_set_lcd_filter_core(1, (int)((pk >> 2) & 3));
+		  ayaneo_set_lcd_filter_core(2, (int)((pk >> 4) & 3)); }
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -359,7 +364,7 @@ int ayaneo_settings_serialize(unsigned char *b, int cap)
 	wr32(b + 12, (unsigned int)s_brightness);
 	wr32(b + 16, (unsigned int)s_load_on_boot);
 	wr32(b + 20, (unsigned int)s_skip_boot);
-	wr32(b + 24, (unsigned int)s_lcd_filter);
+	wr32(b + 24, (unsigned int)((s_lcd_filter[0] & 3) | ((s_lcd_filter[1] & 3) << 2) | ((s_lcd_filter[2] & 3) << 4)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
@@ -385,7 +390,10 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 	if (ver >= 2) {
 		s_load_on_boot  = rd32(b + 16) ? 1 : 0;
 		s_skip_boot     = rd32(b + 20) ? 1 : 0;
-		ayaneo_set_lcd_filter((int)rd32(b + 24));
+		{ unsigned int pk = rd32(b + 24);   /* packed: bits0-1 SNES, 2-3 GBA, 4-5 GBC (old blobs stored plain SNES value) */
+		  ayaneo_set_lcd_filter_core(0, (int)(pk & 3));
+		  ayaneo_set_lcd_filter_core(1, (int)((pk >> 2) & 3));
+		  ayaneo_set_lcd_filter_core(2, (int)((pk >> 4) & 3)); }
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -424,7 +432,7 @@ void ayaneo_settings_save(void)
 	wr32(b + 12, (unsigned int)s_brightness);
 	wr32(b + 16, (unsigned int)s_load_on_boot);
 	wr32(b + 20, (unsigned int)s_skip_boot);
-	wr32(b + 24, (unsigned int)s_lcd_filter);
+	wr32(b + 24, (unsigned int)((s_lcd_filter[0] & 3) | ((s_lcd_filter[1] & 3) << 2) | ((s_lcd_filter[2] & 3) << 4)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);

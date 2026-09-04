@@ -117,8 +117,8 @@ extern int  ayaneo_get_skip_boot(void);
 extern void ayaneo_set_skip_boot(int v);
 extern int  ayaneo_get_skip_gba_intro(void);
 extern void ayaneo_set_skip_gba_intro(int v);
-extern int  ayaneo_get_lcd_filter(void);
-extern void ayaneo_set_lcd_filter(int v);
+extern int  ayaneo_get_lcd_filter_core(int c);
+extern void ayaneo_set_lcd_filter_core(int c, int v);
 extern int  ayaneo_get_color_correct(void);
 extern void ayaneo_set_color_correct(int v);
 extern int  ayaneo_get_preempt_frames(void);
@@ -1169,7 +1169,7 @@ static const char *menu_value(int item, char *buf)
 	switch (item) {
 	case MI_BRIGHT:   p = mi_putu(p, (unsigned)ayaneo_brightness_pct()); p = mi_puts(p, "%"); break;
 	case MI_VOLUME:   p = mi_putu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mi_puts(p, "%"); break;
-	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter())); break;
+	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter_core(1))); break;
 	case MI_COLORCORRECT: p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
 	case MI_PREEMPT: { int pf = ayaneo_get_preempt_frames();
 		/* Named tiers (max desired depth) + the depth the closed loop is running
@@ -1264,7 +1264,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	switch (item) {
 	case MI_BRIGHT:   if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case MI_VOLUME:   if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
-	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); else changed = 0; break;
+	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter_core(1, (ayaneo_get_lcd_filter_core(1) + dir + 4) % 4); else changed = 0; break;
 	case MI_COLORCORRECT: if (dir || act) ayaneo_set_color_correct(!ayaneo_get_color_correct()); else changed = 0; break;
 	case MI_PREEMPT:  if (dir || act) { int d = dir ? dir : 1;
 		ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + d + 4) % 4);
@@ -2001,6 +2001,13 @@ static int emu_thread(void *arg)
 			if (s_close_req) {
 				s_close_req = 0;
 				s_menu_open = 0;
+				/* Tear down the hardware menu overlay (OVL0 L0) before the reverse punch +
+				 * carousel: an AYA-hold or "Close" exit can leave it enabled, which would
+				 * composite the stale Pico panel over the transition and the carousel. */
+				{
+					extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
+					ayaneo_menu_overlay(0, 0);
+				}
 #ifdef AYANEO_GBA_SD
 				if (s_sd_mode && s_nrom > 0) {
 					extern void gba_menu_arm_reverse(const unsigned short *game_frame);
@@ -2054,6 +2061,14 @@ static int emu_thread(void *arg)
 				}
 #endif
 				continue;
+			}
+
+			/* Refresh the Pico menu as a hardware overlay (OVL0 L0) over the running game,
+			 * or disable it when closed - so aspect/filter/etc. preview live with the game
+			 * visible underneath and no pause. Done each frame before the present dispatch. */
+			{
+				extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
+				ayaneo_menu_overlay(gbc_menu_draw_overlay, s_menu_open);
 			}
 
 			/* fast-forward: present sparsely so the vsync block does not cap the
