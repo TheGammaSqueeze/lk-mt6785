@@ -1413,7 +1413,14 @@ void ayaneo_overlay_layer_set(unsigned int argb_pa, unsigned int w, unsigned int
 		primary_display_config_input(&in);
 		primary_display_trigger(1);
 	} else {
-		OVL0_SRC_CON &= ~1u;          /* clear OVL0 L0 enable (config_input won't disable it) */
+		/* Disable via config_input(layer_en=0), NOT a bare SRC_CON poke: OVLConfig rebuilds OVL0
+		 * SRC_CON from the cached ovl_config[].layer_en on EVERY config_input, so the game's next
+		 * per-frame present would re-enable a poked-off layer (the flicker-back bug). Clearing the
+		 * cached layer_en makes the disable persist; OVLConfig then drops it from enabled_layers. */
+		disp_input_config in;
+		memset(&in, 0, sizeof(in));
+		in.layer = 2; in.layer_en = 0;
+		primary_display_config_input(&in);
 		primary_display_trigger(1);
 	}
 }
