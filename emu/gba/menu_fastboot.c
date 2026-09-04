@@ -378,9 +378,35 @@ static void cmd_selftest(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* Dump all 16 SoC AUXADC channels (mediatek,mt6768-auxadc @0x11001000) as calibrated values.
+ * The LK device tree only declares digital inputs (gpio-keys: dpad/face/L2=key_lc/R2=key_rc/
+ * JOYSTICK_L_SW/R_SW clicks), so the analog stick axes and analog trigger pressure - if wired to
+ * the SoC AUXADC - are on unlabeled channels 3..15 (0/1 = thermistors, 2 = md-channel). Run this,
+ * then push each stick to its extremes and squeeze each trigger, and watch which channel swings:
+ * that reveals the axis->channel map with no kernel DTS needed. If NOTHING swings, the analog
+ * inputs are behind an external I2C ADC/MCU (i2c@1401e000) instead, which needs a client driver. */
+static void cmd_adcscan(const char *arg, void *data, unsigned sz)
+{
+	extern int iio_read_channel_processed(int channel, int *val);
+	int ch, val, base;
+	(void)arg; (void)data; (void)sz;
+	for (base = 0; base < 16; base += 4) {
+		int v0 = -1, v1 = -1, v2 = -1, v3 = -1;
+		ch = base + 0; if (iio_read_channel_processed(ch, &val) == 0) v0 = val;
+		ch = base + 1; if (iio_read_channel_processed(ch, &val) == 0) v1 = val;
+		ch = base + 2; if (iio_read_channel_processed(ch, &val) == 0) v2 = val;
+		ch = base + 3; if (iio_read_channel_processed(ch, &val) == 0) v3 = val;
+		snprintf(lbuf, sizeof lbuf, "adc ch%02d=%d ch%02d=%d ch%02d=%d ch%02d=%d",
+			 base, v0, base + 1, v1, base + 2, v2, base + 3, v3);
+		fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
+	fastboot_register("oem adcscan", cmd_adcscan, 1, 0);
 	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
 	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
