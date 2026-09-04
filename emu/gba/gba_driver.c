@@ -1307,8 +1307,10 @@ static int aya_edge(void)
 }
 static void menu_toggle(void)
 {
+	extern void ayaneo_menu_overlay_mark_dirty(void);
 	s_menu_open = !s_menu_open;
 	s_menu_status[0] = 0;
+	ayaneo_menu_overlay_mark_dirty();	/* repaint the static overlay on open/close */
 	if (s_menu_open)
 		battery_poll(BATTERY_MENU_FRAMES);	/* refresh the shown % on open (<= once/min) */
 	menu_keys();		/* drop the AYA edge */
@@ -1316,8 +1318,10 @@ static void menu_toggle(void)
 
 static void menu_tick(unsigned char *state)
 {
+	extern void ayaneo_menu_overlay_mark_dirty(void);
 	unsigned k = menu_keys();
 	battery_poll(BATTERY_MENU_FRAMES);	/* menu open: refresh the shown % at most once/min */
+	if (k) ayaneo_menu_overlay_mark_dirty();	/* any nav/value key changes the panel -> repaint */
 	if (k & MK_UP)    { s_menu_sel = (s_menu_sel + MI_COUNT - 1) % MI_COUNT; s_menu_status[0] = 0; }
 	if (k & MK_DOWN)  { s_menu_sel = (s_menu_sel + 1) % MI_COUNT; s_menu_status[0] = 0; }
 	if (k & MK_LEFT)  { if (menu_change(s_menu_sel, -1, 0, state, s_menu_status)) s_menu_open = 0; }

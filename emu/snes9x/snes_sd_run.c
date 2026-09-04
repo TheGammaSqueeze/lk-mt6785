@@ -26,6 +26,7 @@ extern void     ayaneo_gbc_audio_init(void);       /* 48 kHz AFE ring (shared wi
 extern void     ayaneo_snes_audio_reset(void);
 extern void     ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz);
 extern void     ayaneo_menu_audio_silence(void);
+extern void     ayaneo_menu_overlay_mark_dirty(void);   /* repaint the hardware menu overlay (mt_disp_drv.c) */
 extern void     ayaneo_display_prepare(void);
 extern void     ayaneo_dsi_set_vfp(unsigned int vfp);   /* per-core panel refresh (ddp_dsi.c) */
 extern unsigned int ayaneo_dsi_get_vfp(void);           /* read-back to validate the switch */
@@ -791,6 +792,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* AYA taps toggle the menu; holding AYA ~1.5 s force-exits to the selector. */
 		aya = PRESSED(GPIO_AYA);
 		if (aya && !aya_prev) { g_snes_menu_open = !g_snes_menu_open; s_mstat[0] = 0;
+			ayaneo_menu_overlay_mark_dirty();                    /* repaint the overlay on open/close */
 			if (!g_snes_menu_open) snes_settings_flush(); }      /* flush pending on menu close; game keeps running + audio keeps playing */
 		aya_prev = aya;
 		if (aya) { if (++aya_hold >= 90) {
@@ -816,6 +818,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			#define FIRE(h)   ((h) == 1 || ((h) > NAV_DELAY && (((h) - NAV_DELAY) % NAV_REP) == 0))
 			up_h = up ? up_h + 1 : 0; dn_h = dn ? dn_h + 1 : 0;
 			lt_h = lt ? lt_h + 1 : 0; rt_h = rt ? rt_h + 1 : 0;
+			if ((up && FIRE(up_h)) || (dn && FIRE(dn_h)) || (lt && FIRE(lt_h)) || (rt && FIRE(rt_h)) ||
+			    (a && !a_p) || (b && !b_p))
+				ayaneo_menu_overlay_mark_dirty();   /* content changes -> repaint the static overlay */
 			if (up && FIRE(up_h)) s_msel = (s_msel + SM_COUNT - 1) % SM_COUNT;
 			if (dn && FIRE(dn_h)) s_msel = (s_msel + 1) % SM_COUNT;
 			if (lt && FIRE(lt_h)) sm_change(s_msel, -1, 0);

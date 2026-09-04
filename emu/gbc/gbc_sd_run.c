@@ -204,6 +204,7 @@ extern int  ayaneo_get_lcd_filter_core(int c);
 extern void ayaneo_set_lcd_filter_core(int c, int v);
 extern void ayaneo_set_preempt_frames(int v);
 extern void ayaneo_menu_settings_persist(void);
+extern void ayaneo_menu_overlay_mark_dirty(void);   /* repaint the hardware menu overlay (mt_disp_drv.c) */
 
 volatile int g_gbc_menu_open;   /* read by ayaneo_gbc_pad_mask (gba_driver.c) to gate game input */
 /* Release-latch (gambatte mask: A=0x01, B=0x02) for the A/B that dismissed the menu, so the
@@ -543,7 +544,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * Holding AYA ~1.5 s force-exits to the selector - a safety so a broken
 			 * menu can never soft-lock the game (the watchdog is disabled here). */
 			aya = PRESSED(GPIO_AYA);
-			if (aya && !aya_prev) { g_gbc_menu_open = !g_gbc_menu_open; s_mstat[0] = 0; if (!g_gbc_menu_open) s_pal_pick = 0; }
+			if (aya && !aya_prev) { g_gbc_menu_open = !g_gbc_menu_open; s_mstat[0] = 0; if (!g_gbc_menu_open) s_pal_pick = 0; ayaneo_menu_overlay_mark_dirty(); }
 			aya_prev = aya;
 			if (aya) { if (++aya_hold >= 90) {
 				/* Arm the reverse punch so the AYA-hold exit shrinks the live frame back
@@ -578,7 +579,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					int n = dmg_pal_count(s_menu_c), v = *s_menu_pal + dir * step;
 					while (v < 0) v += n; while (v >= n) v -= n;   /* wrap */
 					*s_menu_pal = v; apply_dmg_palette(s_menu_c, v);
+					ayaneo_menu_overlay_mark_dirty();
 				}
+				if ((a && !a_prev) || (b && !b_prev)) ayaneo_menu_overlay_mark_dirty();
 				if (a && !a_prev) {                                  /* apply (already live) */
 					s_pal_pick = 0;
 					if (s_menu_pal) gbc_pal_save(s_menu_vol, s_menu_rom->name, *s_menu_pal);
@@ -596,6 +599,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
 				int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
 				int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B), x = PRESSED(GPIO_X);
+				if ((up && !up_prev) || (dn && !dn_prev) || (lt && !lt_prev) || (rt && !rt_prev) ||
+				    (a && !a_prev) || (x && !x_prev) || (b && !b_prev))
+					ayaneo_menu_overlay_mark_dirty();
 				if (up && !up_prev) s_msel = (s_msel + GM_COUNT - 1) % GM_COUNT;
 				if (dn && !dn_prev) s_msel = (s_msel + 1) % GM_COUNT;
 				if (lt && !lt_prev) res = gm_change(s_msel, -1, 0);

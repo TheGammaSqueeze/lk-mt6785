@@ -1456,22 +1456,32 @@ void ayaneo_overlay_test(int on)
  * refresh the buffer content each frame for live menu values (the OVL re-scans it every vsync). */
 #define MENU_OVERLAY_PA 0x55900000u
 volatile int g_overlay_active;
+static volatile int s_overlay_dirty;
+/* Cores call this whenever the menu CONTENT changes (open, navigation, value edit, volume rocker),
+ * so the overlay is repainted only then - NOT every frame. Repainting every frame meant a
+ * full-screen 4.9 MB clear + 4.9 MB cache-flush per frame; on the lower-clock GBA/GBC that overran
+ * the frame budget, so the panel scanned a half-cleared overlay = stale content torn across the top.
+ * The game still animates live underneath through its own present; only the menu panel is static. */
+void ayaneo_menu_overlay_mark_dirty(void) { s_overlay_dirty = 1; }
 void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int *b = (unsigned int *)MENU_OVERLAY_PA;
 	if (open && paint) {
+		if (!g_overlay_active || s_overlay_dirty) {
+			/* Clear to transparent (alpha=0) then draw the opaque panel. Full-screen clear each
+			 * repaint handles GBA/GBC swapping between differently-sized panels (menu vs palette/
+			 * aspect pickers) with no stale opaque pixels - but only on a real content change.
+			 * Painted BEFORE the layer is enabled on the open frame so no stale buffer flashes. */
+			memset(b, 0, W * H * 4u);
+			paint(b, W, W, H);
+			arch_clean_cache_range(MENU_OVERLAY_PA, W * H * 4u);
+			s_overlay_dirty = 0;
+		}
 		if (!g_overlay_active) {
 			g_overlay_active = 1;
 			ayaneo_overlay_layer_set(MENU_OVERLAY_PA, W, H, 0, 0, 1);
 		}
-		/* Clear to transparent (alpha=0) EACH frame, then draw the opaque panel. GBA/GBC menus
-		 * swap between differently-sized panels (menu vs palette/aspect pickers), so a paint-once
-		 * clear would leave stale opaque pixels where a larger panel shrank. The clear+flush only
-		 * runs while the menu is open (interactive, not perf-critical), so it costs nothing in play. */
-		memset(b, 0, W * H * 4u);
-		paint(b, W, W, H);   /* redraw the opaque panel (current selection/values) for live update */
-		arch_clean_cache_range(MENU_OVERLAY_PA, W * H * 4u);
 	} else if (g_overlay_active) {
 		ayaneo_overlay_layer_set(0, 0, 0, 0, 0, 0);
 		g_overlay_active = 0;
