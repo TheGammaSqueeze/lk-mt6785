@@ -86,6 +86,24 @@ frame-emulate is ~2x cheaper (less accurate/faster core) AND it runs at 1800.
   already on the fast load (the crackle fix's set_ra_fast), so run-ahead state_load is also ~557us not 2682.
 - gen-bench forward unchanged (fps=173 frame=5759). load/loadfast now both shown by oem gen-bench.
 
+## Iteration 4 (2026-09-05): profiled the frame - VDP render is ~49%
+- gen-bench @1399: frame=5759us, norender=2951us -> VDP PIXEL RENDER = 2808us (49%!), CPU(68k+Z80+sound+
+  VDP-timing) = 2951us. (norender = set_av_skip novideo=1.) load=2678 loadfast=555.
+- Render is skipped on FF thrown-away frames + run-ahead look-ahead frames (except the last), so cutting it
+  mainly helps FORWARD play + the rewind render + the final look-ahead. CPU (2951) runs on EVERY frame incl.
+  skipped ones -> matters most for run-ahead depth/FF.
+- DEAD END - softfp+neon-fp-armv8 (from soft): built + linked clean, but frame 5759->5781us, norender
+  2951->3001us (SLIGHTLY WORSE, ~0.4%). GPGX's render/CPU loops are too branchy/gather-heavy (LUT remap) for
+  the -O3 auto-vectorizer, and softfp adds a hair of overhead. REVERTED to soft-float. Hand-written NEON
+  intrinsics for the render remap COULD help but is high-effort + the remap is a per-pixel LUT gather (poor
+  NEON fit). Do NOT retry auto-vectorize.
+- STANDING: the frame-emulate (5760us) resists cheap wins (compiler flags, float-abi, config all tried). The
+  render (2808us) is a per-pixel indexed LUT remap; the CPU (2951us) is the cycle-accurate 68k/Z80. Both need
+  hand code-level work for further gains. BUT the rewind 6x goal is already MET (iter2/3), so this is only
+  forward/FF/run-ahead-depth headroom. Next candidate ideas: (a) hand-optimize the vdp_render line remap
+  (write RGB565 directly, avoid double-buffer), (b) check if config.overclock/M68K_OVERCLOCK_SHIFT adds
+  cycle-accounting overhead when overclock=0, (c) accept current perf (rewind goal met) and reduce churn.
+
 ## Ideas backlog (try in order of expected impact / low risk first)
 1. [DONE-build, unmeasured] -O3 hot / -O2 cold (was all -Os). <-- likely the big one.
 2. Bump the blob LTO link to -O3 (build_core_blob.sh line ~47) if per-file -O3 under LTO isn't enough.
