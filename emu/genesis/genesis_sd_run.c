@@ -73,10 +73,6 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
 #define GEN_STATE_CAP  0x00400000u        /* 4 MB (GPGX state ~0.5-1 MB) */
 #define GEN_AHEAD_BUF  0x53800000u        /* run-ahead save/restore scratch (separate from state) */
 #define GEN_REWIND_MAX_SPD 1536           /* max rewind speed in 256ths (1536 = 6x); floor 256 = 1x */
-#define GEN_REWIND_MHZ     1999           /* CPU clock held WHILE rewinding, so a full-serialize rewind
-                                           * reaches 6x even when the gameplay tier clock is low; the
-                                           * gameplay clock is restored on release. Rewind is vsync-capped
-                                           * (one present/frame) so this is safe capped play. */
 
 /* run-ahead CPU clock by depth: pf frames run pf+1 emulations/display + 1 save + 1 load, so
  * escalate the clock with depth (mirrors the snes s_snes_ra_opp). ayaneo_set_cpu_mhz is PLL-only. */
@@ -131,6 +127,11 @@ static int rom_type_to_system(unsigned char type)
 volatile unsigned g_gen_dbg_frames;
 volatile unsigned g_gen_dbg_w, g_gen_dbg_h, g_gen_dbg_sr;
 volatile int      g_gen_dbg_loadrc;
+/* rewind cost breakdown (updated while rewinding; read via `oem gen-rw`): the per-step state_load
+ * (portable retro_unserialize + system_reset) cost vs the c->run re-emulate cost, the smoothed per-step
+ * total, and the achieved reverse speed x10. Answers "is the state restore or the re-emulation the wall?" */
+volatile unsigned g_gen_dbg_rw_load_us, g_gen_dbg_rw_run_us, g_gen_dbg_rw_step_us, g_gen_dbg_rw_eff_x10;
+volatile unsigned g_gen_dbg_rw_mhz;   /* CPU clock at the time of the measurement */
 
 /* ---- in-game Pico menu (hardware OVL0 L0 overlay over the running game; mirrors the snes menu).
  * g_genesis_menu_open (declared above) gates game input + FF/rewind; the game keeps running so
@@ -351,7 +352,6 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	const struct genesis_core_exports *c = genesis_core_load();
 	unsigned romsz, sr = 44100, ssz, rw_payload, saved_mhz;
 	int aya_prev = 0, aya_hold = 0, rw_acc = 0, reset_hold = 0;
-	unsigned rw_saved_mhz = 0;   /* gameplay clock stashed while a rewind boosts to GEN_REWIND_MHZ */
 	int up_h = 0, dn_h = 0, lt_h = 0, rt_h = 0;             /* menu nav auto-repeat hold counters */
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	struct genesis_frame fr;
@@ -471,38 +471,42 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			extern int priamry_display_wait_for_vsync(void);
 			static unsigned int s_rw_step_us = 3500u;   /* adaptive per-step (state_load+run) cost */
 			int spd = 256 + (rw * (GEN_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(6x) */
-			unsigned int sz; const void *st; int k, steps, done = 0;
-			unsigned int rw_t0;
-			ayaneo_hud_set(2, spd * 10 / 256);   /* cyan reverse-speed badge (requested speed) */
-			if (!ayaneo_rewind_active()) {
-				ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip();
-				rw_saved_mhz = ayaneo_get_cpu_mhz();       /* boost to GEN_REWIND_MHZ for the rewind, */
-				ayaneo_set_cpu_mhz(GEN_REWIND_MHZ);        /* restored on release below */
-			}
+			unsigned int sz; const void *st; int k, steps, done = 0, cap, req_x10, eff_x10;
+			unsigned int rw_t0, load_acc = 0, run_acc = 0;
+			if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
 			rw_acc += spd; steps = rw_acc >> 8; rw_acc &= 255;
-			{	/* Cap the reverse steps to what fits one vsync: a rewound frame is a FULL state_load
-				 * (GPGX has no cheap raw snapshot) + a full render, so a heavy cart cannot sustain 6x
-				 * of those per present - the uncapped loop overran the refresh = the choppy rewind and
-				 * the audio-ring underrun the user heard. Mirrors the forward FF adaptive cap. Decimate
-				 * the reverse audio by the SAME capped count so one present still submits ~one frame of
-				 * samples (no under/overrun). */
+			/* Cap the reverse steps to what fits one vsync AT THE CURRENT (tier) CLOCK: a rewound frame is
+			 * a full state_load + full re-render (GPGX has no cheap raw snapshot), so a low tier can only
+			 * sustain a few per present. No clock boost - the achieved speed is whatever the tier allows,
+			 * and the badge below reflects it honestly. Decimate the reverse audio by the capped count so
+			 * one present still submits ~one frame of samples (no under/overrun). */
+			{
 				unsigned int budget = g_dbg_blit_us < 15000u ? (15000u - g_dbg_blit_us) : 2000u;
-				int cap = (int)(budget / (s_rw_step_us ? s_rw_step_us : 3500u));
+				cap = (int)(budget / (s_rw_step_us ? s_rw_step_us : 3500u));
 				if (cap < 1) cap = 1;
-				if (steps > cap) steps = cap;
 			}
+			if (steps > cap) steps = cap;
 			if (steps < 1) steps = 1;
+			/* Honest reverse-speed badge: the ACHIEVED speed (requested, clamped to what the clock
+			 * sustains), not the trigger depth - so a heavy cart on a low tier shows e.g. 2.0x, not 6.0x. */
+			req_x10 = spd * 10 / 256; eff_x10 = cap * 10; if (req_x10 < eff_x10) eff_x10 = req_x10;
+			ayaneo_hud_set(2, eff_x10);
 			if (c->set_av_skip) c->set_av_skip(0, 0);   /* never skip a rewound frame's render/audio */
 			rw_t0 = gpt4_get_current_tick();
 			for (k = 0; k < steps; k++) {
+				unsigned int ta, tb, tc;
 				int atold = (ayaneo_rewind_step() != 0);
 				if (k > 0 && atold) break;
 				st = ayaneo_rewind_cur(&sz);
 				if (!st || !sz) break;
-				c->state_load(st, sz);
+				ta = gpt4_get_current_tick();
+				c->state_load(st, sz);                    /* portable retro_unserialize + system_reset */
+				tb = gpt4_get_current_tick();
 				if (c->sound_rebase) c->sound_rebase();   /* clean, consistent audio baseline per rewound
 									   * frame (state_load can't restore blip phase) */
-				c->run(&fr);                 /* render the rewound state */
+				c->run(&fr);                 /* render the rewound state (full frame re-emulate) */
+				tc = gpt4_get_current_tick();
+				load_acc += (tb - ta) / 13u; run_acc += (tc - tb) / 13u;   /* split, for `oem gen-rw` */
 				g_gen_dbg_frames++; done++;
 				if (fr.audio && fr.frames) {
 					const short *a = fr.audio; unsigned int f = fr.frames, i, j = 0;
@@ -516,9 +520,14 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				}
 				if (atold) break;
 			}
-			if (done > 0) {   /* self-tune the per-step cost estimate for the next present's cap */
+			if (done > 0) {   /* self-tune the per-step cost estimate + publish the load/run split */
 				unsigned int el = (gpt4_get_current_tick() - rw_t0) / 13u / (unsigned)done;
 				s_rw_step_us = el < 500u ? 500u : el;
+				g_gen_dbg_rw_load_us = load_acc / (unsigned)done;
+				g_gen_dbg_rw_run_us  = run_acc / (unsigned)done;
+				g_gen_dbg_rw_step_us = s_rw_step_us;
+				g_gen_dbg_rw_eff_x10 = (unsigned)eff_x10;
+				g_gen_dbg_rw_mhz     = ayaneo_get_cpu_mhz();
 			}
 			if (fr.video && fr.width && fr.height)
 				ayaneo_genesis_show_frame((const unsigned short *)fr.video, fr.width, fr.height, fr.pitch / 2u);
@@ -527,10 +536,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			mtk_wdt_restart();
 			continue;   /* rewind present done; skip the forward path */
 		}
-		if (ayaneo_rewind_active()) {
-			ayaneo_rewind_end(); ayaneo_audio_reverse_flip();
-			if (rw_saved_mhz) { ayaneo_set_cpu_mhz(rw_saved_mhz); rw_saved_mhz = 0; }   /* restore gameplay clock */
-		}
+		if (ayaneo_rewind_active()) { ayaneo_rewind_end(); ayaneo_audio_reverse_flip(); }
 
 		em0 = gpt4_get_current_tick();
 		c->run(&fr);                                 /* committed frame */

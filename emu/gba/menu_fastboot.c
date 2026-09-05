@@ -213,6 +213,23 @@ static void cmd_gen_probe(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem gen-rw - report the Genesis rewind cost breakdown captured during the LAST rewind: the average
+ * per-step state_load (portable retro_unserialize + system_reset) vs the c->run re-emulate cost, the
+ * smoothed per-step total, the achieved reverse speed, and the CPU clock it was measured at. Tells us
+ * whether the state restore or the frame re-emulation is the wall for rewind at a given clock. Rewind on
+ * the device first (hold left trigger for a couple seconds), then run this. */
+static void cmd_gen_rw(const char *arg, void *data, unsigned sz)
+{
+	extern volatile unsigned g_gen_dbg_rw_load_us, g_gen_dbg_rw_run_us, g_gen_dbg_rw_step_us,
+				 g_gen_dbg_rw_eff_x10, g_gen_dbg_rw_mhz;
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "rewind @%uMHz: state_load=%uus run(re-emulate)=%uus step=%uus eff=%u.%ux",
+		 g_gen_dbg_rw_mhz, g_gen_dbg_rw_load_us, g_gen_dbg_rw_run_us, g_gen_dbg_rw_step_us,
+		 g_gen_dbg_rw_eff_x10 / 10u, g_gen_dbg_rw_eff_x10 % 10u);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem snes-launch[:N] - launch the FIRST SNES ROM for N frames (default 240) then return,
  * via the menu thread (arena-safe), and report the result. Safe way to validate the SNES
  * path over USB without navigating or risking a wrong non-SNES force-launch. Read the
@@ -597,6 +614,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem joytest", cmd_joytest, 1, 0);
 	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
 	fastboot_register("oem gen-probe", cmd_gen_probe, 1, 0);
+	fastboot_register("oem gen-rw", cmd_gen_rw, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
 	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
 	fastboot_register("oem snes-stretch", cmd_snes_stretch, 1, 0);
