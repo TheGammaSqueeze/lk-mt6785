@@ -79,6 +79,7 @@ extern int  zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstle
 extern int  pmic_detect_powerkey(void);
 extern void mt_power_off(void);
 extern void ayaneo_gbc_show_frame(const unsigned short *pix);	/* mt_disp_drv.c */
+extern void ayaneo_hud_set(int mode, int speed_x10);		/* mt_disp_drv.c: FF/RW speed badge */
 extern void ayaneo_gba_show_intro_frame(const unsigned short *pix);	/* 6x fill-height */
 extern void ayaneo_gbc_blank(void);		/* clear both game fbs to black */
 /* Punch-hole launch transition: composite the live game frame inside a growing
@@ -200,11 +201,11 @@ static volatile int s_ff_level;			/* right-trigger fast-forward level 0..255 (0 
 /* Rewind (left trigger): a snapshot (core state + 128 KB sound ring) is pushed for EVERY committed
  * emulated frame - the committed frame plus each fast-forward frame - so FF'd frames can be rewound
  * too (NOT the speculative run-ahead look-ahead frames, which get rewound anyway). Holding the left
- * trigger walks it backward at a smooth 1x..4x speed set by press depth via a fractional accumulator
+ * trigger walks it backward at a smooth 1x..6x speed set by press depth via a fractional accumulator
  * (256ths). One snapshot = one emulated frame, so speed = SPD/256 real-time. The per-frame save is a
  * ~640 KB memcpy (~0.3 ms) - the same save run-ahead already does every frame - so it fits inside the
  * run-ahead-Max vsync margin. */
-#define GBA_REWIND_MAX_SPD   1024		/* max rewind speed in 256ths (1024 = 4x); floor is 256 = 1x */
+#define GBA_REWIND_MAX_SPD   1536		/* max rewind speed in 256ths (1536 = 6x); floor is 256 = 1x */
 #define GBA_RW_SND_SZ        (128u * 1024u)	/* sound ring size (matches the run-ahead s_ahead_snd) */
 static unsigned s_gba_rw_snd_off;		/* byte offset of the sound ring within a ring slot */
 static unsigned s_gba_rw_payload;		/* ring slot payload = snd_off + GBA_RW_SND_SZ (0 = disabled) */
@@ -1984,11 +1985,11 @@ static int emu_thread(void *arg)
 			update_buttons();
 
 			/* Rewind (left trigger): instead of advancing the game, walk the ring of periodic
-			 * snapshots backward and re-render. Press depth sets a smooth 1x..4x speed (see
+			 * snapshots backward and re-render. Press depth sets a smooth 1x..6x speed (see
 			 * GBA_REWIND_MAX_SPD). Each stepped-back frame is rendered (newest-first) and its audio is
 			 * captured (g_gba_audio_capture routes gba_audio_cb into g_gba_cap instead of the sink),
 			 * then REVERSED + decimated by `steps` and submitted so you hear the game backwards, with
-			 * `steps` frames compressed into one present (correct 1x..4x pitch, no ring overrun). Only
+			 * `steps` frames compressed into one present (correct 1x..6x pitch, no ring overrun). Only
 			 * the last (oldest) frame's video is presented. State-load flushes the dynarec, so each
 			 * render re-enters the CPU thread cleanly (clean boundary + restart) like the run-ahead
 			 * rewind. Menu-gated. On release the ring commits the rewound point as the new head. */
@@ -2001,8 +2002,9 @@ static int emu_thread(void *arg)
 				static short s_gba_audrev[4096 * 2];   /* reversed+decimated audio scratch */
 				int rw = (!s_menu_open) ? ayaneo_joypad_rewind_level() : 0;
 				if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
-					int spd = 256 + (rw * (GBA_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(4x) */
+					int spd = 256 + (rw * (GBA_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(6x) */
 					unsigned sz; const void *st; int k, steps, rendered = 0;
+					ayaneo_hud_set(2, spd * 10 / 256);   /* show reverse speed, e.g. "6.0x" */
 					if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
 					rw_acc += spd;
 					steps = rw_acc >> 8; rw_acc &= 255;         /* whole snapshots to step this present (>=1) */
@@ -2084,12 +2086,27 @@ static int emu_thread(void *arg)
 				 * frame-skips, PAUSES audio, and was slower than this. Keep s_fast_forward off. */
 				s_fast_forward = 0;
 				if (s_ff_level > 0 && !s_menu_open) {
-					int mult = 2 + (s_ff_level * (FF_MAX_MULT - 2)) / 255;   /* 2..FF_MAX_MULT */
+					/* Adaptive cap: run only as many extra frames as fit ~one vsync so the panel
+					 * stays a smooth 60fps instead of overrunning at a fixed 10x. Every GBA FF frame
+					 * is a full render, so the committed-frame cost (s_committed_us) is the per-frame
+					 * cost; reserve the present blit (g_dbg_blit_us). Keep a 2x floor so a squeeze
+					 * always does something even on a heavy scene / low CPU clock. */
+					extern volatile unsigned int g_dbg_blit_us;
+					int raw = 2 + (s_ff_level * (FF_MAX_MULT - 2)) / 255;   /* press depth -> 2..FF_MAX_MULT */
+					unsigned int fe = s_committed_us ? s_committed_us : 2500u;
+					unsigned int blit = g_dbg_blit_us < 15500u ? g_dbg_blit_us : 0u;
+					int cap = (int)((15500u - blit) / fe);   /* whole frames that fit ~one vsync */
+					int mult = raw < cap ? raw : cap;
 					int i;
+					if (mult < 2) mult = 2;
+					if (mult > FF_MAX_MULT) mult = FF_MAX_MULT;
+					ayaneo_hud_set(1, mult * 10);
 					for (i = 1; i < mult; i++) {
 						run_one_frame();
 						gba_rewind_snap();   /* capture each FF frame so it can be rewound */
 					}
+				} else {
+					ayaneo_hud_set(0, 0);
 				}
 			}
 			/* (Rewind capture is done above per committed + FF frame, so the run-ahead look-ahead

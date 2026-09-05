@@ -910,6 +910,59 @@ int ayaneo_text(unsigned int *buf, unsigned int pitch_w,
 	return x;
 }
 
+/* ---- fast-forward / rewind speed HUD (top-right corner of the game rect) --------------------
+ * The emu loop publishes the current action + speed each frame via ayaneo_hud_set(); the present
+ * path draws a small translucent badge (a double-triangle icon + the speed, e.g. "4x" / "5.0x")
+ * into the game rect. It is self-clearing: as soon as the loop stops publishing a mode the next
+ * present's game blit overwrites the badge. Single-word volatile stores from the one emu thread,
+ * read here in the one present flow - no locking. mode: 0=none, 1=fast-forward, 2=rewind.
+ * speed_x10 = speed*10 (FF: frame multiplier*10 -> "Nx"; rewind: spd*10/256 -> "N.Mx"). */
+volatile int g_hud_mode;
+volatile int g_hud_speed_x10;
+void ayaneo_hud_set(int mode, int speed_x10) { g_hud_mode = mode; g_hud_speed_x10 = speed_x10; }
+
+/* one filled triangle in a size x size box, pointing right (right=1) or left (right=0) */
+static void ayaneo_hud_tri(unsigned int *buf, unsigned int pitch_w, int x0, int y0, int size,
+			   int right, unsigned int argb)
+{
+	int r;
+	for (r = 0; r < size; r++) {
+		int d = (size - 1) - 2 * r; if (d < 0) d = -d;   /* |..| -> span 1..size..1 */
+		int w = size - d; if (w < 1) w = 1;
+		int xs = right ? x0 : (x0 + size - w);
+		ayaneo_fill(buf, pitch_w, xs, y0 + r, w, 1, argb);   /* ayaneo_fill clips to the panel */
+	}
+}
+
+/* Draw the FF/RW badge into the top-right of the game rect [gx,gy,gw,gh] in `buf` (pitch_w px). */
+static void ayaneo_hud_draw(unsigned int *buf, unsigned int pitch_w, int gx, int gy, int gw, int gh)
+{
+	int mode = g_hud_mode, sx10 = g_hud_speed_x10;
+	unsigned int col;
+	char s[8]; int n = 0, whole, frac;
+	const int scale = 2, icon = 22, gap = 8, pad = 10;
+	int th = MTK_VFH * scale, bh = th + 12, bw, bx, by, iy, tx;
+	(void)gh;
+	if (mode != 1 && mode != 2) return;
+	col = (mode == 1) ? 0xFF3CFF78u : 0xFF46C8FFu;       /* FF green / RW cyan */
+	whole = sx10 / 10; frac = sx10 % 10;
+	if (whole < 0) whole = 0; if (frac < 0) frac = 0;
+	if (whole >= 10) s[n++] = (char)('0' + (whole / 10) % 10);
+	s[n++] = (char)('0' + whole % 10);
+	if (mode == 2) { s[n++] = '.'; s[n++] = (char)('0' + frac); }   /* rewind shows one decimal */
+	s[n++] = 'x'; s[n] = 0;
+	bw = pad + icon * 2 + gap + n * MTK_VFW * scale + pad;
+	bx = gx + gw - bw - 12;
+	by = gy + 12;
+	if (bx < gx) bx = gx;
+	ayaneo_fill_blend(buf, pitch_w, bx, by, bw, bh, 0xFF0A0A0Fu, 190);   /* translucent dark pill */
+	iy = by + (bh - icon) / 2;
+	ayaneo_hud_tri(buf, pitch_w, bx + pad,        iy, icon, mode == 1, col);
+	ayaneo_hud_tri(buf, pitch_w, bx + pad + icon, iy, icon, mode == 1, col);
+	tx = bx + pad + icon * 2 + gap;
+	ayaneo_text(buf, pitch_w, tx, by + (bh - th) / 2, scale, 0xFFFFFFFFu, s);
+}
+
 /* Get the current back buffer (the one not being scanned out) to draw a full
  * frame into. The menu uses this + ayaneo_canvas_present() to render itself. */
 unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigned int *H)
@@ -1184,6 +1237,7 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		ayaneo_fill(dst, pitch_w, xoff + 4, yoff + 4, 200, 28, 0xFF000000u);
 		ayaneo_text(dst, pitch_w, xoff + 8, yoff + 6, 2, 0xFF30FF60u, s);
 	}
+	ayaneo_hud_draw(dst, pitch_w, (int)xoff, (int)yoff, (int)dw, (int)dh);   /* FF/RW speed badge */
 	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
 	g_dbg_blit_us = (gpt4_get_current_tick() - t_blit0) / 13u;	/* work before the vsync wait */
 	ayaneo_present(dpa, W, H, pitch_w);
@@ -1263,6 +1317,7 @@ void ayaneo_gb_show_frame(const unsigned short *pix)
 		if (!gbc_menu_open())
 			ayaneo_draw_osd(dst, pitch_w, W, H);         /* volume/brightness slider */
 	}
+	ayaneo_hud_draw(dst, pitch_w, (int)xoff, (int)yoff, (int)dw, (int)dh);   /* FF/RW speed badge */
 	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
 	g_dbg_blit_us = (gpt4_get_current_tick() - t0) / 13u;
 	ayaneo_present(dpa, W, H, pitch_w);
@@ -1669,6 +1724,7 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 			}
 		}
 	}
+	ayaneo_hud_draw(vbuf, fbpitch, 0, 0, (int)iw, (int)ih);   /* FF/RW speed badge (scaled with the game) */
 	arch_clean_cache_range((unsigned int)vbuf, ih * fbpitch * 4u);
 
 	/* Detect geometry changes (source res or output rect - dw/dh uniquely encode the aspect mode)
@@ -1873,6 +1929,7 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 	}
 	/* The Pico menu is now an independent hardware overlay (ayaneo_menu_overlay), not drawn here. */
 	ayaneo_draw_osd(dst, pitch_w, W, H);	/* transient volume/brightness slider (HW rocker) */
+	ayaneo_hud_draw(dst, pitch_w, xoff, yoff, (int)dw, (int)dh);   /* FF/RW speed badge */
 	extern volatile unsigned g_snes_flush_us;   /* isolated cache-clean cost, for oem diag */
 	unsigned int t_flush0 = gpt4_get_current_tick();
 	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);

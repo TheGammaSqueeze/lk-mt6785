@@ -69,7 +69,7 @@ static int s_snes_ra_avail = 1;
  * (raw fast-save unsupported, e.g. some special-chip carts). Set once per session; used to re-arm
  * the ring on reset / load-state. See emu/ayaneo_rewind.h. */
 static unsigned s_snes_rw_payload;
-#define SNES_REWIND_MAX_SPD 1024    /* max rewind speed in 256ths (1024 = 4x); floor is 256 = 1x. A
+#define SNES_REWIND_MAX_SPD 1536    /* max rewind speed in 256ths (1536 = 6x); floor is 256 = 1x. A
 				    * snapshot is captured for every committed + fast-forward frame. */
 
 /* Benchmark (uncap): run the emulator with no vsync pacing and no audio, counting
@@ -149,6 +149,7 @@ extern int      mt_get_gpio_in(unsigned pin);
 
 /* ---- in-game overlay menu (GammaOS Pico), mirrors the GB/GBC one ---- */
 extern void ayaneo_fill(unsigned int *buf, unsigned int pitch, int x, int y, int w, int h, unsigned int argb);
+extern void ayaneo_hud_set(int mode, int speed_x10);   /* mt_disp_drv.c: FF/RW speed badge */
 extern int  ayaneo_text(unsigned int *buf, unsigned int pitch, int x, int y, int scale, unsigned int argb, const char *s);
 extern int  ayaneo_brightness_pct(void);
 extern int  ayaneo_brightness_step(int dir);
@@ -657,6 +658,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	int reset_hold = 0, aya_prev = 0, ff_prev = 0;
 	int rw_acc = 0;                  /* rewind fractional-speed accumulator (256ths), reset on entry */
+	unsigned int snes_emu_us = 0;    /* committed-frame emu cost (us), feeds the adaptive FF cap */
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	int up_h = 0, dn_h = 0, lt_h = 0, rt_h = 0;   /* hold-frame counters for nav auto-repeat */
 	struct snes_frame f;
@@ -680,23 +682,25 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 
 		/* Rewind (left trigger): walk the ring of periodic raw snapshots backward and re-render
-		 * instead of advancing the game. Press depth sets a smooth 1x..4x speed (see SNES_REWIND_MAX_SPD);
+		 * instead of advancing the game. Press depth sets a smooth 1x..6x speed (see SNES_REWIND_MAX_SPD);
 		 * audio is muted; the FF/run-ahead/present path below is skipped. Menu-gated. On release the
 		 * ring commits the rewound point as the new head and forward play resumes from there. */
 		{
 			extern int ayaneo_joypad_rewind_level(void);
 			extern void ayaneo_audio_reverse_flip(void);
+			extern void ayaneo_hud_set(int mode, int speed_x10);
 			static short s_snes_audrev[2048 * 2];   /* reversed+decimated audio scratch */
 			int rw = (!g_snes_menu_open && !g_snes_test_limit) ? ayaneo_joypad_rewind_level() : 0;
 			if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
-				int spd = 256 + (rw * (SNES_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(4x) */
+				int spd = 256 + (rw * (SNES_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(6x) */
 				unsigned sz; const void *st; int k, steps;
+				ayaneo_hud_set(2, spd * 10 / 256);   /* show reverse speed */
 				if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
 				rw_acc += spd;
 				steps = rw_acc >> 8; rw_acc &= 255;         /* whole snapshots to step this present (>=1) */
 				/* Render each stepped-back frame (newest-first); reverse + decimate its audio by
 				 * `steps` and submit, so `steps` frames compress into one present's worth (correct
-				 * 1x..4x reverse pitch, no ring overrun). Present the LAST (oldest) frame's video. */
+				 * 1x..6x reverse pitch, no ring overrun). Present the LAST (oldest) frame's video. */
 				for (k = 0; k < steps; k++) {
 					int atold = (ayaneo_rewind_step() != 0);
 					if (k > 0 && atold) break;              /* already rendered >=1 and now at oldest */
@@ -753,7 +757,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * while the menu is open (pf=0, ff=0 above), so this is a single committed frame; the
 			 * game visibly keeps running under the menu and setting changes preview live. */
 			if (c->set_av_skip) c->set_av_skip(((pf > 0 || ff) && !g_snes_test_limit) ? 1 : 0, 0);
-			c->run(&f);
+			{ extern unsigned int gpt4_get_current_tick(void); unsigned int _t = gpt4_get_current_tick();
+			  c->run(&f);
+			  snes_emu_us = (gpt4_get_current_tick() - _t) / 13u; }   /* committed frame cost for the FF cap */
 			g_snes_dbg_frames++;
 			/* keep the display's target aspect current (cheap; refreshed periodically) - it
 			 * changes when the player switches Aspect Ratio or Overscan in the menu. */
@@ -806,13 +812,34 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * vsync-locked present below rate-limits it (2x .. CPU-bound = fastest at full press).
 		 * Run-ahead (pf) is already gated off while ff is active. */
 		if (ff) {
-			int mult = 2 + (ff_lvl * (10 - 2)) / 255;   /* 2..10 */
+			/* Adaptive cap: run only as many FF frames as fit ~one vsync so the panel stays a
+			 * smooth 60fps instead of overrunning at a fixed 10x. SNES skips the PPU render on the
+			 * thrown-away frames (cheap, cost ~snes_emu_us during FF) and renders only the LAST one
+			 * (cost ~s_snes_render_us), so the budget is: (mult-1) skips + 1 render + the present
+			 * blit (g_snes_show_us) <= ~one vsync. 2x floor so a squeeze always advances. */
+			extern volatile unsigned g_snes_show_us;
+			extern unsigned int gpt4_get_current_tick(void);
+			extern void ayaneo_hud_set(int mode, int speed_x10);
+			static unsigned int s_snes_render_us;   /* last FF final-render cost (us), for the reserve */
+			int raw = 2 + (ff_lvl * (10 - 2)) / 255;   /* press depth -> 2..10 */
+			unsigned int skip = snes_emu_us ? snes_emu_us : 1500u;   /* committed (render-skipped) cost */
+			unsigned int rend = s_snes_render_us ? s_snes_render_us : 4000u;
+			unsigned int blit = g_snes_show_us;
+			unsigned int avail = (15500u > blit + rend) ? (15500u - blit - rend) : 0u;
+			int cap = 1 + (int)(avail / skip);
+			int mult = raw < cap ? raw : cap;
 			int k;
+			if (mult < 2) mult = 2;
+			if (mult > 10) mult = 10;
+			ayaneo_hud_set(1, mult * 10);
 			for (k = 1; k < mult; k++) {
+				unsigned int _t = 0;
 				/* skip the PPU render (the heavy part) on the thrown-away frames; render only
 				 * the LAST one (the frame we actually present). Audio kept on all -> speeds up. */
 				if (c->set_av_skip) c->set_av_skip(k < mult - 1 ? 1 : 0, 0);
+				if (k == mult - 1) _t = gpt4_get_current_tick();
 				c->run(&f);
+				if (k == mult - 1) s_snes_render_us = (gpt4_get_current_tick() - _t) / 13u;   /* measure final render */
 				g_snes_dbg_frames++;
 				if (f.audio && f.frames)
 					ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
@@ -823,6 +850,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				}
 			}
 			if (c->set_av_skip) c->set_av_skip(0, 0);
+		} else {
+			ayaneo_hud_set(0, 0);
 		}
 		/* Run-ahead: advance the DISPLAY pf frames into the future with the current input,
 		 * then rewind so the real emulation still advances exactly one frame per loop. */
