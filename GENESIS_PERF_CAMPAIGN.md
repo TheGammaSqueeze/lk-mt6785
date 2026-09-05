@@ -13,10 +13,15 @@ the cron. Iterate: compiler opts, code opts, config, state-path, etc.
   frame to render each rewound state). So both frame-emulate AND state_load matter.
 
 ## Baseline + history (append each iteration: what changed, gen-bench numbers)
-- 2026-09-05 commit b22d6a3 (-O3 hot / -O2 cold; was ALL -Os): FIRST on-device gen-bench (Sonic 3 Complete):
-  `@1399MHz fps=173 frame=5760us save=322us load=(truncated ~26xx)`. The -Os->-O3 fix is a big win (core
-  was crippled). blob 1.38MB->1.79MB (fits 2MB). load value was cut by the 64-byte fastboot line; split the
-  output into 2 lines (next flash) to read load + impliedRW.
+- 2026-09-05 commit b22d6a3/3691681 (-O3 hot / -O2 cold; was ALL -Os): on-device gen-bench (Sonic 3 Complete):
+  `@1399MHz fps=173 frame=5759us save=322us load=2681us impliedRW=1.8x`. -Os->-O3 = big win (core was
+  crippled). blob 1.38MB->1.79MB (fits 2MB).
+  ANALYSIS: rewind step = load(2681) + frame(5759) = 8440us @1400 -> 1.97x; @2000 ~5908us -> 2.8x. For 6x@2000
+  need step<=2778us. load is 32% of the step (NOT negligible - state_load = retro_unserialize + system_reset).
+  So BOTH the raw-state-path (cut load ~2681->~300) AND more core speed (cut frame) are needed for 6x via
+  emulation; OR the video-ring (B) makes it trivial. NEXT (by impact): (1) raw state path skipping the
+  state_load system_reset [idea 5]; (2) LTO link -O3 + hot-file vectorize/unroll to cut frame; (3) video ring
+  [B]. Try 1 then 2, measure each; escalate to 3 if emulation-path plateaus below 6x.
 
 ## KEY STRATEGIC INSIGHT (drives the campaign)
 frame(emulate) = 5760us @1400MHz = ~4030us @2000MHz. Rewind re-emulates ONE full frame per step to render
