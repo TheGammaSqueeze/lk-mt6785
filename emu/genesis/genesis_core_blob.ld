@@ -9,7 +9,9 @@
  *
  * Header (image offset 0):
  *   u32 magic   = 0x31474553 "SEG1"
- *   u32 version = 1
+ *   u32 version = 2   (MUST match GENESIS_CORE_ABI_VERSION in genesis_core_abi.h - the loader rejects a
+ *                      mismatch. This is a hand-kept literal because the linker script cannot #include the
+ *                      header; bump it in lockstep whenever GENESIS_CORE_ABI_VERSION changes.)
  *   u32 entry   = offset of genesis_core_blob_init from the image start
  *   u32 load    = bytes present in the file (load these, then zero up to span)
  *   u32 span    = end of BSS offset (total DRAM footprint)
@@ -24,7 +26,7 @@ SECTIONS
 
 	.header : {
 		LONG(0x31474553);                        /* [0] magic "SEG1" */
-		LONG(1);                                 /* [1] version */
+		LONG(2);                                 /* [1] version - MUST match GENESIS_CORE_ABI_VERSION */
 		LONG(genesis_core_blob_init - BLOB_VMA); /* [2] entry offset */
 		LONG(__blob_load_end - BLOB_VMA);        /* [3] load_size */
 		LONG(__blob_end - BLOB_VMA);             /* [4] total_span */
