@@ -23,6 +23,18 @@ the cron. Iterate: compiler opts, code opts, config, state-path, etc.
   state_load system_reset [idea 5]; (2) LTO link -O3 + hot-file vectorize/unroll to cut frame; (3) video ring
   [B]. Try 1 then 2, measure each; escalate to 3 if emulation-path plateaus below 6x.
 
+## BREAKTHROUGH (2026-09-05, commit pending): rewind decoupled from emulation speed
+The rewind loop was re-emulating EVERY stepped-back frame (full state_load + run per step) even though only
+the LAST is displayed - the intermediates existed only for a blended reverse-audio. But ayaneo_rewind_step is
+just an XOR-RLE reconstruction of the target state in the ring scratch (NO core work). So: walk `steps` deltas
+(cheap), then render the target with ONE state_load + ONE run. Per-present cost is now SPEED-INDEPENDENT
+(~1 load + 1 run ~= 8.4ms @1400, ~11.8ms @999), so 6x - and beyond - fits one vsync at ANY clock. No clock
+boost, no video ring, no cap needed. Reverse audio = the target frame reversed (one frame ~= one present of
+samples, no ring under/overrun; normal-pitch reverse). This should give a solid 6x at every tier. VERIFY on
+device when the user can hold rewind (oem gen-rw will then show load/run once, ~8ms total). Forward play +
+run-ahead unchanged. This likely SOLVES the 6x goal on the rewind side; keep pushing frame(emulate) down for
+forward/FF/run-ahead headroom.
+
 ## KEY STRATEGIC INSIGHT (drives the campaign)
 frame(emulate) = 5760us @1400MHz = ~4030us @2000MHz. Rewind re-emulates ONE full frame per step to render
 each rewound state (the ring stores STATES, not framebuffers). So N-x rewind needs N frame-emulates per one

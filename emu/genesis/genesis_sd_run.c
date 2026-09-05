@@ -488,66 +488,48 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		rw = g_genesis_menu_open ? 0 : ayaneo_joypad_rewind_level();
 		if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
 			extern int priamry_display_wait_for_vsync(void);
-			static unsigned int s_rw_step_us = 3500u;   /* adaptive per-step (state_load+run) cost */
 			int spd = 256 + (rw * (GEN_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(6x) */
-			unsigned int sz; const void *st; int k, steps, done = 0, cap, req_x10, eff_x10;
-			unsigned int rw_t0, load_acc = 0, run_acc = 0;
+			unsigned int sz; const void *st = 0; int k, steps, walked = 0;
+			unsigned int t_load = 0, t_run = 0, ta, tb, tc;
 			if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
 			rw_acc += spd; steps = rw_acc >> 8; rw_acc &= 255;
-			/* Cap the reverse steps to what fits one vsync AT THE CURRENT (tier) CLOCK: a rewound frame is
-			 * a full state_load + full re-render (GPGX has no cheap raw snapshot), so a low tier can only
-			 * sustain a few per present. No clock boost - the achieved speed is whatever the tier allows,
-			 * and the badge below reflects it honestly. Decimate the reverse audio by the capped count so
-			 * one present still submits ~one frame of samples (no under/overrun). */
-			{
-				unsigned int budget = g_dbg_blit_us < 15000u ? (15000u - g_dbg_blit_us) : 2000u;
-				cap = (int)(budget / (s_rw_step_us ? s_rw_step_us : 3500u));
-				if (cap < 1) cap = 1;
-			}
-			if (steps > cap) steps = cap;
 			if (steps < 1) steps = 1;
-			/* Honest reverse-speed badge: the ACHIEVED speed (requested, clamped to what the clock
-			 * sustains), not the trigger depth - so a heavy cart on a low tier shows e.g. 2.0x, not 6.0x. */
-			req_x10 = spd * 10 / 256; eff_x10 = cap * 10; if (req_x10 < eff_x10) eff_x10 = req_x10;
-			ayaneo_hud_set(2, eff_x10);
-			if (c->set_av_skip) c->set_av_skip(0, 0);   /* never skip a rewound frame's render/audio */
-			rw_t0 = gpt4_get_current_tick();
-			for (k = 0; k < steps; k++) {
-				unsigned int ta, tb, tc;
-				int atold = (ayaneo_rewind_step() != 0);
-				if (k > 0 && atold) break;
-				st = ayaneo_rewind_cur(&sz);
-				if (!st || !sz) break;
+			ayaneo_hud_set(2, spd * 10 / 256);   /* achieved == requested: cost is now speed-independent */
+
+			/* KEY optimization: walk the delta ring back `steps` records FIRST - each ayaneo_rewind_step
+			 * is just an XOR-RLE reconstruction of the target state in the ring's scratch buffer, NO core
+			 * work. Then render ONLY the target frame with a SINGLE state_load + run. The old loop did a
+			 * full state_load + frame re-emulate for EVERY stepped-back frame even though only the last is
+			 * shown (the intermediates existed solely for a blended reverse-audio), which is why a heavy
+			 * core capped rewind near 2x. One render per present makes the per-present cost SPEED-
+			 * INDEPENDENT (~1 state_load + 1 re-emulate), so 6x (and beyond) fits one vsync at ANY clock. */
+			for (k = 0; k < steps; k++) { if (ayaneo_rewind_step() != 0) break; walked++; }
+			if (walked > 0 && (st = ayaneo_rewind_cur(&sz)) != 0 && sz) {
+				if (c->set_av_skip) c->set_av_skip(0, 0);   /* never skip the rewound frame's render/audio */
 				ta = gpt4_get_current_tick();
-				c->state_load(st, sz);                    /* portable retro_unserialize + system_reset */
+				c->state_load(st, sz);                    /* one portable retro_unserialize for the target */
 				tb = gpt4_get_current_tick();
-				if (c->sound_rebase) c->sound_rebase();   /* clean, consistent audio baseline per rewound
-									   * frame (state_load can't restore blip phase) */
-				c->run(&fr);                 /* render the rewound state (full frame re-emulate) */
+				if (c->sound_rebase) c->sound_rebase();   /* clean audio baseline (state_load can't carry blip phase) */
+				c->run(&fr);                              /* render the target rewound frame ONCE */
 				tc = gpt4_get_current_tick();
-				load_acc += (tb - ta) / 13u; run_acc += (tc - tb) / 13u;   /* split, for `oem gen-rw` */
-				g_gen_dbg_frames++; done++;
+				t_load = (tb - ta) / 13u; t_run = (tc - tb) / 13u;
+				g_gen_dbg_frames++;
+				/* Reverse the target frame's audio: one frame's worth ~= one present's consumption, so the
+				 * AFE ring neither underruns nor overruns. Normal-pitch reverse (no per-speed blend) - the
+				 * intermediate frames are no longer emulated, and it is smoother this way. */
 				if (fr.audio && fr.frames) {
-					const short *a = fr.audio; unsigned int f = fr.frames, i, j = 0;
+					const short *a = fr.audio; unsigned int f = fr.frames, i;
 					if (f > 2048u) f = 2048u;
-					for (i = 0; i < f; i += (unsigned)steps) {
-						s_gen_audrev[j * 2]     = a[(f - 1u - i) * 2];
-						s_gen_audrev[j * 2 + 1] = a[(f - 1u - i) * 2 + 1];
-						j++;
+					for (i = 0; i < f; i++) {
+						s_gen_audrev[i * 2]     = a[(f - 1u - i) * 2];
+						s_gen_audrev[i * 2 + 1] = a[(f - 1u - i) * 2 + 1];
 					}
-					ayaneo_snes_audio_submit(s_gen_audrev, j, sr);
+					ayaneo_snes_audio_submit(s_gen_audrev, f, sr);
 				}
-				if (atold) break;
 			}
-			if (done > 0) {   /* self-tune the per-step cost estimate + publish the load/run split */
-				unsigned int el = (gpt4_get_current_tick() - rw_t0) / 13u / (unsigned)done;
-				s_rw_step_us = el < 500u ? 500u : el;
-				g_gen_dbg_rw_load_us = load_acc / (unsigned)done;
-				g_gen_dbg_rw_run_us  = run_acc / (unsigned)done;
-				g_gen_dbg_rw_step_us = s_rw_step_us;
-				g_gen_dbg_rw_eff_x10 = (unsigned)eff_x10;
-				g_gen_dbg_rw_mhz     = ayaneo_get_cpu_mhz();
-			}
+			/* publish the split + achieved speed for `oem gen-rw` */
+			g_gen_dbg_rw_load_us = t_load; g_gen_dbg_rw_run_us = t_run; g_gen_dbg_rw_step_us = t_load + t_run;
+			g_gen_dbg_rw_eff_x10 = (unsigned)(spd * 10 / 256); g_gen_dbg_rw_mhz = ayaneo_get_cpu_mhz();
 			if (fr.video && fr.width && fr.height)
 				ayaneo_genesis_show_frame((const unsigned short *)fr.video, fr.width, fr.height, fr.pitch / 2u);
 			else
