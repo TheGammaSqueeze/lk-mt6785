@@ -137,6 +137,7 @@ volatile unsigned g_gen_dbg_rw_mhz;   /* CPU clock at the time of the measuremen
 volatile unsigned g_gen_dbg_bench_fps, g_gen_dbg_bench_us, g_gen_dbg_bench_save_us, g_gen_dbg_bench_load_us;
 volatile unsigned g_gen_dbg_bench_mhz, g_gen_dbg_bench_rwx10;   /* clock; implied rewind speed x10 */
 volatile unsigned g_gen_dbg_bench_loadfast_us;   /* state_load with the buffer-clear memsets skipped */
+volatile unsigned g_gen_dbg_bench_norender_us;   /* per-frame with the VDP pixel render skipped (CPU+timing) */
 
 /* ---- in-game Pico menu (hardware OVL0 L0 overlay over the running game; mirrors the snes menu).
  * g_genesis_menu_open (declared above) gates game input + FF/rewind; the game keeps running so
@@ -733,6 +734,17 @@ static void genesis_bench_body(fat_vol *vol, const gba_rom_entry *rom, int frame
 		unsigned int per = ((t1 - t0) / 13u) / (unsigned)(frames > 0 ? frames : 1);
 		g_gen_dbg_bench_us  = per;
 		g_gen_dbg_bench_fps = per ? (1000000u / per) : 0;
+	}
+	/* Profile split: run frames with the VDP pixel render SKIPPED (set_av_skip novideo=1). frame - norender
+	 * = the VDP render cost; norender ~= 68k+Z80+sound+VDP-timing. Tells us whether the pixel render or the
+	 * CPU is the wall for the frame-emulate. */
+	if (c->set_av_skip) {
+		c->set_av_skip(1, 0);
+		t0 = gpt4_get_current_tick();
+		for (i = 0; i < frames; i++) c->run(&fr);
+		t1 = gpt4_get_current_tick();
+		c->set_av_skip(0, 0);
+		g_gen_dbg_bench_norender_us = ((t1 - t0) / 13u) / (unsigned)(frames > 0 ? frames : 1);
 	}
 	ssz = c->state_size(); rwp = (ssz && ssz <= 0x00400000u) ? ssz : 0;
 	if (rwp) {
