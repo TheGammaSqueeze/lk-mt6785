@@ -415,10 +415,15 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * test); the look-ahead frames skip render (all but the last) and audio (all) via set_av_skip. */
 		{
 			int pf = (ff || g_genesis_menu_open || !rw_payload) ? 0 : ayaneo_get_preempt_frames();
+			int did_ra = 0, i;
 			if (pf > 3) pf = 3;
-			if (pf > 0) {
-				int i;
-				c->state_save((void *)GEN_AHEAD_BUF, GEN_STATE_CAP);
+			/* Only run the look-ahead if the committed state was actually saved. Pass the EXACT
+			 * state size: GPGX retro_serialize is `if (size != STATE_SIZE) return FALSE`, so a wrong
+			 * size (e.g. the buffer capacity) silently fails the save; then the restore has nothing
+			 * to rewind to and the look-ahead frames STICK, running the game pf+1x - the
+			 * fast-forward-with-frameskip bug. Guarding on the save return makes that impossible. */
+			if (pf > 0 && c->state_save((void *)GEN_AHEAD_BUF, rw_payload) == 0) {
+				did_ra = 1;
 				for (i = 0; i < pf; i++) {
 					if (c->set_av_skip) c->set_av_skip(i == pf - 1 ? 0 : 1, 1);
 					c->run(&fr);
@@ -430,7 +435,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				ayaneo_genesis_show_frame((const unsigned short *)fr.video, fr.width, fr.height,
 							  fr.pitch / 2u);
 			}
-			if (pf > 0) c->state_load((const void *)GEN_AHEAD_BUF, rw_payload);   /* rewind to committed */
+			if (did_ra) c->state_load((const void *)GEN_AHEAD_BUF, rw_payload);   /* rewind to committed */
 		}
 		mtk_wdt_restart();
 
