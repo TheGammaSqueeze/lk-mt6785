@@ -39,6 +39,7 @@ extern int _dprintf(const char *fmt, ...);
  * call site unchanged by routing it through the table, so gba_core_state_save(x) etc.
  * become g_core->state_save(x), and the three shared flags become pointer derefs. */
 #include "gba_core_abi.h"
+#include "../ayaneo_rewind.h"
 extern const struct gba_core_exports *gba_core_load(void);	/* gba_core_loader.c */
 static const struct gba_core_exports *g_core;
 
@@ -195,6 +196,16 @@ static int s_ready;
 static volatile int s_fast_forward;
 static volatile int s_ff_level;			/* right-trigger fast-forward level 0..255 (0 = off) */
 #define FF_MAX_MULT   10			/* full press = up to 10x (CPU-bound = fastest, audio kept) */
+
+/* Rewind (left trigger): a snapshot (core state + 128 KB sound ring) is pushed to the high-DRAM
+ * ring every GBA_REWIND_K committed frames; holding the left trigger walks it backward with the
+ * press-depth speed curve (see emu/ayaneo_rewind.h). Capture backs off when run-ahead is at a high
+ * tier so the extra 512 KB save never tips a run-ahead-max frame past vsync. */
+#define GBA_REWIND_K         6			/* capture cadence (~10/s; doubled at run-ahead pf>=2) */
+#define GBA_REWIND_MAX_STEPS 8			/* ring steps per present at full trigger */
+#define GBA_RW_SND_SZ        (128u * 1024u)	/* sound ring size (matches the run-ahead s_ahead_snd) */
+static unsigned s_gba_rw_snd_off;		/* byte offset of the sound ring within a ring slot */
+static unsigned s_gba_rw_payload;		/* ring slot payload = snd_off + GBA_RW_SND_SZ (0 = disabled) */
 static volatile int s_close_req;	/* in-game menu "Close": save + back to the SNES selector */
 static volatile int s_reset_req;	/* soft reset: restart the current game (menu Reset / hotkey) */
 /* Per-frame emulation cost (run_one_frame wall time, us) averaged over 16 frames.
@@ -717,6 +728,19 @@ static void run_one_frame(void)
 	event_signal(&ev_cpu, false);
 	event_wait(&ev_main);
 	gba_core_post_frame();		/* drain audio */
+}
+
+/* (Re)arm the rewind ring for the current game: size a slot to hold the core state (aligned) plus
+ * the 128 KB sound ring, then clear the history. Called at game start and at every timeline break
+ * (soft reset, game switch, menu Load State). state_size is fixed for the gpSP build, so this just
+ * recomputes cheaply and clears. Payload 0 disables rewind (state too large for a slot). */
+static void gba_rewind_arm(void)
+{
+	unsigned ss = gba_core_state_size();
+	if (!ss || ss > (512u * 1024u)) { s_gba_rw_payload = 0; ayaneo_rewind_reset(0); return; }
+	s_gba_rw_snd_off = (ss + 7u) & ~7u;
+	s_gba_rw_payload = s_gba_rw_snd_off + GBA_RW_SND_SZ;
+	ayaneo_rewind_reset(s_gba_rw_payload);
 }
 
 /* ===================== run-ahead ("Preemptive Frames") =======================
@@ -1296,7 +1320,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
 	case MI_ASPECT:   if (dir) g_gba_aspect = (g_gba_aspect + dir + 3) % 3; changed = 0; break;
 	case MI_SLOT:     if (dir) s_gba_slot = (s_gba_slot + dir + GBA_SLOT_COUNT) % GBA_SLOT_COUNT; changed = 0; break;
-	case MI_LOADSTATE: if (act) mi_puts(status, manual_state_read(state) ? "State loaded" : "No save state"); changed = 0; break;
+	case MI_LOADSTATE: if (act) { int ok = manual_state_read(state); if (ok) gba_rewind_arm(); mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
 	case MI_SAVESTATE: if (act) { int ok = manual_state_write(state); sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;
 	case MI_RESET:    if (act) { s_reset_req = 1; return 1; } changed = 0; break;
 	case MI_CLOSE:    if (act) { s_close_req = 1; return 1; } changed = 0; break;
@@ -1890,6 +1914,8 @@ static int emu_thread(void *arg)
 #endif
 
 		unsigned punch_start = 0;	/* 13 MHz tick the punch-hole began (0 = not yet) */
+		int rw_capdiv = 0;		/* frames since the last rewind snapshot */
+		gba_rewind_arm();		/* size + clear the rewind ring for this game */
 		for (;;) {
 			int uncapped;
 
@@ -1934,6 +1960,43 @@ static int emu_thread(void *arg)
 
 			{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers (non-blocking) */
 			update_buttons();
+
+			/* Rewind (left trigger): instead of advancing the game, walk the ring of periodic
+			 * snapshots backward and re-render. Press depth sets the speed (see GBA_REWIND_MAX_STEPS);
+			 * audio is suppressed (the same g_gba_audio_suppress the look-ahead uses); the committed
+			 * frame / FF / run-ahead / present below are skipped. Menu-gated. State-load flushes the
+			 * dynarec, so re-enter the CPU thread cleanly (clean boundary + restart) exactly like the
+			 * run-ahead rewind. On release the ring commits the rewound point as the new head. */
+			{
+				extern int ayaneo_joypad_rewind_level(void);
+				int rw = (!s_menu_open) ? ayaneo_joypad_rewind_level() : 0;
+				if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
+					int steps = 1 + (rw * (GBA_REWIND_MAX_STEPS - 1)) / 255;   /* 1..MAX per present */
+					unsigned sz; const void *st; int k;
+					if (!ayaneo_rewind_active()) ayaneo_rewind_begin();
+					for (k = 0; k < steps; k++)
+						if (ayaneo_rewind_step() != 0) break;   /* clamp at the oldest state */
+					st = ayaneo_rewind_cur(&sz);
+					if (st && sz) {
+						g_gba_load_light = 1;
+						gba_core_state_load((void *)st);
+						gba_sound_ring_load((unsigned char *)st + s_gba_rw_snd_off);
+						g_gba_load_light = 0;
+						s_cpu_clean_boundary = 1;   /* re-enter as a FULL frame */
+						s_cpu_restart_req = 1;      /* the render run_one_frame re-enters cleanly */
+					}
+					g_gba_audio_suppress = 1;
+					run_one_frame();                    /* render the loaded state (muted) */
+					g_gba_audio_suppress = 0;
+					ayaneo_present_skip_framedone = 0;
+					ayaneo_gbc_show_frame(gba_core_screen());
+					mtk_wdt_restart();
+					rw_capdiv = 0;                      /* re-arm capture for when play resumes */
+					continue;
+				}
+				if (ayaneo_rewind_active()) ayaneo_rewind_end();   /* released: resume forward */
+			}
+
 			{	/* apply the per-tier CPU clock when the Preemptive Frames tier
 				 * changes (covers the Pico menu, oem preempt:, and boot). */
 				static int s_pf_applied = -1;
@@ -1975,6 +2038,21 @@ static int emu_thread(void *arg)
 					int i;
 					for (i = 1; i < mult; i++)
 						run_one_frame();
+				}
+			}
+			/* Rewind capture: snapshot the committed frame (core state + sound ring) into the ring
+			 * every GBA_REWIND_K frames. Skipped on FF / in-menu. The cadence is doubled while
+			 * run-ahead runs a high tier so the extra 512 KB save never tips that frame past vsync. */
+			if (s_gba_rw_payload && s_ff_level == 0 && !s_menu_open && ayaneo_rewind_ready()) {
+				int cap_k = (g_dbg_eff_pf >= 2) ? (GBA_REWIND_K * 2) : GBA_REWIND_K;
+				if (++rw_capdiv >= cap_k) {
+					void *p = ayaneo_rewind_capture_begin();
+					rw_capdiv = 0;
+					if (p) {
+						gba_core_state_save(p);
+						gba_sound_ring_save((unsigned char *)p + s_gba_rw_snd_off);
+						ayaneo_rewind_capture_commit(s_gba_rw_payload);
+					}
 				}
 			}
 			if (g_dbg_selftest_req) {	/* `oem selftest[:N]`: validate the rewind path */
@@ -2035,6 +2113,7 @@ static int emu_thread(void *arg)
 				s_menu_open = 0;
 				ayaneo_menu_audio_silence();	/* drop the stale ring so it does not loop */
 				reset_gba();
+				gba_rewind_arm();		/* reset breaks the rewind timeline */
 				s_cpu_restart_req = 1;
 			}
 
@@ -2098,6 +2177,7 @@ static int emu_thread(void *arg)
 							gba_core_backup_size());
 					if (!PRESSED(GPIO_B))
 						state_read(scratch);
+					gba_rewind_arm();	/* fresh game -> fresh rewind timeline */
 					/* no blank: keep the frozen menu on screen for the seamless
 					 * growing-circle opening (the punch composites the full frame). */
 					dynarec_enable = 1;
