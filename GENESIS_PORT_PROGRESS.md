@@ -44,8 +44,28 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
       called AFTER retro_load_game (GPGX io_init/input_init touch per-system state that only
       exists post-load; calling before crashed input_init). Fixed in genesis_core_exports.c
       (deferred to genesis_load) and host_test.c. Run a REAL ROM later on device for gameplay.
-- [ ] genesis_core_loader.c (lk_a side, boot_b 0x01A00000 -> VMA 0x4F800000) <-- NEXT STEP
-- [ ] genesis_sd_run.c (own thread; native geom show_frame; input; ~44.1kHz audio)
+- [x] genesis_core_loader.c (lk_a side): reads blob from boot_b 0x01A00000 -> VMA 0x4F800000,
+      validates "SEG1"/version, zeroes BSS, DCCMVAU/ICIMVAU, calls genesis_core_blob_init(imports).
+      imports = {ayaneo_genesis_pad_mask(port), gba_host_time}. Debug: g_gen_dbg_loaderr/hdr0/prc.
+      NOT yet in rules.mk (references ayaneo_genesis_pad_mask from genesis_sd_run.c which is next;
+      adding to lk_a before that file exists would break the link).
+- [ ] genesis_sd_run.c (own thread; native geom show_frame; input; ~44.1kHz audio) <-- NEXT STEP
+      PLAN (mirror emu/snes9x/snes_sd_run.c, but BASIC first per CORE_PORTING_NOTES #8; gate
+      parity extras behind a flag and add them in later firings):
+      * ayaneo_genesis_pad_mask(unsigned port): LK pad GPIOs -> RETRO_DEVICE_ID_JOYPAD_* bits.
+        MD 3-button: B=RETRO_B(0), C=RETRO_A(8), A=RETRO_Y(1), Start=RETRO_START(3), D-pad; add
+        6-button (X/Y/Z=RETRO_L/R/..., Mode=RETRO_SELECT) later. Reuse gba_driver GPIO defines.
+      * genesis_session_body(vol, rom): genesis_core_load() every session; heap_init a ~48MB arena
+        in 0x50000000 (cart.rom mallocs up to 32MB via USE_DYNAMIC_ALLOC, so size >= 40MB); load
+        ROM from SD by console type (system hint MD/SMS/GG/SG from rom->type); run frames; present
+        via ayaneo_genesis_show_frame; submit audio via ayaneo_snes_audio_submit(buf,frames,44100)
+        (reuse SNES 48kHz resampler path - both s16 stereo); poll input; save/resume via state
+        exports + SRAM via sram_ptr/size. Own thread like gbc/snes (64KB emu_thread overflows).
+      * ayaneo_genesis_show_frame(pix,w,h,pitch) in mt_disp_drv.c: native geom (MD 320x224/256x224,
+        SMS/SG 256x192, GG 160x144-cropped), RGB565, integer/RSZ scale (mirror ayaneo_snes_show_frame;
+        default Pixel CPU blit, Fit/Stretch via ayaneo_rsz_present). NOTE GPGX pitch is 720*2 bytes
+        (fixed 720px stride) - use the passed pitch, blit only w x h.
+      * rules.mk: add emu/genesis/genesis_core_loader.o + genesis_sd_run.o (-Os) to OBJS.
 - [ ] Console types GENESIS/SMS/GG/SG in sd_fat.h + ROM folders + launch dispatch
       (gba_driver.c both ROM-select sites) + boxart/badge
 - [ ] Parity: save states, SRAM battery, suspend/resume, adaptive FF + HUD, rewind
