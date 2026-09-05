@@ -200,11 +200,11 @@ static volatile int s_ff_level;			/* right-trigger fast-forward level 0..255 (0 
 /* Rewind (left trigger): a snapshot (core state + 128 KB sound ring) is pushed for EVERY committed
  * emulated frame - the committed frame plus each fast-forward frame - so FF'd frames can be rewound
  * too (NOT the speculative run-ahead look-ahead frames, which get rewound anyway). Holding the left
- * trigger walks it backward at a smooth 1x..2x speed set by press depth via a fractional accumulator
+ * trigger walks it backward at a smooth 1x..4x speed set by press depth via a fractional accumulator
  * (256ths). One snapshot = one emulated frame, so speed = SPD/256 real-time. The per-frame save is a
  * ~640 KB memcpy (~0.3 ms) - the same save run-ahead already does every frame - so it fits inside the
  * run-ahead-Max vsync margin. */
-#define GBA_REWIND_MAX_SPD   512		/* max rewind speed in 256ths (512 = 2x); floor is 256 = 1x */
+#define GBA_REWIND_MAX_SPD   1024		/* max rewind speed in 256ths (1024 = 4x); floor is 256 = 1x */
 #define GBA_RW_SND_SZ        (128u * 1024u)	/* sound ring size (matches the run-ahead s_ahead_snd) */
 static unsigned s_gba_rw_snd_off;		/* byte offset of the sound ring within a ring slot */
 static unsigned s_gba_rw_payload;		/* ring slot payload = snd_off + GBA_RW_SND_SZ (0 = disabled) */
@@ -1984,11 +1984,11 @@ static int emu_thread(void *arg)
 			update_buttons();
 
 			/* Rewind (left trigger): instead of advancing the game, walk the ring of periodic
-			 * snapshots backward and re-render. Press depth sets a smooth 1x..2x speed (see
+			 * snapshots backward and re-render. Press depth sets a smooth 1x..4x speed (see
 			 * GBA_REWIND_MAX_SPD). Each stepped-back frame is rendered (newest-first) and its audio is
 			 * captured (g_gba_audio_capture routes gba_audio_cb into g_gba_cap instead of the sink),
 			 * then REVERSED + decimated by `steps` and submitted so you hear the game backwards, with
-			 * `steps` frames compressed into one present (correct 1x..2x pitch, no ring overrun). Only
+			 * `steps` frames compressed into one present (correct 1x..4x pitch, no ring overrun). Only
 			 * the last (oldest) frame's video is presented. State-load flushes the dynarec, so each
 			 * render re-enters the CPU thread cleanly (clean boundary + restart) like the run-ahead
 			 * rewind. Menu-gated. On release the ring commits the rewound point as the new head. */
@@ -2001,7 +2001,7 @@ static int emu_thread(void *arg)
 				static short s_gba_audrev[4096 * 2];   /* reversed+decimated audio scratch */
 				int rw = (!s_menu_open) ? ayaneo_joypad_rewind_level() : 0;
 				if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
-					int spd = 256 + (rw * (GBA_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(2x) */
+					int spd = 256 + (rw * (GBA_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(4x) */
 					unsigned sz; const void *st; int k, steps, rendered = 0;
 					if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
 					rw_acc += spd;

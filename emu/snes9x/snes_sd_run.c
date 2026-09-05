@@ -69,7 +69,7 @@ static int s_snes_ra_avail = 1;
  * (raw fast-save unsupported, e.g. some special-chip carts). Set once per session; used to re-arm
  * the ring on reset / load-state. See emu/ayaneo_rewind.h. */
 static unsigned s_snes_rw_payload;
-#define SNES_REWIND_MAX_SPD 512    /* max rewind speed in 256ths (512 = 2x); floor is 256 = 1x. A
+#define SNES_REWIND_MAX_SPD 1024    /* max rewind speed in 256ths (1024 = 4x); floor is 256 = 1x. A
 				    * snapshot is captured for every committed + fast-forward frame. */
 
 /* Benchmark (uncap): run the emulator with no vsync pacing and no audio, counting
@@ -680,7 +680,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 
 		/* Rewind (left trigger): walk the ring of periodic raw snapshots backward and re-render
-		 * instead of advancing the game. Press depth sets a smooth 1x..2x speed (see SNES_REWIND_MAX_SPD);
+		 * instead of advancing the game. Press depth sets a smooth 1x..4x speed (see SNES_REWIND_MAX_SPD);
 		 * audio is muted; the FF/run-ahead/present path below is skipped. Menu-gated. On release the
 		 * ring commits the rewound point as the new head and forward play resumes from there. */
 		{
@@ -689,14 +689,14 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			static short s_snes_audrev[2048 * 2];   /* reversed+decimated audio scratch */
 			int rw = (!g_snes_menu_open && !g_snes_test_limit) ? ayaneo_joypad_rewind_level() : 0;
 			if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
-				int spd = 256 + (rw * (SNES_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(2x) */
+				int spd = 256 + (rw * (SNES_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(4x) */
 				unsigned sz; const void *st; int k, steps;
 				if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
 				rw_acc += spd;
 				steps = rw_acc >> 8; rw_acc &= 255;         /* whole snapshots to step this present (>=1) */
 				/* Render each stepped-back frame (newest-first); reverse + decimate its audio by
 				 * `steps` and submit, so `steps` frames compress into one present's worth (correct
-				 * 1x..2x reverse pitch, no ring overrun). Present the LAST (oldest) frame's video. */
+				 * 1x..4x reverse pitch, no ring overrun). Present the LAST (oldest) frame's video. */
 				for (k = 0; k < steps; k++) {
 					int atold = (ayaneo_rewind_step() != 0);
 					if (k > 0 && atold) break;              /* already rendered >=1 and now at oldest */

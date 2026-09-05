@@ -64,11 +64,11 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
 /* Rewind (left trigger): a snapshot is pushed to the high-DRAM ring for EVERY committed emulated
  * frame (including the extra frames run during fast-forward, so FF'd content can be rewound too;
  * NOT the speculative run-ahead look-ahead frames, which get rewound anyway). Holding the left
- * trigger walks the ring backward. Speed is a smooth 1x..2x set by press depth via a fractional
+ * trigger walks the ring backward. Speed is a smooth 1x..4x set by press depth via a fractional
  * accumulator (256ths): rewind_offset advances REWIND_SPD/256 snapshots per present. Since one
  * snapshot = one emulated frame, speed = SPD/256 real-time. GBC states are tiny (~30-180KB) so
  * per-frame capture is negligible; window is many tens of seconds. */
-#define GBC_REWIND_MAX_SPD 512    /* max rewind speed in 256ths (512 = 2x); floor is 256 = 1x */
+#define GBC_REWIND_MAX_SPD 1024    /* max rewind speed in 256ths (1024 = 4x); floor is 256 = 1x */
 
 /* Emulation CPU OPP by run-ahead tier (mirrors the GBA preempt tiers Off/Bal/Resp/Max):
  * run-ahead runs (pf+1) emulations per displayed frame, so escalate the clock with pf.
@@ -556,7 +556,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers */
 
 		/* Rewind (left trigger): instead of advancing the game, walk backward through the ring of
-		 * periodic save-states and re-render. Press depth sets a smooth 1x..2x speed (see
+		 * periodic save-states and re-render. Press depth sets a smooth 1x..4x speed (see
 		 * GBC_REWIND_MAX_SPD) via a fractional accumulator; audio is muted; the normal present/run-ahead
 		 * path below is skipped, so run-ahead is inert while rewinding. Gated off while the in-game menu
 		 * is open. On release the ring commits the rewound point as the new head and forward play
@@ -567,14 +567,14 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			static unsigned int s_gbc_audrev[GBC_SND_MAX];   /* reversed+decimated audio scratch */
 			int rw = (!g_gbc_menu_open) ? ayaneo_joypad_rewind_level() : 0;
 			if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
-				int spd = 256 + (rw * (GBC_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(2x) */
+				int spd = 256 + (rw * (GBC_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(4x) */
 				unsigned sz; const void *st; int k, steps;
 				if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
 				rw_acc += spd;
 				steps = rw_acc >> 8; rw_acc &= 255;         /* whole snapshots to step this present (>=1) */
 				/* Render each stepped-back frame (newest-first). Reverse + decimate its audio by
 				 * `steps` and submit, so `steps` frames compress into one present's worth of samples
-				 * (correct 1x..2x reverse pitch, no ring overrun). Present the LAST (oldest) video. */
+				 * (correct 1x..4x reverse pitch, no ring overrun). Present the LAST (oldest) video. */
 				for (k = 0; k < steps; k++) {
 					unsigned s2 = GBC_SND_MAX, i, j = 0;
 					int atold = (ayaneo_rewind_step() != 0);
