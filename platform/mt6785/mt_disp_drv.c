@@ -1995,20 +1995,36 @@ void ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw, unsigned 
 	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
 	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
 
-	for (sy = 0; sy < sh; sy++) {
-		const unsigned short *srow = pix + sy * spitch_px;
-		for (sx = 0; sx < sw; sx++) {
-			unsigned int v = srow[sx];
-			unsigned int r = ((v >> 11) & 0x1f) << 3;
-			unsigned int g = ((v >> 5) & 0x3f) << 2;
-			unsigned int b = (v & 0x1f) << 3;
-			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
-			if (!filt) {
-				for (iy = 0; iy < scale; iy++) {
-					unsigned int *o = dst + (yoff + sy * scale + iy) * pitch_w + (xoff + sx * scale);
-					for (ix = 0; ix < scale; ix++) o[ix] = px;
-				}
-			} else {
+	if (!filt) {
+		/* Fast path (no filter, the common case): render ONE destination row per source row
+		 * (scalar), then replicate it to the remaining scale-1 rows with memcpy. memcpy issues wide
+		 * vectorised stores, so vertical scaling costs ~1 scalar row + N cheap copies instead of N
+		 * scalar rows - the fully-scalar scale*scale nested blit was the Pixel-aspect slowdown
+		 * (the RSZ Fit/Stretch path already replicated rows by memcpy, so it ran fine). */
+		for (sy = 0; sy < sh; sy++) {
+			const unsigned short *srow = pix + sy * spitch_px;
+			unsigned int *o0 = dst + (unsigned int)(yoff + (int)(sy * scale)) * pitch_w + (unsigned int)xoff;
+			unsigned int col = 0;
+			for (sx = 0; sx < sw; sx++) {
+				unsigned int v = srow[sx];
+				unsigned int r = ((v >> 11) & 0x1f) << 3;
+				unsigned int g = ((v >> 5) & 0x3f) << 2;
+				unsigned int b = (v & 0x1f) << 3;
+				unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+				for (ix = 0; ix < scale; ix++) o0[col++] = px;
+			}
+			for (iy = 1; iy < scale; iy++)
+				memcpy(o0 + iy * pitch_w, o0, (size_t)dw * 4u);
+		}
+	} else {
+		for (sy = 0; sy < sh; sy++) {
+			const unsigned short *srow = pix + sy * spitch_px;
+			for (sx = 0; sx < sw; sx++) {
+				unsigned int v = srow[sx];
+				unsigned int r = ((v >> 11) & 0x1f) << 3;
+				unsigned int g = ((v >> 5) & 0x3f) << 2;
+				unsigned int b = (v & 0x1f) << 3;
+				unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
 				unsigned int dk = 0xFF000000u | ((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
 				for (iy = 0; iy < scale; iy++) {
 					unsigned int *o = dst + (yoff + sy * scale + iy) * pitch_w + (xoff + sx * scale);
