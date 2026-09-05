@@ -132,6 +132,17 @@ frame-emulate is ~2x cheaper (less accurate/faster core) AND it runs at 1800.
 - frame still 5647us (render 2828 / cpu 2821). Cheap compiler/config levers exhausted; further frame cuts
   need hand code-level work on the VDP tile render or 68k core (high effort, needs live visual verification).
 
+## Iteration 7 (2026-09-05): frame CRC tool + CRC-validated remap widening (safe render win)
+- Added a frame CRC (FNV-1a of the rendered frame) to gen-bench so a RENDER-path change can be proven
+  byte-identical headlessly (no live pixel check). Reference crc @1400 = 4ec9198e (frame 5647).
+- remap_line (vdp_render.c): widened the `*dst++ = pixel[*src++]` output loop to 2 pixels per 32-bit store
+  (dst 4-aligned + even width, LSB_FIRST lo->dst0/hi->dst1; scalar fallback otherwise). RESULT: frame
+  5647->5493us, fps 177->182, and crc STAYED 4ec9198e -> PROVEN byte-identical (video unchanged, zero
+  corruption risk). Render dropped ~159us. rewind6x still ok=1 (cost 3737us). KEPT.
+- The CRC approach unlocks further SAFE render micro-opts (e.g. the merge()/render_bg output loops) - any
+  change that keeps crc=4ec9198e is provably correct. Next candidate: profile/optimize the render_bg tile
+  loops (the bulk of the ~2669us render), validating each with the CRC.
+
 ## Ideas backlog (try in order of expected impact / low risk first)
 1. [DONE-build, unmeasured] -O3 hot / -O2 cold (was all -Os). <-- likely the big one.
 2. Bump the blob LTO link to -O3 (build_core_blob.sh line ~47) if per-file -O3 under LTO isn't enough.

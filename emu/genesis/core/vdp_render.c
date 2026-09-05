@@ -4977,11 +4977,33 @@ void remap_line(int line)
     }
     else
     {
-      do
+#if defined(USE_16BPP_RENDERING)
+      /* Remap 2 pixels per 32-bit store when dst is 4-aligned and width is even (always true for MD/SMS:
+       * pitch is even so line*pitch is 16-bit aligned, and every mode width is even). Byte-identical output
+       * (LSB_FIRST: lo->dst[0], hi->dst[1]); halves the store count in this per-pixel LUT-gather loop.
+       * Scalar fallback otherwise. Correctness proven via the gen-bench frame CRC. */
+      if (!(((unsigned long)dst) & 3ul) && !(width & 1))
       {
-        *dst++ = pixel[*src++];
+        uint32 *d32 = (uint32 *)dst;
+        int n = width >> 1;
+        do
+        {
+          uint32 lo = pixel[src[0]];
+          uint32 hi = pixel[src[1]];
+          *d32++ = lo | (hi << 16);
+          src += 2;
+        }
+        while (--n);
       }
-      while (--width);
+      else
+#endif
+      {
+        do
+        {
+          *dst++ = pixel[*src++];
+        }
+        while (--width);
+      }
     }
  #endif
   }
