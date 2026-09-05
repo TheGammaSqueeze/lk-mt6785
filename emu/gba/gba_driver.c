@@ -348,6 +348,14 @@ static void update_buttons(void)
 	if (PRESSED(GPIO_X))  raw |= RB_X;
 	if (PRESSED(GPIO_Y))  raw |= RB_Y;
 	if (PRESSED(GPIO_R2)) raw |= RB_FF;
+	{	/* left analog stick -> D-pad (JOY_UP=1 DOWN=2 LEFT=4 RIGHT=8) */
+		extern unsigned int ayaneo_joypad_dpad(void);
+		unsigned d = ayaneo_joypad_dpad();
+		if (d & 0x01u) raw |= GB_UP;
+		if (d & 0x02u) raw |= GB_DOWN;
+		if (d & 0x04u) raw |= GB_LEFT;
+		if (d & 0x08u) raw |= GB_RIGHT;
+	}
 
 	/* N-frame agreement: accept a bit only when this read AND the previous N-1 reads
 	 * all had it pressed. At N=1 this is a pure raw pass (no history). */
