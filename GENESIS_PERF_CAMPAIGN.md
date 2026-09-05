@@ -1,5 +1,12 @@
 # Genesis performance campaign (autonomous, 15-min cron)
 
+## STATUS: rewind 6x goal MET structurally (iter 2 decouple + iter 3 fast load). Rewind per-present cost
+## = 1 fast state_load (556us) + 1 re-emulate (5760us) = ~6316us @1400 / ~8842us @999, both << the 15500us
+## present budget, at ANY tier, speed-independent. Needs a LIVE rewind to eyeball-confirm 6x (oem gen-rw
+## will show ~556 load + ~5760 run once). REMAINING WORK = cut the 5760us frame-emulate for forward/FF/
+## run-ahead headroom (higher effort: VDP/68k code paths, PGO). Also re-verify audio/run-ahead intact.
+
+
 GOAL: Genesis (GPGX) rewind should reach 6x like SNES/GBA/GBC. MD is NOT a taxing system, so the core is
 under-optimized. Drive raw core throughput UP until rewind hits 6x at a sane clock. User is AFK; DO NOT stop
 the cron. Iterate: compiler opts, code opts, config, state-path, etc.
