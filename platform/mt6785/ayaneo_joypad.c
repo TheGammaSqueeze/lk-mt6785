@@ -142,3 +142,94 @@ int ayaneo_joypad_trigger(int lr)
 	sgm58031_init();
 	return sgm58031_read(lr ? SGM_CFG_RT : SGM_CFG_LT);
 }
+
+/* =========================================================================
+ * Higher-level mapping: sticks -> D-pad, triggers -> press level.
+ *
+ * Everything auto-calibrates at first read (the values sampled at rest are
+ * treated as the centre / released baseline), so it is robust across units
+ * without a stored calibration. The two triggers move in OPPOSITE directions
+ * (LT decreases when squeezed, RT increases) - handled by measuring signed
+ * deviation from rest, so we never hardcode a direction.
+ * ========================================================================= */
+
+#define JOY_UP     0x01u
+#define JOY_DOWN   0x02u
+#define JOY_LEFT   0x04u
+#define JOY_RIGHT  0x08u
+
+#define STICK_DEADZONE   520            /* counts from centre before a D-pad edge fires */
+#define TRIG_RANGE_FLOOR 1500           /* min assumed full-press deviation (adaptive grows it) */
+#define TRIG_ACT_LO_PCT  25             /* actuate from 25% of range */
+#define TRIG_ACT_HI_PCT  85             /* max out at 85% of range */
+#define TRIG_LEVEL_MAX   255
+
+static int s_cal;
+static int s_lx0, s_ly0;                /* left-stick centres */
+static int s_lt0, s_rt0;                /* trigger rest values */
+static int s_lt_ext, s_rt_ext;          /* largest deviation seen (adaptive full-press range) */
+
+/* Sample the resting baseline. Safe to call repeatedly; only the first takes effect
+ * unless force!=0 (e.g. a menu "recalibrate"). Assumes sticks centred + triggers released. */
+void ayaneo_joypad_calibrate(int force)
+{
+	if (s_cal && !force)
+		return;
+	if (!s_powered)
+		ayaneo_joypad_power();
+	sgm58031_init();
+	s_lx0 = ayaneo_joypad_stick(1);
+	s_ly0 = ayaneo_joypad_stick(2);
+	s_lt0 = sgm58031_read(SGM_CFG_LT);
+	s_rt0 = sgm58031_read(SGM_CFG_RT);
+	s_lt_ext = TRIG_RANGE_FLOOR;
+	s_rt_ext = TRIG_RANGE_FLOOR;
+	s_cal = 1;
+}
+
+/* Left stick -> D-pad bitmask (JOY_UP/DOWN/LEFT/RIGHT). lx up = RIGHT, ly up = UP. */
+unsigned int ayaneo_joypad_dpad(void)
+{
+	int lx, ly;
+	unsigned int m = 0;
+	if (!s_cal)
+		ayaneo_joypad_calibrate(0);
+	lx = ayaneo_joypad_stick(1) - s_lx0;
+	ly = ayaneo_joypad_stick(2) - s_ly0;
+	if (lx >  STICK_DEADZONE) m |= JOY_RIGHT;
+	else if (lx < -STICK_DEADZONE) m |= JOY_LEFT;
+	if (ly >  STICK_DEADZONE) m |= JOY_UP;
+	else if (ly < -STICK_DEADZONE) m |= JOY_DOWN;
+	return m;
+}
+
+/* Map a trigger to a 0..255 press level: 0 below the 25% actuation point, ramping to 255 at
+ * 85% of the (adaptively learned) full-press range. lr=0 left, lr=1 right. */
+static int trig_level(int lr)
+{
+	int raw, rest, dev, *ext, range, lo, hi;
+	if (!s_cal)
+		ayaneo_joypad_calibrate(0);
+	raw = sgm58031_read(lr ? SGM_CFG_RT : SGM_CFG_LT);
+	if (raw < 0)
+		return 0;
+	if (lr) { rest = s_rt0; dev = raw - rest; ext = &s_rt_ext; }   /* RT increases */
+	else    { rest = s_lt0; dev = rest - raw; ext = &s_lt_ext; }   /* LT decreases */
+	if (dev < 0)
+		dev = 0;
+	if (dev > *ext)
+		*ext = dev;                         /* learn this unit's real full-press range */
+	range = *ext;
+	lo = range * TRIG_ACT_LO_PCT / 100;
+	hi = range * TRIG_ACT_HI_PCT / 100;
+	if (dev <= lo || hi <= lo)
+		return 0;
+	if (dev >= hi)
+		return TRIG_LEVEL_MAX;
+	return 1 + (dev - lo) * (TRIG_LEVEL_MAX - 1) / (hi - lo);
+}
+
+/* Right trigger -> fast-forward level 0..255 (0 = off). */
+int ayaneo_joypad_ff_level(void)     { return trig_level(1); }
+/* Left trigger  -> rewind level 0..255 (0 = off). */
+int ayaneo_joypad_rewind_level(void) { return trig_level(0); }

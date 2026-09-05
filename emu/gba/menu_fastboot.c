@@ -456,12 +456,39 @@ static void cmd_trigscan(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* Validate the input MAPPING (auto-calibrated): left stick -> D-pad bitmask, and the two triggers
+ * mapped to a 0..255 press level (RT=fast-forward, LT=rewind), 0 below 25% actuation ramping to 255
+ * at 85% of range. Hold sticks centred + triggers released for the first run (that samples the rest
+ * baseline), then move the stick / feather each trigger and re-run to see the dpad + levels. */
+static void cmd_joytest(const char *arg, void *data, unsigned sz)
+{
+	extern void         ayaneo_joypad_calibrate(int force);
+	extern unsigned int ayaneo_joypad_dpad(void);
+	extern int          ayaneo_joypad_ff_level(void);
+	extern int          ayaneo_joypad_rewind_level(void);
+	extern int          ayaneo_joypad_stick(int ch);
+	unsigned int m;
+	int ff, rw, lx, ly;
+	(void)arg; (void)data; (void)sz;
+	m  = ayaneo_joypad_dpad();
+	ff = ayaneo_joypad_ff_level();
+	rw = ayaneo_joypad_rewind_level();
+	lx = ayaneo_joypad_stick(1);
+	ly = ayaneo_joypad_stick(2);
+	snprintf(lbuf, sizeof lbuf, "joy dpad=%c%c%c%c lx=%d ly=%d  FF(RT)=%d  REW(LT)=%d",
+		 (m & 0x01) ? 'U' : '-', (m & 0x02) ? 'D' : '-',
+		 (m & 0x04) ? 'L' : '-', (m & 0x08) ? 'R' : '-', lx, ly, ff, rw);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem adcscan", cmd_adcscan, 1, 0);
 	fastboot_register("oem stickscan", cmd_stickscan, 1, 0);
 	fastboot_register("oem trigscan", cmd_trigscan, 1, 0);
+	fastboot_register("oem joytest", cmd_joytest, 1, 0);
 	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
 	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
