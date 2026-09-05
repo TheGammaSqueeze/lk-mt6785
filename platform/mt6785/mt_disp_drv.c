@@ -1952,13 +1952,32 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 void ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px)
 {
 	extern unsigned int gpt4_get_current_tick(void);
+	extern volatile int g_genesis_aspect;          /* 0=Pixel 1=Fit 2=Stretch (genesis_sd_run.c) */
+	extern volatile unsigned g_genesis_aspect_x1000;
+	extern volatile int g_genesis_filter;          /* 0=off 1=scanlines 2/3=grid */
 	unsigned int t0 = gpt4_get_current_tick();
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
 	unsigned int scale, s2, dw, dh, xoff, yoff, sx, sy, ix, iy;
 	unsigned int *dst, dpa;
+	int filt = g_genesis_filter;
 
 	if (!fb_addr || !pix || !sw || !sh) return;
+
+	/* Aspect modes: Fit / Stretch via the hardware RSZ; Pixel (0) uses the sharp integer CPU blit.
+	 * Genesis is 4:3 on a 4:3 panel, so Fit uses the core's aspect (g_genesis_aspect_x1000, ~4:3)
+	 * and Stretch fills the panel. RSZ stays on under the live overlay menu; Pixel/exit restores 1:1. */
+	if (g_genesis_aspect != 0) {
+		unsigned int dwr, dhr, a;
+		if (g_genesis_aspect == 2) { dwr = W; dhr = H; }
+		else { a = g_genesis_aspect_x1000; if (!a) a = 1333u;
+		       dhr = H; dwr = H * a / 1000u; if (dwr > W) { dwr = W; dhr = W * 1000u / a; } }
+		ayaneo_rsz_present(pix, sw, sh, spitch_px, dwr, dhr, (W - dwr) / 2u, (H - dhr) / 2u, filt, 0, 0);
+		g_dbg_blit_us = g_rsz_show_us;
+		return;
+	}
+	if (s_rsz_setup) ayaneo_snes_rsz_restore();   /* Pixel / menu-open: back to the 1:1 path (once) */
+
 	scale = W / sw; s2 = H / sh; if (s2 < scale) scale = s2; if (scale < 1) scale = 1;
 	dw = sw * scale; dh = sh * scale;
 	xoff = (W - dw) / 2; yoff = (H - dh) / 2;
@@ -1984,9 +2003,23 @@ void ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw, unsigned 
 			unsigned int g = ((v >> 5) & 0x3f) << 2;
 			unsigned int b = (v & 0x1f) << 3;
 			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
-			for (iy = 0; iy < scale; iy++) {
-				unsigned int *o = dst + (yoff + sy * scale + iy) * pitch_w + (xoff + sx * scale);
-				for (ix = 0; ix < scale; ix++) o[ix] = px;
+			if (!filt) {
+				for (iy = 0; iy < scale; iy++) {
+					unsigned int *o = dst + (yoff + sy * scale + iy) * pitch_w + (xoff + sx * scale);
+					for (ix = 0; ix < scale; ix++) o[ix] = px;
+				}
+			} else {
+				unsigned int dk = 0xFF000000u | ((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
+				for (iy = 0; iy < scale; iy++) {
+					unsigned int *o = dst + (yoff + sy * scale + iy) * pitch_w + (xoff + sx * scale);
+					int lastrow = (iy == scale - 1);
+					for (ix = 0; ix < scale; ix++) {
+						unsigned int cc = px; int lastcol = (ix == scale - 1);
+						if (filt == 1 && lastrow) cc = dk;
+						else if (filt >= 2 && (lastrow || lastcol)) cc = dk;
+						o[ix] = cc;
+					}
+				}
 			}
 		}
 	}

@@ -73,7 +73,10 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
 #define GEN_STATE_CAP  0x00400000u        /* 4 MB (GPGX state ~0.5-1 MB) */
 #define GEN_REWIND_MAX_SPD 1536           /* max rewind speed in 256ths (1536 = 6x); floor 256 = 1x */
 
-volatile int g_genesis_menu_open;         /* reserved for the Pico menu (parity phase) */
+volatile int g_genesis_menu_open;         /* gates game input + FF/rewind while the Pico menu is up */
+volatile int g_genesis_aspect;            /* display aspect: 0=Pixel 1=Fit 2=Stretch (ayaneo_genesis_show_frame) */
+volatile unsigned g_genesis_aspect_x1000; /* core display aspect * 1000 (Fit target); 0 -> 4:3 */
+volatile int g_genesis_filter;            /* LCD filter: 0=off 1=scanlines 2/3=grid */
 
 /* physical pad -> RETRO_DEVICE_ID_JOYPAD_* bits. GPGX maps retro -> Genesis internally:
  * Genesis B=retro B, C=retro A, A=retro Y, Start=retro Start; 6-button X=retro L, Y=retro X,
@@ -155,13 +158,16 @@ static void genesis_cpu_step(int dir)
 	ayaneo_set_cpu_mhz(s_cpu_opp[s_cpu_idx]);
 }
 
-enum { GM_BRIGHT, GM_VOLUME, GM_CPU, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
+enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_CPU, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
+static const char *gen_aspect_name(int a) { return a == 2 ? "Stretch" : a == 1 ? "Fit" : "Pixel"; }
+static const char *gen_filter_name(int f) { return f == 3 ? "Grid+" : f == 2 ? "Grid" : f == 1 ? "Scanlines" : "Off"; }
 
 static char *mput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *mputu(char *p, unsigned v) { char t[12]; int n = 0; if (!v) { *p++ = '0'; return p; } while (v) { t[n++] = '0' + v % 10; v /= 10; } while (n) *p++ = t[--n]; return p; }
 
 static const char *gm_label(int i) { switch (i) {
-	case GM_BRIGHT: return "Brightness"; case GM_VOLUME: return "Volume"; case GM_CPU: return "CPU Clock";
+	case GM_BRIGHT: return "Brightness"; case GM_VOLUME: return "Volume";
+	case GM_ASPECT: return "Aspect Ratio"; case GM_FILTER: return "LCD Filter"; case GM_CPU: return "CPU Clock";
 	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
 	case GM_RESET: return "Reset Game"; case GM_EXIT: return "Exit Game"; } return ""; }
 
@@ -169,6 +175,8 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 	switch (i) {
 	case GM_BRIGHT: p = mputu(p, (unsigned)ayaneo_brightness_pct()); p = mput(p, "%"); break;
 	case GM_VOLUME: p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
+	case GM_ASPECT: p = mput(p, gen_aspect_name(g_genesis_aspect)); break;
+	case GM_FILTER: p = mput(p, gen_filter_name(g_genesis_filter)); break;
 	case GM_CPU:    p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
 	case GM_SLOT:   p = mputu(p, (unsigned)s_save_slot); break;
 	case GM_SAVE: case GM_LOAD: case GM_RESET: case GM_EXIT: p = mput(p, "[A]"); break;
@@ -183,6 +191,8 @@ static int gm_change(int i, int dir, int act)
 	switch (i) {
 	case GM_BRIGHT: if (dir) ayaneo_brightness_step(dir); break;
 	case GM_VOLUME: if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); break;
+	case GM_ASPECT: if (dir) g_genesis_aspect = (g_genesis_aspect + dir + 3) % 3; break;   /* live preview */
+	case GM_FILTER: if (dir) g_genesis_filter = (g_genesis_filter + dir + 4) % 4; break;
 	case GM_CPU:    if (dir) genesis_cpu_step(dir); break;
 	case GM_SLOT:   if (dir) s_save_slot = (s_save_slot + dir + 3) % 3; break;
 	case GM_SAVE: if (act) {
@@ -265,6 +275,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	c->av_info(0, 0, 0, 0, &sr);
 	if (!sr) sr = 44100;
 	g_gen_dbg_sr = sr;
+	if (c->aspect_x1000) g_genesis_aspect_x1000 = c->aspect_x1000();   /* Fit target (~4:3) */
 
 	/* Arm the rewind ring: capture the FULL serialized state each frame (GPGX has no raw fast
 	 * snapshot, so unlike snes we use state_save/state_load = retro_serialize). The high-DRAM delta
@@ -342,6 +353,8 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		c->run(&fr);                                 /* committed frame */
 		fe = (gpt4_get_current_tick() - em0) / 13u;  /* per-frame emu cost (us) for the FF cap */
 		g_gen_dbg_frames++;
+		if (c->aspect_x1000 && (g_gen_dbg_frames & 15u) == 0)   /* refresh Fit target (H32/H40 switch) */
+			g_genesis_aspect_x1000 = c->aspect_x1000();
 		if (rw_payload && ayaneo_rewind_ready()) {   /* capture committed frame into the rewind ring */
 			void *p = ayaneo_rewind_capture_begin();
 			if (p && c->state_save(p, rw_payload) == 0) ayaneo_rewind_capture_commit(rw_payload);
@@ -423,6 +436,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 		if (g_genesis_menu_exit) break;   /* Pico "Exit Game" selected */
 	}
+	{ extern void ayaneo_snes_rsz_restore(void); ayaneo_snes_rsz_restore(); }   /* RSZ back to 1:1 (else Close hangs / carousel shears) */
 	ayaneo_menu_overlay(0, 0);   /* disable the overlay BEFORE returning to the carousel (else the
 				      * stale Pico panel composites over the selector - see CORE_PORTING_NOTES) */
 	ayaneo_hud_set(0, 0);   /* clear the FF/RW badge on exit */

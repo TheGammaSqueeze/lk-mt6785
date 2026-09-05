@@ -94,11 +94,18 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
         Nav = Up/Down move, Left/Right change, A select, B/AYA close, with press-edge + auto-repeat;
         left stick also navigates. Save/Load use /states/genesis/<rom>.st<slot>; Load re-arms the
         rewind ring. Overlay disabled on exit (CORE_PORTING_NOTES gotcha). Builds clean.
-  - [ ] Remaining parity: run-ahead (state_save/load per frame + set_av_skip look-ahead), aspect
-        Pixel/Fit/Stretch via ayaneo_rsz_present + LCD filter in ayaneo_genesis_show_frame (+ wire
-        into the menu), GPGX core options in the menu (region/overclock/etc. via c->set_option),
-        per-core settings PERSIST across reboot (mirror ayaneo_set_snes_opts), boxart/console badges
-        in the carousel. <-- NEXT: aspect Fit/Stretch + LCD filter (then wire menu rows for them).
+  - [x] Aspect Pixel/Fit/Stretch + LCD filter: ayaneo_genesis_show_frame now takes the hardware-RSZ
+        path (ayaneo_rsz_present) for Fit (core aspect g_genesis_aspect_x1000, ~4:3) and Stretch
+        (full panel); Pixel keeps the integer CPU blit. LCD filter (Off/Scanlines/Grid/Grid+) dims
+        the last dest row/col per source pixel in the CPU blit and is passed to the RSZ. Session
+        refreshes g_genesis_aspect_x1000 from c->aspect_x1000() (H32/H40 switch) and calls
+        ayaneo_snes_rsz_restore() on exit (CORE_PORTING_NOTES: else Close hangs / carousel shears).
+        New menu rows Aspect Ratio + LCD Filter (session-scoped globals; live preview). Builds clean.
+  - [ ] Remaining parity: GPGX core options in the menu (region / overclock / etc. via c->set_option),
+        per-core settings PERSIST across reboot (mirror ayaneo_set_snes_opts - a genesis settings
+        blob for aspect/filter/slot), run-ahead (state_save/load + set_av_skip look-ahead),
+        boxart/console badges in the carousel. <-- NEXT: settings persistence + a couple GPGX core
+        options (region) in the menu.
 
 ## Milestone reached (2026-09-05): Genesis core LOADS on the device
 Blob builds (1.34MB) + host-test PASS + on-device gen-probe PASS. A Genesis/MD/SMS/GG/SG ROM
