@@ -181,15 +181,21 @@ static int s_pl_started;                /* a conversion is in flight (pipelined)
  * unless force!=0 (e.g. a menu "recalibrate"). Assumes sticks centred + triggers released. */
 void ayaneo_joypad_calibrate(int force)
 {
+	int lx, ly, lt, rt;
 	if (s_cal && !force)
 		return;
 	if (!s_powered)
 		ayaneo_joypad_power();
 	sgm58031_init();
-	s_lx0 = ayaneo_joypad_stick(1);
-	s_ly0 = ayaneo_joypad_stick(2);
-	s_lt0 = sgm58031_read(SGM_CFG_LT);
-	s_rt0 = sgm58031_read(SGM_CFG_RT);
+	lx = ayaneo_joypad_stick(1);
+	ly = ayaneo_joypad_stick(2);
+	lt = sgm58031_read(SGM_CFG_LT);
+	rt = sgm58031_read(SGM_CFG_RT);
+	if (lx < 0 || ly < 0 || lt < 0 || rt < 0)
+		return;                    /* a read failed: stay uncalibrated (s_cal=0), retry next poll -
+					    * never bake a -1 baseline (it would offset every later read into a
+					    * permanent phantom D-pad direction) */
+	s_lx0 = lx; s_ly0 = ly; s_lt0 = lt; s_rt0 = rt;
 	s_lt_ext = TRIG_RANGE_FLOOR;
 	s_rt_ext = TRIG_RANGE_FLOOR;
 	s_cal = 1;
@@ -220,9 +226,13 @@ static int level_from_raw(int lr, int raw)
 
 static unsigned int dpad_from_sticks(void)
 {
-	int lx = ayaneo_joypad_stick(1) - s_lx0;   /* lx up = RIGHT, ly up = UP */
-	int ly = ayaneo_joypad_stick(2) - s_ly0;
+	int rx = ayaneo_joypad_stick(1), ry = ayaneo_joypad_stick(2);
+	int lx, ly;
 	unsigned int m = 0;
+	if (rx < 0 || ry < 0)              /* AUXADC read error (-1): report neutral, not a phantom edge */
+		return 0;
+	lx = rx - s_lx0;                   /* lx up = RIGHT, ly up = UP */
+	ly = ry - s_ly0;
 	if (lx >  STICK_DEADZONE) m |= JOY_RIGHT;
 	else if (lx < -STICK_DEADZONE) m |= JOY_LEFT;
 	if (ly >  STICK_DEADZONE) m |= JOY_UP;

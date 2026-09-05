@@ -1551,6 +1551,7 @@ static int gba_sd_rom_select(void)
 	}
 	for (;;) {
 		mtk_wdt_restart();   /* kick the 10s watchdog: idling on the menu must not reset the device */
+		{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }   /* so the stick works in this fallback list too */
 		unsigned k = menu_keys();
 		unsigned int *buf = ayaneo_canvas_back(&pitch, &W, &H);
 		if (k & MK_UP)   sel = rs_move(sel, s_nrom, 1, 0);
