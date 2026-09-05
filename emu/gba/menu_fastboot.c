@@ -487,9 +487,20 @@ static void cmd_joytest(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* Dump the physical DRAM map (ranks + mblock usable + reserved regions with names) so we can pick
+ * a safe high-DRAM region to claim for the rewind ring buffer. */
+static void cmd_meminfo(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_meminfo_dump(void (*emit)(const char *));
+	(void)arg; (void)data; (void)sz;
+	ayaneo_meminfo_dump(fastboot_info);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
+	fastboot_register("oem meminfo", cmd_meminfo, 1, 0);
 	fastboot_register("oem adcscan", cmd_adcscan, 1, 0);
 	fastboot_register("oem stickscan", cmd_stickscan, 1, 0);
 	fastboot_register("oem trigscan", cmd_trigscan, 1, 0);
