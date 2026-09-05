@@ -363,14 +363,17 @@ void *ayaneo_rewind_capture_begin(void)
 }
 void ayaneo_rewind_capture_commit(unsigned int size)
 {
-	unsigned int len, i, flags = 0;
+	unsigned int len, flags = 0;
 	if (!ayaneo_rewind_ready() || s_rewinding) return;
 	(void)size;                                          /* state size is fixed at reset (s_state_sz) */
 	if (!s_have_prev) { flags = REC_BASE; }              /* first after reset: delta vs zero = floor */
 	len = xor_rle_encode(s_encbuf, 2u * s_state_sz + 4096u,
 			     s_recon, s_have_prev ? s_prev : 0, s_state_words);
 	if (len == 0u || len > s_arena_sz) {                 /* incompressible past the arena: skip frame */
-		for (i = 0; i < s_state_words; i++) s_prev[i] = s_recon[i];
+		/* s_recon holds the new committed state -> make it the next XOR base by SWAPPING the two
+		 * staging buffers (they are independent equal-size regions), not a full-state copy. The old
+		 * s_prev becomes free scratch that capture_begin hands back next frame (fully overwritten). */
+		unsigned int *t = s_prev; s_prev = s_recon; s_recon = t;
 		s_have_prev = 1;
 		return;
 	}
@@ -386,7 +389,10 @@ void ayaneo_rewind_capture_commit(unsigned int size)
 		s_used += len;
 		if (flags & REC_BASE) s_have_base = 1;
 	}
-	for (i = 0; i < s_state_words; i++) s_prev[i] = s_recon[i];
+	/* s_recon (the just-committed state) becomes the next XOR base by pointer swap - the per-frame
+	 * ~full-state copy (up to ~1MB for Genesis) was pure memory-bandwidth waste. begin()/end() keep
+	 * their copies (they run once per rewind session, not per frame, and must not alias s_prev). */
+	{ unsigned int *t = s_prev; s_prev = s_recon; s_recon = t; }
 	s_have_prev = 1;
 }
 

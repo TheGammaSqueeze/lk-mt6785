@@ -113,10 +113,40 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
         by depth via s_gen_ra_opp {1400,1600,1800,2000}. New "Run-Ahead" menu row. Builds clean.
   - [x] FF performance: fast-forward now set_av_skip's the thrown-away frames (render only the last
         presented one), like snes - much cheaper FF frames.
-  - [ ] Menu enter/exit TRANSITIONS (user requested): the launch punch-hole (growing circle reveal)
-        + exit reverse-punch (shrink back to carousel), like snes/gba/gbc. genesis currently hard-cuts.
-        Mirror gba_snes_menu.c snes_menu_arm_reverse + the launch punch snapshot + gba_driver.c close
-        path. <-- NEXT.
+  - [x] Menu enter/exit TRANSITIONS (commit 2429a9c): launch punch-hole (gameplay circle grows over the
+        frozen carousel at 0x54000000) + exit reverse-punch (last frame shrinks back into the carousel),
+        matching snes/gba/gbc. New ayaneo_genesis_punch_prerender (mt_disp_drv.c) renders the frozen frame
+        with the LIVE aspect-mode geometry (Pixel/Fit/Stretch, honours g_genesis_aspect + _x1000);
+        genesis_menu_arm_reverse (gba_snes_menu.c, g_reverse_is_gbc==3) packs the exit frame contiguous for
+        the menu-thread reverse shrink. Launch punch armed generically by the menu (gba_punch_ready).
+  - [x] PIXEL-ASPECT PERF ROOT CAUSE (commit 2429a9c): the Pixel path did priamry_display_wait_for_vsync()
+        AFTER ayaneo_present() - but primary_display_config_input already blocks on DISP_PATH_EVENT_FRAME_DONE
+        in DSI video mode (primary_display.c:1081), so that was a SECOND wait = two vsync periods = a hard
+        30fps cap. Fit/Stretch (RSZ, wait_vsync=0) + GBC (no explicit wait) ran at 60. Removed the redundant
+        wait; also narrowed the per-frame cache clean from the whole FB to just the game rows (mirror GBC).
+        The earlier memcpy row-replicate blit change (commit 459a439) is a valid micro-opt but was NOT the
+        cause. NOTE: the snes9x + snes paths (mt_disp_drv.c ~1935/1944) may carry the SAME double-wait - the
+        perf audit workflow is checking; fix there too if confirmed.
+  - [~] EXTREME PERF PASS + HOTKEY CONSISTENCY (user requested, IN PROGRESS). Audit workflow wf_3dae1c0c-e2f
+        DONE; prioritized plan being implemented:
+        PERF: [x] Genesis clock 1400->1800 @ pf=0 (s_gen_ra_opp={1800,1800,2000,2000}) - biggest lever.
+              [ ] GBA/GBC Pixel blit -> memcpy row-replicate (mt_disp_drv.c ~1204, mirror Genesis:2017).
+              [ ] SNES Pixel/Fit full-panel clean -> banded (mt_disp_drv.c:1935 -> yoff/dh like Genesis:2047).
+              [x] Rewind s_prev refresh: scalar copy -> pointer swap (ayaneo_rewind.c commit + skip paths) -
+                  removes ~2MB/frame (Genesis) copy, ALL cores, behavior-preserving. begin/end keep copies.
+              [ ] (deferred) Rewind capture stride N=2-3: behavior-changing (rewind granularity); hold.
+              [x] FAST_SAVESTATES bit4: NOT APPLICABLE - verified this vendored GPGX uses fast_savestates ONLY
+                  to gate save/restore_sound_buffer in libretro.c; it does NOT skip a system_reset memset (the
+                  runahead agent assumed upstream behavior). Enabling it would ADD sound-buffer copies. SKIPPED.
+              [~] hq_fm/hq_psg: KEEP ON (audio quality); blip_buf/psg -O2 deferred (small win, needs boot_b reflash).
+              [ ] (opt) run-ahead reuse rewind s_prev instead of 2nd state_save: medium/medium, deferred.
+        HOTKEYS (canonical = GBA scheme; renderer kind 0=none/1=vol/2=bright):
+              [x] SNES brightness OSD kind 0->2 (snes_sd_run.c:313) - bar never showed.
+              [ ] H1 Genesis genesis_poll_volume() (mtk_detect_key 0x11/0x00, SELECT=bright), call @ loop top.
+              [ ] H2 GBC-SD gbc_poll_volume() into gbc_sd_run.c (baked gbc_driver.c:266 is the wrong path).
+              [ ] H4 Genesis menu bright/vol deferred-persist (currently never persists).
+              [ ] H5 power key in-game -> save+.sav+flush+mt_power_off for SNES/Genesis/GBC-SD (only GBA has it).
+              [ ] H6 Genesis soft-reset SELECT+START+L+R (mirror snes_sd_run.c:987).
   - [ ] Also remaining: GPGX core options in the menu (region/overclock via c->set_option), per-core
         settings PERSIST across reboot (a genesis settings blob for aspect/filter/RA/slot),
         boxart/console badges in the carousel.
