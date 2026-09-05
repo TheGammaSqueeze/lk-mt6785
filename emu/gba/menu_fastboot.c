@@ -226,7 +226,7 @@ static void cmd_gen_bench(const char *arg, void *data, unsigned sz)
 	extern volatile unsigned g_gen_dbg_bench_fps, g_gen_dbg_bench_us, g_gen_dbg_bench_save_us,
 				 g_gen_dbg_bench_load_us, g_gen_dbg_bench_mhz, g_gen_dbg_bench_rwx10,
 				 g_gen_dbg_bench_loadfast_us, g_gen_dbg_bench_norender_us,
-				 g_gen_dbg_bench_rw6_us, g_gen_dbg_bench_rwok;
+				 g_gen_dbg_bench_rw6_us, g_gen_dbg_bench_rwok, g_gen_dbg_bench_crc;
 	void *vol = gba_sd_menu_vol();
 	const void *rom = gba_sd_first_genesis_rom();
 	int frames = 300;
@@ -239,6 +239,8 @@ static void cmd_gen_bench(const char *arg, void *data, unsigned sz)
 	genesis_sd_bench(vol, rom, frames);
 	snprintf(lbuf, sizeof lbuf, "gen-bench @%uMHz: fps=%u frame=%uus norender=%uus",
 		 g_gen_dbg_bench_mhz, g_gen_dbg_bench_fps, g_gen_dbg_bench_us, g_gen_dbg_bench_norender_us);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "  frame-crc=%08x (render byte-identity check)", g_gen_dbg_bench_crc);
 	fastboot_info(lbuf);
 	snprintf(lbuf, sizeof lbuf, "  save=%uus load=%uus loadfast=%uus impliedRW=%u.%ux",
 		 g_gen_dbg_bench_save_us, g_gen_dbg_bench_load_us, g_gen_dbg_bench_loadfast_us,

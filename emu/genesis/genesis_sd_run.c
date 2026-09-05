@@ -139,6 +139,7 @@ volatile unsigned g_gen_dbg_bench_mhz, g_gen_dbg_bench_rwx10;   /* clock; implie
 volatile unsigned g_gen_dbg_bench_loadfast_us;   /* state_load with the buffer-clear memsets skipped */
 volatile unsigned g_gen_dbg_bench_norender_us;   /* per-frame with the VDP pixel render skipped (CPU+timing) */
 volatile unsigned g_gen_dbg_bench_rw6_us, g_gen_dbg_bench_rwok;   /* headless 6x-rewind present cost + valid-frame flag */
+volatile unsigned g_gen_dbg_bench_crc;   /* FNV-1a of the rendered frame (render-change byte-identity check) */
 
 /* ---- in-game Pico menu (hardware OVL0 L0 overlay over the running game; mirrors the snes menu).
  * g_genesis_menu_open (declared above) gates game input + FF/rewind; the game keeps running so
@@ -747,6 +748,18 @@ static void genesis_bench_body(fat_vol *vol, const gba_rom_entry *rom, int frame
 		unsigned int per = ((t1 - t0) / 13u) / (unsigned)(frames > 0 ? frames : 1);
 		g_gen_dbg_bench_us  = per;
 		g_gen_dbg_bench_fps = per ? (1000000u / per) : 0;
+	}
+	/* Frame CRC (FNV-1a over the rendered frame after the deterministic run): a RENDER-path change that is
+	 * byte-identical keeps this value, so a render optimization can be proven correct headlessly (no live
+	 * pixel check needed). Emulation/timing changes may legitimately alter it. */
+	if (fr.video && fr.width && fr.height) {
+		const unsigned short *pv = (const unsigned short *)fr.video;
+		unsigned int pitch_px = fr.pitch / 2u, y, x, h = 0x811c9dc5u;
+		for (y = 0; y < fr.height; y++) {
+			const unsigned short *row = pv + (unsigned int)y * pitch_px;
+			for (x = 0; x < fr.width; x++) { h ^= row[x]; h *= 0x01000193u; }
+		}
+		g_gen_dbg_bench_crc = h;
 	}
 	/* Profile split: run frames with the VDP pixel render SKIPPED (set_av_skip novideo=1). frame - norender
 	 * = the VDP render cost; norender ~= 68k+Z80+sound+VDP-timing. Tells us whether the pixel render or the
