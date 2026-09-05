@@ -200,8 +200,13 @@ static int genesis_load(const void *rom, unsigned size, int system)
 	rc = retro_load_game(&info) ? 0 : -1;
 	s_ext.data = 0;                           /* stop answering GET_GAME_INFO_EXT after load */
 	if (rc == 0) {                            /* now that the system+input exist, select the pads */
-		retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
-		retro_set_controller_port_device(1, RETRO_DEVICE_JOYPAD);
+		/* Mega Drive: 6-button pad (subclass 1) so the device X/Y/L/R/Select reach Genesis
+		 * X/Y/Z/Mode; 8-bit systems (SMS/GG/SG) use the plain 2-button joypad. */
+		unsigned dev = (system == GEN_SYS_MD || system == GEN_SYS_AUTO)
+			? RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 1)
+			: RETRO_DEVICE_JOYPAD;
+		retro_set_controller_port_device(0, dev);
+		retro_set_controller_port_device(1, dev);
 	}
 	return rc;
 }

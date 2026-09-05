@@ -83,9 +83,15 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
         2.8us/call on x86 (GPGX state is a compact fixed buffer, not a real 1MB copy), so per-frame
         capture is cheap; the ring delta-encode (~256K-word scan) is the dominant cost, well within
         the 16.6ms budget -> 60fps rewind is viable. host_test.c gained a serialize-throughput probe.
-  - [ ] run-ahead (state_save/load per frame + set_av_skip), aspect Fit/Stretch via
-        ayaneo_rsz_present + LCD filter in ayaneo_genesis_show_frame, CPU clock, per-core settings
-        persist, live Pico overlay menu with GPGX core options, boxart/console badges, 6-button pad.
+  - [x] CPU clock: session raises to 1400 MHz for gameplay (Genesis + per-frame rewind capture +
+        60fps), restores the menu idle clock on exit (ayaneo_get/set_cpu_mhz).
+  - [x] 6-button pad: MD sets RETRO_DEVICE_SUBCLASS(JOYPAD,1) = MDPAD_6B so device X/Y/L/R/Select
+        reach Genesis X/Y/Z/Mode; 8-bit systems use the plain joypad. (blob change -> boot_b reflash.)
+  - [ ] run-ahead (state_save/load per frame + set_av_skip look-ahead), aspect Fit/Stretch via
+        ayaneo_rsz_present + LCD filter in ayaneo_genesis_show_frame, per-core settings persist,
+        live Pico overlay menu (the KEYSTONE - unlocks aspect/filter/clock/core-options/save-slots
+        selection; mirror snes_menu_paint/sm_label/sm_value/sm_change + ayaneo_menu_overlay),
+        boxart/console badges. <-- NEXT: the Pico menu (biggest remaining parity gap).
 
 ## Milestone reached (2026-09-05): Genesis core LOADS on the device
 Blob builds (1.34MB) + host-test PASS + on-device gen-probe PASS. A Genesis/MD/SMS/GG/SG ROM

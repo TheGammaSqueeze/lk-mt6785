@@ -27,6 +27,8 @@ extern int      mt_get_gpio_in(unsigned pin);
 extern void     ayaneo_joypad_poll(void);
 extern unsigned int ayaneo_joypad_dpad(void);
 extern void     ayaneo_hud_set(int mode, int speed_x10);   /* mt_disp_drv.c: FF/RW speed badge */
+extern void     ayaneo_set_cpu_mhz(unsigned int mhz);      /* reprograms ARM-PLL PCW (not voltage) */
+extern unsigned int ayaneo_get_cpu_mhz(void);
 
 /* pad GPIOs (match gba_driver.c / gbc_sd_run.c). Active-low. */
 #define GP(n)          ((n) | 0x80000000u)
@@ -118,7 +120,7 @@ volatile int      g_gen_dbg_loadrc;
 static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 {
 	const struct genesis_core_exports *c = genesis_core_load();
-	unsigned romsz, sr = 44100, ssz, rw_payload;
+	unsigned romsz, sr = 44100, ssz, rw_payload, saved_mhz;
 	int aya_prev = 0, aya_hold = 0, rw_acc = 0;
 	struct genesis_frame fr;
 
@@ -160,6 +162,12 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	rw_payload = c->state_size();
 	if (rw_payload && rw_payload <= 0x00400000u) ayaneo_rewind_reset(rw_payload);
 	else rw_payload = 0;
+
+	/* Raise the CPU clock for gameplay (Genesis + per-frame rewind capture + 60fps present); the
+	 * menu holds a lower idle clock. Restored on exit. ayaneo_set_cpu_mhz reprograms only the PLL,
+	 * so 1400 MHz runs at the boot Vproc - the same point the SNES gameplay tiers use. */
+	saved_mhz = ayaneo_get_cpu_mhz();
+	ayaneo_set_cpu_mhz(1400);
 
 	for (;;) {
 		extern int ayaneo_joypad_ff_level(void);
@@ -266,6 +274,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 	}
 	ayaneo_hud_set(0, 0);   /* clear the FF/RW badge on exit */
+	ayaneo_set_cpu_mhz(saved_mhz);   /* restore the menu's idle clock */
 
 	/* persist SRAM + a suspend state so the next launch resumes */
 	if (c->sram_ptr() && c->sram_size())
