@@ -503,13 +503,14 @@ static void cmd_meminfo(const char *arg, void *data, unsigned sz)
 static void cmd_rewindtest(const char *arg, void *data, unsigned sz)
 {
 	extern unsigned int ayaneo_rewind_phys(void);
+	extern unsigned int ayaneo_rewind_segs(void);
 	extern int ayaneo_rewind_selftest(unsigned int *region_out, unsigned int *tested_out, unsigned int *bad_out);
 	unsigned int region = 0, tested = 0, bad = 0;
 	int rc;
 	(void)arg; (void)data; (void)sz;
 	rc = ayaneo_rewind_selftest(&region, &tested, &bad);
-	snprintf(lbuf, sizeof lbuf, "rewind rc=%d bad=%u tested=%u %uMB @0x%08x",
-		 rc, bad, tested, region >> 20, ayaneo_rewind_phys());
+	snprintf(lbuf, sizeof lbuf, "rewind rc=%d bad=%u tested=%u %uMB/%useg @0x%08x",
+		 rc, bad, tested, region >> 20, ayaneo_rewind_segs(), ayaneo_rewind_phys());
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }

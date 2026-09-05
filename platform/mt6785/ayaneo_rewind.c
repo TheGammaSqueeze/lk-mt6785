@@ -21,34 +21,49 @@ extern BOOT_ARGUMENT *g_boot_arg;
 
 #define REWIND_SCRATCH_END 0x56000000ULL /* end of the 128MB emulator scratch; look above this */
 #define REWIND_VA_LIMIT    0x100000000ULL /* LK is 32-bit VA (identity) - can only map phys < 4GB */
-#define REWIND_CAP         0x3E000000u    /* ~992MB. The old 512MB cap tied every high mblock at 512MB,
-					   * so region_find picked the FIRST (mblk4 @0x56000000); a higher cap
-					   * lets it select the largest island (mblk10 ~990MB @0xC0000000 on a
-					   * 3GB unit) uncapped, ~2x the rewind window. block-headroom stays the
-					   * binding limit, so smaller SKUs still scale down safely. */
-#define REWIND_HEADROOM    0x02000000u    /* leave 32MB below the chosen mblock's end */
+#define REWIND_CAP         0x40000000u    /* per-block ceiling (1GB); the largest real island (mblk10
+					   * ~1022MB) sits just under it, so no block is actually capped -
+					   * the sub-4GB VA limit and per-block headroom are the real bounds.
+					   * Guards against a bogus oversized mblock. */
+#define REWIND_HEADROOM    0x02000000u    /* leave 32MB below each mapped block's end */
 #define REWIND_MIN         0x04000000u    /* need at least 64MB to bother */
+#define REWIND_MAX_SEGS    8u             /* max DRAM islands we stitch into one logical arena */
 #define SECT_ALIGN(x)      ((x) & ~(SECTION_SIZE - 1))   /* 2MB-align -> cheap L1 sections, no L2 heap */
 
-static unsigned char *s_base;          /* mapped region base VA (== phys, identity) */
-static unsigned int    s_base_phys;    /* chosen physical base */
-static unsigned int    s_region;       /* mapped region size (bytes), 0 = not mapped */
+/* Rewind is arena-bound for large-state cores (GBA fills ~990MB in ~24min), so instead of the single
+ * largest island we map EVERY usable+unreserved DRAM island above the scratch (mblk4+6+10 ~2.6GB on a
+ * 3GB unit) and stitch them into ONE logical byte arena. The islands are physically non-contiguous, so
+ * the arena is a linear [0,total) offset space translated to a VA per segment; the header (prev/recon/
+ * encbuf/directory) lives at the front of segment 0 (the LARGEST island, so it always holds it). */
+static unsigned char *s_seg_va[REWIND_MAX_SEGS];   /* mapped VA (== phys, identity) of each island */
+static unsigned int    s_seg_phys[REWIND_MAX_SEGS];/* physical base of each island */
+static unsigned int    s_seg_size[REWIND_MAX_SEGS];/* mapped bytes of each island (2MB-aligned) */
+static unsigned int    s_seg_n;                    /* number of mapped islands */
+
+static unsigned char *s_base;          /* segment-0 base VA (holds the header; == phys, identity) */
+static unsigned int    s_base_phys;    /* segment-0 physical base */
+static unsigned int    s_region;       /* TOTAL mapped bytes across all islands, 0 = not mapped */
 static int             s_mapped;
 static int             s_tried;
 
-/* Pick the LARGEST usable+unreserved DRAM mblock that sits ABOVE the emulator scratch and inside the
- * 32-bit VA space, 2MB-aligned, size = min(block - headroom, CAP). Purely from the runtime mblock map,
- * so it is per-SKU dynamic AND self-protecting: a region reserved by ADSP/TEE/etc. is never a "usable"
- * mblock, so we can never pick it. Returns 0 (base) if none qualifies. */
-static unsigned int rewind_region_find(unsigned int *base_out)
+/* Map EVERY usable+unreserved DRAM island above the emulator scratch and inside the 32-bit VA space,
+ * 2MB-aligned, each min(block - headroom, CAP). Purely from the runtime mblock map, so it is per-SKU
+ * dynamic AND self-protecting: a region reserved by ADSP/TEE/etc. is never a "usable" mblock, so we
+ * can never pick it. The largest island is placed at index 0 (it holds the header). Returns the TOTAL
+ * mapped bytes, 0 on failure. Identity-mapped Normal-WriteBack, once. */
+unsigned int ayaneo_rewind_map(void)
 {
 	mblock_info_t *mi;
-	unsigned int i, best_base = 0, best_size = 0;
-	*base_out = 0;
+	unsigned int i, n = 0, total = 0;
+	if (s_mapped)
+		return s_region;
+	if (s_tried)
+		return 0;
+	s_tried = 1;
 	if (!g_boot_arg)
 		return 0;
 	mi = &g_boot_arg->mblock_info;
-	for (i = 0; i < mi->mblock_num && i < 128u; i++) {
+	for (i = 0; i < mi->mblock_num && i < 128u && n < REWIND_MAX_SEGS; i++) {
 		unsigned long long s = mi->mblock[i].start;
 		unsigned long long sz = mi->mblock[i].size;
 		unsigned long long abase, end, asz, avail;
@@ -65,61 +80,79 @@ static unsigned int rewind_region_find(unsigned int *base_out)
 		if (avail > REWIND_CAP)
 			avail = REWIND_CAP;
 		avail = SECT_ALIGN((unsigned int)avail);
-		if (avail >= REWIND_MIN && (unsigned int)avail > best_size) {
-			best_size = (unsigned int)avail;
-			best_base = (unsigned int)abase;
+		if (avail < REWIND_MIN)
+			continue;
+		s_seg_phys[n] = (unsigned int)abase;
+		s_seg_size[n] = (unsigned int)avail;
+		n++;
+	}
+	if (!n)
+		return 0;
+	/* put the LARGEST island at index 0 so segment 0 always has room for the header */
+	{
+		unsigned int bi = 0, bj, t;
+		for (bj = 1; bj < n; bj++)
+			if (s_seg_size[bj] > s_seg_size[bi]) bi = bj;
+		if (bi != 0) {
+			t = s_seg_phys[0]; s_seg_phys[0] = s_seg_phys[bi]; s_seg_phys[bi] = t;
+			t = s_seg_size[0]; s_seg_size[0] = s_seg_size[bi]; s_seg_size[bi] = t;
 		}
 	}
-	*base_out = best_base;
-	return best_size;
-}
-
-/* Map the rewind region Normal-WriteBack (identity, once). Returns the mapped size, 0 on failure. */
-unsigned int ayaneo_rewind_map(void)
-{
-	unsigned int sz, base;
-	if (s_mapped)
-		return s_region;
-	if (s_tried)
+	/* map each island; if one fails, keep the prefix that mapped and stop (still a valid arena) */
+	for (i = 0; i < n; i++) {
+		if (arch_mmu_map((uint64_t)s_seg_phys[i], (vaddr_t)s_seg_phys[i],
+				 MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA,
+				 s_seg_size[i]) != 0) {
+			n = i;
+			break;
+		}
+		s_seg_va[i] = (unsigned char *)(addr_t)s_seg_phys[i];
+		total += s_seg_size[i];
+	}
+	if (!n)
 		return 0;
-	s_tried = 1;
-	sz = rewind_region_find(&base);
-	if (!sz || !base)
-		return 0;
-	if (arch_mmu_map((uint64_t)base, (vaddr_t)base,
-			 MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA, sz) != 0)
-		return 0;
-	s_base = (unsigned char *)(addr_t)base;
-	s_base_phys = base;
-	s_region = sz;
+	s_seg_n = n;
+	s_base = s_seg_va[0];
+	s_base_phys = s_seg_phys[0];
+	s_region = total;
 	s_mapped = 1;
-	return sz;
+	return total;
 }
 
 unsigned int ayaneo_rewind_phys(void) { return s_base_phys; }
+unsigned int ayaneo_rewind_segs(void) { return s_seg_n; }
 
 unsigned char *ayaneo_rewind_base(void) { return s_base; }
 unsigned int   ayaneo_rewind_region(void) { return s_region; }
 
-/* Isolation selftest: map the region, write a position-dependent pattern every 1MB across the WHOLE
- * region, read it back. If the map faulted or the region overlapped something live we would crash or
- * mismatch. region/tested/bad reported; returns 0 iff all read back correctly. */
+/* Isolation selftest: map every island, write a position-dependent pattern every 1MB across EACH
+ * island, read it back. If any map faulted or an island overlapped something live we would crash or
+ * mismatch here - this is the proof that ALL stitched islands (not just the largest) are truly free.
+ * region/tested/bad reported (region = total across islands); returns 0 iff all read back correctly. */
 int ayaneo_rewind_selftest(unsigned int *region_out, unsigned int *tested_out, unsigned int *bad_out)
 {
-	unsigned int sz = ayaneo_rewind_map();
-	unsigned int off, tested = 0, bad = 0;
-	*region_out = sz;
+	unsigned int total = ayaneo_rewind_map();
+	unsigned int si, off, tested = 0, bad = 0;
+	*region_out = total;
 	*tested_out = 0;
 	*bad_out = 0;
-	if (!sz)
+	if (!total)
 		return -1;
-	for (off = 0; off + 4u <= sz; off += 0x100000u) {
-		*(volatile unsigned int *)(s_base + off) = 0xA5A50000u ^ off;
-		tested++;
+	for (si = 0; si < s_seg_n; si++) {
+		unsigned char *base = s_seg_va[si];
+		unsigned int sz = s_seg_size[si], tag = si * 0x02000000u;
+		for (off = 0; off + 4u <= sz; off += 0x100000u) {
+			*(volatile unsigned int *)(base + off) = 0xA5A50000u ^ off ^ tag;
+			tested++;
+		}
 	}
-	for (off = 0; off + 4u <= sz; off += 0x100000u) {
-		if (*(volatile unsigned int *)(s_base + off) != (0xA5A50000u ^ off))
-			bad++;
+	for (si = 0; si < s_seg_n; si++) {
+		unsigned char *base = s_seg_va[si];
+		unsigned int sz = s_seg_size[si], tag = si * 0x02000000u;
+		for (off = 0; off + 4u <= sz; off += 0x100000u) {
+			if (*(volatile unsigned int *)(base + off) != (0xA5A50000u ^ off ^ tag))
+				bad++;
+		}
 	}
 	*tested_out = tested;
 	*bad_out = bad;
@@ -145,7 +178,13 @@ int ayaneo_rewind_selftest(unsigned int *region_out, unsigned int *tested_out, u
  * when the arena or directory fills. All state is plain scalars - capture and rewind are mutually
  * exclusive on the single emu thread, no locking.
  * ========================================================================= */
-#define REC_DIR_CAP  262144u           /* max stored frames (directory entries); 3MB dir */
+#define REC_DIR_CAP  2097152u          /* max stored frames (directory entries), 2^21; 24MB dir. Must be
+					* a power of two - the (head-1-back)%CAP index math relies on
+					* unsigned wrap == modulo. Big enough that the tiny-delta cores
+					* (GBC 464B, SNES 1726B) become ARENA-bound not directory-bound, so
+					* they fill the whole ~2.6GB stitched arena (SNES ~7h, GBC ~9.7h)
+					* instead of stalling at the old 262144 cap (~73min). GBA stays
+					* arena-bound well under this cap. */
 #define REC_BASE     1u                /* flags bit: first-after-reset record (delta vs zero) = floor */
 
 struct rw_rec { unsigned int off; unsigned int len; unsigned int flags; };
@@ -156,8 +195,17 @@ static unsigned int  *s_prev;          /* previous raw state (XOR base for the n
 static unsigned int  *s_recon;         /* capture staging AND rewind reconstruction buffer */
 static unsigned char *s_encbuf;        /* RLE encode scratch (one delta) */
 static struct rw_rec *s_dir;           /* circular record directory */
-static unsigned char *s_arena;         /* record byte arena */
-static unsigned int   s_arena_sz;      /* arena bytes (multiple of 4) */
+static unsigned int   s_arena_sz;      /* arena bytes (multiple of 4), summed across all islands */
+
+/* The byte arena is a linear [0,s_arena_sz) offset space stitched from the mapped islands: island 0
+ * contributes [header, size0) and islands 1..n-1 contribute their whole size. These parallel arrays
+ * map an arena offset to a VA. s_aseg_off[i] = cumulative arena offset where island i's slice begins;
+ * s_aseg_len[i] = bytes it contributes; s_aseg_va[i] = VA of that slice's first byte. All lengths are
+ * 4-multiples (islands are 2MB-aligned, header is 64-aligned) so a 4-aligned u32 never straddles an
+ * island boundary, and s_arena_sz is a 4-multiple so it never straddles the arena-end wrap either. */
+static unsigned char *s_aseg_va[REWIND_MAX_SEGS];
+static unsigned int   s_aseg_off[REWIND_MAX_SEGS];
+static unsigned int   s_aseg_len[REWIND_MAX_SEGS];
 static unsigned int   s_wr;            /* arena write offset (4-aligned) */
 static unsigned int   s_used;          /* live arena bytes */
 static unsigned int   s_dir_head;      /* next directory slot (newest = head-1) */
@@ -186,36 +234,62 @@ static unsigned int xor_rle_encode(unsigned char *out, unsigned int outcap,
 	return olen;
 }
 
-/* Apply an RLE'd delta stored in the arena at byte offset `off` (len bytes, may wrap) INTO recon:
- * recon ^= expand(delta). Every u32 is 4-aligned so it never straddles the wrap. Fast path for the
- * common non-wrapping record (plain pointer walk); modular access only for a record that wraps. */
+/* Which arena island slice holds arena offset `off` (searched top-down; s_seg_n is small). */
+static unsigned int arena_seg_of(unsigned int off)
+{
+	unsigned int i = s_seg_n;
+	while (i-- > 1u)
+		if (off >= s_aseg_off[i]) return i;
+	return 0u;
+}
+
+/* Copy `len` bytes from src into the arena starting at offset `off`, splitting at every island
+ * boundary AND the arena-end wrap so each contiguous chunk stays within one mapped island. Callers
+ * guarantee len <= s_arena_sz (eviction makes room), so the walk terminates. */
+static void arena_write(unsigned int off, const unsigned char *src, unsigned int len)
+{
+	unsigned int si = arena_seg_of(off);
+	unsigned int local = off - s_aseg_off[si];
+	while (len) {
+		unsigned int seg_rem = s_aseg_len[si] - local;
+		unsigned int chunk = len < seg_rem ? len : seg_rem;
+		memcpy(s_aseg_va[si] + local, src, chunk);
+		src += chunk; len -= chunk; local += chunk;
+		if (local >= s_aseg_len[si]) {                 /* crossed an island end */
+			si++; local = 0;
+			if (si >= s_seg_n) si = 0;             /* ... or the arena end: wrap to island 0 */
+		}
+	}
+}
+
+/* Read cursor over the stitched arena: reads one 4-aligned u32 and advances, incrementally tracking
+ * the island so each read is O(1). A u32 never straddles an island boundary (all slice lengths are
+ * 4-multiples), so the boundary check only fires between whole words. */
+struct arena_cur { unsigned int off; unsigned int si; };
+static void arena_cur_init(struct arena_cur *c, unsigned int off) { c->off = off; c->si = arena_seg_of(off); }
+static unsigned int arena_rd32(struct arena_cur *c)
+{
+	unsigned int v = *(const unsigned int *)(s_aseg_va[c->si] + (c->off - s_aseg_off[c->si]));
+	c->off += 4u;
+	if (c->off >= s_arena_sz) { c->off = 0u; c->si = 0u; }               /* arena-end wrap */
+	else if (c->off >= s_aseg_off[c->si] + s_aseg_len[c->si]) c->si++;   /* next island */
+	return v;
+}
+
+/* Apply an RLE'd delta stored in the arena at byte offset `off` (len bytes, may wrap islands and the
+ * arena end) INTO recon: recon ^= expand(delta). */
 static void xor_rle_apply(unsigned int *recon, unsigned int off, unsigned int len, unsigned int nwords)
 {
-	unsigned int w = 0;
-	if (off + len <= s_arena_sz) {                     /* fast path: record is contiguous */
-		const unsigned char *d = s_arena + off, *e = d + len;
-		while (d + 8u <= e && w < nwords) {
-			unsigned int gap = *(const unsigned int *)d; d += 4;
-			unsigned int lit = *(const unsigned int *)d; d += 4;
-			unsigned int k;
-			w += gap;
-			for (k = 0; k < lit && w < nwords; k++) { recon[w] ^= *(const unsigned int *)d; d += 4; w++; }
-		}
-		return;
-	}
-	{                                                  /* slow path: record wraps the arena end */
-		unsigned int p = off, consumed = 0;
-		while (consumed + 8u <= len && w < nwords) {
-			unsigned int gap = *(unsigned int *)(s_arena + (p % s_arena_sz)); p += 4u;
-			unsigned int lit = *(unsigned int *)(s_arena + (p % s_arena_sz)); p += 4u;
-			unsigned int k;
-			consumed += 8u;
-			w += gap;
-			for (k = 0; k < lit && w < nwords; k++) {
-				recon[w] ^= *(unsigned int *)(s_arena + (p % s_arena_sz));
-				p += 4u; consumed += 4u; w++;
-			}
-		}
+	struct arena_cur c;
+	unsigned int w = 0, consumed = 0;
+	arena_cur_init(&c, off);
+	while (consumed + 8u <= len && w < nwords) {
+		unsigned int gap = arena_rd32(&c);
+		unsigned int lit = arena_rd32(&c);
+		unsigned int k;
+		consumed += 8u;
+		w += gap;
+		for (k = 0; k < lit && w < nwords; k++) { recon[w] ^= arena_rd32(&c); consumed += 4u; w++; }
 	}
 }
 
@@ -225,7 +299,7 @@ static void xor_rle_apply(unsigned int *recon, unsigned int off, unsigned int le
 unsigned int ayaneo_rewind_reset(unsigned int max_payload)
 {
 	unsigned int region = ayaneo_rewind_map();
-	unsigned int pstride, estride, dirbytes, hdr;
+	unsigned int pstride, estride, dirbytes, hdr, i;
 	unsigned char *b = s_base;
 	s_wr = s_used = s_dir_head = s_dir_count = s_back = 0;
 	s_rewinding = 0; s_have_base = 0; s_have_prev = 0;
@@ -236,13 +310,22 @@ unsigned int ayaneo_rewind_reset(unsigned int max_payload)
 	estride  = (2u * s_state_sz + 4096u + 63u) & ~63u;      /* encbuf: worst-case delta + slack */
 	dirbytes = REC_DIR_CAP * (unsigned int)sizeof(struct rw_rec);
 	hdr = 2u * pstride + estride + dirbytes;                /* prev + recon + encbuf + directory */
-	if (region <= hdr + REWIND_MIN) { s_state_sz = 0; s_state_words = 0; return 0; }
+	/* the header lives entirely in island 0 (the largest), which must fit it + a little arena */
+	if (s_seg_n == 0u || s_seg_size[0] <= hdr + REWIND_MIN) { s_state_sz = 0; s_state_words = 0; return 0; }
 	s_prev   = (unsigned int *)(b + 0u * pstride);
 	s_recon  = (unsigned int *)(b + 1u * pstride);
 	s_encbuf = (unsigned char *)(b + 2u * pstride);
 	s_dir    = (struct rw_rec *)(b + 2u * pstride + estride);
-	s_arena  = b + hdr;
-	s_arena_sz = (region - hdr) & ~3u;
+	/* stitch the arena: island 0 gives [hdr,size0), islands 1..n-1 give their whole size */
+	s_aseg_va[0]  = b + hdr;
+	s_aseg_len[0] = s_seg_size[0] - hdr;
+	s_aseg_off[0] = 0u;
+	for (i = 1u; i < s_seg_n; i++) {
+		s_aseg_va[i]  = s_seg_va[i];
+		s_aseg_len[i] = s_seg_size[i];
+		s_aseg_off[i] = s_aseg_off[i - 1u] + s_aseg_len[i - 1u];
+	}
+	s_arena_sz = (s_aseg_off[s_seg_n - 1u] + s_aseg_len[s_seg_n - 1u]) & ~3u;
 	return REC_DIR_CAP;
 }
 
@@ -293,15 +376,9 @@ void ayaneo_rewind_capture_commit(unsigned int size)
 	}
 	while ((s_used + len > s_arena_sz || s_dir_count >= REC_DIR_CAP) && s_dir_count > 0)
 		rw_evict_oldest();
-	/* write the record at s_wr, wrapping the arena boundary (bytes stay 4-aligned) */
+	/* write the record at s_wr (arena_write splits at island boundaries + the arena-end wrap) */
 	{
-		unsigned int first = s_arena_sz - s_wr;
-		if (first >= len) {
-			for (i = 0; i < len; i++) s_arena[s_wr + i] = s_encbuf[i];
-		} else {
-			for (i = 0; i < first; i++) s_arena[s_wr + i] = s_encbuf[i];
-			for (i = 0; i < len - first; i++) s_arena[i] = s_encbuf[first + i];
-		}
+		arena_write(s_wr, s_encbuf, len);
 		s_dir[s_dir_head].off = s_wr; s_dir[s_dir_head].len = len; s_dir[s_dir_head].flags = flags;
 		s_dir_head = (s_dir_head + 1u) % REC_DIR_CAP;
 		s_dir_count++;
