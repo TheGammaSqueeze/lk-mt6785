@@ -101,11 +101,25 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
         refreshes g_genesis_aspect_x1000 from c->aspect_x1000() (H32/H40 switch) and calls
         ayaneo_snes_rsz_restore() on exit (CORE_PORTING_NOTES: else Close hangs / carousel shears).
         New menu rows Aspect Ratio + LCD Filter (session-scoped globals; live preview). Builds clean.
-  - [ ] Remaining parity: GPGX core options in the menu (region / overclock / etc. via c->set_option),
-        per-core settings PERSIST across reboot (mirror ayaneo_set_snes_opts - a genesis settings
-        blob for aspect/filter/slot), run-ahead (state_save/load + set_av_skip look-ahead),
-        boxart/console badges in the carousel. <-- NEXT: settings persistence + a couple GPGX core
-        options (region) in the menu.
+## ON-DEVICE GAMEPLAY CONFIRMED (2026-09-05, user): Sonic 3 Complete (SONIC3C.GEN, pushed via
+## fastboot stage + oem sd-put to /roms/genesis) RUNS on the Genesis core - display, input, audio,
+## and ALL menu options work like snes. The emulation + menu + display path is validated end to end.
+
+  - [x] Run-ahead: pf = ayaneo_get_preempt_frames() (Off/Balanced/Responsive/Max), gated off during
+        FF/menu. After the committed frame: state_save to GEN_AHEAD_BUF, run pf look-ahead frames
+        (set_av_skip render-except-last + audio-off), present the future frame, state_load back to
+        committed. GPGX serialize is fast+deterministic (host-measured 2.8us) so no raw path needed;
+        no heap_mark/reset (GPGX serialize is allocation-free, unlike snes9x). Session clock escalates
+        by depth via s_gen_ra_opp {1400,1600,1800,2000}. New "Run-Ahead" menu row. Builds clean.
+  - [x] FF performance: fast-forward now set_av_skip's the thrown-away frames (render only the last
+        presented one), like snes - much cheaper FF frames.
+  - [ ] Menu enter/exit TRANSITIONS (user requested): the launch punch-hole (growing circle reveal)
+        + exit reverse-punch (shrink back to carousel), like snes/gba/gbc. genesis currently hard-cuts.
+        Mirror gba_snes_menu.c snes_menu_arm_reverse + the launch punch snapshot + gba_driver.c close
+        path. <-- NEXT.
+  - [ ] Also remaining: GPGX core options in the menu (region/overclock via c->set_option), per-core
+        settings PERSIST across reboot (a genesis settings blob for aspect/filter/RA/slot),
+        boxart/console badges in the carousel.
 
 ## Milestone reached (2026-09-05): Genesis core LOADS on the device
 Blob builds (1.34MB) + host-test PASS + on-device gen-probe PASS. A Genesis/MD/SMS/GG/SG ROM

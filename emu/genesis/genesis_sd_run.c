@@ -71,7 +71,12 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
 #define GEN_ROM_CAP    0x00800000u        /* 8 MB (largest MD carts ~8 MB) */
 #define GEN_STATE_BUF  0x53400000u        /* save/suspend state scratch */
 #define GEN_STATE_CAP  0x00400000u        /* 4 MB (GPGX state ~0.5-1 MB) */
+#define GEN_AHEAD_BUF  0x53800000u        /* run-ahead save/restore scratch (separate from state) */
 #define GEN_REWIND_MAX_SPD 1536           /* max rewind speed in 256ths (1536 = 6x); floor 256 = 1x */
+
+/* run-ahead CPU clock by depth: pf frames run pf+1 emulations/display + 1 save + 1 load, so
+ * escalate the clock with depth (mirrors the snes s_snes_ra_opp). ayaneo_set_cpu_mhz is PLL-only. */
+static const unsigned s_gen_ra_opp[4] = { 1400, 1600, 1800, 2000 };
 
 volatile int g_genesis_menu_open;         /* gates game input + FF/rewind while the Pico menu is up */
 volatile int g_genesis_aspect;            /* display aspect: 0=Pixel 1=Fit 2=Stretch (ayaneo_genesis_show_frame) */
@@ -158,16 +163,21 @@ static void genesis_cpu_step(int dir)
 	ayaneo_set_cpu_mhz(s_cpu_opp[s_cpu_idx]);
 }
 
-enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_CPU, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
+extern int  ayaneo_get_preempt_frames(void);
+extern void ayaneo_set_preempt_frames(int v);
+
+enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_RUNAHEAD, GM_CPU, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
 static const char *gen_aspect_name(int a) { return a == 2 ? "Stretch" : a == 1 ? "Fit" : "Pixel"; }
 static const char *gen_filter_name(int f) { return f == 3 ? "Grid+" : f == 2 ? "Grid" : f == 1 ? "Scanlines" : "Off"; }
+static const char *gen_ra_name(int pf) { return pf == 3 ? "Max" : pf == 2 ? "Responsive" : pf == 1 ? "Balanced" : "Off"; }
 
 static char *mput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *mputu(char *p, unsigned v) { char t[12]; int n = 0; if (!v) { *p++ = '0'; return p; } while (v) { t[n++] = '0' + v % 10; v /= 10; } while (n) *p++ = t[--n]; return p; }
 
 static const char *gm_label(int i) { switch (i) {
 	case GM_BRIGHT: return "Brightness"; case GM_VOLUME: return "Volume";
-	case GM_ASPECT: return "Aspect Ratio"; case GM_FILTER: return "LCD Filter"; case GM_CPU: return "CPU Clock";
+	case GM_ASPECT: return "Aspect Ratio"; case GM_FILTER: return "LCD Filter";
+	case GM_RUNAHEAD: return "Run-Ahead"; case GM_CPU: return "CPU Clock";
 	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
 	case GM_RESET: return "Reset Game"; case GM_EXIT: return "Exit Game"; } return ""; }
 
@@ -177,6 +187,7 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 	case GM_VOLUME: p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
 	case GM_ASPECT: p = mput(p, gen_aspect_name(g_genesis_aspect)); break;
 	case GM_FILTER: p = mput(p, gen_filter_name(g_genesis_filter)); break;
+	case GM_RUNAHEAD: p = mput(p, gen_ra_name(ayaneo_get_preempt_frames())); break;
 	case GM_CPU:    p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
 	case GM_SLOT:   p = mputu(p, (unsigned)s_save_slot); break;
 	case GM_SAVE: case GM_LOAD: case GM_RESET: case GM_EXIT: p = mput(p, "[A]"); break;
@@ -193,6 +204,8 @@ static int gm_change(int i, int dir, int act)
 	case GM_VOLUME: if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); break;
 	case GM_ASPECT: if (dir) g_genesis_aspect = (g_genesis_aspect + dir + 3) % 3; break;   /* live preview */
 	case GM_FILTER: if (dir) g_genesis_filter = (g_genesis_filter + dir + 4) % 4; break;
+	case GM_RUNAHEAD: if (dir) { int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
+		ayaneo_set_preempt_frames(pf); ayaneo_set_cpu_mhz(s_gen_ra_opp[pf]); s_cpu_idx = -1; } break;
 	case GM_CPU:    if (dir) genesis_cpu_step(dir); break;
 	case GM_SLOT:   if (dir) s_save_slot = (s_save_slot + dir + 3) % 3; break;
 	case GM_SAVE: if (act) {
@@ -285,11 +298,11 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	if (rw_payload && rw_payload <= 0x00400000u) ayaneo_rewind_reset(rw_payload);
 	else rw_payload = 0;
 
-	/* Raise the CPU clock for gameplay (Genesis + per-frame rewind capture + 60fps present); the
-	 * menu holds a lower idle clock. Restored on exit. ayaneo_set_cpu_mhz reprograms only the PLL,
-	 * so 1400 MHz runs at the boot Vproc - the same point the SNES gameplay tiers use. */
+	/* Raise the CPU clock for gameplay, escalated by the run-ahead depth (pf frames run pf+1
+	 * emulations + a save + a load per display). The menu holds a lower idle clock; restored on
+	 * exit. ayaneo_set_cpu_mhz reprograms only the PLL (boot Vproc), like the SNES gameplay tiers. */
 	saved_mhz = ayaneo_get_cpu_mhz();
-	ayaneo_set_cpu_mhz(1400);
+	{ int pf0 = ayaneo_get_preempt_frames(); ayaneo_set_cpu_mhz(s_gen_ra_opp[(pf0 >= 0 && pf0 < 4) ? pf0 : 0]); }
 
 	/* menu context (actions reference the session core + save target) */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom; s_menu_rw_payload = rw_payload;
@@ -378,6 +391,9 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (mult > 10) mult = 10;
 			ayaneo_hud_set(1, mult * 10);
 			for (k = 1; k < mult; k++) {
+				/* skip the VDP render (the heavy part) on the thrown-away frames; render only
+				 * the LAST one (the frame we present). Audio kept on all so the sound speeds up. */
+				if (c->set_av_skip) c->set_av_skip(k < mult - 1 ? 1 : 0, 0);
 				c->run(&fr);
 				g_gen_dbg_frames++;
 				if (rw_payload && ayaneo_rewind_ready()) {   /* capture each FF frame too */
@@ -387,14 +403,34 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (fr.audio && fr.frames)
 					ayaneo_snes_audio_submit(fr.audio, fr.frames, sr);
 			}
+			if (c->set_av_skip) c->set_av_skip(0, 0);
 		} else {
 			ayaneo_hud_set(0, 0);
 		}
 
-		if (fr.video && fr.width && fr.height) {     /* present the (last) frame, vsync-paced */
-			g_gen_dbg_w = fr.width; g_gen_dbg_h = fr.height;
-			ayaneo_genesis_show_frame((const unsigned short *)fr.video, fr.width, fr.height,
-						  fr.pitch / 2u);
+		/* Run-ahead: advance the DISPLAY pf frames into the future with the current input, present
+		 * that future frame, then restore the committed state so real emulation still advances one
+		 * frame per loop - hiding pf frames of the game's internal input lag. Gated off during FF /
+		 * menu. GPGX has no raw snapshot, so state_save/load (fast + deterministic per the host
+		 * test); the look-ahead frames skip render (all but the last) and audio (all) via set_av_skip. */
+		{
+			int pf = (ff || g_genesis_menu_open || !rw_payload) ? 0 : ayaneo_get_preempt_frames();
+			if (pf > 3) pf = 3;
+			if (pf > 0) {
+				int i;
+				c->state_save((void *)GEN_AHEAD_BUF, GEN_STATE_CAP);
+				for (i = 0; i < pf; i++) {
+					if (c->set_av_skip) c->set_av_skip(i == pf - 1 ? 0 : 1, 1);
+					c->run(&fr);
+				}
+				if (c->set_av_skip) c->set_av_skip(0, 0);
+			}
+			if (fr.video && fr.width && fr.height) {   /* present the future (or committed) frame */
+				g_gen_dbg_w = fr.width; g_gen_dbg_h = fr.height;
+				ayaneo_genesis_show_frame((const unsigned short *)fr.video, fr.width, fr.height,
+							  fr.pitch / 2u);
+			}
+			if (pf > 0) c->state_load((const void *)GEN_AHEAD_BUF, rw_payload);   /* rewind to committed */
 		}
 		mtk_wdt_restart();
 
