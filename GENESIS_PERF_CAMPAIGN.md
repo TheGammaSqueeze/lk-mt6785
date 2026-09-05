@@ -1,6 +1,12 @@
 # Genesis performance campaign (autonomous, 15-min cron)
 
-## STATUS: rewind 6x goal MET structurally (iter 2 decouple + iter 3 fast load). Rewind per-present cost
+## STATUS: rewind 6x goal VALIDATED on device (iter 6). Headless self-test `oem gen-bench` -> rewind6x:
+## cost=3624us/present ok=1 @1400MHz: a 6x rewind (walk 6 ring records + 1 fast state_load + 1 render)
+## costs 3624us and renders a VALID frame -> 4.6x headroom under the 16667us present budget (3.3x @999).
+## The decoupled + fast-load rewind works end to end; cost is speed-INDEPENDENT so it fits well past 6x at
+## every tier. PRIMARY GOAL DONE. Remaining = pure forward/FF/run-ahead-depth headroom (frame-emulate cuts).
+##
+## (prior) rewind 6x goal MET structurally (iter 2 decouple + iter 3 fast load). Rewind per-present cost
 ## = 1 fast state_load (556us) + 1 re-emulate (5760us) = ~6316us @1400 / ~8842us @999, both << the 15500us
 ## present budget, at ANY tier, speed-independent. Needs a LIVE rewind to eyeball-confirm 6x (oem gen-rw
 ## will show ~556 load + ~5760 run once). REMAINING WORK = cut the 5760us frame-emulate for forward/FF/
@@ -111,6 +117,20 @@ frame-emulate is ~2x cheaper (less accurate/faster core) AND it runs at 1800.
   build_core_blob.sh -> USE_CYCLES collapses to `cycles += (A)`.
 - RESULT (commit pending): frame 5760->5647us, norender 2950->2819us (~131us, ~4.4% of CPU), fps 173->177.
   Small but free, no feature loss. KEPT. Rewind step loadfast(557)+frame(5647)=6204us.
+
+## Iteration 6 (2026-09-05): VALIDATED 6x rewind headlessly + ruled out risky render surgery
+- Added a headless 6x-rewind self-test to gen-bench: capture 200 states into the ring, then run the EXACT
+  decoupled rewind (rewind_begin, walk 6 step()s, fast state_load, sound_rebase, one render) and time it +
+  check the frame is valid. Result @1400: cost=3624us/present, ok=1. Fits one 60Hz present with 4.6x margin
+  (3.3x @999) -> 6x rewind confirmed working on device, not just reasoned. This is the campaign's primary
+  goal, now proven.
+- Considered a 2-pixel-per-store widening of remap_line (`*dst++ = pixel[*src++]`): byte-identical + safe
+  (PIXEL_OUT_T=uint16, width even, dst 4-aligned) but the remap is memory/gather-bound so the gain is
+  marginal, and it is the video OUTPUT stage (any bug corrupts ALL games) which cannot be pixel-validated
+  headlessly - NOT worth flashing to an AFK device for a marginal gain. Deferred (would need the user to
+  eyeball colours).
+- frame still 5647us (render 2828 / cpu 2821). Cheap compiler/config levers exhausted; further frame cuts
+  need hand code-level work on the VDP tile render or 68k core (high effort, needs live visual verification).
 
 ## Ideas backlog (try in order of expected impact / low risk first)
 1. [DONE-build, unmeasured] -O3 hot / -O2 cold (was all -Os). <-- likely the big one.

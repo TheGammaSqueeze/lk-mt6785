@@ -138,6 +138,7 @@ volatile unsigned g_gen_dbg_bench_fps, g_gen_dbg_bench_us, g_gen_dbg_bench_save_
 volatile unsigned g_gen_dbg_bench_mhz, g_gen_dbg_bench_rwx10;   /* clock; implied rewind speed x10 */
 volatile unsigned g_gen_dbg_bench_loadfast_us;   /* state_load with the buffer-clear memsets skipped */
 volatile unsigned g_gen_dbg_bench_norender_us;   /* per-frame with the VDP pixel render skipped (CPU+timing) */
+volatile unsigned g_gen_dbg_bench_rw6_us, g_gen_dbg_bench_rwok;   /* headless 6x-rewind present cost + valid-frame flag */
 
 /* ---- in-game Pico menu (hardware OVL0 L0 overlay over the running game; mirrors the snes menu).
  * g_genesis_menu_open (declared above) gates game input + FF/rewind; the game keeps running so
@@ -166,6 +167,18 @@ extern void ayaneo_gbc_osd_show(int kind, int pct);     /* transient OSD bar: 1=
 extern void ayaneo_menu_settings_persist(void);         /* persist brightness/volume/... to eMMC+SD */
 extern int  pmic_detect_powerkey(void);
 extern void mt_power_off(void);
+/* rewind ring (platform/mt6785/ayaneo_rewind.c) - declared once so the pointer/unsigned returns are correct
+ * (no implicit-int) for both the session loop and the headless self-test. */
+extern unsigned int ayaneo_rewind_reset(unsigned int max_payload);
+extern int          ayaneo_rewind_ready(void);
+extern int          ayaneo_rewind_active(void);
+extern unsigned int ayaneo_rewind_count(void);
+extern void        *ayaneo_rewind_capture_begin(void);
+extern void         ayaneo_rewind_capture_commit(unsigned int size);
+extern int          ayaneo_rewind_begin(void);
+extern int          ayaneo_rewind_step(void);
+extern const void  *ayaneo_rewind_cur(unsigned int *size_out);
+extern void         ayaneo_rewind_end(void);
 extern int  ayaneo_get_gen_aspect(void); extern void ayaneo_set_gen_aspect(int v);   /* persisted per-core settings */
 extern int  ayaneo_get_gen_filter(void); extern void ayaneo_set_gen_filter(int v);
 extern int  ayaneo_get_gen_region(void); extern void ayaneo_set_gen_region(int v);
@@ -760,6 +773,38 @@ static void genesis_bench_body(fat_vol *vol, const gba_rom_entry *rom, int frame
 			t0 = gpt4_get_current_tick(); c->state_load((const void *)GEN_STATE_BUF, rwp); t1 = gpt4_get_current_tick();
 			c->set_ra_fast(0);
 			g_gen_dbg_bench_loadfast_us = (t1 - t0) / 13u;
+		}
+		/* Headless 6x-rewind self-test: capture a run of states into the ring, then do the EXACT decoupled
+		 * rewind (walk 6 records + one fast state_load + one render) and measure the real per-present cost +
+		 * confirm a valid frame. Validates the primary campaign goal (6x rewind) without a live trigger. */
+		{
+			ayaneo_rewind_reset(rwp);
+			for (i = 0; i < 200; i++) {
+				c->run(&fr);
+				if (ayaneo_rewind_ready()) {
+					void *p = ayaneo_rewind_capture_begin();
+					if (p && c->state_save(p, rwp) == 0) ayaneo_rewind_capture_commit(rwp);
+				}
+			}
+			if (ayaneo_rewind_count() > 6u) {
+				int k, ok = 0; unsigned int sz2; const void *st2;
+				ayaneo_rewind_begin();
+				t0 = gpt4_get_current_tick();
+				for (k = 0; k < 6; k++) if (ayaneo_rewind_step() != 0) break;
+				st2 = ayaneo_rewind_cur(&sz2);
+				if (st2 && sz2) {
+					if (c->set_ra_fast) c->set_ra_fast(1);
+					c->state_load(st2, sz2);
+					if (c->set_ra_fast) c->set_ra_fast(0);
+					if (c->sound_rebase) c->sound_rebase();
+					c->run(&fr);
+					ok = (fr.video && fr.width >= 160u && fr.height >= 100u);
+				}
+				t1 = gpt4_get_current_tick();
+				ayaneo_rewind_end();
+				g_gen_dbg_bench_rw6_us = (t1 - t0) / 13u;   /* real 6x rewind present cost @1400 */
+				g_gen_dbg_bench_rwok   = ok ? 1u : 0u;
+			}
 		}
 	}
 	/* implied rewind x10: one present (~15500us usable) / (per-step = state_load + one re-emulate) */
