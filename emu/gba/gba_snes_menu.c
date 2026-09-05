@@ -49,8 +49,9 @@ extern void arch_clean_cache_range(unsigned long start, unsigned int len);
 #define GBA_GAME_FULL_PA    0x55900000u   /* game pre-rendered full-screen BGRA (fast reverse) */
 #define GBA_REVERSE_MS      180u
 static int g_reverse_punch = 0;
-static int g_reverse_is_gbc = 0;   /* 0 = GBA 240x160x5, 1 = GB/GBC 160x144x6, 2 = SNES (dims below) */
+static int g_reverse_is_gbc = 0;   /* 0 = GBA 240x160x5, 1 = GB/GBC 160x144x6, 2 = SNES, 3 = Genesis */
 static int g_reverse_snes_w, g_reverse_snes_h, g_reverse_snes_scale;
+static int g_reverse_gen_w, g_reverse_gen_h;   /* frozen Genesis frame dims (aspect-aware prerender) */
 volatile int g_dbg_arm_cnt;   /* incremented each time the driver arms the reverse */
 
 /* Called by the driver on "Close" with the last game frame; armed here, consumed by
@@ -96,6 +97,22 @@ void snes_menu_arm_reverse(const unsigned short *game_frame, unsigned sw, unsign
 		g_reverse_snes_scale = (sw <= 256) ? 4 : 2;
 		g_reverse_punch = 1;
 		g_reverse_is_gbc = 2;
+	}
+}
+
+/* Genesis variant: the frozen frame is up to 320x240 (RGB565) at the core's 720px stride, so pack
+ * it CONTIGUOUS into GBA_GAME_FREEZE_PA and record its dims. The reverse renders it with the same
+ * aspect-mode geometry as the live display (ayaneo_genesis_punch_prerender honours g_genesis_aspect). */
+void genesis_menu_arm_reverse(const unsigned short *game_frame, unsigned sw, unsigned sh, unsigned spitch)
+{
+	g_dbg_arm_cnt++;
+	if (game_frame && sw && sh && sw <= 512 && sh <= 512) {
+		unsigned y; unsigned short *d = (unsigned short *)(uintptr_t)GBA_GAME_FREEZE_PA;
+		for (y = 0; y < sh; y++) memcpy(d + y * sw, game_frame + y * spitch, sw * 2u);
+		arch_clean_cache_range(GBA_GAME_FREEZE_PA, sw * sh * 2u);   /* emu thread -> menu thread (see above) */
+		g_reverse_gen_w = (int)sw; g_reverse_gen_h = (int)sh;
+		g_reverse_punch = 1;
+		g_reverse_is_gbc = 3;
 	}
 }
 
@@ -399,7 +416,15 @@ static void play_reverse_punch(unsigned int ms)
 	/* Pre-convert the FROZEN game to a full-screen BGRA buffer ONCE, so each shrink
 	 * frame is just memcpy (gba_punch_composite_pre) = ~5ms not ~50ms. FRAME-paced
 	 * over a fixed count so the shrink is a smooth, visible 60fps sequence. */
-	if (g_reverse_is_gbc == 2) {
+	if (g_reverse_is_gbc == 3) {
+		/* Genesis: render the frozen frame with the SAME aspect-mode geometry as the live display
+		 * (ayaneo_genesis_punch_prerender honours g_genesis_aspect + g_genesis_aspect_x1000), so the
+		 * reverse shrinks the exact last on-screen frame. */
+		extern void ayaneo_genesis_punch_prerender(const unsigned short *, unsigned, unsigned, unsigned);
+		int gw = g_reverse_gen_w, gh = g_reverse_gen_h;
+		ayaneo_genesis_punch_prerender((const unsigned short *)GBA_GAME_FREEZE_PA,
+					       (unsigned)gw, (unsigned)gh, (unsigned)gw);
+	} else if (g_reverse_is_gbc == 2) {
 		/* SNES: render the frozen frame with the SAME aspect-aware geometry as the live display
 		 * (ayaneo_snes_punch_prerender reads g_snes_aspect_x1000), so the reverse shrinks the exact
 		 * last on-screen frame instead of a centred integer-scaled box. */

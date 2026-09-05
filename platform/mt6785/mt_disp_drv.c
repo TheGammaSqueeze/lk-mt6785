@@ -2041,10 +2041,17 @@ void ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw, unsigned 
 	}
 	ayaneo_draw_osd(dst, pitch_w, W, H);
 	ayaneo_hud_draw(dst, pitch_w, (int)xoff, (int)yoff, (int)dw, (int)dh);   /* FF/RW speed badge */
-	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
+	/* Flush ONLY the game rows (the letterbox is static black, flushed once on geometry change; the
+	 * OSD/HUD self-flush their own regions) - mirrors the GBC path. The old full-panel clean touched
+	 * ~60% more cache lines every frame for no benefit. */
+	arch_clean_cache_range((unsigned int)(dst + (unsigned int)yoff * pitch_w), (unsigned int)dh * pitch_w * 4);
 	g_dbg_blit_us = (gpt4_get_current_tick() - t0) / 13u;
+	/* Present. primary_display_config_input (inside ayaneo_present) already WAITS for FRAME_DONE in
+	 * DSI video mode, which paces the emulation to the panel's 60 Hz - exactly like the GBC path and
+	 * the RSZ (Fit/Stretch) path (which passes wait_vsync=0). The old explicit wait here was a SECOND
+	 * blocking wait per frame = two vsync periods per present = a hard 30fps cap in Pixel mode, while
+	 * Fit/Stretch ran at 60. That double-wait was the Pixel-aspect slowdown. */
 	ayaneo_present(dpa, W, H, pitch_w);
-	priamry_display_wait_for_vsync();
 	s_fb_flip ^= 1;
 }
 
@@ -2230,6 +2237,49 @@ void ayaneo_snes_punch_prerender(const unsigned short *pix, unsigned int sw, uns
 		unsigned int *orow = gf + y * pitch;
 		int in_gy = ((int)y >= yoff && y < (unsigned)yoff + dh);
 		const unsigned short *srow = in_gy ? (pix + ((y - (unsigned)yoff) / sy_scale) * spitch_px) : 0;
+		unsigned int acc = 0;
+		for (x = 0; x < W; x++) {
+			if (in_gy && (int)x >= xoff && x < (unsigned)xoff + dw) {
+				unsigned int v = srow[acc >> 16]; acc += xstep;
+				unsigned int r = ((v >> 11) & 0x1f) << 3, g = ((v >> 5) & 0x3f) << 2, b = (v & 0x1f) << 3;
+				orow[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+			} else orow[x] = 0xFF000000u;
+		}
+	}
+	arch_clean_cache_range(GBA_PUNCH_GAME_FULL_PA, pitch * H * 4);
+}
+
+/* Genesis variant: pre-convert a frozen Genesis frame (RGB565, stride spitch_px) to the
+ * full-screen BGRA game buffer the punch compositor reads, using the SAME aspect-mode geometry
+ * as ayaneo_genesis_show_frame (0=Pixel integer, 1=Fit core-aspect, 2=Stretch full-panel) so the
+ * launch circle opens - and the exit circle shrinks - onto the exact live on-screen geometry. */
+void ayaneo_genesis_punch_prerender(const unsigned short *pix, unsigned int sw, unsigned int sh,
+				    unsigned int spitch_px)
+{
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	unsigned int *gf = (unsigned int *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA;
+	extern volatile unsigned g_genesis_aspect_x1000;
+	extern volatile int g_genesis_aspect;
+	unsigned int dw, dh, xstep, ystep, x, y;
+	int xoff, yoff;
+	if (!pix || !sw || !sh) return;
+	if (g_genesis_aspect == 2) { dw = W; dh = H; }
+	else if (g_genesis_aspect == 1) {
+		unsigned int a = g_genesis_aspect_x1000; if (!a) a = 1333u;
+		dh = H; dw = H * a / 1000u; if (dw > W) { dw = W; dh = W * 1000u / a; }
+	} else {                                     /* Pixel: integer scale = min(W/sw, H/sh) */
+		unsigned int s = W / sw, s2 = H / sh; if (s2 < s) s = s2; if (s < 1) s = 1;
+		dw = sw * s; dh = sh * s;
+	}
+	if (dw > W) dw = W; if (dh > H) dh = H; if (dw < 1) dw = 1; if (dh < 1) dh = 1;
+	xoff = ((int)W - (int)dw) / 2; yoff = ((int)H - (int)dh) / 2;
+	if (xoff < 0) xoff = 0; if (yoff < 0) yoff = 0;
+	xstep = (sw << 16) / dw; ystep = (sh << 16) / dh;
+	for (y = 0; y < H; y++) {
+		unsigned int *orow = gf + y * pitch;
+		int in_gy = ((int)y >= yoff && y < (unsigned)yoff + dh);
+		const unsigned short *srow = in_gy ? (pix + (((y - (unsigned)yoff) * ystep) >> 16) * spitch_px) : 0;
 		unsigned int acc = 0;
 		for (x = 0; x < W; x++) {
 			if (in_gy && (int)x >= xoff && x < (unsigned)xoff + dw) {

@@ -308,6 +308,33 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom; s_menu_rw_payload = rw_payload;
 	g_genesis_menu_open = 0; g_genesis_menu_exit = 0; s_msel = 0; s_mstat[0] = 0; s_cpu_idx = -1;
 
+	/* Launch punch-hole (matches snes/gba/gbc): the menu handed off with the frozen carousel still on
+	 * screen (GBA_PUNCH_SNAP_PA = 0x54000000) and gba_punch_ready set. Run a few frames so real
+	 * gameplay is on screen (not a black/boot frame), pre-render it full-screen with the live aspect
+	 * geometry, then grow a circle from 0 to the panel diagonal over the frozen menu - the carousel is
+	 * visibly eaten by the expanding gameplay instead of a hard cut. Skipped for the oem gen-launch. */
+	{
+		extern int  gba_punch_ready;
+		extern void ayaneo_genesis_punch_prerender(const unsigned short *, unsigned, unsigned, unsigned);
+		extern void ayaneo_gba_punch_frame_pre(const unsigned int *, int);
+		if (gba_punch_ready) {
+			int i, w;
+			struct genesis_frame pf; pf.video = 0; pf.width = 0; pf.height = 0;
+			gba_punch_ready = 0;
+			for (w = 0; w < 20; w++) { c->run(&pf); if (pf.video && pf.width && w >= 3) break; }
+			if (c->aspect_x1000) g_genesis_aspect_x1000 = c->aspect_x1000();
+			if (pf.video && pf.width && pf.height) {
+				ayaneo_genesis_punch_prerender((const unsigned short *)pf.video, pf.width, pf.height,
+							       pf.pitch / 2u);
+				for (i = 1; i <= 20; i++) {
+					int r = 820 * i / 20; if (r < 1) r = 1;
+					ayaneo_gba_punch_frame_pre((const unsigned int *)0x54000000u, r);
+					mtk_wdt_restart();
+				}
+			}
+		}
+	}
+
 	for (;;) {
 		extern int ayaneo_joypad_ff_level(void);
 		extern int ayaneo_joypad_rewind_level(void);
@@ -476,6 +503,14 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			up_p = up; dn_p = dn; lt_p = lt; rt_p = rt; a_p = a; b_p = b;
 		}
 		if (g_genesis_menu_exit) break;   /* Pico "Exit Game" selected */
+	}
+	/* Arm the exit reverse-punch: the carousel re-entry shrinks this last game frame back into the
+	 * selector (matches snes/gba/gbc) instead of a hard cut to black. fr still holds the last rendered
+	 * frame (the core framebuffer is untouched until c->unload below). */
+	{
+		extern void genesis_menu_arm_reverse(const unsigned short *, unsigned, unsigned, unsigned);
+		if (fr.video && fr.width && fr.height)
+			genesis_menu_arm_reverse((const unsigned short *)fr.video, fr.width, fr.height, fr.pitch / 2u);
 	}
 	{ extern void ayaneo_snes_rsz_restore(void); ayaneo_snes_rsz_restore(); }   /* RSZ back to 1:1 (else Close hangs / carousel shears) */
 	ayaneo_menu_overlay(0, 0);   /* disable the overlay BEFORE returning to the carousel (else the
