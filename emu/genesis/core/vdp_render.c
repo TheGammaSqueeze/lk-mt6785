@@ -956,11 +956,32 @@ static uint32 make_lut_bgobj_m4(uint32 bx, uint32 sx)
 
 INLINE void merge(uint8 *srca, uint8 *srcb, uint8 *dst, uint8 *table, int width)
 {
-  do
+  /* 4 indexed pixels per 32-bit store when dst is 4-aligned and width%4==0 (linebuf[..][0x20] is aligned,
+   * mode widths are multiples of 16). Byte-identical (LSB_FIRST: p0->dst0..p3->dst3); quarters the store
+   * count in this per-pixel 16-bit-LUT-gather composite. Scalar fallback otherwise. CRC-validated. */
+  if (!(((unsigned long)dst) & 3ul) && !(width & 3))
   {
-    *dst++ = table[(*srcb++ << 8) | (*srca++)];
+    uint32 *d32 = (uint32 *)dst;
+    int n = width >> 2;
+    do
+    {
+      uint32 p0 = table[(srcb[0] << 8) | srca[0]];
+      uint32 p1 = table[(srcb[1] << 8) | srca[1]];
+      uint32 p2 = table[(srcb[2] << 8) | srca[2]];
+      uint32 p3 = table[(srcb[3] << 8) | srca[3]];
+      *d32++ = p0 | (p1 << 8) | (p2 << 16) | (p3 << 24);
+      srca += 4; srcb += 4;
+    }
+    while (--n);
   }
-  while (--width);
+  else
+  {
+    do
+    {
+      *dst++ = table[(*srcb++ << 8) | (*srca++)];
+    }
+    while (--width);
+  }
 }
 
 

@@ -143,6 +143,15 @@ frame-emulate is ~2x cheaper (less accurate/faster core) AND it runs at 1800.
   change that keeps crc=4ec9198e is provably correct. Next candidate: profile/optimize the render_bg tile
   loops (the bulk of the ~2669us render), validating each with the CRC.
 
+## Iteration 8 (2026-09-05): merge() 4-pixel widening (CRC-proven, frame 5493->5101us, BIGGER win)
+- merge() (vdp_render.c, the per-pixel priority-layer composite dst=table[(srcb<<8)|srca]) widened to 4
+  indexed pixels per 32-bit store (dst aligned + width%4==0, LSB_FIRST byte pack; scalar fallback). It is
+  hotter than the remap (Sonic mixes both scroll planes with priority). RESULT: frame 5493->5101us, fps
+  182->196, crc STAYED 4ec9198e (byte-identical, video unchanged). rewind6x ok=1 (cost 3552us). KEPT.
+- Cumulative render: 2828us (iter4) -> ~2245us via the CRC-validated remap+merge store-widening. frame now
+  5101us. The CRC methodology is working great for the render output/composite loops (store-bound). The
+  remaining render is the render_bg tile DECODE (gather-bound, harder). CPU (norender) ~2850us unchanged.
+
 ## Ideas backlog (try in order of expected impact / low risk first)
 1. [DONE-build, unmeasured] -O3 hot / -O2 cold (was all -Os). <-- likely the big one.
 2. Bump the blob LTO link to -O3 (build_core_blob.sh line ~47) if per-file -O3 under LTO isn't enough.
