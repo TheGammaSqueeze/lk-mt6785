@@ -1092,11 +1092,12 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 	}
 
 	/* Aspect modes (GBA 240x160): Fit / Stretch scale via the hardware RSZ; Pixel (0) uses the
-	 * sharp integer CPU blit below. RSZ only for pure game frames - the Pico menu overlay is
-	 * panel-sized and must go through the 1:1 CPU path, so restore RSZ when the menu opens. */
+	 * sharp integer CPU blit below. RSZ stays on while the live Pico menu overlay is up (it
+	 * composites on top as OVL0 L0; g_overlay_active single-buffers the RSZ scratch so it never
+	 * collides with the overlay buffer). Selecting Pixel - or exiting the session (canvas_present
+	 * self-heal) - restores the 1:1 path via ayaneo_snes_rsz_restore. */
 	{
 		extern volatile int g_gba_aspect;
-		extern int gbc_menu_is_open(void);
 		extern int ayaneo_get_color_correct(void);
 		extern const unsigned short gba_cc_lut444[];
 		if (g_gba_aspect != 0) {
@@ -1209,10 +1210,10 @@ void ayaneo_gb_show_frame(const unsigned short *pix)
 	unsigned int sx, sy, ix, iy;
 
 	/* Aspect modes (GB/GBC 160x144): Fit / Stretch via hardware RSZ; Pixel (0) uses the sharp
-	 * integer CPU blit below. No colour-correction LUT (gambatte already outputs final RGB565). */
+	 * integer CPU blit below. No colour-correction LUT (gambatte already outputs final RGB565).
+	 * As on GBA, RSZ stays on under the live overlay menu; Pixel/exit restores the 1:1 path. */
 	{
 		extern volatile int g_gbc_aspect;
-		extern int gbc_menu_open(void);
 		if (g_gbc_aspect != 0) {
 			unsigned int dwr, dhr;
 			if (g_gbc_aspect == 2) { dwr = W; dhr = H; }   /* Stretch: full panel */
