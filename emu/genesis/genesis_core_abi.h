@@ -15,7 +15,7 @@
 #define GENESIS_CORE_ABI_H
 
 #define GENESIS_CORE_ABI_MAGIC   0x31474553u   /* "SEG1" */
-#define GENESIS_CORE_ABI_VERSION 1u
+#define GENESIS_CORE_ABI_VERSION 2u   /* v2: + set_ra_fast, sound_rebase (run-ahead/rewind audio continuity) */
 
 /* System hint passed to load() so the core forces the right machine for ambiguous files
  * (.bin/.sg can be MD or SMS or SG). 0 = auto-detect from the ROM header. */
@@ -92,6 +92,18 @@ struct genesis_core_exports {
 	 * hard-disable audio (skip_audio) for look-ahead frames never presented/heard. Both cleared
 	 * (0,0) for normal frames. */
 	void  (*set_av_skip)(int skip_video, int skip_audio);
+
+	/* run-ahead FAST_SAVESTATES: when on (1), retro_serialize/unserialize ALSO save/restore the
+	 * blip-buffer + FM/CD audio-phase side-channel and suppress the state_load blip_clear, so a
+	 * state_save/state_load PAIR is audio-continuous. Scope it to the run-ahead save/load pair only
+	 * (the side-channel is a single global latch; leaving it on globally lets per-frame ring captures
+	 * clobber it). Off for portable SD/manual/suspend saves. */
+	void  (*set_ra_fast)(int on);
+	/* re-baseline the audio synthesis (blip_clear all channels + zero the FM last-level carry) so the
+	 * NEXT run() starts from a clean, consistent phase. Called after a rewind state_load (which is NOT
+	 * fast, so it cannot restore the per-entry phase) to stop each rewound frame stepping against a
+	 * stale integrator = the reverse-audio buzz/loop. */
+	void  (*sound_rebase)(void);
 };
 
 typedef const struct genesis_core_exports *(*genesis_core_blob_init_fn)(const struct genesis_core_imports *imp);

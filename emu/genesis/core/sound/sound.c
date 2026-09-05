@@ -675,3 +675,22 @@ void restore_sound_buffer()
     }
   }
 }
+
+/* Re-baseline the audio synthesis to a clean, consistent phase: clear all blip integrators/ring and
+ * zero the FM last-level carry. Used after a (non-fast) rewind state_load so each rewound frame starts
+ * its band-limited synthesis from the same baseline instead of stepping against a stale integrator
+ * (the reverse-audio buzz). blip_clear leaves the buffer ready; fm_last=0 makes the next frame's FM
+ * deltas relative to silence, consistent across every rewound frame. */
+void sound_rebase()
+{
+  int i;
+  fm_last[0] = 0;
+  fm_last[1] = 0;
+  for (i = 0; i < 3; i++)
+  {
+    if (snd.blips[i] != NULL)
+    {
+      blip_clear(snd.blips[i]);
+    }
+  }
+}

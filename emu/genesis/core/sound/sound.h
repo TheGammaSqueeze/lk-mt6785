@@ -51,5 +51,6 @@ extern void (*fm_write)(unsigned int cycles, unsigned int address, unsigned int 
 extern unsigned int (*fm_read)(unsigned int cycles, unsigned int address);
 extern void save_sound_buffer();
 extern void restore_sound_buffer();
+extern void sound_rebase();
 
 #endif /* _SOUND_H_ */

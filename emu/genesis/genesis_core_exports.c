@@ -86,6 +86,16 @@ static int genesis_set_option(const char *key, const char *value)
 static volatile int s_ra_novideo, s_ra_noaudio;
 static void genesis_set_av_skip(int nv, int na) { s_ra_novideo = nv ? 1 : 0; s_ra_noaudio = na ? 1 : 0; }
 
+/* run-ahead FAST_SAVESTATES: OR'd into GET_AUDIO_VIDEO_ENABLE bit 2 (value 4). When on, GPGX's
+ * retro_serialize/unserialize save/restore the blip-buffer + FM/CD audio-phase side-channel and
+ * suppress the state_load blip_clear, so a save/load pair is audio-continuous (fixes run-ahead crackle).
+ * Scoped by LK to the run-ahead save/load pair only (single global latch - see genesis_core_abi.h). */
+static volatile int s_ra_fast;
+static void genesis_set_ra_fast(int on) { s_ra_fast = on ? 1 : 0; }
+/* re-baseline the audio synthesis after a (non-fast) rewind state_load. */
+extern void sound_rebase(void);   /* core/sound/sound.c */
+static void genesis_sound_rebase(void) { sound_rebase(); }
+
 /* ---- libretro callbacks ---- */
 static bool env_cb(unsigned cmd, void *data)
 {
@@ -96,8 +106,9 @@ static bool env_cb(unsigned cmd, void *data)
 	}
 	case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE:
 		/* VIDEO(bit0) on unless a look-ahead render is skipped; AUDIO(bit1) always on;
+		 * FAST_SAVESTATES(bit2) during a run-ahead save/load pair so the audio phase is preserved;
 		 * HARD_DISABLE_AUDIO(bit3) when a look-ahead frame's audio is skipped. */
-		if (data) *(int *)data = (s_ra_novideo ? 0 : 1) | 2 | (s_ra_noaudio ? 8 : 0);
+		if (data) *(int *)data = (s_ra_novideo ? 0 : 1) | 2 | (s_ra_fast ? 4 : 0) | (s_ra_noaudio ? 8 : 0);
 		return true;
 	case RETRO_ENVIRONMENT_GET_VARIABLE: {
 		struct retro_variable *v = (struct retro_variable *)data;
@@ -278,6 +289,8 @@ static const struct genesis_core_exports g_exports = {
 	genesis_heap_mark,
 	genesis_heap_reset,
 	genesis_set_av_skip,
+	genesis_set_ra_fast,
+	genesis_sound_rebase,
 };
 
 const struct genesis_core_exports *genesis_core_blob_init(const struct genesis_core_imports *imp)

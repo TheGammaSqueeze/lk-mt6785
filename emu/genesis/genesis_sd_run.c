@@ -464,19 +464,38 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * Gated off while the menu is open. */
 		rw = g_genesis_menu_open ? 0 : ayaneo_joypad_rewind_level();
 		if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
+			extern int priamry_display_wait_for_vsync(void);
+			static unsigned int s_rw_step_us = 3500u;   /* adaptive per-step (state_load+run) cost */
 			int spd = 256 + (rw * (GEN_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(6x) */
-			unsigned int sz; const void *st; int k, steps;
-			ayaneo_hud_set(2, spd * 10 / 256);   /* cyan reverse-speed badge */
+			unsigned int sz; const void *st; int k, steps, done = 0;
+			unsigned int rw_t0;
+			ayaneo_hud_set(2, spd * 10 / 256);   /* cyan reverse-speed badge (requested speed) */
 			if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
 			rw_acc += spd; steps = rw_acc >> 8; rw_acc &= 255;
+			{	/* Cap the reverse steps to what fits one vsync: a rewound frame is a FULL state_load
+				 * (GPGX has no cheap raw snapshot) + a full render, so a heavy cart cannot sustain 6x
+				 * of those per present - the uncapped loop overran the refresh = the choppy rewind and
+				 * the audio-ring underrun the user heard. Mirrors the forward FF adaptive cap. Decimate
+				 * the reverse audio by the SAME capped count so one present still submits ~one frame of
+				 * samples (no under/overrun). */
+				unsigned int budget = g_dbg_blit_us < 15000u ? (15000u - g_dbg_blit_us) : 2000u;
+				int cap = (int)(budget / (s_rw_step_us ? s_rw_step_us : 3500u));
+				if (cap < 1) cap = 1;
+				if (steps > cap) steps = cap;
+			}
+			if (steps < 1) steps = 1;
+			if (c->set_av_skip) c->set_av_skip(0, 0);   /* never skip a rewound frame's render/audio */
+			rw_t0 = gpt4_get_current_tick();
 			for (k = 0; k < steps; k++) {
 				int atold = (ayaneo_rewind_step() != 0);
 				if (k > 0 && atold) break;
 				st = ayaneo_rewind_cur(&sz);
 				if (!st || !sz) break;
 				c->state_load(st, sz);
+				if (c->sound_rebase) c->sound_rebase();   /* clean, consistent audio baseline per rewound
+									   * frame (state_load can't restore blip phase) */
 				c->run(&fr);                 /* render the rewound state */
-				g_gen_dbg_frames++;
+				g_gen_dbg_frames++; done++;
 				if (fr.audio && fr.frames) {
 					const short *a = fr.audio; unsigned int f = fr.frames, i, j = 0;
 					if (f > 2048u) f = 2048u;
@@ -489,8 +508,14 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				}
 				if (atold) break;
 			}
+			if (done > 0) {   /* self-tune the per-step cost estimate for the next present's cap */
+				unsigned int el = (gpt4_get_current_tick() - rw_t0) / 13u / (unsigned)done;
+				s_rw_step_us = el < 500u ? 500u : el;
+			}
 			if (fr.video && fr.width && fr.height)
 				ayaneo_genesis_show_frame((const unsigned short *)fr.video, fr.width, fr.height, fr.pitch / 2u);
+			else
+				priamry_display_wait_for_vsync();   /* pace a video-less rewound frame (matches snes) */
 			mtk_wdt_restart();
 			continue;   /* rewind present done; skip the forward path */
 		}
@@ -556,13 +581,22 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * size (e.g. the buffer capacity) silently fails the save; then the restore has nothing
 			 * to rewind to and the look-ahead frames STICK, running the game pf+1x - the
 			 * fast-forward-with-frameskip bug. Guarding on the save return makes that impossible. */
-			if (pf > 0 && c->state_save((void *)GEN_AHEAD_BUF, rw_payload) == 0) {
-				did_ra = 1;
-				for (i = 0; i < pf; i++) {
-					if (c->set_av_skip) c->set_av_skip(i == pf - 1 ? 0 : 1, 1);
-					c->run(&fr);
+			if (pf > 0) {
+				/* Preserve the audio-synthesis phase across the run-ahead save/load pair: with
+				 * FAST_SAVESTATES on, the state_save latches the committed blip-buffer + FM phase and
+				 * the state_load restores it (and suppresses the blip_clear the load would otherwise
+				 * do), so the next committed frame's audio is continuous. Without this the look-ahead
+				 * frames leave the blip pf frames ahead and every committed frame audibly steps =
+				 * the run-ahead crackle. Scoped to THIS pair only (the sound buffer is a single latch). */
+				if (c->set_ra_fast) c->set_ra_fast(1);
+				if (c->state_save((void *)GEN_AHEAD_BUF, rw_payload) == 0) {
+					did_ra = 1;
+					for (i = 0; i < pf; i++) {
+						if (c->set_av_skip) c->set_av_skip(i == pf - 1 ? 0 : 1, 1);
+						c->run(&fr);
+					}
+					if (c->set_av_skip) c->set_av_skip(0, 0);
 				}
-				if (c->set_av_skip) c->set_av_skip(0, 0);
 			}
 			if (fr.video && fr.width && fr.height) {   /* present the future (or committed) frame */
 				g_gen_dbg_w = fr.width; g_gen_dbg_h = fr.height;
@@ -570,6 +604,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 							  fr.pitch / 2u);
 			}
 			if (did_ra) c->state_load((const void *)GEN_AHEAD_BUF, rw_payload);   /* rewind to committed */
+			if (pf > 0 && c->set_ra_fast) c->set_ra_fast(0);   /* close the audio-preserving window */
 		}
 		mtk_wdt_restart();
 
