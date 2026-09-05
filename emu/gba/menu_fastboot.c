@@ -463,13 +463,18 @@ static void cmd_trigscan(const char *arg, void *data, unsigned sz)
 static void cmd_joytest(const char *arg, void *data, unsigned sz)
 {
 	extern void         ayaneo_joypad_calibrate(int force);
+	extern void         ayaneo_joypad_poll(void);
 	extern unsigned int ayaneo_joypad_dpad(void);
 	extern int          ayaneo_joypad_ff_level(void);
 	extern int          ayaneo_joypad_rewind_level(void);
 	extern int          ayaneo_joypad_stick(int ch);
+	extern void         udelay(unsigned long usec);
 	unsigned int m;
-	int ff, rw, lx, ly;
+	int ff, rw, lx, ly, i;
 	(void)arg; (void)data; (void)sz;
+	/* Prime the pipelined trigger read: poll a few times (both channels alternate, ~1 frame
+	 * apart) so the caches reflect the current press before we read them. */
+	for (i = 0; i < 6; i++) { ayaneo_joypad_poll(); udelay(3000); }
 	m  = ayaneo_joypad_dpad();
 	ff = ayaneo_joypad_ff_level();
 	rw = ayaneo_joypad_rewind_level();

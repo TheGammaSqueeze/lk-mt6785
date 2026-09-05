@@ -538,6 +538,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 		if (r >= 0) {                       /* a video frame completed */
 			int combo, pf, aya;
+				{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers */
 			mtk_wdt_restart();
 
 			/* AYA taps toggle the in-game menu (game keeps running underneath).

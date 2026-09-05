@@ -160,7 +160,7 @@ int ayaneo_joypad_trigger(int lr)
 
 #define STICK_DEADZONE   350            /* counts from centre before a D-pad edge fires (~35x rest noise) */
 #define TRIG_RANGE_FLOOR 2000           /* min assumed full-press deviation (~measured hw; adaptive grows it) */
-#define TRIG_ACT_LO_PCT  25             /* actuate from 25% of range */
+#define TRIG_ACT_LO_PCT  10             /* actuate from 10% of range */
 #define TRIG_ACT_HI_PCT  85             /* max out at 85% of range */
 #define TRIG_LEVEL_MAX   255
 
@@ -168,6 +168,14 @@ static int s_cal;
 static int s_lx0, s_ly0;                /* left-stick centres */
 static int s_lt0, s_rt0;                /* trigger rest values */
 static int s_lt_ext, s_rt_ext;          /* largest deviation seen (adaptive full-press range) */
+
+/* Cached results updated by ayaneo_joypad_poll() (called once per display frame). The pad masks
+ * and FF/rewind logic read these caches - NOT the ADC directly - so a per-frame (and per run-ahead
+ * look-ahead) input read costs nothing extra and never stalls the frame loop. */
+static volatile unsigned int s_dpad_cache;
+static volatile int s_ff_cache, s_rw_cache;
+static int s_pl_ch;                     /* SGM58031 channel currently converting (0=LT, 1=RT) */
+static int s_pl_started;                /* a conversion is in flight (pipelined) */
 
 /* Sample the resting baseline. Safe to call repeatedly; only the first takes effect
  * unless force!=0 (e.g. a menu "recalibrate"). Assumes sticks centred + triggers released. */
@@ -187,30 +195,11 @@ void ayaneo_joypad_calibrate(int force)
 	s_cal = 1;
 }
 
-/* Left stick -> D-pad bitmask (JOY_UP/DOWN/LEFT/RIGHT). lx up = RIGHT, ly up = UP. */
-unsigned int ayaneo_joypad_dpad(void)
+/* Map a raw trigger reading to a 0..255 press level: 0 below the actuation point, ramping to 255
+ * at 85% of the (adaptively learned) full-press range. lr=0 left, lr=1 right. */
+static int level_from_raw(int lr, int raw)
 {
-	int lx, ly;
-	unsigned int m = 0;
-	if (!s_cal)
-		ayaneo_joypad_calibrate(0);
-	lx = ayaneo_joypad_stick(1) - s_lx0;
-	ly = ayaneo_joypad_stick(2) - s_ly0;
-	if (lx >  STICK_DEADZONE) m |= JOY_RIGHT;
-	else if (lx < -STICK_DEADZONE) m |= JOY_LEFT;
-	if (ly >  STICK_DEADZONE) m |= JOY_UP;
-	else if (ly < -STICK_DEADZONE) m |= JOY_DOWN;
-	return m;
-}
-
-/* Map a trigger to a 0..255 press level: 0 below the 25% actuation point, ramping to 255 at
- * 85% of the (adaptively learned) full-press range. lr=0 left, lr=1 right. */
-static int trig_level(int lr)
-{
-	int raw, rest, dev, *ext, range, lo, hi;
-	if (!s_cal)
-		ayaneo_joypad_calibrate(0);
-	raw = sgm58031_read(lr ? SGM_CFG_RT : SGM_CFG_LT);
+	int rest, dev, *ext, range, lo, hi;
 	if (raw < 0)
 		return 0;
 	if (lr) { rest = s_rt0; dev = raw - rest; ext = &s_rt_ext; }   /* RT increases */
@@ -229,7 +218,51 @@ static int trig_level(int lr)
 	return 1 + (dev - lo) * (TRIG_LEVEL_MAX - 1) / (hi - lo);
 }
 
-/* Right trigger -> fast-forward level 0..255 (0 = off). */
-int ayaneo_joypad_ff_level(void)     { return trig_level(1); }
-/* Left trigger  -> rewind level 0..255 (0 = off). */
-int ayaneo_joypad_rewind_level(void) { return trig_level(0); }
+static unsigned int dpad_from_sticks(void)
+{
+	int lx = ayaneo_joypad_stick(1) - s_lx0;   /* lx up = RIGHT, ly up = UP */
+	int ly = ayaneo_joypad_stick(2) - s_ly0;
+	unsigned int m = 0;
+	if (lx >  STICK_DEADZONE) m |= JOY_RIGHT;
+	else if (lx < -STICK_DEADZONE) m |= JOY_LEFT;
+	if (ly >  STICK_DEADZONE) m |= JOY_UP;
+	else if (ly < -STICK_DEADZONE) m |= JOY_DOWN;
+	return m;
+}
+
+/* Poll ALL analog inputs ONCE per display frame and cache the results. Cheap and NON-BLOCKING for
+ * the triggers: the SGM58031 is pipelined - each call reads the result of the conversion started on
+ * the PREVIOUS call (long done, ~1 frame elapsed), then kicks off the next channel and returns
+ * immediately (no OS-bit poll wait). So there is NO ~2 ms stall in the frame loop and run-ahead
+ * pacing is undisturbed. The two channels alternate, so each trigger refreshes every 2 frames. */
+void ayaneo_joypad_poll(void)
+{
+	mt_i2c i2c;
+	unsigned char buf[4];
+	unsigned int cfg;
+	if (!s_cal)
+		ayaneo_joypad_calibrate(0);
+	s_dpad_cache = dpad_from_sticks();          /* fast blocking AUXADC (~100 us) */
+
+	sgm_i2c_setup(&i2c);
+	if (s_pl_started) {                         /* read the previously-started conversion (done) */
+		buf[0] = SGM_REG_CONV;
+		if (i2c_write_read(&i2c, buf, 1, 2) == I2C_OK) {
+			int raw = (int)(((unsigned)buf[0] << 8) | buf[1]);
+			if (s_pl_ch) s_ff_cache = level_from_raw(1, raw);
+			else         s_rw_cache = level_from_raw(0, raw);
+		}
+	}
+	s_pl_ch ^= 1;                               /* start the other channel (non-blocking) */
+	cfg = s_pl_ch ? SGM_CFG_RT : SGM_CFG_LT;
+	buf[0] = SGM_REG_CONFIG;
+	buf[1] = (unsigned char)(cfg >> 8);
+	buf[2] = (unsigned char)(cfg & 0xff);
+	i2c_write(&i2c, buf, 3);
+	s_pl_started = 1;
+}
+
+/* Cached accessors (updated by ayaneo_joypad_poll) - free to call as often as needed. */
+unsigned int ayaneo_joypad_dpad(void)     { return s_dpad_cache; }
+int ayaneo_joypad_ff_level(void)          { return s_ff_cache; }
+int ayaneo_joypad_rewind_level(void)      { return s_rw_cache; }

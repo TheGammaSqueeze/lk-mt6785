@@ -1932,6 +1932,7 @@ static int emu_thread(void *arg)
 				}
 			}
 
+			{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers (non-blocking) */
 			update_buttons();
 			{	/* apply the per-tier CPU clock when the Preemptive Frames tier
 				 * changes (covers the Pico menu, oem preempt:, and boot). */
@@ -1961,14 +1962,15 @@ static int emu_thread(void *arg)
 			 * ~2 ms trigger read is throttled to every 4th frame. */
 			{
 				extern int ayaneo_joypad_ff_level(void);
-				if ((frame & 3u) == 0)
-					s_ff_level = ayaneo_joypad_ff_level();
-				if (s_ff_level > 0 && !s_menu_open) {
+				s_ff_level = ayaneo_joypad_ff_level();   /* cached (poll'd above), no I2C stall */
+				/* Full press = UNCAPPED: hand off to the flat-out FF path below (s_fast_forward).
+				 * Below full: run (2..FF_MAX_MULT-1) extra frames, vsync-paced, so the speed
+				 * ramps with press depth. Audio is NOT muted - the extra frames submit their
+				 * samples, so the player hears the game speed up. */
+				s_fast_forward = (s_ff_level >= 255 && !s_menu_open) ? 1 : 0;
+				if (s_ff_level > 0 && s_ff_level < 255 && !s_menu_open) {
 					int mult = 2 + (s_ff_level * (FF_MAX_MULT - 2)) / 255;   /* 2..FF_MAX_MULT */
 					int i;
-					/* Audio is NOT muted: each extra frame submits its samples too, so the
-					 * player hears the audio speed up with the game (mult x samples/display
-					 * frame drain through the ring). */
 					for (i = 1; i < mult; i++)
 						run_one_frame();
 				}
