@@ -1966,15 +1966,57 @@ void ayaneo_gba_punch_frame(const unsigned short *pix, const unsigned int *snap,
  * (gba_punch_composite_pre) = ~5ms not ~50ms, so the driver can frame-pace a smooth
  * 60fps opening. The game is paused for the ~0.3s punch (imperceptible at launch). */
 #define GBA_PUNCH_GAME_FULL_PA 0x55900000u
+
+/* Fill the full-screen BGRA punch buffer with the game frame nearest-scaled into the rect (dw x dh)
+ * centred on the panel, opaque-black bars elsewhere. This is the fractional (both-axes) form of the
+ * SNES punch prerender, used for the GBA/GBC Fit/Stretch aspect modes so the launch circle opens onto
+ * the SAME geometry the RSZ show_frame path will present (no first-frame geometry pop). Bounded: the
+ * source index is (x-xoff)*sw/dw < sw and (y-yoff)*sh/dh < sh, so it never reads outside the frame. */
+static void punch_fill_scaled(unsigned int *gf, unsigned int pitch, unsigned int W, unsigned int H,
+			      const unsigned short *pix, unsigned int sw, unsigned int sh, unsigned int spitch,
+			      unsigned int dw, unsigned int dh)
+{
+	int xoff, yoff; unsigned int xstep, ystep, y, x;
+	if (dw > W) dw = W; if (dh > H) dh = H;
+	if (dw < 1u) dw = 1u; if (dh < 1u) dh = 1u;
+	xoff = ((int)W - (int)dw) / 2; yoff = ((int)H - (int)dh) / 2;
+	if (xoff < 0) xoff = 0; if (yoff < 0) yoff = 0;
+	xstep = (sw << 16) / dw;
+	ystep = (sh << 16) / dh;
+	for (y = 0; y < H; y++) {
+		unsigned int *orow = gf + y * pitch;
+		int in_gy = ((int)y >= yoff && y < (unsigned)yoff + dh);
+		const unsigned short *srow = in_gy ? (pix + (((y - (unsigned)yoff) * ystep) >> 16) * spitch) : 0;
+		unsigned int acc = 0;
+		for (x = 0; x < W; x++) {
+			if (in_gy && (int)x >= xoff && x < (unsigned)xoff + dw) {
+				unsigned int v = srow[acc >> 16]; acc += xstep;
+				unsigned int r = ((v >> 11) & 0x1fu) << 3, g = ((v >> 5) & 0x3fu) << 2, b = (v & 0x1fu) << 3;
+				orow[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+			} else orow[x] = 0xFF000000u;
+		}
+	}
+}
+
 void ayaneo_gba_punch_prerender(const unsigned short *pix)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch = ALIGN_TO(W, MTK_FB_ALIGNMENT);
-	int dw = GBC_SRC_W * GBC_SCALE, dh = GBC_SRC_H * GBC_SCALE;
+	extern volatile int g_gba_aspect;
 	if (!pix) return;
-	gba_punch_prerender((uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, (int)pitch,
-			    (int)W, (int)H, pix, GBC_SCALE, GBC_SRC_W, GBC_SRC_H,
-			    ((int)W - dw) / 2, ((int)H - dh) / 2);
+	if (g_gba_aspect != 0) {   /* Fit/Stretch: match the RSZ show_frame rect (no launch pop) */
+		unsigned int dwr, dhr;
+		if (g_gba_aspect == 2) { dwr = W; dhr = H; }
+		else if (W * (unsigned)GBC_SRC_H <= H * (unsigned)GBC_SRC_W) { dwr = W; dhr = W * GBC_SRC_H / GBC_SRC_W; }
+		else { dhr = H; dwr = H * GBC_SRC_W / GBC_SRC_H; }
+		punch_fill_scaled((unsigned int *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, pitch, W, H,
+				  pix, GBC_SRC_W, GBC_SRC_H, GBC_SRC_W, dwr, dhr);
+	} else {                   /* Pixel Perfect: crisp integer scale (unchanged) */
+		int dw = GBC_SRC_W * GBC_SCALE, dh = GBC_SRC_H * GBC_SCALE;
+		gba_punch_prerender((uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, (int)pitch,
+				    (int)W, (int)H, pix, GBC_SCALE, GBC_SRC_W, GBC_SRC_H,
+				    ((int)W - dw) / 2, ((int)H - dh) / 2);
+	}
 	arch_clean_cache_range(GBA_PUNCH_GAME_FULL_PA, pitch * H * 4);
 }
 
@@ -1986,11 +2028,21 @@ void ayaneo_gb_punch_prerender(const unsigned short *pix)
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch = ALIGN_TO(W, MTK_FB_ALIGNMENT);
 	const int SW = 160, SH = 144, SC = 6;
-	int dw = SW * SC, dh = SH * SC;
+	extern volatile int g_gbc_aspect;
 	if (!pix) return;
-	gba_punch_prerender((uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, (int)pitch,
-			    (int)W, (int)H, pix, SC, SW, SH,
-			    ((int)W - dw) / 2, ((int)H - dh) / 2);
+	if (g_gbc_aspect != 0) {   /* Fit/Stretch: match the RSZ show_frame rect (no launch pop) */
+		unsigned int dwr, dhr;
+		if (g_gbc_aspect == 2) { dwr = W; dhr = H; }
+		else if (W * (unsigned)SH <= H * (unsigned)SW) { dwr = W; dhr = W * SH / SW; }
+		else { dhr = H; dwr = H * SW / SH; }
+		punch_fill_scaled((unsigned int *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, pitch, W, H,
+				  pix, SW, SH, SW, dwr, dhr);
+	} else {                   /* Pixel Perfect: crisp integer 6x (unchanged) */
+		int dw = SW * SC, dh = SH * SC;
+		gba_punch_prerender((uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, (int)pitch,
+				    (int)W, (int)H, pix, SC, SW, SH,
+				    ((int)W - dw) / 2, ((int)H - dh) / 2);
+	}
 	arch_clean_cache_range(GBA_PUNCH_GAME_FULL_PA, pitch * H * 4);
 }
 
