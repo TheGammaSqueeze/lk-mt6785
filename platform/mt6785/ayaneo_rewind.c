@@ -251,6 +251,17 @@ int ayaneo_rewind_active(void) { return s_rewinding; }
 unsigned int ayaneo_rewind_slots(void) { return s_state_sz ? REC_DIR_CAP : 0u; }
 unsigned int ayaneo_rewind_count(void) { return s_dir_count; }
 
+/* Live delta-ring stats for the current session (records stored, arena bytes used, arena size, raw
+ * per-state bytes). records/60 = seconds of rewind; used/records = average delta size = how well the
+ * game's states delta-compress (small = long window). */
+void ayaneo_rewind_stat(unsigned int *records, unsigned int *used, unsigned int *arena, unsigned int *state)
+{
+	if (records) *records = s_dir_count;
+	if (used)    *used    = s_used;
+	if (arena)   *arena   = s_arena_sz;
+	if (state)   *state   = s_state_sz;
+}
+
 /* Evict the oldest record (free its arena bytes + directory slot). */
 static void rw_evict_oldest(void)
 {

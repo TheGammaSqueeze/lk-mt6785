@@ -529,6 +529,24 @@ static void cmd_rewindring(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* Report the live delta-ring stats for the LAST game session (still resident until the next game
+ * arms the ring): frames retained (=> seconds of rewind at 60fps), the average delta size (how well
+ * that game's states compress), and the raw state size. Run from the carousel right after exiting a
+ * game to see how long that core's rewind window actually is. */
+static void cmd_rewindstat(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_rewind_stat(unsigned int *records, unsigned int *used, unsigned int *arena, unsigned int *state);
+	unsigned int rec = 0, used = 0, arena = 0, state = 0, avg, secs;
+	(void)arg; (void)data; (void)sz;
+	ayaneo_rewind_stat(&rec, &used, &arena, &state);
+	avg  = rec ? (used / rec) : 0u;
+	secs = rec / 60u;
+	snprintf(lbuf, sizeof lbuf, "rewindstat frames=%u win=%us avgdelta=%uB raw=%uKB used=%uMB/%uMB",
+		 rec, secs, avg, state >> 10, used >> 20, arena >> 20);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* Validate that persisting the GBA/GBC aspect (packed into the free bits of the b+24 filter word)
  * round-trips through serialize/deserialize without disturbing the per-core LCD filters. */
 static void cmd_settingsrt(const char *arg, void *data, unsigned sz)
@@ -548,6 +566,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem meminfo", cmd_meminfo, 1, 0);
 	fastboot_register("oem rewindtest", cmd_rewindtest, 1, 0);
 	fastboot_register("oem rewindring", cmd_rewindring, 1, 0);
+	fastboot_register("oem rewindstat", cmd_rewindstat, 1, 0);
 	fastboot_register("oem settingsrt", cmd_settingsrt, 1, 0);
 	fastboot_register("oem adcscan", cmd_adcscan, 1, 0);
 	fastboot_register("oem stickscan", cmd_stickscan, 1, 0);
