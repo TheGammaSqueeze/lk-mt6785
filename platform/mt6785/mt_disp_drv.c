@@ -1945,6 +1945,60 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 	s_fb_flip ^= 1;
 }
 
+/* Sega Genesis-Plus-GX present: variable native geometry (MD 320x224/256x224/320x240, SMS/SG
+ * 256x192, GG cropped), RGB565 at a fixed 720px source stride. BASIC integer-scale CPU blit +
+ * vsync-locked present (mirrors ayaneo_gb_show_frame); Fit/Stretch RSZ + LCD filter are added in
+ * the parity phase. Centered, letterbox cleared once on a geometry change; FF/RW HUD drawn on top. */
+void ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px)
+{
+	extern unsigned int gpt4_get_current_tick(void);
+	unsigned int t0 = gpt4_get_current_tick();
+	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int pitch_w = ALIGN_TO(W, MTK_FB_ALIGNMENT);
+	unsigned int scale, s2, dw, dh, xoff, yoff, sx, sy, ix, iy;
+	unsigned int *dst, dpa;
+
+	if (!fb_addr || !pix || !sw || !sh) return;
+	scale = W / sw; s2 = H / sh; if (s2 < scale) scale = s2; if (scale < 1) scale = 1;
+	dw = sw * scale; dh = sh * scale;
+	xoff = (W - dw) / 2; yoff = (H - dh) / 2;
+
+	/* borders are static black - clear BOTH buffers only when the geometry changes */
+	{
+		static unsigned int last_sw, last_sh, last_sc;
+		if (sw != last_sw || sh != last_sh || scale != last_sc) {
+			memset(fb_addr, 0, fb_size);
+			memset((unsigned char *)fb_addr + fb_size, 0, fb_size);
+			arch_clean_cache_range((unsigned int)fb_addr, fb_size * 2);
+			last_sw = sw; last_sh = sh; last_sc = scale;
+		}
+	}
+	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
+	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
+
+	for (sy = 0; sy < sh; sy++) {
+		const unsigned short *srow = pix + sy * spitch_px;
+		for (sx = 0; sx < sw; sx++) {
+			unsigned int v = srow[sx];
+			unsigned int r = ((v >> 11) & 0x1f) << 3;
+			unsigned int g = ((v >> 5) & 0x3f) << 2;
+			unsigned int b = (v & 0x1f) << 3;
+			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+			for (iy = 0; iy < scale; iy++) {
+				unsigned int *o = dst + (yoff + sy * scale + iy) * pitch_w + (xoff + sx * scale);
+				for (ix = 0; ix < scale; ix++) o[ix] = px;
+			}
+		}
+	}
+	ayaneo_draw_osd(dst, pitch_w, W, H);
+	ayaneo_hud_draw(dst, pitch_w, (int)xoff, (int)yoff, (int)dw, (int)dh);   /* FF/RW speed badge */
+	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
+	g_dbg_blit_us = (gpt4_get_current_tick() - t0) / 13u;
+	ayaneo_present(dpa, W, H, pitch_w);
+	priamry_display_wait_for_vsync();
+	s_fb_flip ^= 1;
+}
+
 /* Blank BOTH game frame buffers to black. Called at the menu -> game transition
  * so no menu / BIOS-intro pixels linger in any area the game frame does not draw
  * (belt-and-suspenders now that the 6x game fills the panel). */

@@ -23,10 +23,14 @@ int gba_sd_load_bios(fat_vol *v, unsigned char *dst);
 /* Console type of a ROM entry - which core plays it and which badge the card
  * shows. Ordered GB, GBC, GBA (see GBA_CONSOLE_* -> logo asset keys). */
 enum {
-	GBA_CONSOLE_GB   = 0,   /* /roms/gb   *.gb        - gambatte, forced GB mode */
-	GBA_CONSOLE_GBC  = 1,   /* /roms/gbc  *.gbc       - gambatte, CGB mode */
-	GBA_CONSOLE_GBA  = 2,   /* /roms/gba  *.gba       - gpSP */
-	GBA_CONSOLE_SNES = 3    /* /roms/snes *.sfc/.smc  - snes9x */
+	GBA_CONSOLE_GB      = 0,   /* /roms/gb      *.gb            - gambatte, forced GB mode */
+	GBA_CONSOLE_GBC     = 1,   /* /roms/gbc     *.gbc           - gambatte, CGB mode */
+	GBA_CONSOLE_GBA     = 2,   /* /roms/gba     *.gba           - gpSP */
+	GBA_CONSOLE_SNES    = 3,   /* /roms/snes    *.sfc/.smc      - snes9x */
+	GBA_CONSOLE_GENESIS = 4,   /* /roms/genesis *.md/.gen/.bin/.smd - Genesis-Plus-GX (Mega Drive) */
+	GBA_CONSOLE_SMS     = 5,   /* /roms/sms     *.sms           - Genesis-Plus-GX (Master System) */
+	GBA_CONSOLE_GG      = 6,   /* /roms/gg      *.gg            - Genesis-Plus-GX (Game Gear) */
+	GBA_CONSOLE_SG      = 7    /* /roms/sg      *.sg            - Genesis-Plus-GX (SG-1000) */
 };
 
 /* One ROM in /roms/{gb,gbc,gba} (name kept for display + save/state matching). */

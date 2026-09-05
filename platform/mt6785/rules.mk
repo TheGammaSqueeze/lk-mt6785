@@ -381,6 +381,10 @@ OBJS += emu/gbc/gbc_sd_run.o
 # the small loader + session runner (video/input/audio driver), like the gbc side.
 OBJS += emu/snes9x/snes_core_loader.o
 OBJS += emu/snes9x/snes_sd_run.o
+# Genesis-Plus-GX (Sega MD/SMS/GG/SG) core is a FOURTH boot_b blob (emu/genesis/core_genesis.blob);
+# lk_a carries only the small loader + session runner, like the other loadable cores.
+OBJS += emu/genesis/genesis_core_loader.o
+OBJS += emu/genesis/genesis_sd_run.o
 # SNES-Classic-mini-style carousel menu engine (imported from lk-snes-menu). The
 # software renderer is float-heavy, so build the render/scene/audio modules with
 # hardware NEON FP (LK default -mfloat-abi=soft would make every op an aeabi call).
@@ -411,6 +415,8 @@ $(BUILDDIR)/emu/gba/fat_ro.o:           CFLAGS += -Os
 $(BUILDDIR)/emu/gba/fat_wr.o:           CFLAGS += -Os
 $(BUILDDIR)/emu/snes9x/snes_core_loader.o: CFLAGS += -Os
 $(BUILDDIR)/emu/snes9x/snes_sd_run.o:      CFLAGS += -Os
+$(BUILDDIR)/emu/genesis/genesis_core_loader.o: CFLAGS += -Os
+$(BUILDDIR)/emu/genesis/genesis_sd_run.o:      CFLAGS += -Os
 endif
 else
 OBJS += emu/gbc/gbc_driver.o
