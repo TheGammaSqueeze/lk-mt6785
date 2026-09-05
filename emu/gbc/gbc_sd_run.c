@@ -15,6 +15,7 @@
 #include "gbc_core_abi.h"
 #include "../gba/sd_fat.h"
 #include "../gba/gba_sd_save.h"
+#include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
 #include <kernel/event.h>
 
@@ -59,6 +60,13 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
  *  - GBC_SUSPEND:  save a state on exit and reload it on launch (resume where you left). */
 #define GBC_RUNAHEAD 1
 #define GBC_SUSPEND  1
+
+/* Rewind (left trigger): a snapshot is pushed to the high-DRAM ring every REWIND_K committed
+ * frames; holding the left trigger walks the ring backward. Press depth picks how many snapshots
+ * to step per presented frame, so rewind speed scales like the right-trigger fast-forward:
+ * gentle press = REWIND_K x, full press = REWIND_MAX_STEPS*REWIND_K x. */
+#define GBC_REWIND_K         4    /* capture cadence: every 4th committed frame (~15/s) */
+#define GBC_REWIND_MAX_STEPS 8    /* ring steps per present at full trigger (=> up to 32x) */
 
 /* Emulation CPU OPP by run-ahead tier (mirrors the GBA preempt tiers Off/Bal/Resp/Max):
  * run-ahead runs (pf+1) emulations per displayed frame, so escalate the clock with pf.
@@ -336,9 +344,11 @@ static int gm_change(int i, int dir, int act)
 			     mput(s_mstat, gba_sd_write_state(s_menu_vol, s_menu_rom->name, s_gbc_slot, s_menu_ahead, s_menu_ahead_sz) == 0 ? "State saved" : "Save failed"); }
 			 changed = 0; break;
 	case GM_LOAD:    if (act && s_menu_ahead_sz) { unsigned n = gba_sd_load_state(s_menu_vol, s_menu_rom->name, s_gbc_slot, s_menu_ahead, 0x00A00000u);
-			     mput(s_mstat, (n && s_menu_c->state_load(s_menu_ahead, n) == 0) ? "State loaded" : "No save state"); }
+			     int ok = (n && s_menu_c->state_load(s_menu_ahead, n) == 0);
+			     if (ok) ayaneo_rewind_reset(s_menu_ahead_sz);   /* loaded state breaks the rewind timeline */
+			     mput(s_mstat, ok ? "State loaded" : "No save state"); }
 			 changed = 0; break;
-	case GM_RESET:   if (act) { s_menu_c->reset(); return 1; } changed = 0; break;
+	case GM_RESET:   if (act) { s_menu_c->reset(); ayaneo_rewind_reset(s_menu_ahead_sz); return 1; } changed = 0; break;
 	case GM_CLOSE:   if (act) return 2; changed = 0; break;
 	default: changed = 0; break;
 	}
@@ -438,6 +448,12 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	ahead_sz = c->state_size();
 	if (ahead_sz > 0x00A00000u) ahead_sz = 0;   /* sanity: must fit the 10 MB scratch gap */
 
+	/* Rewind timeline: size the high-DRAM ring for this core's save-state and clear it. Cheap
+	 * states (~30-50 KB) yield many minutes of history on the mapped region. Rewound with the
+	 * left trigger below. Re-armed on soft reset / menu load-state (anything that breaks the
+	 * timeline). No-op (returns 0) on SKUs where the region could not be mapped. */
+	ayaneo_rewind_reset(ahead_sz);
+
 	/* cartridge battery save (.sav) from the card, if any. Clamp to the GB max SRAM
 	 * (128 KB) so a bad size can never drive a runaway SD DMA. */
 	{
@@ -530,15 +546,49 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	{
 	int up_prev = 0, dn_prev = 0, lt_prev = 0, rt_prev = 0, a_prev = 0, b_prev = 0, x_prev = 0;
 	int aya_hold = 0;
+	int rw_capdiv = 0;               /* frames since the last rewind snapshot (capture every REWIND_K) */
 	for (;;) {
 		unsigned samples = GBC_SND_MAX;
-		long r = c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
+		long r;
+
+		{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers */
+
+		/* Rewind (left trigger): instead of advancing the game, walk backward through the ring of
+		 * periodic save-states and re-render. Press depth sets the speed (see GBC_REWIND_MAX_STEPS);
+		 * audio is muted; the normal present/run-ahead path below is skipped, so run-ahead is inert
+		 * while rewinding. Gated off while the in-game menu is open. On release the ring commits the
+		 * rewound point as the new head and forward play resumes from there. */
+		{
+			extern int ayaneo_joypad_rewind_level(void);
+			int rw = (!g_gbc_menu_open) ? ayaneo_joypad_rewind_level() : 0;
+			if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
+				int steps = 1 + (rw * (GBC_REWIND_MAX_STEPS - 1)) / 255;   /* 1..MAX per present */
+				unsigned sz; const void *st; int k;
+				if (!ayaneo_rewind_active()) ayaneo_rewind_begin();
+				for (k = 0; k < steps; k++)
+					if (ayaneo_rewind_step() != 0) break;   /* clamp at the oldest state */
+				st = ayaneo_rewind_cur(&sz);
+				if (st && sz) c->state_load(st, sz);
+				{ unsigned s2 = GBC_SND_MAX;                 /* render the loaded state (audio dropped) */
+				  c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2); }
+				mtk_wdt_restart();
+				ayaneo_gb_show_frame(vbuf);
+				pace_n++;
+				{ unsigned target = pace_base + (unsigned)(pace_n * TPF_NUM / TPF_DEN);
+				  while ((int)(gpt4_get_current_tick() - target) < 0) ; }
+				rw_capdiv = 0;                              /* re-arm capture for when play resumes */
+				continue;
+			}
+			if (ayaneo_rewind_active()) ayaneo_rewind_end();   /* released: resume forward from here */
+		}
+
+		samples = GBC_SND_MAX;
+		r = c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
 
 		ayaneo_gbc_audio_submit(snd, samples);
 
 		if (r >= 0) {                       /* a video frame completed */
 			int combo, pf, aya, ff = 0;
-				{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers */
 			/* Variable fast-forward (right trigger): run extra committed frames (audio kept, so
 			 * the sound speeds up too). The 59.7 Hz loop pacing below rate-limits it (2x..10x with
 			 * press depth). Run-ahead (pf) is gated off while ff is active. */
@@ -638,7 +688,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				/* Soft reset hotkey: SELECT+START+L+R held ~0.5 s. */
 				combo = PRESSED(GPIO_SELECT) && PRESSED(GPIO_START) &&
 					PRESSED(GPIO_LB) && PRESSED(GPIO_RB);
-				if (combo) { if (++reset_hold >= RESET_HOLD_FRAMES) { c->reset(); reset_hold = 0; } }
+				if (combo) { if (++reset_hold >= RESET_HOLD_FRAMES) { c->reset(); ayaneo_rewind_reset(ahead_sz); reset_hold = 0; } }
 				else reset_hold = 0;
 				/* L/R cycle the DMG palette (mono games only, not during the combo) */
 				if (is_dmg && !combo) {
@@ -655,6 +705,17 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			{
 				extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
 				ayaneo_menu_overlay(gbc_menu_paint, g_gbc_menu_open);
+			}
+
+			/* Rewind capture: snapshot the committed frame into the ring every REWIND_K frames
+			 * (core state is at the committed frame here - before the look-ahead below advances it).
+			 * Skipped during fast-forward and while the menu is open. Cheap for GB/GBC (~30-50 KB). */
+			if (ahead_sz && !ff && !g_gbc_menu_open && ayaneo_rewind_ready()) {
+				if (++rw_capdiv >= GBC_REWIND_K) {
+					void *p = ayaneo_rewind_capture_begin();
+					rw_capdiv = 0;
+					if (p) { c->state_save(p); ayaneo_rewind_capture_commit(ahead_sz); }
+				}
 			}
 
 			/* Run-ahead: present pf frames into the future then rewind. Off while the
