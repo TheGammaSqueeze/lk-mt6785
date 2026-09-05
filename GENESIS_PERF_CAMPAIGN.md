@@ -52,6 +52,20 @@ frame-emulate is ~2x cheaper (less accurate/faster core) AND it runs at 1800.
       highest-impact item. Weigh vs the shared ayaneo_rewind ring design (genesis-only video side-ring is
       safest - do NOT destabilise snes/gba/gbc). STRONGLY CONSIDER (B) as the primary path.
 
+## Iteration 2 (2026-09-05): rewind decoupled (BIG) + two config dead-ends measured
+- REWIND FIX (commit a95cbc3, lk_a): walk deltas cheap + render target ONCE -> per-present cost speed-
+  independent (~load+frame = 8441us @1400), 6x fits at any clock. Forward gen-bench unchanged (fps=173
+  frame=5760us) as expected. VERIFY 6x on device with a live rewind (oem gen-rw should show one load+run
+  ~8ms). The bench impliedRW metric NO LONGER maps to rewind speed (rewind is now decoupled) - it just
+  tells you one load+run fits one present (1.8x headroom @1400).
+- DEAD END - hq_fm/hq_psg=0: frame 5760->5698us (~1%, 62us). Not worth the audio-quality loss. REVERTED
+  (kept hq=1). Sound is only ~1-2% of the frame; 68k/Z80/VDP dominate.
+- DEAD END - LTO blob link -O2->-O3: blob byte-identical, frame unchanged. With -ffat-lto-objects + per-file
+  -O3 hot flags, the link -O level does not change hot-function codegen. REVERTED to -O2. Do NOT retry.
+- SO: frame=5760us @1400 is what -O3-per-file gives. Further frame cuts need code-level (VDP render / 68k
+  fast paths) or PGO, which are higher-effort. But the PRIMARY GOAL (6x rewind) is met structurally by the
+  decouple - forward/FF/run-ahead headroom is the only remaining reason to cut frame further.
+
 ## Ideas backlog (try in order of expected impact / low risk first)
 1. [DONE-build, unmeasured] -O3 hot / -O2 cold (was all -Os). <-- likely the big one.
 2. Bump the blob LTO link to -O3 (build_core_blob.sh line ~47) if per-file -O3 under LTO isn't enough.
