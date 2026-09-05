@@ -149,9 +149,13 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
               [x] H6 Genesis soft-reset SELECT+START+L+R.
         GENESIS MENU (user requests): [x] Region (Auto/USA/Europe/Japan, live via region_detect);
               [x] Refresh Rate readout (ayaneo_dsi_refresh_milli from live vfp; groundwork for LCM refresh switch).
-  - [ ] Also remaining: GPGX core options in the menu (region/overclock via c->set_option), per-core
-        settings PERSIST across reboot (a genesis settings blob for aspect/filter/RA/slot),
-        boxart/console badges in the carousel.
+  - [x] Genesis per-core settings PERSIST across reboot: aspect/filter/region/slot packed into the shared
+        settings blob b+24 free bits (10-17) via ayaneo_get/set_gen_aspect/filter/region/slot (ayaneo_audio.c,
+        all 4 blob sites: load/serialize/deserialize/save); run-ahead persists via the shared preempt-frames
+        (b+48). genesis_sd_run restores them at session start (region pushed via set_option) and touches the
+        deferred persist on every menu change. No blob version bump needed (old blobs read 0 = correct defaults).
+  - [ ] Also remaining: GPGX overclock core option in the menu (region done); boxart/console badges in
+        the carousel (SMS/GG/SG/MD logos like the GB/GBC/GBA/SNES badges).
 
 ## Milestone reached (2026-09-05): Genesis core LOADS on the device
 Blob builds (1.34MB) + host-test PASS + on-device gen-probe PASS. A Genesis/MD/SMS/GG/SG ROM

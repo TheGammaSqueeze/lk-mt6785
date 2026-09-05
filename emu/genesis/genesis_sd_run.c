@@ -156,6 +156,10 @@ extern void ayaneo_gbc_osd_show(int kind, int pct);     /* transient OSD bar: 1=
 extern void ayaneo_menu_settings_persist(void);         /* persist brightness/volume/... to eMMC+SD */
 extern int  pmic_detect_powerkey(void);
 extern void mt_power_off(void);
+extern int  ayaneo_get_gen_aspect(void); extern void ayaneo_set_gen_aspect(int v);   /* persisted per-core settings */
+extern int  ayaneo_get_gen_filter(void); extern void ayaneo_set_gen_filter(int v);
+extern int  ayaneo_get_gen_region(void); extern void ayaneo_set_gen_region(int v);
+extern int  ayaneo_get_gen_slot(void);   extern void ayaneo_set_gen_slot(int v);
 
 /* Deferred settings persist (mirrors the snes core): a hardware-rocker OR Pico-menu volume/brightness
  * change marks dirty; the eMMC+SD write is debounced ~0.5 s so holding a key never spams flash. Before
@@ -231,17 +235,22 @@ static int gm_change(int i, int dir, int act)
 	switch (i) {
 	case GM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); genesis_settings_touch(); } break;
 	case GM_VOLUME: if (dir) { ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); genesis_settings_touch(); } break;
-	case GM_ASPECT: if (dir) g_genesis_aspect = (g_genesis_aspect + dir + 3) % 3; break;   /* live preview */
-	case GM_FILTER: if (dir) g_genesis_filter = (g_genesis_filter + dir + 4) % 4; break;
+	case GM_ASPECT: if (dir) { g_genesis_aspect = (g_genesis_aspect + dir + 3) % 3;   /* live preview */
+		ayaneo_set_gen_aspect(g_genesis_aspect); genesis_settings_touch(); } break;
+	case GM_FILTER: if (dir) { g_genesis_filter = (g_genesis_filter + dir + 4) % 4;
+		ayaneo_set_gen_filter(g_genesis_filter); genesis_settings_touch(); } break;
 	case GM_REGION: if (dir) { s_gen_region = (s_gen_region + dir + 4) % 4;
 		if (s_menu_c && s_menu_c->set_option)
 			s_menu_c->set_option("genesis_plus_gx_region_detect", gen_region_opt(s_gen_region));
+		ayaneo_set_gen_region(s_gen_region); genesis_settings_touch();
 		mput(s_mstat, "Region set (reset for full effect)"); } break;
 	case GM_REFRESH: break;   /* read-only display (panel Hz); no adjust */
 	case GM_RUNAHEAD: if (dir) { int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
-		ayaneo_set_preempt_frames(pf); ayaneo_set_cpu_mhz(s_gen_ra_opp[pf]); s_cpu_idx = -1; } break;
+		ayaneo_set_preempt_frames(pf); ayaneo_set_cpu_mhz(s_gen_ra_opp[pf]); s_cpu_idx = -1;
+		genesis_settings_touch(); } break;   /* persist run-ahead (shared preempt-frames blob) */
 	case GM_CPU:    if (dir) genesis_cpu_step(dir); break;
-	case GM_SLOT:   if (dir) s_save_slot = (s_save_slot + dir + 3) % 3; break;
+	case GM_SLOT:   if (dir) { s_save_slot = (s_save_slot + dir + 3) % 3;
+		ayaneo_set_gen_slot(s_save_slot); genesis_settings_touch(); } break;
 	case GM_SAVE: if (act) {
 		unsigned char *st = (unsigned char *)GEN_STATE_BUF; unsigned ssz = s_menu_c->state_size();
 		char ext[4]; int ok; genesis_slot_ext(ext);
@@ -392,6 +401,16 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	/* menu context (actions reference the session core + save target) */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom; s_menu_rw_payload = rw_payload;
 	g_genesis_menu_open = 0; g_genesis_menu_exit = 0; s_msel = 0; s_mstat[0] = 0; s_cpu_idx = -1;
+
+	/* Restore persisted per-core settings (aspect/filter/region/slot) so a launch honours the player's
+	 * last picks instead of defaults. Run-ahead uses the shared preempt-frames; volume/brightness the
+	 * shared blob. Region is pushed to the core here (before the launch frames run). */
+	g_genesis_aspect = ayaneo_get_gen_aspect();
+	g_genesis_filter = ayaneo_get_gen_filter();
+	s_gen_region     = ayaneo_get_gen_region();
+	s_save_slot      = ayaneo_get_gen_slot();
+	if (s_gen_region && c->set_option)
+		c->set_option("genesis_plus_gx_region_detect", gen_region_opt(s_gen_region));
 
 	/* Launch punch-hole (matches snes/gba/gbc): the menu handed off with the frozen carousel still on
 	 * screen (GBA_PUNCH_SNAP_PA = 0x54000000) and gba_punch_ready set. Run a few frames so real

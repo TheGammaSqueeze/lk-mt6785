@@ -224,6 +224,12 @@ static volatile unsigned s_snes_opts = 0;	/* packed snes9x menu picks: aspect | 
 						 * audio_interp<<16 | hires_blend<<24 (each a small index) */
 static volatile int s_snes_slot = 0;		/* last-used SNES manual save-state slot (0..9) */
 static volatile int s_snes_turbo = 0;		/* SNES auto-fire mask: bit0 = A, bit1 = B */
+/* Genesis per-core settings, persisted in the b+24 free bits (10-17): aspect(10-11), filter(12-13),
+ * region(14-15), slot(16-17). Run-ahead is shared via s_preempt_frames; volume/brightness are shared. */
+static volatile int s_gen_aspect = 0;		/* 0 Pixel, 1 Fit, 2 Stretch */
+static volatile int s_gen_filter = 0;		/* 0 Off, 1 Scanlines, 2 Grid, 3 Grid+ */
+static volatile int s_gen_region = 0;		/* 0 Auto, 1 USA, 2 Europe, 3 Japan */
+static volatile int s_gen_slot   = 0;		/* last-used Genesis manual save-state slot (0..2) */
 static int s_settings_loaded;
 
 /* ---------- little-endian helpers ---------- */
@@ -295,6 +301,14 @@ int  ayaneo_get_snes_slot(void)       { return s_snes_slot; }
 void ayaneo_set_snes_slot(int v)      { s_snes_slot = (v < 0) ? 0 : (v > 9 ? 9 : v); }
 int  ayaneo_get_snes_turbo(void)      { return s_snes_turbo; }
 void ayaneo_set_snes_turbo(int v)     { s_snes_turbo = v & 3; }
+int  ayaneo_get_gen_aspect(void)      { return s_gen_aspect; }
+void ayaneo_set_gen_aspect(int v)     { s_gen_aspect = (v < 0) ? 0 : (v > 2 ? 2 : v); }
+int  ayaneo_get_gen_filter(void)      { return s_gen_filter; }
+void ayaneo_set_gen_filter(int v)     { s_gen_filter = (v < 0) ? 0 : (v > 3 ? 3 : v); }
+int  ayaneo_get_gen_region(void)      { return s_gen_region; }
+void ayaneo_set_gen_region(int v)     { s_gen_region = (v < 0) ? 0 : (v > 3 ? 3 : v); }
+int  ayaneo_get_gen_slot(void)        { return s_gen_slot; }
+void ayaneo_set_gen_slot(int v)       { s_gen_slot = (v < 0) ? 0 : (v > 2 ? 2 : v); }
 
 /* load the persisted settings from boot_b (once). Missing/invalid -> keep the
  * compile-time defaults. Does not touch the hardware; callers apply brightness. */
@@ -331,7 +345,9 @@ void ayaneo_settings_load(void)
 		  ayaneo_set_lcd_filter_core(1, (int)((pk >> 2) & 3));
 		  ayaneo_set_lcd_filter_core(2, (int)((pk >> 4) & 3));
 		  ga = (int)((pk >> 6) & 3); g_gba_aspect = (ga <= 2) ? ga : 0;   /* 3 (never written) -> Pixel */
-		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0; }
+		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0;
+		  ayaneo_set_gen_aspect((int)((pk >> 10) & 3)); ayaneo_set_gen_filter((int)((pk >> 12) & 3));
+		  ayaneo_set_gen_region((int)((pk >> 14) & 3)); ayaneo_set_gen_slot((int)((pk >> 16) & 3)); }
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -372,7 +388,9 @@ int ayaneo_settings_serialize(unsigned char *b, int cap)
 	wr32(b + 16, (unsigned int)s_load_on_boot);
 	wr32(b + 20, (unsigned int)s_skip_boot);
 	wr32(b + 24, (unsigned int)((s_lcd_filter[0] & 3) | ((s_lcd_filter[1] & 3) << 2) | ((s_lcd_filter[2] & 3) << 4)
-		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)));
+		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)
+		     | ((s_gen_aspect & 3) << 10) | ((s_gen_filter & 3) << 12)
+		     | ((s_gen_region & 3) << 14) | ((s_gen_slot & 3) << 16)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
@@ -404,7 +422,9 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 		  ayaneo_set_lcd_filter_core(1, (int)((pk >> 2) & 3));
 		  ayaneo_set_lcd_filter_core(2, (int)((pk >> 4) & 3));
 		  ga = (int)((pk >> 6) & 3); g_gba_aspect = (ga <= 2) ? ga : 0;   /* 3 (never written) -> Pixel */
-		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0; }
+		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0;
+		  ayaneo_set_gen_aspect((int)((pk >> 10) & 3)); ayaneo_set_gen_filter((int)((pk >> 12) & 3));
+		  ayaneo_set_gen_region((int)((pk >> 14) & 3)); ayaneo_set_gen_slot((int)((pk >> 16) & 3)); }
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -472,7 +492,9 @@ void ayaneo_settings_save(void)
 	wr32(b + 16, (unsigned int)s_load_on_boot);
 	wr32(b + 20, (unsigned int)s_skip_boot);
 	wr32(b + 24, (unsigned int)((s_lcd_filter[0] & 3) | ((s_lcd_filter[1] & 3) << 2) | ((s_lcd_filter[2] & 3) << 4)
-		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)));
+		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)
+		     | ((s_gen_aspect & 3) << 10) | ((s_gen_filter & 3) << 12)
+		     | ((s_gen_region & 3) << 14) | ((s_gen_slot & 3) << 16)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
