@@ -194,7 +194,7 @@ extern int  mtk_detect_key(unsigned short hwkey);
 static int s_ready;
 static volatile int s_fast_forward;
 static volatile int s_ff_level;			/* right-trigger fast-forward level 0..255 (0 = off) */
-#define FF_MAX_MULT   8				/* full press = 8x game speed */
+#define FF_MAX_MULT   10			/* full press = up to 10x (CPU-bound = fastest, audio kept) */
 static volatile int s_close_req;	/* in-game menu "Close": save + back to the SNES selector */
 static volatile int s_reset_req;	/* soft reset: restart the current game (menu Reset / hotkey) */
 /* Per-frame emulation cost (run_one_frame wall time, us) averaged over 16 frames.
@@ -1963,12 +1963,14 @@ static int emu_thread(void *arg)
 			{
 				extern int ayaneo_joypad_ff_level(void);
 				s_ff_level = ayaneo_joypad_ff_level();   /* cached (poll'd above), no I2C stall */
-				/* Full press = UNCAPPED: hand off to the flat-out FF path below (s_fast_forward).
-				 * Below full: run (2..FF_MAX_MULT-1) extra frames, vsync-paced, so the speed
-				 * ramps with press depth. Audio is NOT muted - the extra frames submit their
-				 * samples, so the player hears the game speed up. */
-				s_fast_forward = (s_ff_level >= 255 && !s_menu_open) ? 1 : 0;
-				if (s_ff_level > 0 && s_ff_level < 255 && !s_menu_open) {
+				/* Variable fast-forward across the WHOLE range via extra emulated frames: run
+				 * (2..FF_MAX_MULT-1) extra frames scaled by press depth. At full press FF_MAX_MULT
+				 * frames/present is CPU-bound = the fastest the emulator can run (effectively
+				 * uncapped). Audio is NOT muted (each extra frame submits its samples, so it speeds
+				 * up). We deliberately do NOT use the old s_fast_forward present-every-8th path - it
+				 * frame-skips, PAUSES audio, and was slower than this. Keep s_fast_forward off. */
+				s_fast_forward = 0;
+				if (s_ff_level > 0 && !s_menu_open) {
 					int mult = 2 + (s_ff_level * (FF_MAX_MULT - 2)) / 255;   /* 2..FF_MAX_MULT */
 					int i;
 					for (i = 1; i < mult; i++)
