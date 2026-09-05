@@ -15,7 +15,7 @@
 #define GENESIS_CORE_ABI_H
 
 #define GENESIS_CORE_ABI_MAGIC   0x31474553u   /* "SEG1" */
-#define GENESIS_CORE_ABI_VERSION 2u   /* v2: + set_ra_fast, sound_rebase (run-ahead/rewind audio continuity) */
+#define GENESIS_CORE_ABI_VERSION 3u   /* v3: + fps_milli (core frame rate for dynamic per-core panel refresh; v2 was set_ra_fast, sound_rebase) */
 
 /* System hint passed to load() so the core forces the right machine for ambiguous files
  * (.bin/.sg can be MD or SMS or SG). 0 = auto-detect from the ROM header. */
@@ -104,6 +104,13 @@ struct genesis_core_exports {
 	 * fast, so it cannot restore the per-entry phase) to stop each rewound frame stepping against a
 	 * stale integrator = the reverse-audio buzz/loop. */
 	void  (*sound_rebase)(void);
+
+	/* current emulated frame rate in milli-Hz (e.g. 59923 = 59.923 Hz NTSC, 49701 = 49.701 Hz PAL),
+	 * read live from retro av_info. GPGX recomputes this on a region change (get_region updates
+	 * system_clock + vdp_pal + lines_per_frame; fps = system_clock/lines_per_frame/MCYCLES_PER_LINE),
+	 * but NEVER fires SET_SYSTEM_AV_INFO, so LK must POLL this after the region option takes effect
+	 * and retune the panel vfp. */
+	unsigned (*fps_milli)(void);
 };
 
 typedef const struct genesis_core_exports *(*genesis_core_blob_init_fn)(const struct genesis_core_imports *imp);

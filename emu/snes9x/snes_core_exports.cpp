@@ -257,6 +257,16 @@ static void snes_av_info(unsigned *base_w, unsigned *base_h,
 	if (sr)     *sr     = (unsigned)av.timing.sample_rate;
 }
 
+static unsigned snes_fps_milli(void)
+{
+	struct retro_system_av_info av;
+	retro_get_system_av_info(&av);
+	/* av.timing.fps is set in libretro.cpp retro_get_system_av_info:
+	 * NTSC 21477272/357366 = 60.0988, PAL 21281370/425568 = 50.0070. Region comes from
+	 * Settings.PAL via retro_get_region, decided at retro_load_game. */
+	return (unsigned)(av.timing.fps * 1000.0 + 0.5);
+}
+
 static unsigned snes_aspect_x1000(void)
 {
 	struct retro_system_av_info av;
@@ -312,6 +322,7 @@ static const struct snes_core_exports g_exports = {
 	snes_set_av_skip,
 	snes_state_save_ra,
 	snes_state_load_ra,
+	snes_fps_milli,
 };
 
 /* Blob entry: stash the imports and return the export table. NOTE: .init_array (libstdc++

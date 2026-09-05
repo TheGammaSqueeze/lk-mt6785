@@ -54,6 +54,20 @@
 #define AYANEO_GBA_DR_KHZ 526512u
 #endif
 
+/* AYANEO: panel line rate numerator (milliHz-per-line * total lines) used to map refresh<->vfp:
+ * refresh_milliHz = AYANEO_DSI_LINE_CONST / vtotal, vtotal = 976 + vfp. The literal 59684000 was
+ * calibrated on the STOCK integer data rate. The shipped build defines AYANEO_GBA, which overrides
+ * the MIPI data rate to AYANEO_GBA_DR_KHZ=526512 (see the DSI_*PHY_clk_setting PCW blocks) and
+ * disables SSC, lowering the true line rate to ~59.667 kHz. Gate the constant on the SAME define
+ * so read and write agree. This is NOT cosmetic for PAL: under 59667000 the PAL vfp targets are
+ * 217 (SNES) / 224 (Genesis); under 59684000 they are 218 / 225 (a one-line, ~0.03 Hz shift).
+ * NTSC (20/17) and GBA (23) are identical under both constants. */
+#if defined(AYANEO_GBA) && AYANEO_GBA_DR_KHZ
+#define AYANEO_DSI_LINE_CONST 59667000u
+#else
+#define AYANEO_DSI_LINE_CONST 59684000u
+#endif
+
 #include <platform/mt_gpio.h>
 #include "lcm_util.h"
 
@@ -1101,7 +1115,8 @@ void DSI_CPHY_Calc_VDO_Timing(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAM
 void ayaneo_dsi_set_vfp(unsigned int vfp)
 {
 	if (vfp < 4u)   vfp = 4u;
-	if (vfp > 200u) vfp = 200u;
+	if (vfp > 256u) vfp = 256u;   /* was 200 (50.75Hz floor). 256 -> vtotal 1232 -> ~48.4Hz floor,
+	                                 clears worst-case PAL Genesis vfp 225 (non-shipped const) with margin */
 	DSI_OUTREG32(NULL, DSI_REG_BASE[0] + DISP_REG_DSI_VFP_NL, vfp);
 }
 
@@ -1122,7 +1137,26 @@ unsigned int ayaneo_dsi_refresh_milli(void)
 	unsigned int vfp = AS_UINT32(DSI_REG_BASE[0] + DISP_REG_DSI_VFP_NL);
 	unsigned int vtotal = 976u + vfp;
 	if (!vtotal) return 0;
-	return 59684000u / vtotal;   /* line_rate(milliHz*lines) / vtotal = refresh in milliHz */
+	return AYANEO_DSI_LINE_CONST / vtotal;   /* line_rate(milliHz*lines) / vtotal = refresh in milliHz */
+}
+
+/* AYANEO: pick the vfp that lands the panel refresh on a target fps (milli-Hz) and apply it live.
+ * vtotal = round(AYANEO_DSI_LINE_CONST / fps_milli); vfp = vtotal - 976 (non-vfp lines sum to 976 on
+ * this st7703_hd720 timing). Rounding is (const + fps/2) / fps. The [4,256] clamp and the single
+ * register write live in ayaneo_dsi_set_vfp(), which this calls, so the poke is never duplicated.
+ * Real-time safe: in continuous VDO mode DSI_VFP_NL is re-read at the next frame boundary, no DSI
+ * reset. Do NOT wait_for_vsync here (double-wait = 30fps). Returns the pre-clamp vfp so callers can
+ * log it. Guards fps_milli==0. */
+unsigned int ayaneo_dsi_set_fps_milli(unsigned int fps_milli)
+{
+	unsigned int line_const = AYANEO_DSI_LINE_CONST;
+	unsigned int vtotal, vfp;
+	if (fps_milli == 0u) return 0u;
+	vtotal = (line_const + fps_milli / 2u) / fps_milli;   /* rounded */
+	if (vtotal < 976u + 4u) vtotal = 976u + 4u;           /* keep vfp subtraction non-negative */
+	vfp = vtotal - 976u;
+	ayaneo_dsi_set_vfp(vfp);   /* single write + [4,256] clamp */
+	return vfp;
 }
 
 void DSI_Config_VDO_Timing(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAMS *dsi_params)

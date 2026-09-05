@@ -11,7 +11,7 @@
 #define SNES_CORE_ABI_H
 
 #define SNES_CORE_ABI_MAGIC   0x31534E53u   /* "SNS1" */
-#define SNES_CORE_ABI_VERSION 1u
+#define SNES_CORE_ABI_VERSION 2u   /* v2: + fps_milli (core frame rate for dynamic per-core panel refresh) */
 
 /* Services LK provides to the core (core -> LK). */
 struct snes_core_imports {
@@ -95,6 +95,11 @@ struct snes_core_exports {
 	 * state_load_ra returns 0 on success, -1 if unsupported. */
 	unsigned (*state_save_ra)(void *buf, unsigned cap);
 	int      (*state_load_ra)(const void *buf);
+
+	/* emulated native refresh in milliHz (e.g. 60099 = 60.0988 Hz NTSC, 50007 = 50.0070 Hz PAL),
+	 * from retro av.timing.fps * 1000. Region is decided at load (ROM auto-detect / snes9x_region),
+	 * so this is valid post-load and re-poll-able. LK derives the panel vfp from it. */
+	unsigned (*fps_milli)(void);
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);

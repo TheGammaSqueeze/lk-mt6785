@@ -14,7 +14,7 @@
  *
  * Header (image offset 0):
  *   u32 magic   = 0x31534E53 "SNS1"
- *   u32 version = 1
+ *   u32 version = 2
  *   u32 entry   = offset of snes_core_blob_init from the image start
  *   u32 load    = bytes present in the file (load these, then zero up to span)
  *   u32 span    = end of BSS offset (total DRAM footprint)
@@ -29,7 +29,7 @@ SECTIONS
 
 	.header : {
 		LONG(0x31534E53);                     /* [0] magic "SNS1" */
-		LONG(1);                              /* [1] version */
+		LONG(2);                              /* [1] version - MUST match SNES_CORE_ABI_VERSION */
 		LONG(snes_core_blob_init - BLOB_VMA); /* [2] entry offset */
 		LONG(__blob_load_end - BLOB_VMA);     /* [3] load_size */
 		LONG(__blob_end - BLOB_VMA);          /* [4] total_span */

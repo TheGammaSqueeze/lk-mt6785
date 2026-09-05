@@ -31,6 +31,8 @@ extern void     ayaneo_menu_overlay_mark_dirty(void);   /* repaint the hardware 
 extern void     ayaneo_display_prepare(void);
 extern void     ayaneo_dsi_set_vfp(unsigned int vfp);   /* per-core panel refresh (ddp_dsi.c) */
 extern unsigned int ayaneo_dsi_get_vfp(void);           /* read-back to validate the switch */
+extern unsigned int ayaneo_dsi_refresh_milli(void);     /* live panel refresh in milli-Hz (ddp_dsi.c) - for the FF budget */
+extern unsigned int ayaneo_dsi_set_fps_milli(unsigned int fps_milli); /* set panel refresh to target fps (milli-Hz), returns vfp (ddp_dsi.c) */
 volatile unsigned g_snes_dbg_vfp;                       /* the live DSI vfp during the session */
 extern int      priamry_display_wait_for_vsync(void);   /* primary_display.c (name has the typo) */
 extern unsigned gpt4_get_current_tick(void);
@@ -106,11 +108,21 @@ static void snes_cpu_step(int dir)
 	ayaneo_set_cpu_mhz(s_snes_cpu_opp[best]);
 }
 
-/* Panel vertical-front-porch per refresh rate. Stock vfp 23 -> vtotal 999 -> 59.749 Hz
- * (GB/GBC/GBA/menu). SNES uses vfp 17 -> vtotal 993 -> ~60.11 Hz (0.02% off its native
- * 60.0988 Hz) so the vsync-locked present in ayaneo_snes_show_frame is smooth. */
-#define SNES_VFP      17u
-#define DEFAULT_VFP   23u
+/* Panel vfp derived from the core's native refresh. vtotal = 976 + vfp; shipped-build line const
+ * 59667000, so refresh_milliHz = 59667000 / vtotal, i.e. vfp = round(59667000 / fps_milli) - 976.
+ * NTSC 60099 -> vfp 17 (matches the old fixed value); PAL 50007 -> vfp 217. The 217 needs the
+ * ddp_dsi clamp lifted from 200 to >=225; without it vfp caps at 200 = 50.75 Hz and PAL runs ~1.5% fast. */
+#define SNES_LINE_CONST 59667000u
+#define SNES_VFP_NTSC   17u          /* fallback if fps_milli export missing */
+#define DEFAULT_VFP     23u
+static unsigned snes_vfp_for_fps(unsigned fps_milli)
+{
+	unsigned vt, vfp;
+	if (fps_milli < 20000u || fps_milli > 130000u) return SNES_VFP_NTSC; /* sanity: 20..130 Hz */
+	vt = (SNES_LINE_CONST + fps_milli / 2u) / fps_milli;   /* round(const/fps) */
+	vfp = (vt > 976u) ? (vt - 976u) : 4u;
+	return vfp;
+}
 extern void     mtk_wdt_restart(void);
 extern void     mtk_wdt_disable(void);
 extern int      mt_get_gpio_in(unsigned pin);
@@ -574,11 +586,16 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	ayaneo_gbc_audio_init();
 	ayaneo_snes_audio_reset();
 	mtk_wdt_disable();
-	/* Switch the panel to ~60.11 Hz for SNES (vfp swap). The vsync-locked present in
-	 * ayaneo_snes_show_frame then paces emulation to the panel scan - smooth, tear-free,
-	 * no 13 MHz busy-wait needed. Restored to 59.749 Hz on exit below. */
-	ayaneo_dsi_set_vfp(SNES_VFP);
-	g_snes_dbg_vfp = ayaneo_dsi_get_vfp();   /* read-back: should equal SNES_VFP (17) */
+	/* Switch the panel to the CORE's native refresh (region-aware): NTSC ROMs -> ~60.09 Hz (vfp 17),
+	 * PAL ROMs -> ~50 Hz (vfp 217). Region is auto-detected at c->load(); poll fps now. The vsync-locked
+	 * present in ayaneo_snes_show_frame then paces emulation to the panel scan. Restored to 59.749 Hz on
+	 * exit below. NOTE: PAL vfp 217 needs the ddp_dsi [4,200] clamp raised to >=225; until that ships PAL
+	 * is capped at 200 (50.75 Hz, ~1.5% fast). */
+	{
+		unsigned fps_milli = (c->fps_milli) ? c->fps_milli() : 60099u;
+		ayaneo_dsi_set_vfp(snes_vfp_for_fps(fps_milli));
+	}
+	g_snes_dbg_vfp = ayaneo_dsi_get_vfp();   /* read-back: derived vfp (17 NTSC / 217 PAL) */
 
 	/* hand the in-game menu this session's context */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
@@ -847,7 +864,10 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			unsigned int skip = snes_emu_us ? snes_emu_us : 1500u;   /* committed (render-skipped) cost */
 			unsigned int rend = s_snes_render_us ? s_snes_render_us : 4000u;
 			unsigned int blit = g_snes_show_us;
-			unsigned int avail = (15500u > blit + rend) ? (15500u - blit - rend) : 0u;
+			unsigned int rmilli = ayaneo_dsi_refresh_milli();
+			unsigned int full_us = rmilli ? (1000000000u / rmilli) : 16666u;   /* 1e9/milliHz = 1e6/panel_fps; PAL ~20000us, NTSC ~16666us */
+			unsigned int budget_us = full_us > 1200u ? full_us - 1200u : full_us; /* present-margin (old 15500 vs 16666) */
+			unsigned int avail = (budget_us > blit + rend) ? (budget_us - blit - rend) : 0u;
 			int cap = 1 + (int)(avail / skip);
 			int mult = raw < cap ? raw : cap;
 			int k;

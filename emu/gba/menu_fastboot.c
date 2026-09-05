@@ -45,6 +45,17 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 {
 	(void)arg; (void)data; (void)sz;
 	{
+		/* AYANEO dynamic refresh: live panel rate + vfp, read register-direct so it reflects ANY
+		 * running core (genesis/snes/gba/gbc/menu) and a real-time region switch. Sample this before
+		 * and after a Genesis Region toggle to prove the panel follows the core fps. mHz/1000 = Hz. */
+		extern unsigned int ayaneo_dsi_refresh_milli(void);
+		extern unsigned int ayaneo_dsi_get_vfp(void);
+		unsigned int rm = ayaneo_dsi_refresh_milli();
+		snprintf(lbuf, sizeof lbuf, "panel: refresh_mHz=%u (%u.%02uHz) vfp=%u",
+			 rm, rm / 1000u, (rm % 1000u) / 10u, ayaneo_dsi_get_vfp());
+		fastboot_info(lbuf);
+	}
+	{
 		extern volatile unsigned int g_dbg_hz1000;
 		extern volatile unsigned int g_dbg_boxart_ok, g_dbg_boxart_tot;
 		extern volatile unsigned int g_dbg_emu_us;

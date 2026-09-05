@@ -220,18 +220,34 @@ static const char *gen_ra_name(int pf) { return pf == 3 ? "Max" : pf == 2 ? "Res
 /* Region override -> GPGX genesis_plus_gx_region_detect. The core applies it live via check_variables
  * (reinits framerate/audio timing + I/O region reg); some games only honour it on reset. */
 static int s_gen_region;   /* 0 Auto, 1 USA (ntsc-u), 2 Europe (pal), 3 Japan (ntsc-j) */
+static volatile int s_gen_refresh_retune;   /* >0: re-read core fps + retune panel vfp after the next committed frame(s) (real-time region switch) */
 static const char *gen_region_name(int r) { return r == 3 ? "Japan" : r == 2 ? "Europe" : r == 1 ? "USA" : "Auto"; }
 static const char *gen_region_opt(int r)  { return r == 3 ? "ntsc-j" : r == 2 ? "pal" : r == 1 ? "ntsc-u" : "auto"; }
 extern unsigned int ayaneo_dsi_refresh_milli(void);   /* panel refresh in milli-Hz (ties into LCM work) */
 extern void ayaneo_dsi_set_vfp(unsigned int vfp);     /* per-core panel refresh (ddp_dsi.c) */
 extern unsigned int ayaneo_dsi_get_vfp(void);
-/* Panel vertical-front-porch per refresh rate (vtotal = 976 + vfp; refresh ~= 59.684 kHz / vtotal).
- * Genesis NTSC is 59.92 Hz, so vfp 20 -> vtotal 996 -> 59.923 Hz matches the core's native rate (the
- * vsync-locked present then paces emulation to it = no judder), like SNES uses vfp 17 for 60.11 Hz.
- * DEFAULT_VFP 23 (59.749 Hz) is restored for the menu / other cores on exit. */
-#define GEN_VFP        20u
+extern unsigned int ayaneo_dsi_set_fps_milli(unsigned int fps_milli);  /* set panel refresh to target fps (milli-Hz), returns vfp (ddp_dsi.c) */
+/* Panel vertical-front-porch per refresh rate (vtotal = 976 + vfp; refresh ~= 59.667 kHz / vtotal on
+ * the shipped AYANEO_GBA build). Genesis NTSC is 59.92 Hz -> vfp 20 -> vtotal 996 matches the core's
+ * native rate (the vsync-locked present then paces emulation to it = no judder), like SNES uses vfp 17.
+ * PAL is ~49.70 Hz -> vfp 224 -> vtotal 1200 (needs ayaneo_dsi_set_vfp's clamp raised past 200 - see
+ * the DSI mechanism change). DEFAULT_VFP 23 (59.749 Hz) is restored for the menu / other cores on exit. */
+#define GEN_VFP        20u    /* NTSC fallback if the core reports no fps */
 #define GEN_DEFAULT_VFP 23u
 volatile unsigned g_gen_dbg_vfp;   /* live DSI vfp during the session (validates the switch) */
+
+/* Map a core frame rate (milli-Hz) to the panel vfp that makes the vsync-locked present pace exactly
+ * that rate. vtotal = 976 + vfp and refresh_milli = 59667000 / vtotal (shipped-build line const,
+ * matches ayaneo_dsi_refresh_milli), so vfp = 59667000/fps_milli - 976, rounded. Guards a zero/insane
+ * fps by falling back to the NTSC default. The DSI helper clamps the final vfp to its safe porch range. */
+static unsigned genesis_vfp_for_fps(unsigned fps_milli)
+{
+	unsigned vtotal;
+	if (fps_milli < 40000u || fps_milli > 65000u) return GEN_VFP;   /* implausible -> NTSC */
+	vtotal = (59667000u + fps_milli / 2u) / fps_milli;             /* rounded 59667000/fps_milli */
+	if (vtotal <= 976u) return 4u;                                 /* faster than the porch floor */
+	return vtotal - 976u;
+}
 
 static char *mput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *mputu(char *p, unsigned v) { char t[12]; int n = 0; if (!v) { *p++ = '0'; return p; } while (v) { t[n++] = '0' + v % 10; v /= 10; } while (n) *p++ = t[--n]; return p; }
@@ -276,7 +292,13 @@ static int gm_change(int i, int dir, int act)
 		if (s_menu_c && s_menu_c->set_option)
 			s_menu_c->set_option("genesis_plus_gx_region_detect", gen_region_opt(s_gen_region));
 		ayaneo_set_gen_region(s_gen_region); genesis_settings_touch();
-		mput(s_mstat, "Region set (reset for full effect)"); } break;
+		/* Real-time refresh switch: the core option is now queued (s_opt_dirty), but check_variables -
+		 * which recomputes system_clock/vdp_pal/lines_per_frame, hence fps - only runs inside the next
+		 * retro_run(). The game keeps running underneath the Pico menu, so the very next c->run() in the
+		 * session loop applies the region and updates fps. Arm a deferred re-tune that the session loop
+		 * fires after that frame; do NOT poll fps here (it would still read the OLD rate). */
+		s_gen_refresh_retune = 2;   /* re-read fps + retune vfp for the next 2 committed frames */
+		mput(s_mstat, "Region set (some games need Reset)"); } break;
 	case GM_REFRESH: break;   /* read-only display (panel Hz); no adjust */
 	case GM_RUNAHEAD: if (dir) { int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
 		ayaneo_set_preempt_frames(pf); ayaneo_set_cpu_mhz(s_gen_ra_opp[pf]); s_cpu_idx = -1;
@@ -445,10 +467,19 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	if (s_gen_region && c->set_option)
 		c->set_option("genesis_plus_gx_region_detect", gen_region_opt(s_gen_region));
 
-	/* Switch the panel to the Genesis NTSC rate (~59.92 Hz) so the vsync-locked present paces emulation
-	 * to the core's native framerate (no periodic judder), like SNES runs the panel at 60.11 Hz.
+	/* Switch the panel to the CORE's native rate (NTSC ~59.92 Hz, PAL ~49.70 Hz) so the vsync-locked
+	 * present paces emulation to it (no periodic judder / no speed error). Read fps live from the core:
+	 * the region option pushed above has NOT been applied yet (check_variables runs inside retro_run,
+	 * and no frame has run), so run one discarded frame first if a region was forced, then read.
 	 * Restored to the stock 59.749 Hz for the menu on exit. */
-	ayaneo_dsi_set_vfp(GEN_VFP);
+	if (s_gen_region && c->set_option) {
+		struct genesis_frame pf0; pf0.video = 0; pf0.width = 0; pf0.height = 0;
+		c->run(&pf0);   /* let check_variables apply the forced region so fps_milli reflects it */
+	}
+	{
+		unsigned fps = (c->fps_milli) ? c->fps_milli() : 0u;
+		ayaneo_dsi_set_vfp(fps ? genesis_vfp_for_fps(fps) : GEN_VFP);
+	}
 	g_gen_dbg_vfp = ayaneo_dsi_get_vfp();
 
 	/* Launch punch-hole (matches snes/gba/gbc): the menu handed off with the frozen carousel still on
@@ -566,6 +597,15 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		c->run(&fr);                                 /* committed frame */
 		fe = (gpt4_get_current_tick() - em0) / 13u;  /* per-frame emu cost (us) for the FF cap */
 		g_gen_dbg_frames++;
+		/* Real-time panel refresh follow: a GM_REGION change armed s_gen_refresh_retune; the region
+		 * option was applied by the c->run() just above (check_variables -> get_region recomputes fps),
+		 * so read the (now new) fps and retune the panel vfp. Retry a couple of frames in case the
+		 * variable-update flag was consumed a frame late. No extra wait_for_vsync here (double-wait = 30fps). */
+		if (s_gen_refresh_retune > 0 && c->fps_milli) {
+			unsigned fps = c->fps_milli();
+			if (fps) { ayaneo_dsi_set_vfp(genesis_vfp_for_fps(fps)); g_gen_dbg_vfp = ayaneo_dsi_get_vfp(); }
+			s_gen_refresh_retune--;
+		}
 		if (c->aspect_x1000 && (g_gen_dbg_frames & 15u) == 0)   /* refresh Fit target (H32/H40 switch) */
 			g_genesis_aspect_x1000 = c->aspect_x1000();
 		if (rw_payload && ayaneo_rewind_ready()) {   /* capture committed frame into the rewind ring */
@@ -583,9 +623,12 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		ff = g_genesis_menu_open ? 0 : ayaneo_joypad_ff_level();
 		if (ff > 0) {
 			int raw = 2 + (ff * (10 - 2)) / 255;
-			unsigned int blit = g_dbg_blit_us < 15500u ? g_dbg_blit_us : 0u;
+			unsigned int rmilli = ayaneo_dsi_refresh_milli();
+			unsigned int full_us = rmilli ? (1000000000u / rmilli) : 16666u;   /* 1e9/milliHz = 1e6/panel_fps; PAL ~20000us, NTSC ~16666us */
+			unsigned int budget_us = full_us > 1200u ? full_us - 1200u : full_us; /* ~1.2ms present-margin the old 15500-vs-16666 baked in */
+			unsigned int blit = g_dbg_blit_us < budget_us ? g_dbg_blit_us : 0u;
 			unsigned int fef = fe ? fe : 2500u;
-			int cap = (int)((15500u - blit) / fef);
+			int cap = (int)((budget_us - blit) / fef);
 			int mult = raw < cap ? raw : cap, k;
 			if (mult < 2) mult = 2;
 			if (mult > 10) mult = 10;

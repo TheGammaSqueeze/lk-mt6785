@@ -257,6 +257,16 @@ static unsigned genesis_aspect_x1000(void)
 	return (unsigned)(a * 1000.0f + 0.5f);
 }
 
+/* emulated frame rate in milli-Hz, read live (retro_get_system_av_info recomputes timing.fps from
+ * system_clock/lines_per_frame/MCYCLES_PER_LINE each call, so this reflects a region change on the
+ * very next read after check_variables has run inside retro_run). */
+static unsigned genesis_fps_milli(void)
+{
+	struct retro_system_av_info av;
+	retro_get_system_av_info(&av);
+	return (unsigned)(av.timing.fps * 1000.0 + 0.5);
+}
+
 static void    *genesis_sram_ptr(void)  { return retro_get_memory_data(RETRO_MEMORY_SAVE_RAM); }
 static unsigned  genesis_sram_size(void) { return (unsigned)retro_get_memory_size(RETRO_MEMORY_SAVE_RAM); }
 
@@ -291,6 +301,7 @@ static const struct genesis_core_exports g_exports = {
 	genesis_set_av_skip,
 	genesis_set_ra_fast,
 	genesis_sound_rebase,
+	genesis_fps_milli,
 };
 
 const struct genesis_core_exports *genesis_core_blob_init(const struct genesis_core_imports *imp)
