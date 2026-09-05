@@ -117,11 +117,122 @@ volatile unsigned g_gen_dbg_frames;
 volatile unsigned g_gen_dbg_w, g_gen_dbg_h, g_gen_dbg_sr;
 volatile int      g_gen_dbg_loadrc;
 
+/* ---- in-game Pico menu (hardware OVL0 L0 overlay over the running game; mirrors the snes menu).
+ * g_genesis_menu_open (declared above) gates game input + FF/rewind; the game keeps running so
+ * settings preview live. Scoped to the settings that need no display-path change yet (Brightness,
+ * Volume, CPU Clock, Save-state slots, Reset, Exit); aspect/filter/core-options land with the RSZ
+ * display path. ---- */
+volatile int g_genesis_menu_exit;   /* "Exit Game" -> the run loop breaks back to the selector */
+static int   s_msel;
+static char  s_mstat[48];
+static int   s_save_slot;            /* manual save-state slot 0..2 */
+static const struct genesis_core_exports *s_menu_c;   /* session context for the menu actions */
+static fat_vol             *s_menu_vol;
+static const gba_rom_entry *s_menu_rom;
+static unsigned             s_menu_rw_payload;
+
+extern void ayaneo_fill(unsigned int *buf, unsigned int pitch, int x, int y, int w, int h, unsigned int argb);
+extern int  ayaneo_text(unsigned int *buf, unsigned int pitch, int x, int y, int scale, unsigned int argb, const char *s);
+extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
+extern void ayaneo_menu_overlay_mark_dirty(void);
+extern int  ayaneo_brightness_pct(void);
+extern int  ayaneo_brightness_step(int dir);
+extern int  ayaneo_gbc_audio_get_volume(void);
+extern void ayaneo_gbc_audio_set_volume(int v);
+
+/* manual CPU-clock grid (ayaneo_set_cpu_mhz reprograms the PLL only, so >boot-Vproc is the user's call) */
+static const unsigned s_cpu_opp[] = { 600, 800, 1000, 1200, 1400, 1600, 1800, 2000 };
+static int s_cpu_idx = -1;
+static void genesis_cpu_step(int dir)
+{
+	int n = (int)(sizeof s_cpu_opp / sizeof s_cpu_opp[0]), i;
+	if (s_cpu_idx < 0) {
+		unsigned cur = ayaneo_get_cpu_mhz(), bd = ~0u; int best = 0;
+		for (i = 0; i < n; i++) { unsigned d = s_cpu_opp[i] > cur ? s_cpu_opp[i] - cur : cur - s_cpu_opp[i]; if (d < bd) { bd = d; best = i; } }
+		s_cpu_idx = best;
+	}
+	s_cpu_idx += dir; if (s_cpu_idx < 0) s_cpu_idx = 0; if (s_cpu_idx >= n) s_cpu_idx = n - 1;
+	ayaneo_set_cpu_mhz(s_cpu_opp[s_cpu_idx]);
+}
+
+enum { GM_BRIGHT, GM_VOLUME, GM_CPU, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
+
+static char *mput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+static char *mputu(char *p, unsigned v) { char t[12]; int n = 0; if (!v) { *p++ = '0'; return p; } while (v) { t[n++] = '0' + v % 10; v /= 10; } while (n) *p++ = t[--n]; return p; }
+
+static const char *gm_label(int i) { switch (i) {
+	case GM_BRIGHT: return "Brightness"; case GM_VOLUME: return "Volume"; case GM_CPU: return "CPU Clock";
+	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
+	case GM_RESET: return "Reset Game"; case GM_EXIT: return "Exit Game"; } return ""; }
+
+static const char *gm_value(int i, char *buf) { char *p = buf;
+	switch (i) {
+	case GM_BRIGHT: p = mputu(p, (unsigned)ayaneo_brightness_pct()); p = mput(p, "%"); break;
+	case GM_VOLUME: p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
+	case GM_CPU:    p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
+	case GM_SLOT:   p = mputu(p, (unsigned)s_save_slot); break;
+	case GM_SAVE: case GM_LOAD: case GM_RESET: case GM_EXIT: p = mput(p, "[A]"); break;
+	} *p = 0; return buf; }
+
+static void genesis_slot_ext(char *e) { e[0] = 's'; e[1] = 't'; e[2] = (char)('0' + s_save_slot); e[3] = 0; }
+
+/* returns 1 to close the menu (Reset/Exit) */
+static int gm_change(int i, int dir, int act)
+{
+	s_mstat[0] = 0;
+	switch (i) {
+	case GM_BRIGHT: if (dir) ayaneo_brightness_step(dir); break;
+	case GM_VOLUME: if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); break;
+	case GM_CPU:    if (dir) genesis_cpu_step(dir); break;
+	case GM_SLOT:   if (dir) s_save_slot = (s_save_slot + dir + 3) % 3; break;
+	case GM_SAVE: if (act) {
+		unsigned char *st = (unsigned char *)GEN_STATE_BUF; unsigned ssz = s_menu_c->state_size();
+		char ext[4]; int ok; genesis_slot_ext(ext);
+		ok = (ssz && ssz <= GEN_STATE_CAP && s_menu_c->state_save(st, ssz) == 0 &&
+		      gba_sd_write_named(s_menu_vol, "/states/genesis", s_menu_rom->name, ext, st, ssz) == 0);
+		mput(s_mstat, ok ? "State saved" : "Save failed"); } break;
+	case GM_LOAD: if (act) {
+		unsigned char *st = (unsigned char *)GEN_STATE_BUF; char ext[4]; unsigned n; int ok;
+		genesis_slot_ext(ext);
+		n = gba_sd_read_named(s_menu_vol, "/states/genesis", s_menu_rom->name, ext, st, GEN_STATE_CAP);
+		ok = (n && s_menu_c->state_load(st, n) == 0);
+		if (ok && s_menu_rw_payload) ayaneo_rewind_reset(s_menu_rw_payload);   /* loaded state breaks the rewind timeline */
+		mput(s_mstat, ok ? "State loaded" : "No save state"); } break;
+	case GM_RESET: if (act) { s_menu_c->reset(); if (s_menu_rw_payload) ayaneo_rewind_reset(s_menu_rw_payload); return 1; } break;
+	case GM_EXIT:  if (act) { g_genesis_menu_exit = 1; return 1; } break;
+	}
+	return 0;
+}
+
+int genesis_menu_open(void) { return g_genesis_menu_open; }
+
+void genesis_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
+{
+	int rowH = 38, panelW = 520, panelH = 84 + GM_COUNT * rowH + 42;
+	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2, x = px + 28, y = py + 84, i;
+	char val[48];
+	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
+	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
+	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "GammaOS Pico");
+	for (i = 0; i < GM_COUNT; i++, y += rowH) {
+		unsigned int fg = (i == s_msel) ? 0xFF101018u : 0xFFC8D0E0u; int vw;
+		if (i == s_msel) ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
+		ayaneo_text(buf, pitch, x, y, 2, fg, gm_label(i));
+		gm_value(i, val); for (vw = 0; val[vw]; vw++) ;
+		ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, val);
+	}
+	if (s_mstat[0]) ayaneo_text(buf, pitch, x, py + panelH - 40, 2, 0xFF80E080u, s_mstat);
+	ayaneo_text(buf, pitch, x, py + panelH - 16, 1, 0xFF8890A0u,
+		    "Up/Down move  Left/Right change  A select  B/AYA close");
+}
+
 static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 {
 	const struct genesis_core_exports *c = genesis_core_load();
 	unsigned romsz, sr = 44100, ssz, rw_payload, saved_mhz;
 	int aya_prev = 0, aya_hold = 0, rw_acc = 0;
+	int up_h = 0, dn_h = 0, lt_h = 0, rt_h = 0;             /* menu nav auto-repeat hold counters */
+	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	struct genesis_frame fr;
 
 	if (!c) return;   /* blob load failed (g_gen_dbg_loaderr set by the loader) */
@@ -169,6 +280,10 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	saved_mhz = ayaneo_get_cpu_mhz();
 	ayaneo_set_cpu_mhz(1400);
 
+	/* menu context (actions reference the session core + save target) */
+	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom; s_menu_rw_payload = rw_payload;
+	g_genesis_menu_open = 0; g_genesis_menu_exit = 0; s_msel = 0; s_mstat[0] = 0; s_cpu_idx = -1;
+
 	for (;;) {
 		extern int ayaneo_joypad_ff_level(void);
 		extern int ayaneo_joypad_rewind_level(void);
@@ -180,11 +295,16 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 		ayaneo_joypad_poll();
 
+		/* Refresh the Pico menu as a hardware overlay (OVL0 L0) over the running game, or disable it
+		 * when closed - the game keeps running underneath so settings preview live (mirrors snes). */
+		ayaneo_menu_overlay(genesis_menu_paint, g_genesis_menu_open);
+
 		/* Rewind (left trigger): walk the delta ring backward and re-render instead of advancing.
 		 * Press depth sets a smooth 1x..6x speed via a fractional accumulator; each stepped-back
 		 * frame's audio is reversed + decimated by `steps` and submitted (game plays backwards). On
-		 * release the ring commits the rewound point as the new head. Mirrors the snes rewind block. */
-		rw = ayaneo_joypad_rewind_level();
+		 * release the ring commits the rewound point as the new head. Mirrors the snes rewind block.
+		 * Gated off while the menu is open. */
+		rw = g_genesis_menu_open ? 0 : ayaneo_joypad_rewind_level();
 		if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
 			int spd = 256 + (rw * (GEN_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(6x) */
 			unsigned int sz; const void *st; int k, steps;
@@ -234,7 +354,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * panel stays a smooth 60fps (mirrors the GBA/GBC/SNES adaptive cap). GPGX renders every FF
 		 * frame, so the committed-frame cost is the per-frame cost; reserve the present blit; 2x floor.
 		 * Audio of every frame is submitted (so the sound speeds up). Only the LAST frame is presented. */
-		ff = ayaneo_joypad_ff_level();
+		ff = g_genesis_menu_open ? 0 : ayaneo_joypad_ff_level();
 		if (ff > 0) {
 			int raw = 2 + (ff * (10 - 2)) / 255;
 			unsigned int blit = g_dbg_blit_us < 15500u ? g_dbg_blit_us : 0u;
@@ -265,14 +385,46 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 		mtk_wdt_restart();
 
-		/* AYA: tap or hold ~1.5 s exits back to the ROM selector (matches the other cores). */
+		/* AYA taps toggle the Pico menu; holding AYA ~1.5 s force-exits to the selector. */
 		{
 			int aya = PRESSED(GPIO_AYA);
-			if (aya) { if (++aya_hold >= 90) break; }
-			else { if (aya_prev && aya_hold < 90) break; aya_hold = 0; }
+			if (aya && !aya_prev) { g_genesis_menu_open = !g_genesis_menu_open; s_mstat[0] = 0;
+				ayaneo_menu_overlay_mark_dirty(); }
 			aya_prev = aya;
+			if (aya) { if (++aya_hold >= 90) break; } else aya_hold = 0;
 		}
+
+		/* menu navigation (Up/Down move, Left/Right change, A select, B/AYA close), with press-edge
+		 * + auto-repeat. The game keeps running underneath (pad mask returns 0 while open). */
+		if (g_genesis_menu_open) {
+			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
+			int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
+			int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);
+			unsigned int jd = ayaneo_joypad_dpad();   /* left analog stick also drives nav */
+			up |= !!(jd & 0x01u); dn |= !!(jd & 0x02u); lt |= !!(jd & 0x04u); rt |= !!(jd & 0x08u);
+			#define NAV_DELAY 22
+			#define NAV_REP   5
+			#define FIRE(h)   ((h) == 1 || ((h) > NAV_DELAY && (((h) - NAV_DELAY) % NAV_REP) == 0))
+			up_h = up ? up_h + 1 : 0; dn_h = dn ? dn_h + 1 : 0;
+			lt_h = lt ? lt_h + 1 : 0; rt_h = rt ? rt_h + 1 : 0;
+			if ((up && FIRE(up_h)) || (dn && FIRE(dn_h)) || (lt && FIRE(lt_h)) || (rt && FIRE(rt_h)) ||
+			    (a && !a_p) || (b && !b_p))
+				ayaneo_menu_overlay_mark_dirty();
+			if (up && FIRE(up_h)) s_msel = (s_msel + GM_COUNT - 1) % GM_COUNT;
+			if (dn && FIRE(dn_h)) s_msel = (s_msel + 1) % GM_COUNT;
+			if (lt && FIRE(lt_h)) gm_change(s_msel, -1, 0);
+			if (rt && FIRE(rt_h)) gm_change(s_msel, +1, 0);
+			#undef NAV_DELAY
+			#undef NAV_REP
+			#undef FIRE
+			if (a && !a_p) { if (gm_change(s_msel, 0, 1)) g_genesis_menu_open = 0; }
+			if (b && !b_p) g_genesis_menu_open = 0;
+			up_p = up; dn_p = dn; lt_p = lt; rt_p = rt; a_p = a; b_p = b;
+		}
+		if (g_genesis_menu_exit) break;   /* Pico "Exit Game" selected */
 	}
+	ayaneo_menu_overlay(0, 0);   /* disable the overlay BEFORE returning to the carousel (else the
+				      * stale Pico panel composites over the selector - see CORE_PORTING_NOTES) */
 	ayaneo_hud_set(0, 0);   /* clear the FF/RW badge on exit */
 	ayaneo_set_cpu_mhz(saved_mhz);   /* restore the menu's idle clock */
 

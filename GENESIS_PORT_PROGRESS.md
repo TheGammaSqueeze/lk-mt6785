@@ -87,11 +87,18 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
         60fps), restores the menu idle clock on exit (ayaneo_get/set_cpu_mhz).
   - [x] 6-button pad: MD sets RETRO_DEVICE_SUBCLASS(JOYPAD,1) = MDPAD_6B so device X/Y/L/R/Select
         reach Genesis X/Y/Z/Mode; 8-bit systems use the plain joypad. (blob change -> boot_b reflash.)
-  - [ ] run-ahead (state_save/load per frame + set_av_skip look-ahead), aspect Fit/Stretch via
-        ayaneo_rsz_present + LCD filter in ayaneo_genesis_show_frame, per-core settings persist,
-        live Pico overlay menu (the KEYSTONE - unlocks aspect/filter/clock/core-options/save-slots
-        selection; mirror snes_menu_paint/sm_label/sm_value/sm_change + ayaneo_menu_overlay),
-        boxart/console badges. <-- NEXT: the Pico menu (biggest remaining parity gap).
+  - [x] Live Pico in-game menu (hardware OVL0 L0 overlay over the running game, mirrors the snes
+        menu): AYA-tap toggles it (AYA-hold ~1.5s still force-exits), game runs underneath so
+        settings preview live, pad mask + FF + rewind gated while open. Options: Brightness, Volume,
+        CPU Clock (manual OPP grid), Save Slot (0..2), Save State, Load State, Reset Game, Exit Game.
+        Nav = Up/Down move, Left/Right change, A select, B/AYA close, with press-edge + auto-repeat;
+        left stick also navigates. Save/Load use /states/genesis/<rom>.st<slot>; Load re-arms the
+        rewind ring. Overlay disabled on exit (CORE_PORTING_NOTES gotcha). Builds clean.
+  - [ ] Remaining parity: run-ahead (state_save/load per frame + set_av_skip look-ahead), aspect
+        Pixel/Fit/Stretch via ayaneo_rsz_present + LCD filter in ayaneo_genesis_show_frame (+ wire
+        into the menu), GPGX core options in the menu (region/overclock/etc. via c->set_option),
+        per-core settings PERSIST across reboot (mirror ayaneo_set_snes_opts), boxart/console badges
+        in the carousel. <-- NEXT: aspect Fit/Stretch + LCD filter (then wire menu rows for them).
 
 ## Milestone reached (2026-09-05): Genesis core LOADS on the device
 Blob builds (1.34MB) + host-test PASS + on-device gen-probe PASS. A Genesis/MD/SMS/GG/SG ROM
