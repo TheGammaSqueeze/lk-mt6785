@@ -13,9 +13,27 @@ the cron. Iterate: compiler opts, code opts, config, state-path, etc.
   frame to render each rewound state). So both frame-emulate AND state_load matter.
 
 ## Baseline + history (append each iteration: what changed, gen-bench numbers)
-- (pending first flash) ROOT CAUSE FOUND: build_core.sh HOT_SET never matched (find paths are `core/...`,
-  HOT_SET entries were un-prefixed) so the ENTIRE core built at -Os. Fixed: strip `core/` in opt_for,
-  OPT_HOT=-O3 / OPT_COLD=-O2, widened HOT_SET. Expect a big fps jump. MEASURE with gen-bench after flash.
+- 2026-09-05 commit b22d6a3 (-O3 hot / -O2 cold; was ALL -Os): FIRST on-device gen-bench (Sonic 3 Complete):
+  `@1399MHz fps=173 frame=5760us save=322us load=(truncated ~26xx)`. The -Os->-O3 fix is a big win (core
+  was crippled). blob 1.38MB->1.79MB (fits 2MB). load value was cut by the 64-byte fastboot line; split the
+  output into 2 lines (next flash) to read load + impliedRW.
+
+## KEY STRATEGIC INSIGHT (drives the campaign)
+frame(emulate) = 5760us @1400MHz = ~4030us @2000MHz. Rewind re-emulates ONE full frame per step to render
+each rewound state (the ring stores STATES, not framebuffers). So N-x rewind needs N frame-emulates per one
+60Hz present (16670us). Even at 2000MHz: 6 x 4030us = 24ms > 16.67ms -> 6x is PHYSICALLY IMPOSSIBLE by
+compiler opts alone (the frame-emulate is the wall, state_load is small). SNES hits 6x only because snes9x's
+frame-emulate is ~2x cheaper (less accurate/faster core) AND it runs at 1800.
+=> TWO honest paths to 6x, pursue BOTH:
+  (A) Make the GPGX frame-emulate ~2-3x faster (compiler: LTO -O3 link, PGO, per-loop vectorize; code: VDP
+      render fast paths; config: drop any cycle-accuracy/enhancement default that isn't needed). Halving
+      frame->~2000us@2000 gives ~4x; needs ~2700us for 6x.
+  (B) DECOUPLE rewind from emulation: keep a VIDEO ring of recently-rendered frames (or render-on-capture)
+      so rewind DISPLAYS stored frames without re-emulating -> rewind speed becomes display-bound (trivially
+      6x+). Genesis frame 320x240x2=150KB; a few seconds at 60fps fits the huge rewind arena (mblk stitch
+      ~2.5GB) if stored compressed/every-Nth. This is the real architectural fix for 6x and likely the
+      highest-impact item. Weigh vs the shared ayaneo_rewind ring design (genesis-only video side-ring is
+      safest - do NOT destabilise snes/gba/gbc). STRONGLY CONSIDER (B) as the primary path.
 
 ## Ideas backlog (try in order of expected impact / low risk first)
 1. [DONE-build, unmeasured] -O3 hot / -O2 cold (was all -Os). <-- likely the big one.

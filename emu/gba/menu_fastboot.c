@@ -235,9 +235,12 @@ static void cmd_gen_bench(const char *arg, void *data, unsigned sz)
 	snprintf(lbuf, sizeof lbuf, "gen-bench: %d frames uncapped...", frames);
 	fastboot_info(lbuf);
 	genesis_sd_bench(vol, rom, frames);
-	snprintf(lbuf, sizeof lbuf, "gen-bench @%uMHz: fps=%u frame=%uus save=%uus load=%uus impliedRW=%u.%ux",
-		 g_gen_dbg_bench_mhz, g_gen_dbg_bench_fps, g_gen_dbg_bench_us, g_gen_dbg_bench_save_us,
-		 g_gen_dbg_bench_load_us, g_gen_dbg_bench_rwx10 / 10u, g_gen_dbg_bench_rwx10 % 10u);
+	snprintf(lbuf, sizeof lbuf, "gen-bench @%uMHz: fps=%u frame=%uus",
+		 g_gen_dbg_bench_mhz, g_gen_dbg_bench_fps, g_gen_dbg_bench_us);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "  save=%uus load=%uus impliedRW=%u.%ux",
+		 g_gen_dbg_bench_save_us, g_gen_dbg_bench_load_us,
+		 g_gen_dbg_bench_rwx10 / 10u, g_gen_dbg_bench_rwx10 % 10u);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
