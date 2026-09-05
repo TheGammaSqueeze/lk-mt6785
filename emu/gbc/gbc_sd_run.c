@@ -215,6 +215,34 @@ extern void ayaneo_set_lcd_filter_core(int c, int v);
 extern void ayaneo_set_preempt_frames(int v);
 extern void ayaneo_menu_settings_persist(void);
 extern void ayaneo_menu_overlay_mark_dirty(void);   /* repaint the hardware menu overlay (mt_disp_drv.c) */
+extern int  mtk_detect_key(unsigned short hwkey);   /* MTK keypad matrix (hardware volume rocker) */
+extern void ayaneo_gbc_osd_show(int kind, int pct); /* transient OSD bar: 1=volume 2=brightness */
+extern int  pmic_detect_powerkey(void);
+extern void mt_power_off(void);
+
+/* Hardware volume rocker + SELECT-for-brightness (parity with snes/gba/genesis + the baked GB path).
+ * The SD GB/GBC path had NO in-game volume/brightness shortcut before; only the Pico menu. VolUp =
+ * mtk_detect_key(0x11), VolDown = 0x00, edge-detected; SELECT held switches to brightness. */
+static void gbc_sd_poll_volume(void)
+{
+	static int vu_p, vd_p;
+	int vu = mtk_detect_key(0x11), vd = mtk_detect_key(0x00);
+	int sel = PRESSED(GPIO_SELECT);
+	int dir = 0;
+	if (vu && !vu_p) dir = +1; else if (vd && !vd_p) dir = -1;
+	vu_p = vu; vd_p = vd;
+	if (!dir) return;
+	if (sel) {
+		ayaneo_brightness_step(dir);
+		ayaneo_gbc_osd_show(2, ayaneo_brightness_pct());   /* 2 = brightness */
+	} else {
+		int v = ayaneo_gbc_audio_get_volume() + dir * 5;
+		if (v < 0) v = 0; if (v > 100) v = 100;
+		ayaneo_gbc_audio_set_volume(v);
+		ayaneo_gbc_osd_show(1, v);                         /* 1 = volume */
+	}
+	ayaneo_menu_settings_persist();   /* one persist per tap (edge-detected, no auto-repeat) */
+}
 
 volatile int g_gbc_menu_open;   /* read by ayaneo_gbc_pad_mask (gba_driver.c) to gate game input */
 /* Release-latch (gambatte mask: A=0x01, B=0x02) for the A/B that dismissed the menu, so the
@@ -555,6 +583,27 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		long r;
 
 		{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers */
+		gbc_sd_poll_volume();   /* hardware volume rocker + SELECT-brightness (parity with all cores) */
+		{  /* power key: arm on release, fire on press -> save cartridge + suspend, then power off (parity) */
+			static int pk_armed;
+			int pk = pmic_detect_powerkey();
+			if (!pk) pk_armed = 1;
+			else if (pk_armed) {
+				unsigned savsz;
+				pk_armed = 0;
+				ayaneo_menu_audio_silence();
+				savsz = c->savedata_size(); if (savsz > 128u * 1024u) savsz = 0;
+				if (c->savedata_ptr() && savsz)
+					gba_sd_write_sav(vol, rom->name, (const unsigned char *)c->savedata_ptr(), savsz);
+				if (GBC_SUSPEND && ahead_sz) {
+					c->state_save(ahead);
+					gba_sd_write_named(vol, "/states/gba", rom->name, "sus", ahead, ahead_sz);
+				}
+				gbc_prefs_save(vol);
+				if (is_dmg) gbc_pal_save(vol, rom->name, pal_idx);
+				mt_power_off();   /* no return */
+			}
+		}
 
 		/* Rewind (left trigger): instead of advancing the game, walk backward through the ring of
 		 * periodic save-states and re-render. Press depth sets a smooth 1x..6x speed (see

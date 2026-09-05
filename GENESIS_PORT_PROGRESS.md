@@ -142,11 +142,13 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
               [ ] (opt) run-ahead reuse rewind s_prev instead of 2nd state_save: medium/medium, deferred.
         HOTKEYS (canonical = GBA scheme; renderer kind 0=none/1=vol/2=bright):
               [x] SNES brightness OSD kind 0->2 (snes_sd_run.c:313) - bar never showed.
-              [ ] H1 Genesis genesis_poll_volume() (mtk_detect_key 0x11/0x00, SELECT=bright), call @ loop top.
-              [ ] H2 GBC-SD gbc_poll_volume() into gbc_sd_run.c (baked gbc_driver.c:266 is the wrong path).
-              [ ] H4 Genesis menu bright/vol deferred-persist (currently never persists).
-              [ ] H5 power key in-game -> save+.sav+flush+mt_power_off for SNES/Genesis/GBC-SD (only GBA has it).
-              [ ] H6 Genesis soft-reset SELECT+START+L+R (mirror snes_sd_run.c:987).
+              [x] H1 Genesis genesis_poll_volume() (mtk_detect_key 0x11/0x00, SELECT=bright) @ loop top + deferred persist.
+              [x] H2 GBC-SD gbc_sd_poll_volume() added (SD GB/GBC path had NO hardware rocker before).
+              [x] H4 Genesis menu bright/vol deferred-persist (genesis_settings_touch/tick/flush).
+              [x] H5 power key in-game -> save+suspend+flush+mt_power_off now in Genesis, GBC-SD, SNES (was GBA-only).
+              [x] H6 Genesis soft-reset SELECT+START+L+R.
+        GENESIS MENU (user requests): [x] Region (Auto/USA/Europe/Japan, live via region_detect);
+              [x] Refresh Rate readout (ayaneo_dsi_refresh_milli from live vfp; groundwork for LCM refresh switch).
   - [ ] Also remaining: GPGX core options in the menu (region/overclock via c->set_option), per-core
         settings PERSIST across reboot (a genesis settings blob for aspect/filter/RA/slot),
         boxart/console badges in the carousel.

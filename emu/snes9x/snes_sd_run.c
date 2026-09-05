@@ -672,6 +672,28 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* Hardware volume rocker works whether or not the menu is open. */
 		snes_poll_volume();
 
+		/* Power key during gameplay (parity with gba/genesis/gbc): arm on release, fire on the next
+		 * press -> write the suspend state + SRAM so the next launch resumes, flush settings, power off. */
+		{
+			extern int pmic_detect_powerkey(void); extern void mt_power_off(void);
+			static int pk_armed;
+			int pk = pmic_detect_powerkey();
+			if (!pk) pk_armed = 1;
+			else if (pk_armed) {
+				unsigned char *st = (unsigned char *)SNES_STATE_BUF;
+				unsigned ssz = c->state_size(), sz; void *p;
+				pk_armed = 0;
+				ayaneo_menu_audio_silence();
+				snes_settings_flush();
+				if (ssz && ssz <= SNES_STATE_CAP && c->state_save(st, ssz) == 0)
+					gba_sd_write_named(vol, "/states/snes", rom->name, "sus", st, ssz);
+				sz = c->sram_size(); p = c->sram_ptr();
+				if (p && sz && sz <= 0x20000u)
+					gba_sd_write_named(vol, "/saves/snes", rom->name, "srm", p, sz);
+				mt_power_off();   /* no return */
+			}
+		}
+
 		/* Render/refresh the Pico menu as a hardware overlay layer (OVL0 L0) over the running game,
 		 * or disable it when closed - BEFORE the present, so g_overlay_active (which makes the RSZ
 		 * path single-buffer to free 0x55900000 for the overlay) is consistent with the layer state
