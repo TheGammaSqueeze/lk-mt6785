@@ -628,6 +628,8 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				 * pre-open selection. Direction is polled every frame (not edge). */
 				int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
 				int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);
+				{ extern unsigned int ayaneo_joypad_dpad(void); unsigned int jd = ayaneo_joypad_dpad();
+				  up |= !!(jd & 0x01u); dn |= !!(jd & 0x02u); }   /* stick browses the palette list too */
 				int dir = up ? -1 : dn ? +1 : 0;
 				int move = 0, step = 1;
 				if (dir == 0) { s_pick_dir = 0; s_pick_hold = 0; s_pick_tick = 0; }
@@ -667,6 +669,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
 				int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
 				int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B), x = PRESSED(GPIO_X);
+				/* left analog stick also drives menu nav (cache from ayaneo_joypad_poll; deadzoned) */
+				{ extern unsigned int ayaneo_joypad_dpad(void); unsigned int jd = ayaneo_joypad_dpad();
+				  up |= !!(jd & 0x01u); dn |= !!(jd & 0x02u); lt |= !!(jd & 0x04u); rt |= !!(jd & 0x08u); }
 				if ((up && !up_prev) || (dn && !dn_prev) || (lt && !lt_prev) || (rt && !rt_prev) ||
 				    (a && !a_prev) || (x && !x_prev) || (b && !b_prev))
 					ayaneo_menu_overlay_mark_dirty();

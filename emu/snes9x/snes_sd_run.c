@@ -903,6 +903,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
 			int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
 			int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);
+			/* left analog stick also drives menu nav (cache from ayaneo_joypad_poll; deadzoned) */
+			{ extern unsigned int ayaneo_joypad_dpad(void); unsigned int jd = ayaneo_joypad_dpad();
+			  up |= !!(jd & 0x01u); dn |= !!(jd & 0x02u); lt |= !!(jd & 0x04u); rt |= !!(jd & 0x08u); }
 			/* Up/Down (navigate) and Left/Right (adjust value) auto-repeat: fire on press,
 			 * then after ~0.37 s of holding repeat every ~0.08 s - useful with 16 rows and
 			 * up-to-10-value items. The per-change eMMC/SD write is debounced (see

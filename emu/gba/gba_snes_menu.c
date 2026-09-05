@@ -637,6 +637,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			enum { DL=1, DR=2, DU=4, DD=8, DA=16, DB=32, DST=64, DSE=128, DLB=256, DRB=512 };
 			static unsigned mhist[3];	/* >= MENU_DEBOUNCE-1 words */
 			unsigned raw = 0, deb;
+			{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }   /* refresh the stick cache once/frame */
 			if (PRESSED(K_LEFT))  raw |= DL;
 			if (PRESSED(K_RIGHT)) raw |= DR;
 			if (PRESSED(K_UP))    raw |= DU;
@@ -647,6 +648,12 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			if (PRESSED(K_SELECT))raw |= DSE;
 			if (PRESSED(K_LB))    raw |= DLB;
 			if (PRESSED(K_RB))    raw |= DRB;
+			/* Left analog stick also scrolls the carousel. Map the joypad D-pad bits (JOY_UP=1,
+			 * DOWN=2, LEFT=4, RIGHT=8) onto this menu's layout (DL=1,DR=2,DU=4,DD=8); deadzoned, so a
+			 * centred stick adds nothing and the carousel behaves exactly as before at rest. */
+			{ extern unsigned int ayaneo_joypad_dpad(void); unsigned int jd = ayaneo_joypad_dpad();
+			  if (jd & 0x04u) raw |= DL; if (jd & 0x08u) raw |= DR;
+			  if (jd & 0x01u) raw |= DU; if (jd & 0x02u) raw |= DD; }
 			deb = ayaneo_menu_debounce(raw, mhist);
 		in.left = !!(deb & DL); in.right = !!(deb & DR);
 		in.up = !!(deb & DU); in.down = !!(deb & DD);

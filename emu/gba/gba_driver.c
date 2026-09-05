@@ -1183,6 +1183,10 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 	if (PRESSED(GPIO_A))     raw |= MK_A;
 	if (PRESSED(GPIO_B))     raw |= MK_B;
 	if (PRESSED(GPIO_AYA))   raw |= MK_AYA;
+	/* Left analog stick drives the menu D-pad too (JOY_UP/DOWN/LEFT/RIGHT = MK_UP/DOWN/LEFT/RIGHT =
+	 * 1/2/4/8). Cache is refreshed by ayaneo_joypad_poll() at the game-loop top; deadzoned, so a
+	 * centred stick contributes nothing (menu behaves exactly as before at rest). */
+	{ extern unsigned int ayaneo_joypad_dpad(void); raw |= ayaneo_joypad_dpad() & (MK_UP|MK_DOWN|MK_LEFT|MK_RIGHT); }
 	deb = ayaneo_menu_debounce(raw, hist);	/* max debounce for the Pico menu */
 	edge = deb & ~prev;
 	prev = deb;
