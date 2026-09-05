@@ -1322,7 +1322,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;
 	case MI_CPU:      if (dir) cpu_step(dir); changed = 0; break;
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
-	case MI_ASPECT:   if (dir) g_gba_aspect = (g_gba_aspect + dir + 3) % 3; changed = 0; break;
+	case MI_ASPECT:   if (dir) g_gba_aspect = (g_gba_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
 	case MI_SLOT:     if (dir) s_gba_slot = (s_gba_slot + dir + GBA_SLOT_COUNT) % GBA_SLOT_COUNT; changed = 0; break;
 	case MI_LOADSTATE: if (act) { int ok = manual_state_read(state); if (ok) gba_rewind_arm(); mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
 	case MI_SAVESTATE: if (act) { int ok = manual_state_write(state); sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;

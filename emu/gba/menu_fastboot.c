@@ -529,12 +529,26 @@ static void cmd_rewindring(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* Validate that persisting the GBA/GBC aspect (packed into the free bits of the b+24 filter word)
+ * round-trips through serialize/deserialize without disturbing the per-core LCD filters. */
+static void cmd_settingsrt(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_settings_aspect_selftest(void);
+	int fail;
+	(void)arg; (void)data; (void)sz;
+	fail = ayaneo_settings_aspect_selftest();
+	snprintf(lbuf, sizeof lbuf, "settingsrt %s failmask=0x%x", fail ? "FAIL" : "OK", (unsigned)fail);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
 	fastboot_register("oem meminfo", cmd_meminfo, 1, 0);
 	fastboot_register("oem rewindtest", cmd_rewindtest, 1, 0);
 	fastboot_register("oem rewindring", cmd_rewindring, 1, 0);
+	fastboot_register("oem settingsrt", cmd_settingsrt, 1, 0);
 	fastboot_register("oem adcscan", cmd_adcscan, 1, 0);
 	fastboot_register("oem stickscan", cmd_stickscan, 1, 0);
 	fastboot_register("oem trigscan", cmd_trigscan, 1, 0);

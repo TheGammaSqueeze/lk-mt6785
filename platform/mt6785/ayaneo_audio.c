@@ -210,6 +210,10 @@ static volatile int s_brightness = AYANEO_BL_DEFAULT;	/* LCD level, 0-255 */
 static volatile int s_load_on_boot = 1;		/* resume save state after boot */
 static volatile int s_skip_boot = 0;		/* skip the animation + chime */
 static volatile int s_lcd_filter[3] = { 0, 0, 0 };	/* per core [0]=SNES [1]=GBA [2]=GBC; each 0 off,1 scanlines,2 grid,3 both */
+/* GBA/GBC display aspect (0=Pixel,1=Fit,2=Stretch) live in mt_disp_drv.c; persisted here by packing
+ * into the FREE high bits of the b+24 filter word (bits 6-7 GBA, 8-9 GBC) so the 64-byte blob LAYOUT
+ * is unchanged and old blobs (those bits 0) read back as Pixel. */
+extern volatile int g_gba_aspect, g_gbc_aspect;
 static volatile int s_color_correct = 0;	/* CGB colour correction on/off */
 static volatile int s_dark_filter = 0;		/* 0-5 dark filter level */
 static volatile int s_skip_gba_intro = 0;	/* skip the GBA BIOS boot-logo intro (SD flow) */
@@ -321,10 +325,13 @@ void ayaneo_settings_load(void)
 	if (ver >= 2) {			/* new fields; older blobs keep the defaults */
 		s_load_on_boot  = rd32(b + 16) ? 1 : 0;
 		s_skip_boot     = rd32(b + 20) ? 1 : 0;
-		{ unsigned int pk = rd32(b + 24);   /* packed: bits0-1 SNES, 2-3 GBA, 4-5 GBC (old blobs stored plain SNES value) */
+		{ unsigned int pk = rd32(b + 24);   /* bits0-5 filters (SNES/GBA/GBC); 6-7 GBA aspect, 8-9 GBC aspect */
+		  int ga, gg;
 		  ayaneo_set_lcd_filter_core(0, (int)(pk & 3));
 		  ayaneo_set_lcd_filter_core(1, (int)((pk >> 2) & 3));
-		  ayaneo_set_lcd_filter_core(2, (int)((pk >> 4) & 3)); }
+		  ayaneo_set_lcd_filter_core(2, (int)((pk >> 4) & 3));
+		  ga = (int)((pk >> 6) & 3); g_gba_aspect = (ga <= 2) ? ga : 0;   /* 3 (never written) -> Pixel */
+		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0; }
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -364,7 +371,8 @@ int ayaneo_settings_serialize(unsigned char *b, int cap)
 	wr32(b + 12, (unsigned int)s_brightness);
 	wr32(b + 16, (unsigned int)s_load_on_boot);
 	wr32(b + 20, (unsigned int)s_skip_boot);
-	wr32(b + 24, (unsigned int)((s_lcd_filter[0] & 3) | ((s_lcd_filter[1] & 3) << 2) | ((s_lcd_filter[2] & 3) << 4)));
+	wr32(b + 24, (unsigned int)((s_lcd_filter[0] & 3) | ((s_lcd_filter[1] & 3) << 2) | ((s_lcd_filter[2] & 3) << 4)
+		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
@@ -390,10 +398,13 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 	if (ver >= 2) {
 		s_load_on_boot  = rd32(b + 16) ? 1 : 0;
 		s_skip_boot     = rd32(b + 20) ? 1 : 0;
-		{ unsigned int pk = rd32(b + 24);   /* packed: bits0-1 SNES, 2-3 GBA, 4-5 GBC (old blobs stored plain SNES value) */
+		{ unsigned int pk = rd32(b + 24);   /* bits0-5 filters (SNES/GBA/GBC); 6-7 GBA aspect, 8-9 GBC aspect */
+		  int ga, gg;
 		  ayaneo_set_lcd_filter_core(0, (int)(pk & 3));
 		  ayaneo_set_lcd_filter_core(1, (int)((pk >> 2) & 3));
-		  ayaneo_set_lcd_filter_core(2, (int)((pk >> 4) & 3)); }
+		  ayaneo_set_lcd_filter_core(2, (int)((pk >> 4) & 3));
+		  ga = (int)((pk >> 6) & 3); g_gba_aspect = (ga <= 2) ? ga : 0;   /* 3 (never written) -> Pixel */
+		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0; }
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -420,6 +431,34 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 	s_settings_loaded = 1;			/* SD values are authoritative from here */
 }
 
+/* Headless round-trip self-test for the settings blob (validates the aspect bits packed into the
+ * b+24 filter word do NOT disturb the per-core LCD filters, and both survive serialize->deserialize).
+ * Non-destructive: saves the live filter/aspect values, exercises the REAL serialize + deserialize
+ * with distinct test values, checks they round-trip, then restores the live values. Everything else
+ * in the blob is serialized from (and deserialized back to) its live value, so nothing is lost.
+ * Returns 0 on pass, else a bitmask of which field failed (bit0 SNESfilt..bit4 GBCaspect). */
+int ayaneo_settings_aspect_selftest(void)
+{
+	static unsigned char b[64];
+	int of0 = s_lcd_filter[0], of1 = s_lcd_filter[1], of2 = s_lcd_filter[2];
+	int oga = g_gba_aspect, ogg = g_gbc_aspect;
+	int fail = 0;
+	s_lcd_filter[0] = 3; s_lcd_filter[1] = 2; s_lcd_filter[2] = 1;   /* distinct test filters */
+	g_gba_aspect = 2; g_gbc_aspect = 1;                             /* Stretch / Fit */
+	ayaneo_settings_serialize(b, 64);
+	s_lcd_filter[0] = s_lcd_filter[1] = s_lcd_filter[2] = 0;
+	g_gba_aspect = g_gbc_aspect = 0;
+	ayaneo_settings_deserialize(b, 64);
+	if (s_lcd_filter[0] != 3) fail |= 1;
+	if (s_lcd_filter[1] != 2) fail |= 2;
+	if (s_lcd_filter[2] != 1) fail |= 4;
+	if (g_gba_aspect   != 2) fail |= 8;
+	if (g_gbc_aspect   != 1) fail |= 16;
+	s_lcd_filter[0] = of0; s_lcd_filter[1] = of1; s_lcd_filter[2] = of2;   /* restore live values */
+	g_gba_aspect = oga; g_gbc_aspect = ogg;
+	return fail;
+}
+
 /* write all current settings back to boot_b (block-aligned) */
 void ayaneo_settings_save(void)
 {
@@ -432,7 +471,8 @@ void ayaneo_settings_save(void)
 	wr32(b + 12, (unsigned int)s_brightness);
 	wr32(b + 16, (unsigned int)s_load_on_boot);
 	wr32(b + 20, (unsigned int)s_skip_boot);
-	wr32(b + 24, (unsigned int)((s_lcd_filter[0] & 3) | ((s_lcd_filter[1] & 3) << 2) | ((s_lcd_filter[2] & 3) << 4)));
+	wr32(b + 24, (unsigned int)((s_lcd_filter[0] & 3) | ((s_lcd_filter[1] & 3) << 2) | ((s_lcd_filter[2] & 3) << 4)
+		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);

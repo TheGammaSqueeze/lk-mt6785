@@ -322,7 +322,7 @@ static int gm_change(int i, int dir, int act)
 	case GM_BRIGHT:  if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case GM_VOLUME:  if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
 	case GM_FILTER:  if (dir) ayaneo_set_lcd_filter_core(2, (ayaneo_get_lcd_filter_core(2) + dir + 4) % 4); else changed = 0; break;
-	case GM_ASPECT:  if (dir) g_gbc_aspect = (g_gbc_aspect + dir + 3) % 3; changed = 0; break;
+	case GM_ASPECT:  if (dir) g_gbc_aspect = (g_gbc_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
 	case GM_PALETTE: if (s_menu_is_dmg && s_menu_pal) {
 				 if (act == 1) {   /* A = open the full palette list picker */
 					 s_pal_pick_saved = *s_menu_pal;
