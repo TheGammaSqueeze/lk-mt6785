@@ -73,14 +73,17 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
 #define GEN_STATE_CAP  0x00400000u        /* 4 MB (GPGX state ~0.5-1 MB) */
 #define GEN_AHEAD_BUF  0x53800000u        /* run-ahead save/restore scratch (separate from state) */
 #define GEN_REWIND_MAX_SPD 1536           /* max rewind speed in 256ths (1536 = 6x); floor 256 = 1x */
+#define GEN_REWIND_MHZ     1999           /* CPU clock held WHILE rewinding, so a full-serialize rewind
+                                           * reaches 6x even when the gameplay tier clock is low; the
+                                           * gameplay clock is restored on release. Rewind is vsync-capped
+                                           * (one present/frame) so this is safe capped play. */
 
 /* run-ahead CPU clock by depth: pf frames run pf+1 emulations/display + 1 save + 1 load, so
  * escalate the clock with depth (mirrors the snes s_snes_ra_opp). ayaneo_set_cpu_mhz is PLL-only. */
-/* Gameplay CPU clock per run-ahead tier (pf=0..3). pf=0 (run-ahead Off, the default) now floors at
- * 1800 MHz like the SNES core - 1400 left demanding MD scenes short of 60fps. 1800 is validated safe for
- * sustained VSYNC-capped play on this SoC (the CPU idles each frame; only uncapped 1800+ browns out).
- * Higher run-ahead tiers escalate to 2000 for the extra pf+1 emulations. Monotonic non-decreasing. */
-static const unsigned s_gen_ra_opp[4] = { 1800, 1800, 2000, 2000 };
+/* Gameplay CPU clock per run-ahead tier (index = pf: 0 Off, 1 Balanced, 2 Responsive, 3 Max). Set per
+ * the user's chosen ladder - each tier steps up ~200 MHz for the extra pf+1 emulations run-ahead does.
+ * ayaneo_set_cpu_mhz programs the PLL directly (no grid snapping), so these exact values are applied. */
+static const unsigned s_gen_ra_opp[4] = { 999, 1199, 1399, 1599 };
 
 volatile int g_genesis_menu_open;         /* gates game input + FF/rewind while the Pico menu is up */
 volatile int g_genesis_aspect;            /* display aspect: 0=Pixel 1=Fit 2=Stretch (ayaneo_genesis_show_frame) */
@@ -348,6 +351,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	const struct genesis_core_exports *c = genesis_core_load();
 	unsigned romsz, sr = 44100, ssz, rw_payload, saved_mhz;
 	int aya_prev = 0, aya_hold = 0, rw_acc = 0, reset_hold = 0;
+	unsigned rw_saved_mhz = 0;   /* gameplay clock stashed while a rewind boosts to GEN_REWIND_MHZ */
 	int up_h = 0, dn_h = 0, lt_h = 0, rt_h = 0;             /* menu nav auto-repeat hold counters */
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	struct genesis_frame fr;
@@ -470,7 +474,11 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			unsigned int sz; const void *st; int k, steps, done = 0;
 			unsigned int rw_t0;
 			ayaneo_hud_set(2, spd * 10 / 256);   /* cyan reverse-speed badge (requested speed) */
-			if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
+			if (!ayaneo_rewind_active()) {
+				ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip();
+				rw_saved_mhz = ayaneo_get_cpu_mhz();       /* boost to GEN_REWIND_MHZ for the rewind, */
+				ayaneo_set_cpu_mhz(GEN_REWIND_MHZ);        /* restored on release below */
+			}
 			rw_acc += spd; steps = rw_acc >> 8; rw_acc &= 255;
 			{	/* Cap the reverse steps to what fits one vsync: a rewound frame is a FULL state_load
 				 * (GPGX has no cheap raw snapshot) + a full render, so a heavy cart cannot sustain 6x
@@ -519,7 +527,10 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			mtk_wdt_restart();
 			continue;   /* rewind present done; skip the forward path */
 		}
-		if (ayaneo_rewind_active()) { ayaneo_rewind_end(); ayaneo_audio_reverse_flip(); }
+		if (ayaneo_rewind_active()) {
+			ayaneo_rewind_end(); ayaneo_audio_reverse_flip();
+			if (rw_saved_mhz) { ayaneo_set_cpu_mhz(rw_saved_mhz); rw_saved_mhz = 0; }   /* restore gameplay clock */
+		}
 
 		em0 = gpt4_get_current_tick();
 		c->run(&fr);                                 /* committed frame */
