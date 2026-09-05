@@ -980,8 +980,8 @@ static void config_default(void)
    config.fm_preamp      = 100;
    config.cdda_volume    = 100;
    config.pcm_volume     = 100;
-   config.hq_fm          = 1; /* high-quality FM resampling (slower) */
-   config.hq_psg         = 1; /* high-quality PSG resampling (slower) */
+   config.hq_fm          = 1; /* high-quality FM resampling: measured only ~1% frame-us cost, keep for audio quality */
+   config.hq_psg         = 1; /* high-quality PSG resampling */
    config.filter         = 1; /* no filter */
    config.lp_range       = 0x9999; /* 0.6 in 0.16 fixed point */
    config.low_freq       = 880;
