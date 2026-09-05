@@ -190,6 +190,14 @@ int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
 	n = scan_rom_folder(v, "/roms/gba",  ".gba",  GBA_CONSOLE_GBA,  out, max, n, &tot);
 	n = scan_rom_folder(v, "/roms/snes", ".sfc",  GBA_CONSOLE_SNES, out, max, n, &tot);
 	n = scan_rom_folder(v, "/roms/snes", ".smc",  GBA_CONSOLE_SNES, out, max, n, &tot);
+	/* Sega, all via the Genesis-Plus-GX core (one blob) - the type routes the system hint. */
+	n = scan_rom_folder(v, "/roms/genesis", ".md",  GBA_CONSOLE_GENESIS, out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/genesis", ".gen", GBA_CONSOLE_GENESIS, out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/genesis", ".bin", GBA_CONSOLE_GENESIS, out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/genesis", ".smd", GBA_CONSOLE_GENESIS, out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/sms",     ".sms", GBA_CONSOLE_SMS, out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/gg",      ".gg",  GBA_CONSOLE_GG,  out, max, n, &tot);
+	n = scan_rom_folder(v, "/roms/sg",      ".sg",  GBA_CONSOLE_SG,  out, max, n, &tot);
 	if (total) *total = tot;
 	for (i = 1; i < n; i++) {           /* insertion sort, case-insensitive by name */
 		gba_rom_entry t = out[i];
@@ -207,6 +215,10 @@ int gba_sd_make_rom_dirs(fat_vol *v)
 	if (fat_wr_mkpath(v, "/roms/gbc")  != 0) rc = -1;
 	if (fat_wr_mkpath(v, "/roms/gba")  != 0) rc = -1;
 	if (fat_wr_mkpath(v, "/roms/snes") != 0) rc = -1;
+	if (fat_wr_mkpath(v, "/roms/genesis") != 0) rc = -1;
+	if (fat_wr_mkpath(v, "/roms/sms")  != 0) rc = -1;
+	if (fat_wr_mkpath(v, "/roms/gg")   != 0) rc = -1;
+	if (fat_wr_mkpath(v, "/roms/sg")   != 0) rc = -1;
 	return rc;
 }
 

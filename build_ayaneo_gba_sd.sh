@@ -40,6 +40,10 @@ echo ">> Building snes9x SNES core objects + blob for boot_b"
 emu/snes9x/build_core.sh >/dev/null
 emu/snes9x/build_core_blob.sh >/dev/null 2>&1
 
+echo ">> Building Genesis-Plus-GX (MD/SMS/GG/SG) core objects + blob for boot_b"
+emu/genesis/build_core.sh >/dev/null 2>&1
+emu/genesis/build_core_blob.sh >/dev/null 2>&1
+
 echo ">> Building $PROJECT (AYANEO_GBA_SD=yes, jobs=$JOBS)"
 rm -f "build-$PROJECT/lk" "build-$PROJECT/lk.img"
 make "$PROJECT" AYANEO_GBA_SD=yes -j"$JOBS"

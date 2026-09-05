@@ -23,10 +23,14 @@ DEF_AUDIO = os.path.join(HERE, "..", "audio", "boot_audio.bin")
 DEF_BLOB  = os.path.join(HERE, "..", "..", "..", "emu", "gba", "core_gba.blob")
 DEF_GBC_BLOB = os.path.join(HERE, "..", "..", "..", "emu", "gbc", "core_gbc.blob")
 DEF_SNES_BLOB = os.path.join(HERE, "..", "..", "..", "emu", "snes9x", "core_snes.blob")
+DEF_GENESIS_BLOB = os.path.join(HERE, "..", "..", "..", "emu", "genesis", "core_genesis.blob")
 
 AUDIO_OFF = 0x01000000
 PACK_OFF  = 0x01100000
-GBC_BLOB_OFF = 0x01900000         # gambatte GB/GBC core blob (matches GBC_CORE_BLOB_OFF)
+GBC_BLOB_OFF = 0x01900000         # gambatte GB/GBC core blob (matches GBC_CORE_BLOB_OFF); the GBC
+                                  # blob is tiny (~0.14MB) so its 3MB slot has slack for the genesis blob
+GENESIS_BLOB_OFF = 0x01A00000     # Genesis-Plus-GX core blob (matches GENESIS_CORE_BLOB_OFF in the
+                                  # loader); 2MB slot in the GBC slack, before the gpSP blob at 0x01C00000
 STATE_OFF = 0x01C00000
 BLOB_OFF  = 0x01C00000            # gpSP core blob (matches GBA_CORE_BLOB_OFF in the loader)
 SNES_BLOB_OFF = 0x01E00000        # snes9x core blob (matches SNES_CORE_BLOB_OFF in the loader)
@@ -45,6 +49,7 @@ def main():
     ap.add_argument("--blob", default=DEF_BLOB)
     ap.add_argument("--gbc-blob", default=DEF_GBC_BLOB)
     ap.add_argument("--snes-blob", default=DEF_SNES_BLOB)
+    ap.add_argument("--genesis-blob", default=DEF_GENESIS_BLOB)
     a = ap.parse_args()
 
     pack = open(a.pack, "rb").read()
@@ -53,6 +58,7 @@ def main():
     blob = open(a.blob, "rb").read() if os.path.exists(a.blob) else b""
     gbc = open(a.gbc_blob, "rb").read() if os.path.exists(a.gbc_blob) else b""
     snes = open(a.snes_blob, "rb").read() if os.path.exists(a.snes_blob) else b""
+    genesis = open(a.genesis_blob, "rb").read() if os.path.exists(a.genesis_blob) else b""
     if not blob:
         raise SystemExit("core blob %s missing - run emu/gba/build_core_blob.sh first" % a.blob)
     if not gbc:
@@ -71,9 +77,12 @@ def main():
         raise SystemExit("SNES pack (%d B deflate) overruns the GBC blob region "
                          "@0x%x by %d B; downscale art in pack_snes.py" %
                          (len(comp), GBC_BLOB_OFF, pack_end - GBC_BLOB_OFF))
-    if GBC_BLOB_OFF + len(gbc) > BLOB_OFF:
-        raise SystemExit("GBC blob (%d B) overruns the gpSP blob region @0x%x by %d B" %
-                         (len(gbc), BLOB_OFF, GBC_BLOB_OFF + len(gbc) - BLOB_OFF))
+    if GBC_BLOB_OFF + len(gbc) > GENESIS_BLOB_OFF:
+        raise SystemExit("GBC blob (%d B) overruns the genesis blob region @0x%x by %d B" %
+                         (len(gbc), GENESIS_BLOB_OFF, GBC_BLOB_OFF + len(gbc) - GENESIS_BLOB_OFF))
+    if GENESIS_BLOB_OFF + len(genesis) > BLOB_OFF:
+        raise SystemExit("genesis blob (%d B) overruns the gpSP blob region @0x%x by %d B" %
+                         (len(genesis), BLOB_OFF, GENESIS_BLOB_OFF + len(genesis) - BLOB_OFF))
     if BLOB_OFF + len(blob) > SNES_BLOB_OFF:
         raise SystemExit("gpSP blob (%d B) overruns the SNES blob region @0x%x by %d B" %
                          (len(blob), SNES_BLOB_OFF, BLOB_OFF + len(blob) - SNES_BLOB_OFF))
@@ -91,6 +100,8 @@ def main():
     buf[PACK_OFF:PACK_OFF + len(hdr)] = hdr
     buf[PACK_OFF + len(hdr):pack_end] = comp
     buf[GBC_BLOB_OFF:GBC_BLOB_OFF + len(gbc)] = gbc
+    if genesis:
+        buf[GENESIS_BLOB_OFF:GENESIS_BLOB_OFF + len(genesis)] = genesis
     buf[BLOB_OFF:BLOB_OFF + len(blob)] = blob
     if snes:
         buf[SNES_BLOB_OFF:SNES_BLOB_OFF + len(snes)] = snes
@@ -102,6 +113,7 @@ def main():
     print("  snes  %8d B raw -> %d B deflate @0x%08x (ends 0x%08x)" %
           (len(pack), len(comp), PACK_OFF, pack_end))
     print("  gbc   %8d B @0x%08x (gambatte GB/GBC core)" % (len(gbc), GBC_BLOB_OFF))
+    print("  genesis %6d B @0x%08x (Genesis-Plus-GX MD/SMS/GG/SG core)" % (len(genesis), GENESIS_BLOB_OFF))
     print("  blob  %8d B @0x%08x (gpSP core)" % (len(blob), BLOB_OFF))
     print("  snes9x %7d B @0x%08x (snes9x core)" % (len(snes), SNES_BLOB_OFF))
 

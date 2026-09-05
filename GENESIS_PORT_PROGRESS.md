@@ -56,9 +56,14 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
       native geom, vsync present, HUD). + rules.mk entries. **lk_a BUILDS CLEAN** with all of it
       (not yet reachable: no dispatch / ROM folders / blob-in-boot_b). Parity extras (FF/rewind/
       run-ahead/menu/aspect-RSZ) deferred.
-- [ ] Menu integration: genesis blob into build + boot_b packer @0x01A00000; ROM folder scan
-      (/roms/genesis,/sms,/gg,/sg); launch dispatch (both ROM-select sites in gba_driver.c ->
-      genesis_sd_session); boxart/badges. <-- NEXT STEP (makes it flashable+testable)
+- [x] Menu integration: genesis blob built + packed into boot_b @0x01A00000 (build_ayaneo_gba_sd.sh
+      + build_snes_boot_b.py, guards GBC-end <= 0x01A00000 and genesis-end <= gpSP 0x01C00000);
+      ROM folder scan added (/roms/genesis .md/.gen/.bin/.smd, /roms/sms .sms, /roms/gg .gg,
+      /roms/sg .sg) in sd_fat.c + mkdirs; launch dispatch at BOTH ROM-select sites in gba_driver.c
+      (type >= GBA_CONSOLE_GENESIS -> genesis_sd_session, before the != GBA catch-all). **FULL
+      BUILD CLEAN + FLASHED to device** (lk_a + boot_b). Boxart/badges = later (cosmetic).
+- [ ] On-device validation: oem gen-probe (blob load check, no ROM) <-- NEXT; then a real
+      Genesis ROM in /roms/genesis for gameplay. Then parity extras.
       PLAN (mirror emu/snes9x/snes_sd_run.c, but BASIC first per CORE_PORTING_NOTES #8; gate
       parity extras behind a flag and add them in later firings):
       * ayaneo_genesis_pad_mask(unsigned port): LK pad GPIOs -> RETRO_DEVICE_ID_JOYPAD_* bits.
