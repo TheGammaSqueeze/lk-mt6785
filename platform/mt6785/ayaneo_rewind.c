@@ -21,7 +21,11 @@ extern BOOT_ARGUMENT *g_boot_arg;
 
 #define REWIND_SCRATCH_END 0x56000000ULL /* end of the 128MB emulator scratch; look above this */
 #define REWIND_VA_LIMIT    0x100000000ULL /* LK is 32-bit VA (identity) - can only map phys < 4GB */
-#define REWIND_CAP         0x20000000u    /* hard cap 512MB (plenty; leaves huge margin) */
+#define REWIND_CAP         0x3E000000u    /* ~992MB. The old 512MB cap tied every high mblock at 512MB,
+					   * so region_find picked the FIRST (mblk4 @0x56000000); a higher cap
+					   * lets it select the largest island (mblk10 ~990MB @0xC0000000 on a
+					   * 3GB unit) uncapped, ~2x the rewind window. block-headroom stays the
+					   * binding limit, so smaller SKUs still scale down safely. */
 #define REWIND_HEADROOM    0x02000000u    /* leave 32MB below the chosen mblock's end */
 #define REWIND_MIN         0x04000000u    /* need at least 64MB to bother */
 #define SECT_ALIGN(x)      ((x) & ~(SECTION_SIZE - 1))   /* 2MB-align -> cheap L1 sections, no L2 heap */
