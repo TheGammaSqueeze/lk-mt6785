@@ -1984,43 +1984,63 @@ static int emu_thread(void *arg)
 			update_buttons();
 
 			/* Rewind (left trigger): instead of advancing the game, walk the ring of periodic
-			 * snapshots backward and re-render. Press depth sets a smooth 1x..2x speed (see GBA_REWIND_MAX_SPD);
-			 * audio is suppressed (the same g_gba_audio_suppress the look-ahead uses); the committed
-			 * frame / FF / run-ahead / present below are skipped. Menu-gated. State-load flushes the
-			 * dynarec, so re-enter the CPU thread cleanly (clean boundary + restart) exactly like the
-			 * run-ahead rewind. On release the ring commits the rewound point as the new head. */
+			 * snapshots backward and re-render. Press depth sets a smooth 1x..2x speed (see
+			 * GBA_REWIND_MAX_SPD). Each stepped-back frame is rendered (newest-first) and its audio is
+			 * captured (g_gba_audio_capture routes gba_audio_cb into g_gba_cap instead of the sink),
+			 * then REVERSED + decimated by `steps` and submitted so you hear the game backwards, with
+			 * `steps` frames compressed into one present (correct 1x..2x pitch, no ring overrun). Only
+			 * the last (oldest) frame's video is presented. State-load flushes the dynarec, so each
+			 * render re-enters the CPU thread cleanly (clean boundary + restart) like the run-ahead
+			 * rewind. Menu-gated. On release the ring commits the rewound point as the new head. */
 			{
 				extern int ayaneo_joypad_rewind_level(void);
+				extern void ayaneo_audio_reverse_flip(void);
+				extern void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames);
+				extern void ayaneo_gba_rw_capture_begin(void);
+				extern unsigned ayaneo_gba_rw_capture_end(const short **buf);
+				static short s_gba_audrev[4096 * 2];   /* reversed+decimated audio scratch */
 				int rw = (!s_menu_open) ? ayaneo_joypad_rewind_level() : 0;
 				if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
 					int spd = 256 + (rw * (GBA_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(2x) */
-					unsigned sz; const void *st; int k, steps;
-					if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; }
+					unsigned sz; const void *st; int k, steps, rendered = 0;
+					if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
 					rw_acc += spd;
 					steps = rw_acc >> 8; rw_acc &= 255;         /* whole snapshots to step this present (>=1) */
-					for (k = 0; k < steps; k++)
-						if (ayaneo_rewind_step() != 0) break;   /* clamp at the oldest state */
-					st = ayaneo_rewind_cur(&sz);
-					if (st && sz) {
+					for (k = 0; k < steps; k++) {
+						const short *cap; unsigned fr, i, j = 0;
+						int atold = (ayaneo_rewind_step() != 0);
+						if (k > 0 && atold) break;          /* already rendered >=1 and now at oldest */
+						st = ayaneo_rewind_cur(&sz);
+						if (!st || !sz) break;
 						g_gba_load_light = 1;
 						gba_core_state_load((void *)st);
 						gba_sound_ring_load((unsigned char *)st + s_gba_rw_snd_off);
 						g_gba_load_light = 0;
 						s_cpu_clean_boundary = 1;   /* re-enter as a FULL frame */
 						s_cpu_restart_req = 1;      /* the render run_one_frame re-enters cleanly */
-						g_gba_audio_suppress = 1;
-						run_one_frame();            /* render the loaded state (muted) */
-						g_gba_audio_suppress = 0;
+						ayaneo_gba_rw_capture_begin();
+						run_one_frame();            /* render video + capture this frame's audio */
+						fr = ayaneo_gba_rw_capture_end(&cap);
+						if (fr > 4096u) fr = 4096u;
+						for (i = 0; i < fr; i += (unsigned)steps) {   /* reverse (+ decimate) */
+							s_gba_audrev[j * 2]     = cap[(fr - 1u - i) * 2];
+							s_gba_audrev[j * 2 + 1] = cap[(fr - 1u - i) * 2 + 1];
+							j++;
+						}
+						ayaneo_gba_audio_submit(s_gba_audrev, j);   /* play this frame backwards */
+						rendered = 1;
+						if (atold) break;                   /* rendered the oldest: hold */
+					}
+					if (rendered) {
 						ayaneo_present_skip_framedone = 0;
-						ayaneo_gbc_show_frame(gba_core_screen());
+						ayaneo_gbc_show_frame(gba_core_screen());   /* present the oldest video */
 						mtk_wdt_restart();
 						continue;
 					}
-					/* empty/invalid slot (should not happen with count>0): abandon rewind and
-					 * fall through to a normal committed frame rather than run stale dynarec. */
-					ayaneo_rewind_end();
+					/* nothing valid to render (should not happen with count>0): abandon rewind. */
+					ayaneo_rewind_end(); ayaneo_audio_reverse_flip();
 				} else if (ayaneo_rewind_active()) {
-					ayaneo_rewind_end();   /* released: resume forward */
+					ayaneo_rewind_end(); ayaneo_audio_reverse_flip();   /* released: resume forward */
 				}
 			}
 

@@ -1170,6 +1170,17 @@ void ayaneo_gba_audio_set_rate(int panel_hz100)
 }
 
 /* `frames` stereo frames, s16 interleaved [L,R,L,R,...] at GBA_SRC_HZ. */
+/* Rewind reverse-audio capture (GBA). While active, ayaneo_gba_audio_submit diverts the core's
+ * per-frame audio (s16 stereo @ 65536 Hz) into s_gba_rw_cap[] instead of the AFE ring; the GBA
+ * rewind path then reverses + decimates + resubmits it. gpSP drains its ring in <=256-frame chunks
+ * per rendered frame, so the callback fires a few times - accumulate until capture_end reads it. */
+#define GBA_RW_CAP_MAX 4096u
+static volatile int s_gba_rw_capture;
+static short s_gba_rw_cap[GBA_RW_CAP_MAX * 2];
+static volatile unsigned s_gba_rw_cap_n;
+void ayaneo_gba_rw_capture_begin(void) { s_gba_rw_cap_n = 0; s_gba_rw_capture = 1; }
+unsigned ayaneo_gba_rw_capture_end(const short **buf) { s_gba_rw_capture = 0; if (buf) *buf = s_gba_rw_cap; return s_gba_rw_cap_n; }
+
 void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 {
 	extern volatile unsigned int g_dbg_asub_calls, g_dbg_asub_done, g_dbg_asub_frames;
@@ -1177,6 +1188,14 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 	unsigned q = (vol >= 100) ? 256u : ((unsigned)vol * 256u / 100u);
 	unsigned i;
 
+	if (s_gba_rw_capture) {			/* rewind: divert into the capture buffer, do not ring */
+		unsigned n = frames, room = GBA_RW_CAP_MAX - s_gba_rw_cap_n, k;
+		if (n > room) n = room;
+		for (k = 0; k < n * 2u; k++)
+			s_gba_rw_cap[s_gba_rw_cap_n * 2u + k] = interleaved[k];
+		s_gba_rw_cap_n += n;
+		return;
+	}
 	g_dbg_asub_calls++;
 	if (!s_gbc_audio_on || s_gbc_paused)
 		return;
@@ -1358,6 +1377,27 @@ static int      s_sn_pl, s_sn_pr;
 static int      s_sn_prime;
 
 void ayaneo_snes_audio_reset(void) { s_sn_phase = 0; s_sn_pl = s_sn_pr = 0; s_sn_prime = 0; }
+
+/* Called at a rewind direction change (forward->reverse on entry, reverse->forward on release).
+ * Resets every core's resampler carry state so the first sample after the flip is not a blend of
+ * forward+reverse data (a one-sample straddle tick), and reseats the ring write cursor to a clean
+ * ~85 ms lead over the live AFE read cursor (same as ayaneo_gbc_audio_pause(0)) so the stale audio
+ * queued ahead of the read pointer is dropped and the emergency snap cannot fire on the first
+ * post-flip submit. Does NOT wipe the ring (that would drop the small amount of still-valid audio
+ * between the read and write cursors). Only the active core's state matters; resetting all is safe. */
+void ayaneo_audio_reverse_flip(void)
+{
+	if (!s_gbc_audio_on)
+		return;
+	s_rs_accl = s_rs_accr = 0; s_rs_n = 0; s_rs_phase = 0;          /* GBC box decimator */
+	s_ga_accl = s_ga_accr = 0; s_ga_n = 0; s_ga_phase = 0;          /* GBA box decimator */
+	ayaneo_snes_audio_reset();                                      /* SNES linear interpolator */
+	{
+		unsigned cur = afe_r(AFE_DL1_CUR), base = (unsigned)(addr_t)s_gbc_ring;
+		unsigned f = (cur >= base) ? (cur - base) / 4u : 0u;
+		s_gbc_widx = (f + GBC_RING_FRAMES / 4u) & (GBC_RING_FRAMES - 1u);
+	}
+}
 
 void ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz)
 {

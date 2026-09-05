@@ -563,19 +563,31 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * resumes from there. */
 		{
 			extern int ayaneo_joypad_rewind_level(void);
+			extern void ayaneo_audio_reverse_flip(void);
+			static unsigned int s_gbc_audrev[GBC_SND_MAX];   /* reversed+decimated audio scratch */
 			int rw = (!g_gbc_menu_open) ? ayaneo_joypad_rewind_level() : 0;
 			if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
 				int spd = 256 + (rw * (GBC_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(2x) */
 				unsigned sz; const void *st; int k, steps;
-				if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; }
+				if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
 				rw_acc += spd;
 				steps = rw_acc >> 8; rw_acc &= 255;         /* whole snapshots to step this present (>=1) */
-				for (k = 0; k < steps; k++)
-					if (ayaneo_rewind_step() != 0) break;   /* clamp at the oldest state */
-				st = ayaneo_rewind_cur(&sz);
-				if (st && sz) c->state_load(st, sz);
-				{ unsigned s2 = GBC_SND_MAX;                 /* render the loaded state (audio dropped) */
-				  c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2); }
+				/* Render each stepped-back frame (newest-first). Reverse + decimate its audio by
+				 * `steps` and submit, so `steps` frames compress into one present's worth of samples
+				 * (correct 1x..2x reverse pitch, no ring overrun). Present the LAST (oldest) video. */
+				for (k = 0; k < steps; k++) {
+					unsigned s2 = GBC_SND_MAX, i, j = 0;
+					int atold = (ayaneo_rewind_step() != 0);
+					if (k > 0 && atold) break;              /* already rendered >=1 and now at oldest */
+					st = ayaneo_rewind_cur(&sz);
+					if (!st || !sz) break;
+					c->state_load(st, sz);
+					c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);   /* render video + audio */
+					for (i = 0; i < s2; i += (unsigned)steps)
+						s_gbc_audrev[j++] = snd[s2 - 1u - i];       /* reverse (+ decimate) */
+					ayaneo_gbc_audio_submit(s_gbc_audrev, j);       /* play this frame backwards */
+					if (atold) break;                       /* rendered the oldest: hold */
+				}
 				mtk_wdt_restart();
 				ayaneo_gb_show_frame(vbuf);
 				pace_n++;
@@ -583,7 +595,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				  while ((int)(gpt4_get_current_tick() - target) < 0) ; }
 				continue;
 			}
-			if (ayaneo_rewind_active()) ayaneo_rewind_end();   /* released: resume forward from here */
+			if (ayaneo_rewind_active()) { ayaneo_rewind_end(); ayaneo_audio_reverse_flip(); }   /* resume forward */
 		}
 
 		samples = GBC_SND_MAX;

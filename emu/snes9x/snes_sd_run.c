@@ -685,27 +685,47 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * ring commits the rewound point as the new head and forward play resumes from there. */
 		{
 			extern int ayaneo_joypad_rewind_level(void);
+			extern void ayaneo_audio_reverse_flip(void);
+			static short s_snes_audrev[2048 * 2];   /* reversed+decimated audio scratch */
 			int rw = (!g_snes_menu_open && !g_snes_test_limit) ? ayaneo_joypad_rewind_level() : 0;
 			if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
 				int spd = 256 + (rw * (SNES_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(2x) */
 				unsigned sz; const void *st; int k, steps;
-				if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; }
+				if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
 				rw_acc += spd;
 				steps = rw_acc >> 8; rw_acc &= 255;         /* whole snapshots to step this present (>=1) */
-				for (k = 0; k < steps; k++)
-					if (ayaneo_rewind_step() != 0) break;   /* clamp at the oldest state */
-				st = ayaneo_rewind_cur(&sz);
-				if (st && sz) c->state_load_ra(st);         /* raw restore (matches the raw capture) */
-				if (c->set_av_skip) c->set_av_skip(0, 0);
-				c->run(&f);                                 /* render the loaded state (audio dropped) */
-				g_snes_dbg_frames++;
+				/* Render each stepped-back frame (newest-first); reverse + decimate its audio by
+				 * `steps` and submit, so `steps` frames compress into one present's worth (correct
+				 * 1x..2x reverse pitch, no ring overrun). Present the LAST (oldest) frame's video. */
+				for (k = 0; k < steps; k++) {
+					int atold = (ayaneo_rewind_step() != 0);
+					if (k > 0 && atold) break;              /* already rendered >=1 and now at oldest */
+					st = ayaneo_rewind_cur(&sz);
+					if (!st || !sz) break;
+					c->state_load_ra(st);                   /* raw restore (matches the raw capture) */
+					if (c->set_av_skip) c->set_av_skip(0, 0);
+					c->run(&f);                             /* render video + audio */
+					g_snes_dbg_frames++;
+					if (f.audio && f.frames) {              /* reverse (+ decimate) -> play backwards */
+						const short *a = (const short *)f.audio;
+						unsigned fr = f.frames, i, j = 0;
+						if (fr > 2048u) fr = 2048u;
+						for (i = 0; i < fr; i += (unsigned)steps) {
+							s_snes_audrev[j * 2]     = a[(fr - 1u - i) * 2];
+							s_snes_audrev[j * 2 + 1] = a[(fr - 1u - i) * 2 + 1];
+							j++;
+						}
+						ayaneo_snes_audio_submit(s_snes_audrev, j, sr ? sr : 32040u);
+					}
+					if (atold) break;                       /* rendered the oldest: hold */
+				}
 				if (f.video && f.width && f.height)
 					ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
 				else
 					priamry_display_wait_for_vsync();
 				continue;
 			}
-			if (ayaneo_rewind_active()) ayaneo_rewind_end();   /* released: resume forward from here */
+			if (ayaneo_rewind_active()) { ayaneo_rewind_end(); ayaneo_audio_reverse_flip(); }   /* resume forward */
 		}
 
 		/* Freeze emulation while the in-game menu is open: skip c->run so the overlay always
