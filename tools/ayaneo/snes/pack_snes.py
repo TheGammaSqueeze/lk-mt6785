@@ -476,6 +476,14 @@ def main():
                     help="PNG registered as resource 'logo_gba' (Game Boy Advance card badge)")
     ap.add_argument("--logo-snes", dest="logo_snes", default=None,
                     help="PNG registered as resource 'logo_snes' (SNES card badge)")
+    ap.add_argument("--logo-genesis", dest="logo_genesis", default=None,
+                    help="PNG registered as resource 'logo_genesis' (Genesis/Mega Drive card badge)")
+    ap.add_argument("--logo-sms", dest="logo_sms", default=None,
+                    help="PNG registered as resource 'logo_sms' (Master System card badge)")
+    ap.add_argument("--logo-gg", dest="logo_gg", default=None,
+                    help="PNG registered as resource 'logo_gg' (Game Gear card badge)")
+    ap.add_argument("--logo-sg", dest="logo_sg", default=None,
+                    help="PNG registered as resource 'logo_sg' (SG-1000 card badge)")
     args = ap.parse_args()
 
     asset_dir = args.asset_dir
@@ -873,7 +881,9 @@ def main():
 
     # ---- console-type badges (bottom-right of each card, per ROM type) ----
     for key, path in (("logo_gb", args.logo_gb), ("logo_gbc", args.logo_gbc),
-                      ("logo_gba", args.logo_gba), ("logo_snes", args.logo_snes)):
+                      ("logo_gba", args.logo_gba), ("logo_snes", args.logo_snes),
+                      ("logo_genesis", args.logo_genesis), ("logo_sms", args.logo_sms),
+                      ("logo_gg", args.logo_gg), ("logo_sg", args.logo_sg)):
         if path:
             lidx = add_image(path, tile=False)
             if lidx is not None:

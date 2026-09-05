@@ -871,7 +871,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		if (m->gba_mode && m->gba_types && m->ngames > 0) {
 			int gidx = m->order[((gi % m->ngames) + m->ngames) % m->ngames];
 			int ty = m->gba_types[gidx];
-			const snes_img_entry *lg = (ty >= 0 && ty < 4) ? m->console_logo[ty] : 0;
+			const snes_img_entry *lg = (ty >= 0 && ty < 8) ? m->console_logo[ty] : 0;
 			if (lg && lg->w && lg->h) {
 				float maxW = 72.0f, maxH = 22.0f;      /* card-unit badge box */
 				float bs = maxW / (float)lg->w, bsh = maxH / (float)lg->h;
@@ -976,7 +976,7 @@ static const uint32_t *fct_get(snes_menu *m, int gi)
 		if (!m->gba_boxart && m->gba_types && m->ngames > 0) {
 			int gidx = m->order[((gi % m->ngames) + m->ngames) % m->ngames];
 			int ty = m->gba_types[gidx];
-			if (ty < 0 || ty > 2) ty = 2;
+			if (ty < 0 || ty > 7) ty = 7;
 			want = 0x40000000 | ty;
 		}
 		if (!m->fct_ready || m->fct_aspect != m->aspect ||
@@ -1026,12 +1026,12 @@ static const uint32_t *ctile_get(snes_menu *m, int gi)
 			}
 			return m->ctile;
 		}
-		if (m->ctile_cap >= 3) {
+		if (m->ctile_cap >= 8) {   /* room for one cached body tile per console type (0..7) */
 			int n = m->ngames > 0 ? m->ngames : 1;
 			int gidx = m->order[((gi % n) + n) % n];
 			int ty = m->gba_types[gidx];
 			int key;
-			if (ty < 0 || ty > 2) ty = 2;
+			if (ty < 0 || ty > 7) ty = 7;
 			key = 0x40000000 | ty;               /* slot == console type (0..2) */
 			if (m->ctile_gi[ty] != key) {
 				render_card_tile(m, gi, m->ctile + (unsigned)ty * CT_PIX, 0.0f);
@@ -1103,7 +1103,9 @@ void snes_menu_set_gba_boxart(snes_menu *m, const snes_img_entry *img, const sne
 
 void snes_menu_set_console_badges(snes_menu *m, const unsigned char *types,
 				  const snes_img_entry *gb, const snes_img_entry *gbc,
-				  const snes_img_entry *gba, const snes_img_entry *snes)
+				  const snes_img_entry *gba, const snes_img_entry *snes,
+				  const snes_img_entry *genesis, const snes_img_entry *sms,
+				  const snes_img_entry *gg, const snes_img_entry *sg)
 {
 	int i;
 	m->gba_types = types;
@@ -1111,6 +1113,10 @@ void snes_menu_set_console_badges(snes_menu *m, const unsigned char *types,
 	m->console_logo[1] = gbc;
 	m->console_logo[2] = gba;
 	m->console_logo[3] = snes;
+	m->console_logo[4] = genesis;   /* GBA_CONSOLE_GENESIS */
+	m->console_logo[5] = sms;       /* GBA_CONSOLE_SMS */
+	m->console_logo[6] = gg;        /* GBA_CONSOLE_GG */
+	m->console_logo[7] = sg;        /* GBA_CONSOLE_SG */
 	/* the badge is baked into the per-card tile cache: invalidate so it repaints */
 	m->ctile_aspect = -1;
 	if (m->ctile_gi) for (i = 0; i < m->ctile_cap; i++) m->ctile_gi[i] = -1;
@@ -1716,7 +1722,8 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->sub_ready = 0; m->sub_key = 0; m->sub_op0 = 0; m->sub_op1 = 0;
 	m->wp_skip0 = 0; m->wp_skip1 = 0;
 	m->gba_mode = 0; m->gba_names = 0; m->gba_cart_img = 0; m->launch = -1; m->sysreset = 0; m->pstart = 0;
-	m->gba_types = 0; m->console_logo[0] = m->console_logo[1] = m->console_logo[2] = 0;
+	m->gba_types = 0;
+	{ int ci; for (ci = 0; ci < 8; ci++) m->console_logo[ci] = 0; }
 	m->ctile = 0; m->ctile_gi = 0; m->ctile_cap = 0; m->ctile_aspect = -1;
 	m->fct = 0; m->fct_ready = 0; m->fct_aspect = -1; m->no_cursor = 0;
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;

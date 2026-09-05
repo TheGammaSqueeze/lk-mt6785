@@ -524,12 +524,16 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	build_names(roms, nrom);
 	cart = snes_res_img(&s_pk, snes_hash("gba_cart"));
 	snes_menu_set_gba_roster(&s_menu, s_nameptr, nrom, cart);
-	/* console-type badges (GB / GBC / GBA logo bottom-right of each card) */
+	/* console-type badges (GB / GBC / GBA / SNES / Genesis / SMS / GG / SG logo bottom-right of each card) */
 	snes_menu_set_console_badges(&s_menu, s_types,
 				     snes_res_img(&s_pk, snes_hash("logo_gb")),
 				     snes_res_img(&s_pk, snes_hash("logo_gbc")),
 				     snes_res_img(&s_pk, snes_hash("logo_gba")),
-				     snes_res_img(&s_pk, snes_hash("logo_snes")));
+				     snes_res_img(&s_pk, snes_hash("logo_snes")),
+				     snes_res_img(&s_pk, snes_hash("logo_genesis")),
+				     snes_res_img(&s_pk, snes_hash("logo_sms")),
+				     snes_res_img(&s_pk, snes_hash("logo_gg")),
+				     snes_res_img(&s_pk, snes_hash("logo_sg")));
 	if (start_sel >= 0 && start_sel < nrom) s_menu.focus = start_sel;
 
 	/* Card-tile cache: cap SNES_CTILE2_CAP slots. Without boxart every GBA card body

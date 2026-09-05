@@ -122,11 +122,15 @@ int main(int argc, char **argv)
 			const snes_img_entry *lgc = snes_res_img(&pk, snes_hash("logo_gbc"));
 			const snes_img_entry *lga = snes_res_img(&pk, snes_hash("logo_gba"));
 			const snes_img_entry *lgs = snes_res_img(&pk, snes_hash("logo_snes"));
+			const snes_img_entry *lgn = snes_res_img(&pk, snes_hash("logo_genesis"));
+			const snes_img_entry *lms = snes_res_img(&pk, snes_hash("logo_sms"));
+			const snes_img_entry *lgg = snes_res_img(&pk, snes_hash("logo_gg"));
+			const snes_img_entry *lsg = snes_res_img(&pk, snes_hash("logo_sg"));
 			int k;
 			const char *force = getenv("GBA_BADGE_FORCE");
 			for (k = 0; k < gn && k < 128; k++)
-				types[k] = force ? (unsigned char)atoi(force) : (unsigned char)(k % 4);
-			snes_menu_set_console_badges(&menu, types, lg, lgc, lga, lgs);
+				types[k] = force ? (unsigned char)atoi(force) : (unsigned char)(k % 8);
+			snes_menu_set_console_badges(&menu, types, lg, lgc, lga, lgs, lgn, lms, lgg, lsg);
 			if (!lg || !lgc || !lga || !lgs) fprintf(stderr, "WARN a console logo image is not in pack\n");
 		}
 

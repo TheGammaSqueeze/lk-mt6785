@@ -154,8 +154,20 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
         all 4 blob sites: load/serialize/deserialize/save); run-ahead persists via the shared preempt-frames
         (b+48). genesis_sd_run restores them at session start (region pushed via set_option) and touches the
         deferred persist on every menu change. No blob version bump needed (old blobs read 0 = correct defaults).
-  - [ ] Also remaining: GPGX overclock core option in the menu (region done); boxart/console badges in
-        the carousel (SMS/GG/SG/MD logos like the GB/GBC/GBA/SNES badges).
+  - [x] Console badges in the carousel: GENESIS/SMS/GG/SG wordmark logos (tools/ayaneo/snes/logos/*.png,
+        generated white bold, swappable) packed as logo_genesis/sms/gg/sg; console_logo[] extended 4->8,
+        the badge-cache clamp raised from >2 to >7 (also fixes the latent SNES type-3 collision),
+        snes_menu_set_console_badges + both callers pass the 4 Sega badges. s_types already carries the
+        GENESIS/SMS/GG/SG type per ROM. boot_b + lk_a changed.
+  - [~] PARITY REACHED. Genesis core is at feature parity with snes9x: emulation (MD/SMS/GG/SG),
+        display (Pixel/Fit/Stretch via RSZ, LCD filter, native geometry), input, ~44.1kHz audio, save
+        states + slots, SRAM battery, suspend/resume, adaptive fast-forward + HUD, rewind delta-ring +
+        6x reverse audio, run-ahead, CPU clock tiers, live Pico menu (brightness/volume/aspect/filter/
+        region/refresh/run-ahead/cpu/slot/save/load/reset/exit), settings persistence, launch/exit
+        punch-hole transitions, cross-core hotkey consistency (volume/brightness/power/soft-reset), and
+        console badges. Remaining is optional polish only: GPGX overclock menu option; official Sega
+        badge artwork to replace the generated wordmarks; and the deferred perf micro-opts (rewind
+        capture stride, blip/psg -O2, run-ahead single-serialize).
 
 ## Milestone reached (2026-09-05): Genesis core LOADS on the device
 Blob builds (1.34MB) + host-test PASS + on-device gen-probe PASS. A Genesis/MD/SMS/GG/SG ROM
