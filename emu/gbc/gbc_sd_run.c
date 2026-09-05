@@ -61,14 +61,14 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
 #define GBC_RUNAHEAD 1
 #define GBC_SUSPEND  1
 
-/* Rewind (left trigger): a snapshot is pushed to the high-DRAM ring every REWIND_K committed
- * frames; holding the left trigger walks the ring backward. Press depth picks how many snapshots
- * to step per presented frame, so rewind speed = steps * REWIND_K real-time. With REWIND_K = 1 a
- * snapshot is one emulated frame, so speed maps directly to steps = 1..MAX_STEPS = 1x..10x, smooth
- * at every press depth (gentle press = 1x, full press = 10x). GBC states are tiny (~30-180KB) so
+/* Rewind (left trigger): a snapshot is pushed to the high-DRAM ring for EVERY committed emulated
+ * frame (including the extra frames run during fast-forward, so FF'd content can be rewound too;
+ * NOT the speculative run-ahead look-ahead frames, which get rewound anyway). Holding the left
+ * trigger walks the ring backward. Speed is a smooth 1x..2x set by press depth via a fractional
+ * accumulator (256ths): rewind_offset advances REWIND_SPD/256 snapshots per present. Since one
+ * snapshot = one emulated frame, speed = SPD/256 real-time. GBC states are tiny (~30-180KB) so
  * per-frame capture is negligible; window is many tens of seconds. */
-#define GBC_REWIND_K         1    /* capture cadence: every committed frame (1 snapshot = 1 frame) */
-#define GBC_REWIND_MAX_STEPS 10   /* frames stepped per present at full trigger (=> 1x..10x) */
+#define GBC_REWIND_MAX_SPD 512    /* max rewind speed in 256ths (512 = 2x); floor is 256 = 1x */
 
 /* Emulation CPU OPP by run-ahead tier (mirrors the GBA preempt tiers Off/Bal/Resp/Max):
  * run-ahead runs (pf+1) emulations per displayed frame, so escalate the clock with pf.
@@ -548,7 +548,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	{
 	int up_prev = 0, dn_prev = 0, lt_prev = 0, rt_prev = 0, a_prev = 0, b_prev = 0, x_prev = 0;
 	int aya_hold = 0;
-	int rw_capdiv = 0;               /* frames since the last rewind snapshot (capture every REWIND_K) */
+	int rw_acc = 0;                  /* rewind fractional-speed accumulator (256ths), reset on entry */
 	for (;;) {
 		unsigned samples = GBC_SND_MAX;
 		long r;
@@ -556,17 +556,20 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers */
 
 		/* Rewind (left trigger): instead of advancing the game, walk backward through the ring of
-		 * periodic save-states and re-render. Press depth sets the speed (see GBC_REWIND_MAX_STEPS);
-		 * audio is muted; the normal present/run-ahead path below is skipped, so run-ahead is inert
-		 * while rewinding. Gated off while the in-game menu is open. On release the ring commits the
-		 * rewound point as the new head and forward play resumes from there. */
+		 * periodic save-states and re-render. Press depth sets a smooth 1x..2x speed (see
+		 * GBC_REWIND_MAX_SPD) via a fractional accumulator; audio is muted; the normal present/run-ahead
+		 * path below is skipped, so run-ahead is inert while rewinding. Gated off while the in-game menu
+		 * is open. On release the ring commits the rewound point as the new head and forward play
+		 * resumes from there. */
 		{
 			extern int ayaneo_joypad_rewind_level(void);
 			int rw = (!g_gbc_menu_open) ? ayaneo_joypad_rewind_level() : 0;
 			if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
-				int steps = 1 + (rw * (GBC_REWIND_MAX_STEPS - 1)) / 255;   /* 1..MAX per present */
-				unsigned sz; const void *st; int k;
-				if (!ayaneo_rewind_active()) ayaneo_rewind_begin();
+				int spd = 256 + (rw * (GBC_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(2x) */
+				unsigned sz; const void *st; int k, steps;
+				if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; }
+				rw_acc += spd;
+				steps = rw_acc >> 8; rw_acc &= 255;         /* whole snapshots to step this present (>=1) */
 				for (k = 0; k < steps; k++)
 					if (ayaneo_rewind_step() != 0) break;   /* clamp at the oldest state */
 				st = ayaneo_rewind_cur(&sz);
@@ -578,7 +581,6 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				pace_n++;
 				{ unsigned target = pace_base + (unsigned)(pace_n * TPF_NUM / TPF_DEN);
 				  while ((int)(gpt4_get_current_tick() - target) < 0) ; }
-				rw_capdiv = 0;                              /* re-arm capture for when play resumes */
 				continue;
 			}
 			if (ayaneo_rewind_active()) ayaneo_rewind_end();   /* released: resume forward from here */
@@ -591,6 +593,14 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 		if (r >= 0) {                       /* a video frame completed */
 			int combo, pf, aya, ff = 0;
+			/* Rewind capture: snapshot EVERY committed emulated frame - this one plus each
+			 * fast-forward frame below - so FF'd frames can be rewound (NOT the run-ahead
+			 * look-ahead frames, which get rewound anyway). Skipped while the menu is open. Cheap
+			 * for GB/GBC (~30-180KB). This captures the committed frame; FF frames capture below. */
+			if (ahead_sz && !g_gbc_menu_open && ayaneo_rewind_ready()) {
+				void *p = ayaneo_rewind_capture_begin();
+				if (p) { c->state_save(p); ayaneo_rewind_capture_commit(ahead_sz); }
+			}
 			/* Variable fast-forward (right trigger): run extra committed frames (audio kept, so
 			 * the sound speeds up too). The 59.7 Hz loop pacing below rate-limits it (2x..10x with
 			 * press depth). Run-ahead (pf) is gated off while ff is active. */
@@ -605,6 +615,10 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 						unsigned s2 = GBC_SND_MAX;
 						c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);
 						ayaneo_gbc_audio_submit(snd, s2);
+						if (ahead_sz && ayaneo_rewind_ready()) {   /* capture each FF frame too */
+							void *p = ayaneo_rewind_capture_begin();
+							if (p) { c->state_save(p); ayaneo_rewind_capture_commit(ahead_sz); }
+						}
 					}
 				}
 			}
@@ -714,16 +728,8 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				ayaneo_menu_overlay(gbc_menu_paint, g_gbc_menu_open);
 			}
 
-			/* Rewind capture: snapshot the committed frame into the ring every REWIND_K frames
-			 * (core state is at the committed frame here - before the look-ahead below advances it).
-			 * Skipped during fast-forward and while the menu is open. Cheap for GB/GBC (~30-50 KB). */
-			if (ahead_sz && !ff && !g_gbc_menu_open && ayaneo_rewind_ready()) {
-				if (++rw_capdiv >= GBC_REWIND_K) {
-					void *p = ayaneo_rewind_capture_begin();
-					rw_capdiv = 0;
-					if (p) { c->state_save(p); ayaneo_rewind_capture_commit(ahead_sz); }
-				}
-			}
+			/* (Rewind capture moved above: every committed + FF frame is snapshotted, so the
+			 * run-ahead look-ahead frames here are correctly NOT captured.) */
 
 			/* Run-ahead: present pf frames into the future then rewind. Off while the
 			 * menu is open (do not race the game ahead under the overlay, and a menu

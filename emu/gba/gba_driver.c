@@ -197,14 +197,14 @@ static volatile int s_fast_forward;
 static volatile int s_ff_level;			/* right-trigger fast-forward level 0..255 (0 = off) */
 #define FF_MAX_MULT   10			/* full press = up to 10x (CPU-bound = fastest, audio kept) */
 
-/* Rewind (left trigger): a snapshot (core state + 128 KB sound ring) is pushed to the high-DRAM
- * ring every GBA_REWIND_K committed frames; holding the left trigger walks it backward. With
- * GBA_REWIND_K = 1 a snapshot is one emulated frame, so rewind speed = steps = 1..MAX_STEPS =
- * 1x..10x, smooth at every press depth. The per-frame save is a ~640 KB memcpy (~0.3 ms) - the
- * same save run-ahead already does every frame - so it fits inside the run-ahead-Max vsync margin;
- * cadence is UNIFORM (no run-ahead backoff) so rewind speed stays consistent through Max segments. */
-#define GBA_REWIND_K         1			/* capture cadence: every committed frame (1 snapshot = 1 frame) */
-#define GBA_REWIND_MAX_STEPS 10			/* frames stepped per present at full trigger (=> 1x..10x) */
+/* Rewind (left trigger): a snapshot (core state + 128 KB sound ring) is pushed for EVERY committed
+ * emulated frame - the committed frame plus each fast-forward frame - so FF'd frames can be rewound
+ * too (NOT the speculative run-ahead look-ahead frames, which get rewound anyway). Holding the left
+ * trigger walks it backward at a smooth 1x..2x speed set by press depth via a fractional accumulator
+ * (256ths). One snapshot = one emulated frame, so speed = SPD/256 real-time. The per-frame save is a
+ * ~640 KB memcpy (~0.3 ms) - the same save run-ahead already does every frame - so it fits inside the
+ * run-ahead-Max vsync margin. */
+#define GBA_REWIND_MAX_SPD   512		/* max rewind speed in 256ths (512 = 2x); floor is 256 = 1x */
 #define GBA_RW_SND_SZ        (128u * 1024u)	/* sound ring size (matches the run-ahead s_ahead_snd) */
 static unsigned s_gba_rw_snd_off;		/* byte offset of the sound ring within a ring slot */
 static unsigned s_gba_rw_payload;		/* ring slot payload = snd_off + GBA_RW_SND_SZ (0 = disabled) */
@@ -743,6 +743,21 @@ static void gba_rewind_arm(void)
 	s_gba_rw_snd_off = (ss + 7u) & ~7u;
 	s_gba_rw_payload = s_gba_rw_snd_off + GBA_RW_SND_SZ;
 	ayaneo_rewind_reset(s_gba_rw_payload);
+}
+
+/* Push one rewind snapshot (core state + sound ring) of the CURRENT committed state. Called for
+ * every committed emulated frame (the committed frame + each fast-forward frame); the caller gates
+ * on the menu. No-op if rewind is unavailable this session. */
+static void gba_rewind_snap(void)
+{
+	void *p;
+	if (!s_gba_rw_payload || !ayaneo_rewind_ready()) return;
+	p = ayaneo_rewind_capture_begin();
+	if (p) {
+		gba_core_state_save(p);
+		gba_sound_ring_save((unsigned char *)p + s_gba_rw_snd_off);
+		ayaneo_rewind_capture_commit(s_gba_rw_payload);
+	}
 }
 
 /* ===================== run-ahead ("Preemptive Frames") =======================
@@ -1921,7 +1936,7 @@ static int emu_thread(void *arg)
 #endif
 
 		unsigned punch_start = 0;	/* 13 MHz tick the punch-hole began (0 = not yet) */
-		int rw_capdiv = 0;		/* frames since the last rewind snapshot */
+		int rw_acc = 0;			/* rewind fractional-speed accumulator (256ths), reset on entry */
 		gba_rewind_arm();		/* size + clear the rewind ring for this game */
 		for (;;) {
 			int uncapped;
@@ -1969,7 +1984,7 @@ static int emu_thread(void *arg)
 			update_buttons();
 
 			/* Rewind (left trigger): instead of advancing the game, walk the ring of periodic
-			 * snapshots backward and re-render. Press depth sets the speed (see GBA_REWIND_MAX_STEPS);
+			 * snapshots backward and re-render. Press depth sets a smooth 1x..2x speed (see GBA_REWIND_MAX_SPD);
 			 * audio is suppressed (the same g_gba_audio_suppress the look-ahead uses); the committed
 			 * frame / FF / run-ahead / present below are skipped. Menu-gated. State-load flushes the
 			 * dynarec, so re-enter the CPU thread cleanly (clean boundary + restart) exactly like the
@@ -1978,9 +1993,11 @@ static int emu_thread(void *arg)
 				extern int ayaneo_joypad_rewind_level(void);
 				int rw = (!s_menu_open) ? ayaneo_joypad_rewind_level() : 0;
 				if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
-					int steps = 1 + (rw * (GBA_REWIND_MAX_STEPS - 1)) / 255;   /* 1..MAX per present */
-					unsigned sz; const void *st; int k;
-					if (!ayaneo_rewind_active()) ayaneo_rewind_begin();
+					int spd = 256 + (rw * (GBA_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(2x) */
+					unsigned sz; const void *st; int k, steps;
+					if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; }
+					rw_acc += spd;
+					steps = rw_acc >> 8; rw_acc &= 255;         /* whole snapshots to step this present (>=1) */
 					for (k = 0; k < steps; k++)
 						if (ayaneo_rewind_step() != 0) break;   /* clamp at the oldest state */
 					st = ayaneo_rewind_cur(&sz);
@@ -1997,7 +2014,6 @@ static int emu_thread(void *arg)
 						ayaneo_present_skip_framedone = 0;
 						ayaneo_gbc_show_frame(gba_core_screen());
 						mtk_wdt_restart();
-						rw_capdiv = 0;              /* re-arm capture for when play resumes */
 						continue;
 					}
 					/* empty/invalid slot (should not happen with count>0): abandon rewind and
@@ -2029,6 +2045,9 @@ static int emu_thread(void *arg)
 					if (++cnt >= 16) { g_dbg_emu_us = acc / (16u * 13u); acc = 0; cnt = 0; }
 				}
 			}
+			/* Rewind capture: snapshot this committed frame (and each FF frame below), so FF'd frames
+			 * can be rewound. Not the run-ahead look-ahead frames (rewound anyway). Skipped in-menu. */
+			if (!s_menu_open) gba_rewind_snap();
 			/* Variable fast-forward (right analog trigger): after the committed frame, run extra
 			 * MUTED frames so the game advances s_ff_level -> 2..FF_MAX_MULT x per displayed frame.
 			 * The display stays vsync-locked at 60 Hz (normal present below), so the speed is
@@ -2047,25 +2066,14 @@ static int emu_thread(void *arg)
 				if (s_ff_level > 0 && !s_menu_open) {
 					int mult = 2 + (s_ff_level * (FF_MAX_MULT - 2)) / 255;   /* 2..FF_MAX_MULT */
 					int i;
-					for (i = 1; i < mult; i++)
+					for (i = 1; i < mult; i++) {
 						run_one_frame();
-				}
-			}
-			/* Rewind capture: snapshot the committed frame (core state + sound ring) into the ring
-			 * every GBA_REWIND_K frames. Skipped on FF / in-menu. Cadence is UNIFORM (no run-ahead
-			 * backoff): a varying cadence would space snapshots unevenly, so rewinding through a
-			 * run-ahead-Max segment would run faster than 1x. The ~0.3 ms save fits the Max margin. */
-			if (s_gba_rw_payload && s_ff_level == 0 && !s_menu_open && ayaneo_rewind_ready()) {
-				if (++rw_capdiv >= GBA_REWIND_K) {
-					void *p = ayaneo_rewind_capture_begin();
-					rw_capdiv = 0;
-					if (p) {
-						gba_core_state_save(p);
-						gba_sound_ring_save((unsigned char *)p + s_gba_rw_snd_off);
-						ayaneo_rewind_capture_commit(s_gba_rw_payload);
+						gba_rewind_snap();   /* capture each FF frame so it can be rewound */
 					}
 				}
 			}
+			/* (Rewind capture is done above per committed + FF frame, so the run-ahead look-ahead
+			 * frames below are correctly NOT captured.) */
 			if (g_dbg_selftest_req) {	/* `oem selftest[:N]`: validate the rewind path */
 				int nf = g_dbg_selftest_req;	/* N frames (1 = single-rewind) */
 				g_dbg_selftest_req = 0;

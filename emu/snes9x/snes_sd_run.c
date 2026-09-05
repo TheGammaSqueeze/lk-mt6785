@@ -69,8 +69,8 @@ static int s_snes_ra_avail = 1;
  * (raw fast-save unsupported, e.g. some special-chip carts). Set once per session; used to re-arm
  * the ring on reset / load-state. See emu/ayaneo_rewind.h. */
 static unsigned s_snes_rw_payload;
-#define SNES_REWIND_K         1    /* capture cadence: every committed frame (1 snapshot = 1 frame) */
-#define SNES_REWIND_MAX_STEPS 10   /* frames stepped per present at full trigger (=> 1x..10x) */
+#define SNES_REWIND_MAX_SPD 512    /* max rewind speed in 256ths (512 = 2x); floor is 256 = 1x. A
+				    * snapshot is captured for every committed + fast-forward frame. */
 
 /* Benchmark (uncap): run the emulator with no vsync pacing and no audio, counting
  * emulated frames per second so CPU-clock changes are measurable (mirrors the GBC/GBA
@@ -656,7 +656,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	}
 
 	int reset_hold = 0, aya_prev = 0, ff_prev = 0;
-	int rw_capdiv = 0;               /* frames since the last rewind snapshot */
+	int rw_acc = 0;                  /* rewind fractional-speed accumulator (256ths), reset on entry */
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	int up_h = 0, dn_h = 0, lt_h = 0, rt_h = 0;   /* hold-frame counters for nav auto-repeat */
 	struct snes_frame f;
@@ -680,16 +680,18 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 
 		/* Rewind (left trigger): walk the ring of periodic raw snapshots backward and re-render
-		 * instead of advancing the game. Press depth sets the speed (see SNES_REWIND_MAX_STEPS);
+		 * instead of advancing the game. Press depth sets a smooth 1x..2x speed (see SNES_REWIND_MAX_SPD);
 		 * audio is muted; the FF/run-ahead/present path below is skipped. Menu-gated. On release the
 		 * ring commits the rewound point as the new head and forward play resumes from there. */
 		{
 			extern int ayaneo_joypad_rewind_level(void);
 			int rw = (!g_snes_menu_open && !g_snes_test_limit) ? ayaneo_joypad_rewind_level() : 0;
 			if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
-				int steps = 1 + (rw * (SNES_REWIND_MAX_STEPS - 1)) / 255;   /* 1..MAX per present */
-				unsigned sz; const void *st; int k;
-				if (!ayaneo_rewind_active()) ayaneo_rewind_begin();
+				int spd = 256 + (rw * (SNES_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(2x) */
+				unsigned sz; const void *st; int k, steps;
+				if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; }
+				rw_acc += spd;
+				steps = rw_acc >> 8; rw_acc &= 255;         /* whole snapshots to step this present (>=1) */
 				for (k = 0; k < steps; k++)
 					if (ayaneo_rewind_step() != 0) break;   /* clamp at the oldest state */
 				st = ayaneo_rewind_cur(&sz);
@@ -701,7 +703,6 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
 				else
 					priamry_display_wait_for_vsync();
-				rw_capdiv = 0;                              /* re-arm capture for when play resumes */
 				continue;
 			}
 			if (ayaneo_rewind_active()) ayaneo_rewind_end();   /* released: resume forward from here */
@@ -768,20 +769,16 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			g_snes_dbg_audframes += f.frames;
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 		}
-		/* Rewind capture: snapshot the committed frame into the ring via the fast raw save (the same
-		 * mechanism run-ahead uses), every SNES_REWIND_K frames. State is at the committed frame here
-		 * (before the look-ahead below advances it). Skipped on FF / in-menu / headless test. Cadence
-		 * is UNIFORM (no run-ahead backoff): a varying cadence would make snapshots unevenly spaced, so
-		 * rewinding through a run-ahead-Max segment would run faster than 1x. The raw save is cheap
+		/* Rewind capture: snapshot EVERY committed emulated frame via the fast raw save (the same
+		 * mechanism run-ahead uses) - this committed frame plus each fast-forward frame below - so
+		 * FF'd frames can be rewound (NOT the run-ahead look-ahead frames, which get rewound anyway).
+		 * State is at the committed frame here. Skipped in-menu / headless test. The raw save is cheap
 		 * (run-ahead already does one every frame), so per-frame capture fits the budget. */
-		if (s_snes_rw_payload && !ff && !g_snes_menu_open && !g_snes_test_limit && ayaneo_rewind_ready()) {
-			if (++rw_capdiv >= SNES_REWIND_K) {
-				void *p = ayaneo_rewind_capture_begin();
-				rw_capdiv = 0;
-				if (p) {
-					unsigned n = (unsigned)c->state_save_ra(p, s_snes_rw_payload);
-					if (n) ayaneo_rewind_capture_commit(n);
-				}
+		if (s_snes_rw_payload && !g_snes_menu_open && !g_snes_test_limit && ayaneo_rewind_ready()) {
+			void *p = ayaneo_rewind_capture_begin();
+			if (p) {
+				unsigned n = (unsigned)c->state_save_ra(p, s_snes_rw_payload);
+				if (n) ayaneo_rewind_capture_commit(n);
 			}
 		}
 		/* Variable fast-forward (right trigger): run extra committed frames per display frame,
@@ -799,6 +796,11 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				g_snes_dbg_frames++;
 				if (f.audio && f.frames)
 					ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
+				if (s_snes_rw_payload && ayaneo_rewind_ready()) {   /* capture each FF frame too */
+					void *p = ayaneo_rewind_capture_begin();
+					if (p) { unsigned n = (unsigned)c->state_save_ra(p, s_snes_rw_payload);
+						 if (n) ayaneo_rewind_capture_commit(n); }
+				}
 			}
 			if (c->set_av_skip) c->set_av_skip(0, 0);
 		}
