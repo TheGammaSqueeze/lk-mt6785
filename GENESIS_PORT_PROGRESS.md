@@ -70,10 +70,18 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
       provides; cannot place autonomously). Core loads + host-test proves the emulation path.
       An oem gen-launch (headless N-frame run on a synthetic ROM) could be added like snes-launch
       for further no-ROM validation. <-- NEXT
-- [ ] Parity extras (all deferred, add incrementally): adaptive fast-forward + HUD, rewind
-      delta-ring + reverse audio (6x), run-ahead, aspect Fit/Stretch via ayaneo_rsz_present, LCD
-      filter, CPU clock, per-core settings persist, live Pico overlay menu with GPGX core options,
-      boxart/console badges in the carousel, 6-button pad, save-state slots. Mirror snes_sd_run.c.
+- Parity extras (add incrementally, mirror snes_sd_run.c):
+  - [x] Adaptive fast-forward + on-screen HUD: RT trigger -> run 2..10 extra frames/present,
+        capped to what fits one vsync (committed-frame cost + g_dbg_blit_us reserve, 2x floor),
+        audio of every frame submitted (speeds up), only the last presented; ayaneo_hud_set green
+        badge. Builds clean. (Render-every-frame; set_av_skip optimization deferred.)
+  - [ ] Rewind delta-ring + reverse audio (6x): capture c->state_save into ayaneo_rewind ring
+        each committed+FF frame; LT-hold walks back (state_load + re-render + reverse audio,
+        decimate by steps); mirror the snes rewind block. GEN_STATE size ~0.5-1MB per snapshot ->
+        the delta ring crushes it. <-- NEXT
+  - [ ] run-ahead (state_save/load per frame + set_av_skip), aspect Fit/Stretch via
+        ayaneo_rsz_present + LCD filter in ayaneo_genesis_show_frame, CPU clock, per-core settings
+        persist, live Pico overlay menu with GPGX core options, boxart/console badges, 6-button pad.
 
 ## Milestone reached (2026-09-05): Genesis core LOADS on the device
 Blob builds (1.34MB) + host-test PASS + on-device gen-probe PASS. A Genesis/MD/SMS/GG/SG ROM

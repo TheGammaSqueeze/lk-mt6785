@@ -25,6 +25,7 @@ extern void     mtk_wdt_restart(void);
 extern int      mt_get_gpio_in(unsigned pin);
 extern void     ayaneo_joypad_poll(void);
 extern unsigned int ayaneo_joypad_dpad(void);
+extern void     ayaneo_hud_set(int mode, int speed_x10);   /* mt_disp_drv.c: FF/RW speed badge */
 
 /* pad GPIOs (match gba_driver.c / gbc_sd_run.c). Active-low. */
 #define GP(n)          ((n) | 0x80000000u)
@@ -151,16 +152,50 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	g_gen_dbg_sr = sr;
 
 	for (;;) {
+		extern int ayaneo_joypad_ff_level(void);
+		extern void ayaneo_hud_set(int mode, int speed_x10);
+		extern volatile unsigned int g_dbg_blit_us;
+		unsigned int em0, fe;
+		int ff;
+
 		ayaneo_joypad_poll();
-		c->run(&fr);
+		em0 = gpt4_get_current_tick();
+		c->run(&fr);                                 /* committed frame */
+		fe = (gpt4_get_current_tick() - em0) / 13u;  /* per-frame emu cost (us) for the FF cap */
 		g_gen_dbg_frames++;
-		if (fr.video && fr.width && fr.height) {
+		if (fr.audio && fr.frames)
+			ayaneo_snes_audio_submit(fr.audio, fr.frames, sr);
+
+		/* Variable fast-forward (right trigger): after the committed frame, run extra frames so the
+		 * game advances 2..10x per displayed frame, capped adaptively to what fits one vsync so the
+		 * panel stays a smooth 60fps (mirrors the GBA/GBC/SNES adaptive cap). GPGX renders every FF
+		 * frame, so the committed-frame cost is the per-frame cost; reserve the present blit; 2x floor.
+		 * Audio of every frame is submitted (so the sound speeds up). Only the LAST frame is presented. */
+		ff = ayaneo_joypad_ff_level();
+		if (ff > 0) {
+			int raw = 2 + (ff * (10 - 2)) / 255;
+			unsigned int blit = g_dbg_blit_us < 15500u ? g_dbg_blit_us : 0u;
+			unsigned int fef = fe ? fe : 2500u;
+			int cap = (int)((15500u - blit) / fef);
+			int mult = raw < cap ? raw : cap, k;
+			if (mult < 2) mult = 2;
+			if (mult > 10) mult = 10;
+			ayaneo_hud_set(1, mult * 10);
+			for (k = 1; k < mult; k++) {
+				c->run(&fr);
+				g_gen_dbg_frames++;
+				if (fr.audio && fr.frames)
+					ayaneo_snes_audio_submit(fr.audio, fr.frames, sr);
+			}
+		} else {
+			ayaneo_hud_set(0, 0);
+		}
+
+		if (fr.video && fr.width && fr.height) {     /* present the (last) frame, vsync-paced */
 			g_gen_dbg_w = fr.width; g_gen_dbg_h = fr.height;
 			ayaneo_genesis_show_frame((const unsigned short *)fr.video, fr.width, fr.height,
-						  fr.pitch / 2u);   /* vsync-paced present */
+						  fr.pitch / 2u);
 		}
-		if (fr.audio && fr.frames)
-			ayaneo_snes_audio_submit(fr.audio, fr.frames, sr);   /* reuse the 48 kHz resampler */
 		mtk_wdt_restart();
 
 		/* AYA: tap or hold ~1.5 s exits back to the ROM selector (matches the other cores). */
@@ -171,6 +206,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			aya_prev = aya;
 		}
 	}
+	ayaneo_hud_set(0, 0);   /* clear the FF/RW badge on exit */
 
 	/* persist SRAM + a suspend state so the next launch resumes */
 	if (c->sram_ptr() && c->sram_size())
