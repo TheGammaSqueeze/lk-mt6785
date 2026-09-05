@@ -191,6 +191,28 @@ static void cmd_snes_probe(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem gen-probe - read the Genesis-Plus-GX blob header from boot_b @0x01A00000 (magic should be
+ * 0x31474553 "SEG1"), then genesis_core_load() it (safe on the fastboot thread: the loader only
+ * copies the image + calls the blob entry, no emulation) and report the exports magic + loaderr.
+ * Validates the blob-in-boot_b + loader path WITHOUT needing a Genesis ROM on the card. */
+static void cmd_gen_probe(const char *arg, void *data, unsigned sz)
+{
+	extern long partition_read(const char *part, long long off, unsigned char *buf, unsigned long len);
+	unsigned char b[20]; long r; unsigned m;
+	(void)arg; (void)data; (void)sz;
+	r = partition_read("boot_b", 0x01A00000LL, b, 20); m = *(unsigned *)b;
+	snprintf(lbuf, sizeof lbuf, "probe genesis @0x01A00000 rc=%ld m=0x%08x (want 0x31474553)", r, m);
+	fastboot_info(lbuf);
+	{
+		extern const void *genesis_core_load(void);   /* returns exports ptr, NULL on fail */
+		extern volatile unsigned g_gen_dbg_loaderr;
+		const void *ex = genesis_core_load();
+		snprintf(lbuf, sizeof lbuf, "probe load: ex=%s loaderr=%u", ex ? "OK" : "NULL", g_gen_dbg_loaderr);
+		fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
+
 /* oem snes-launch[:N] - launch the FIRST SNES ROM for N frames (default 240) then return,
  * via the menu thread (arena-safe), and report the result. Safe way to validate the SNES
  * path over USB without navigating or risking a wrong non-SNES force-launch. Read the
@@ -574,6 +596,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem trigscan", cmd_trigscan, 1, 0);
 	fastboot_register("oem joytest", cmd_joytest, 1, 0);
 	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
+	fastboot_register("oem gen-probe", cmd_gen_probe, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
 	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
 	fastboot_register("oem snes-stretch", cmd_snes_stretch, 1, 0);

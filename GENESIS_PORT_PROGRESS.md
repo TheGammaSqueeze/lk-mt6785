@@ -62,8 +62,23 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
       /roms/sg .sg) in sd_fat.c + mkdirs; launch dispatch at BOTH ROM-select sites in gba_driver.c
       (type >= GBA_CONSOLE_GENESIS -> genesis_sd_session, before the != GBA catch-all). **FULL
       BUILD CLEAN + FLASHED to device** (lk_a + boot_b). Boxart/badges = later (cosmetic).
-- [ ] On-device validation: oem gen-probe (blob load check, no ROM) <-- NEXT; then a real
-      Genesis ROM in /roms/genesis for gameplay. Then parity extras.
+- [x] On-device validation: **oem gen-probe PASSES on the device**: probe genesis @0x01A00000
+      rc=20 m=0x31474553 ("SEG1"); probe load: ex=OK loaderr=0. The whole blob-in-boot_b + loader
+      path (read from boot_b -> copy to VMA 0x4F800000 -> zero BSS -> genesis_core_blob_init ->
+      valid exports) works on real hardware. lk_a+boot_b flashed.
+- [ ] Gameplay validation: needs a REAL Genesis ROM in /roms/genesis on the SD card (user
+      provides; cannot place autonomously). Core loads + host-test proves the emulation path.
+      An oem gen-launch (headless N-frame run on a synthetic ROM) could be added like snes-launch
+      for further no-ROM validation. <-- NEXT
+- [ ] Parity extras (all deferred, add incrementally): adaptive fast-forward + HUD, rewind
+      delta-ring + reverse audio (6x), run-ahead, aspect Fit/Stretch via ayaneo_rsz_present, LCD
+      filter, CPU clock, per-core settings persist, live Pico overlay menu with GPGX core options,
+      boxart/console badges in the carousel, 6-button pad, save-state slots. Mirror snes_sd_run.c.
+
+## Milestone reached (2026-09-05): Genesis core LOADS on the device
+Blob builds (1.34MB) + host-test PASS + on-device gen-probe PASS. A Genesis/MD/SMS/GG/SG ROM
+placed in the matching /roms/* folder will now launch through the carousel. Basic emulation
+(display/input/audio/SRAM/suspend) is code-complete; parity extras are the remaining work.
       PLAN (mirror emu/snes9x/snes_sd_run.c, but BASIC first per CORE_PORTING_NOTES #8; gate
       parity extras behind a flag and add them in later firings):
       * ayaneo_genesis_pad_mask(unsigned port): LK pad GPIOs -> RETRO_DEVICE_ID_JOYPAD_* bits.
