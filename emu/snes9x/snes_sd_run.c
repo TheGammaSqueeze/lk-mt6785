@@ -232,6 +232,14 @@ unsigned ayaneo_snes_pad_mask(void)
 	if (PRESSED(GPIO_DOWN))   m |= 1u << RJ_DOWN;
 	if (PRESSED(GPIO_LEFT))   m |= 1u << RJ_LEFT;
 	if (PRESSED(GPIO_RIGHT))  m |= 1u << RJ_RIGHT;
+	{	/* left analog stick -> D-pad (JOY_UP=1 DOWN=2 LEFT=4 RIGHT=8) */
+		extern unsigned int ayaneo_joypad_dpad(void);
+		unsigned d = ayaneo_joypad_dpad();
+		if (d & 0x01u) m |= 1u << RJ_UP;
+		if (d & 0x02u) m |= 1u << RJ_DOWN;
+		if (d & 0x04u) m |= 1u << RJ_LEFT;
+		if (d & 0x08u) m |= 1u << RJ_RIGHT;
+	}
 	if (PRESSED(GPIO_A) && a_on) m |= 1u << RJ_A;
 	if (PRESSED(GPIO_X))      m |= 1u << RJ_X;
 	if (PRESSED(GPIO_LB))     m |= 1u << RJ_L;

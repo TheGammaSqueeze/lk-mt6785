@@ -441,6 +441,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	int do_reverse = g_reverse_punch;	/* consume now so a failed re-entry (pack missing)
 						 * cannot leave a stale reverse armed for next time */
 	g_reverse_punch = 0;
+	/* Calibrate the analog joypad once here at the carousel (sticks centred / triggers released,
+	 * before any game): powers the rail, inits the SGM58031, and samples the rest baseline. */
+	{ extern void ayaneo_joypad_calibrate(int force); ayaneo_joypad_calibrate(0); }
 	int fade_in = 18;   /* fade the menu in from WHITE on entry over 0.3s (the boot-logo
 			     * animation ends on a whiteout, so a white->menu fade is a seamless
 			     * handover; was black). matching

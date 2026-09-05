@@ -292,6 +292,14 @@ unsigned ayaneo_gbc_pad_mask(void)
 	if (PRESSED(GPIO_LEFT))   m |= 0x20u;
 	if (PRESSED(GPIO_UP))     m |= 0x40u;
 	if (PRESSED(GPIO_DOWN))   m |= 0x80u;
+	{	/* left analog stick -> D-pad (JOY_UP=1 DOWN=2 LEFT=4 RIGHT=8) */
+		extern unsigned int ayaneo_joypad_dpad(void);
+		unsigned d = ayaneo_joypad_dpad();
+		if (d & 0x08u) m |= 0x10u;   /* RIGHT */
+		if (d & 0x04u) m |= 0x20u;   /* LEFT */
+		if (d & 0x01u) m |= 0x40u;   /* UP */
+		if (d & 0x02u) m |= 0x80u;   /* DOWN */
+	}
 	return m;
 }
 

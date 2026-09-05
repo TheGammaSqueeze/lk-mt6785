@@ -158,8 +158,8 @@ int ayaneo_joypad_trigger(int lr)
 #define JOY_LEFT   0x04u
 #define JOY_RIGHT  0x08u
 
-#define STICK_DEADZONE   520            /* counts from centre before a D-pad edge fires */
-#define TRIG_RANGE_FLOOR 1500           /* min assumed full-press deviation (adaptive grows it) */
+#define STICK_DEADZONE   350            /* counts from centre before a D-pad edge fires (~35x rest noise) */
+#define TRIG_RANGE_FLOOR 2000           /* min assumed full-press deviation (~measured hw; adaptive grows it) */
 #define TRIG_ACT_LO_PCT  25             /* actuate from 25% of range */
 #define TRIG_ACT_HI_PCT  85             /* max out at 85% of range */
 #define TRIG_LEVEL_MAX   255
