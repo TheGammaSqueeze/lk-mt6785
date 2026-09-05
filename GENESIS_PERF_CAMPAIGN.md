@@ -104,6 +104,14 @@ frame-emulate is ~2x cheaper (less accurate/faster core) AND it runs at 1800.
   (write RGB565 directly, avoid double-buffer), (b) check if config.overclock/M68K_OVERCLOCK_SHIFT adds
   cycle-accounting overhead when overclock=0, (c) accept current perf (rewind goal met) and reduce churn.
 
+## Iteration 5 (2026-09-05): removed the overclock-shift per-instruction overhead (small CPU win)
+- M68K/Z80_OVERCLOCK_SHIFT=20 kept USE_CYCLES as `cycles += (A*cycle_ratio)>>20` (a runtime mul+shift per
+  68k AND z80 instruction) purely for the overclock feature - which is NOT even wired up (HAVE_OVERCLOCK
+  undefined, no menu item; overclock code all #ifdef-guarded). Removed both defines from build_core.sh +
+  build_core_blob.sh -> USE_CYCLES collapses to `cycles += (A)`.
+- RESULT (commit pending): frame 5760->5647us, norender 2950->2819us (~131us, ~4.4% of CPU), fps 173->177.
+  Small but free, no feature loss. KEPT. Rewind step loadfast(557)+frame(5647)=6204us.
+
 ## Ideas backlog (try in order of expected impact / low risk first)
 1. [DONE-build, unmeasured] -O3 hot / -O2 cold (was all -Os). <-- likely the big one.
 2. Bump the blob LTO link to -O3 (build_core_blob.sh line ~47) if per-file -O3 under LTO isn't enough.

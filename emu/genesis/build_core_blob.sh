@@ -17,7 +17,7 @@ INC="-I$CORE -I$CORE/z80 -I$CORE/m68k -I$CORE/ntsc -I$CORE/sound -I$CORE/input_h
      -I$CORE/cd_hw -I$CORE/cart_hw -I$CORE/cart_hw/svp \
      -I$DIR/libretro -I$DIR/libretro/libretro-common/include"
 DEFS="-DLSB_FIRST -DBYTE_ORDER=LITTLE_ENDIAN -D__LIBRETRO__ -DALIGN_LONG -DALIGN_WORD \
-      -DM68K_OVERCLOCK_SHIFT=20 -DZ80_OVERCLOCK_SHIFT=20 -DMAXROMSIZE=33554432 -DUSE_DYNAMIC_ALLOC \
+      -DMAXROMSIZE=33554432 -DUSE_DYNAMIC_ALLOC \
       -DUSE_16BPP_RENDERING -DFRONTEND_SUPPORTS_RGB565 -DHAVE_YM3438_CORE -DHAVE_OPLL_CORE"
 # Match build_core.sh ISA/tune (LTO re-optimizes at link; -fno-ipa-icf dodges the GCC10.3 LTO segfault).
 COMMON="-march=armv8-a -mtune=cortex-a76 -mfloat-abi=soft -mthumb-interwork -ffreestanding \
