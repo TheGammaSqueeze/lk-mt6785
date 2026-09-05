@@ -772,7 +772,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * mechanism run-ahead uses), every SNES_REWIND_K frames. State is at the committed frame here
 		 * (before the look-ahead below advances it). Skipped on FF / in-menu / headless test. */
 		if (s_snes_rw_payload && !ff && !g_snes_menu_open && !g_snes_test_limit && ayaneo_rewind_ready()) {
-			if (++rw_capdiv >= SNES_REWIND_K) {
+			int cap_k = (pf >= 2) ? (SNES_REWIND_K * 2) : SNES_REWIND_K;   /* back off under run-ahead Max */
+			if (++rw_capdiv >= cap_k) {
 				void *p = ayaneo_rewind_capture_begin();
 				rw_capdiv = 0;
 				if (p) {

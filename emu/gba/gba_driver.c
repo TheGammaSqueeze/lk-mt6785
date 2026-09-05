@@ -1984,17 +1984,21 @@ static int emu_thread(void *arg)
 						g_gba_load_light = 0;
 						s_cpu_clean_boundary = 1;   /* re-enter as a FULL frame */
 						s_cpu_restart_req = 1;      /* the render run_one_frame re-enters cleanly */
+						g_gba_audio_suppress = 1;
+						run_one_frame();            /* render the loaded state (muted) */
+						g_gba_audio_suppress = 0;
+						ayaneo_present_skip_framedone = 0;
+						ayaneo_gbc_show_frame(gba_core_screen());
+						mtk_wdt_restart();
+						rw_capdiv = 0;              /* re-arm capture for when play resumes */
+						continue;
 					}
-					g_gba_audio_suppress = 1;
-					run_one_frame();                    /* render the loaded state (muted) */
-					g_gba_audio_suppress = 0;
-					ayaneo_present_skip_framedone = 0;
-					ayaneo_gbc_show_frame(gba_core_screen());
-					mtk_wdt_restart();
-					rw_capdiv = 0;                      /* re-arm capture for when play resumes */
-					continue;
+					/* empty/invalid slot (should not happen with count>0): abandon rewind and
+					 * fall through to a normal committed frame rather than run stale dynarec. */
+					ayaneo_rewind_end();
+				} else if (ayaneo_rewind_active()) {
+					ayaneo_rewind_end();   /* released: resume forward */
 				}
-				if (ayaneo_rewind_active()) ayaneo_rewind_end();   /* released: resume forward */
 			}
 
 			{	/* apply the per-tier CPU clock when the Preemptive Frames tier

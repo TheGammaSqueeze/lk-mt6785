@@ -173,6 +173,7 @@ void *ayaneo_rewind_capture_begin(void)
 void ayaneo_rewind_capture_commit(unsigned int size)
 {
 	if (!ayaneo_rewind_ready() || s_rewinding) return;
+	if (size > s_slot_sz - SLOT_HDR) size = s_slot_sz - SLOT_HDR;   /* never record past the slot */
 	*(volatile unsigned int *)slot_ptr(s_head) = size;
 	s_head = (s_head + 1u) % s_nslots;
 	if (s_count < s_nslots) s_count++;   /* else oldest is overwritten */
