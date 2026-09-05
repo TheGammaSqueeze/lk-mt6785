@@ -193,6 +193,8 @@ extern int  mtk_detect_key(unsigned short hwkey);
 
 static int s_ready;
 static volatile int s_fast_forward;
+static volatile int s_ff_level;			/* right-trigger fast-forward level 0..255 (0 = off) */
+#define FF_MAX_MULT   8				/* full press = 8x game speed */
 static volatile int s_close_req;	/* in-game menu "Close": save + back to the SNES selector */
 static volatile int s_reset_req;	/* soft reset: restart the current game (menu Reset / hotkey) */
 /* Per-frame emulation cost (run_one_frame wall time, us) averaged over 16 frames.
@@ -1952,6 +1954,25 @@ static int emu_thread(void *arg)
 					if (++cnt >= 16) { g_dbg_emu_us = acc / (16u * 13u); acc = 0; cnt = 0; }
 				}
 			}
+			/* Variable fast-forward (right analog trigger): after the committed frame, run extra
+			 * MUTED frames so the game advances s_ff_level -> 2..FF_MAX_MULT x per displayed frame.
+			 * The display stays vsync-locked at 60 Hz (normal present below), so the speed is
+			 * rate-limited (not uncapped) and scales with how hard the trigger is squeezed. The
+			 * ~2 ms trigger read is throttled to every 4th frame. */
+			{
+				extern int ayaneo_joypad_ff_level(void);
+				if ((frame & 3u) == 0)
+					s_ff_level = ayaneo_joypad_ff_level();
+				if (s_ff_level > 0 && !s_menu_open) {
+					int mult = 2 + (s_ff_level * (FF_MAX_MULT - 2)) / 255;   /* 2..FF_MAX_MULT */
+					int i;
+					/* Audio is NOT muted: each extra frame submits its samples too, so the
+					 * player hears the audio speed up with the game (mult x samples/display
+					 * frame drain through the ring). */
+					for (i = 1; i < mult; i++)
+						run_one_frame();
+				}
+			}
 			if (g_dbg_selftest_req) {	/* `oem selftest[:N]`: validate the rewind path */
 				int nf = g_dbg_selftest_req;	/* N frames (1 = single-rewind) */
 				g_dbg_selftest_req = 0;
@@ -1961,7 +1982,7 @@ static int emu_thread(void *arg)
 			if (frame == 0)		/* first frame done => dynarec executed OK */
 				gba_dbg("GBA 7: first frame rendered (dynarec ok)");
 
-			uncapped = s_fast_forward || s_benchmark;
+			uncapped = s_fast_forward || s_benchmark;   /* FF keeps audio playing (sped up) */
 			if (uncapped != ff_prev) {
 				ayaneo_gbc_audio_pause(uncapped);
 				ff_prev = uncapped;
