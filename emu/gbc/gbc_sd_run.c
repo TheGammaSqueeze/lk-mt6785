@@ -63,10 +63,12 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
 
 /* Rewind (left trigger): a snapshot is pushed to the high-DRAM ring every REWIND_K committed
  * frames; holding the left trigger walks the ring backward. Press depth picks how many snapshots
- * to step per presented frame, so rewind speed scales like the right-trigger fast-forward:
- * gentle press = REWIND_K x, full press = REWIND_MAX_STEPS*REWIND_K x. */
-#define GBC_REWIND_K         4    /* capture cadence: every 4th committed frame (~15/s) */
-#define GBC_REWIND_MAX_STEPS 8    /* ring steps per present at full trigger (=> up to 32x) */
+ * to step per presented frame, so rewind speed = steps * REWIND_K real-time. With REWIND_K = 1 a
+ * snapshot is one emulated frame, so speed maps directly to steps = 1..MAX_STEPS = 1x..10x, smooth
+ * at every press depth (gentle press = 1x, full press = 10x). GBC states are tiny (~30-180KB) so
+ * per-frame capture is negligible; window is many tens of seconds. */
+#define GBC_REWIND_K         1    /* capture cadence: every committed frame (1 snapshot = 1 frame) */
+#define GBC_REWIND_MAX_STEPS 10   /* frames stepped per present at full trigger (=> 1x..10x) */
 
 /* Emulation CPU OPP by run-ahead tier (mirrors the GBA preempt tiers Off/Bal/Resp/Max):
  * run-ahead runs (pf+1) emulations per displayed frame, so escalate the clock with pf.

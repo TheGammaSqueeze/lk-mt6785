@@ -198,11 +198,13 @@ static volatile int s_ff_level;			/* right-trigger fast-forward level 0..255 (0 
 #define FF_MAX_MULT   10			/* full press = up to 10x (CPU-bound = fastest, audio kept) */
 
 /* Rewind (left trigger): a snapshot (core state + 128 KB sound ring) is pushed to the high-DRAM
- * ring every GBA_REWIND_K committed frames; holding the left trigger walks it backward with the
- * press-depth speed curve (see emu/ayaneo_rewind.h). Capture backs off when run-ahead is at a high
- * tier so the extra 512 KB save never tips a run-ahead-max frame past vsync. */
-#define GBA_REWIND_K         6			/* capture cadence (~10/s; doubled at run-ahead pf>=2) */
-#define GBA_REWIND_MAX_STEPS 8			/* ring steps per present at full trigger */
+ * ring every GBA_REWIND_K committed frames; holding the left trigger walks it backward. With
+ * GBA_REWIND_K = 1 a snapshot is one emulated frame, so rewind speed = steps = 1..MAX_STEPS =
+ * 1x..10x, smooth at every press depth. The per-frame save is a ~640 KB memcpy (~0.3 ms) - the
+ * same save run-ahead already does every frame - so it fits inside the run-ahead-Max vsync margin;
+ * cadence is UNIFORM (no run-ahead backoff) so rewind speed stays consistent through Max segments. */
+#define GBA_REWIND_K         1			/* capture cadence: every committed frame (1 snapshot = 1 frame) */
+#define GBA_REWIND_MAX_STEPS 10			/* frames stepped per present at full trigger (=> 1x..10x) */
 #define GBA_RW_SND_SZ        (128u * 1024u)	/* sound ring size (matches the run-ahead s_ahead_snd) */
 static unsigned s_gba_rw_snd_off;		/* byte offset of the sound ring within a ring slot */
 static unsigned s_gba_rw_payload;		/* ring slot payload = snd_off + GBA_RW_SND_SZ (0 = disabled) */
@@ -2050,11 +2052,11 @@ static int emu_thread(void *arg)
 				}
 			}
 			/* Rewind capture: snapshot the committed frame (core state + sound ring) into the ring
-			 * every GBA_REWIND_K frames. Skipped on FF / in-menu. The cadence is doubled while
-			 * run-ahead runs a high tier so the extra 512 KB save never tips that frame past vsync. */
+			 * every GBA_REWIND_K frames. Skipped on FF / in-menu. Cadence is UNIFORM (no run-ahead
+			 * backoff): a varying cadence would space snapshots unevenly, so rewinding through a
+			 * run-ahead-Max segment would run faster than 1x. The ~0.3 ms save fits the Max margin. */
 			if (s_gba_rw_payload && s_ff_level == 0 && !s_menu_open && ayaneo_rewind_ready()) {
-				int cap_k = (g_dbg_eff_pf >= 2) ? (GBA_REWIND_K * 2) : GBA_REWIND_K;
-				if (++rw_capdiv >= cap_k) {
+				if (++rw_capdiv >= GBA_REWIND_K) {
 					void *p = ayaneo_rewind_capture_begin();
 					rw_capdiv = 0;
 					if (p) {

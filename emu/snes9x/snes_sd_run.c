@@ -69,8 +69,8 @@ static int s_snes_ra_avail = 1;
  * (raw fast-save unsupported, e.g. some special-chip carts). Set once per session; used to re-arm
  * the ring on reset / load-state. See emu/ayaneo_rewind.h. */
 static unsigned s_snes_rw_payload;
-#define SNES_REWIND_K         6    /* capture cadence: every 6th committed frame (~10/s) */
-#define SNES_REWIND_MAX_STEPS 8    /* ring steps per present at full trigger */
+#define SNES_REWIND_K         1    /* capture cadence: every committed frame (1 snapshot = 1 frame) */
+#define SNES_REWIND_MAX_STEPS 10   /* frames stepped per present at full trigger (=> 1x..10x) */
 
 /* Benchmark (uncap): run the emulator with no vsync pacing and no audio, counting
  * emulated frames per second so CPU-clock changes are measurable (mirrors the GBC/GBA
@@ -770,10 +770,12 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 		/* Rewind capture: snapshot the committed frame into the ring via the fast raw save (the same
 		 * mechanism run-ahead uses), every SNES_REWIND_K frames. State is at the committed frame here
-		 * (before the look-ahead below advances it). Skipped on FF / in-menu / headless test. */
+		 * (before the look-ahead below advances it). Skipped on FF / in-menu / headless test. Cadence
+		 * is UNIFORM (no run-ahead backoff): a varying cadence would make snapshots unevenly spaced, so
+		 * rewinding through a run-ahead-Max segment would run faster than 1x. The raw save is cheap
+		 * (run-ahead already does one every frame), so per-frame capture fits the budget. */
 		if (s_snes_rw_payload && !ff && !g_snes_menu_open && !g_snes_test_limit && ayaneo_rewind_ready()) {
-			int cap_k = (pf >= 2) ? (SNES_REWIND_K * 2) : SNES_REWIND_K;   /* back off under run-ahead Max */
-			if (++rw_capdiv >= cap_k) {
+			if (++rw_capdiv >= SNES_REWIND_K) {
 				void *p = ayaneo_rewind_capture_begin();
 				rw_capdiv = 0;
 				if (p) {
