@@ -121,3 +121,124 @@ int ayaneo_rewind_selftest(unsigned int *region_out, unsigned int *tested_out, u
 	*bad_out = bad;
 	return bad ? -1 : 0;
 }
+
+/* =========================================================================
+ * Ring of periodic save-states for rewind.
+ *
+ * The mapped region is sliced into fixed-size slots; each slot = [u32 size][payload...]. Capture
+ * pushes the current state (oldest overwritten when full). Rewind walks a cursor backward through
+ * the stored slots; on release the cursor becomes the new head (the "future" states past the cursor
+ * are discarded and future captures continue from there). The core packs whatever it needs into a
+ * slot (e.g. GBA = machine state + sound ring). All indices are plain ints - no locking needed since
+ * capture and rewind are mutually exclusive and both run on the emu thread.
+ * ========================================================================= */
+#define SLOT_HDR   16u                 /* 4-byte size + 12 pad -> 16B header, keeps payload 16-aligned */
+
+static unsigned int s_slot_sz;         /* bytes per slot (hdr + payload), 0 = ring not ready */
+static unsigned int s_nslots;
+static unsigned int s_head;            /* next capture slot */
+static unsigned int s_count;           /* valid stored slots (<= nslots) */
+static unsigned int s_cursor;          /* rewind: current slot */
+static unsigned int s_back;            /* rewind: steps back from newest */
+static int          s_rewinding;
+
+static unsigned char *slot_ptr(unsigned int i) { return s_base + (unsigned long long)i * s_slot_sz; }
+
+/* (Re)initialise the ring for a per-core max payload. Maps the region on first use. Clears history.
+ * Call at session start and whenever the timeline is invalidated (game switch / reset / load-state /
+ * menu-exit is fine to leave). Returns the number of slots (0 = rewind unavailable on this SKU). */
+unsigned int ayaneo_rewind_reset(unsigned int max_payload)
+{
+	unsigned int region = ayaneo_rewind_map();
+	s_head = s_count = s_cursor = s_back = 0;
+	s_rewinding = 0;
+	if (!region || !max_payload) { s_slot_sz = 0; s_nslots = 0; return 0; }
+	s_slot_sz = (SLOT_HDR + max_payload + 63u) & ~63u;
+	s_nslots  = region / s_slot_sz;
+	return s_nslots;
+}
+
+int ayaneo_rewind_ready(void)  { return s_slot_sz != 0 && s_nslots != 0; }
+int ayaneo_rewind_active(void) { return s_rewinding; }
+unsigned int ayaneo_rewind_slots(void) { return s_nslots; }
+unsigned int ayaneo_rewind_count(void) { return s_count; }
+
+/* Capture: get the payload pointer to write the current state into (up to max_payload), then commit
+ * the actual byte count. Returns NULL if the ring is not ready. Not valid while rewinding. */
+void *ayaneo_rewind_capture_begin(void)
+{
+	if (!ayaneo_rewind_ready() || s_rewinding) return 0;
+	return slot_ptr(s_head) + SLOT_HDR;
+}
+void ayaneo_rewind_capture_commit(unsigned int size)
+{
+	if (!ayaneo_rewind_ready() || s_rewinding) return;
+	*(volatile unsigned int *)slot_ptr(s_head) = size;
+	s_head = (s_head + 1u) % s_nslots;
+	if (s_count < s_nslots) s_count++;   /* else oldest is overwritten */
+}
+
+/* Rewind: enter (cursor = newest state), step back one stored state (clamped at oldest), read the
+ * current cursor state, and exit (commit cursor as the new head, dropping the newer states). */
+int ayaneo_rewind_begin(void)
+{
+	if (!ayaneo_rewind_ready() || s_count == 0) return -1;
+	s_rewinding = 1;
+	s_back = 0;
+	s_cursor = (s_head + s_nslots - 1u) % s_nslots;   /* newest */
+	return 0;
+}
+int ayaneo_rewind_step(void)
+{
+	if (!s_rewinding) return -1;
+	if (s_back + 1u >= s_count) return -1;             /* already at oldest */
+	s_back++;
+	s_cursor = (s_head + s_nslots - 1u - s_back) % s_nslots;
+	return 0;
+}
+const void *ayaneo_rewind_cur(unsigned int *size_out)
+{
+	if (!ayaneo_rewind_ready() || !s_rewinding) { if (size_out) *size_out = 0; return 0; }
+	if (size_out) *size_out = *(volatile unsigned int *)slot_ptr(s_cursor);
+	return slot_ptr(s_cursor) + SLOT_HDR;
+}
+void ayaneo_rewind_end(void)
+{
+	if (!s_rewinding) return;
+	s_head  = (s_cursor + 1u) % s_nslots;   /* resume from the rewound point */
+	s_count = s_count - s_back;             /* drop the discarded newer states */
+	s_back = 0;
+	s_rewinding = 0;
+}
+
+/* Ring-logic selftest (no core): push `n` slots each stamped with a marker, rewind all the way,
+ * verify the markers come back newest->oldest, then exit and confirm the head resumes correctly. */
+int ayaneo_rewind_ring_selftest(unsigned int *slots_out, unsigned int *pushed_out, unsigned int *bad_out)
+{
+	unsigned int i, bad = 0, n;
+	if (!ayaneo_rewind_reset(4096u)) { *slots_out = 0; *pushed_out = 0; *bad_out = 0; return -1; }
+	*slots_out = s_nslots;
+	n = s_nslots + 5u;                       /* overflow the ring to exercise wraparound */
+	for (i = 0; i < n; i++) {
+		unsigned int *p = (unsigned int *)ayaneo_rewind_capture_begin();
+		if (!p) { bad++; continue; }
+		p[0] = 0xBEEF0000u | (i & 0xffff);   /* marker = push index */
+		ayaneo_rewind_capture_commit(4096u);
+	}
+	*pushed_out = n;
+	/* newest should be marker (n-1), then n-2, ... down to (n - count) */
+	if (ayaneo_rewind_begin() == 0) {
+		unsigned int expect = n - 1u, steps = 0;
+		for (;;) {
+			unsigned int sz; const unsigned int *p = (const unsigned int *)ayaneo_rewind_cur(&sz);
+			if (!p || sz != 4096u || p[0] != (0xBEEF0000u | (expect & 0xffff))) bad++;
+			if (ayaneo_rewind_step() != 0) break;
+			expect--; steps++;
+			if (steps > s_nslots) { bad++; break; }   /* runaway guard */
+		}
+		ayaneo_rewind_end();
+	} else bad++;
+	*bad_out = bad;
+	ayaneo_rewind_reset(0);                  /* leave the ring clean/disabled */
+	return bad ? -1 : 0;
+}
