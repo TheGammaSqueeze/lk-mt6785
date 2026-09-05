@@ -75,10 +75,14 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
         capped to what fits one vsync (committed-frame cost + g_dbg_blit_us reserve, 2x floor),
         audio of every frame submitted (speeds up), only the last presented; ayaneo_hud_set green
         badge. Builds clean. (Render-every-frame; set_av_skip optimization deferred.)
-  - [ ] Rewind delta-ring + reverse audio (6x): capture c->state_save into ayaneo_rewind ring
-        each committed+FF frame; LT-hold walks back (state_load + re-render + reverse audio,
-        decimate by steps); mirror the snes rewind block. GEN_STATE size ~0.5-1MB per snapshot ->
-        the delta ring crushes it. <-- NEXT
+  - [x] Rewind delta-ring + reverse audio (6x): arms ayaneo_rewind_reset(state_size()) after load;
+        captures c->state_save into the ring each committed + FF frame; LT-hold walks back
+        (state_load + re-render + reverse+decimate-by-steps audio, GEN_REWIND_MAX_SPD 1536 = 6x),
+        cyan HUD; on release ayaneo_rewind_end commits the head. Mirrors the snes rewind block but
+        uses full state_save/load (GPGX has no raw fast path). Builds clean. Serialize measured
+        2.8us/call on x86 (GPGX state is a compact fixed buffer, not a real 1MB copy), so per-frame
+        capture is cheap; the ring delta-encode (~256K-word scan) is the dominant cost, well within
+        the 16.6ms budget -> 60fps rewind is viable. host_test.c gained a serialize-throughput probe.
   - [ ] run-ahead (state_save/load per frame + set_av_skip), aspect Fit/Stretch via
         ayaneo_rsz_present + LCD filter in ayaneo_genesis_show_frame, CPU clock, per-core settings
         persist, live Pico overlay menu with GPGX core options, boxart/console badges, 6-button pad.

@@ -11,6 +11,7 @@
 #include "genesis_core_abi.h"
 #include "../gba/sd_fat.h"
 #include "../gba/gba_sd_save.h"
+#include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
 #include <kernel/event.h>
 
@@ -68,6 +69,7 @@ extern void     ayaneo_hud_set(int mode, int speed_x10);   /* mt_disp_drv.c: FF/
 #define GEN_ROM_CAP    0x00800000u        /* 8 MB (largest MD carts ~8 MB) */
 #define GEN_STATE_BUF  0x53400000u        /* save/suspend state scratch */
 #define GEN_STATE_CAP  0x00400000u        /* 4 MB (GPGX state ~0.5-1 MB) */
+#define GEN_REWIND_MAX_SPD 1536           /* max rewind speed in 256ths (1536 = 6x); floor 256 = 1x */
 
 volatile int g_genesis_menu_open;         /* reserved for the Pico menu (parity phase) */
 
@@ -116,8 +118,8 @@ volatile int      g_gen_dbg_loadrc;
 static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 {
 	const struct genesis_core_exports *c = genesis_core_load();
-	unsigned romsz, sr = 44100, ssz;
-	int aya_prev = 0, aya_hold = 0;
+	unsigned romsz, sr = 44100, ssz, rw_payload;
+	int aya_prev = 0, aya_hold = 0, rw_acc = 0;
 	struct genesis_frame fr;
 
 	if (!c) return;   /* blob load failed (g_gen_dbg_loaderr set by the loader) */
@@ -151,18 +153,71 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	if (!sr) sr = 44100;
 	g_gen_dbg_sr = sr;
 
+	/* Arm the rewind ring: capture the FULL serialized state each frame (GPGX has no raw fast
+	 * snapshot, so unlike snes we use state_save/state_load = retro_serialize). The high-DRAM delta
+	 * ring XOR+RLEs consecutive same-size states, so a frame of change compresses well. Disabled if
+	 * the state is absurdly large or the region is unavailable. */
+	rw_payload = c->state_size();
+	if (rw_payload && rw_payload <= 0x00400000u) ayaneo_rewind_reset(rw_payload);
+	else rw_payload = 0;
+
 	for (;;) {
 		extern int ayaneo_joypad_ff_level(void);
-		extern void ayaneo_hud_set(int mode, int speed_x10);
+		extern int ayaneo_joypad_rewind_level(void);
+		extern void ayaneo_audio_reverse_flip(void);
 		extern volatile unsigned int g_dbg_blit_us;
+		static short s_gen_audrev[2048 * 2];   /* reversed+decimated rewind audio scratch */
 		unsigned int em0, fe;
-		int ff;
+		int ff, rw;
 
 		ayaneo_joypad_poll();
+
+		/* Rewind (left trigger): walk the delta ring backward and re-render instead of advancing.
+		 * Press depth sets a smooth 1x..6x speed via a fractional accumulator; each stepped-back
+		 * frame's audio is reversed + decimated by `steps` and submitted (game plays backwards). On
+		 * release the ring commits the rewound point as the new head. Mirrors the snes rewind block. */
+		rw = ayaneo_joypad_rewind_level();
+		if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
+			int spd = 256 + (rw * (GEN_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(6x) */
+			unsigned int sz; const void *st; int k, steps;
+			ayaneo_hud_set(2, spd * 10 / 256);   /* cyan reverse-speed badge */
+			if (!ayaneo_rewind_active()) { ayaneo_rewind_begin(); rw_acc = 0; ayaneo_audio_reverse_flip(); }
+			rw_acc += spd; steps = rw_acc >> 8; rw_acc &= 255;
+			for (k = 0; k < steps; k++) {
+				int atold = (ayaneo_rewind_step() != 0);
+				if (k > 0 && atold) break;
+				st = ayaneo_rewind_cur(&sz);
+				if (!st || !sz) break;
+				c->state_load(st, sz);
+				c->run(&fr);                 /* render the rewound state */
+				g_gen_dbg_frames++;
+				if (fr.audio && fr.frames) {
+					const short *a = fr.audio; unsigned int f = fr.frames, i, j = 0;
+					if (f > 2048u) f = 2048u;
+					for (i = 0; i < f; i += (unsigned)steps) {
+						s_gen_audrev[j * 2]     = a[(f - 1u - i) * 2];
+						s_gen_audrev[j * 2 + 1] = a[(f - 1u - i) * 2 + 1];
+						j++;
+					}
+					ayaneo_snes_audio_submit(s_gen_audrev, j, sr);
+				}
+				if (atold) break;
+			}
+			if (fr.video && fr.width && fr.height)
+				ayaneo_genesis_show_frame((const unsigned short *)fr.video, fr.width, fr.height, fr.pitch / 2u);
+			mtk_wdt_restart();
+			continue;   /* rewind present done; skip the forward path */
+		}
+		if (ayaneo_rewind_active()) { ayaneo_rewind_end(); ayaneo_audio_reverse_flip(); }
+
 		em0 = gpt4_get_current_tick();
 		c->run(&fr);                                 /* committed frame */
 		fe = (gpt4_get_current_tick() - em0) / 13u;  /* per-frame emu cost (us) for the FF cap */
 		g_gen_dbg_frames++;
+		if (rw_payload && ayaneo_rewind_ready()) {   /* capture committed frame into the rewind ring */
+			void *p = ayaneo_rewind_capture_begin();
+			if (p && c->state_save(p, rw_payload) == 0) ayaneo_rewind_capture_commit(rw_payload);
+		}
 		if (fr.audio && fr.frames)
 			ayaneo_snes_audio_submit(fr.audio, fr.frames, sr);
 
@@ -184,6 +239,10 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			for (k = 1; k < mult; k++) {
 				c->run(&fr);
 				g_gen_dbg_frames++;
+				if (rw_payload && ayaneo_rewind_ready()) {   /* capture each FF frame too */
+					void *p = ayaneo_rewind_capture_begin();
+					if (p && c->state_save(p, rw_payload) == 0) ayaneo_rewind_capture_commit(rw_payload);
+				}
 				if (fr.audio && fr.frames)
 					ayaneo_snes_audio_submit(fr.audio, fr.frames, sr);
 			}

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 #include <libretro.h>
 
 void     retro_set_environment(retro_environment_t);
@@ -168,6 +169,21 @@ int main(int argc, char **argv)
 		}
 	}
 	printf("save-state RESULT: %s\n", ss_ok ? "PASS (deterministic round-trip)" : "FAIL");
+
+	/* serialize throughput: the LK rewind ring captures a full state every frame (GPGX has no raw
+	 * fast path), so this must be cheap relative to a ~16.6ms frame. x86 timing is a rough proxy
+	 * for the ARM A76 cost. */
+	{
+		size_t ssz = retro_serialize_size();
+		void *sb = malloc(ssz);
+		struct timespec t0, t1; int N = 300, i;
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		for (i = 0; i < N; i++) retro_serialize(sb, ssz);
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		double us = ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / 1000.0 / N;
+		printf("serialize: size=%zu bytes, %.1f us/call on host x86 (rewind captures 1/frame)\n", ssz, us);
+		free(sb);
+	}
 
 	{
 		int ran_ok = (vcalls > 0 && vw >= 160 && vh >= 100);
