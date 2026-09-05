@@ -310,7 +310,7 @@ static void snes_poll_volume(void)
 	if (!dir) return;
 	if (sel) {
 		ayaneo_brightness_step(dir);
-		ayaneo_gbc_osd_show(0, ayaneo_brightness_pct());
+		ayaneo_gbc_osd_show(2, ayaneo_brightness_pct());   /* kind 2 = brightness (kind 0 = "none" -> bar never showed) */
 	} else {
 		int v = ayaneo_gbc_audio_get_volume() + dir * 5;
 		if (v < 0) v = 0; if (v > 100) v = 100;

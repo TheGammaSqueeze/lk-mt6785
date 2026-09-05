@@ -1180,6 +1180,32 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		 * (before the 5x upscale), gated by the persisted setting. */
 		int cc = ayaneo_get_color_correct();
 		extern const unsigned short gba_cc_lut444[];
+		if (!filt) {
+			/* Fast path (no LCD filter, the common case): render ONE destination row per
+			 * source row (scalar unpack + GBC_SCALE-wide horizontal replicate), then copy it to
+			 * the remaining GBC_SCALE-1 rows with memcpy (wide vectorised stores). The old
+			 * per-pixel GBC_SCALE x GBC_SCALE scalar block wrote every scaled row by hand
+			 * (~1M u32 stores/frame, measured ~7.6 ms at 600 MHz); this cuts the vertical scale
+			 * to ~1 scalar row + N cheap copies, matching the Genesis/SNES fast path. */
+			for (sy = 0; sy < GBC_SRC_H; sy++) {
+				const unsigned short *srow = pix + sy * GBC_SRC_W;
+				unsigned int *o0 = dst + (yoff + sy * GBC_SCALE) * pitch_w + xoff;
+				unsigned int col = 0;
+				for (sx = 0; sx < GBC_SRC_W; sx++) {
+					unsigned int v = srow[sx];
+					if (cc) v = gba_cc_lut444[(((v >> 12) & 0xF) << 8) |
+								  (((v >> 7) & 0xF) << 4) |
+								  ((v >> 1) & 0xF)];
+					unsigned int r = ((v >> 11) & 0x1f) << 3;
+					unsigned int g = ((v >> 5) & 0x3f) << 2;
+					unsigned int b = (v & 0x1f) << 3;
+					unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+					for (ix = 0; ix < GBC_SCALE; ix++) o0[col++] = px;
+				}
+				for (iy = 1; iy < GBC_SCALE; iy++)
+					memcpy(o0 + iy * pitch_w, o0, (size_t)dw * 4u);
+			}
+		} else
 		for (sy = 0; sy < GBC_SRC_H; sy++) {
 			const unsigned short *srow = pix + sy * GBC_SRC_W;
 			for (sx = 0; sx < GBC_SRC_W; sx++) {
@@ -1193,22 +1219,6 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 				unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
 				unsigned int dk = 0xFF000000u |
 					((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
-
-				if (!filt) {
-					/* Fast path (no LCD filter, the common case): the whole
-					 * GBC_SCALE x GBC_SCALE block is the solid pixel, so write it
-					 * with no per-subpixel branch. Byte-identical to the filtered
-					 * path below when filt==0. This is the dominant per-frame cost
-					 * (measured ~7.6 ms/frame at 600 MHz), so hoisting the branch
-					 * out of ~1M inner iterations is a large win. */
-					for (iy = 0; iy < GBC_SCALE; iy++) {
-						unsigned int *o = dst +
-							(yoff + sy * GBC_SCALE + iy) * pitch_w +
-							(xoff + sx * GBC_SCALE);
-						for (ix = 0; ix < GBC_SCALE; ix++)
-							o[ix] = px;
-					}
-				} else
 				for (iy = 0; iy < GBC_SCALE; iy++) {
 					unsigned int *o = dst +
 						(yoff + sy * GBC_SCALE + iy) * pitch_w +
@@ -1283,6 +1293,26 @@ void ayaneo_gb_show_frame(const unsigned short *pix)
 	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
 	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
 
+	if (!filt) {
+		/* Fast path: one scalar dest row per source row, then memcpy-replicate to the other
+		 * SC-1 rows (mirrors the Genesis/SNES/GBA fast path) - cuts the vertical 6x scale from
+		 * 6 scalar rows to 1 scalar row + 5 wide copies. */
+		for (sy = 0; sy < SH; sy++) {
+			const unsigned short *srow = pix + sy * SW;
+			unsigned int *o0 = dst + (yoff + sy * SC) * pitch_w + xoff;
+			unsigned int col = 0;
+			for (sx = 0; sx < SW; sx++) {
+				unsigned int v = srow[sx];
+				unsigned int r = ((v >> 11) & 0x1f) << 3;
+				unsigned int g = ((v >> 5) & 0x3f) << 2;
+				unsigned int b = (v & 0x1f) << 3;
+				unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
+				for (ix = 0; ix < SC; ix++) o0[col++] = px;
+			}
+			for (iy = 1; iy < SC; iy++)
+				memcpy(o0 + iy * pitch_w, o0, (size_t)dw * 4u);
+		}
+	} else
 	for (sy = 0; sy < SH; sy++) {
 		const unsigned short *srow = pix + sy * SW;
 		for (sx = 0; sx < SW; sx++) {
@@ -1292,21 +1322,14 @@ void ayaneo_gb_show_frame(const unsigned short *pix)
 			unsigned int b = (v & 0x1f) << 3;
 			unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
 			unsigned int dk = 0xFF000000u | ((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
-			if (!filt) {
-				for (iy = 0; iy < SC; iy++) {
-					unsigned int *o = dst + (yoff + sy * SC + iy) * pitch_w + (xoff + sx * SC);
-					for (ix = 0; ix < SC; ix++) o[ix] = px;
-				}
-			} else {
-				for (iy = 0; iy < SC; iy++) {
-					unsigned int *o = dst + (yoff + sy * SC + iy) * pitch_w + (xoff + sx * SC);
-					int lastrow = (iy == (int)SC - 1);
-					for (ix = 0; ix < SC; ix++) {
-						unsigned int c = px; int lastcol = (ix == (int)SC - 1);
-						if (filt == 1 && lastrow) c = dk;
-						else if (filt >= 2 && (lastrow || lastcol)) c = dk;
-						o[ix] = c;
-					}
+			for (iy = 0; iy < SC; iy++) {
+				unsigned int *o = dst + (yoff + sy * SC + iy) * pitch_w + (xoff + sx * SC);
+				int lastrow = (iy == (int)SC - 1);
+				for (ix = 0; ix < SC; ix++) {
+					unsigned int c = px; int lastcol = (ix == (int)SC - 1);
+					if (filt == 1 && lastrow) c = dk;
+					else if (filt >= 2 && (lastrow || lastcol)) c = dk;
+					o[ix] = c;
 				}
 			}
 		}
@@ -1932,9 +1955,12 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 	ayaneo_hud_draw(dst, pitch_w, xoff, yoff, (int)dw, (int)dh);   /* FF/RW speed badge */
 	extern volatile unsigned g_snes_flush_us;   /* isolated cache-clean cost, for oem diag */
 	unsigned int t_flush0 = gpt4_get_current_tick();
-	arch_clean_cache_range((unsigned int)dst, H * pitch_w * 4);
+	/* Flush ONLY the game rows [yoff, yoff+dh) - the letterbox is static (cleared once on geometry
+	 * change above) and the OSD/HUD self-flush their own bands. Full-panel clean wasted ~0.33MB+ of
+	 * cache traffic every frame (Stretch dh==H is unchanged). Mirrors Genesis/GBC/GBA. */
+	arch_clean_cache_range((unsigned int)(dst + (unsigned int)yoff * pitch_w), (unsigned int)dh * pitch_w * 4);
 	unsigned int t_flush1 = gpt4_get_current_tick();
-	g_snes_flush_us = (t_flush1 - t_flush0) / 13u;               /* just the 4.9MB clean */
+	g_snes_flush_us = (t_flush1 - t_flush0) / 13u;               /* just the game-rows clean */
 	g_snes_show_us  = (t_flush1 - t_show0) / 13u;                /* scale+osd+flush (no vsync) */
 	ayaneo_present(dpa, W, H, pitch_w);
 	/* Vsync-locked present: the SNES session runs the panel at ~60.11 Hz (vfp swap), so

@@ -1113,6 +1113,18 @@ unsigned int ayaneo_dsi_get_vfp(void)
 	return AS_UINT32(DSI_REG_BASE[0] + DISP_REG_DSI_VFP_NL);
 }
 
+/* Panel refresh rate in milli-Hz (e.g. 59749 = 59.749 Hz), derived from the live vfp. In VDO mode
+ * vtotal = VSA+VBP+VACTIVE+VFP; on this st7703_hd720 timing the non-vfp lines sum to 976 and the line
+ * rate is ~59.684 kHz (calibrated to the two documented points: vfp 23 -> vtotal 999 -> 59.749 Hz,
+ * vfp 17 -> vtotal 993 -> 60.11 Hz). Read-only; the per-core LCM refresh switch will build on this. */
+unsigned int ayaneo_dsi_refresh_milli(void)
+{
+	unsigned int vfp = AS_UINT32(DSI_REG_BASE[0] + DISP_REG_DSI_VFP_NL);
+	unsigned int vtotal = 976u + vfp;
+	if (!vtotal) return 0;
+	return 59684000u / vtotal;   /* line_rate(milliHz*lines) / vtotal = refresh in milliHz */
+}
+
 void DSI_Config_VDO_Timing(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAMS *dsi_params)
 {
 	int i = 0;

@@ -76,7 +76,11 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
 
 /* run-ahead CPU clock by depth: pf frames run pf+1 emulations/display + 1 save + 1 load, so
  * escalate the clock with depth (mirrors the snes s_snes_ra_opp). ayaneo_set_cpu_mhz is PLL-only. */
-static const unsigned s_gen_ra_opp[4] = { 1400, 1600, 1800, 2000 };
+/* Gameplay CPU clock per run-ahead tier (pf=0..3). pf=0 (run-ahead Off, the default) now floors at
+ * 1800 MHz like the SNES core - 1400 left demanding MD scenes short of 60fps. 1800 is validated safe for
+ * sustained VSYNC-capped play on this SoC (the CPU idles each frame; only uncapped 1800+ browns out).
+ * Higher run-ahead tiers escalate to 2000 for the extra pf+1 emulations. Monotonic non-decreasing. */
+static const unsigned s_gen_ra_opp[4] = { 1800, 1800, 2000, 2000 };
 
 volatile int g_genesis_menu_open;         /* gates game input + FF/rewind while the Pico menu is up */
 volatile int g_genesis_aspect;            /* display aspect: 0=Pixel 1=Fit 2=Stretch (ayaneo_genesis_show_frame) */
@@ -147,6 +151,20 @@ extern int  ayaneo_brightness_pct(void);
 extern int  ayaneo_brightness_step(int dir);
 extern int  ayaneo_gbc_audio_get_volume(void);
 extern void ayaneo_gbc_audio_set_volume(int v);
+extern int  mtk_detect_key(unsigned short hwkey);       /* MTK keypad matrix (hardware volume rocker) */
+extern void ayaneo_gbc_osd_show(int kind, int pct);     /* transient OSD bar: 1=volume 2=brightness */
+extern void ayaneo_menu_settings_persist(void);         /* persist brightness/volume/... to eMMC+SD */
+extern int  pmic_detect_powerkey(void);
+extern void mt_power_off(void);
+
+/* Deferred settings persist (mirrors the snes core): a hardware-rocker OR Pico-menu volume/brightness
+ * change marks dirty; the eMMC+SD write is debounced ~0.5 s so holding a key never spams flash. Before
+ * this, Genesis persisted NO settings - brightness/volume were lost on the next launch. */
+static int s_gen_settings_dirty;
+#define GEN_SETTINGS_DEBOUNCE 30
+static void genesis_settings_touch(void) { s_gen_settings_dirty = GEN_SETTINGS_DEBOUNCE; }
+static void genesis_settings_tick(void)  { if (s_gen_settings_dirty > 0 && --s_gen_settings_dirty == 0) ayaneo_menu_settings_persist(); }
+static void genesis_settings_flush(void) { if (s_gen_settings_dirty > 0) { s_gen_settings_dirty = 0; ayaneo_menu_settings_persist(); } }
 
 /* manual CPU-clock grid (ayaneo_set_cpu_mhz reprograms the PLL only, so >boot-Vproc is the user's call) */
 static const unsigned s_cpu_opp[] = { 600, 800, 1000, 1200, 1400, 1600, 1800, 2000 };
@@ -166,10 +184,17 @@ static void genesis_cpu_step(int dir)
 extern int  ayaneo_get_preempt_frames(void);
 extern void ayaneo_set_preempt_frames(int v);
 
-enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_RUNAHEAD, GM_CPU, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
+enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_CPU, GM_REFRESH, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
 static const char *gen_aspect_name(int a) { return a == 2 ? "Stretch" : a == 1 ? "Fit" : "Pixel"; }
 static const char *gen_filter_name(int f) { return f == 3 ? "Grid+" : f == 2 ? "Grid" : f == 1 ? "Scanlines" : "Off"; }
 static const char *gen_ra_name(int pf) { return pf == 3 ? "Max" : pf == 2 ? "Responsive" : pf == 1 ? "Balanced" : "Off"; }
+
+/* Region override -> GPGX genesis_plus_gx_region_detect. The core applies it live via check_variables
+ * (reinits framerate/audio timing + I/O region reg); some games only honour it on reset. */
+static int s_gen_region;   /* 0 Auto, 1 USA (ntsc-u), 2 Europe (pal), 3 Japan (ntsc-j) */
+static const char *gen_region_name(int r) { return r == 3 ? "Japan" : r == 2 ? "Europe" : r == 1 ? "USA" : "Auto"; }
+static const char *gen_region_opt(int r)  { return r == 3 ? "ntsc-j" : r == 2 ? "pal" : r == 1 ? "ntsc-u" : "auto"; }
+extern unsigned int ayaneo_dsi_refresh_milli(void);   /* panel refresh in milli-Hz (ties into LCM work) */
 
 static char *mput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *mputu(char *p, unsigned v) { char t[12]; int n = 0; if (!v) { *p++ = '0'; return p; } while (v) { t[n++] = '0' + v % 10; v /= 10; } while (n) *p++ = t[--n]; return p; }
@@ -177,6 +202,7 @@ static char *mputu(char *p, unsigned v) { char t[12]; int n = 0; if (!v) { *p++ 
 static const char *gm_label(int i) { switch (i) {
 	case GM_BRIGHT: return "Brightness"; case GM_VOLUME: return "Volume";
 	case GM_ASPECT: return "Aspect Ratio"; case GM_FILTER: return "LCD Filter";
+	case GM_REGION: return "Region"; case GM_REFRESH: return "Refresh Rate";
 	case GM_RUNAHEAD: return "Run-Ahead"; case GM_CPU: return "CPU Clock";
 	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
 	case GM_RESET: return "Reset Game"; case GM_EXIT: return "Exit Game"; } return ""; }
@@ -187,6 +213,9 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 	case GM_VOLUME: p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
 	case GM_ASPECT: p = mput(p, gen_aspect_name(g_genesis_aspect)); break;
 	case GM_FILTER: p = mput(p, gen_filter_name(g_genesis_filter)); break;
+	case GM_REGION: p = mput(p, gen_region_name(s_gen_region)); break;
+	case GM_REFRESH: { unsigned mhz = ayaneo_dsi_refresh_milli();   /* read-only: XX.X Hz */
+		p = mputu(p, mhz / 1000u); *p++ = '.'; *p++ = (char)('0' + (mhz % 1000u) / 100u); p = mput(p, " Hz"); } break;
 	case GM_RUNAHEAD: p = mput(p, gen_ra_name(ayaneo_get_preempt_frames())); break;
 	case GM_CPU:    p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
 	case GM_SLOT:   p = mputu(p, (unsigned)s_save_slot); break;
@@ -200,10 +229,15 @@ static int gm_change(int i, int dir, int act)
 {
 	s_mstat[0] = 0;
 	switch (i) {
-	case GM_BRIGHT: if (dir) ayaneo_brightness_step(dir); break;
-	case GM_VOLUME: if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); break;
+	case GM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); genesis_settings_touch(); } break;
+	case GM_VOLUME: if (dir) { ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); genesis_settings_touch(); } break;
 	case GM_ASPECT: if (dir) g_genesis_aspect = (g_genesis_aspect + dir + 3) % 3; break;   /* live preview */
 	case GM_FILTER: if (dir) g_genesis_filter = (g_genesis_filter + dir + 4) % 4; break;
+	case GM_REGION: if (dir) { s_gen_region = (s_gen_region + dir + 4) % 4;
+		if (s_menu_c && s_menu_c->set_option)
+			s_menu_c->set_option("genesis_plus_gx_region_detect", gen_region_opt(s_gen_region));
+		mput(s_mstat, "Region set (reset for full effect)"); } break;
+	case GM_REFRESH: break;   /* read-only display (panel Hz); no adjust */
 	case GM_RUNAHEAD: if (dir) { int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
 		ayaneo_set_preempt_frames(pf); ayaneo_set_cpu_mhz(s_gen_ra_opp[pf]); s_cpu_idx = -1; } break;
 	case GM_CPU:    if (dir) genesis_cpu_step(dir); break;
@@ -249,11 +283,62 @@ void genesis_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, u
 		    "Up/Down move  Left/Right change  A select  B/AYA close");
 }
 
+/* Hardware volume rocker (mirrors snes_poll_volume / gba poll_volume so every core behaves the same):
+ * VolUp = mtk_detect_key(0x11), VolDown = 0x00, edge-detected (one press = one step). Holding SELECT
+ * turns the rocker into a brightness control. Runs whether or not the Pico menu is open. Debounced to
+ * disk via genesis_settings_touch. Genesis previously had NO in-game volume/brightness shortcut. */
+static void genesis_poll_volume(void)
+{
+	static int vu_p, vd_p;
+	int vu = mtk_detect_key(0x11), vd = mtk_detect_key(0x00);
+	int sel = PRESSED(GPIO_SELECT);
+	int dir = 0;
+	if (vu && !vu_p) dir = +1; else if (vd && !vd_p) dir = -1;
+	vu_p = vu; vd_p = vd;
+	if (!dir) return;
+	if (sel) {
+		ayaneo_brightness_step(dir);
+		ayaneo_gbc_osd_show(2, ayaneo_brightness_pct());   /* 2 = brightness */
+	} else {
+		int v = ayaneo_gbc_audio_get_volume() + dir * 5;
+		if (v < 0) v = 0; if (v > 100) v = 100;
+		ayaneo_gbc_audio_set_volume(v);
+		ayaneo_gbc_osd_show(1, v);                         /* 1 = volume */
+	}
+	genesis_settings_touch();
+}
+
+/* Power key during gameplay (mirrors gba check_power/save_and_poweroff so power behaves the same on
+ * every core): arm on release, fire on the next press. On press: silence audio, write the cartridge
+ * battery + a suspend state so the next launch resumes, flush pending settings, then power off. Uses
+ * the session context stashed in s_menu_* by genesis_session_body. */
+static void genesis_power_check(void)
+{
+	static int armed;
+	int p = pmic_detect_powerkey();
+	if (!p) { armed = 1; return; }
+	if (!armed) return;
+	armed = 0;
+	ayaneo_menu_audio_silence();
+	if (s_menu_c && s_menu_vol && s_menu_rom) {
+		const struct genesis_core_exports *c = s_menu_c;
+		unsigned ssz;
+		if (c->sram_ptr() && c->sram_size())
+			gba_sd_write_sav(s_menu_vol, s_menu_rom->name, c->sram_ptr(), c->sram_size());
+		ssz = c->state_size();
+		if (ssz && ssz <= GEN_STATE_CAP && c->state_save((void *)GEN_STATE_BUF, ssz) == 0)
+			gba_sd_write_named(s_menu_vol, "/states/genesis", s_menu_rom->name, "sus",
+					   (const unsigned char *)GEN_STATE_BUF, ssz);
+	}
+	genesis_settings_flush();
+	mt_power_off();   /* no return */
+}
+
 static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 {
 	const struct genesis_core_exports *c = genesis_core_load();
 	unsigned romsz, sr = 44100, ssz, rw_payload, saved_mhz;
-	int aya_prev = 0, aya_hold = 0, rw_acc = 0;
+	int aya_prev = 0, aya_hold = 0, rw_acc = 0, reset_hold = 0;
 	int up_h = 0, dn_h = 0, lt_h = 0, rt_h = 0;             /* menu nav auto-repeat hold counters */
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	struct genesis_frame fr;
@@ -345,6 +430,9 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		int ff, rw;
 
 		ayaneo_joypad_poll();
+		genesis_poll_volume();     /* hardware volume rocker + SELECT-brightness (parity with all cores) */
+		genesis_settings_tick();   /* debounced volume/brightness persist */
+		genesis_power_check();      /* power key -> save cartridge + suspend, then power off */
 
 		/* Refresh the Pico menu as a hardware overlay (OVL0 L0) over the running game, or disable it
 		 * when closed - the game keeps running underneath so settings preview live (mirrors snes). */
@@ -498,9 +586,15 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			#undef NAV_DELAY
 			#undef NAV_REP
 			#undef FIRE
-			if (a && !a_p) { if (gm_change(s_msel, 0, 1)) g_genesis_menu_open = 0; }
-			if (b && !b_p) g_genesis_menu_open = 0;
+			if (a && !a_p) { if (gm_change(s_msel, 0, 1)) { g_genesis_menu_open = 0; genesis_settings_flush(); } }
+			if (b && !b_p) { g_genesis_menu_open = 0; genesis_settings_flush(); }
 			up_p = up; dn_p = dn; lt_p = lt; rt_p = rt; a_p = a; b_p = b;
+			reset_hold = 0;
+		} else {
+			/* Soft reset: SELECT+START+L+R held ~0.5 s (parity with snes/gba/gbc). */
+			if (PRESSED(GPIO_SELECT) && PRESSED(GPIO_START) && PRESSED(GPIO_LB) && PRESSED(GPIO_RB)) {
+				if (++reset_hold >= 30) { c->reset(); if (rw_payload) ayaneo_rewind_reset(rw_payload); reset_hold = 0; }
+			} else reset_hold = 0;
 		}
 		if (g_genesis_menu_exit) break;   /* Pico "Exit Game" selected */
 	}
@@ -517,6 +611,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				      * stale Pico panel composites over the selector - see CORE_PORTING_NOTES) */
 	ayaneo_hud_set(0, 0);   /* clear the FF/RW badge on exit */
 	ayaneo_set_cpu_mhz(saved_mhz);   /* restore the menu's idle clock */
+	genesis_settings_flush();   /* write any pending volume/brightness change before leaving */
 
 	/* persist SRAM + a suspend state so the next launch resumes */
 	if (c->sram_ptr() && c->sram_size())
