@@ -37,8 +37,14 @@ port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
 - [x] genesis_core_blob.ld (VMA 0x4F800000, above snes9x, below arena; magic "SEG1") +
       build_core_blob.sh -> **core_genesis.blob BUILDS: 1,376,333 bytes (1.34 MB, fits the 2MB
       boot_b slot), span 0x43e8f0 (~4.24 MB incl ~3MB BSS)**. libc+stubs compiled NON-LTO.
-- [ ] build_host_test.sh + host_test.c (validate a frame off-device FIRST) <-- NEXT STEP
-- [ ] genesis_core_loader.c (lk_a side, boot_b 0x01A00000 -> VMA)
+- [x] build_host_test.sh + host_test.c: **HOST TEST PASSES** (native x86-64, synthetic minimal
+      MD ROM). Core builds+inits+loads (via GET_GAME_INFO_EXT buffer path)+runs 600 frames
+      (video_cb 600, audio ~735/frame at 44100/60) + **save-state round-trip deterministic**
+      (serialize_size ~1.01MB). GOTCHA CAUGHT + FIXED: retro_set_controller_port_device must be
+      called AFTER retro_load_game (GPGX io_init/input_init touch per-system state that only
+      exists post-load; calling before crashed input_init). Fixed in genesis_core_exports.c
+      (deferred to genesis_load) and host_test.c. Run a REAL ROM later on device for gameplay.
+- [ ] genesis_core_loader.c (lk_a side, boot_b 0x01A00000 -> VMA 0x4F800000) <-- NEXT STEP
 - [ ] genesis_sd_run.c (own thread; native geom show_frame; input; ~44.1kHz audio)
 - [ ] Console types GENESIS/SMS/GG/SG in sd_fat.h + ROM folders + launch dispatch
       (gba_driver.c both ROM-select sites) + boxart/badge

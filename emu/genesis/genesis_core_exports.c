@@ -164,8 +164,9 @@ static void genesis_init(void)
 	retro_set_input_poll(input_poll_cb);
 	retro_set_input_state(input_state_cb);
 	retro_init();
-	retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
-	retro_set_controller_port_device(1, RETRO_DEVICE_JOYPAD);
+	/* NOTE: retro_set_controller_port_device is deferred to genesis_load(): GPGX's io_init/
+	 * input_init touch per-system input state that only exists AFTER a game is loaded, so calling
+	 * it here (before load) dereferences uninitialised state and crashes (caught by host_test). */
 }
 
 static const char *ext_for(int system)
@@ -198,6 +199,10 @@ static int genesis_load(const void *rom, unsigned size, int system)
 	info.path = 0; info.data = rom; info.size = size; info.meta = 0;
 	rc = retro_load_game(&info) ? 0 : -1;
 	s_ext.data = 0;                           /* stop answering GET_GAME_INFO_EXT after load */
+	if (rc == 0) {                            /* now that the system+input exist, select the pads */
+		retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+		retro_set_controller_port_device(1, RETRO_DEVICE_JOYPAD);
+	}
 	return rc;
 }
 
