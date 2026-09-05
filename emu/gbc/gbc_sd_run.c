@@ -537,8 +537,25 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		ayaneo_gbc_audio_submit(snd, samples);
 
 		if (r >= 0) {                       /* a video frame completed */
-			int combo, pf, aya;
+			int combo, pf, aya, ff = 0;
 				{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers */
+			/* Variable fast-forward (right trigger): run extra committed frames (audio kept, so
+			 * the sound speeds up too). The 59.7 Hz loop pacing below rate-limits it (2x..10x with
+			 * press depth). Run-ahead (pf) is gated off while ff is active. */
+			{
+				extern int ayaneo_joypad_ff_level(void);
+				int ff_lvl = ayaneo_joypad_ff_level();
+				if (ff_lvl > 0 && !g_gbc_menu_open) {
+					int mult = 2 + (ff_lvl * (10 - 2)) / 255;   /* 2..10 */
+					int k;
+					ff = 1;
+					for (k = 1; k < mult; k++) {
+						unsigned s2 = GBC_SND_MAX;
+						c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);
+						ayaneo_gbc_audio_submit(snd, s2);
+					}
+				}
+			}
 			mtk_wdt_restart();
 
 			/* AYA taps toggle the in-game menu (game keeps running underneath).
@@ -643,7 +660,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			/* Run-ahead: present pf frames into the future then rewind. Off while the
 			 * menu is open (do not race the game ahead under the overlay, and a menu
 			 * Load State just replaced the state). */
-			pf = (!g_gbc_menu_open && GBC_RUNAHEAD) ? ayaneo_get_preempt_frames() : 0;
+			pf = (!g_gbc_menu_open && !ff && GBC_RUNAHEAD) ? ayaneo_get_preempt_frames() : 0;
 			if (pf > 0 && ahead_sz) {
 				int i;
 				c->state_save(ahead);

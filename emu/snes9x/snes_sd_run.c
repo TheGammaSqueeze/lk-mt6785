@@ -664,9 +664,10 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * before the committed frame runs. When run-ahead presents a look-ahead frame, the
 		 * committed frame's OWN video is thrown away, so skip rendering it (its audio is still the
 		 * committed audio, so keep that). The headless test keeps video so frame validation works. */
-		int ff = PRESSED(GPIO_R2) && !g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit;
-		if (ff && !ff_prev) ayaneo_menu_audio_silence();   /* clear the AFE ring once on FF entry */
-		ff_prev = ff;
+		int ff_lvl;
+		{ extern int ayaneo_joypad_ff_level(void); ff_lvl = ayaneo_joypad_ff_level(); }  /* RT, cached */
+		int ff = ff_lvl > 0 && !g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit;
+		ff_prev = ff;   /* FF audio stays continuous (speeds up); no ring clear on entry */
 		int pf = 0;
 		{
 			extern volatile int g_snes_dbg_ra;   /* oem snes-ra:N forces run-ahead depth in the test */
@@ -678,7 +679,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * independent hardware overlay). Run-ahead and fast-forward are already gated off
 			 * while the menu is open (pf=0, ff=0 above), so this is a single committed frame; the
 			 * game visibly keeps running under the menu and setting changes preview live. */
-			if (c->set_av_skip) c->set_av_skip((pf > 0 && !g_snes_test_limit) ? 1 : 0, 0);
+			if (c->set_av_skip) c->set_av_skip(((pf > 0 || ff) && !g_snes_test_limit) ? 1 : 0, 0);
 			c->run(&f);
 			g_snes_dbg_frames++;
 			/* keep the display's target aspect current (cheap; refreshed periodically) - it
@@ -711,9 +712,27 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* Committed-frame audio submitted BEFORE any run-ahead look-ahead overwrites the
 		 * blob's audio buffer; muted while benchmarking or fast-forwarding so the ring never
 		 * throttles the uncapped loop. (ff / pf were computed up front, above.) */
-		if (f.audio && f.frames && !g_snes_benchmark && !ff) {
+		if (f.audio && f.frames && !g_snes_benchmark) {
 			g_snes_dbg_audframes += f.frames;
 			ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
+		}
+		/* Variable fast-forward (right trigger): run extra committed frames per display frame,
+		 * scaled by press depth, submitting each frame's audio so the sound speeds up too. The
+		 * vsync-locked present below rate-limits it (2x .. CPU-bound = fastest at full press).
+		 * Run-ahead (pf) is already gated off while ff is active. */
+		if (ff) {
+			int mult = 2 + (ff_lvl * (10 - 2)) / 255;   /* 2..10 */
+			int k;
+			for (k = 1; k < mult; k++) {
+				/* skip the PPU render (the heavy part) on the thrown-away frames; render only
+				 * the LAST one (the frame we actually present). Audio kept on all -> speeds up. */
+				if (c->set_av_skip) c->set_av_skip(k < mult - 1 ? 1 : 0, 0);
+				c->run(&f);
+				g_snes_dbg_frames++;
+				if (f.audio && f.frames)
+					ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
+			}
+			if (c->set_av_skip) c->set_av_skip(0, 0);
 		}
 		/* Run-ahead: advance the DISPLAY pf frames into the future with the current input,
 		 * then rewind so the real emulation still advances exactly one frame per loop. */
@@ -749,7 +768,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * you could not see the real max. With the sparse present the loop measures pure
 			 * emulation throughput (ayaneo_snes_show_frame also skips the vsync wait when
 			 * snes_benchmark_on(), so nothing paces it). */
-			int uncapped = ff || g_snes_benchmark;
+			int uncapped = g_snes_benchmark;   /* FF uses the normal vsync present; the extra committed frames above rate-limit it */
 			if (uncapped) {
 				if ((g_snes_dbg_frames & 7u) == 0 && f.video && f.width && f.height)
 					ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);
