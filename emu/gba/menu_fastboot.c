@@ -213,6 +213,35 @@ static void cmd_gen_probe(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem gen-bench[:N] - headless Genesis core throughput benchmark: find the first ROM in /roms/genesis
+ * (Sonic), load it, run N (default 300) frames UNCAPPED at a fixed-safe 1400 MHz on the genesis thread,
+ * and report per-frame emu us / fps / state save+load us / an implied rewind speed. This is the stable
+ * metric an autonomous optimization loop pushes (raw core speed, no display/vsync). Run it at the menu. */
+static void cmd_gen_bench(const char *arg, void *data, unsigned sz)
+{
+	extern void *gba_sd_menu_vol(void);                 /* opaque fat_vol* (no sd_fat.h here) */
+	extern const void *gba_sd_first_genesis_rom(void);  /* opaque gba_rom_entry* */
+	extern void genesis_sd_bench(void *vol, const void *rom, int frames);
+	extern int atoi(const char *);
+	extern volatile unsigned g_gen_dbg_bench_fps, g_gen_dbg_bench_us, g_gen_dbg_bench_save_us,
+				 g_gen_dbg_bench_load_us, g_gen_dbg_bench_mhz, g_gen_dbg_bench_rwx10;
+	void *vol = gba_sd_menu_vol();
+	const void *rom = gba_sd_first_genesis_rom();
+	int frames = 300;
+	(void)data; (void)sz;
+	if (arg && arg[0] == ':') { int v = atoi(arg + 1); if (v >= 30) frames = v; }
+	if (!vol) { fastboot_info("gen-bench: no SD volume (be at the ROM menu)"); fastboot_okay(""); return; }
+	if (!rom) { fastboot_info("gen-bench: no Genesis ROM found in /roms/genesis"); fastboot_okay(""); return; }
+	snprintf(lbuf, sizeof lbuf, "gen-bench: %d frames uncapped...", frames);
+	fastboot_info(lbuf);
+	genesis_sd_bench(vol, rom, frames);
+	snprintf(lbuf, sizeof lbuf, "gen-bench @%uMHz: fps=%u frame=%uus save=%uus load=%uus impliedRW=%u.%ux",
+		 g_gen_dbg_bench_mhz, g_gen_dbg_bench_fps, g_gen_dbg_bench_us, g_gen_dbg_bench_save_us,
+		 g_gen_dbg_bench_load_us, g_gen_dbg_bench_rwx10 / 10u, g_gen_dbg_bench_rwx10 % 10u);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem gen-rw - report the Genesis rewind cost breakdown captured during the LAST rewind: the average
  * per-step state_load (portable retro_unserialize + system_reset) vs the c->run re-emulate cost, the
  * smoothed per-step total, the achieved reverse speed, and the CPU clock it was measured at. Tells us
@@ -615,6 +644,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
 	fastboot_register("oem gen-probe", cmd_gen_probe, 1, 0);
 	fastboot_register("oem gen-rw", cmd_gen_rw, 1, 0);
+	fastboot_register("oem gen-bench", cmd_gen_bench, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
 	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
 	fastboot_register("oem snes-stretch", cmd_snes_stretch, 1, 0);

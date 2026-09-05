@@ -25,12 +25,17 @@ COMMON="-march=armv8-a -mtune=cortex-a76 -mfloat-abi=soft -mthumb-interwork -ffr
         -fno-short-enums -mno-unaligned-access -fno-strict-aliasing -fno-common \
         -flto -ffat-lto-objects -fno-ipa-icf \
         -ffunction-sections -fdata-sections -std=gnu99 $DEFS $INC"
-OPT_HOT="-O2"
-OPT_COLD="-Os"
+OPT_HOT="-O3"
+OPT_COLD="-O2"
 
-# HOT files: run every frame (68000, Z80, VDP render/ctrl, sound). Everything else -Os.
-HOT_SET=" m68k/m68kcpu z80/z80 vdp_render vdp_ctrl system sound/sound sound/ym2612 sound/sn76489 sound/ym2413 mem68k memz80 membnk "
-opt_for() { case "$HOT_SET" in *" $1 "*) echo "$OPT_HOT";; *) echo "$OPT_COLD";; esac; }
+# HOT files: run every frame (68000, Z80, VDP render/ctrl, sound) -> -O3; everything else -O2.
+# NOTE: the `rel` passed here is the find(1) path WITH the leading "core/" (e.g. core/m68k/m68kcpu),
+# so HOT_SET entries must match after stripping that prefix - opt_for strips it. The old code compared
+# the "core/..."-prefixed rel against un-prefixed HOT_SET entries, so NOTHING matched and the ENTIRE
+# core built at -Os (a ~2-3x emulation slowdown). Both the prefix strip and the -Os->-O2 cold floor
+# below are the fix. Extra hot loops added (vdp_sms, cart mappers seldom hot but cheap to include).
+HOT_SET=" m68k/m68kcpu z80/z80 vdp_render vdp_ctrl vdp_sms system sound/sound sound/ym2612 sound/sn76489 sound/ym2413 sound/blip_buf sound/psg mem68k memz80 membnk io_ctrl input_hw/input "
+opt_for() { r="${1#core/}"; case "$HOT_SET" in *" $r "*) echo "$OPT_HOT";; *) echo "$OPT_COLD";; esac; }
 
 OBJDIR="$DIR/obj"
 rm -rf "$OBJDIR"; mkdir -p "$OBJDIR"

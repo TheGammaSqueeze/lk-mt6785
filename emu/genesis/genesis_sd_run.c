@@ -132,6 +132,10 @@ volatile int      g_gen_dbg_loadrc;
  * total, and the achieved reverse speed x10. Answers "is the state restore or the re-emulation the wall?" */
 volatile unsigned g_gen_dbg_rw_load_us, g_gen_dbg_rw_run_us, g_gen_dbg_rw_step_us, g_gen_dbg_rw_eff_x10;
 volatile unsigned g_gen_dbg_rw_mhz;   /* CPU clock at the time of the measurement */
+/* headless benchmark results (oem gen-bench): uncapped forward throughput + state costs at a fixed
+ * safe clock, so autonomous optimization iterations have a stable core-speed metric. */
+volatile unsigned g_gen_dbg_bench_fps, g_gen_dbg_bench_us, g_gen_dbg_bench_save_us, g_gen_dbg_bench_load_us;
+volatile unsigned g_gen_dbg_bench_mhz, g_gen_dbg_bench_rwx10;   /* clock; implied rewind speed x10 */
 
 /* ---- in-game Pico menu (hardware OVL0 L0 overlay over the running game; mirrors the snes menu).
  * g_genesis_menu_open (declared above) gates game input + FF/rewind; the game keeps running so
@@ -203,6 +207,15 @@ static int s_gen_region;   /* 0 Auto, 1 USA (ntsc-u), 2 Europe (pal), 3 Japan (n
 static const char *gen_region_name(int r) { return r == 3 ? "Japan" : r == 2 ? "Europe" : r == 1 ? "USA" : "Auto"; }
 static const char *gen_region_opt(int r)  { return r == 3 ? "ntsc-j" : r == 2 ? "pal" : r == 1 ? "ntsc-u" : "auto"; }
 extern unsigned int ayaneo_dsi_refresh_milli(void);   /* panel refresh in milli-Hz (ties into LCM work) */
+extern void ayaneo_dsi_set_vfp(unsigned int vfp);     /* per-core panel refresh (ddp_dsi.c) */
+extern unsigned int ayaneo_dsi_get_vfp(void);
+/* Panel vertical-front-porch per refresh rate (vtotal = 976 + vfp; refresh ~= 59.684 kHz / vtotal).
+ * Genesis NTSC is 59.92 Hz, so vfp 20 -> vtotal 996 -> 59.923 Hz matches the core's native rate (the
+ * vsync-locked present then paces emulation to it = no judder), like SNES uses vfp 17 for 60.11 Hz.
+ * DEFAULT_VFP 23 (59.749 Hz) is restored for the menu / other cores on exit. */
+#define GEN_VFP        20u
+#define GEN_DEFAULT_VFP 23u
+volatile unsigned g_gen_dbg_vfp;   /* live DSI vfp during the session (validates the switch) */
 
 static char *mput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
 static char *mputu(char *p, unsigned v) { char t[12]; int n = 0; if (!v) { *p++ = '0'; return p; } while (v) { t[n++] = '0' + v % 10; v /= 10; } while (n) *p++ = t[--n]; return p; }
@@ -415,6 +428,12 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	s_save_slot      = ayaneo_get_gen_slot();
 	if (s_gen_region && c->set_option)
 		c->set_option("genesis_plus_gx_region_detect", gen_region_opt(s_gen_region));
+
+	/* Switch the panel to the Genesis NTSC rate (~59.92 Hz) so the vsync-locked present paces emulation
+	 * to the core's native framerate (no periodic judder), like SNES runs the panel at 60.11 Hz.
+	 * Restored to the stock 59.749 Hz for the menu on exit. */
+	ayaneo_dsi_set_vfp(GEN_VFP);
+	g_gen_dbg_vfp = ayaneo_dsi_get_vfp();
 
 	/* Launch punch-hole (matches snes/gba/gbc): the menu handed off with the frozen carousel still on
 	 * screen (GBA_PUNCH_SNAP_PA = 0x54000000) and gba_punch_ready set. Run a few frames so real
@@ -677,6 +696,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		if (fr.video && fr.width && fr.height)
 			genesis_menu_arm_reverse((const unsigned short *)fr.video, fr.width, fr.height, fr.pitch / 2u);
 	}
+	ayaneo_dsi_set_vfp(GEN_DEFAULT_VFP);   /* panel back to 59.749 Hz for the menu / other cores */
 	{ extern void ayaneo_snes_rsz_restore(void); ayaneo_snes_rsz_restore(); }   /* RSZ back to 1:1 (else Close hangs / carousel shears) */
 	ayaneo_menu_overlay(0, 0);   /* disable the overlay BEFORE returning to the carousel (else the
 				      * stale Pico panel composites over the selector - see CORE_PORTING_NOTES) */
@@ -695,18 +715,66 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	ayaneo_menu_audio_silence();
 }
 
+/* Headless core benchmark: load the ROM, run `frames` UNCAPPED at a fixed safe clock (1400 MHz, like the
+ * SNES uncapped bench - sustained 100% duty at 1800+ browns the core out), and record the per-frame emu
+ * cost + fps + a state save/load round-trip. Publishes an IMPLIED rewind speed (16.7ms / (load+run)) so an
+ * autonomous optimization loop has one stable number to push. No display/audio - pure core throughput. */
+static void genesis_bench_body(fat_vol *vol, const gba_rom_entry *rom, int frames)
+{
+	const struct genesis_core_exports *c = genesis_core_load();
+	unsigned romsz, ssz, rwp, saved_mhz; int i;
+	unsigned int t0, t1;
+	struct genesis_frame fr;
+	g_gen_dbg_bench_fps = 0;
+	if (!c) return;
+	saved_mhz = ayaneo_get_cpu_mhz();
+	ayaneo_set_cpu_mhz(1400);                     /* guaranteed-stable uncapped clock */
+	c->heap_init((void *)GEN_HEAP_BASE, GEN_HEAP_SZ);
+	c->init();
+	romsz = gba_sd_load_rom(vol, rom, (unsigned char *)GEN_ROM_BUF, GEN_ROM_CAP);
+	if (!romsz || c->load((const void *)GEN_ROM_BUF, romsz, rom_type_to_system(rom->type)) != 0) {
+		c->unload(); ayaneo_set_cpu_mhz(saved_mhz); return;
+	}
+	for (i = 0; i < 90; i++) c->run(&fr);          /* warm up past the BIOS/intro */
+	t0 = gpt4_get_current_tick();
+	for (i = 0; i < frames; i++) c->run(&fr);
+	t1 = gpt4_get_current_tick();
+	{
+		unsigned int per = ((t1 - t0) / 13u) / (unsigned)(frames > 0 ? frames : 1);
+		g_gen_dbg_bench_us  = per;
+		g_gen_dbg_bench_fps = per ? (1000000u / per) : 0;
+	}
+	ssz = c->state_size(); rwp = (ssz && ssz <= 0x00400000u) ? ssz : 0;
+	if (rwp) {
+		t0 = gpt4_get_current_tick(); c->state_save((void *)GEN_STATE_BUF, rwp); t1 = gpt4_get_current_tick();
+		g_gen_dbg_bench_save_us = (t1 - t0) / 13u;
+		t0 = gpt4_get_current_tick(); c->state_load((const void *)GEN_STATE_BUF, rwp); t1 = gpt4_get_current_tick();
+		g_gen_dbg_bench_load_us = (t1 - t0) / 13u;
+	}
+	/* implied rewind x10: one present (~15500us usable) / (per-step = state_load + one re-emulate) */
+	{
+		unsigned int step = g_gen_dbg_bench_load_us + g_gen_dbg_bench_us;
+		g_gen_dbg_bench_rwx10 = step ? (155000u / step) : 0;
+	}
+	g_gen_dbg_bench_mhz = ayaneo_get_cpu_mhz();
+	c->unload();
+	ayaneo_set_cpu_mhz(saved_mhz);
+}
+
 /* ---- dedicated emulation thread (see gbc_sd_run.c rationale: emu_thread's 64 KB overflows) ---- */
 static thread_t *s_gen_thread;
 static event_t   s_gen_kick, s_gen_done;
 static fat_vol  *s_gen_vol;
 static const gba_rom_entry *s_gen_rom;
+static volatile int s_gen_bench_n;   /* >0: run the headless bench for N frames instead of a session */
 
 static int genesis_thread_fn(void *arg)
 {
 	(void)arg;
 	for (;;) {
 		event_wait(&s_gen_kick);
-		genesis_session_body(s_gen_vol, s_gen_rom);
+		if (s_gen_bench_n > 0) { genesis_bench_body(s_gen_vol, s_gen_rom, s_gen_bench_n); s_gen_bench_n = 0; }
+		else genesis_session_body(s_gen_vol, s_gen_rom);
 		event_signal(&s_gen_done, false);
 	}
 	return 0;
@@ -724,6 +792,26 @@ void genesis_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 		if (!s_gen_thread) { genesis_session_body(vol, rom); return; }   /* fallback: inline */
 		thread_resume(s_gen_thread);
 	}
+	s_gen_bench_n = 0;
+	s_gen_vol = vol;
+	s_gen_rom = rom;
+	event_signal(&s_gen_kick, false);
+	event_wait(&s_gen_done);
+}
+
+/* Headless benchmark of `rom` for `frames` uncapped frames on the genesis_emu thread (stack-safe).
+ * Blocks until done; results land in the g_gen_dbg_bench_* globals (read via `oem gen-bench`). */
+void genesis_sd_bench(fat_vol *vol, const gba_rom_entry *rom, int frames)
+{
+	if (!s_gen_thread) {
+		event_init(&s_gen_kick, false, EVENT_FLAG_AUTOUNSIGNAL);
+		event_init(&s_gen_done, false, EVENT_FLAG_AUTOUNSIGNAL);
+		s_gen_thread = thread_create("genesis_emu", &genesis_thread_fn, NULL,
+					     DEFAULT_PRIORITY, 262144);
+		if (!s_gen_thread) { s_gen_bench_n = frames; genesis_bench_body(vol, rom, frames); s_gen_bench_n = 0; return; }
+		thread_resume(s_gen_thread);
+	}
+	s_gen_bench_n = frames > 0 ? frames : 300;
 	s_gen_vol = vol;
 	s_gen_rom = rom;
 	event_signal(&s_gen_kick, false);

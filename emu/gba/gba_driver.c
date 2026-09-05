@@ -1545,6 +1545,16 @@ volatile unsigned int g_dbg_bt_coreload, g_dbg_bt_coreinit, g_dbg_bt_start, g_db
 /* The mounted SD volume, for the menu's per-ROM boxart loader; 0 if not in SD mode
  * (the plain-list/never-brick fallback then just shows placeholders). */
 fat_vol *gba_sd_menu_vol(void) { return s_sd_mode ? &s_sd_vol : 0; }
+/* First enumerated Genesis-family ROM (type >= GENESIS), for the headless bench (oem gen-bench).
+ * Returns an opaque pointer (menu_fastboot.c has no sd_fat.h); NULL if none / not in SD mode. */
+const void *gba_sd_first_genesis_rom(void)
+{
+	int i;
+	if (!s_sd_mode) return 0;
+	for (i = 0; i < s_nrom; i++)
+		if (s_roms[i].type >= GBA_CONSOLE_GENESIS) return &s_roms[i];
+	return 0;
+}
 static int s_sel_rom = -1;          /* chosen ROM index (for save/state paths) */
 
 #include "rom_select_nav.h"   /* rs_move / rs_scroll (host-tested nav math) */
