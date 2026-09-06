@@ -77,6 +77,29 @@ extern int ddp_enable_module_clock(DISP_MODULE_ENUM module);
 static int g_pwm_inited = 0;
 static disp_pwm_id_t g_pwm_main_id = DISP_PWM0;
 
+/* AYANEO motion-blur strobe: when non-zero, disp_pwm_set_backlight writes this into the PWM
+ * clock divider (CON_0), dropping the dimming carrier to ~frame rate so the backlight strobes
+ * instead of dimming uniformly = shorter sample-and-hold = less perceived motion blur. 0 = off
+ * (normal ~kHz dimming). 256 gives ~98Hz on this panel (flicker-free, real blur reduction). The
+ * user's brightness rides on the duty (CON_1), so brightness and strobe cooperate. */
+static unsigned int g_strobe_div = 0;
+void disp_pwm_strobe_mode(int on)
+{
+	g_strobe_div = on ? 256u : 0u;
+	/* Apply the divider to CON_0 immediately. The brightness path caches same-level calls and
+	 * skips the PWM write, so a menu toggle would otherwise not take effect until the next
+	 * brightness change. Guarded until the PWM is inited: the early-boot settings load just sets
+	 * the variable, and the first post-init backlight set then applies it. CON_1 (duty) is left
+	 * as-is so the current brightness is preserved. */
+	if (g_pwm_inited) {
+		unsigned int reg_base = pwm_get_reg_base(g_pwm_main_id);
+		PWM_REG_SET(reg_base + DISP_PWM_COMMIT_OFF, 0);
+		PWM_REG_SET(reg_base + DISP_PWM_CON_0_OFF, g_strobe_div << 16);
+		PWM_REG_SET(reg_base + DISP_PWM_COMMIT_OFF, 1);
+		PWM_REG_SET(reg_base + DISP_PWM_COMMIT_OFF, 0);
+	}
+}
+
 
 void disp_pwm_clkmux_update(void)
 {
@@ -207,6 +230,7 @@ int disp_pwm_set_backlight(disp_pwm_id_t id, int level_1024)
 	level_1024 = disp_pwm_level_remap(id, level_1024);
 
 	PWM_REG_SET(reg_base + DISP_PWM_COMMIT_OFF, 0);
+	PWM_REG_SET(reg_base + DISP_PWM_CON_0_OFF, g_strobe_div << 16);  /* strobe divider (0 = normal dimming) */
 	PWM_REG_SET(reg_base + DISP_PWM_CON_1_OFF, (level_1024 << 16) | 0x3ff);
 
 	if (level_1024 > 0) {
@@ -223,6 +247,71 @@ int disp_pwm_set_backlight(disp_pwm_id_t id, int level_1024)
 	}
 
 	return 0;
+}
+
+
+/* AYANEO backlight strobe (motion-blur / response-lag reduction).
+ *
+ * The DISP_PWM dimming carrier freq = src_clk / (div+1) / 1024. Stock div=0 gives a
+ * ~kHz carrier, so a reduced duty just DIMS uniformly. Cranking the divider drops the
+ * carrier toward the frame rate, at which point a duty < full makes the backlight go
+ * DARK for part of each ~frame = a strobe that shortens the sample-and-hold time and
+ * cuts perceived motion blur. div sweeps the strobe rate, duty the ON fraction (of 1024).
+ *
+ * Two modes:
+ *  - disp_pwm_strobe(): FREE-RUNNING carrier. Simple but drifts against the panel scan,
+ *    so at a strobe rate != frame rate the eye sums two frames = a double-image.
+ *  - disp_pwm_strobe_locked() + disp_pwm_strobe_tick(): the tick restarts the PWM counter
+ *    once per frame at the FRAME_DONE point (primary_display_config_input), so EXACTLY one
+ *    pulse fires per frame, phase-locked to the panel. That removes the double-image while
+ *    keeping the persistence cut. div sets the period (~1 frame), duty the ON fraction.
+ * div=0 disables the strobe and restores the normal dimming carrier at the given duty. */
+static volatile int          g_strobe_locked;   /* 1 = re-align the pulse every frame */
+
+void disp_pwm_strobe(unsigned int div, unsigned int duty)
+{
+	unsigned int reg_base = pwm_get_reg_base(g_pwm_main_id);
+
+	disp_pwm_init(g_pwm_main_id);
+	g_strobe_locked = 0;   /* free-running: the per-frame tick does nothing */
+	if (div > 0x3ff)  div = 0x3ff;
+	if (duty > 0x3ff) duty = 0x3ff;
+
+	PWM_REG_SET(reg_base + DISP_PWM_COMMIT_OFF, 0);
+	PWM_REG_SET(reg_base + DISP_PWM_CON_0_OFF, div << 16);
+	PWM_REG_SET(reg_base + DISP_PWM_CON_1_OFF, (duty << 16) | 0x3ff);
+	if (duty > 0)
+		PWM_REG_SET(reg_base + DISP_PWM_EN_OFF, 0x1);
+	else
+		PWM_REG_SET(reg_base + DISP_PWM_EN_OFF, 0x0);
+	PWM_REG_SET(reg_base + DISP_PWM_COMMIT_OFF, 1);
+	PWM_REG_SET(reg_base + DISP_PWM_COMMIT_OFF, 0);
+}
+
+/* Vsync-locked strobe: same waveform, but re-latched each frame by disp_pwm_strobe_tick().
+ * div=0 (or duty=0) disables the lock and restores the normal carrier at `duty` brightness. */
+void disp_pwm_strobe_locked(unsigned int div, unsigned int duty)
+{
+	if (div == 0 || duty == 0) {
+		disp_pwm_strobe(0, duty ? duty : 1023);   /* clears g_strobe_locked, restores carrier */
+		return;
+	}
+	disp_pwm_strobe(div, duty);   /* apply the waveform (clears lock)... */
+	g_strobe_locked = 1;          /* ...then arm the per-frame re-lock */
+}
+
+/* Called once per frame from the FRAME_DONE point in primary_display_config_input. Restart
+ * the PWM counter (EN off->on) so the single pulse re-aligns to THIS frame = phase lock.
+ * Cheap (2 register writes); no-op unless a locked strobe is active. */
+void disp_pwm_strobe_tick(void)
+{
+	unsigned int reg_base;
+
+	if (!g_strobe_locked)
+		return;
+	reg_base = pwm_get_reg_base(g_pwm_main_id);
+	PWM_REG_SET(reg_base + DISP_PWM_EN_OFF, 0x0);
+	PWM_REG_SET(reg_base + DISP_PWM_EN_OFF, 0x1);
 }
 
 

@@ -650,6 +650,123 @@ static void cmd_settingsrt(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* ---- live panel-register poke (st7703 tuning harness) ------------------------
+ * Send a DCS write to the LIVE panel so drive registers (VCOM, gamma, charge
+ * pump, ...) can be swept BY EYE with no edit/rebuild/reflash cycle. Uses the
+ * exact path the init table uses (DSI_set_cmdq_V2 -> DSI0): select the register
+ * PAGE (cmd 0xEE), then write REG=VAL. All values are HEX (no 0x prefix).
+ *   fastboot oem lcmwr:1,28,20     page 0x01, reg 0x28 (VCOM low) = 0x20
+ *   fastboot oem vcom:1F,29,63     page01 0x28/0x29/0x2A = lo,hi,off in one shot
+ * DEBUG/tuning only: the poke shares the DSI with the present thread, so an
+ * occasional glitch is possible; power-cycle to restore the init-table values.
+ * Bake a winning value into ST7703_* / the init table in st7703_hd720_dsi_vdo.c. */
+extern void DSI_set_cmdq_V2_Wrapper_DSI0(unsigned cmd, unsigned char count,
+					 unsigned char *para_list, unsigned char force_update);
+
+static unsigned fb_hex(const char **pp)
+{
+	const char *p = *pp;
+	unsigned v = 0;
+	while (*p == ' ' || *p == ',' || *p == ':') p++;
+	for (;;) {
+		char c = *p;
+		unsigned d;
+		if (c >= '0' && c <= '9') d = (unsigned)(c - '0');
+		else if (c >= 'a' && c <= 'f') d = (unsigned)(c - 'a' + 10);
+		else if (c >= 'A' && c <= 'F') d = (unsigned)(c - 'A' + 10);
+		else break;
+		v = (v << 4) | d;
+		p++;
+	}
+	*pp = p;
+	return v;
+}
+
+static void lcm_page_write(unsigned page, unsigned reg, unsigned val)
+{
+	unsigned char b[1];
+	b[0] = (unsigned char)page; DSI_set_cmdq_V2_Wrapper_DSI0(0xEE, 1, b, 1);   /* select page */
+	b[0] = (unsigned char)val;  DSI_set_cmdq_V2_Wrapper_DSI0((unsigned char)reg, 1, b, 1);
+}
+
+static void cmd_lcmwr(const char *arg, void *data, unsigned sz)
+{
+	unsigned page, reg, val;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	page = fb_hex(&arg); reg = fb_hex(&arg); val = fb_hex(&arg);
+	lcm_page_write(page, reg, val);
+	snprintf(lbuf, sizeof lbuf, "lcmwr: page 0x%02x reg 0x%02x = 0x%02x",
+		 page & 0xff, reg & 0xff, val & 0xff);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* VCOM convenience: page01 0x28/0x29/0x2A = lo,hi,off (stock 0x1F,0x29,0x63). */
+static void cmd_vcom(const char *arg, void *data, unsigned sz)
+{
+	unsigned lo, hi, off;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	lo = fb_hex(&arg); hi = fb_hex(&arg); off = fb_hex(&arg);
+	lcm_page_write(0x01, 0x28, lo);
+	lcm_page_write(0x01, 0x29, hi);
+	lcm_page_write(0x01, 0x2A, off);
+	snprintf(lbuf, sizeof lbuf, "vcom: 0x28=0x%02x 0x29=0x%02x 0x2A=0x%02x",
+		 lo & 0xff, hi & 0xff, off & 0xff);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* Backlight-strobe experiment (motion-blur test): oem strobe:DIV,DUTY (DECIMAL, 0..1023).
+ * DIV cranks the DISP_PWM carrier down toward the frame rate (bigger = slower; sweep
+ * ~150..900 to find where a strobe/flicker appears). DUTY is the ON level out of 1024
+ * (brightness of the lit phase; lower = shorter hold = less blur but dimmer). DIV=0 =
+ * normal dimming at DUTY, e.g. strobe:0,800 restores a normal backlight. Reboot also
+ * restores. Free-running (not vsync-locked yet), so expect a slow rolling brightness band. */
+extern void disp_pwm_strobe(unsigned int div, unsigned int duty);
+
+static unsigned fb_dec(const char **pp)
+{
+	const char *p = *pp;
+	unsigned v = 0;
+	while (*p == ' ' || *p == ',' || *p == ':') p++;
+	while (*p >= '0' && *p <= '9') { v = v * 10u + (unsigned)(*p - '0'); p++; }
+	*pp = p;
+	return v;
+}
+
+static void cmd_strobe(const char *arg, void *data, unsigned sz)
+{
+	unsigned div, duty;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	div = fb_dec(&arg);
+	duty = fb_dec(&arg);
+	disp_pwm_strobe(div, duty);
+	snprintf(lbuf, sizeof lbuf, "strobe: div=%u duty=%u/1024", div, duty);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* Vsync-locked strobe: oem strobelk:DIV,DUTY (DECIMAL). One pulse per frame, phase-locked
+ * to FRAME_DONE (kills the free-running double-image). DIV sets the period ~ 1 frame (start
+ * near ~420 and tune), DUTY the ON fraction of 1024. strobelk:0,<bright> disables + restores. */
+extern void disp_pwm_strobe_locked(unsigned int div, unsigned int duty);
+
+static void cmd_strobelk(const char *arg, void *data, unsigned sz)
+{
+	unsigned div, duty;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	div = fb_dec(&arg);
+	duty = fb_dec(&arg);
+	disp_pwm_strobe_locked(div, duty);
+	snprintf(lbuf, sizeof lbuf, "strobelk: div=%u duty=%u/1024 (vsync-locked)", div, duty);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
@@ -674,5 +791,9 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem snes-ra", cmd_snes_ra, 1, 0);
 	fastboot_register("oem nav:", cmd_nav, 1, 0);
 	fastboot_register("oem preempt:", cmd_preempt, 1, 0);
+	fastboot_register("oem lcmwr:", cmd_lcmwr, 1, 0);   /* live panel-register poke (VCOM/gamma sweep) */
+	fastboot_register("oem vcom:", cmd_vcom, 1, 0);     /* VCOM convenience: lo,hi,off */
+	fastboot_register("oem strobe:", cmd_strobe, 1, 0); /* free-running strobe: div,duty */
+	fastboot_register("oem strobelk:", cmd_strobelk, 1, 0); /* vsync-locked strobe: div,duty */
 	fastboot_register("oem selftest", cmd_selftest, 1, 0);
 }

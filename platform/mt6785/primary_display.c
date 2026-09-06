@@ -1080,6 +1080,8 @@ int primary_display_config_input(disp_input_config* input)
 			extern int ayaneo_present_skip_framedone;
 			if (primary_display_is_video_mode() && !ayaneo_present_skip_framedone) {
 				dpmgr_wait_event_timeout(pgc->dpmgr_handle, DISP_PATH_EVENT_FRAME_DONE, HZ*1);
+				/* AYANEO: phase-lock the backlight strobe to this frame (no-op unless active) */
+				{ extern void disp_pwm_strobe_tick(void); disp_pwm_strobe_tick(); }
 			}
 		}
 		ret = _convert_disp_input_to_ovl(&(data_config.ovl_config[input->layer]), input);

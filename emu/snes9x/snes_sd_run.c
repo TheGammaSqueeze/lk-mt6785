@@ -38,6 +38,8 @@ extern int      priamry_display_wait_for_vsync(void);   /* primary_display.c (na
 extern unsigned gpt4_get_current_tick(void);
 extern int      ayaneo_get_lcd_filter(void);            /* 0 Off,1 Scanlines,2 Grid,3 Dot Matrix */
 extern void     ayaneo_set_lcd_filter(int f);
+extern int      ayaneo_get_strobe(void);                /* backlight motion-blur strobe (shared) */
+extern void     ayaneo_set_strobe(int v);
 extern int      ayaneo_get_preempt_frames(void);        /* run-ahead depth 0..3 (shared setting) */
 extern void     ayaneo_set_preempt_frames(int v);
 extern unsigned ayaneo_get_snes_opts(void);             /* packed aspect|overscan<<8|audio<<16|hires<<24 */
@@ -344,7 +346,7 @@ static void snes_slot_check(void)
 	s_slot_used = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, tmp, sizeof tmp) > 0;
 }
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
-       SM_CPU, SM_RUNAHEAD, SM_TURBO, SM_BENCH, SM_PANEL,
+       SM_CPU, SM_RUNAHEAD, SM_TURBO, SM_BENCH, SM_PANEL, SM_STROBE,
        SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
 
 static const char *snes_turbo_name(int t)
@@ -395,6 +397,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_CPU:    return "CPU Clock"; case SM_RUNAHEAD: return "Run-Ahead";
 	case SM_TURBO:  return "Turbo (auto-fire)";
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
+	case SM_STROBE: return "Strobe";
 	case SM_SLOT:   return "Save Slot";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
 	case SM_RESET:  return "Reset Game"; case SM_CLOSE:  return "Exit Game"; } return ""; }
@@ -421,6 +424,7 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 		p = smputu(p, hz / 1000); p = smput(p, ".");
 		{ unsigned f = (hz % 1000) / 10; if (f < 10) p = smput(p, "0"); p = smputu(p, f); }
 		p = smput(p, " Hz"); break; }
+	case SM_STROBE: p = smput(p, ayaneo_get_strobe() ? "On" : "Off"); break;
 	case SM_SLOT: p = smputu(p, (unsigned)s_save_slot); p = smput(p, s_slot_used ? " used" : " empty"); break;
 	case SM_SAVE: case SM_LOAD: case SM_RESET: case SM_CLOSE: p = smput(p, "[A]"); break;
 	default: break; } *p = 0; return buf; }
@@ -485,6 +489,7 @@ static int sm_change(int i, int dir, int act)
 			ayaneo_set_snes_turbo(g_snes_turbo); snes_settings_touch(); } break;
 	case SM_BENCH:  if (act) g_snes_benchmark = !g_snes_benchmark; break;   /* A toggles (not L/R, which auto-repeat) */
 	case SM_PANEL:  break;   /* read-only */
+	case SM_STROBE: if (dir) { ayaneo_set_strobe(!ayaneo_get_strobe()); snes_settings_touch(); } break;
 	case SM_SLOT: if (dir) { s_save_slot = (s_save_slot + dir + SNES_SLOT_COUNT) % SNES_SLOT_COUNT;
 			ayaneo_set_snes_slot(s_save_slot); snes_settings_touch();
 			snes_slot_check(); } break;   /* refresh used/empty for the new slot */

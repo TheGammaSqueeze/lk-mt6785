@@ -183,6 +183,7 @@ extern void         ayaneo_rewind_end(void);
 extern int  ayaneo_get_gen_aspect(void); extern void ayaneo_set_gen_aspect(int v);   /* persisted per-core settings */
 extern int  ayaneo_get_gen_filter(void); extern void ayaneo_set_gen_filter(int v);
 extern int  ayaneo_get_gen_region(void); extern void ayaneo_set_gen_region(int v);
+extern int  ayaneo_get_strobe(void); extern void ayaneo_set_strobe(int v);   /* backlight motion-blur strobe (shared) */
 extern int  ayaneo_get_gen_slot(void);   extern void ayaneo_set_gen_slot(int v);
 
 /* Deferred settings persist (mirrors the snes core): a hardware-rocker OR Pico-menu volume/brightness
@@ -212,7 +213,7 @@ static void genesis_cpu_step(int dir)
 extern int  ayaneo_get_preempt_frames(void);
 extern void ayaneo_set_preempt_frames(int v);
 
-enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_CPU, GM_REFRESH, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
+enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_CPU, GM_REFRESH, GM_STROBE, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
 static const char *gen_aspect_name(int a) { return a == 2 ? "Stretch" : a == 1 ? "Fit" : "Pixel"; }
 static const char *gen_filter_name(int f) { return f == 3 ? "Grid+" : f == 2 ? "Grid" : f == 1 ? "Scanlines" : "Off"; }
 static const char *gen_ra_name(int pf) { return pf == 3 ? "Max" : pf == 2 ? "Responsive" : pf == 1 ? "Balanced" : "Off"; }
@@ -256,6 +257,7 @@ static const char *gm_label(int i) { switch (i) {
 	case GM_BRIGHT: return "Brightness"; case GM_VOLUME: return "Volume";
 	case GM_ASPECT: return "Aspect Ratio"; case GM_FILTER: return "LCD Filter";
 	case GM_REGION: return "Region"; case GM_REFRESH: return "Refresh Rate";
+	case GM_STROBE: return "Strobe";
 	case GM_RUNAHEAD: return "Run-Ahead"; case GM_CPU: return "CPU Clock";
 	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
 	case GM_RESET: return "Reset Game"; case GM_EXIT: return "Exit Game"; } return ""; }
@@ -269,6 +271,7 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 	case GM_REGION: p = mput(p, gen_region_name(s_gen_region)); break;
 	case GM_REFRESH: { unsigned mhz = ayaneo_dsi_refresh_milli();   /* read-only: XX.X Hz */
 		p = mputu(p, mhz / 1000u); *p++ = '.'; *p++ = (char)('0' + (mhz % 1000u) / 100u); p = mput(p, " Hz"); } break;
+	case GM_STROBE: p = mput(p, ayaneo_get_strobe() ? "On" : "Off"); break;
 	case GM_RUNAHEAD: p = mput(p, gen_ra_name(ayaneo_get_preempt_frames())); break;
 	case GM_CPU:    p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
 	case GM_SLOT:   p = mputu(p, (unsigned)s_save_slot); break;
@@ -300,6 +303,7 @@ static int gm_change(int i, int dir, int act)
 		s_gen_refresh_retune = 2;   /* re-read fps + retune vfp for the next 2 committed frames */
 		mput(s_mstat, "Region set (some games need Reset)"); } break;
 	case GM_REFRESH: break;   /* read-only display (panel Hz); no adjust */
+	case GM_STROBE: if (dir) { ayaneo_set_strobe(!ayaneo_get_strobe()); genesis_settings_touch(); } break;
 	case GM_RUNAHEAD: if (dir) { int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
 		ayaneo_set_preempt_frames(pf); ayaneo_set_cpu_mhz(s_gen_ra_opp[pf]); s_cpu_idx = -1;
 		genesis_settings_touch(); } break;   /* persist run-ahead (shared preempt-frames blob) */

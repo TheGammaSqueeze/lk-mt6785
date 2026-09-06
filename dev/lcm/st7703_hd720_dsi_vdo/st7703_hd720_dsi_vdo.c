@@ -35,7 +35,8 @@
 #define ST7703_VGL    0x78	/* stock 0x58, ceiling 0x78 */
 #define ST7703_CPUMP  0x48	/* charge pump freq, stock 0x32 */
 #define ST7703_AVDD   0xFF	/* stock 0xE0 */
-#define ST7703_AVEE   0x60	/* stock 0x20, ceiling 0x60 (0x70 flickers) */
+#define ST7703_AVEE   0x60	/* stock 0x20, ceiling 0x60 (0x70 flickers; 0x68 tested = flicker + only a
+				 * minuscule response gain, so 0x60 is the practical response limit) */
 
 #define GPIO_OUT_ONE  1
 #define GPIO_OUT_ZERO 0

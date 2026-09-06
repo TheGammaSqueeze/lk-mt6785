@@ -201,6 +201,7 @@ static unsigned int s_audio_ms;
 #endif
 
 extern void ayaneo_apply_backlight(int level);	/* mt_disp_drv.c: drive the LCD */
+extern void disp_pwm_strobe_mode(int on);	/* ddp_pwm.c: backlight motion-blur strobe divider on/off */
 
 /* All settings are persisted in the boot_b block. Field byte offsets:
  * 0 magic, 4 version, 8 volume, 12 brightness, 16 load-state-on-boot,
@@ -230,6 +231,7 @@ static volatile int s_gen_aspect = 0;		/* 0 Pixel, 1 Fit, 2 Stretch */
 static volatile int s_gen_filter = 0;		/* 0 Off, 1 Scanlines, 2 Grid, 3 Grid+ */
 static volatile int s_gen_region = 0;		/* 0 Auto, 1 USA, 2 Europe, 3 Japan */
 static volatile int s_gen_slot   = 0;		/* last-used Genesis manual save-state slot (0..2) */
+static volatile int s_strobe     = 0;		/* backlight motion-blur strobe (global; persisted in b+24 bit 18) */
 static int s_settings_loaded;
 
 /* ---------- little-endian helpers ---------- */
@@ -309,6 +311,13 @@ int  ayaneo_get_gen_region(void)      { return s_gen_region; }
 void ayaneo_set_gen_region(int v)     { s_gen_region = (v < 0) ? 0 : (v > 3 ? 3 : v); }
 int  ayaneo_get_gen_slot(void)        { return s_gen_slot; }
 void ayaneo_set_gen_slot(int v)       { s_gen_slot = (v < 0) ? 0 : (v > 2 ? 2 : v); }
+int  ayaneo_get_strobe(void)          { return s_strobe; }
+void ayaneo_set_strobe(int v)
+{
+	s_strobe = v ? 1 : 0;
+	disp_pwm_strobe_mode(s_strobe);
+	ayaneo_apply_backlight(s_brightness);   /* re-apply so the strobe divider takes effect at the current level */
+}
 
 /* load the persisted settings from boot_b (once). Missing/invalid -> keep the
  * compile-time defaults. Does not touch the hardware; callers apply brightness. */
@@ -347,7 +356,8 @@ void ayaneo_settings_load(void)
 		  ga = (int)((pk >> 6) & 3); g_gba_aspect = (ga <= 2) ? ga : 0;   /* 3 (never written) -> Pixel */
 		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0;
 		  ayaneo_set_gen_aspect((int)((pk >> 10) & 3)); ayaneo_set_gen_filter((int)((pk >> 12) & 3));
-		  ayaneo_set_gen_region((int)((pk >> 14) & 3)); ayaneo_set_gen_slot((int)((pk >> 16) & 3)); }
+		  ayaneo_set_gen_region((int)((pk >> 14) & 3)); ayaneo_set_gen_slot((int)((pk >> 16) & 3));
+		  s_strobe = (int)((pk >> 18) & 1); disp_pwm_strobe_mode(s_strobe); }
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -390,7 +400,8 @@ int ayaneo_settings_serialize(unsigned char *b, int cap)
 	wr32(b + 24, (unsigned int)((s_lcd_filter[0] & 3) | ((s_lcd_filter[1] & 3) << 2) | ((s_lcd_filter[2] & 3) << 4)
 		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)
 		     | ((s_gen_aspect & 3) << 10) | ((s_gen_filter & 3) << 12)
-		     | ((s_gen_region & 3) << 14) | ((s_gen_slot & 3) << 16)));
+		     | ((s_gen_region & 3) << 14) | ((s_gen_slot & 3) << 16)
+		     | ((s_strobe & 1) << 18)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
@@ -424,7 +435,8 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 		  ga = (int)((pk >> 6) & 3); g_gba_aspect = (ga <= 2) ? ga : 0;   /* 3 (never written) -> Pixel */
 		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0;
 		  ayaneo_set_gen_aspect((int)((pk >> 10) & 3)); ayaneo_set_gen_filter((int)((pk >> 12) & 3));
-		  ayaneo_set_gen_region((int)((pk >> 14) & 3)); ayaneo_set_gen_slot((int)((pk >> 16) & 3)); }
+		  ayaneo_set_gen_region((int)((pk >> 14) & 3)); ayaneo_set_gen_slot((int)((pk >> 16) & 3));
+		  s_strobe = (int)((pk >> 18) & 1); disp_pwm_strobe_mode(s_strobe); }
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -494,7 +506,8 @@ void ayaneo_settings_save(void)
 	wr32(b + 24, (unsigned int)((s_lcd_filter[0] & 3) | ((s_lcd_filter[1] & 3) << 2) | ((s_lcd_filter[2] & 3) << 4)
 		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)
 		     | ((s_gen_aspect & 3) << 10) | ((s_gen_filter & 3) << 12)
-		     | ((s_gen_region & 3) << 14) | ((s_gen_slot & 3) << 16)));
+		     | ((s_gen_region & 3) << 14) | ((s_gen_slot & 3) << 16)
+		     | ((s_strobe & 1) << 18)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
