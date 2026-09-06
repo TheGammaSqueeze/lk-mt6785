@@ -164,6 +164,7 @@ extern int  mt_get_gpio_in(unsigned pin);
 #define K_SELECT 90
 #define K_LB 92    /* GBA L shoulder = page jump back */
 #define K_RB 81    /* GBA R shoulder = page jump forward */
+#define K_X  84    /* GBA X button (autofire B in-game) = cycle the system filter in the menu */
 #define PRESSED(g) (mt_get_gpio_in(GP(g)) == 0)
 
 extern int pmic_detect_powerkey(void);
@@ -322,6 +323,22 @@ static char          s_names[128][128];
 static const char   *s_nameptr[128];
 static unsigned char s_types[128];   /* per-ROM console type (GBA_CONSOLE_*) for badges */
 
+/* System filter (press X to cycle All -> each present system -> All). The menu is fed a
+ * FILTERED VIEW of the roster; s_vmap maps a view index back to the full roms[] index so a
+ * launch returns the right game. The view name/type/boxart tables are compact copies of the
+ * full s_nameptr / s_types / s_boxart_full tables. */
+static const char    *s_vnameptr[128];
+static unsigned char  s_vtypes[128];
+static snes_img_entry s_vboxart[128];
+static unsigned short s_vmap[128];
+static int            s_vn;                 /* games in the current view */
+static int            s_sysfilter = -1;     /* -1 = All, else a GBA_CONSOLE_* value */
+static snes_img_entry s_boxart_full[128];   /* full per-ROM boxart, indexed by roms[] */
+static snes_pack      s_boxart_full_pk;
+static int            s_have_boxart;
+static const snes_img_entry *s_cart_img;    /* placeholder cart tile, for the roster re-set */
+static int            s_filter_label_hold;  /* frames left to show the "System: X" toast */
+
 static uint32_t rd32(const unsigned char *p)
 { return (uint32_t)p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
 
@@ -454,6 +471,65 @@ static void play_reverse_punch(unsigned int ms)
 	}
 }
 
+/* Human label for the system-filter toast. */
+static const char *filter_name(int f)
+{
+	switch (f) {
+	case GBA_CONSOLE_GB:      return "Game Boy";
+	case GBA_CONSOLE_GBC:     return "Game Boy Color";
+	case GBA_CONSOLE_GBA:     return "Game Boy Advance";
+	case GBA_CONSOLE_SNES:    return "Super Nintendo";
+	case GBA_CONSOLE_GENESIS: return "Mega Drive / Genesis";
+	case GBA_CONSOLE_SMS:     return "Master System";
+	case GBA_CONSOLE_GG:      return "Game Gear";
+	case GBA_CONSOLE_SG:      return "SG-1000";
+	default:                  return "All Systems";
+	}
+}
+
+/* Rebuild the visible roster for the current s_sysfilter (-1 = All, else a GBA_CONSOLE_*)
+ * from the full name/type/boxart tables and hand the filtered view to the menu. Copies the
+ * boxart img_entry struct only (its pixels stay put in the boxart DRAM region), records the
+ * view->roms map, and resets focus to the top of the new list. */
+static void apply_filter(int full_n)
+{
+	int i, k = 0;
+	if (full_n > 128) full_n = 128;
+	for (i = 0; i < full_n; i++) {
+		if (s_sysfilter >= 0 && (int)s_types[i] != s_sysfilter) continue;
+		s_vnameptr[k] = s_nameptr[i];
+		s_vtypes[k]   = s_types[i];
+		s_vboxart[k]  = s_boxart_full[i];
+		s_vmap[k]     = (unsigned short)i;
+		k++;
+	}
+	s_vn = k;
+	s_menu.focus = 0;
+	snes_menu_set_gba_roster(&s_menu, s_vnameptr, s_vn, s_cart_img);
+	if (s_have_boxart) snes_menu_set_gba_boxart(&s_menu, s_vboxart, &s_boxart_full_pk);
+}
+
+/* X advances the filter to All or the next system that actually has ROMs (skips empty ones). */
+static void cycle_filter(int full_n)
+{
+	static const signed char ord[9] = { -1, GBA_CONSOLE_GB, GBA_CONSOLE_GBC,
+		GBA_CONSOLE_GBA, GBA_CONSOLE_SNES, GBA_CONSOLE_GENESIS,
+		GBA_CONSOLE_SMS, GBA_CONSOLE_GG, GBA_CONSOLE_SG };
+	int cur = 0, i, s;
+	for (i = 0; i < 9; i++) if (ord[i] == s_sysfilter) { cur = i; break; }
+	for (s = 0; s < 9; s++) {
+		int f;
+		cur = (cur + 1) % 9;
+		f = ord[cur];
+		if (f < 0) { s_sysfilter = -1; break; }        /* All is always available */
+		{ int j, present = 0;
+		  for (j = 0; j < full_n && j < 128; j++) if ((int)s_types[j] == f) { present = 1; break; }
+		  if (present) { s_sysfilter = f; break; } }
+	}
+	apply_filter(full_n);
+	s_filter_label_hold = 96;   /* ~1.6s at 60fps */
+}
+
 /*
  * Run the SNES-style ROM selector. Returns the chosen ROM index, or -2 if the
  * SNES pack is missing (caller falls back to the plain list).
@@ -523,9 +599,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 
 	build_names(roms, nrom);
 	cart = snes_res_img(&s_pk, snes_hash("gba_cart"));
-	snes_menu_set_gba_roster(&s_menu, s_nameptr, nrom, cart);
+	s_cart_img = cart;
+	/* The roster itself is set by apply_filter() below, AFTER the boxart table loads, so the
+	 * initial All-systems view and every later X filter change go through one path. */
 	/* console-type badges (GB / GBC / GBA / SNES / Genesis / SMS / GG / SG logo bottom-right of each card) */
-	snes_menu_set_console_badges(&s_menu, s_types,
+	snes_menu_set_console_badges(&s_menu, s_vtypes,
 				     snes_res_img(&s_pk, snes_hash("logo_gb")),
 				     snes_res_img(&s_pk, snes_hash("logo_gbc")),
 				     snes_res_img(&s_pk, snes_hash("logo_gba")),
@@ -534,7 +612,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 				     snes_res_img(&s_pk, snes_hash("logo_sms")),
 				     snes_res_img(&s_pk, snes_hash("logo_gg")),
 				     snes_res_img(&s_pk, snes_hash("logo_sg")));
-	if (start_sel >= 0 && start_sel < nrom) s_menu.focus = start_sel;
+	/* initial focus (start_sel) is applied after apply_filter() below, which resets focus */
 
 	/* Card-tile cache: cap SNES_CTILE2_CAP slots. Without boxart every GBA card body
 	 * is the identical placeholder and the engine keeps its single-shared-tile fast
@@ -553,29 +631,32 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * One-time at menu init (snes_menu is pure and cannot read the SD lazily); the raw
 	 * .ART is read through the deflate staging (free after load_pack). */
 	{
-		static snes_img_entry s_boxart[128];
-		static snes_pack s_boxart_pk;
 		unsigned char *region = (unsigned char *)SNES_BOXART_PA;
 		unsigned char *scratch = (unsigned char *)SNES_COMP_PA;
 		fat_vol *vol = gba_sd_menu_vol();
 		int i, any = 0, tot = 0;
-		s_boxart_pk.base = region;
+		s_boxart_full_pk.base = region;
 		for (i = 0; i < nrom && i < 128; i++) {
-			s_boxart[i].w = 0;			/* default: no art */
+			s_boxart_full[i].w = 0;			/* default: no art */
 			if (vol && i < SNES_BOXART_CAP) {
 				unsigned off = (unsigned)i * SNES_BOXART_SLOT;
 				tot++;
 				if (gba_boxart_load_sd(vol, roms[i].name, scratch, SNES_COMP_MAX,
 						       region + off, SNES_BOXART_SLOT, off,
-						       &s_boxart[i]) == 0)
+						       &s_boxart_full[i]) == 0)
 					any++;
 			}
 		}
 		g_dbg_boxart_ok = (unsigned)any;	/* reported via oem diag bx=ok/tot */
 		g_dbg_boxart_tot = (unsigned)tot;
-		if (any)
-			snes_menu_set_gba_boxart(&s_menu, s_boxart, &s_boxart_pk);
+		s_have_boxart = (any > 0);
 	}
+
+	/* Build the initial (All systems) view and hand it to the menu. Every X press re-runs
+	 * apply_filter() to swap in a single-system view (see cycle_filter). */
+	s_sysfilter = -1;
+	apply_filter(nrom);
+	if (start_sel >= 0 && start_sel < s_vn) s_menu.focus = start_sel;
 
 	/* Repurpose the top two cosmetic Options toggles as functional, persisted
 	 * audio-mute settings: relabel them (fall back to a shorter label if the
@@ -725,6 +806,16 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 
 		menu_av_poll();   /* volume / brightness keys (+ deferred persist) */
 
+		/* X cycles the system filter (All -> each present system -> All). Edge-detected with a
+		 * short cooldown so contact bounce cannot skip a system within one press. */
+		{
+			static int px_last, x_cd;
+			int xnow = PRESSED(K_X);
+			if (x_cd > 0) x_cd--;
+			if (xnow && !px_last && x_cd == 0) { cycle_filter(nrom); x_cd = 8; }
+			px_last = xnow;
+		}
+
 		t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
 		t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;
 		snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
@@ -808,6 +899,16 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			fade_in--;
 		}
 		menu_av_draw(fb, pitch, (int)W, (int)H);   /* volume/brightness OSD bar */
+		if (s_filter_label_hold > 0) {   /* transient "System: X" toast, top-left, drop shadow for legibility */
+			char lbl[48]; int k = 0, j = 0;
+			const char *pre = "System: ", *nm = filter_name(s_sysfilter);
+			while (pre[k] && k < 40) { lbl[k] = pre[k]; k++; }
+			while (nm[j] && k < 46) lbl[k++] = nm[j++];
+			lbl[k] = 0;
+			ayaneo_text(fb, pitch, 26, 20, 3, 0xFF000000u, lbl);   /* shadow */
+			ayaneo_text(fb, pitch, 24, 18, 3, 0xFFFFFFFFu, lbl);
+			s_filter_label_hold--;
+		}
 		pump_audio();
 
 		/* debug: fastboot `oem nav:!` force-launches the focused ROM (injected edge
@@ -826,10 +927,12 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		if (g_dbg_snes_launch) {
 			int i;
 			g_dbg_snes_launch = 0;
-			for (i = 0; i < nrom && i < 128; i++)
-				if (s_types[i] == GBA_CONSOLE_SNES) { s_menu.launch = i; break; }
+			for (i = 0; i < s_vn && i < 128; i++)   /* search the current view (index space the menu uses) */
+				if (s_vtypes[i] == GBA_CONSOLE_SNES) { s_menu.launch = i; break; }
 		}
 		launch = snes_menu_take_launch(&s_menu);
+		/* the menu returns a VIEW index (current filter); map it back to the full roms[] index */
+		if (launch >= 0 && launch < s_vn) launch = (int)s_vmap[launch]; else launch = -1;
 		if (launch >= 0 && launch < nrom) {
 			/* Punch-hole launch: instead of fading the menu to black, CAPTURE the
 			 * final menu frame so the driver can composite live gameplay inside a
