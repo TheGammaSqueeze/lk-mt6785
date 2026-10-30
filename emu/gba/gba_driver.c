@@ -123,6 +123,7 @@ extern int  ayaneo_get_lcd_filter_core(int c);
 extern void ayaneo_set_lcd_filter_core(int c, int v);
 extern int  ayaneo_get_color_correct(void);
 extern int  ayaneo_get_strobe(void); extern void ayaneo_set_strobe(int v);   /* backlight motion-blur strobe (shared) */
+extern int  ayaneo_get_overdrive(void); extern void ayaneo_set_overdrive_level(int k);   /* software motion-trail overdrive (shared) */
 extern void ayaneo_set_color_correct(int v);
 extern int  ayaneo_get_preempt_frames(void);
 extern void ayaneo_set_preempt_frames(int v);
@@ -1214,8 +1215,9 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_SKIPBOOT, MI_SKIPINTRO,
-	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
+	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_OVERDRIVE, MI_PREEMPT, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
 };
+#define GBA_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
 /* Display aspect (0=Pixel integer, 1=Fit native-aspect fill, 2=Stretch full panel). Read by
  * ayaneo_gbc_show_frame (mt_disp_drv.c); session-scoped, defaults to Pixel = current behaviour. */
@@ -1237,6 +1239,7 @@ static const char *menu_value(int item, char *buf)
 	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter_core(1))); break;
 	case MI_COLORCORRECT: p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
 	case MI_STROBE:   p = mi_puts(p, ayaneo_get_strobe() ? "On" : "Off"); break;
+	case MI_OVERDRIVE: p = mi_puts(p, ayaneo_get_overdrive() ? "On" : "Off"); break;
 	case MI_PREEMPT: { int pf = ayaneo_get_preempt_frames();
 		/* Named tiers (max desired depth) + the depth the closed loop is running
 		 * right now (it backs off to hold 60 fps), so the user sees it adapt -
@@ -1313,6 +1316,7 @@ static const char *menu_label(int item)
 	case MI_CPU:       return "CPU Clock";
 	case MI_PANEL:     return "Panel Refresh";
 	case MI_STROBE:    return "Strobe";
+	case MI_OVERDRIVE: return "Overdrive";
 	case MI_PREEMPT:   return "Run-Ahead";
 	case MI_BENCH:     return "Benchmark (Uncap)";
 	case MI_RESET:     return "Reset Game";
@@ -1334,6 +1338,9 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter_core(1, (ayaneo_get_lcd_filter_core(1) + dir + 4) % 4); else changed = 0; break;
 	case MI_COLORCORRECT: if (dir || act) ayaneo_set_color_correct(!ayaneo_get_color_correct()); else changed = 0; break;
 	case MI_STROBE:   if (dir || act) ayaneo_set_strobe(!ayaneo_get_strobe()); else changed = 0; break;
+	case MI_OVERDRIVE: if (dir || act) { int d = dir ? dir : 1;
+		ayaneo_set_overdrive_level((ayaneo_get_overdrive() + d + (GBA_OD_MENU_MAX + 1)) % (GBA_OD_MENU_MAX + 1));
+	} else changed = 0; break;
 	case MI_PREEMPT:  if (dir || act) { int d = dir ? dir : 1;
 		ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + d + 4) % 4);
 		/* CPU clock escalation is applied in the game loop on any level change,

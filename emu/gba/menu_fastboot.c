@@ -767,6 +767,50 @@ static void cmd_strobelk(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* Software overdrive (motion-trail RTC): oem od:ON,KUP,KDN,THR,CAP (DECIMAL). ON=1 enable / 0 off.
+ * KUP/KDN = overshoot for rising / falling transitions in 1/16ths of the delta (KDN omitted -> = KUP,
+ * i.e. symmetric). THR = skip overshoot for |delta| <= THR (kills small-change halos). CAP = max
+ * |overshoot| per 5-bit channel, 0 = uncapped (bounds the high-contrast halo). Drives each changed
+ * pixel past its target so the slow LC settles within the frame. Live-tunable, zero DC.
+ * e.g. od:1,3 (symmetric 3), od:1,4,2,1 (rise 4, fall 2, threshold 1), od:1,5,4,2,6 (+cap 6). */
+extern void ayaneo_set_overdrive(int on, int kup, int kdn, int thr, int cap);
+
+static void cmd_od(const char *arg, void *data, unsigned sz)
+{
+	unsigned on, kup, kdn, thr, cap;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	on = fb_dec(&arg);
+	kup = fb_dec(&arg);
+	kdn = fb_dec(&arg); if (kdn == 0) kdn = kup;   /* omitted -> symmetric */
+	thr = fb_dec(&arg);
+	cap = fb_dec(&arg);                            /* omitted -> 0 = uncapped */
+	ayaneo_set_overdrive((int)on, (int)kup, (int)kdn, (int)thr, (int)cap);
+	snprintf(lbuf, sizeof lbuf, "od: %s kup=%u kdn=%u thr=%u cap=%u", on ? "on" : "off", kup, kdn, thr, cap);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* Prev-indexed rising-gain curve: oem odup:KUPHI,KUPLO,GAM (DECIMAL). KUPHI = rising gain (/16) at
+ * prev=BLACK (dark-origin smear killer), KUPLO = rising gain at prev=WHITE (halo-free floor), GAM =
+ * falloff shape (16 linear, higher collapses the boost toward the darkest origins sooner). Leaves
+ * ON/KDN/THR/CAP as-is; a preceding `oem od:` flattens the curve, this restores it. */
+extern void ayaneo_set_overdrive_curve(int kuphi, int kuplo, int gam);
+
+static void cmd_odup(const char *arg, void *data, unsigned sz)
+{
+	unsigned kuphi, kuplo, gam;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	kuphi = fb_dec(&arg);
+	kuplo = fb_dec(&arg);
+	gam = fb_dec(&arg); if (gam == 0) gam = 16;   /* omitted -> linear */
+	ayaneo_set_overdrive_curve((int)kuphi, (int)kuplo, (int)gam);
+	snprintf(lbuf, sizeof lbuf, "odup: kuphi=%u kuplo=%u gam=%u", kuphi, kuplo, gam);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
@@ -795,5 +839,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem vcom:", cmd_vcom, 1, 0);     /* VCOM convenience: lo,hi,off */
 	fastboot_register("oem strobe:", cmd_strobe, 1, 0); /* free-running strobe: div,duty */
 	fastboot_register("oem strobelk:", cmd_strobelk, 1, 0); /* vsync-locked strobe: div,duty */
+	fastboot_register("oem od:", cmd_od, 1, 0);             /* software overdrive: on,kup,kdn,thr,cap */
+	fastboot_register("oem odup:", cmd_odup, 1, 0);         /* prev-indexed rising curve: kuphi,kuplo,gam */
 	fastboot_register("oem selftest", cmd_selftest, 1, 0);
 }

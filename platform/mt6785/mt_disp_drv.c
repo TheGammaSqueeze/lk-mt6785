@@ -1646,6 +1646,131 @@ void ayaneo_snes_rsz_restore(void)
  * target rect from their OWN aspect options; PIXEL-PERFECT (integer) modes should use the CPU
  * integer blit instead (sharper, and RSZ 1:1 buys nothing). One core runs at a time, so the
  * geometry-tracking statics are shared safely. */
+/* ---- software overdrive / RTC (motion-trail reduction) --------------------------------------
+ * True per-transition overdrive done in SOFTWARE, using the emulator's PREVIOUS frame (which the
+ * SoC scanout does not retain). For each native pixel, drive it PAST its target in the direction it
+ * just moved - out = clamp(cur + k/16 * (cur - prev)) per RGB565 channel - so the slow LC reaches
+ * the real target within the frame instead of trailing. Static pixels (delta 0) are untouched.
+ * Zero net DC (per-frame image content, not a standing bias) so no retention / panel wear. Runs at
+ * native res (<1 ms) before the hardware upscale. Overshoot = k/16 of the frame-to-frame delta, split
+ * into rising / falling (LC is direction-asymmetric) with a small-delta threshold and a per-channel cap.
+ * The RISING gain is NOT a scalar but a table indexed by the ORIGIN (prev) level: this st7703's slow
+ * rises are dark-origin, while over-driving already-bright rises is exactly the halo, so gain runs high
+ * at prev=black (kuphi, the smear killer) and low at prev=white (kuplo, the proven halo-free floor).
+ * Falling stays flat (empirically halo-free). Tunable live via `oem od:ON,KUP,KDN,THR,CAP` (flattens the
+ * rising curve to KUP == old behavior) and `oem odup:KUPHI,KUPLO,GAM` (the prev-indexed rising curve). */
+static volatile int   g_od_on = 1;    /* default ON with the tuned profile below; persisted setting overrides at load */
+static volatile int   g_od_kdn = 6;   /* FALLING overshoot (flat) - "free" (no visible halo on this panel) */
+static volatile int   g_od_thr = 3;   /* skip overshoot when |delta| <= thr (kills small-change / gradient halos) */
+static volatile int   g_od_cap = 3;   /* max |overshoot| per 5-bit channel (0 = uncapped). Bounds the halo on
+                                       * HIGH-contrast edges (biggest k*delta, worst fringe, fastest native LC). */
+/* Prev-indexed RISING gain: keff runs from kuphi at prev=black down to kuplo at prev=white, bent by gam
+ * (q4, 16 = linear; higher collapses the boost toward the darkest origins sooner). Rebuilt off the hot
+ * path into g_od_up5/up6 on any knob change. Flat (kuphi==kuplo) is byte-identical to the old scalar. */
+static volatile int   g_od_kuphi = 6; /* rising gain /16 at prev=BLACK (dark-origin smear killer) */
+static volatile int   g_od_kuplo = 2; /* rising gain /16 at prev=WHITE (halo-free floor) */
+static volatile int   g_od_gam   = 22;/* rising falloff shape: 16 linear, higher = faster collapse to kuplo */
+static unsigned char  g_od_up5[32];   /* rising gain per 5-bit origin level (R/B) */
+static unsigned char  g_od_up6[64];   /* rising gain per 6-bit origin level (G)   */
+static volatile int   g_od_need_build = 1;    /* rebuild the tables at next od_apply */
+static unsigned short s_od_prev[512 * 512];   /* previous native frame, packed at sw stride */
+static unsigned short s_od_out[512 * 512];    /* overshot output handed to the resizer */
+static unsigned int   s_od_pw, s_od_ph;       /* dims of the stored previous frame */
+
+/* Fill a rising-gain table t[0..maxv]: lo..hi across origin darkness, gam bends linear<->squared. */
+static void od_build_up(unsigned char *t, int maxv, int hi, int lo, int gam)
+{
+	int p;
+	for (p = 0; p <= maxv; p++) {
+		int frac = ((maxv - p) * 256) / maxv;          /* 256 at prev=black, 0 at white */
+		int wf = frac;
+		if (gam != 16) { int sq = (frac * frac) >> 8;  /* blend linear<->squared by (gam-16) */
+				 wf = frac + (((sq - frac) * (gam - 16)) >> 4); }
+		if (wf < 0) wf = 0; if (wf > 256) wf = 256;
+		t[p] = (unsigned char)(lo + (((hi - lo) * wf) >> 8));   /* lo..hi, monotone in darkness */
+	}
+}
+static void od_rebuild(void)
+{
+	od_build_up(g_od_up5, 31, g_od_kuphi, g_od_kuplo, g_od_gam);
+	od_build_up(g_od_up6, 63, g_od_kuphi, g_od_kuplo, g_od_gam);
+	g_od_need_build = 0;
+}
+
+/* Scalar entry (legacy `oem od:` + the off path): flattens the rising curve to KUP so it reproduces the
+ * old behavior exactly; the prev-indexed curve is set separately by ayaneo_set_overdrive_curve. */
+void ayaneo_set_overdrive(int on, int kup, int kdn, int thr, int cap)
+{
+	if (kup < 0) kup = 0; else if (kup > 64) kup = 64;
+	if (kdn < 0) kdn = 0; else if (kdn > 64) kdn = 64;
+	if (thr < 0) thr = 0; else if (thr > 16) thr = 16;
+	if (cap < 0) cap = 0; else if (cap > 31) cap = 31;
+	g_od_kuphi = kup; g_od_kuplo = kup;   /* flat rising == scalar */
+	g_od_kdn = kdn; g_od_thr = thr; g_od_cap = cap;
+	g_od_need_build = 1;
+	g_od_on = on ? 1 : 0;
+	if (!g_od_on) { s_od_pw = 0; s_od_ph = 0; }   /* drop history so a re-enable starts clean */
+}
+
+/* Set the prev-indexed RISING curve (leaves on/kdn/thr/cap): kuphi = dark-origin gain, kuplo =
+ * bright-origin gain, gam = falloff shape. */
+void ayaneo_set_overdrive_curve(int kuphi, int kuplo, int gam)
+{
+	if (kuphi < 0) kuphi = 0; else if (kuphi > 64) kuphi = 64;
+	if (kuplo < 0) kuplo = 0; else if (kuplo > 64) kuplo = 64;
+	if (gam < 8) gam = 8; else if (gam > 48) gam = 48;
+	g_od_kuphi = kuphi; g_od_kuplo = kuplo; g_od_gam = gam;
+	g_od_need_build = 1;
+}
+
+static inline int od_ch(int c, int p, int maxv, int cap, const unsigned char *uptab)
+{
+	int d = c - p;
+	int ad = d < 0 ? -d : d;
+	int ov, r, k;
+	if (ad <= g_od_thr) return c;                          /* tiny change: leave it, no halo */
+	k = (d > 0) ? uptab[p] : g_od_kdn;                     /* RISING gain from ORIGIN(prev); FALLING flat */
+	ov = (k * d) / 16;
+	if (cap > 0) { if (ov > cap) ov = cap; else if (ov < -cap) ov = -cap; }   /* bound the halo on big deltas */
+	r = c + ov;
+	if (r < 0) return 0;
+	if (r > maxv) return maxv;
+	return r;
+}
+
+static inline unsigned short od_pixel(unsigned short c, unsigned short p)
+{
+	int cap = g_od_cap;                                    /* 5-bit units; green (6-bit) gets 2x to match */
+	int r = od_ch((c >> 11) & 0x1F, (p >> 11) & 0x1F, 31, cap,     g_od_up5);
+	int g = od_ch((c >> 5) & 0x3F, (p >> 5) & 0x3F, 63, cap * 2, g_od_up6);
+	int b = od_ch(c & 0x1F, p & 0x1F, 31, cap,     g_od_up5);
+	return (unsigned short)((r << 11) | (g << 5) | b);
+}
+
+/* Returns the buffer + stride to present: the overshot output when overdrive is active, or the
+ * original frame unchanged (off, or the native resolution just changed so there is no valid prev). */
+static const unsigned short *od_apply(const unsigned short *pix, unsigned int sw, unsigned int sh,
+				      unsigned int spitch_px, unsigned int *out_pitch)
+{
+	unsigned int x, y;
+	int have_prev;
+	if (!g_od_on || (g_od_kuphi <= 0 && g_od_kuplo <= 0 && g_od_kdn <= 0) || sw > 512u || sh > 512u) return pix;
+	if (g_od_need_build) od_rebuild();
+	have_prev = (s_od_pw == sw && s_od_ph == sh);
+	for (y = 0; y < sh; y++) {
+		const unsigned short *src = pix + y * spitch_px;
+		unsigned short *prv = s_od_prev + y * sw;
+		unsigned short *dst = s_od_out + y * sw;
+		if (have_prev)
+			for (x = 0; x < sw; x++) { unsigned short c = src[x]; dst[x] = od_pixel(c, prv[x]); prv[x] = c; }
+		else
+			for (x = 0; x < sw; x++) { unsigned short c = src[x]; dst[x] = c; prv[x] = c; }
+	}
+	s_od_pw = sw; s_od_ph = sh;
+	*out_pitch = sw;
+	return s_od_out;
+}
+
 void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int sh, unsigned int spitch_px,
 			unsigned int dw, unsigned int dh, unsigned int xoff, unsigned int yoff,
 			int filt, int wait_vsync, const unsigned short *cc_lut)
@@ -1655,6 +1780,7 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	unsigned int t0 = gpt4_get_current_tick();
 
 	if (!pix || !fb_addr || !sw || !sh) return;
+	pix = od_apply(pix, sw, sh, spitch_px, &spitch_px);   /* software overdrive (no-op unless enabled) */
 	if (dw > W) dw = W; if (dh > H) dh = H;
 	if (dw < 1u) dw = 1u; if (dh < 1u) dh = 1u;
 	if (xoff + dw > W) xoff = (W - dw) / 2u;

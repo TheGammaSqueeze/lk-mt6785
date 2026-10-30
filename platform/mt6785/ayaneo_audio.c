@@ -192,7 +192,7 @@ static unsigned int s_audio_ms;
  * mirrored to the SD card, which stays authoritative, so this relocation loses nothing. */
 #define AYANEO_SET_OFF		0x020FF000u	/* ~33 MB into boot_b, after the snes blob */
 #define AYANEO_SET_MAGIC	0x54455341u	/* "ASET" LE */
-#define AYANEO_SET_VER		9u	/* v9: reset the SNES audio-interpolation byte once (default -> Linear) */
+#define AYANEO_SET_VER		10u	/* v10: software-overdrive strength (b+24 bits 19-22); ver<10 migrates to k=3 default */
 #define AYANEO_BL_MIN		16		/* keep the panel visible (never 0) */
 #define AYANEO_BL_MAX		255		/* mt65xx LCD level is 0-255 */
 #define AYANEO_BL_STEP		8		/* fine granularity (~30 steps) */
@@ -202,6 +202,8 @@ static unsigned int s_audio_ms;
 
 extern void ayaneo_apply_backlight(int level);	/* mt_disp_drv.c: drive the LCD */
 extern void disp_pwm_strobe_mode(int on);	/* ddp_pwm.c: backlight motion-blur strobe divider on/off */
+extern void ayaneo_set_overdrive(int on, int kup, int kdn, int thr, int cap);	/* mt_disp_drv.c: software motion-trail overdrive */
+extern void ayaneo_set_overdrive_curve(int kuphi, int kuplo, int gam);		/* mt_disp_drv.c: prev-indexed rising-gain curve */
 
 /* All settings are persisted in the boot_b block. Field byte offsets:
  * 0 magic, 4 version, 8 volume, 12 brightness, 16 load-state-on-boot,
@@ -232,6 +234,7 @@ static volatile int s_gen_filter = 0;		/* 0 Off, 1 Scanlines, 2 Grid, 3 Grid+ */
 static volatile int s_gen_region = 0;		/* 0 Auto, 1 USA, 2 Europe, 3 Japan */
 static volatile int s_gen_slot   = 0;		/* last-used Genesis manual save-state slot (0..2) */
 static volatile int s_strobe     = 0;		/* backlight motion-blur strobe (global; persisted in b+24 bit 18) */
+static volatile int s_overdrive  = 1;		/* software motion-trail overdrive on/off (persisted in b+24 bits 19-22); On applies the tuned profile */
 static int s_settings_loaded;
 
 /* ---------- little-endian helpers ---------- */
@@ -318,6 +321,24 @@ void ayaneo_set_strobe(int v)
 	disp_pwm_strobe_mode(s_strobe);
 	ayaneo_apply_backlight(s_brightness);   /* re-apply so the strobe divider takes effect at the current level */
 }
+/* Tuned default overdrive profile (found by on-device sweep 2026-09-06). Falling is "free" (no halo) so
+ * kdn is strong; the RISING gain is a prev-indexed curve (kuphi at dark origins = the smear killer, kuplo
+ * at bright origins = the proven halo-free floor) since this panel's slow rises are dark-origin and
+ * over-driving bright rises is the halo. thr/cap are guards. The menu is On/Off (the good setting is a
+ * fixed recipe); power users retune live via `oem od:` / `oem odup:`. */
+#define OD_DEF_KUPHI 6
+#define OD_DEF_KUPLO 2
+#define OD_DEF_KDN   6
+#define OD_DEF_THR   3
+#define OD_DEF_CAP   3
+#define OD_DEF_GAM   22
+int  ayaneo_get_overdrive(void)       { return s_overdrive; }
+void ayaneo_set_overdrive_level(int on)
+{
+	s_overdrive = on ? 1 : 0;
+	ayaneo_set_overdrive(s_overdrive, OD_DEF_KUPLO, OD_DEF_KDN, OD_DEF_THR, OD_DEF_CAP);   /* on/kdn/thr/cap + flat floor */
+	ayaneo_set_overdrive_curve(OD_DEF_KUPHI, OD_DEF_KUPLO, OD_DEF_GAM);                    /* override rising with the curve */
+}
 
 /* load the persisted settings from boot_b (once). Missing/invalid -> keep the
  * compile-time defaults. Does not touch the hardware; callers apply brightness. */
@@ -357,7 +378,9 @@ void ayaneo_settings_load(void)
 		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0;
 		  ayaneo_set_gen_aspect((int)((pk >> 10) & 3)); ayaneo_set_gen_filter((int)((pk >> 12) & 3));
 		  ayaneo_set_gen_region((int)((pk >> 14) & 3)); ayaneo_set_gen_slot((int)((pk >> 16) & 3));
-		  s_strobe = (int)((pk >> 18) & 1); disp_pwm_strobe_mode(s_strobe); }
+		  s_strobe = (int)((pk >> 18) & 1); disp_pwm_strobe_mode(s_strobe);
+		  if (ver >= 10) s_overdrive = (int)((pk >> 19) & 0xF);   /* ver<10: keep k=3 default (migration) */
+		  ayaneo_set_overdrive_level(s_overdrive); }
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -401,7 +424,7 @@ int ayaneo_settings_serialize(unsigned char *b, int cap)
 		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)
 		     | ((s_gen_aspect & 3) << 10) | ((s_gen_filter & 3) << 12)
 		     | ((s_gen_region & 3) << 14) | ((s_gen_slot & 3) << 16)
-		     | ((s_strobe & 1) << 18)));
+		     | ((s_strobe & 1) << 18) | ((s_overdrive & 0xF) << 19)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
@@ -436,7 +459,9 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0;
 		  ayaneo_set_gen_aspect((int)((pk >> 10) & 3)); ayaneo_set_gen_filter((int)((pk >> 12) & 3));
 		  ayaneo_set_gen_region((int)((pk >> 14) & 3)); ayaneo_set_gen_slot((int)((pk >> 16) & 3));
-		  s_strobe = (int)((pk >> 18) & 1); disp_pwm_strobe_mode(s_strobe); }
+		  s_strobe = (int)((pk >> 18) & 1); disp_pwm_strobe_mode(s_strobe);
+		  if (ver >= 10) s_overdrive = (int)((pk >> 19) & 0xF);   /* ver<10: keep k=3 default (migration) */
+		  ayaneo_set_overdrive_level(s_overdrive); }
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -507,7 +532,7 @@ void ayaneo_settings_save(void)
 		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)
 		     | ((s_gen_aspect & 3) << 10) | ((s_gen_filter & 3) << 12)
 		     | ((s_gen_region & 3) << 14) | ((s_gen_slot & 3) << 16)
-		     | ((s_strobe & 1) << 18)));
+		     | ((s_strobe & 1) << 18) | ((s_overdrive & 0xF) << 19)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);

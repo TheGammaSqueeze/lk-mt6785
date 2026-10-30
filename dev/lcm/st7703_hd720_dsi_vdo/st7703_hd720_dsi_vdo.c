@@ -31,12 +31,15 @@
  * (stock values in comments). Tune ONE register at a time and verify;
  * over-driving does not fail safe. Ceilings: AVEE 0x60, VGH/VGL 0x78, AVDD 0xFF.
  */
-#define ST7703_VGH    0x78	/* stock 0x58, ceiling 0x78 */
-#define ST7703_VGL    0x78	/* stock 0x58, ceiling 0x78 */
-#define ST7703_CPUMP  0x48	/* charge pump freq, stock 0x32 */
-#define ST7703_AVDD   0xFF	/* stock 0xE0 */
-#define ST7703_AVEE   0x60	/* stock 0x20, ceiling 0x60 (0x70 flickers; 0x68 tested = flicker + only a
-				 * minuscule response gain, so 0x60 is the practical response limit) */
+/* Shipping profile (clean, no persistence). Response campaign parked: the AVEE+gate+bias combo gives a
+ * real response gain but with accumulating DC-retention; VCOM tuning (0x2A up to ~0x88) reduced but
+ * could NOT eliminate it (plateau + flicker = positive/negative gamma-curve asymmetry). Next avenue is
+ * re-balancing the page02 gamma curves. See DISPLAY_OVERDRIVE_LEVERS.md section 8. */
+#define ST7703_VGH    0x78	/* stock 0x58, shipping 0x78 (0x84 inverts) */
+#define ST7703_VGL    0x78	/* shipping 0x78 */
+#define ST7703_CPUMP  0x48	/* charge pump freq, stock 0x32 / shipping 0x48 */
+#define ST7703_AVDD   0xFF	/* stock 0xE0 (register max) */
+#define ST7703_AVEE   0x60	/* stock 0x20, shipping 0x60 (0x70 = response gain but accumulating retention) */
 
 #define GPIO_OUT_ONE  1
 #define GPIO_OUT_ZERO 0

@@ -77,3 +77,18 @@ Explicitly do NOT pursue: SoC OD/RTC (absent), home-grown per-pixel RTC LUT (no 
 - No 120Hz today: vfp can only lower Hz; classic BFI is out until the pixel clock/data rate is roughly doubled (assert-legal but untested).
 - No panel-internal backlight/strobe path: any strobe must be CPU-driven DISP_PWM writes, and clean sub-frame strobing at ~59.7Hz flickers with a brightness cost the maxed rails cannot offset.
 - Needs on-device measurement, not answerable from source: the ST7703 charge-pump/gamma field encodings, whether a true column-precharge register exists (none found), the correct VCOM after the rail raise, the DISP_PWM carrier frequency at pwm_div=0, the panel's true DSI-RX max line rate, and the A-vs-B crossover per added Hz.
+
+## 8. Aggressive combined-push experiment (2026-09-06) - KEY RESULT
+
+The earlier "voltage headroom is fully spent" conclusion was based on an AVEE-only step (0x60 -> 0x68), which gave a minuscule gain. That UNDERSOLD it. Pushing every drive lever at once gave a clear, unmistakable response improvement on device (user: "panel response time is much better now", the trail visibly shrank). So there IS real cause-A headroom beyond the shipping profile; it just needs the levers combined, not one at a time.
+
+The build tested (all in `dev/lcm/st7703_hd720_dsi_vdo/st7703_hd720_dsi_vdo.c`), vs shipping in parens:
+- AVEE (page04 0x09): 0x70 (0x60)
+- VGH / VGL (page01 0x14/0x15): 0x7C (0x78)
+- Charge pump (page01 0x17): 0x60 (0x48)
+- Source-amp bias (page08 0x61): 0x40 (0x20)
+- VCOM offset (page01 0x2A): 0x58 (0x63)  <- blind co-tune guess
+
+Cost: image persistence / retention between scenes (a bright scene ghosts into the next). This is the classic overdrive-retention failure mode, and it is almost certainly a VCOM-centering problem: raising the rails shifts the drive midpoint, and the blind 0x58 VCOM guess did not re-center it, leaving a DC bias that sticks charge. Reverted to shipping after judging.
+
+Path forward (not yet done): the response win is real and worth keeping. The next campaign is to KEEP the aggressive rails/gate/bias and SWEEP VCOM (page01 0x28/0x29/0x2A) to find the value that kills the retention while preserving the response, i.e. the retention is likely a fixable centering issue, not an inherent limit of the gained response. Bake-and-flash per VCOM value (config regs do not re-latch live). If a clean VCOM exists, this becomes a shippable fast-response profile (possibly a toggle, given some retention risk remains on a slow LC). Secondary: bisect which of the five levers contributed most of the response so the others can be relaxed to reduce stress/retention.
