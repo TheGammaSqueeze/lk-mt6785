@@ -1654,7 +1654,32 @@ int boot_linux_from_storage(void)
 	 */
 	{
 		extern int ayaneo_gba_sd_boot(void);
+#if defined(KONKR_KPA)
+		/* The Konkr has no volume keys, so the stock "Volume Up at power-on" bootloader menu
+		 * is unreachable. Holding SELECT + START (GPIO91 + GPIO90, active low, pulled up by
+		 * the button init in the stock DT defaults) while LK starts drops straight into
+		 * fastboot instead of the emulator or Android, so the device is always recoverable
+		 * over USB without the SP Flash Tool. */
+		{
+			extern S32 mt_get_gpio_in(u32 pin);
+			extern S32 mt_set_gpio_mode(u32 pin, u32 mode);
+			extern S32 mt_set_gpio_dir(u32 pin, u32 dir);
+			extern S32 mt_set_gpio_pull_enable(u32 pin, u32 en);
+			extern S32 mt_set_gpio_pull_select(u32 pin, u32 sel);
+			const u32 sel = 91u | 0x80000000u, sta = 90u | 0x80000000u;
+			mt_set_gpio_mode(sel, 0); mt_set_gpio_dir(sel, 0);
+			mt_set_gpio_pull_enable(sel, 1); mt_set_gpio_pull_select(sel, 1);
+			mt_set_gpio_mode(sta, 0); mt_set_gpio_dir(sta, 0);
+			mt_set_gpio_pull_enable(sta, 1); mt_set_gpio_pull_select(sta, 1);
+			if (mt_get_gpio_in(sel) == 0 && mt_get_gpio_in(sta) == 0) {
+				dprintf(CRITICAL, "[KPA] SELECT+START held at boot: fastboot\n");
+				g_boot_mode = FASTBOOT;
+			}
+		}
+		if (g_boot_mode != FASTBOOT && ayaneo_gba_sd_boot() >= 0)
+#else
 		if (ayaneo_gba_sd_boot() >= 0)
+#endif
 			for (;;)
 				thread_sleep(1000);
 	}

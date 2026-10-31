@@ -50,7 +50,11 @@
  * PLL PCW from this kHz value (see the DSI_*PHY_clk_setting PCW blocks) tunes it in ~0.0002%
  * steps. 0 = use the stock integer data_Rate. 532000 reproduces the stock 59.751 Hz.
  * CRON-TUNED by measurement (oem diag hz1000). */
-#if defined(AYANEO_GBA)
+#if defined(KONKR_KPA)
+/* Konkr (ST7123 640x960 portrait, PLL 177 MHz, htotal 724): stock integer data rate until the
+ * line rate has been measured on the device (oem diag hz1000); 0 = no fractional override. */
+#define AYANEO_GBA_DR_KHZ 0u
+#elif defined(AYANEO_GBA)
 #define AYANEO_GBA_DR_KHZ 526512u
 #endif
 
@@ -62,10 +66,22 @@
  * so read and write agree. This is NOT cosmetic for PAL: under 59667000 the PAL vfp targets are
  * 217 (SNES) / 224 (Genesis); under 59684000 they are 218 / 225 (a one-line, ~0.03 Hz shift).
  * NTSC (20/17) and GBA (23) are identical under both constants. */
-#if defined(AYANEO_GBA) && AYANEO_GBA_DR_KHZ
-#define AYANEO_DSI_LINE_CONST 59667000u
+#if defined(KONKR_KPA)
+/* Nominal, from the stock panel timing: 354 Mbps per lane x 4 lanes / 24 bpp = 59.0 MHz pixel
+ * clock, htotal 4+40+40+640 = 724 -> 81.49 kHz lines. The non-vfp lines are vsa 4 + vbp 40 +
+ * vact 960 = 1004; stock vfp 280 gives 1284 lines = 63.5 Hz. The GBA's 59.7275 Hz lands at
+ * vfp 360. MUST be calibrated on the device like the pairmini constant was. */
+#define AYANEO_DSI_LINE_CONST  81491713u
+#define AYANEO_DSI_FIXED_LINES 1004u
+#define AYANEO_DSI_VFP_MAX     1000u   /* PAL 50 Hz needs ~626; DSI_VFP_NL is a 12-bit field */
+#elif defined(AYANEO_GBA) && AYANEO_GBA_DR_KHZ
+#define AYANEO_DSI_LINE_CONST  59667000u
+#define AYANEO_DSI_FIXED_LINES 976u
+#define AYANEO_DSI_VFP_MAX     256u
 #else
-#define AYANEO_DSI_LINE_CONST 59684000u
+#define AYANEO_DSI_LINE_CONST  59684000u
+#define AYANEO_DSI_FIXED_LINES 976u
+#define AYANEO_DSI_VFP_MAX     256u
 #endif
 
 #include <platform/mt_gpio.h>
@@ -1115,8 +1131,9 @@ void DSI_CPHY_Calc_VDO_Timing(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAM
 void ayaneo_dsi_set_vfp(unsigned int vfp)
 {
 	if (vfp < 4u)   vfp = 4u;
-	if (vfp > 256u) vfp = 256u;   /* was 200 (50.75Hz floor). 256 -> vtotal 1232 -> ~48.4Hz floor,
-	                                 clears worst-case PAL Genesis vfp 225 (non-shipped const) with margin */
+	if (vfp > AYANEO_DSI_VFP_MAX) vfp = AYANEO_DSI_VFP_MAX;   /* pairmini 256: was 200 (50.75Hz floor);
+	                                 256 -> vtotal 1232 -> ~48.4Hz floor, clears worst-case PAL Genesis
+	                                 vfp 225 (non-shipped const) with margin. Konkr: see the define. */
 	DSI_OUTREG32(NULL, DSI_REG_BASE[0] + DISP_REG_DSI_VFP_NL, vfp);
 }
 
@@ -1135,7 +1152,7 @@ unsigned int ayaneo_dsi_get_vfp(void)
 unsigned int ayaneo_dsi_refresh_milli(void)
 {
 	unsigned int vfp = AS_UINT32(DSI_REG_BASE[0] + DISP_REG_DSI_VFP_NL);
-	unsigned int vtotal = 976u + vfp;
+	unsigned int vtotal = AYANEO_DSI_FIXED_LINES + vfp;
 	if (!vtotal) return 0;
 	return AYANEO_DSI_LINE_CONST / vtotal;   /* line_rate(milliHz*lines) / vtotal = refresh in milliHz */
 }
@@ -1153,10 +1170,29 @@ unsigned int ayaneo_dsi_set_fps_milli(unsigned int fps_milli)
 	unsigned int vtotal, vfp;
 	if (fps_milli == 0u) return 0u;
 	vtotal = (line_const + fps_milli / 2u) / fps_milli;   /* rounded */
-	if (vtotal < 976u + 4u) vtotal = 976u + 4u;           /* keep vfp subtraction non-negative */
-	vfp = vtotal - 976u;
-	ayaneo_dsi_set_vfp(vfp);   /* single write + [4,256] clamp */
+	if (vtotal < AYANEO_DSI_FIXED_LINES + 4u) vtotal = AYANEO_DSI_FIXED_LINES + 4u;   /* keep vfp subtraction non-negative */
+	vfp = vtotal - AYANEO_DSI_FIXED_LINES;
+	ayaneo_dsi_set_vfp(vfp);   /* single write + [4,max] clamp */
 	return vfp;
+}
+
+/* Pure form of the above for the cores: the vfp that puts the panel on fps_milli (no register
+ * write, no clamp beyond the porch floor). Keeps the board timing in one place instead of each
+ * core carrying its own copy of the line constant and the fixed line count. */
+unsigned int ayaneo_dsi_vfp_for_fps(unsigned int fps_milli)
+{
+	unsigned int vtotal;
+	if (fps_milli == 0u) return 4u;
+	vtotal = (AYANEO_DSI_LINE_CONST + fps_milli / 2u) / fps_milli;
+	if (vtotal <= AYANEO_DSI_FIXED_LINES) return 4u;
+	return vtotal - AYANEO_DSI_FIXED_LINES;
+}
+
+/* The resting vfp: the GBA's 59.7275 Hz, rounded to the nearest line at or above that rate (the
+ * menu, GB/GBC and GBA all run here). 23 on the pairmini (59.749 Hz), 360 nominal on the Konkr. */
+unsigned int ayaneo_dsi_default_vfp(void)
+{
+	return ayaneo_dsi_vfp_for_fps(59727u);
 }
 
 void DSI_Config_VDO_Timing(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAMS *dsi_params)

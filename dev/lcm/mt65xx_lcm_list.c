@@ -57,10 +57,15 @@ extern LCM_DRIVER hct_rm68200_dsi_vdo_hd_tm_50_xld;
 extern LCM_DRIVER hct_nt35521s_dsi_vdo_hd_boe_50_xld;
 extern LCM_DRIVER hct_hx8394d_dsi_vdo_hd_cmi;
 extern LCM_DRIVER st7703_hd720_dsi_vdo_lcm_drv;
+extern LCM_DRIVER st7123p_hd640_boe_dsi_vdo_lcm_drv;
 
 LCM_DRIVER *lcm_driver_list[] = {
 #if defined(ST7703_HD720_DSI_VDO)
 	&st7703_hd720_dsi_vdo_lcm_drv,
+#endif
+
+#if defined(ST7123P_HD640_BOE_DSI_VDO)
+	&st7123p_hd640_boe_dsi_vdo_lcm_drv,
 #endif
 
 #if defined(HCT_OTM1285A_DSI_VDO_HD_BOE)

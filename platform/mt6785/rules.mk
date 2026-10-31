@@ -291,12 +291,20 @@ INCLUDES += -I$(LOCAL_DIR)/include \
 
 INCLUDES += -I$(DRVGEN_OUT)/inc
 
+# Analog stick / trigger ADC access. The Konkr Pocket Advance has no analog inputs and
+# reuses the pins the pairmini ADC path drives, so it links neutral stubs instead.
+ifeq ($(KONKR_KPA),yes)
+OBJS += $(LOCAL_DIR)/ayaneo_joypad_kpa.o
+else
+OBJS += $(LOCAL_DIR)/ayaneo_joypad.o
+endif
+
 OBJS += \
 	$(LOCAL_DIR)/bitops.o \
 	$(LOCAL_DIR)/gpio.o \
 	$(LOCAL_DIR)/mt_disp_drv.o \
 	$(LOCAL_DIR)/ayaneo_audio.o \
-	$(LOCAL_DIR)/ayaneo_joypad.o \
+	$(LOCAL_DIR)/ayaneo_volume_input.o \
 	$(LOCAL_DIR)/ayaneo_meminfo.o \
 	$(LOCAL_DIR)/ayaneo_rewind.o \
 	$(LOCAL_DIR)/gpio_init.o \

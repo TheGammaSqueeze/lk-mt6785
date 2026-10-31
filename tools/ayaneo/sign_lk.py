@@ -15,7 +15,7 @@ Everything it needs ships in this directory:
 Only depends on Python 3 and the openssl CLI.
 
 Usage:
-  tools/ayaneo/sign_lk.py <in_lk.img> <out_signed.img>
+  tools/ayaneo/sign_lk.py [--device konkr] <in_lk.img> <out_signed.img>
 """
 import hashlib
 import os
@@ -27,13 +27,20 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 KEY = os.path.join(HERE, "keys", "img_prvk.pem")
 PUBKEY = os.path.join(HERE, "keys", "img_pubk.pem")
-LK_CERT = os.path.join(HERE, "certs", "lk_cert.bin")
-DTB_CERT = os.path.join(HERE, "certs", "dtb_cert.bin")
+# Device data (cert partitions + stock lk_main_dtb) defaults to this directory (AYANEO Pocket
+# Air Mini). `--device NAME` switches to tools/NAME/ (e.g. tools/konkr for the Konkr Pocket
+# Advance); the MTK test key is shared by both boards.
+DEVICE_DIR = HERE
+if len(sys.argv) >= 3 and sys.argv[1] == "--device":
+    DEVICE_DIR = os.path.join(os.path.dirname(HERE), sys.argv[2])
+    del sys.argv[1:3]
+LK_CERT = os.path.join(DEVICE_DIR, "certs", "lk_cert.bin")
+DTB_CERT = os.path.join(DEVICE_DIR, "certs", "dtb_cert.bin")
 # Stock lk_main_dtb partition (header + padded data). The from-source LK builds
 # a generic lk_main_dtb that lacks this device's nodes/symbols (e.g. mt6360_pmu),
 # so the device's dtbo overlay fails. We substitute the stock device tree, which
 # is device data (not code) and is what the dtbo was authored against.
-STOCK_DTB = os.path.join(HERE, "lk_main_dtb.bin")
+STOCK_DTB = os.path.join(DEVICE_DIR, "lk_main_dtb.bin")
 
 MAGIC = bytes.fromhex("88168858")
 ALIGN = 16

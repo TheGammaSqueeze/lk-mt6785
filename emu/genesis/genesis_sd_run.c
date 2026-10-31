@@ -9,6 +9,7 @@
  * Only one core runs at a time, so we reuse the gpSP/gambatte/snes9x arena at 0x50000000.
  */
 #include "genesis_core_abi.h"
+#include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/gba_sd_save.h"
 #include "../ayaneo_rewind.h"
@@ -237,8 +238,10 @@ extern unsigned int ayaneo_dsi_set_fps_milli(unsigned int fps_milli);  /* set pa
  * native rate (the vsync-locked present then paces emulation to it = no judder), like SNES uses vfp 17.
  * PAL is ~49.70 Hz -> vfp 224 -> vtotal 1200 (needs ayaneo_dsi_set_vfp's clamp raised past 200 - see
  * the DSI mechanism change). DEFAULT_VFP 23 (59.749 Hz) is restored for the menu / other cores on exit. */
-#define GEN_VFP        20u    /* NTSC fallback if the core reports no fps */
-#define GEN_DEFAULT_VFP 23u
+extern unsigned int ayaneo_dsi_vfp_for_fps(unsigned int fps_milli);   /* ddp_dsi.c: board timing */
+extern unsigned int ayaneo_dsi_default_vfp(void);
+#define GEN_VFP         ayaneo_dsi_vfp_for_fps(59922u)   /* NTSC fallback if the core reports no fps (20 on the pairmini) */
+#define GEN_DEFAULT_VFP ayaneo_dsi_default_vfp()
 volatile unsigned g_gen_dbg_vfp;   /* live DSI vfp during the session (validates the switch) */
 
 /* Map a core frame rate (milli-Hz) to the panel vfp that makes the vsync-locked present pace exactly
@@ -247,11 +250,8 @@ volatile unsigned g_gen_dbg_vfp;   /* live DSI vfp during the session (validates
  * fps by falling back to the NTSC default. The DSI helper clamps the final vfp to its safe porch range. */
 static unsigned genesis_vfp_for_fps(unsigned fps_milli)
 {
-	unsigned vtotal;
 	if (fps_milli < 40000u || fps_milli > 65000u) return GEN_VFP;   /* implausible -> NTSC */
-	vtotal = (59667000u + fps_milli / 2u) / fps_milli;             /* rounded 59667000/fps_milli */
-	if (vtotal <= 976u) return 4u;                                 /* faster than the porch floor */
-	return vtotal - 976u;
+	return ayaneo_dsi_vfp_for_fps(fps_milli);
 }
 
 static char *mput(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
@@ -364,12 +364,8 @@ void genesis_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, u
  * disk via genesis_settings_touch. Genesis previously had NO in-game volume/brightness shortcut. */
 static void genesis_poll_volume(void)
 {
-	static int vu_p, vd_p;
-	int vu = mtk_detect_key(0x11), vd = mtk_detect_key(0x00);
 	int sel = PRESSED(GPIO_SELECT);
-	int dir = 0;
-	if (vu && !vu_p) dir = +1; else if (vd && !vd_p) dir = -1;
-	vu_p = vu; vd_p = vd;
+	int dir = ayaneo_volume_dir();
 	if (!dir) return;
 	if (sel) {
 		ayaneo_brightness_step(dir);

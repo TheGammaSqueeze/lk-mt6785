@@ -13,6 +13,7 @@
  * First bring-up: video + input. Audio and the in-game menu/run-ahead come next.
  */
 #include "snes_core_abi.h"
+#include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/gba_sd_save.h"
 #include "../ayaneo_rewind.h"
@@ -116,16 +117,14 @@ static void snes_cpu_step(int dir)
  * 59667000, so refresh_milliHz = 59667000 / vtotal, i.e. vfp = round(59667000 / fps_milli) - 976.
  * NTSC 60099 -> vfp 17 (matches the old fixed value); PAL 50007 -> vfp 217. The 217 needs the
  * ddp_dsi clamp lifted from 200 to >=225; without it vfp caps at 200 = 50.75 Hz and PAL runs ~1.5% fast. */
-#define SNES_LINE_CONST 59667000u
-#define SNES_VFP_NTSC   17u          /* fallback if fps_milli export missing */
-#define DEFAULT_VFP     23u
+extern unsigned int ayaneo_dsi_vfp_for_fps(unsigned int fps_milli);   /* ddp_dsi.c: board timing */
+extern unsigned int ayaneo_dsi_default_vfp(void);
+#define DEFAULT_VFP     ayaneo_dsi_default_vfp()
 static unsigned snes_vfp_for_fps(unsigned fps_milli)
 {
-	unsigned vt, vfp;
-	if (fps_milli < 20000u || fps_milli > 130000u) return SNES_VFP_NTSC; /* sanity: 20..130 Hz */
-	vt = (SNES_LINE_CONST + fps_milli / 2u) / fps_milli;   /* round(const/fps) */
-	vfp = (vt > 976u) ? (vt - 976u) : 4u;
-	return vfp;
+	if (fps_milli < 20000u || fps_milli > 130000u)            /* sanity: 20..130 Hz */
+		return ayaneo_dsi_vfp_for_fps(60099u);            /* NTSC SNES fallback (17 on the pairmini) */
+	return ayaneo_dsi_vfp_for_fps(fps_milli);
 }
 extern void     mtk_wdt_restart(void);
 extern void     mtk_wdt_disable(void);
@@ -317,12 +316,8 @@ static void snes_settings_flush(void)
  * change is debounced to disk via snes_settings_touch. Runs whether or not the menu is open. */
 static void snes_poll_volume(void)
 {
-	static int vu_p, vd_p;
-	int vu = mtk_detect_key(0x11), vd = mtk_detect_key(0x00);
 	int sel = PRESSED(GPIO_SELECT);
-	int dir = 0;
-	if (vu && !vu_p) dir = +1; else if (vd && !vd_p) dir = -1;
-	vu_p = vu; vd_p = vd;
+	int dir = ayaneo_volume_dir();
 	if (!dir) return;
 	if (sel) {
 		ayaneo_brightness_step(dir);

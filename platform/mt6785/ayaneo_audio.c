@@ -770,6 +770,14 @@ static void afe_dl1_stop(void)
 
 static void spk_amp_enable(int on)
 {
+#ifdef KONKR_KPA
+	/* On the Konkr GPIO24/GPIO21 are the RESET lines of the two AW883xx smart amps (i2c6 0x34 /
+	 * 0x35, fed over I2S3), not enables for a dumb class-D stage. Toggling them here would drop
+	 * the amps in and out of reset with nothing configured behind them. Leave them alone until
+	 * the AW883xx bring-up exists; the MT6359 headphone path below plays into nothing. */
+	(void)on;
+	return;
+#endif
 	mt_set_gpio_mode(AYANEO_SPK_EN_GPIO, 0);
 	mt_set_gpio_dir(AYANEO_SPK_EN_GPIO, 1);
 	mt_set_gpio_out(AYANEO_SPK_EN_GPIO, on ? 1 : 0);

@@ -811,6 +811,20 @@ static void cmd_odup(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* Konkr: flip the quarter-turn direction of the rotation layer live (oem rot:0 clockwise, oem rot:1
+ * counter clockwise) so the right one can be picked on the device without a reflash. Takes effect
+ * on the next presented frame. On the pairmini the layer is the identity and this is inert. */
+static void cmd_rot(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_rot_ccw;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	g_rot_ccw = fb_dec(&arg) ? 1 : 0;
+	snprintf(lbuf, sizeof lbuf, "rot: %s", g_rot_ccw ? "ccw" : "cw");
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
@@ -841,5 +855,6 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem strobelk:", cmd_strobelk, 1, 0); /* vsync-locked strobe: div,duty */
 	fastboot_register("oem od:", cmd_od, 1, 0);             /* software overdrive: on,kup,kdn,thr,cap */
 	fastboot_register("oem odup:", cmd_odup, 1, 0);         /* prev-indexed rising curve: kuphi,kuplo,gam */
+	fastboot_register("oem rot:", cmd_rot, 1, 0);           /* Konkr: 0 clockwise / 1 counter clockwise turn */
 	fastboot_register("oem selftest", cmd_selftest, 1, 0);
 }

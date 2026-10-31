@@ -823,6 +823,167 @@ static void ayaneo_present(unsigned int pa, unsigned int W, unsigned int H,
  * are never rendered at the same time - the menu pauses the emulator). */
 static int s_fb_flip;
 
+/* ---- logical screen and rotation ------------------------------------------------------------
+ * The Konkr Pocket Advance panel is scanned 640 wide x 960 tall and mounted landscape, so the LK
+ * frame buffer (CFG_DISPLAY_WIDTH x CFG_DISPLAY_HEIGHT) is portrait while everything the user sees
+ * is a 960x640 landscape picture. All emulator and menu geometry below is expressed on the LOGICAL
+ * screen (ayaneo_screen_w/h); the few places that hand pixels to the hardware rotate them into the
+ * physical buffer: native emulator frames are turned before the resizer upscales them (cheap, a
+ * few tens of thousands of pixels), and the full-screen ARGB canvas the menu / dialogs / transitions
+ * draw into is turned once per present. On the pairmini the panel is landscape, AYANEO_ROT is 0 and
+ * every helper collapses to the identity, so that build is unchanged.
+ *
+ * Turn direction: logical (x, y) -> physical (PW - 1 - y, x) is a clockwise quarter turn, the
+ * alternative is (y, PH - 1 - x). Which one the glass needs is decided on the device (oem rot:N
+ * flips g_rot_ccw live); the default follows the stock LK's "90". */
+#ifdef KONKR_KPA
+#define AYANEO_ROT 1
+/* Scratch in the WB-mapped DRAM window, laid out around the fixed transition buffers (see the
+ * map in gba_snes_menu.c). With the 640x960x4 frame buffer (0x258000) these ranges are disjoint from
+ * the snapshot (0x54000000+fb), reveal (0x55000000+fb), boxart (0x55500000..0x557E4000), freeze
+ * (0x55800000), game-full / overlay / RSZ_BUF1 (0x55900000+fb) and fct (0x55E00000..) regions. The
+ * 4:3 warped-wallpaper cache that starts at 0x54000000 is never built on this board (3:2 screen). */
+/* The menu, dialogs and transitions draw on a VIRTUAL canvas of the pairmini's design width
+ * (1280) at the 3:2 height (853) so none of their layout code changes; ayaneo_canvas_present
+ * scales it by exactly 3/4 to the 960x640 logical screen and turns it into the frame buffer.
+ * The canvas and the rotated-native-frame scratch share one region: the canvas is only drawn
+ * while no emulator frame is being presented (menu, dialogs, transitions) and vice versa. The
+ * downscale temp shares the overlay paint target for the same reason (menu time vs game time).
+ * 0x54800000 sits above the (3:2 sized) warped-wallpaper cache and below the relocated card
+ * tile cache (gba_snes_menu.c, KONKR_KPA map). */
+#define ROT_CANVAS_W    1280u
+#define ROT_CANVAS_H    853u
+#define ROT_CANVAS_PA   0x54800000u   /* 1280x853x4 = 0x42A400, ends 0x54C2A400 */
+#define ROT_565_PA      0x54800000u   /* rotated native frame, up to 1280x720 RGB565 (0x1C2000) */
+#define ROT_OVERLAY_PA  0x55B80000u   /* logical ARGB paint target for the game overlay (0x258000) */
+#define ROT_LOGICAL_PA  0x55B80000u   /* logical 960x640 temp of the downscaled canvas */
+#define ROT_565_MAX_PX  (1280u * 720u)
+#else
+#define AYANEO_ROT 0
+#endif
+
+/* Size of the canvas handed out by ayaneo_canvas_back (the panel on the pairmini, the virtual
+ * 1280x853 on the Konkr). */
+void ayaneo_canvas_dims(unsigned int *cw, unsigned int *ch)
+{
+#if AYANEO_ROT
+	*cw = ROT_CANVAS_W; *ch = ROT_CANVAS_H;
+#else
+	*cw = CFG_DISPLAY_WIDTH; *ch = CFG_DISPLAY_HEIGHT;
+#endif
+}
+volatile int g_rot_ccw;   /* 0 = clockwise quarter turn (default), 1 = counter clockwise */
+
+unsigned int ayaneo_screen_w(void) { return AYANEO_ROT ? CFG_DISPLAY_HEIGHT : CFG_DISPLAY_WIDTH; }
+unsigned int ayaneo_screen_h(void) { return AYANEO_ROT ? CFG_DISPLAY_WIDTH : CFG_DISPLAY_HEIGHT; }
+
+#if AYANEO_ROT
+/* Map a logical rect onto the physical frame buffer. */
+static void rot_rect(unsigned lx, unsigned ly, unsigned lw, unsigned lh,
+		     unsigned *px, unsigned *py, unsigned *pw, unsigned *ph)
+{
+	unsigned PW = CFG_DISPLAY_WIDTH, PH = CFG_DISPLAY_HEIGHT;
+	*pw = lh; *ph = lw;
+	if (!g_rot_ccw) { *px = (ly + lh <= PW) ? PW - ly - lh : 0; *py = lx; }
+	else            { *px = ly; *py = (lx + lw <= PH) ? PH - lx - lw : 0; }
+}
+
+/* Turn an RGB565 frame (sw x sh at spitch) into dst as (sh x sw) with pitch sh. */
+static void rot565(const unsigned short *src, unsigned sw, unsigned sh, unsigned spitch,
+		   unsigned short *dst)
+{
+	unsigned x, y;
+	if (!g_rot_ccw) {
+		/* dst[x][sh-1-y] = src[y][x]: walk the source rows, scatter down one dst column each */
+		for (y = 0; y < sh; y++) {
+			const unsigned short *sr = src + y * spitch;
+			unsigned short *dc = dst + (sh - 1u - y);
+			for (x = 0; x < sw; x++) dc[x * sh] = sr[x];
+		}
+	} else {
+		/* dst[sw-1-x][y] = src[y][x] */
+		for (y = 0; y < sh; y++) {
+			const unsigned short *sr = src + y * spitch;
+			unsigned short *dc = dst + (sw - 1u) * sh + y;
+			for (x = 0; x < sw; x++) dc[-(int)(x * sh)] = sr[x];
+		}
+	}
+}
+
+/* Turn a 32-bit canvas (w x h at spitch words) into dst (h x w at dpitch words). Processes the
+ * source in 8x8 tiles so both the reads and the scattered writes stay inside one cache line set;
+ * ~1 ms for 960x640 on one core at LK clocks. */
+static void rot8888(const unsigned int *src, unsigned w, unsigned h, unsigned spitch,
+		    unsigned int *dst, unsigned dpitch)
+{
+	unsigned tx, ty, x, y;
+	for (ty = 0; ty < h; ty += 8) {
+		unsigned yh = (ty + 8u <= h) ? 8u : h - ty;
+		for (tx = 0; tx < w; tx += 8) {
+			unsigned xw = (tx + 8u <= w) ? 8u : w - tx;
+			for (y = 0; y < yh; y++) {
+				const unsigned int *sr = src + (ty + y) * spitch + tx;
+				if (!g_rot_ccw) {
+					unsigned int *dc = dst + (h - 1u - (ty + y));
+					for (x = 0; x < xw; x++) dc[(tx + x) * dpitch] = sr[x];
+				} else {
+					unsigned int *dc = dst + (ty + y);
+					for (x = 0; x < xw; x++) dc[(w - 1u - (tx + x)) * dpitch] = sr[x];
+				}
+			}
+		}
+	}
+}
+
+/* Exact 4:3 box downscale of an ARGB canvas: every 4 source columns become 3 destination
+ * columns with weights (3,1)/4, (2,2)/4, (1,3)/4, the same vertically. Separable, integer, no
+ * divides; 1280x853 -> 960x640 (the last partial row group clamps to the last source row). */
+static void scale43_down(const unsigned int *src, unsigned sw, unsigned sh, unsigned spitch,
+			 unsigned int *dst, unsigned dw, unsigned dh, unsigned dpitch)
+{
+	/* per-channel mix of two ARGB pixels: (a*wa + b*wb) / 4, wa + wb == 4 */
+	#define MIX4(a, b, wa, wb) \
+		(0xFF000000u | \
+		 (((((a) >> 16) & 0xffu) * (wa) + (((b) >> 16) & 0xffu) * (wb)) >> 2) << 16 | \
+		 (((((a) >>  8) & 0xffu) * (wa) + (((b) >>  8) & 0xffu) * (wb)) >> 2) <<  8 | \
+		 (((( (a)      ) & 0xffu) * (wa) + (( (b)      ) & 0xffu) * (wb)) >> 2))
+	unsigned x, y, g;
+	for (y = 0; y < dh; y++) {
+		/* destination row y blends source rows r0/r1 by the 4->3 pattern */
+		unsigned grp = y / 3u, k = y % 3u, r0, r1, wa, wb;
+		if (k == 0)      { r0 = grp * 4u;      r1 = r0 + 1u; wa = 3; wb = 1; }
+		else if (k == 1) { r0 = grp * 4u + 1u; r1 = r0 + 1u; wa = 2; wb = 2; }
+		else             { r0 = grp * 4u + 2u; r1 = r0 + 1u; wa = 1; wb = 3; }
+		if (r0 >= sh) r0 = sh - 1u;
+		if (r1 >= sh) r1 = sh - 1u;
+		{
+			const unsigned int *a = src + r0 * spitch, *b = src + r1 * spitch;
+			unsigned int *o = dst + y * dpitch;
+			for (x = 0, g = 0; x + 3u <= dw && g + 4u <= sw; x += 3u, g += 4u) {
+				/* vertical mix of the four source columns of this group */
+				unsigned int c0 = MIX4(a[g],      b[g],      wa, wb);
+				unsigned int c1 = MIX4(a[g + 1u], b[g + 1u], wa, wb);
+				unsigned int c2 = MIX4(a[g + 2u], b[g + 2u], wa, wb);
+				unsigned int c3 = MIX4(a[g + 3u], b[g + 3u], wa, wb);
+				o[x]      = MIX4(c0, c1, 3, 1);
+				o[x + 1u] = MIX4(c1, c2, 2, 2);
+				o[x + 2u] = MIX4(c2, c3, 1, 3);
+			}
+			for (; x < dw; x++) o[x] = 0xFF000000u;   /* only if dw is not a multiple of 3 */
+		}
+	}
+	#undef MIX4
+}
+#endif
+
+/* Largest integer scale of (sw x sh) that fits the logical screen. */
+static unsigned rot_int_scale(unsigned sw, unsigned sh)
+{
+	unsigned k = ayaneo_screen_w() / sw, k2 = ayaneo_screen_h() / sh;
+	if (k2 < k) k = k2;
+	return k ? k : 1u;
+}
+
 /* ---- primitive drawing into a 32-bit BGRA back buffer (used by the menu) ---- */
 
 /* filled rectangle, clipped to the panel */
@@ -967,10 +1128,18 @@ static void ayaneo_hud_draw(unsigned int *buf, unsigned int pitch_w, int gx, int
  * frame into. The menu uses this + ayaneo_canvas_present() to render itself. */
 unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigned int *H)
 {
+#if AYANEO_ROT
+	/* The virtual 1280x853 canvas; ayaneo_canvas_present scales + turns it into the back buffer. */
+	*pitch_w = ROT_CANVAS_W;
+	*W = ROT_CANVAS_W;
+	*H = ROT_CANVAS_H;
+	return (unsigned int *)ROT_CANVAS_PA;
+#else
 	*pitch_w = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT);
 	*W = CFG_DISPLAY_WIDTH;
 	*H = CFG_DISPLAY_HEIGHT;
 	return (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
+#endif
 }
 
 /* Get the currently DISPLAYED (front) buffer - the one being scanned out, i.e.
@@ -979,10 +1148,16 @@ unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigne
  * AFTER latching, so the displayed buffer is the opposite of the current back. */
 const unsigned int *ayaneo_canvas_front(unsigned int *pitch_w, unsigned int *W, unsigned int *H)
 {
+#if AYANEO_ROT
+	/* The virtual canvas is what was last presented (it is scaled + turned into the fb, never
+	 * drawn into directly), so it doubles as the readable front image. */
+	return ayaneo_canvas_back(pitch_w, W, H);
+#else
 	*pitch_w = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT);
 	*W = CFG_DISPLAY_WIDTH;
 	*H = CFG_DISPLAY_HEIGHT;
 	return (const unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? 0 : fb_size));
+#endif
 }
 
 /* flush the whole back buffer and present it, then flip */
@@ -1010,6 +1185,12 @@ void ayaneo_canvas_present(void)
 	    (*(volatile unsigned int *)0x14009020u & 0xffffu) != W)
 		ayaneo_snes_rsz_restore();
 
+#if AYANEO_ROT
+	scale43_down((const unsigned int *)ROT_CANVAS_PA, ROT_CANVAS_W, ROT_CANVAS_H, ROT_CANVAS_W,
+		     (unsigned int *)ROT_LOGICAL_PA, ayaneo_screen_w(), ayaneo_screen_h(), ayaneo_screen_w());
+	rot8888((const unsigned int *)ROT_LOGICAL_PA, ayaneo_screen_w(), ayaneo_screen_h(), ayaneo_screen_w(),
+		(unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0)), pitch_w);
+#endif
 	arch_clean_cache_range((unsigned int)((unsigned char *)fb_addr +
 			       (s_fb_flip ? fb_size : 0)), fb_size);
 	ayaneo_present(dpa, W, H, pitch_w);
@@ -1144,6 +1325,27 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 		inited = 1;
 	}
 
+#if AYANEO_ROT
+	/* Turned panel: every aspect goes through the resizer path, which rotates the native frame
+	 * and places it on the logical screen. Pixel is the exact integer fit (4x = 960x640 here). */
+	{
+		extern volatile int g_gba_aspect;
+		extern int ayaneo_get_color_correct(void);
+		extern const unsigned short gba_cc_lut444[];
+		unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h(), dwr, dhr;
+		if (g_gba_aspect == 2) { dwr = LW; dhr = LH; }
+		else if (g_gba_aspect == 1) {
+			if (LW * GBC_SRC_H <= LH * GBC_SRC_W) { dwr = LW; dhr = LW * GBC_SRC_H / GBC_SRC_W; }
+			else { dhr = LH; dwr = LH * GBC_SRC_W / GBC_SRC_H; }
+		} else { unsigned k = rot_int_scale(GBC_SRC_W, GBC_SRC_H); dwr = GBC_SRC_W * k; dhr = GBC_SRC_H * k; }
+		ayaneo_rsz_present(pix, GBC_SRC_W, GBC_SRC_H, GBC_SRC_W, dwr, dhr,
+				   (LW - dwr) / 2u, (LH - dhr) / 2u, ayaneo_get_lcd_filter_core(1), 0,
+				   ayaneo_get_color_correct() ? gba_cc_lut444 : 0);
+		g_dbg_blit_us = g_rsz_show_us;
+		return;
+	}
+#endif
+
 	/* Aspect modes (GBA 240x160): Fit / Stretch scale via the hardware RSZ; Pixel (0) uses the
 	 * sharp integer CPU blit below. RSZ stays on while the live Pico menu overlay is up (it
 	 * composites on top as OVL0 L0; g_overlay_active single-buffers the RSZ scratch so it never
@@ -1273,6 +1475,20 @@ void ayaneo_gb_show_frame(const unsigned short *pix)
 	int filt = ayaneo_get_lcd_filter_core(2);   /* GBC */
 	unsigned int sx, sy, ix, iy;
 
+#if AYANEO_ROT
+	{
+		extern volatile int g_gbc_aspect;
+		unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h(), dwr, dhr;
+		if (g_gbc_aspect == 2) { dwr = LW; dhr = LH; }
+		else if (g_gbc_aspect == 1) {
+			if (LW * SH <= LH * SW) { dwr = LW; dhr = LW * SH / SW; }
+			else { dhr = LH; dwr = LH * SW / SH; }
+		} else { unsigned k = rot_int_scale(SW, SH); dwr = SW * k; dhr = SH * k; }
+		ayaneo_rsz_present(pix, SW, SH, SW, dwr, dhr, (LW - dwr) / 2u, (LH - dhr) / 2u, filt, 0, 0);
+		g_dbg_blit_us = g_rsz_show_us;
+		return;
+	}
+#endif
 	/* Aspect modes (GB/GBC 160x144): Fit / Stretch via hardware RSZ; Pixel (0) uses the sharp
 	 * integer CPU blit below. No colour-correction LUT (gambatte already outputs final RGB565).
 	 * As on GBA, RSZ stays on under the live overlay menu; Pixel/exit restores the 1:1 path. */
@@ -1363,6 +1579,18 @@ void ayaneo_gba_show_intro_frame(const unsigned short *pix)
 	unsigned int dpa;
 	int sx, sy, ix, iy;
 
+#if AYANEO_ROT
+	/* Fill the logical height like the 6x path does on the 4:3 panel; here that is the exact
+	 * 4x = 960x640, nothing to crop. */
+	{
+		unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h(), k = rot_int_scale(SRC_W, SRC_H);
+		(void)S; (void)xoff; (void)sx0; (void)sx1; (void)pitch_w; (void)dst; (void)dpa;
+		(void)sx; (void)sy; (void)ix; (void)iy;
+		ayaneo_rsz_present(pix, SRC_W, SRC_H, SRC_W, SRC_W * k, SRC_H * k,
+				   (LW - SRC_W * k) / 2u, (LH - SRC_H * k) / 2u, 0, 0, 0);
+		return;
+	}
+#endif
 	if (sx0 < 0) sx0 = 0;
 	if (sx1 > SRC_W) sx1 = SRC_W;
 	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
@@ -1552,8 +1780,18 @@ void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned in
 			 * repaint handles GBA/GBC swapping between differently-sized panels (menu vs palette/
 			 * aspect pickers) with no stale opaque pixels - but only on a real content change.
 			 * Painted BEFORE the layer is enabled on the open frame so no stale buffer flashes. */
+#if AYANEO_ROT
+			{
+				unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h();
+				unsigned int *lb = (unsigned int *)ROT_OVERLAY_PA;
+				memset(lb, 0, LW * LH * 4u);
+				paint(lb, LW, LW, LH);
+				rot8888(lb, LW, LH, LW, b, W);
+			}
+#else
 			memset(b, 0, W * H * 4u);
 			paint(b, W, W, H);
+#endif
 			arch_clean_cache_range(MENU_OVERLAY_PA, W * H * 4u);
 			s_overlay_dirty = 0;
 		}
@@ -1781,6 +2019,24 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 
 	if (!pix || !fb_addr || !sw || !sh) return;
 	pix = od_apply(pix, sw, sh, spitch_px, &spitch_px);   /* software overdrive (no-op unless enabled) */
+#if AYANEO_ROT
+	/* Callers describe the picture on the logical landscape screen. Turn the native frame now,
+	 * while it is small, and map the target rect onto the portrait frame buffer; everything
+	 * below then works in physical coordinates exactly as on a landscape panel. */
+	{
+		unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h(), px, py, pw, ph2, t;
+		if (sw * sh > ROT_565_MAX_PX) return;
+		if (dw > LW) dw = LW; if (dh > LH) dh = LH;
+		if (dw < 1u) dw = 1u; if (dh < 1u) dh = 1u;
+		if (xoff + dw > LW) xoff = (LW - dw) / 2u;
+		if (yoff + dh > LH) yoff = (LH - dh) / 2u;
+		rot565(pix, sw, sh, spitch_px, (unsigned short *)ROT_565_PA);
+		pix = (const unsigned short *)ROT_565_PA;
+		t = sw; sw = sh; sh = t; spitch_px = sw;
+		rot_rect(xoff, yoff, dw, dh, &px, &py, &pw, &ph2);
+		xoff = px; yoff = py; dw = pw; dh = ph2;
+	}
+#endif
 	if (dw > W) dw = W; if (dh > H) dh = H;
 	if (dw < 1u) dw = 1u; if (dh < 1u) dh = 1u;
 	if (xoff + dw > W) xoff = (W - dw) / 2u;
@@ -1873,7 +2129,8 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 			}
 		}
 	}
-	ayaneo_hud_draw(vbuf, fbpitch, 0, 0, (int)iw, (int)ih);   /* FF/RW speed badge (scaled with the game) */
+	if (!AYANEO_ROT)   /* the badge is drawn upright; on the turned buffer it would lie on its side */
+		ayaneo_hud_draw(vbuf, fbpitch, 0, 0, (int)iw, (int)ih);   /* FF/RW speed badge (scaled with the game) */
 	arch_clean_cache_range((unsigned int)vbuf, ih * fbpitch * 4u);
 
 	/* Detect geometry changes (source res or output rect - dw/dh uniquely encode the aspect mode)
@@ -1928,7 +2185,7 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 static void ayaneo_snes_show_frame_rsz(const unsigned short *pix, unsigned int sw, unsigned int sh,
 				       unsigned int spitch_px)
 {
-	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int W = ayaneo_screen_w(), H = ayaneo_screen_h();
 	extern volatile unsigned g_snes_aspect_x1000, g_snes_show_us;
 	extern volatile int g_snes_stretch;
 	extern int ayaneo_get_lcd_filter(void);
@@ -1959,7 +2216,7 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
 		 * an independent hardware overlay (OVL0 L0, see ayaneo_menu_overlay), so it no longer forces
 		 * the game onto the CPU path or pauses it. Aspect/filter changes preview live because the
 		 * game keeps re-presenting underneath the static menu layer. */
-		if (g_snes_rsz) {
+		if (g_snes_rsz || AYANEO_ROT) {   /* the turned panel always presents through the resizer */
 			ayaneo_snes_show_frame_rsz(pix, sw, sh, spitch_px);
 			return;
 		}
@@ -2116,6 +2373,19 @@ void ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw, unsigned 
 
 	if (!fb_addr || !pix || !sw || !sh) return;
 
+#if AYANEO_ROT
+	{
+		unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h(), dwr, dhr, a;
+		if (g_genesis_aspect == 2) { dwr = LW; dhr = LH; }
+		else if (g_genesis_aspect == 1) {
+			a = g_genesis_aspect_x1000; if (!a) a = 1333u;
+			dhr = LH; dwr = LH * a / 1000u; if (dwr > LW) { dwr = LW; dhr = LW * 1000u / a; }
+		} else { unsigned k = rot_int_scale(sw, sh); dwr = sw * k; dhr = sh * k; }
+		ayaneo_rsz_present(pix, sw, sh, spitch_px, dwr, dhr, (LW - dwr) / 2u, (LH - dhr) / 2u, filt, 0, 0);
+		g_dbg_blit_us = g_rsz_show_us;
+		return;
+	}
+#endif
 	/* Aspect modes: Fit / Stretch via the hardware RSZ; Pixel (0) uses the sharp integer CPU blit.
 	 * Genesis is 4:3 on a 4:3 panel, so Fit uses the core's aspect (g_genesis_aspect_x1000, ~4:3)
 	 * and Stretch fills the panel. RSZ stays on under the live overlay menu; Pixel/exit restores 1:1. */
@@ -2235,6 +2505,13 @@ void ayaneo_gbc_clear_letterbox(void)
 
 	if (!fb_addr)
 		return;
+#if AYANEO_ROT
+	/* The game is presented by the resizer path with its own black bars; the CPU buffers only
+	 * ever hold turned menu canvases here, so there is no live game centre to protect. */
+	(void)pitch; (void)dw; (void)dh; (void)xoff; (void)yoff; (void)b; (void)y;
+	ayaneo_gbc_blank();
+	return;
+#endif
 	for (b = 0; b < 2; b++) {
 		unsigned int *fb = (unsigned int *)((unsigned char *)fb_addr + (b ? fb_size : 0));
 		for (y = 0; y < yoff; y++)                 memset(fb + (unsigned)y * pitch, 0, W * 4);
@@ -2266,6 +2543,22 @@ void ayaneo_gba_punch_frame(const unsigned short *pix, const unsigned int *snap,
 
 	if (!fb_addr || !snap)
 		return;
+#if AYANEO_ROT
+	{
+		/* Composite on the virtual canvas at the canvas' own integer scale (5x = 1200x800 on
+		 * 1280x853, a few percent short of the full-fill the game then runs at). */
+		unsigned CW, CH, k;
+		ayaneo_canvas_dims(&CW, &CH);
+		k = CW / GBC_SRC_W; if (CH / GBC_SRC_H < k) k = CH / GBC_SRC_H; if (!k) k = 1;
+		(void)dpa; (void)dw; (void)dh; (void)xoff; (void)yoff;
+		dst = (unsigned int *)ROT_CANVAS_PA;
+		gba_punch_composite(dst, snap, (int)CW, (int)CW, (int)CH, pix, cx, cy, radius,
+				    (int)k, GBC_SRC_W, GBC_SRC_H,
+				    ((int)CW - GBC_SRC_W * (int)k) / 2, ((int)CH - GBC_SRC_H * (int)k) / 2);
+		ayaneo_canvas_present();   /* scales, turns, presents, waits one vsync, flips */
+		return;
+	}
+#endif
 	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
 	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
 	gba_punch_composite(dst, snap, (int)pitch_w, (int)W, (int)H, pix,
@@ -2317,12 +2610,40 @@ static void punch_fill_scaled(unsigned int *gf, unsigned int pitch, unsigned int
 	}
 }
 
+#if AYANEO_ROT
+/* Bake a native frame into the punch buffer in VIRTUAL CANVAS space with the same rect the
+ * resizer path shows it at: aspect 0 = largest integer fit of the logical screen, 1 = fit,
+ * 2 = stretch, computed on the logical 960x640 then scaled to the canvas (4/3). The fractional
+ * fill is fine: the canvas is scaled 3/4 on present, so this lands on the panel at exactly the
+ * live geometry (no geometry pop when the punch finishes and the game takes over). */
+static void rot_prerender_canvas(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch,
+				 int aspect)
+{
+	unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h(), CW, CH, dwr, dhr;
+	ayaneo_canvas_dims(&CW, &CH);
+	if (aspect == 2) { dwr = LW; dhr = LH; }
+	else if (aspect == 1) {
+		if (LW * sh <= LH * sw) { dwr = LW; dhr = LW * sh / sw; }
+		else { dhr = LH; dwr = LH * sw / sh; }
+	} else { unsigned k = rot_int_scale(sw, sh); dwr = sw * k; dhr = sh * k; }
+	punch_fill_scaled((unsigned int *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, CW, CW, CH,
+			  pix, sw, sh, spitch, (dwr * CW + LW / 2u) / LW, (dhr * CH + LH / 2u) / LH);
+	arch_clean_cache_range(GBA_PUNCH_GAME_FULL_PA, CW * CH * 4u);
+}
+#endif
+
 void ayaneo_gba_punch_prerender(const unsigned short *pix)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int pitch = ALIGN_TO(W, MTK_FB_ALIGNMENT);
 	extern volatile int g_gba_aspect;
 	if (!pix) return;
+#if AYANEO_ROT
+	/* The punch buffer is composited onto the virtual canvas, so bake the game there with the
+	 * rect the live resizer path will show, mapped from the logical screen to canvas scale. */
+	rot_prerender_canvas(pix, GBC_SRC_W, GBC_SRC_H, GBC_SRC_W, g_gba_aspect);
+	return;
+#endif
 	if (g_gba_aspect != 0) {   /* Fit/Stretch: match the RSZ show_frame rect (no launch pop) */
 		unsigned int dwr, dhr;
 		if (g_gba_aspect == 2) { dwr = W; dhr = H; }
@@ -2349,6 +2670,10 @@ void ayaneo_gb_punch_prerender(const unsigned short *pix)
 	const int SW = 160, SH = 144, SC = 6;
 	extern volatile int g_gbc_aspect;
 	if (!pix) return;
+#if AYANEO_ROT
+	rot_prerender_canvas(pix, SW, SH, SW, g_gbc_aspect);
+	return;
+#endif
 	if (g_gbc_aspect != 0) {   /* Fit/Stretch: match the RSZ show_frame rect (no launch pop) */
 		unsigned int dwr, dhr;
 		if (g_gbc_aspect == 2) { dwr = W; dhr = H; }
@@ -2381,6 +2706,23 @@ void ayaneo_snes_punch_prerender(const unsigned short *pix, unsigned int sw, uns
 	unsigned int dw = asp ? (dh * asp) / 1000u : sw * ((sw <= 256) ? 4u : 2u);
 	int xoff, yoff; unsigned int xstep, y, x;
 	if (!pix) return;
+#if AYANEO_ROT
+	{
+		/* Same rect as ayaneo_snes_show_frame_rsz on the logical screen, then canvas scaled. */
+		extern volatile int g_snes_stretch;
+		unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h(), CW, CH, dwr, dhr;
+		(void)pitch; (void)gf; (void)xoff; (void)yoff; (void)xstep; (void)y; (void)x;
+		ayaneo_canvas_dims(&CW, &CH);
+		if (g_snes_stretch) { dwr = LW; dhr = LH; }
+		else { dhr = dh; dwr = dw; }
+		if (dwr > LW) dwr = LW; if (dhr > LH) dhr = LH;
+		if (dwr < 1u) dwr = 1u; if (dhr < 1u) dhr = 1u;
+		punch_fill_scaled((unsigned int *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, CW, CW, CH,
+				  pix, sw, sh, spitch_px, (dwr * CW + LW / 2u) / LW, (dhr * CH + LH / 2u) / LH);
+		arch_clean_cache_range(GBA_PUNCH_GAME_FULL_PA, CW * CH * 4u);
+		return;
+	}
+#endif
 	if (dw > W) dw = W; if (dw < 1) dw = 1;
 	xoff = ((int)W - (int)dw) / 2; yoff = ((int)H - (int)dh) / 2;
 	if (xoff < 0) xoff = 0; if (yoff < 0) yoff = 0;
@@ -2416,6 +2758,22 @@ void ayaneo_genesis_punch_prerender(const unsigned short *pix, unsigned int sw, 
 	unsigned int dw, dh, xstep, ystep, x, y;
 	int xoff, yoff;
 	if (!pix || !sw || !sh) return;
+#if AYANEO_ROT
+	{
+		unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h(), CW, CH, dwr, dhr, a;
+		(void)pitch; (void)gf; (void)xoff; (void)yoff; (void)xstep; (void)ystep; (void)x; (void)y;
+		ayaneo_canvas_dims(&CW, &CH);
+		if (g_genesis_aspect == 2) { dwr = LW; dhr = LH; }
+		else if (g_genesis_aspect == 1) {
+			a = g_genesis_aspect_x1000; if (!a) a = 1333u;
+			dhr = LH; dwr = LH * a / 1000u; if (dwr > LW) { dwr = LW; dhr = LW * 1000u / a; }
+		} else { unsigned k = rot_int_scale(sw, sh); dwr = sw * k; dhr = sh * k; }
+		punch_fill_scaled((unsigned int *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, CW, CW, CH,
+				  pix, sw, sh, spitch_px, (dwr * CW + LW / 2u) / LW, (dhr * CH + LH / 2u) / LH);
+		arch_clean_cache_range(GBA_PUNCH_GAME_FULL_PA, CW * CH * 4u);
+		return;
+	}
+#endif
 	if (g_genesis_aspect == 2) { dw = W; dh = H; }
 	else if (g_genesis_aspect == 1) {
 		unsigned int a = g_genesis_aspect_x1000; if (!a) a = 1333u;
@@ -2451,6 +2809,18 @@ void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius)
 	unsigned int *dst;
 	unsigned int dpa;
 	if (!fb_addr || !snap) return;
+#if AYANEO_ROT
+	{
+		unsigned CW, CH;
+		ayaneo_canvas_dims(&CW, &CH);
+		(void)dpa;
+		dst = (unsigned int *)ROT_CANVAS_PA;
+		gba_punch_composite_pre(dst, snap, (const uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA,
+					(int)CW, (int)CW, (int)CH, -1, -1, radius);
+		ayaneo_canvas_present();
+		return;
+	}
+#endif
 	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
 	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
 	gba_punch_composite_pre(dst, snap, (const uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA,
@@ -2689,9 +3059,22 @@ static int ayaneo_rainbow_thread(void *arg)
 				i++;
 				if (!show)
 					continue;
+#if AYANEO_ROT
+				/* Cover the logical screen: scale to its height and crop the width
+				 * symmetrically at the source, then let the resizer path turn + scale. */
+				{
+					unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h();
+					unsigned csw = (sh ? LW * sh / LH : sw), csx;
+					if (csw > sw) csw = sw;
+					csx = (sw - csw) / 2u;
+					ayaneo_rsz_present((const unsigned short *)rgb + csx, csw, sh, sw,
+							   LW, LH, 0, 0, 0, 0, 0);
+				}
+#else
 				anim_blit(rgb, disp_va[disp_i & 1], sw, sh, dw, dh,
 					  xoff, yoff, pitch_w, 256, crop_y, scaled_h);
 				ayaneo_present(disp_pa[disp_i & 1], W, H, pitch_w);
+#endif
 				disp_i++;
 				have_frame = 1;
 				if (!shown) { mt65xx_backlight_on(); ayaneo_apply_persisted_brightness(); shown = 1; }

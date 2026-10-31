@@ -16,6 +16,7 @@
  * WB region backs the pack blob + node pools + render caches.
  */
 #include "menu/snes_pack.h"
+#include <platform/ayaneo_volume_input.h>
 #include "menu/snes_render.h"
 #include "menu/snes_menu.h"
 #include "menu/snes_audio.h"
@@ -218,14 +219,9 @@ static unsigned s_av_tick;        /* 13 MHz tick of the last change */
  * brightness when SELECT is held. Sets the OSD + marks the persist dirty. */
 static void menu_av_poll(void)
 {
-	static int up_prev, dn_prev;
-	int up = mtk_detect_key(0x11);        /* VOL_UP  */
-	int dn = mtk_detect_key(0x00);        /* VOL_DOWN */
 	int sel = PRESSED(K_SELECT);
-	int dir = 0;
+	int dir = ayaneo_volume_dir();
 
-	if (up && !up_prev) dir = +1;
-	else if (dn && !dn_prev) dir = -1;
 	if (dir) {
 		if (sel) {
 			s_av_kind = 2;
@@ -241,7 +237,6 @@ static void menu_av_poll(void)
 		s_av_dirty = 1;
 		s_av_tick = gpt4_get_current_tick();
 	}
-	up_prev = up; dn_prev = dn;
 
 	/* flush the persist ~0.7s after the last change (off the key-repeat hot path).
 	 * Persist to BOTH eMMC AND the SD card: in SD mode the boot settings are loaded
@@ -298,8 +293,16 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
  *   fct     0x55E00000 .. 0x55E70800  (after game-full)
  * Boxart tiles are on the SD card, never in lk_a.
  */
+#if defined(KONKR_KPA)
+/* Konkr: the virtual 1280x853 menu canvas + rotated-frame scratch take 0x54800000..0x54C2A400
+ * (mt_disp_drv.c), so the card tile cache moves up and shrinks to stay below the reveal buffer:
+ * 8 * 320*360*4 = 3.5MB, 0x54C40000..0x54FC4000. */
+#define SNES_CTILE2_PA   0x54C40000u
+#define SNES_CTILE2_CAP  8
+#else
 #define SNES_CTILE2_PA   0x54A80000u /* enlarged card-tile cache (12 * 320*360*4 = 5.4MB) */
 #define SNES_CTILE2_CAP  12
+#endif
 #define SNES_BOXART_PA   0x55500000u /* per-ROM boxart tiles (between reveal and freeze) */
 #define SNES_BOXART_SLOT 0x25000u    /* bytes per tile slot (>= 224*224*3) */
 #define SNES_BOXART_CAP  20          /* 20 * 0x25000 = 0x2E4000 -> ends 0x557E4000 < freeze */
@@ -448,20 +451,27 @@ static void play_reverse_punch(unsigned int ms)
 		int sw = g_reverse_snes_w, sh = g_reverse_snes_h;
 		ayaneo_snes_punch_prerender((const unsigned short *)GBA_GAME_FREEZE_PA,
 					    (unsigned)sw, (unsigned)sh, (unsigned)sw);
-	} else if (g_reverse_is_gbc == 1)
-		gba_punch_prerender((uint32_t *)(uintptr_t)GBA_GAME_FULL_PA, (int)cp, (int)cw, (int)ch,
-				    (const unsigned short *)GBA_GAME_FREEZE_PA, 6, 160, 144,
-				    ((int)cw - 960) / 2, ((int)ch - 864) / 2);
-	else
-		gba_punch_prerender((uint32_t *)(uintptr_t)GBA_GAME_FULL_PA, (int)cp, (int)cw, (int)ch,
-				    (const unsigned short *)GBA_GAME_FREEZE_PA, 5, 240, 160,
-				    ((int)cw - 1200) / 2, ((int)ch - 800) / 2);
+	} else if (g_reverse_is_gbc == 1) {
+		/* GB/GBC: the display driver bakes the frame with the geometry the live path showed
+		 * (integer 6x centred on the pairmini; the logical-screen rect mapped onto the virtual
+		 * canvas on the Konkr), so the reverse shrinks exactly what was on screen. */
+		extern void ayaneo_gb_punch_prerender(const unsigned short *pix);
+		ayaneo_gb_punch_prerender((const unsigned short *)GBA_GAME_FREEZE_PA);
+	} else {
+		extern void ayaneo_gba_punch_prerender(const unsigned short *pix);
+		ayaneo_gba_punch_prerender((const unsigned short *)GBA_GAME_FREEZE_PA);
+	}
 	{
 		int i, N = 20;
+		/* Start radius = the canvas half diagonal (820 on 1280x960, 577 on 960x640) so the
+		 * circle covers the corners on the first frame whatever the panel. */
+		int rmax = 0;
+		{ unsigned int p0, w0, h0; (void)ayaneo_canvas_back(&p0, &w0, &h0);
+		  { unsigned int d2 = (w0 * w0 + h0 * h0) / 4u, r = 1; while (r * r < d2) r++; rmax = (int)r; } }
 		for (i = 1; i <= N; i++) {
 			unsigned int p2, w2, h2;
 			unsigned int *db = ayaneo_canvas_back(&p2, &w2, &h2);
-			int r = 820 * (N - i) / N;                   /* MAX -> 0: game shrinks */
+			int r = rmax * (N - i) / N;                  /* MAX -> 0: game shrinks */
 			gba_punch_composite_pre(db, (const uint32_t *)GBA_REVERSE_SNAP_PA,
 						(const uint32_t *)GBA_GAME_FULL_PA, (int)p2,
 						(int)w2, (int)h2, -1, -1, r);

@@ -16,6 +16,7 @@
  * dedicated CPU thread (see gba_yield_to_main / the run loop).
  */
 #include <debug.h>
+#include <platform/ayaneo_volume_input.h>
 #include <platform/mt_typedefs.h>
 #include <kernel/thread.h>
 #include <kernel/event.h>
@@ -424,14 +425,8 @@ static void update_buttons(void)
 /* Volume keys (MTK keypad); Select + Volume = brightness. Persisted to boot_b. */
 static void poll_volume(void)
 {
-	static int vu_prev, vd_prev;
-	int vu = mtk_detect_key(0x11);
-	int vd = mtk_detect_key(0x00);
 	int sel = PRESSED(GPIO_SELECT);
-	int dir = 0;
-
-	if (vu && !vu_prev) dir = +1;
-	else if (vd && !vd_prev) dir = -1;
+	int dir = ayaneo_volume_dir();
 
 	if (dir) {
 		if (sel) {
@@ -454,8 +449,6 @@ static void poll_volume(void)
 	}
 	if (!sel)
 		s_sel_modifier = 0;
-	vu_prev = vu;
-	vd_prev = vd;
 }
 
 /* ---- little-endian helpers ---- */

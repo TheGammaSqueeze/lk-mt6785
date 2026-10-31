@@ -13,6 +13,7 @@
  * Only one core runs at a time, so we reuse the gpSP arena at 0x50000000.
  */
 #include "gbc_core_abi.h"
+#include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/gba_sd_save.h"
 #include "../ayaneo_rewind.h"
@@ -225,12 +226,8 @@ extern void mt_power_off(void);
  * mtk_detect_key(0x11), VolDown = 0x00, edge-detected; SELECT held switches to brightness. */
 static void gbc_sd_poll_volume(void)
 {
-	static int vu_p, vd_p;
-	int vu = mtk_detect_key(0x11), vd = mtk_detect_key(0x00);
 	int sel = PRESSED(GPIO_SELECT);
-	int dir = 0;
-	if (vu && !vu_p) dir = +1; else if (vd && !vd_p) dir = -1;
-	vu_p = vu; vd_p = vd;
+	int dir = ayaneo_volume_dir();
 	if (!dir) return;
 	if (sel) {
 		ayaneo_brightness_step(dir);

@@ -6,6 +6,7 @@
  * Runs entirely in LK after the boot animation; there is no kernel handoff.
  */
 #include <debug.h>
+#include <platform/ayaneo_volume_input.h>
 #include <platform/mt_typedefs.h>
 #include <kernel/thread.h>
 #include <part_interface.h>
@@ -265,14 +266,8 @@ unsigned gbc_read_buttons(void)
  * on-screen slider and persist the new value to boot_b so it survives reboots. */
 static void gbc_poll_volume(void)
 {
-	static int vu_prev, vd_prev;
-	int vu = mtk_detect_key(0x11);		/* VolumeUp  (hw key 0x11) */
-	int vd = mtk_detect_key(0x00);		/* VolumeDown (hw key 0x00) */
 	int sel = GBC_PRESSED(GBC_GPIO_SELECT);	/* Select = brightness modifier */
-	int dir = 0;
-
-	if (vu && !vu_prev) dir = +1;
-	else if (vd && !vd_prev) dir = -1;
+	int dir = ayaneo_volume_dir();
 
 	if (dir) {
 		if (sel) {
@@ -288,9 +283,6 @@ static void gbc_poll_volume(void)
 	}
 	if (!sel)
 		s_sel_modifier = 0;		/* Select released: hand it back to the game */
-
-	vu_prev = vu;
-	vd_prev = vd;
 }
 
 /* Save state stored in boot_b, placed past the ROM's *max* reserved region
