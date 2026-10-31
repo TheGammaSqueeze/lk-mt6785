@@ -4,12 +4,13 @@
 # amps for the speaker. Everything shared comes from k85v1_64.mk; this file only
 # overrides what the KPA board changes. Build with `make k85v1_64_kpa`.
 
-include project/k85v1_64.mk
-
-# The GBA-from-SD flow is the only configuration this board ships.
+# The GBA-from-SD flow is the only configuration this board ships. Set BEFORE including the
+# base project: its `?=` defaults and the ifeq blocks that add the DEFINES (AYANEO_GBA_SD,
+# AYANEO_GBA, and AYANEO_GBC := no) are evaluated at include time, so a value set afterwards
+# would leave the C code built as the GBC variant with the GBA SD flow bolted on.
 AYANEO_GBA_SD := yes
-AYANEO_GBA := yes
-DEFINES += AYANEO_GBA_SD
+
+include project/k85v1_64.mk
 
 # Board switch for the C code: encoder volume, no analog ADC, AW883xx speaker path,
 # portrait frame buffer rotated 90 degrees.

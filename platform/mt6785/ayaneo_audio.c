@@ -57,6 +57,9 @@ extern int zunzip(unsigned char *src, unsigned long *lenp, void *dst,
 		  int dstlen, int offset);
 extern time_t current_time(void);
 extern S32 mt_set_gpio_mode(u32 pin, u32 mode);
+#ifndef GP
+#define GP(n) ((n) | 0x80000000u)   /* mt_gpio pin handle */
+#endif
 extern S32 mt_set_gpio_dir(u32 pin, u32 dir);
 extern S32 mt_set_gpio_out(u32 pin, u32 output);
 extern S32 mt_get_gpio_out(u32 pin);
@@ -96,8 +99,11 @@ static inline void afe_rmw(unsigned int off, unsigned int mask, unsigned int val
 #define AUDIO_TOP_CON0			0x0000
 #define AUDIO_TOP_CON1			0x0004
 #define AFE_DAC_CON0			0x0010
+#define AFE_CONN0			0x0020   /* O0 = I2S3 ch1 (the DAI the kernel calls I2S3 is the I2S4 register block) */
+#define AFE_CONN1			0x0024   /* O1 = I2S3 ch2 */
 #define AFE_CONN3			0x002c
 #define AFE_CONN4			0x0030
+#define AFE_I2S_CON3			0x0040   /* I2S3 out: bit0 EN, bit1 WLEN (1 = 32 bit), bit3 FMT (1 = I2S), bits 11:8 rate (10 = 48 kHz), bit12 HD */
 #define AFE_DL1_CON0			0x004c
 #define AFE_DL1_BASE_MSB		0x0050
 #define AFE_DL1_BASE			0x0054
@@ -233,7 +239,56 @@ static volatile int s_gen_aspect = 0;		/* 0 Pixel, 1 Fit, 2 Stretch */
 static volatile int s_gen_filter = 0;		/* 0 Off, 1 Scanlines, 2 Grid, 3 Grid+ */
 static volatile int s_gen_region = 0;		/* 0 Auto, 1 USA, 2 Europe, 3 Japan */
 static volatile int s_gen_slot   = 0;		/* last-used Genesis manual save-state slot (0..2) */
-static volatile int s_strobe     = 0;		/* backlight motion-blur strobe (global; persisted in b+24 bit 18) */
+static unsigned int rd32(const unsigned char *p);
+static void wr32(unsigned char *p, unsigned int v);
+/* Resume Game on Boot (default on): when a game is suspended with the power key the ROM name is
+ * recorded (b+68 magic, b+72.. name) and the next boot skips the animation, the BIOS intro and
+ * the menu and launches it straight away (each core reloads its own suspend state). */
+static int  s_resume_on_boot = 1;
+static char s_resume_name[100];
+static int  s_resume_set;
+#define AYANEO_RESUME_MAGIC 0x52455355u   /* "RESU" */
+int  ayaneo_get_resume_on_boot(void)   { return s_resume_on_boot; }
+void ayaneo_set_resume_on_boot(int v)  { s_resume_on_boot = v ? 1 : 0; }
+int  ayaneo_resume_pending(void)       { extern void ayaneo_settings_load(void); ayaneo_settings_load(); return s_resume_on_boot && s_resume_set; }
+void ayaneo_resume_mark(const char *name)
+{
+	unsigned i;
+	if (!name || !name[0]) return;
+	for (i = 0; i + 1u < sizeof s_resume_name && name[i]; i++) s_resume_name[i] = name[i];
+	s_resume_name[i] = 0;
+	s_resume_set = 1;
+}
+void ayaneo_resume_clear(void) { s_resume_set = 0; s_resume_name[0] = 0; }   /* powering off outside a game */
+/* hand the recorded name to the caller and clear the record (saved by the caller's persist) */
+int ayaneo_resume_take(char *out, int cap)
+{
+	int i;
+	if (!s_resume_set || !out || cap <= 1) return 0;
+	for (i = 0; i + 1 < cap && s_resume_name[i]; i++) out[i] = s_resume_name[i];
+	out[i] = 0;
+	s_resume_set = 0; s_resume_name[0] = 0;
+	return 1;
+}
+static void resume_fields_write(unsigned char *b)
+{
+	unsigned i;
+	wr32(b + 64, (unsigned int)(s_resume_on_boot ? 2u : 1u));   /* 0 = never written -> default on */
+	wr32(b + 68, s_resume_set ? AYANEO_RESUME_MAGIC : 0u);
+	for (i = 0; i < sizeof s_resume_name; i++) b[72 + i] = s_resume_set ? (unsigned char)s_resume_name[i] : 0;
+}
+static void resume_fields_read(const unsigned char *b, int len)
+{
+	unsigned i;
+	if (len < 172) return;
+	{ unsigned int r = rd32(b + 64); if (r == 1u || r == 2u) s_resume_on_boot = (r == 2u); }
+	if (rd32(b + 68) == AYANEO_RESUME_MAGIC) {
+		for (i = 0; i + 1u < sizeof s_resume_name; i++) s_resume_name[i] = (char)b[72 + i];
+		s_resume_name[sizeof s_resume_name - 1] = 0;
+		s_resume_set = s_resume_name[0] != 0;
+	} else { s_resume_set = 0; s_resume_name[0] = 0; }
+}
+static volatile int s_strobe     = 0;		/* BFI level 0 off, 1 = 25%, 2 = 50%, 3 = 75% lit (persisted b+24 bit 18 on + bits 23:24 level) */
 static volatile int s_overdrive  = 1;		/* software motion-trail overdrive on/off (persisted in b+24 bits 19-22); On applies the tuned profile */
 static int s_settings_loaded;
 
@@ -287,9 +342,9 @@ void ayaneo_set_skip_boot(int v)    { s_skip_boot = v ? 1 : 0; }
 int ayaneo_get_skip_gba_intro(void)   { return s_skip_gba_intro; }
 void ayaneo_set_skip_gba_intro(int v) { s_skip_gba_intro = v ? 1 : 0; }
 int ayaneo_get_lcd_filter(void)     { return s_lcd_filter[0]; }           /* legacy alias -> SNES */
-void ayaneo_set_lcd_filter(int v)   { s_lcd_filter[0] = (v < 0) ? 0 : (v > 3 ? 3 : v); }
+void ayaneo_set_lcd_filter(int v)   { s_lcd_filter[0] = (v < 0) ? 0 : (v > 5 ? 5 : v); }
 int ayaneo_get_lcd_filter_core(int c)      { if (c < 0 || c > 2) c = 0; return s_lcd_filter[c]; }
-void ayaneo_set_lcd_filter_core(int c, int v) { if (c < 0 || c > 2) c = 0; s_lcd_filter[c] = (v < 0) ? 0 : (v > 3 ? 3 : v); }
+void ayaneo_set_lcd_filter_core(int c, int v) { if (c < 0 || c > 2) c = 0; s_lcd_filter[c] = (v < 0) ? 0 : (v > 5 ? 5 : v); }
 int ayaneo_get_color_correct(void)  { return s_color_correct; }
 void ayaneo_set_color_correct(int v){ s_color_correct = v ? 1 : 0; }
 int ayaneo_get_dark_filter(void)    { return s_dark_filter; }
@@ -307,17 +362,27 @@ void ayaneo_set_snes_slot(int v)      { s_snes_slot = (v < 0) ? 0 : (v > 9 ? 9 :
 int  ayaneo_get_snes_turbo(void)      { return s_snes_turbo; }
 void ayaneo_set_snes_turbo(int v)     { s_snes_turbo = v & 3; }
 int  ayaneo_get_gen_aspect(void)      { return s_gen_aspect; }
-void ayaneo_set_gen_aspect(int v)     { s_gen_aspect = (v < 0) ? 0 : (v > 2 ? 2 : v); }
+void ayaneo_set_gen_aspect(int v)     { s_gen_aspect = (v < 0) ? 0 : (v > 5 ? 0 : v); }   /* 0 Pixel 1 Core 2 Stretch 3 4:3 4 Square 5 16:9 */
 int  ayaneo_get_gen_filter(void)      { return s_gen_filter; }
-void ayaneo_set_gen_filter(int v)     { s_gen_filter = (v < 0) ? 0 : (v > 3 ? 3 : v); }
+void ayaneo_set_gen_filter(int v)     { s_gen_filter = (v < 0) ? 0 : (v > 5 ? 5 : v); }
 int  ayaneo_get_gen_region(void)      { return s_gen_region; }
 void ayaneo_set_gen_region(int v)     { s_gen_region = (v < 0) ? 0 : (v > 3 ? 3 : v); }
 int  ayaneo_get_gen_slot(void)        { return s_gen_slot; }
 void ayaneo_set_gen_slot(int v)       { s_gen_slot = (v < 0) ? 0 : (v > 2 ? 2 : v); }
 int  ayaneo_get_strobe(void)          { return s_strobe; }
+/* 0 Off, 1..3 = 25/50/75 % dark with one pulse per frame, 4..6 = the same with two pulses */
+const char *ayaneo_strobe_name(int b)
+{
+	static const char *n[4] = { "Off", "25%", "50%", "75%" };
+	return n[(b < 0 || b > 3) ? 0 : b];
+}
+void ayaneo_set_overdrive_level(int on);
 void ayaneo_set_strobe(int v)
 {
-	s_strobe = v ? 1 : 0;
+	int was = s_strobe;
+	s_strobe = (v < 0) ? 0 : (v > 3 ? 3 : v);
+	if (!was && s_strobe) s_brightness = AYANEO_BL_MAX;   /* BFI switched on from Off: start at full brightness (the pulse is the brightness) */
+	ayaneo_set_overdrive_level(s_strobe ? 1 : 0);          /* the motion overdrive goes with BFI, no separate option */
 	disp_pwm_strobe_mode(s_strobe);
 	ayaneo_apply_backlight(s_brightness);   /* re-apply so the strobe divider takes effect at the current level */
 }
@@ -371,16 +436,19 @@ void ayaneo_settings_load(void)
 		s_skip_boot     = rd32(b + 20) ? 1 : 0;
 		{ unsigned int pk = rd32(b + 24);   /* bits0-5 filters (SNES/GBA/GBC); 6-7 GBA aspect, 8-9 GBC aspect */
 		  int ga, gg;
-		  ayaneo_set_lcd_filter_core(0, (int)(pk & 3));
-		  ayaneo_set_lcd_filter_core(1, (int)((pk >> 2) & 3));
-		  ayaneo_set_lcd_filter_core(2, (int)((pk >> 4) & 3));
+		  /* filter values 0..5: low two bits in the old places, the third bit at 25/26/27 (gen 28) */
+		  ayaneo_set_lcd_filter_core(0, (int)((pk & 3) | (((pk >> 25) & 1) << 2)));
+		  ayaneo_set_lcd_filter_core(1, (int)(((pk >> 2) & 3) | (((pk >> 26) & 1) << 2)));
+		  ayaneo_set_lcd_filter_core(2, (int)(((pk >> 4) & 3) | (((pk >> 27) & 1) << 2)));
 		  ga = (int)((pk >> 6) & 3); g_gba_aspect = (ga <= 2) ? ga : 0;   /* 3 (never written) -> Pixel */
 		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0;
-		  ayaneo_set_gen_aspect((int)((pk >> 10) & 3)); ayaneo_set_gen_filter((int)((pk >> 12) & 3));
+		  ayaneo_set_gen_aspect((int)(((pk >> 10) & 3) | (((pk >> 29) & 1) << 2)));   /* third bit at 29 */ ayaneo_set_gen_filter((int)(((pk >> 12) & 3) | (((pk >> 28) & 1) << 2)));
 		  ayaneo_set_gen_region((int)((pk >> 14) & 3)); ayaneo_set_gen_slot((int)((pk >> 16) & 3));
-		  s_strobe = (int)((pk >> 18) & 1); disp_pwm_strobe_mode(s_strobe);
+		  s_strobe = ((pk >> 18) & 1) ? (int)((pk >> 23) & 3) : 0;   /* level in bits 23:24; older saves (0) -> 50% */
+		  if (s_strobe == 0 && ((pk >> 18) & 1)) s_strobe = 2;
+		  disp_pwm_strobe_mode(s_strobe);
 		  if (ver >= 10) s_overdrive = (int)((pk >> 19) & 0xF);   /* ver<10: keep k=3 default (migration) */
-		  ayaneo_set_overdrive_level(s_overdrive); }
+		  ayaneo_set_overdrive_level(s_strobe ? 1 : 0); }   /* overdrive follows BFI */
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -388,7 +456,7 @@ void ayaneo_settings_load(void)
 		s_skip_gba_intro = rd32(b + 36) ? 1 : 0;
 	if (ver >= 4) {
 		s_mute_bios = rd32(b + 40) ? 1 : 0;
-		s_mute_menu = rd32(b + 44) ? 1 : 0;
+		s_mute_menu = rd32(b + 44) & 1u ? 1 : 0;
 	}
 	if (ver >= 5)
 		ayaneo_set_preempt_frames((int)rd32(b + 48));
@@ -404,6 +472,7 @@ void ayaneo_settings_load(void)
 		ayaneo_set_snes_slot((int)rd32(b + 56));
 	if (ver >= 8)
 		ayaneo_set_snes_turbo((int)rd32(b + 60));
+	resume_fields_read(b, (int)sizeof(b));
 }
 
 /* Serialize/deserialize the settings block so a caller can persist it elsewhere
@@ -412,8 +481,8 @@ void ayaneo_settings_load(void)
  * settings loaded so a later boot_b load does not override the SD values. */
 int ayaneo_settings_serialize(unsigned char *b, int cap)
 {
-	if (cap < 64) return 0;
-	memset(b, 0, 64);
+	if (cap < 192) return 0;
+	memset(b, 0, 192);
 	wr32(b + 0, AYANEO_SET_MAGIC);
 	wr32(b + 4, AYANEO_SET_VER);
 	wr32(b + 8, (unsigned int)s_gbc_vol);
@@ -424,17 +493,21 @@ int ayaneo_settings_serialize(unsigned char *b, int cap)
 		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)
 		     | ((s_gen_aspect & 3) << 10) | ((s_gen_filter & 3) << 12)
 		     | ((s_gen_region & 3) << 14) | ((s_gen_slot & 3) << 16)
-		     | ((s_strobe & 1) << 18) | ((s_overdrive & 0xF) << 19)));
+		     | ((s_strobe ? 1u : 0u) << 18) | ((s_overdrive & 0xF) << 19) | ((unsigned int)(s_strobe ? ((s_strobe - 1) % 3) + 1 : 0) << 23) 
+		     | ((unsigned int)((s_lcd_filter[0] >> 2) & 1) << 25) | ((unsigned int)((s_lcd_filter[1] >> 2) & 1) << 26)
+		     | ((unsigned int)((s_lcd_filter[2] >> 2) & 1) << 27) | ((unsigned int)((s_gen_filter >> 2) & 1) << 28)
+		     | ((unsigned int)((s_gen_aspect >> 2) & 1) << 29)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
 	wr32(b + 40, (unsigned int)s_mute_bios);
-	wr32(b + 44, (unsigned int)s_mute_menu);
+	wr32(b + 44, (unsigned int)(s_mute_menu ? 1u : 0u));
 	wr32(b + 48, (unsigned int)s_preempt_frames);
 	wr32(b + 52, s_snes_opts);
 	wr32(b + 56, (unsigned int)s_snes_slot);
 	wr32(b + 60, (unsigned int)s_snes_turbo);
-	return 64;
+	resume_fields_write(b);
+	return 192;
 }
 void ayaneo_settings_deserialize(const unsigned char *b, int len)
 {
@@ -452,16 +525,19 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 		s_skip_boot     = rd32(b + 20) ? 1 : 0;
 		{ unsigned int pk = rd32(b + 24);   /* bits0-5 filters (SNES/GBA/GBC); 6-7 GBA aspect, 8-9 GBC aspect */
 		  int ga, gg;
-		  ayaneo_set_lcd_filter_core(0, (int)(pk & 3));
-		  ayaneo_set_lcd_filter_core(1, (int)((pk >> 2) & 3));
-		  ayaneo_set_lcd_filter_core(2, (int)((pk >> 4) & 3));
+		  /* filter values 0..5: low two bits in the old places, the third bit at 25/26/27 (gen 28) */
+		  ayaneo_set_lcd_filter_core(0, (int)((pk & 3) | (((pk >> 25) & 1) << 2)));
+		  ayaneo_set_lcd_filter_core(1, (int)(((pk >> 2) & 3) | (((pk >> 26) & 1) << 2)));
+		  ayaneo_set_lcd_filter_core(2, (int)(((pk >> 4) & 3) | (((pk >> 27) & 1) << 2)));
 		  ga = (int)((pk >> 6) & 3); g_gba_aspect = (ga <= 2) ? ga : 0;   /* 3 (never written) -> Pixel */
 		  gg = (int)((pk >> 8) & 3); g_gbc_aspect = (gg <= 2) ? gg : 0;
-		  ayaneo_set_gen_aspect((int)((pk >> 10) & 3)); ayaneo_set_gen_filter((int)((pk >> 12) & 3));
+		  ayaneo_set_gen_aspect((int)(((pk >> 10) & 3) | (((pk >> 29) & 1) << 2)));   /* third bit at 29 */ ayaneo_set_gen_filter((int)(((pk >> 12) & 3) | (((pk >> 28) & 1) << 2)));
 		  ayaneo_set_gen_region((int)((pk >> 14) & 3)); ayaneo_set_gen_slot((int)((pk >> 16) & 3));
-		  s_strobe = (int)((pk >> 18) & 1); disp_pwm_strobe_mode(s_strobe);
+		  s_strobe = ((pk >> 18) & 1) ? (int)((pk >> 23) & 3) : 0;   /* level in bits 23:24; older saves (0) -> 50% */
+		  if (s_strobe == 0 && ((pk >> 18) & 1)) s_strobe = 2;
+		  disp_pwm_strobe_mode(s_strobe);
 		  if (ver >= 10) s_overdrive = (int)((pk >> 19) & 0xF);   /* ver<10: keep k=3 default (migration) */
-		  ayaneo_set_overdrive_level(s_overdrive); }
+		  ayaneo_set_overdrive_level(s_strobe ? 1 : 0); }   /* overdrive follows BFI */
 		s_color_correct = rd32(b + 28) ? 1 : 0;
 		ayaneo_set_dark_filter((int)rd32(b + 32));
 	}
@@ -469,7 +545,7 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 		s_skip_gba_intro = rd32(b + 36) ? 1 : 0;
 	if (ver >= 4) {
 		s_mute_bios = rd32(b + 40) ? 1 : 0;
-		s_mute_menu = rd32(b + 44) ? 1 : 0;
+		s_mute_menu = rd32(b + 44) & 1u ? 1 : 0;
 	}
 	if (ver >= 5)
 		ayaneo_set_preempt_frames((int)rd32(b + 48));
@@ -485,6 +561,7 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 		ayaneo_set_snes_slot((int)rd32(b + 56));
 	if (ver >= 8)
 		ayaneo_set_snes_turbo((int)rd32(b + 60));
+	resume_fields_read(b, len);
 	s_settings_loaded = 1;			/* SD values are authoritative from here */
 }
 
@@ -532,19 +609,28 @@ void ayaneo_settings_save(void)
 		     | ((g_gba_aspect & 3) << 6) | ((g_gbc_aspect & 3) << 8)
 		     | ((s_gen_aspect & 3) << 10) | ((s_gen_filter & 3) << 12)
 		     | ((s_gen_region & 3) << 14) | ((s_gen_slot & 3) << 16)
-		     | ((s_strobe & 1) << 18) | ((s_overdrive & 0xF) << 19)));
+		     | ((s_strobe ? 1u : 0u) << 18) | ((s_overdrive & 0xF) << 19) | ((unsigned int)(s_strobe ? ((s_strobe - 1) % 3) + 1 : 0) << 23) 
+		     | ((unsigned int)((s_lcd_filter[0] >> 2) & 1) << 25) | ((unsigned int)((s_lcd_filter[1] >> 2) & 1) << 26)
+		     | ((unsigned int)((s_lcd_filter[2] >> 2) & 1) << 27) | ((unsigned int)((s_gen_filter >> 2) & 1) << 28)
+		     | ((unsigned int)((s_gen_aspect >> 2) & 1) << 29)));
 	wr32(b + 28, (unsigned int)s_color_correct);
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
 	wr32(b + 40, (unsigned int)s_mute_bios);
-	wr32(b + 44, (unsigned int)s_mute_menu);
+	wr32(b + 44, (unsigned int)(s_mute_menu ? 1u : 0u));
 	wr32(b + 48, (unsigned int)s_preempt_frames);
 	wr32(b + 52, s_snes_opts);
 	wr32(b + 56, (unsigned int)s_snes_slot);
 	wr32(b + 60, (unsigned int)s_snes_turbo);
+	resume_fields_write(b);
 	s_settings_loaded = 1;			/* our value is now authoritative */
 	arch_clean_cache_range((addr_t)b, sizeof(b));
-	partition_write(AYANEO_AUDIO_PART, AYANEO_SET_OFF, b, sizeof(b));
+	{
+		extern void ayaneo_storage_lock(void), ayaneo_storage_unlock(void);   /* sd_fat.c */
+		ayaneo_storage_lock();
+		partition_write(AYANEO_AUDIO_PART, AYANEO_SET_OFF, b, sizeof(b));
+		ayaneo_storage_unlock();
+	}
 }
 
 /* ensure settings are loaded, then push the brightness to the panel. Called by
@@ -650,6 +736,9 @@ static void headset_volume_ramp_to_0db(void)
 /* pull-down HPL/R to AVSS28 disable: i 7->0, hp_pull_down(false) */
 static void hp_pull_down_off(void)
 {
+#if defined(KONKR_KPA)
+	return;
+#endif
 	int i;
 	for (i = 7; i >= 0; i--) {
 		pmic_rmw(MT6359_AUDDEC_ANA_CON2, (0x7 << 12), ((unsigned)i << 12));
@@ -661,6 +750,9 @@ static void hp_pull_down_off(void)
  * the HP outputs to VCM so there is no charge for the amp to discharge (pop). */
 static void hp_pull_down_on(void)
 {
+#if defined(KONKR_KPA)
+	return;
+#endif
 	int i;
 	for (i = 0; i <= 7; i++) {
 		pmic_rmw(MT6359_AUDDEC_ANA_CON2, (0x7 << 12), ((unsigned)i << 12));
@@ -677,6 +769,9 @@ static void hp_pull_down_on(void)
  */
 static void mt6359_hp_on(void)
 {
+#if defined(KONKR_KPA)
+	return;   /* no headphone path on the Konkr: the AW88166 amps on I2S3 are the speakers */
+#endif
 	mt6359_dl_common_on();
 
 	/* bias (non-hifi): DRBIAS_HP=5uA, IBIAS_ZCD=3uA, IBIAS_HP=4uA */
@@ -738,6 +833,22 @@ static void afe_dl1_setup(unsigned int phys, unsigned int bytes)
 	con0 |= (10u << 24) | (3u << 12) | (3u << 20);
 	afe_w(AFE_DL1_CON0, con0);
 
+#if defined(KONKR_KPA)
+	/* Konkr: the speakers are two AW88166 smart amps on I2S3 (GPIO67 BCK, GPIO68 LRCK, GPIO71
+	 * DO, mode 1), not the MT6359 headphone path. Route DL1 to I2S3 and clock the output as
+	 * the stock kernel does (I2S format, 48 kHz, 32 bit slots = 64fs BCK, normal jitter mode). */
+	mt_set_gpio_mode(GP(67), 1);
+	mt_set_gpio_mode(GP(68), 1);
+	mt_set_gpio_mode(GP(71), 1);
+	afe_rmw(AFE_CONN0, (1u << 5), (1u << 5));	/* I_DL1_CH1 -> O0 */
+	afe_rmw(AFE_CONN1, (1u << 6), (1u << 6));	/* I_DL1_CH2 -> O1 */
+	afe_rmw(AFE_I2S_CON3, 0xffffeffeu, (10u << 8) | (1u << 3) | (1u << 1));
+	afe_rmw(AFE_I2S_CON3, 1u, 1u);			/* I2S3 enable */
+	/* start DL1 memif (DL1_ON bit4 of AFE_DAC_CON0) */
+	afe_rmw(AFE_DAC_CON0, (1u << 4), (1u << 4));
+	{ extern void ayaneo_aw88166_start(void); ayaneo_aw88166_start(); }   /* amps lock to the running BCK */
+	return;
+#endif
 	/* interconnect: DL1 ch1 -> ADDA_DL_CH1 (CONN3), ch2 -> ADDA_DL_CH2 (CONN4) */
 	afe_rmw(AFE_CONN3, (1u << 5), (1u << 5));	/* I_DL1_CH1 */
 	afe_rmw(AFE_CONN4, (1u << 6), (1u << 6));	/* I_DL1_CH2 */
@@ -763,6 +874,12 @@ static void afe_dl1_setup(unsigned int phys, unsigned int bytes)
 
 static void afe_dl1_stop(void)
 {
+#if defined(KONKR_KPA)
+	{ extern void ayaneo_aw88166_stop(void); ayaneo_aw88166_stop(); }   /* mute + power down before the clocks stop */
+	afe_rmw(AFE_DAC_CON0, (1u << 4), 0);		/* DL1_ON = 0 */
+	afe_rmw(AFE_I2S_CON3, 1u, 0);			/* I2S3 off */
+	return;
+#endif
 	afe_rmw(AFE_DAC_CON0, (1u << 4), 0);		/* DL1_ON = 0 */
 	afe_rmw(AFE_ADDA_DL_SRC2_CON0, (1u << 0), 0);	/* DL_2_SRC_ON = 0 */
 	afe_rmw(AFE_ADDA_UL_DL_CON0, (1u << 0), 0);	/* ADDA_AFE_ON = 0 */
@@ -792,6 +909,9 @@ static void spk_amp_enable(int on)
  */
 static void mt6359_hp_mute_ramp(void)
 {
+#if defined(KONKR_KPA)
+	return;
+#endif
 	int idx;
 
 	for (idx = 9; idx <= 0x1f; idx++) {
@@ -1249,6 +1369,8 @@ static volatile unsigned s_gba_rw_cap_n;
 void ayaneo_gba_rw_capture_begin(void) { s_gba_rw_cap_n = 0; s_gba_rw_capture = 1; }
 unsigned ayaneo_gba_rw_capture_end(const short **buf) { s_gba_rw_capture = 0; if (buf) *buf = s_gba_rw_cap; return s_gba_rw_cap_n; }
 
+extern unsigned gpt4_get_current_tick(void);
+volatile int g_dbg_alead_min, g_dbg_asnap_n, g_dbg_asnap_lead; volatile unsigned g_dbg_asnap_ms;   /* oem diag: ring lead low-water + emergency snaps */
 void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 {
 	extern volatile unsigned int g_dbg_asub_calls, g_dbg_asub_done, g_dbg_asub_frames;
@@ -1287,9 +1409,11 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 
 		if (lead >= (int)(GBC_RING_FRAMES / 2))
 			lead -= (int)GBC_RING_FRAMES;
+		if (g_dbg_asub_done < 2u || lead < g_dbg_alead_min) g_dbg_alead_min = lead;
 		if (lead < (int)(GBC_RING_FRAMES / 16) ||	/* ~<21 ms: near underrun */
 		    lead > (int)((GBC_RING_FRAMES * 7) / 16)) {	/* ~>150 ms: near overrun */
 			s_gbc_widx = (rd + GBC_RING_FRAMES / 4) & (GBC_RING_FRAMES - 1);
+			g_dbg_asnap_n++; g_dbg_asnap_lead = lead; g_dbg_asnap_ms = gpt4_get_current_tick() / 13000u;
 		} else {
 			/*
 			 * Closed-loop clock recovery. The fixed resampler rate cannot be
@@ -1388,6 +1512,11 @@ void ayaneo_gba_audio_pace(void)
 
 		if (fill <= GBA_AUDIO_LEAD)
 			break;
+		if (fill - GBA_AUDIO_LEAD > 4u * 48u && (int)(gpt4_get_current_tick() - start) < (int)GBA_FRAME_TICKS) {
+			extern void ayaneo_idle_until(unsigned target_tick);   /* the excess drains at 48 frames per ms */
+			ayaneo_idle_until(gpt4_get_current_tick() + (fill - GBA_AUDIO_LEAD) * 13000u / 48u);
+			continue;
+		}
 		/* safety: never block more than ~3 frame periods if the DMA stalls */
 		if ((int)(gpt4_get_current_tick() - start) > (int)(3u * GBA_FRAME_TICKS))
 			break;
@@ -1399,6 +1528,7 @@ void ayaneo_gba_audio_pace(void)
  * (= the ring rate GBC_DST_HZ), so write straight into the ring with no resample.
  * ayaneo_menu_audio_room() reports how many frames fit under the target lead over
  * the AFE read cursor so the caller keeps the ring fed without over/underrun. */
+volatile int g_dbg_mlead_min = 99999;
 int ayaneo_menu_audio_room(void)
 {
 	unsigned cur, base, rd; int lead, room;
@@ -1410,6 +1540,7 @@ int ayaneo_menu_audio_room(void)
 	lead = (int)((s_gbc_widx - rd) & (GBC_RING_FRAMES - 1));
 	if (lead >= (int)(GBC_RING_FRAMES / 2))
 		lead -= (int)GBC_RING_FRAMES;
+	if (lead < g_dbg_mlead_min) g_dbg_mlead_min = lead;   /* menu mixer low-water (oem led) */
 	room = (int)GBA_AUDIO_LEAD - lead;
 	if (room < 0) room = 0;
 	if (room > (int)(GBC_RING_FRAMES / 4)) room = (int)(GBC_RING_FRAMES / 4);

@@ -37,16 +37,26 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
 #define GPIO_AYA       86      /* return to the selector */
 #define GPIO_LB        92
 #define GPIO_RB        81
+#if defined(KONKR_KPA)
+/* Konkr: the device tree labels match the shell (A 82, B 83, X 84, Y 85, START 90, SELECT 91) */
+#define GPIO_SELECT    91
+#define GPIO_START     90
+#define GPIO_B         83      /* held at launch = start fresh (skip resume) */
+#define GPIO_A         82
+#define GPIO_X         85      /* Konkr: the caps read X on 85, Y on 84 */
+#define GPIO_Y         84
+#else
 #define GPIO_SELECT    90
 #define GPIO_START     91
 #define GPIO_B         82      /* held at launch = start fresh (skip resume) */
+#define GPIO_A         83
+#define GPIO_X         85
+#define GPIO_Y         84
+#endif
 #define GPIO_UP        89
 #define GPIO_DOWN      79
 #define GPIO_LEFT      78
 #define GPIO_RIGHT     80
-#define GPIO_A         83
-#define GPIO_X         85
-#define GPIO_Y         84
 
 /* retro joypad bit positions (RETRO_DEVICE_ID_JOYPAD_*) */
 #define RJ_B 0
@@ -83,7 +93,7 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
 static const unsigned s_gen_ra_opp[4] = { 999, 1199, 1399, 1599 };
 
 volatile int g_genesis_menu_open;         /* gates game input + FF/rewind while the Pico menu is up */
-volatile int g_genesis_aspect;            /* display aspect: 0=Pixel 1=Fit 2=Stretch (ayaneo_genesis_show_frame) */
+volatile int g_genesis_aspect;            /* display aspect: 0 Pixel, 1 Core, 2 Stretch, 3 4:3, 4 Square, 5 16:9 (ayaneo_genesis_show_frame) */
 volatile unsigned g_genesis_aspect_x1000; /* core display aspect * 1000 (Fit target); 0 -> 4:3 */
 volatile int g_genesis_filter;            /* LCD filter: 0=off 1=scanlines 2/3=grid */
 
@@ -184,7 +194,8 @@ extern void         ayaneo_rewind_end(void);
 extern int  ayaneo_get_gen_aspect(void); extern void ayaneo_set_gen_aspect(int v);   /* persisted per-core settings */
 extern int  ayaneo_get_gen_filter(void); extern void ayaneo_set_gen_filter(int v);
 extern int  ayaneo_get_gen_region(void); extern void ayaneo_set_gen_region(int v);
-extern int  ayaneo_get_strobe(void); extern void ayaneo_set_strobe(int v);   /* backlight motion-blur strobe (shared) */
+extern int  ayaneo_get_strobe(void);
+extern const char *ayaneo_strobe_name(int b);
 extern int  ayaneo_get_overdrive(void); extern void ayaneo_set_overdrive_level(int k);   /* software motion-trail overdrive (shared) */
 extern int  ayaneo_get_gen_slot(void);   extern void ayaneo_set_gen_slot(int v);
 
@@ -215,12 +226,25 @@ static void genesis_cpu_step(int dir)
 extern int  ayaneo_get_preempt_frames(void);
 extern void ayaneo_set_preempt_frames(int v);
 
-enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_CPU, GM_REFRESH, GM_STROBE, GM_OVERDRIVE, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
+enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_CPU, GM_REFRESH, GM_STROBE, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
 /* Overdrive is On/Off: On applies the tuned halo-free profile (ayaneo_set_overdrive_level). The exact
  * kup/kdn/thr/cap are still pokeable live via `oem od:` for tuning. */
 #define OD_MENU_MAX 1
-static const char *gen_aspect_name(int a) { return a == 2 ? "Stretch" : a == 1 ? "Fit" : "Pixel"; }
-static const char *gen_filter_name(int f) { return f == 3 ? "Grid+" : f == 2 ? "Grid" : f == 1 ? "Scanlines" : "Off"; }
+static const char *gen_aspect_name(int a)
+{
+	switch (a) { case 1: return "Core"; case 2: return "Stretch"; case 3: return "4:3"; case 4: return "Square"; case 5: return "16:9"; default: return "Pixel"; }
+}
+/* the menu walks the modes in this order (the stored value is the mode number) */
+static const unsigned char gen_aspect_order[] = { 0, 3, 1, 4, 5, 2 };
+static int gen_aspect_step(int a, int dir)
+{
+	int i, n = (int)sizeof gen_aspect_order;
+	for (i = 0; i < n; i++) if (gen_aspect_order[i] == a) break;
+	if (i >= n) i = 0;
+	i = (i + dir + n) % n;
+	return gen_aspect_order[i];
+}
+static const char *gen_filter_name(int f) { return f == 5 ? "LCD3x" : f == 4 ? "LCD1x" : f == 3 ? "Grid+" : f == 2 ? "Grid" : f == 1 ? "Scanlines" : "Off"; }
 static const char *gen_ra_name(int pf) { return pf == 3 ? "Max" : pf == 2 ? "Responsive" : pf == 1 ? "Balanced" : "Off"; }
 
 /* Region override -> GPGX genesis_plus_gx_region_detect. The core applies it live via check_variables
@@ -229,7 +253,8 @@ static int s_gen_region;   /* 0 Auto, 1 USA (ntsc-u), 2 Europe (pal), 3 Japan (n
 static volatile int s_gen_refresh_retune;   /* >0: re-read core fps + retune panel vfp after the next committed frame(s) (real-time region switch) */
 static const char *gen_region_name(int r) { return r == 3 ? "Japan" : r == 2 ? "Europe" : r == 1 ? "USA" : "Auto"; }
 static const char *gen_region_opt(int r)  { return r == 3 ? "ntsc-j" : r == 2 ? "pal" : r == 1 ? "ntsc-u" : "auto"; }
-extern unsigned int ayaneo_dsi_refresh_milli(void);   /* panel refresh in milli-Hz (ties into LCM work) */
+extern unsigned int ayaneo_dsi_refresh_milli(void);
+extern unsigned int ayaneo_dsi_core_refresh_milli(void);   /* panel refresh in milli-Hz (ties into LCM work) */
 extern void ayaneo_dsi_set_vfp(unsigned int vfp);     /* per-core panel refresh (ddp_dsi.c) */
 extern unsigned int ayaneo_dsi_get_vfp(void);
 extern unsigned int ayaneo_dsi_set_fps_milli(unsigned int fps_milli);  /* set panel refresh to target fps (milli-Hz), returns vfp (ddp_dsi.c) */
@@ -261,8 +286,8 @@ static const char *gm_label(int i) { switch (i) {
 	case GM_BRIGHT: return "Brightness"; case GM_VOLUME: return "Volume";
 	case GM_ASPECT: return "Aspect Ratio"; case GM_FILTER: return "LCD Filter";
 	case GM_REGION: return "Region"; case GM_REFRESH: return "Refresh Rate";
-	case GM_STROBE: return "Strobe"; case GM_OVERDRIVE: return "Overdrive";
 	case GM_RUNAHEAD: return "Run-Ahead"; case GM_CPU: return "CPU Clock";
+	case GM_STROBE: return "BFI"; case GM_RESUME: return "Resume Game on Boot";
 	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
 	case GM_RESET: return "Reset Game"; case GM_EXIT: return "Exit Game"; } return ""; }
 
@@ -273,10 +298,10 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 	case GM_ASPECT: p = mput(p, gen_aspect_name(g_genesis_aspect)); break;
 	case GM_FILTER: p = mput(p, gen_filter_name(g_genesis_filter)); break;
 	case GM_REGION: p = mput(p, gen_region_name(s_gen_region)); break;
-	case GM_REFRESH: { unsigned mhz = ayaneo_dsi_refresh_milli();   /* read-only: XX.X Hz */
+	case GM_REFRESH: { unsigned mhz = ayaneo_dsi_core_refresh_milli();   /* read-only: XX.X Hz per frame */
 		p = mputu(p, mhz / 1000u); *p++ = '.'; *p++ = (char)('0' + (mhz % 1000u) / 100u); p = mput(p, " Hz"); } break;
-	case GM_STROBE: p = mput(p, ayaneo_get_strobe() ? "On" : "Off"); break;
-	case GM_OVERDRIVE: p = mput(p, ayaneo_get_overdrive() ? "On" : "Off"); break;
+	case GM_STROBE: { int b = ayaneo_get_strobe(); p = mput(p, ayaneo_strobe_name(b)); } break;
+	case GM_RESUME: { extern int ayaneo_get_resume_on_boot(void); p = mput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case GM_RUNAHEAD: p = mput(p, gen_ra_name(ayaneo_get_preempt_frames())); break;
 	case GM_CPU:    p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
 	case GM_SLOT:   p = mputu(p, (unsigned)s_save_slot); break;
@@ -292,9 +317,9 @@ static int gm_change(int i, int dir, int act)
 	switch (i) {
 	case GM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); genesis_settings_touch(); } break;
 	case GM_VOLUME: if (dir) { ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); genesis_settings_touch(); } break;
-	case GM_ASPECT: if (dir) { g_genesis_aspect = (g_genesis_aspect + dir + 3) % 3;   /* live preview */
+	case GM_ASPECT: if (dir) { g_genesis_aspect = gen_aspect_step(g_genesis_aspect, dir);   /* live preview */
 		ayaneo_set_gen_aspect(g_genesis_aspect); genesis_settings_touch(); } break;
-	case GM_FILTER: if (dir) { g_genesis_filter = (g_genesis_filter + dir + 4) % 4;
+	case GM_FILTER: if (dir) { g_genesis_filter = (g_genesis_filter + dir + 6) % 6;
 		ayaneo_set_gen_filter(g_genesis_filter); genesis_settings_touch(); } break;
 	case GM_REGION: if (dir) { s_gen_region = (s_gen_region + dir + 4) % 4;
 		if (s_menu_c && s_menu_c->set_option)
@@ -308,9 +333,9 @@ static int gm_change(int i, int dir, int act)
 		s_gen_refresh_retune = 2;   /* re-read fps + retune vfp for the next 2 committed frames */
 		mput(s_mstat, "Region set (some games need Reset)"); } break;
 	case GM_REFRESH: break;   /* read-only display (panel Hz); no adjust */
-	case GM_STROBE: if (dir) { ayaneo_set_strobe(!ayaneo_get_strobe()); genesis_settings_touch(); } break;
-	case GM_OVERDRIVE: if (dir) { int k = (ayaneo_get_overdrive() + dir + (OD_MENU_MAX + 1)) % (OD_MENU_MAX + 1);
-		ayaneo_set_overdrive_level(k); genesis_settings_touch(); } break;
+	case GM_STROBE: if (dir) { ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); genesis_settings_touch(); } break;
+	case GM_RESUME: if (dir) { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
+			ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); genesis_settings_touch(); } break;
 	case GM_RUNAHEAD: if (dir) { int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
 		ayaneo_set_preempt_frames(pf); ayaneo_set_cpu_mhz(s_gen_ra_opp[pf]); s_cpu_idx = -1;
 		genesis_settings_touch(); } break;   /* persist run-ahead (shared preempt-frames blob) */
@@ -340,12 +365,21 @@ int genesis_menu_open(void) { return g_genesis_menu_open; }
 
 void genesis_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
 {
-	int rowH = 38, panelW = 520, panelH = 84 + GM_COUNT * rowH + 42;
-	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2, x = px + 28, y = py + 84, i;
+	int rowH = 38, panelW = 520, panelH = 60 + GM_COUNT * rowH + 34;
+	int px, py, x, y, i;
+	/* Fit the panel to the screen: the Konkr's logical height is 640, where 38 px rows with the
+	 * 84 px title band and 42 px footer overflow; shrink the row pitch (never below 20) until
+	 * title + rows + footer leave a 16 px margin. */
+	if (panelH > (int)H - 16) {
+		rowH = ((int)H - 16 - 60 - 34) / GM_COUNT;
+		if (rowH < 20) rowH = 20;
+		panelH = 60 + GM_COUNT * rowH + 34;
+	}
+	px = ((int)W - panelW) / 2; py = ((int)H - panelH) / 2; x = px + 28; y = py + 60;
 	char val[48];
-	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
+	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xD010141Cu);   /* translucent: the game shows through (hardware blend) */
 	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
-	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "GammaOS Pico");
+	ayaneo_text(buf, pitch, px + 28, py + 20, 3, 0xFFFFFFFFu, "GammaOS Pico");
 	for (i = 0; i < GM_COUNT; i++, y += rowH) {
 		unsigned int fg = (i == s_msel) ? 0xFF101018u : 0xFFC8D0E0u; int vw;
 		if (i == s_msel) ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
@@ -353,8 +387,8 @@ void genesis_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, u
 		gm_value(i, val); for (vw = 0; val[vw]; vw++) ;
 		ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, val);
 	}
-	if (s_mstat[0]) ayaneo_text(buf, pitch, x, py + panelH - 40, 2, 0xFF80E080u, s_mstat);
-	ayaneo_text(buf, pitch, x, py + panelH - 16, 1, 0xFF8890A0u,
+	if (s_mstat[0]) ayaneo_text(buf, pitch, x, py + panelH - 32, 2, 0xFF80E080u, s_mstat);
+	ayaneo_text(buf, pitch, x, py + panelH - 14, 1, 0xFF8890A0u,
 		    "Up/Down move  Left/Right change  A select  B/AYA close");
 }
 
@@ -385,11 +419,8 @@ static void genesis_poll_volume(void)
  * the session context stashed in s_menu_* by genesis_session_body. */
 static void genesis_power_check(void)
 {
-	static int armed;
-	int p = pmic_detect_powerkey();
-	if (!p) { armed = 1; return; }
-	if (!armed) return;
-	armed = 0;
+	extern int ayaneo_power_hold(int menu_open, int use_overlay);
+	if (!ayaneo_power_hold(g_genesis_menu_open, 1)) return;
 	ayaneo_menu_audio_silence();
 	if (s_menu_c && s_menu_vol && s_menu_rom) {
 		const struct genesis_core_exports *c = s_menu_c;
@@ -401,7 +432,10 @@ static void genesis_power_check(void)
 			gba_sd_write_named(s_menu_vol, "/states/genesis", s_menu_rom->name, "sus",
 					   (const unsigned char *)GEN_STATE_BUF, ssz);
 	}
+	{ extern void ayaneo_resume_mark(const char *name); ayaneo_resume_mark(s_menu_rom->name); s_gen_settings_dirty = 1; }
 	genesis_settings_flush();
+	{ extern void ayaneo_settings_persist_flush(void); ayaneo_settings_persist_flush(); }
+	{ extern void ayaneo_leds_off_for_poweroff(void); ayaneo_leds_off_for_poweroff(); }
 	mt_power_off();   /* no return */
 }
 
@@ -630,7 +664,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		ff = g_genesis_menu_open ? 0 : ayaneo_joypad_ff_level();
 		if (ff > 0) {
 			int raw = 2 + (ff * (10 - 2)) / 255;
-			unsigned int rmilli = ayaneo_dsi_refresh_milli();
+			unsigned int rmilli = ayaneo_dsi_core_refresh_milli();   /* the per frame rate (panel / vsync divider) */
 			unsigned int full_us = rmilli ? (1000000000u / rmilli) : 16666u;   /* 1e9/milliHz = 1e6/panel_fps; PAL ~20000us, NTSC ~16666us */
 			unsigned int budget_us = full_us > 1200u ? full_us - 1200u : full_us; /* ~1.2ms present-margin the old 15500-vs-16666 baked in */
 			unsigned int blit = g_dbg_blit_us < budget_us ? g_dbg_blit_us : 0u;

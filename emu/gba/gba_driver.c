@@ -123,7 +123,8 @@ extern void ayaneo_set_skip_gba_intro(int v);
 extern int  ayaneo_get_lcd_filter_core(int c);
 extern void ayaneo_set_lcd_filter_core(int c, int v);
 extern int  ayaneo_get_color_correct(void);
-extern int  ayaneo_get_strobe(void); extern void ayaneo_set_strobe(int v);   /* backlight motion-blur strobe (shared) */
+extern int  ayaneo_get_strobe(void);
+extern const char *ayaneo_strobe_name(int b);
 extern int  ayaneo_get_overdrive(void); extern void ayaneo_set_overdrive_level(int k);   /* software motion-trail overdrive (shared) */
 extern void ayaneo_set_color_correct(int v);
 extern int  ayaneo_get_preempt_frames(void);
@@ -254,6 +255,18 @@ long gba_host_time(void)
 #define GPIO_DOWN	79
 #define GPIO_LEFT	78
 #define GPIO_RIGHT	80
+#if defined(KONKR_KPA)
+/* Konkr: the device tree's labels match the shell (KEY_A 82, KEY_B 83, KEY_X 84, KEY_Y 85,
+ * KEY_START 90, KEY_SELECT 91); the pairmini swaps below are wrong on this board. */
+#define GPIO_A		82
+#define GPIO_B		83
+#define GPIO_START	90
+#define GPIO_SELECT	91
+#define GPIO_LB		92	/* L shoulder */
+#define GPIO_RB		81	/* R shoulder */
+#define GPIO_X		85	/* autofire B (Konkr: the caps read X on 85, Y on 84) */
+#define GPIO_Y		84	/* autofire A */
+#else
 #define GPIO_A		83	/* swapped vs DTS to match the physical layout */
 #define GPIO_B		82
 #define GPIO_START	91	/* swapped: Start<->Select */
@@ -262,6 +275,7 @@ long gba_host_time(void)
 #define GPIO_RB		81	/* GBA R shoulder */
 #define GPIO_X		84	/* autofire B */
 #define GPIO_Y		85	/* autofire A */
+#endif
 #define GPIO_R2		57	/* key_rc / second-stage right trigger = fast-forward */
 #define GPIO_AYA	86	/* menu */
 #define AUTOFIRE_HZ	12
@@ -366,7 +380,11 @@ static void update_buttons(void)
 			raw |= s_btn[i].mask;
 	if (PRESSED(GPIO_X))  raw |= RB_X;
 	if (PRESSED(GPIO_Y))  raw |= RB_Y;
+#if defined(KONKR_KPA)
+	{ extern int ayaneo_joypad_ff_level(void); if (ayaneo_joypad_ff_level() > 0) raw |= RB_FF; }   /* R2 toggle */
+#else
 	if (PRESSED(GPIO_R2)) raw |= RB_FF;
+#endif
 	{	/* left analog stick -> D-pad (JOY_UP=1 DOWN=2 LEFT=4 RIGHT=8) */
 		extern unsigned int ayaneo_joypad_dpad(void);
 		unsigned d = ayaneo_joypad_dpad();
@@ -425,7 +443,9 @@ static void update_buttons(void)
 /* Volume keys (MTK keypad); Select + Volume = brightness. Persisted to boot_b. */
 static void poll_volume(void)
 {
+	extern volatile int g_menu_live;
 	int sel = PRESSED(GPIO_SELECT);
+	g_menu_live = 0;   /* a game is running (oem mode) */
 	int dir = ayaneo_volume_dir();
 
 	if (dir) {
@@ -600,6 +620,9 @@ static void try_load_state(unsigned char *scratch)
 		GBA_ATRACE("GBA: resumed save state\n");
 }
 
+#ifdef AYANEO_GBA_SD
+static const char *gba_sd_current_name(void);   /* the ROM running from the card, or NULL */
+#endif
 static void save_and_poweroff(unsigned char *scratch)
 {
 	/* Mute the game audio FIRST so the ~1s eMMC/SD save does not replay the AFE ring
@@ -609,21 +632,22 @@ static void save_and_poweroff(unsigned char *scratch)
 	ayaneo_gbc_audio_pause(1);
 	state_write(scratch);
 	sav_save(scratch);
+#ifdef AYANEO_GBA_SD
+	{ extern void ayaneo_resume_mark(const char *name); const char *nm = gba_sd_current_name(); if (nm) ayaneo_resume_mark(nm); }
+#endif
 	ayaneo_settings_save();
 #ifdef AYANEO_GBA_SD
 	sd_settings_mirror();
 #endif
 	ayaneo_gbc_audio_shutdown();
+	ayaneo_leds_off_for_poweroff();
 	mt_power_off();
 }
 
 static void check_power(unsigned char *scratch)
 {
-	static int armed;
-	int p = pmic_detect_powerkey();
-	if (!p)
-		armed = 1;
-	else if (armed)
+	extern int ayaneo_power_hold(int menu_open, int use_overlay);
+	if (ayaneo_power_hold(s_menu_open, 1))
 		save_and_poweroff(scratch);		/* no return */
 }
 
@@ -719,13 +743,29 @@ static int cpu_thread_fn(void *arg)
 	return 0;
 }
 
+/* Speed telemetry (oem diag): emulated frames per second from run_one_frame and the wall time
+ * one frame takes inside the core, to tell "the core yields less than a frame" from "the loop
+ * presents too slowly". */
+volatile unsigned int g_dbg_emu_fps;        /* committed frames in the last second */
+volatile unsigned int g_dbg_emu_total;      /* committed frames since boot (monotonic, oem diag speed check) */
+volatile unsigned int g_dbg_bt_intro_end, g_dbg_bt_intro_frames;   /* BIOS intro end (ms since boot) + frames run */
+volatile unsigned int g_dbg_emu_frame_us;   /* last run_one_frame duration (us) */
+
 /* run exactly one frame: kick the CPU thread and block until it yields back */
 static void run_one_frame(void)
 {
+	static unsigned int win0, cnt;
+	unsigned int t0 = gpt4_get_current_tick(), t1;
 	gba_core_pre_frame();		/* latch input */
 	event_signal(&ev_cpu, false);
 	event_wait(&ev_main);
 	gba_core_post_frame();		/* drain audio */
+	t1 = gpt4_get_current_tick();
+	g_dbg_emu_frame_us = (t1 - t0) / 13u;
+	g_dbg_emu_total++;
+	cnt++;
+	if (!win0) win0 = t1;
+	if (t1 - win0 >= 13000000u) { g_dbg_emu_fps = cnt; cnt = 0; win0 = t1; }
 }
 
 /* (Re)arm the rewind ring for the current game: size a slot to hold the core state (aligned) plus
@@ -1052,11 +1092,33 @@ static int ocv_pct(int mv)
  * loop the whole read fits comfortably inside the AFE ring buffer (~341 ms) and is
  * absorbed with no audible artifact - so battery_read needs NO audio pause. */
 #define BATTERY_SAMPLES		4
+#ifdef KONKR_KPA
+/* The MT6360 charger's own state (PMU block, I2C5 slave 0x34, CHG_STAT 0x4A bits 7:6):
+ * 0 ready, 1 charging, 2 done, 3 fault; -1 when the read fails. The voltage table cannot
+ * tell a full pack under charge apart from one still taking current (it rests at ~94%). */
+#include <platform/mt_i2c.h>
+int ayaneo_mt6360_chg_reg(unsigned char reg)
+{
+	mt_i2c i2c; unsigned char b[2];
+	memset(&i2c, 0, sizeof i2c);
+	i2c.id = I2C5; i2c.addr = 0x34; i2c.mode = FS_MODE; i2c.speed = 400; i2c.pushpull = true;
+	b[0] = reg;
+	if (i2c_write_read(&i2c, b, 1, 1) < 0) return -1;
+	return b[0];
+}
+static int charger_status(void)
+{
+	int v = ayaneo_mt6360_chg_reg(0x4A);
+	return v < 0 ? -1 : ((v >> 6) & 3);
+}
+#else
+static int charger_status(void) { return -1; }
+#endif
 static int battery_read(int *charging)
 {
 	int chr = upmu_is_chr_det();
 	long sum = 0;
-	int i, vmv;
+	int i, vmv, pct;
 	for (i = 0; i < BATTERY_SAMPLES; i++)
 		sum += get_bat_sense_volt(1);
 	vmv = (int)(sum / BATTERY_SAMPLES);
@@ -1064,7 +1126,13 @@ static int battery_read(int *charging)
 		vmv -= BAT_CHARGE_OFFSET_MV;
 	if (charging)
 		*charging = chr;
-	return ocv_pct(vmv);
+	pct = ocv_pct(vmv);
+	if (chr) {
+		int st = charger_status();
+		if (st == 2) pct = 100;                       /* the charger says done: full */
+		else if (st == 1 && pct > 99) pct = 99;       /* still taking current: never show full */
+	}
+	return pct;
 }
 
 static void set_charge_led(int charging, int pct)
@@ -1074,8 +1142,8 @@ static void set_charge_led(int charging, int pct)
 	if (state == prev)
 		return;
 	prev = state;
-	if (state == 2)      ayaneo_charge_led(0, 255, 0);
-	else if (state == 1) ayaneo_charge_led(255, 0, 0);
+	if (state == 2)      ayaneo_charge_led(0, 128, 0);
+	else if (state == 1) ayaneo_charge_led(128, 0, 0);
 	else                 ayaneo_charge_led(0, 0, 0);
 }
 
@@ -1092,15 +1160,51 @@ static int s_panel_hz100;	/* measured panel refresh * 100 (e.g. 5973 = 59.73 Hz)
  * time it is on USB - so the game replayed a sample every 30-60 s. Dropping the
  * cosmetic full=bright cue (the LED still shows charging vs not) removes the stall
  * entirely; no periodic auxadc on the game thread. */
-static void poll_led(void)
+/* Power LED policy for every core and the menu, on its own low priority thread so neither the
+ * 60 s battery read (an auxadc spin) nor the I2C writes touch a frame: charger connected =
+ * red (green once full), on battery = green, at 5 % or less = red flashing at 1 Hz. The first
+ * write waits for the speaker amps' bring-up, which shares i2c6. */
+#define LED_LEVEL 128   /* half brightness (PWM of 255) */
+volatile int g_dbg_led_chr, g_dbg_led_pct, g_dbg_led_state, g_dbg_led_ticks;   /* oem led */
+static int led_thread(void *arg)
 {
-	static int tick;
-	int chr;
-	if (tick-- > 0)
-		return;
-	tick = 120;			/* ~2 s: charger-detect only (cheap) */
-	chr = upmu_is_chr_det();
-	set_charge_led(chr, 50);
+	extern unsigned int pmic_upmu_get_rgs_chrdet(void);   /* the live CHRDET bit (upmu_is_chr_det prints to the UART) */
+	int pct = -1, chr = 0, tick = 0, flash = 0, last = -1, state;
+	(void)arg;
+	thread_sleep(2500);
+	for (;;) {
+		if ((tick & 1) == 0) chr = pmic_upmu_get_rgs_chrdet() ? 1 : 0;   /* every second, cheap */
+		if (pct < 0 || (tick % 120) == 0) pct = battery_read(&chr);   /* every 60 s */
+		if (chr)              state = (pct >= 99) ? 1 : 3;             /* full: green, charging: red + green */
+		else if (pct <= 5)    { flash = !flash; state = flash ? 2 : 0; } /* low: red flash */
+		else                  state = 1;                               /* battery: green */
+		g_dbg_led_chr = chr; g_dbg_led_pct = pct; g_dbg_led_state = state; g_dbg_led_ticks = tick;
+		{ extern unsigned int ayaneo_rewind_verify_tables(int heal); ayaneo_rewind_verify_tables(1); }   /* page tables of the rewind islands, healed if hit */
+		if (state != last) {
+			last = state;
+			if (state == 1)      ayaneo_charge_led(0, LED_LEVEL, 0);
+			else if (state == 2) ayaneo_charge_led(LED_LEVEL, 0, 0);
+			else if (state == 3) ayaneo_charge_led(LED_LEVEL, LED_LEVEL, 0);
+			else                 ayaneo_charge_led(0, 0, 0);
+		}
+		thread_sleep(500);
+		tick++;
+	}
+	return 0;
+}
+/* every power off path: LED dark first (the AW2033 keeps its state across the SoC power off) */
+void ayaneo_leds_off_for_poweroff(void)
+{
+	ayaneo_charge_led(0, 0, 0);
+}
+static void led_thread_start(void)
+{
+	static int up;
+	thread_t *t;
+	if (up) return;
+	up = 1;
+	t = thread_create("ayaneo_led", &led_thread, NULL, LOW_PRIORITY, 8192);
+	if (t) thread_resume(t);
 }
 
 /* Refresh s_batt_pct (shown in the Pico menu) at most once every interval_frames calls.
@@ -1207,8 +1311,8 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 }
 
 enum {
-	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_SKIPBOOT, MI_SKIPINTRO,
-	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_OVERDRIVE, MI_PREEMPT, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
+	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_RESUME, MI_SKIPBOOT, MI_SKIPINTRO,
+	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
 };
 #define GBA_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -1221,7 +1325,7 @@ extern volatile int g_gba_aspect;
 static int s_gba_slot;
 
 static const char *filter_name(int f)
-{ return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : "Off"; }
+{ return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : f == 4 ? "LCD1x" : f == 5 ? "LCD3x" : "Off"; }
 
 static const char *menu_value(int item, char *buf)
 {
@@ -1231,8 +1335,7 @@ static const char *menu_value(int item, char *buf)
 	case MI_VOLUME:   p = mi_putu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mi_puts(p, "%"); break;
 	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter_core(1))); break;
 	case MI_COLORCORRECT: p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
-	case MI_STROBE:   p = mi_puts(p, ayaneo_get_strobe() ? "On" : "Off"); break;
-	case MI_OVERDRIVE: p = mi_puts(p, ayaneo_get_overdrive() ? "On" : "Off"); break;
+	case MI_STROBE:   { int b = ayaneo_get_strobe(); p = mi_puts(p, ayaneo_strobe_name(b)); } break;
 	case MI_PREEMPT: { int pf = ayaneo_get_preempt_frames();
 		/* Named tiers (max desired depth) + the depth the closed loop is running
 		 * right now (it backs off to hold 60 fps), so the user sees it adapt -
@@ -1250,6 +1353,7 @@ static const char *menu_value(int item, char *buf)
 		}
 		break; }
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
+	case MI_RESUME:   { extern int ayaneo_get_resume_on_boot(void); p = mi_puts(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
 	case MI_SKIPINTRO: p = mi_puts(p, ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
 	case MI_ASPECT:    p = mi_puts(p, g_gba_aspect == 2 ? "Stretch" : g_gba_aspect == 1 ? "Fit" : "Pixel Perfect"); break;
@@ -1299,6 +1403,7 @@ static const char *menu_label(int item)
 	case MI_FILTER:    return "LCD Filter";
 	case MI_COLORCORRECT: return "Color Correction";
 	case MI_LOADBOOT:  return "Load State on Boot";
+	case MI_RESUME:    return "Resume Game on Boot";
 	case MI_SKIPBOOT:  return "Skip Boot Anim/Chime";
 	case MI_SKIPINTRO: return "Skip BIOS Intro";
 	case MI_ASPECT:    return "Aspect Ratio";
@@ -1308,8 +1413,7 @@ static const char *menu_label(int item)
 	case MI_BATTERY:   return "Battery";
 	case MI_CPU:       return "CPU Clock";
 	case MI_PANEL:     return "Panel Refresh";
-	case MI_STROBE:    return "Strobe";
-	case MI_OVERDRIVE: return "Overdrive";
+	case MI_STROBE:    return "BFI";
 	case MI_PREEMPT:   return "Run-Ahead";
 	case MI_BENCH:     return "Benchmark (Uncap)";
 	case MI_RESET:     return "Reset Game";
@@ -1328,18 +1432,17 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	switch (item) {
 	case MI_BRIGHT:   if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case MI_VOLUME:   if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
-	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter_core(1, (ayaneo_get_lcd_filter_core(1) + dir + 4) % 4); else changed = 0; break;
+	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter_core(1, (ayaneo_get_lcd_filter_core(1) + dir + 6) % 6); else changed = 0; break;
 	case MI_COLORCORRECT: if (dir || act) ayaneo_set_color_correct(!ayaneo_get_color_correct()); else changed = 0; break;
-	case MI_STROBE:   if (dir || act) ayaneo_set_strobe(!ayaneo_get_strobe()); else changed = 0; break;
-	case MI_OVERDRIVE: if (dir || act) { int d = dir ? dir : 1;
-		ayaneo_set_overdrive_level((ayaneo_get_overdrive() + d + (GBA_OD_MENU_MAX + 1)) % (GBA_OD_MENU_MAX + 1));
-	} else changed = 0; break;
+	case MI_STROBE:   if (dir) ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); else if (act) ayaneo_set_strobe((ayaneo_get_strobe() + 1) % 4); else changed = 0; break;
 	case MI_PREEMPT:  if (dir || act) { int d = dir ? dir : 1;
 		ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + d + 4) % 4);
 		/* CPU clock escalation is applied in the game loop on any level change,
 		 * so it also covers the oem preempt: path. */
 	} else changed = 0; break;
 	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;
+	case MI_RESUME:   { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
+			    if (dir || act) ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); else changed = 0; } break;
 	case MI_SKIPBOOT: if (dir || act) ayaneo_set_skip_boot(!ayaneo_get_skip_boot()); else changed = 0; break;
 	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;
 	case MI_CPU:      if (dir) cpu_step(dir); changed = 0; break;
@@ -1366,11 +1469,13 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	return 0;
 }
 
+volatile int g_dbg_igm_toggle;   /* fastboot `oem igm`: toggle the in-game menu as if the menu key was pressed */
 static int aya_edge(void)
 {
 	static int prev;
 	int now = PRESSED(GPIO_AYA), edge = now && !prev;
 	prev = now;
+	if (g_dbg_igm_toggle) { g_dbg_igm_toggle = 0; return 1; }
 	return edge;
 }
 static void menu_toggle(void)
@@ -1406,14 +1511,23 @@ void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 	/* panel height scales with the item count (title band 84 + rows + 42 for the
 	 * status/help footer) so the backdrop always covers every row - adding menu
 	 * items (Color Correction, Reset Game) used to push Close below the fixed panel. */
-	int panelW = 660, panelH = 84 + MI_COUNT * rowH + 42;
-	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2;
-	int x = px + 28, y = py + 84, i;
+	int panelW = 660, panelH = 60 + MI_COUNT * rowH + 34;
+	int px, py;
+	/* Fit the panel to the screen: the Konkr's logical height is 640, where 38 px rows with the
+	 * 84 px title band and 42 px footer overflow; shrink the row pitch (never below 20) until
+	 * title + rows + footer leave a 16 px margin. */
+	if (panelH > (int)H - 16) {
+		rowH = ((int)H - 16 - 60 - 34) / MI_COUNT;
+		if (rowH < 20) rowH = 20;
+		panelH = 60 + MI_COUNT * rowH + 34;
+	}
+	px = ((int)W - panelW) / 2; py = ((int)H - panelH) / 2;
+	int x = px + 28, y = py + 60, i;
 	char val[48];
 
-	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
+	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xD010141Cu);   /* translucent: the game shows through (hardware blend) */
 	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
-	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "GammaOS Pico");
+	ayaneo_text(buf, pitch, px + 28, py + 20, 3, 0xFFFFFFFFu, "GammaOS Pico");
 
 	for (i = 0; i < MI_COUNT; i++, y += rowH) {
 		unsigned int fg = (i == s_menu_sel) ? 0xFF101018u : 0xFFC8D0E0u;
@@ -1426,8 +1540,8 @@ void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 		ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, val);
 	}
 	if (s_menu_status[0])
-		ayaneo_text(buf, pitch, x, py + panelH - 40, 2, 0xFF80E080u, s_menu_status);
-	ayaneo_text(buf, pitch, x, py + panelH - 16, 1, 0xFF8890A0u,
+		ayaneo_text(buf, pitch, x, py + panelH - 32, 2, 0xFF80E080u, s_menu_status);
+	ayaneo_text(buf, pitch, x, py + panelH - 14, 1, 0xFF8890A0u,
 		    "Up/Down move  Left/Right change  A select  B/AYA close");
 }
 
@@ -1469,6 +1583,7 @@ static char *gba_hex(char *p, unsigned v)
  * halt(), so a JIT fault paints its type + faulting PC + data-fault address to
  * the panel. If pc lands in the translation-cache arena (0x50000000+), the
  * generated code itself faulted; dfar is the bad data address it touched. */
+unsigned g_fault_regs[5];   /* set by arch/arm/faults.c before the banner: r0 r1 r2 r3 svc_lr */
 void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsigned spsr)
 {
 	char l1[64], l2[128], *p;
@@ -1506,14 +1621,24 @@ void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsign
 		q = mi_puts(q, " rszm="); q = gba_hex(q, g_rszdbg[9]);
 		q = mi_puts(q, " wcg="); q = gba_hex(q, g_rszdbg[10]);
 		q = mi_puts(q, " rszsel="); q = gba_hex(q, g_rszdbg[11]); *q = 0;
-		for (i = 0; i < 2; i++) {
-			unsigned int pitch, W, H;
-			unsigned int *buf = ayaneo_canvas_back(&pitch, &W, &H);
-			ayaneo_fill(buf, pitch, 0, 0, (int)W, 130, 0xFF200000u);
-			ayaneo_text(buf, pitch, 20, 20, 2, 0xFFFFFFFFu, l2);
-			ayaneo_text(buf, pitch, 20, 60, 2, 0xFFFFC0C0u, l3);
-			ayaneo_text(buf, pitch, 20, 92, 2, 0xFFFFC0C0u, l4);
-			ayaneo_canvas_present();
+		{	/* rewind ring: wr/arena records recon prev lastoff+len bad rewinding */
+			extern void ayaneo_rewind_dbg_line(char *out, unsigned int cap);
+			static char l5[160], l6[128];
+			char *r = l5; r = mi_puts(r, "rw "); ayaneo_rewind_dbg_line(r, (unsigned)(sizeof l5 - 4));
+			r = l6; r = mi_puts(r, "r0="); r = gba_hex(r, g_fault_regs[0]); r = mi_puts(r, " r1="); r = gba_hex(r, g_fault_regs[1]);
+			r = mi_puts(r, " r2="); r = gba_hex(r, g_fault_regs[2]); r = mi_puts(r, " r3="); r = gba_hex(r, g_fault_regs[3]);
+			r = mi_puts(r, " lr="); r = gba_hex(r, g_fault_regs[4]); *r = 0;
+			for (i = 0; i < 2; i++) {
+				unsigned int pitch, W, H;
+				unsigned int *buf = ayaneo_canvas_back(&pitch, &W, &H);
+				ayaneo_fill(buf, pitch, 0, 0, (int)W, 192, 0xFF200000u);
+				ayaneo_text(buf, pitch, 20, 20, 2, 0xFFFFFFFFu, l2);
+				ayaneo_text(buf, pitch, 20, 60, 2, 0xFFFFC0C0u, l3);
+				ayaneo_text(buf, pitch, 20, 92, 2, 0xFFFFC0C0u, l4);
+				ayaneo_text(buf, pitch, 20, 124, 2, 0xFFFFE0A0u, l5);
+				ayaneo_text(buf, pitch, 20, 156, 2, 0xFFA0E0FFu, l6);
+				ayaneo_canvas_present();
+			}
 		}
 	}
 }
@@ -1524,6 +1649,7 @@ void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsign
 /* SD flow state, shared between the boot gate and emu_thread. s_sd_mode=1 makes
  * emu_thread run the SD flow (ROM-select then game) instead of the boot_b ROM. */
 static int s_sd_mode;
+static void sd_bg_wait(void);   /* fast boot path: wait for the card listing (defined below) */
 static unsigned char s_sd_bios[16384];
 static fat_vol s_sd_vol;
 static gba_rom_entry s_roms[128];   /* enumerated /roms/gba, sorted (task d/e) */
@@ -1542,6 +1668,7 @@ static int s_gpsp_dirty;
  * frame goes (SD mount / bios read / rom list / core blob load / core init / core
  * start / first drawn frame). */
 static unsigned int s_bt_t0;
+volatile unsigned g_dbg_emu_abs_ms; volatile int g_dbg_emu_chime;   /* oem led: emu_thread start on the gpt4 clock, chime still playing */
 volatile unsigned int g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list;
 volatile unsigned int g_dbg_bt_coreload, g_dbg_bt_coreinit, g_dbg_bt_start, g_dbg_bt_frame1;
 #define BT_MS() ((gpt4_get_current_tick() - s_bt_t0) / 13000u)
@@ -1579,7 +1706,9 @@ static int gba_sd_rom_select(void)
 	 * the SNES asset pack is not present -> fall through to the plain list so a
 	 * boot_b without the pack still lets the user pick a game (never-brick). */
 	{
-		int r = gba_snes_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
+		int r;
+		sd_bg_wait();   /* fast path: the card listing may still be running */
+		r = gba_snes_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
 		if (r >= 0) return r;
 	}
 	for (;;) {
@@ -1624,6 +1753,11 @@ static int sd_mode_on(void) { return s_sd_mode && s_sel_rom >= 0 && s_sel_rom < 
 /* SUSPEND state (load-on-boot / power-off / Close auto-save): a fixed ".sus" file, kept
  * separate from the user-selectable manual slots so auto-resume never clobbers a manual save
  * and vice-versa (mirrors the SNES "sus" vs st0..2 split). */
+static const char *gba_sd_current_name(void)
+{
+	return s_sd_mode ? s_roms[s_sel_rom].name : (const char *)0;
+}
+
 static int sd_state_write(unsigned char *scratch)
 {
 	unsigned sz = gba_core_state_size();
@@ -1679,10 +1813,56 @@ static void sd_settings_mirror(void)
  * mode the boot settings are LOADED from the SD card (gba_sd_settings_load), so a menu
  * change written only to eMMC is overwritten by the stale SD copy on the next power-cycle
  * (the "menu volume/brightness does not stick" bug). */
+/* Settings persist off the game thread. A volume tick or a Pico change used to write the eMMC
+ * block and the SD mirror synchronously on the emulation thread (tens to hundreds of ms on a
+ * slow card) and the audio ring ran dry: the stutter the user heard on every adjustment. Now
+ * the change marks the settings dirty and a low priority writer thread does the storage work,
+ * coalescing bursts (wheel spins) into one write; the block layer is serialised by the storage
+ * mutex (sd_fat.c) and whole file writes by the fat_wr mutex, so the game may touch the card
+ * at the same time. ayaneo_settings_persist_flush() waits for the writer before a power off. */
+static volatile int s_persist_dirty, s_persist_busy;
+static int s_persist_thread_up;
+static event_t s_persist_ev;
+volatile unsigned g_dbg_persist_emmc_us, g_dbg_persist_sd_us, g_dbg_persist_n;   /* oem led: the last settings write */
+static int persist_thread(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		event_wait(&s_persist_ev);
+		thread_sleep(80);                        /* coalesce a burst of changes */
+		s_persist_busy = 1;
+		while (s_persist_dirty) {
+			unsigned t0 = gpt4_get_current_tick(), t1;
+			s_persist_dirty = 0;
+			ayaneo_settings_save();
+			t1 = gpt4_get_current_tick();
+			sd_settings_mirror();
+			g_dbg_persist_emmc_us = (t1 - t0) / 13u;
+			g_dbg_persist_sd_us = (gpt4_get_current_tick() - t1) / 13u;
+			g_dbg_persist_n++;
+		}
+		s_persist_busy = 0;
+	}
+	return 0;
+}
 void ayaneo_menu_settings_persist(void)
 {
-	ayaneo_settings_save();
-	sd_settings_mirror();
+	s_persist_dirty = 1;
+	if (!s_persist_thread_up) {
+		thread_t *t;
+		event_init(&s_persist_ev, false, EVENT_FLAG_AUTOUNSIGNAL);
+		t = thread_create("ayaneo_settings", &persist_thread, NULL, LOW_PRIORITY, 16384);
+		if (!t) { s_persist_dirty = 0; ayaneo_settings_save(); sd_settings_mirror(); return; }
+		thread_resume(t);
+		s_persist_thread_up = 1;
+	}
+	event_signal(&s_persist_ev, false);
+}
+void ayaneo_settings_persist_flush(void)
+{
+	int i;
+	for (i = 0; i < 300 && (s_persist_dirty || s_persist_busy); i++)
+		thread_sleep(10);
 }
 
 /* Build a minimal "logo cart" in the gpSP ROM buffer for the BIOS boot-logo
@@ -1693,6 +1873,119 @@ void ayaneo_menu_settings_persist(void)
  * cart space loops harmlessly, then overlay a REAL header (Nintendo logo + valid
  * checksum + entry, which branches to 0xC0 = a loop) copied from the first ROM on
  * the card so the authentic logo shows. No prebaked data. Returns the cart size. */
+static int gba_sd_assets_ok(fat_vol *v);   /* defined with the gate below */
+/* BIOS + boot-logo header cache in boot_b, so the intro starts from eMMC the moment the LK
+ * reaches the gate instead of after the card mount and the ROM listing (~0.7 s of black).
+ * 0x02000000: [512 B header][16384 B BIOS][512 B: the first GBA ROM's 0xC0 cart header]. The
+ * card is still the source of truth: the background thread compares and refreshes the cache. */
+#define GBA_BIOS_CACHE_OFF   0x02000000u
+#define GBA_BIOS_CACHE_MAGIC 0x4F494247u   /* "GBIO" */
+static unsigned char s_cart_hdr_cache[512] __attribute__((aligned(64)));
+static int s_cart_hdr_valid;
+static volatile int s_sd_bg_state;   /* fast path: 0 card work running, 1 done, <0 failed */
+static int s_sd_fast;
+static volatile int s_sd_bg_pending; /* fast path: start the card thread once the core blob is loaded */
+static int sd_bg_thread(void *arg);
+/* The eMMC read of the core blob is serialised behind SD transfers in the mmc layer (measured:
+ * the core load always completed right after the listing, whatever the thread priorities), so
+ * the card thread starts only after the core is in memory. */
+static void sd_bg_launch(void)
+{
+	thread_t *t;
+	if (!s_sd_bg_pending) return;
+	s_sd_bg_pending = 0;
+	t = thread_create("gba_sdbg", &sd_bg_thread, NULL, LOW_PRIORITY, 32768);
+	if (t) thread_resume(t); else sd_bg_thread(NULL);
+}
+static unsigned cache_sum(const unsigned char *p, unsigned n)
+{
+	unsigned s = 0x9E3779B9u, i;
+	for (i = 0; i < n; i++) s = (s ^ p[i]) * 16777619u;
+	return s;
+}
+static int bios_cache_read(unsigned char *bios)
+{
+	static unsigned char hdr[512] __attribute__((aligned(64)));
+	extern void ayaneo_storage_lock(void), ayaneo_storage_unlock(void);
+	int ok = 0;
+	ayaneo_storage_lock();
+	if (partition_read(GBA_PART, GBA_BIOS_CACHE_OFF, hdr, 512) == 512 &&
+	    rd32le(hdr) == GBA_BIOS_CACHE_MAGIC && rd32le(hdr + 4) == 16384u &&
+	    partition_read(GBA_PART, GBA_BIOS_CACHE_OFF + 512u, bios, 16384) == 16384 &&
+	    rd32le(hdr + 8) == cache_sum(bios, 16384u)) {
+		ok = 1;
+		if (rd32le(hdr + 12) == 0xC0u &&
+		    partition_read(GBA_PART, GBA_BIOS_CACHE_OFF + 512u + 16384u, s_cart_hdr_cache, 512) == 512 &&
+		    rd32le(hdr + 16) == cache_sum(s_cart_hdr_cache, 0xC0u))
+			s_cart_hdr_valid = 1;
+	}
+	ayaneo_storage_unlock();
+	return ok ? 0 : -1;
+}
+static void bios_cache_write(const unsigned char *bios, const unsigned char *cart_hdr)
+{
+	static unsigned char blk[512 + 16384 + 512] __attribute__((aligned(64)));
+	extern void ayaneo_storage_lock(void), ayaneo_storage_unlock(void);
+	memset(blk, 0, sizeof blk);
+	wr32le(blk, GBA_BIOS_CACHE_MAGIC);
+	wr32le(blk + 4, 16384u);
+	wr32le(blk + 8, cache_sum(bios, 16384u));
+	memcpy(blk + 512, bios, 16384);
+	if (cart_hdr) {
+		wr32le(blk + 12, 0xC0u);
+		wr32le(blk + 16, cache_sum(cart_hdr, 0xC0u));
+		memcpy(blk + 512 + 16384, cart_hdr, 0xC0u);
+	}
+	arch_clean_cache_range((addr_t)blk, sizeof blk);
+	ayaneo_storage_lock();
+	partition_write(GBA_PART, GBA_BIOS_CACHE_OFF, blk, sizeof blk);
+	ayaneo_storage_unlock();
+}
+/* the first GBA ROM's cart header from the card (0xC0 bytes), 0 if there is none */
+static int logo_header_from_card(unsigned char *dst)
+{
+	int i, hdr_rom = -1;
+	for (i = 0; i < s_nrom; i++)
+		if (s_roms[i].type == GBA_CONSOLE_GBA) { hdr_rom = i; break; }
+	if (hdr_rom < 0 && s_nrom > 0) hdr_rom = 0;
+	if (hdr_rom < 0) return 0;
+	{
+		fat_file f;
+		f.v = &s_sd_vol;
+		f.first_clus = s_roms[hdr_rom].first_clus;
+		f.size = s_roms[hdr_rom].size;
+		return fat_read(&f, 0, dst, 0xC0u) == 0xC0u;
+	}
+}
+/* fast path: the card work runs here while the intro already plays from the cached BIOS */
+static int sd_bg_thread(void *arg)
+{
+	static unsigned char tmp[16384] __attribute__((aligned(64)));
+	static unsigned char hdr[512] __attribute__((aligned(64)));
+	int rc, refresh = 0, total = 0;
+	(void)arg;
+	rc = gba_sd_mount(&s_sd_vol);
+	if (rc != 0) { GBA_LOG("gba-sd: fast path mount failed rc=%d\n", rc); s_sd_bg_state = -1; return 0; }
+	g_dbg_bt_mount = BT_MS();
+	if (!gba_sd_assets_ok(&s_sd_vol)) { GBA_LOG("gba-sd: fast path: assets missing\n"); s_sd_bg_state = -2; return 0; }
+	if (gba_sd_load_bios(&s_sd_vol, tmp) == 0 && memcmp(tmp, s_sd_bios, 16384) != 0) refresh = 1;
+	g_dbg_bt_bios = BT_MS();
+	gba_sd_make_rom_dirs(&s_sd_vol);
+	s_nrom = gba_sd_list_roms(&s_sd_vol, s_roms, 128, &total);
+	g_dbg_bt_list = BT_MS();
+	memset(hdr, 0, sizeof hdr);
+	if (logo_header_from_card(hdr) && (refresh || !s_cart_hdr_valid || memcmp(hdr, s_cart_hdr_cache, 0xC0u) != 0))
+		refresh = 1;
+	if (refresh) bios_cache_write(refresh && memcmp(tmp, s_sd_bios, 16384) ? tmp : s_sd_bios, hdr);
+	s_sd_bg_state = 1;
+	return 0;
+}
+static void sd_bg_wait(void)
+{
+	if (!s_sd_fast) return;
+	while (s_sd_bg_state == 0) thread_sleep(5);
+}
+
 static unsigned gba_sd_build_logo_cart(unsigned char *rp)
 {
 	unsigned *w = (unsigned *)rp;
@@ -1710,6 +2003,10 @@ static unsigned gba_sd_build_logo_cart(unsigned char *rp)
 		for (i = 0; i < s_nrom; i++)
 			if (s_roms[i].type == GBA_CONSOLE_GBA) { hdr_rom = i; break; }
 		if (hdr_rom < 0 && s_nrom > 0) hdr_rom = 0;
+	}
+	if (s_sd_fast && s_cart_hdr_valid) {
+		memcpy(rp, s_cart_hdr_cache, 0xC0u);   /* the card is still being listed: use the cached header */
+		return 0x8000u;
 	}
 	if (hdr_rom >= 0) {
 		fat_file f;
@@ -1734,6 +2031,20 @@ static int emu_thread(void *arg)
 
 	gba_disable_align_faults();		/* gpSP relies on unaligned host accesses */
 	ayaneo_display_prepare();		/* own the panel + backlight for on-screen debug */
+	g_dbg_emu_abs_ms = gpt4_get_current_tick() / 13000u;
+	g_dbg_emu_chime = ayaneo_boot_audio_active();
+#ifdef KONKR_KPA
+	{ extern unsigned int ayaneo_rewind_map(void); ayaneo_rewind_map(); }   /* islands mapped now, so oem rewindmap works from the menu */
+	{	/* the panel runs at twice the GBA rate from here (the LCM rests it at 59.7275 Hz) */
+		extern void ayaneo_dsi_set_vfp(unsigned int vfp); extern unsigned int ayaneo_dsi_default_vfp(void);
+		ayaneo_dsi_set_vfp(ayaneo_dsi_default_vfp());
+	}
+	/* the speaker amps lock to the I2S clocks and load their DSP image: start that now, under
+	 * the core load and the card mount, so sound is there from the first BIOS frame (the ring
+	 * is silence until a core feeds it); a boot chime still playing keeps the usual order */
+	if (!ayaneo_boot_audio_active())
+		ayaneo_gbc_audio_init();
+#endif
 
 	/* Load the GBA core blob from boot_b into its DRAM slot and bind the export table.
 	 * The core is no longer part of lk_a; everything below drives it through g_core. */
@@ -1756,6 +2067,7 @@ static int emu_thread(void *arg)
 		return 0;
 	}
 	g_dbg_bt_coreinit = BT_MS();
+	sd_bg_launch();   /* fast boot path: the card work starts now, during the intro */
 #ifdef AYANEO_GBA_SD
 	if (s_sd_mode) {
 		unsigned char *rp = gba_core_rom_ptr();
@@ -1848,7 +2160,15 @@ static int emu_thread(void *arg)
 		 * the retune to ~5973 = 59.73 Hz for the vsync-locked pacing */
 		extern int primary_display_get_vsync_interval(void);
 		char m[48], *p;
+#if defined(KONKR_KPA)
+		/* the dpmgr vsync wait returns at once on this board (the DSI frame events never
+		 * fire in video mode), so the timed interval is garbage and seeded the resampler
+		 * with a wrong pitch for the BIOS intro: take the rate the porch produces instead */
+		extern unsigned int ayaneo_dsi_core_refresh_milli(void);
+		int hz100 = (int)(ayaneo_dsi_core_refresh_milli() / 10u);
+#else
 		int hz100 = primary_display_get_vsync_interval();
+#endif
 		s_panel_hz100 = hz100;
 		p = mi_puts(m, "GBA 6: panel Hz*100 = ");
 		p = mi_putu(p, (unsigned)(hz100 < 0 ? 0 : hz100));
@@ -1884,7 +2204,8 @@ static int emu_thread(void *arg)
 		 * menu, then reset the core into the chosen game. Honour skip-boot-logo
 		 * (SD setting); the user can also cut the logo short by holding B. */
 		if (s_sd_mode) {
-			int fi, intro_frames = ayaneo_get_skip_gba_intro() ? 0 : GBA_SD_INTRO_FRAMES;
+			extern int ayaneo_resume_pending(void);
+			int fi, intro_frames = (ayaneo_get_skip_gba_intro() || ayaneo_resume_pending()) ? 0 : GBA_SD_INTRO_FRAMES;
 			/* Run the BIOS-logo intro on the pure INTERPRETER: the dynarec faults
 			 * in translate_block_arm here, and the interpreter also naturally picks
 			 * up the reset PC after the intro->game gba_core_start (it re-reads PC
@@ -1905,6 +2226,10 @@ static int emu_thread(void *arg)
 				if (PRESSED(GPIO_B)) break;	/* hold B to skip the logo */
 			}
 			if (ayaneo_get_mute_bios()) ayaneo_gbc_audio_pause(0);
+			{	/* intro wall time (oem diag): 270 frames at 59.73 Hz = 4520 ms when paced right */
+				extern volatile unsigned int g_dbg_bt_intro_end, g_dbg_bt_intro_frames;
+				g_dbg_bt_intro_end = BT_MS(); g_dbg_bt_intro_frames = (unsigned int)fi;
+			}
 			if (s_nrom > 0) {
 				unsigned char *rp = gba_core_rom_ptr();
 				for (;;) {
@@ -2148,20 +2473,15 @@ static int emu_thread(void *arg)
 
 			mtk_wdt_restart();
 			poll_volume();
-			/* Flush the deferred volume/brightness persist once the user has
-			 * stopped adjusting (~0.7s), silencing the audio ring across the
-			 * eMMC/SD write so the stall plays silence instead of looping. */
+			/* Hand the deferred volume/brightness persist to the writer thread once the user
+			 * has stopped adjusting (~0.7s): the SD mirror takes 200-500 ms and used to run
+			 * here with the ring silenced, which is the stutter heard on every change. */
 			if (s_settings_dirty &&
 			    (gpt4_get_current_tick() - s_settings_tick) >= 9100000u) {
 				s_settings_dirty = 0;
-				ayaneo_gbc_audio_pause(1);
-				ayaneo_settings_save();
-#ifdef AYANEO_GBA_SD
-				sd_settings_mirror();
-#endif
-				ayaneo_gbc_audio_pause(0);
+				ayaneo_menu_settings_persist();
 			}
-			poll_led();
+			/* the power LED is handled by led_thread (all cores) */
 			check_power(scratch);
 			if (!s_menu_open)
 				battery_poll(BATTERY_GAMEPLAY_FRAMES);	/* ~once/10 min, no pause */
@@ -2381,70 +2701,80 @@ static void text_center(unsigned int *buf, unsigned int pitch, int cx, int y,
 	ayaneo_text(buf, pitch, cx - n * 8 * scale / 2, y, scale, argb, s);
 }
 
+/* Offline charging screen. Everything is timed on the 13 MHz counter rather than on loop
+ * turns, because a present may wait for display edges that are slow or absent in this early
+ * context: hold POWER 1.2 s to boot, the panel goes dark after 10 s idle, unplugging for
+ * 300 ms powers off. The frame is redrawn when something changed or every 500 ms, with a
+ * small heartbeat line (loop count, last charger state) so a stall shows where it stopped. */
 void ayaneo_gbc_charging_screen(void)
 {
-	int hold = 0, unplug = 0, disp_on = 1, idle = 0;
-	int pct = 0, btick = 0, dummy;
+	int disp_on = 1, pct = 0, dummy, chr_prev = -1, pct_prev = -1, holding_prev = -1;
+	unsigned t_hold0 = 0, t_unplug0 = 0, t_idle0, t_bat0, t_draw0 = 0, loops = 0;
+	int chg_st = -1;
 
 	ayaneo_settings_load();
 	ayaneo_display_prepare();
 	ayaneo_apply_backlight(40);
 	mtk_wdt_disable();
 	pct = battery_read(&dummy);
+	t_idle0 = t_bat0 = gpt4_get_current_tick();
 
 	for (;;) {
+		unsigned now = gpt4_get_current_tick();
 		int chr = upmu_is_chr_det();
 		int pk = pmic_detect_powerkey();
+		int holding;
+		loops++;
 
-		if (--btick <= 0) { pct = battery_read(&dummy); btick = 10; }
+		if (now - t_bat0 >= 13000000u) { pct = battery_read(&dummy); chg_st = charger_status(); t_bat0 = now; }
 		set_charge_led(chr, pct);
 
-		if (disp_on) {
+		/* unplugged for 300 ms: off (KPOC exists only to charge) */
+		if (!chr) { if (!t_unplug0) t_unplug0 = now ? now : 1u; else if (now - t_unplug0 >= 3900000u) mt_power_off(); }
+		else t_unplug0 = 0;
+
+		/* POWER: a tap wakes the screen, 1.2 s held boots */
+		if (pk) {
+			if (!t_hold0) t_hold0 = now ? now : 1u;
+			if (now - t_hold0 >= 15600000u) { ayaneo_apply_persisted_brightness(); return; }
+			holding = 1 + (int)((now - t_hold0) / 1300000u);   /* tenths of the way */
+		} else {
+			if (t_hold0 && !disp_on) { disp_on = 1; ayaneo_apply_backlight(40); }
+			if (t_hold0) t_idle0 = now;
+			t_hold0 = 0;
+			holding = 0;
+		}
+
+		if (disp_on && now - t_idle0 >= 130000000u) { disp_on = 0; ayaneo_apply_backlight(0); }
+
+		if (disp_on && (chr != chr_prev || pct != pct_prev || holding != holding_prev || now - t_draw0 >= 6500000u)) {
 			unsigned int pitch, W, H;
 			unsigned int *buf = ayaneo_canvas_back(&pitch, &W, &H);
 			int cx = (int)W / 2, cy = (int)H / 2;
-			char line[16], *p;
+			char line[48], *p;
 
+			chr_prev = chr; pct_prev = pct; holding_prev = holding; t_draw0 = now;
 			p = mi_putu(line, (unsigned)pct); p = mi_puts(p, "%"); *p = 0;
 			ayaneo_fill(buf, pitch, 0, 0, (int)W, (int)H, 0xFF000000u);
 			text_center(buf, pitch, cx, cy - 96, 6, 0xFFFFFFFFu, line);
 			text_center(buf, pitch, cx, cy + 24, 3,
 				    chr ? 0xFF60D080u : 0xFFD08060u,
-				    chr ? "Charging" : "On battery");
+				    chr ? (chg_st == 2 ? "Charged" : "Charging") : "On battery");
 			text_center(buf, pitch, cx, cy + 96, 1, 0xFF808890u,
 				    "Tap POWER for status  -  hold to start  -  unplug for off");
+			if (holding) {   /* hold progress bar */
+				int w = (int)W / 3, x0 = cx - w / 2, y0 = cy + 130;
+				ayaneo_fill(buf, pitch, x0, y0, w, 8, 0xFF303840u);
+				ayaneo_fill(buf, pitch, x0, y0, w * (holding > 12 ? 12 : holding) / 12, 8, 0xFFFFFFFFu);
+			}
+			p = mi_puts(line, "loop "); p = mi_putu(p, loops); p = mi_puts(p, "  chg ");
+			p = mi_putu(p, (unsigned)(chg_st < 0 ? 9 : chg_st)); *p = 0;
+			text_center(buf, pitch, cx, (int)H - 24, 1, 0xFF404850u, line);
 			ayaneo_canvas_present();
-			if (++idle >= 100) {
-				disp_on = 0;
-				ayaneo_apply_backlight(0);
-			}
-		}
-
-		if (!chr) {
-			if (++unplug >= 3)
-				mt_power_off();
-		} else {
-			unplug = 0;
-		}
-
-		if (pk) {
-			if (++hold >= 12) {
-				ayaneo_apply_persisted_brightness();
-				return;
-			}
-		} else {
-			if (hold > 0 && hold < 12) {
-				if (!disp_on) {
-					disp_on = 1;
-					ayaneo_apply_backlight(40);
-				}
-				idle = 0;
-			}
-			hold = 0;
 		}
 
 		mtk_wdt_restart();
-		thread_sleep(100);
+		thread_sleep(50);
 	}
 }
 
@@ -2570,6 +2900,28 @@ int ayaneo_gba_sd_boot(void)
 	}
 
 	s_bt_t0 = gpt4_get_current_tick();		/* cold-start clock base (~backlight time) */
+	{
+		extern int gba_sd_card_present(void);
+		if (!gba_sd_card_present()) {
+			GBA_LOG("gba-sd: no card in the slot (GPIO8) -> normal boot\n");
+			return -1;
+		}
+	}
+	if (bios_cache_read(s_sd_bios) == 0) {
+		/* Fast path: the BIOS (and the logo header) come from eMMC, so the intro starts now;
+		 * the card mount, asset check, listing and cache refresh run on their own thread
+		 * and the menu waits for them (sd_bg_wait) after the intro. */
+		s_sd_fast = 1;
+		s_sd_bg_state = 0;
+		s_sd_bg_pending = 1;   /* emu_thread launches the card thread after the core blob is loaded */
+		s_sd_mode = 1;
+		ayaneo_gbc_start();
+		{
+			extern void ayaneo_fastboot_usb_start(void);
+			ayaneo_fastboot_usb_start();
+		}
+		return 0;
+	}
 	rc = gba_sd_mount(&s_sd_vol);
 	if (rc != 0) {
 		if (rc == -4)
@@ -2600,6 +2952,11 @@ int ayaneo_gba_sd_boot(void)
 		GBA_LOG("gba-sd: microSD + assets OK (fat32=%d, %d roms in /roms/gba) - running BIOS intro from SD\n",
 			s_sd_vol.is_fat32, s_nrom);
 	}
+	{	/* first boot (or a stale cache): remember the BIOS and the logo header for next time */
+		static unsigned char hdr[512] __attribute__((aligned(64)));
+		memset(hdr, 0, sizeof hdr);
+		bios_cache_write(s_sd_bios, logo_header_from_card(hdr) ? hdr : (const unsigned char *)0);
+	}
 	s_sd_mode = 1;
 	ayaneo_gbc_start();   /* spawns emu_thread, which runs the SD intro (s_sd_mode) */
 	/* Bring up the USB fastboot debug channel alongside the running emulator so
@@ -2629,4 +2986,5 @@ void ayaneo_gbc_start(void)
 				    DEFAULT_PRIORITY, 65536);
 	if (t)
 		thread_resume(t);
+	led_thread_start();
 }

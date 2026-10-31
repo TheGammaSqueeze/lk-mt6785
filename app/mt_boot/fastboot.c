@@ -73,7 +73,7 @@ extern int get_off_mode_charge_status(void);  // FIXME!!! #include <xxx.h>      
 #define EXPAND(NAME) #NAME
 #define TARGET(NAME) EXPAND(NAME)
 
-#define USB_CMD_TIMEOUT 5000
+#define USB_CMD_TIMEOUT 1500   /* a host that stops reading is detected within 1.5 s (was 5 s) */
 
 static event_t usb_online;
 static event_t txn_done;
@@ -335,6 +335,8 @@ int usb_write_with_timeout(void *buf, unsigned len, time_t timeout)
 	}
 	ret = event_wait_timeout(&txn_done, timeout);
 	if (ret != NO_ERROR) {
+		/* host stopped reading: drop the transfer so it is not delivered to the next host */
+		udc_request_cancel(in, req);
 		goto oops;
 	}
 	if (txn_status < 0) {
@@ -390,6 +392,15 @@ void fastboot_okay(const char *info)
 	fastboot_ack("OKAY", info);
 }
 
+
+/* A command that gave up on a bulk transfer (the request was cancelled) can keep the session
+ * instead of dropping to STATE_ERROR, which ends the command loop until the host re-enumerates
+ * the device: the host already failed its command and will send the next one. */
+void fastboot_session_recover(void)
+{
+	if (fastboot_state == STATE_ERROR)
+		fastboot_state = STATE_COMMAND;
+}
 
 static void fastboot_command_loop(void)
 {

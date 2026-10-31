@@ -31,8 +31,10 @@ int main(int argc, char **argv)
 	FILE *f = fopen(packf, "rb");
 	long len; void *blob;
 	snes_pack pk; snes_menu menu; snes_target t; snes_input in;
+	memset(&menu, 0, sizeof menu);   /* the LK's menu is static (zeroed); match it, snes_menu_init does not clear every field */
 	uint32_t *fb, *wp, *chrome; snes_rnode *home_pool, *bg_pool;
-	int W = 1280, H = 960, i, x, y;
+	int W = 1280, H = getenv("SNES_ASPECT32") ? 853 : 960, i, x, y;   /* 3:2 = the Konkr's 1280x853 virtual canvas */
+	if (getenv("SNES_NATIVE32")) { W = 960; H = 640; }   /* the Konkr's real 960x640 canvas, rendered at 0.75 */
 	if (!f) { fprintf(stderr, "open %s failed\n", packf); return 1; }
 	fseek(f, 0, SEEK_END); len = ftell(f); fseek(f, 0, SEEK_SET);
 	blob = malloc(len); if (fread(blob, 1, len, f) != (size_t)len) return 1; fclose(f);
@@ -64,13 +66,13 @@ int main(int argc, char **argv)
 		}
 		return miss;
 	}
-	t.fb = fb; t.pitch = W; t.W = W; t.H = H;
-	t.offx = (W - SNES_VW) / 2; t.offy = (H - SNES_VH) / 2;
-	snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
+	snes_target_fit(&t, fb, W, W, H);
+	menu.base = snes_target_base(&t);
 	/* The device panel is 1280x960 (4:3), so default to the 4:3 layout to match
 	 * what ships; SNES_FORCE169 forces the letterboxed 720 design for comparison. */
 	if (!getenv("SNES_FORCE169")) { menu.aspect = 1; menu.chrome_ready = 0; }
 	if (getenv("SNES_ASPECT43")) { menu.aspect = 1; menu.chrome_ready = 0; }
+	if (getenv("SNES_ASPECT32") || getenv("SNES_NATIVE32")) { menu.aspect = 2; menu.chrome_ready = 0; }
 	/* 4:3 warped-wallpaper cache (fast memcpy path); SNES_NOWP43 keeps the gather. */
 	if (!getenv("SNES_NOWP43"))
 		snes_menu_set_wp43(&menu, malloc((size_t)WP43_PERIOD * WP43_H * 4));
@@ -192,10 +194,13 @@ int main(int argc, char **argv)
 	{
 		static int ctgi[128];
 		int cap = menu.ngames; if (cap > 128) cap = 128; if (cap < 1) cap = 1;
+		if (getenv("SNES_CTCAP")) { cap = atoi(getenv("SNES_CTCAP")); if (cap < 1) cap = 1; if (cap > 128) cap = 128; }   /* the device's small cache */
 		if (!getenv("SNES_NOCACHE")) {
 			uint32_t *ctbuf = malloc((size_t)cap * SNES_CT_W * SNES_CT_H * 4);
 			snes_menu_set_ctile(&menu, ctbuf, ctgi, cap);
-			snes_menu_set_fct(&menu, malloc((size_t)SNES_CT_W * SNES_CT_H * 4));
+			/* SNES_FCT1 keeps one active tile slot: the crossfade cards draw live (the reference
+			 * for the cached crossfade that fct_cap > 1 enables) */
+			snes_menu_set_fct(&menu, malloc((size_t)SNES_CT_W * SNES_CT_H * 4 * 8), getenv("SNES_FCT1") ? 1 : 8);
 		}
 	}
 
@@ -209,7 +214,7 @@ int main(int argc, char **argv)
 		int ni, s, worst = 0, worstpx = 0, nstates = 0;
 		int ctgi2[128]; int cap2 = menu.ngames > 128 ? 128 : menu.ngames;
 		uint32_t *ctb2 = malloc((size_t)(cap2<1?1:cap2) * SNES_CT_W * SNES_CT_H * 4);
-		uint32_t *fctb = malloc((size_t)SNES_CT_W * SNES_CT_H * 4);
+		uint32_t *fctb = malloc((size_t)SNES_CT_W * SNES_CT_H * 4 * 4);
 		memset(&in, 0, sizeof(in));
 		for (s = 0; s < 240; s++) snes_menu_update(&menu, &in, 1.0f/60.0f);
 		for (ni = 0; ni <= (int)strlen(rnav); ni++) {
@@ -218,12 +223,12 @@ int main(int argc, char **argv)
 			for (s = 0; s < 40; s++) { memset(&in,0,sizeof(in)); snes_menu_update(&menu,&in,1.0f/60.0f); }
 			/* A = live (cache off) */
 			snes_menu_set_ctile(&menu, 0, 0, 0);
-			snes_menu_set_fct(&menu, 0);
+			snes_menu_set_fct(&menu, 0, 1);
 			for (i=0;i<W*H;i++) fb[i]=0xFF000000u; snes_menu_render(&menu,&t);
 			for (i=0;i<W*H;i++) A[i]=fb[i];
 			/* B = cached */
 			snes_menu_set_ctile(&menu, ctb2, ctgi2, cap2<1?1:cap2);
-			snes_menu_set_fct(&menu, fctb);
+			snes_menu_set_fct(&menu, fctb, 4);
 			for (i=0;i<W*H;i++) fb[i]=0xFF000000u; snes_menu_render(&menu,&t);
 			for (i=0;i<W*H;i++) B[i]=fb[i];
 			for (px=0; px<W*H; px++) {
@@ -397,7 +402,7 @@ int main(int argc, char **argv)
 	 * Fill a sentinel, do just the letterbox clear, render, then report any pixel the
 	 * render left untouched: on the double-buffered panel those flicker. */
 	if (getenv("COVCHECK")) {
-		int offy = (H - SNES_VH) / 2, x2, y2, miss = 0;
+		int offy = t.offy, x2, y2, miss = 0;
 		int x0 = W, y0 = H, x1 = -1, y1b = -1;
 		uint32_t SENT = 0xFF17EA5Bu;   /* unlikely bright green sentinel */
 		for (i = 0; i < W * H; i++) fb[i] = SENT;
@@ -451,6 +456,7 @@ int main(int argc, char **argv)
 			fwrite(rgb, 1, 3, f);
 		}
 	fclose(f);
+	{ extern unsigned g_perf_xf[2]; if (g_perf_xf[0] || g_perf_xf[1]) fprintf(stderr, "card tiles rendered: dark=%u active=%u\n", g_perf_xf[0], g_perf_xf[1]); }
 	fprintf(stderr, "wrote %s (%dx%d, %d games)\n", outf, W, H, pk.hdr->game_count);
 	return 0;
 }

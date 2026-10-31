@@ -95,6 +95,8 @@ typedef struct {
 	 * vsync budget on device). Caller-provided WP43_H*WP43_PERIOD u32; 0 = gather. */
 	uint32_t *wp43;
 	int wp43_ready;
+	int wp43_aspect;              /* aspect the warped cache was built for (period/rows differ) */
+	float base;                   /* native scale of the target this menu renders to (0 = 1.0) */
 	uint32_t *chrome;             /* cached static home chrome, VW*VH u32 (0 alpha = uncovered) */
 	int chrome_ready;
 	/* resume/suspend-list panel cache: the panel is static once slid in, so render it
@@ -119,6 +121,11 @@ typedef struct {
 	uint32_t *fct;
 	int fct_ready, fct_aspect, no_cursor;
 	int fct_gi;                   /* game index the focused tile was built for (per-ROM boxart) */
+	int fct_cap;                  /* active (blue) tile slots at fct: 1, or one per console type class */
+	int fct_key[8];               /* what each slot holds (-1 = empty); type keyed when fct_cap > 1 */
+	unsigned fct_stamp[8];        /* last use (frame counter) per active slot: LRU replacement for per-game keys */
+	unsigned ctile_stamp[16];     /* same for the dark tiles when the cache is small enough to be associative */
+	unsigned tile_clock;          /* bumps on every lookup */
 	/* Card-tile cache (single-buffer 60fps): each game's NORMAL card body (dark frame +
 	 * boxart + player icon + resume dots, dim=1, no cursor) is rendered ONCE into a
 	 * CT_W*CT_H straight-RGBA tile and blitted per frame by draw_carousel instead of ~6
@@ -263,7 +270,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 void snes_menu_set_ctile(snes_menu *m, uint32_t *buf, int *gi, int cap);
 /* Provide the focused (blue) card-body tile cache (SNES_CT_W*SNES_CT_H u32), or 0 to
  * render the focused card live each frame. Identical for all GBA carts. */
-void snes_menu_set_fct(snes_menu *m, uint32_t *buf);
+void snes_menu_set_fct(snes_menu *m, uint32_t *buf, int cap);
 /* tile dimensions (one card body); exported so callers can size the buffer */
 #define SNES_CT_W 320
 #define SNES_CT_H 360

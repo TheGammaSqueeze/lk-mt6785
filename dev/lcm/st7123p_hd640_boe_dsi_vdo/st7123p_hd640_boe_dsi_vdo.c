@@ -49,6 +49,7 @@
 #define GPIO_OUT_ZERO 0
 
 static LCM_UTIL_FUNCS lcm_util;
+volatile unsigned int g_st7123_init_id = 0xFFFFFFFFu;   /* glass table lcm_init picked (for oem lcm) */
 
 #define MDELAY(n) (lcm_util.mdelay(n))
 #define UDELAY(n) (lcm_util.udelay(n))
@@ -276,10 +277,10 @@ static void lcm_get_params(LCM_PARAMS *params)
 	params->dsi.vertical_sync_active = 4;
 	params->dsi.vertical_backporch = 40;
 #if defined(AYANEO_GBA)
-	/* The emulators lock to the panel vsync, so rest the panel on the GBA's 59.7275 Hz instead
-	 * of the stock 63.5 Hz: 81491713 / 59727.5 = 1364 lines -> vfp 360 (nominal line rate, see
-	 * ddp_dsi.c AYANEO_DSI_LINE_CONST; recheck once measured on the device). */
-	params->dsi.vertical_frontporch = 360;
+	/* Measured line rate 77.526 kHz (ddp_dsi.c AYANEO_DSI_LINE_CONST, with the 354021 kHz data
+	 * rate): rest the panel at the GBA's 59.7275 Hz for the vsync locked emulators:
+	 * 77526000 / 59727.5 = 1298 lines -> vfp 294. Stock is 280. */
+	params->dsi.vertical_frontporch = 294;
 #else
 	params->dsi.vertical_frontporch = 280;
 #endif
@@ -315,12 +316,49 @@ static void lcm_init_lcm(void)
 	MDELAY(120);
 
 	id = lcm_read_id();
+	g_st7123_init_id = id;
 	if (id == LCM_ID_WEIHUI)
 		push_table(lcm_init_weihui,
 			   sizeof(lcm_init_weihui) / sizeof(struct LCM_setting_table), 1);
 	else if (id == LCM_ID_HONGZHAN)
 		push_table(lcm_init_hongzhan,
 			   sizeof(lcm_init_hongzhan) / sizeof(struct LCM_setting_table), 1);
+#endif
+}
+
+/* Bring-up hooks (fastboot `oem lcm`): raw ID pin levels and a forced re-init with a chosen
+ * glass table, so the panel can be brought up from the USB side when the ID read picks
+ * nothing or the wrong table. which: 0 = WEIHUI, 1 = HONGZHAN. Returns the raw (id1<<1)|id2. */
+unsigned int st7123_read_id_raw(void)
+{
+#ifdef BUILD_LK
+	mt_set_gpio_mode(GPIO_LCD_ID1, GPIO_MODE_00);
+	mt_set_gpio_mode(GPIO_LCD_ID2, GPIO_MODE_00);
+	mt_set_gpio_dir(GPIO_LCD_ID1, GPIO_DIR_IN);
+	mt_set_gpio_dir(GPIO_LCD_ID2, GPIO_DIR_IN);
+	return ((unsigned int)(mt_get_gpio_in(GPIO_LCD_ID1) & 1) << 1) | (unsigned int)(mt_get_gpio_in(GPIO_LCD_ID2) & 1);
+#else
+	return 0;
+#endif
+}
+
+void st7123_force_init(int which)
+{
+#ifdef BUILD_LK
+	lcm_gpio_output(GPIO_LCD_PWR_EN, 1);
+	MDELAY(10);
+	lcm_gpio_output(GPIO_LCD_RST, 1);
+	MDELAY(10);
+	lcm_gpio_output(GPIO_LCD_RST, 0);
+	MDELAY(20);
+	lcm_gpio_output(GPIO_LCD_RST, 1);
+	MDELAY(120);
+	if (which == 1)
+		push_table(lcm_init_hongzhan, sizeof(lcm_init_hongzhan) / sizeof(struct LCM_setting_table), 1);
+	else
+		push_table(lcm_init_weihui, sizeof(lcm_init_weihui) / sizeof(struct LCM_setting_table), 1);
+#else
+	(void)which;
 #endif
 }
 

@@ -785,6 +785,26 @@ err:
 	return ret;
 }
 
+/* Write len bytes through the AP DMA (the FIFO path takes 8 bytes per transaction). The buffer
+ * must be below DMA_ADDRESS_HIGH and already cleaned from the cache by the caller. Used for the
+ * speaker amp DSP image on the Konkr; a failure is reported, the caller falls back to the FIFO. */
+S32 i2c_write_dma(mt_i2c *i2c, U8 *buffer, U32 len)
+{
+	S32 ret;
+	i2c->read_flag = !I2C_M_RD;
+	i2c->op = I2C_MASTER_WR;
+	i2c->msg_buf = buffer;
+	i2c->msg_len = len;
+	_config_mt_i2c(i2c);
+	i2c->dma_en = TRUE;   /* _config_mt_i2c resets it */
+	ret = _i2c_transfer_interface(i2c);
+	if ((int)i2c->msg_len != ret) {
+		I2CERR("DMA write %d bytes fails,ret=%d.\n", i2c->msg_len, ret);
+		return -1;
+	}
+	return I2C_OK;
+}
+
 /*-----------------------------------------------------------------------
  * New write then read back interface: Write bytes then read bytes
  *   i2c:    I2C chip config, see mt_i2c_t.

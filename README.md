@@ -11,6 +11,12 @@ causes, fixes, and untested areas, and
 [BUILD_AYANEO_POCKET_AIR_MINI.md](BUILD_AYANEO_POCKET_AIR_MINI.md) for build and
 device details.
 
+## Konkr Pocket Advance
+
+The same tree also builds for the Konkr Pocket Advance (`./build_konkr_kpa.sh`, project
+`k85v1_64_kpa`). Build, flash, microSD layout, the board differences and a porting checklist
+for further MT6785 handhelds are in `KONKR_POCKET_ADVANCE.md`.
+
 ## Quick start
 
 ```sh

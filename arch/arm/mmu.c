@@ -131,9 +131,52 @@ static status_t get_l2_table(uint32_t l1_index, uint64_t *ppa)
 }
 
 
+/* Install a caller-provided, zeroed, 4 KB aligned page as the second level table of one 1 GB
+ * range whose first level entry is still invalid or a block. arch_mmu_map then fills it with 2 MB
+ * sections instead of allocating the table from the heap. Returns 0 when installed, -1 when the
+ * range already has a table (left as is). */
+int arch_mmu_install_l2(uint32_t l1_index, void *page)
+{
+	uint64_t e1 = ld_tt_l1[l1_index & 3u];
+	if ((e1 & MMU_MEMORY_L1_DESCRIPTOR_MASK) == MMU_MEMORY_L1_DESCRIPTOR_TABLE) return -1;
+	memset(page, 0, PAGE_SIZE);
+	arch_clean_cache_range((addr_t)page, PAGE_SIZE);
+	mmu_update_tt_entry(&ld_tt_l1[l1_index & 3u], ((uint64_t)(addr_t)page) | MMU_MEMORY_L1_DESCRIPTOR_TABLE);
+	return 0;
+}
+
+/* Walk the LPAE tables for one VA: returns 1 (1GB block), 2 (2MB section), 3 (table->page level,
+ * reported as mapped), 0 unmapped. l1/l2 receive the raw descriptors for a diagnostic print. */
+int arch_mmu_probe(vaddr_t vaddr, uint64_t *l1, uint64_t *l2)
+{
+	uint64_t e1 = ld_tt_l1[vaddr / BLOCK_SIZE], e2 = 0;
+	int kind = 0;
+	switch (e1 & MMU_MEMORY_L1_DESCRIPTOR_MASK) {
+	case MMU_MEMORY_L1_DESCRIPTOR_BLOCK: kind = 1; break;
+	case MMU_MEMORY_L1_DESCRIPTOR_TABLE: {
+		uint64_t *t = (uint64_t *)(addr_t)(e1 & 0xFFFFF000ULL);   /* table PA, identity mapped */
+		e2 = t[(vaddr / SECTION_SIZE) % 512u];
+		kind = (e2 & 3u) == 1u ? 2 : (e2 & 3u) == 3u ? 3 : 0;
+		break;
+	}
+	default: kind = 0;
+	}
+	if (l1) *l1 = e1;
+	if (l2) *l2 = e2;
+	return kind;
+}
+
+/* the last eight map requests (vaddr, count, ms on the 13 MHz clock): who maps at run time */
+volatile unsigned int g_dbg_mmu_log[8][3], g_dbg_mmu_log_n;
 int arch_mmu_map(uint64_t paddr, vaddr_t vaddr, uint flags, uint count)
 {
 	int ret = NO_ERROR;
+	{
+		extern unsigned gpt4_get_current_tick(void);
+		unsigned int k = g_dbg_mmu_log_n % 8u;
+		g_dbg_mmu_log[k][0] = vaddr; g_dbg_mmu_log[k][1] = count; g_dbg_mmu_log[k][2] = gpt4_get_current_tick() / 13000u;
+		g_dbg_mmu_log_n++;
+	}
 	/* paddr and vaddr must be aligned */
 	DEBUG_ASSERT(IS_PAGE_ALIGNED(vaddr));
 	DEBUG_ASSERT(IS_PAGE_ALIGNED(paddr));

@@ -259,6 +259,7 @@ enum {
 //==============================================================================
 extern S32 i2c_read(mt_i2c *i2c,U8 *buffer, U32 len);
 extern S32 i2c_write(mt_i2c *i2c,U8  *buffer, U32 len);
+S32 i2c_write_dma(mt_i2c *i2c, U8 *buffer, U32 len);
 extern S32 i2c_write_read(mt_i2c *i2c,U8 *buffer, U32 write_len, U32 read_len);
 extern S32 i2c_set_speed(mt_i2c *i2c);
 extern int i2c_hw_init(void);

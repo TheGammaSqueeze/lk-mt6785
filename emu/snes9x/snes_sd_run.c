@@ -19,6 +19,7 @@
 #include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
 #include <kernel/event.h>
+extern const char *ayaneo_strobe_name(int b);
 
 extern const struct snes_core_exports *snes_core_load(void);   /* snes_core_loader.c */
 extern void     ayaneo_snes_show_frame(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px);
@@ -32,7 +33,8 @@ extern void     ayaneo_menu_overlay_mark_dirty(void);   /* repaint the hardware 
 extern void     ayaneo_display_prepare(void);
 extern void     ayaneo_dsi_set_vfp(unsigned int vfp);   /* per-core panel refresh (ddp_dsi.c) */
 extern unsigned int ayaneo_dsi_get_vfp(void);           /* read-back to validate the switch */
-extern unsigned int ayaneo_dsi_refresh_milli(void);     /* live panel refresh in milli-Hz (ddp_dsi.c) - for the FF budget */
+extern unsigned int ayaneo_dsi_refresh_milli(void);
+extern unsigned int ayaneo_dsi_core_refresh_milli(void);     /* live panel refresh in milli-Hz (ddp_dsi.c) - for the FF budget */
 extern unsigned int ayaneo_dsi_set_fps_milli(unsigned int fps_milli); /* set panel refresh to target fps (milli-Hz), returns vfp (ddp_dsi.c) */
 volatile unsigned g_snes_dbg_vfp;                       /* the live DSI vfp during the session */
 extern int      priamry_display_wait_for_vsync(void);   /* primary_display.c (name has the typo) */
@@ -136,16 +138,26 @@ extern int      mt_get_gpio_in(unsigned pin);
 #define GPIO_AYA       86
 #define GPIO_LB        92
 #define GPIO_RB        81
+#if defined(KONKR_KPA)
+/* Konkr: the device tree labels match the shell (A 82, B 83, X 84, Y 85, START 90, SELECT 91) */
+#define GPIO_SELECT    91
+#define GPIO_START     90
+#define GPIO_B         83
+#define GPIO_A         82
+#define GPIO_X         85      /* Konkr: the caps read X on 85, Y on 84 */
+#define GPIO_Y         84
+#else
 #define GPIO_SELECT    90
 #define GPIO_START     91
 #define GPIO_B         82
+#define GPIO_A         83
+#define GPIO_X         85      /* physical X (84/85 read swapped vs the caps) */
+#define GPIO_Y         84      /* physical Y */
+#endif
 #define GPIO_UP        89
 #define GPIO_DOWN      79
 #define GPIO_LEFT      78
 #define GPIO_RIGHT     80
-#define GPIO_A         83
-#define GPIO_X         85      /* physical X (84/85 read swapped vs the caps) */
-#define GPIO_Y         84      /* physical Y */
 #define GPIO_R2        57      /* second-stage right trigger = fast-forward (matches GBA) */
 
 /* RETRO_DEVICE_ID_JOYPAD_* bit positions (what the core's input_state_cb reads). */
@@ -185,6 +197,7 @@ volatile unsigned g_snes_dbg_loadrc;  /* c->load() return (0 = ok, 0xFF = not re
 volatile unsigned g_snes_dbg_frames;
 volatile unsigned g_snes_dbg_w, g_snes_dbg_h;
 volatile unsigned g_snes_dbg_exit;    /* 0 running,1 aya-hold,2 blob,3 rom,4 load */
+volatile unsigned g_snes_dbg_fps_milli;   /* core reported frame rate of the last session */
 volatile unsigned g_snes_dbg_pitch;   /* f.pitch of the last frame */
 volatile unsigned g_snes_dbg_nz;      /* non-zero pixels in a full-frame sample (0 = black) */
 volatile unsigned g_snes_dbg_changed; /* count of frames whose content hash changed (0 = frozen) */
@@ -343,7 +356,7 @@ static void snes_slot_check(void)
 	s_slot_used = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, tmp, sizeof tmp) > 0;
 }
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
-       SM_CPU, SM_RUNAHEAD, SM_TURBO, SM_BENCH, SM_PANEL, SM_STROBE, SM_OVERDRIVE,
+       SM_CPU, SM_RUNAHEAD, SM_TURBO, SM_BENCH, SM_PANEL, SM_STROBE, SM_RESUME,
        SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
 #define SNES_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -351,7 +364,7 @@ static const char *snes_turbo_name(int t)
 { return t == 1 ? "A" : t == 2 ? "B" : t == 3 ? "A+B" : "Off"; }
 
 static const char *snes_filter_name(int f)
-{ return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : "Off"; }
+{ return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : f == 4 ? "LCD1x" : f == 5 ? "LCD3x" : "Off"; }
 
 /* snes9x core-option choices exposed in the Pico menu: {label, libretro value}. The
  * runner pushes the selected value with c->set_option(key, value); snes9x reflows on the
@@ -395,7 +408,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_CPU:    return "CPU Clock"; case SM_RUNAHEAD: return "Run-Ahead";
 	case SM_TURBO:  return "Turbo (auto-fire)";
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
-	case SM_STROBE: return "Strobe"; case SM_OVERDRIVE: return "Overdrive";
+	case SM_STROBE: return "BFI"; case SM_RESUME: return "Resume Game on Boot";
 	case SM_SLOT:   return "Save Slot";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
 	case SM_RESET:  return "Reset Game"; case SM_CLOSE:  return "Exit Game"; } return ""; }
@@ -422,8 +435,8 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 		p = smputu(p, hz / 1000); p = smput(p, ".");
 		{ unsigned f = (hz % 1000) / 10; if (f < 10) p = smput(p, "0"); p = smputu(p, f); }
 		p = smput(p, " Hz"); break; }
-	case SM_STROBE: p = smput(p, ayaneo_get_strobe() ? "On" : "Off"); break;
-	case SM_OVERDRIVE: p = smput(p, ayaneo_get_overdrive() ? "On" : "Off"); break;
+	case SM_STROBE: { int b = ayaneo_get_strobe(); p = smput(p, ayaneo_strobe_name(b)); } break;
+	case SM_RESUME: { extern int ayaneo_get_resume_on_boot(void); p = smput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case SM_SLOT: p = smputu(p, (unsigned)s_save_slot); p = smput(p, s_slot_used ? " used" : " empty"); break;
 	case SM_SAVE: case SM_LOAD: case SM_RESET: case SM_CLOSE: p = smput(p, "[A]"); break;
 	default: break; } *p = 0; return buf; }
@@ -432,12 +445,21 @@ int snes_menu_open(void) { return g_snes_menu_open; }
 
 void snes_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
 {
-	int rowH = 38, panelW = 520, panelH = 84 + SM_COUNT * rowH + 42;
-	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2, x = px + 28, y = py + 84, i;
+	int rowH = 38, panelW = 520, panelH = 60 + SM_COUNT * rowH + 34;
+	int px, py, x, y, i;
+	/* Fit the panel to the screen: the Konkr's logical height is 640, where 38 px rows with the
+	 * 84 px title band and 42 px footer overflow; shrink the row pitch (never below 20) until
+	 * title + rows + footer leave a 16 px margin. */
+	if (panelH > (int)H - 16) {
+		rowH = ((int)H - 16 - 60 - 34) / SM_COUNT;
+		if (rowH < 20) rowH = 20;
+		panelH = 60 + SM_COUNT * rowH + 34;
+	}
+	px = ((int)W - panelW) / 2; py = ((int)H - panelH) / 2; x = px + 28; y = py + 60;
 	char val[48];
-	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
+	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xD010141Cu);   /* translucent: the game shows through (hardware blend) */
 	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
-	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "GammaOS Pico");
+	ayaneo_text(buf, pitch, px + 28, py + 20, 3, 0xFFFFFFFFu, "GammaOS Pico");
 	for (i = 0; i < SM_COUNT; i++, y += rowH) {
 		unsigned int fg = (i == s_msel) ? 0xFF101018u : 0xFFC8D0E0u; int vw;
 		if (i == s_msel) ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
@@ -445,8 +467,8 @@ void snes_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsi
 		sm_value(i, val); for (vw = 0; val[vw]; vw++) ;
 		ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, val);
 	}
-	if (s_mstat[0]) ayaneo_text(buf, pitch, x, py + panelH - 40, 2, 0xFF80E080u, s_mstat);
-	ayaneo_text(buf, pitch, x, py + panelH - 16, 1, 0xFF8890A0u,
+	if (s_mstat[0]) ayaneo_text(buf, pitch, x, py + panelH - 32, 2, 0xFF80E080u, s_mstat);
+	ayaneo_text(buf, pitch, x, py + panelH - 14, 1, 0xFF8890A0u,
 		    "Up/Down move  Left/Right change  A select  B/AYA close");
 }
 
@@ -457,7 +479,7 @@ static int sm_change(int i, int dir, int act)
 	switch (i) {
 	case SM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); snes_settings_touch(); } break;
 	case SM_VOLUME: if (dir) { ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); snes_settings_touch(); } break;
-	case SM_FILTER: if (dir) { ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 4) % 4); snes_settings_touch(); } break;
+	case SM_FILTER: if (dir) { ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 6) % 6); snes_settings_touch(); } break;
 	case SM_ASPECT: case SM_OVERSCAN: case SM_AUDIO: case SM_HIRES:
 		if (dir && s_menu_c->set_option) {
 			int oi = i - SM_ASPECT, n = s_opt_def[oi].n, k;
@@ -488,9 +510,9 @@ static int sm_change(int i, int dir, int act)
 			ayaneo_set_snes_turbo(g_snes_turbo); snes_settings_touch(); } break;
 	case SM_BENCH:  if (act) g_snes_benchmark = !g_snes_benchmark; break;   /* A toggles (not L/R, which auto-repeat) */
 	case SM_PANEL:  break;   /* read-only */
-	case SM_STROBE: if (dir) { ayaneo_set_strobe(!ayaneo_get_strobe()); snes_settings_touch(); } break;
-	case SM_OVERDRIVE: if (dir) { int k = (ayaneo_get_overdrive() + dir + (SNES_OD_MENU_MAX + 1)) % (SNES_OD_MENU_MAX + 1);
-		ayaneo_set_overdrive_level(k); snes_settings_touch(); } break;
+	case SM_STROBE: if (dir) { ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); snes_settings_touch(); } break;
+	case SM_RESUME: if (dir) { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
+			ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); snes_settings_touch(); } break;
 	case SM_SLOT: if (dir) { s_save_slot = (s_save_slot + dir + SNES_SLOT_COUNT) % SNES_SLOT_COUNT;
 			ayaneo_set_snes_slot(s_save_slot); snes_settings_touch();
 			snes_slot_check(); } break;   /* refresh used/empty for the new slot */
@@ -599,6 +621,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * is capped at 200 (50.75 Hz, ~1.5% fast). */
 	{
 		unsigned fps_milli = (c->fps_milli) ? c->fps_milli() : 60099u;
+		g_snes_dbg_fps_milli = fps_milli;   /* what the core reports (PAL ~50007, NTSC 60099) for oem diag */
 		ayaneo_dsi_set_vfp(snes_vfp_for_fps(fps_milli));
 	}
 	g_snes_dbg_vfp = ayaneo_dsi_get_vfp();   /* read-back: derived vfp (17 NTSC / 217 PAL) */
@@ -698,21 +721,20 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* Power key during gameplay (parity with gba/genesis/gbc): arm on release, fire on the next
 		 * press -> write the suspend state + SRAM so the next launch resumes, flush settings, power off. */
 		{
-			extern int pmic_detect_powerkey(void); extern void mt_power_off(void);
-			static int pk_armed;
-			int pk = pmic_detect_powerkey();
-			if (!pk) pk_armed = 1;
-			else if (pk_armed) {
+			extern void mt_power_off(void); extern int ayaneo_power_hold(int menu_open, int use_overlay);
+			if (ayaneo_power_hold(g_snes_menu_open, 1)) {
 				unsigned char *st = (unsigned char *)SNES_STATE_BUF;
 				unsigned ssz = c->state_size(), sz; void *p;
-				pk_armed = 0;
 				ayaneo_menu_audio_silence();
+				{ extern void ayaneo_resume_mark(const char *name); ayaneo_resume_mark(rom->name); s_settings_dirty = 1; }
 				snes_settings_flush();
+				{ extern void ayaneo_settings_persist_flush(void); ayaneo_settings_persist_flush(); }
 				if (ssz && ssz <= SNES_STATE_CAP && c->state_save(st, ssz) == 0)
 					gba_sd_write_named(vol, "/states/snes", rom->name, "sus", st, ssz);
 				sz = c->sram_size(); p = c->sram_ptr();
 				if (p && sz && sz <= 0x20000u)
 					gba_sd_write_named(vol, "/saves/snes", rom->name, "srm", p, sz);
+				{ extern void ayaneo_leds_off_for_poweroff(void); ayaneo_leds_off_for_poweroff(); }
 				mt_power_off();   /* no return */
 			}
 		}
@@ -870,7 +892,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			unsigned int skip = snes_emu_us ? snes_emu_us : 1500u;   /* committed (render-skipped) cost */
 			unsigned int rend = s_snes_render_us ? s_snes_render_us : 4000u;
 			unsigned int blit = g_snes_show_us;
-			unsigned int rmilli = ayaneo_dsi_refresh_milli();
+			unsigned int rmilli = ayaneo_dsi_core_refresh_milli();   /* the per frame rate (panel / vsync divider) */
 			unsigned int full_us = rmilli ? (1000000000u / rmilli) : 16666u;   /* 1e9/milliHz = 1e6/panel_fps; PAL ~20000us, NTSC ~16666us */
 			unsigned int budget_us = full_us > 1200u ? full_us - 1200u : full_us; /* present-margin (old 15500 vs 16666) */
 			unsigned int avail = (budget_us > blit + rend) ? (budget_us - blit - rend) : 0u;

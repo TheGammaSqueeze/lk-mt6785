@@ -51,6 +51,11 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		extern unsigned int ayaneo_dsi_refresh_milli(void);
 		extern unsigned int ayaneo_dsi_get_vfp(void);
 		unsigned int rm = ayaneo_dsi_refresh_milli();
+		{
+			static unsigned int diag_seq;
+			snprintf(lbuf, sizeof lbuf, "diag: seq=%u", ++diag_seq);   /* stale-reply detector */
+			fastboot_info(lbuf);
+		}
 		snprintf(lbuf, sizeof lbuf, "panel: refresh_mHz=%u (%u.%02uHz) vfp=%u",
 			 rm, rm / 1000u, (rm % 1000u) / 10u, ayaneo_dsi_get_vfp());
 		fastboot_info(lbuf);
@@ -74,6 +79,31 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		/* menu render cost: last + peak snes_menu_render us and loop fps. Peak is the
 		 * worst frame over ~2s (reset by `oem nav`), the number that breaks 60fps. */
 		extern volatile unsigned int g_dbg_render_us, g_dbg_peak_us, g_dbg_fps;
+		{
+			extern volatile unsigned int g_dbg_present_us[2];
+			extern volatile unsigned int g_dbg_pace_waits, g_dbg_pace_dt_us, g_dbg_pace_timeouts, g_dbg_pace_edge_us;
+			snprintf(lbuf, sizeof lbuf, "present_us: fused=%u pace_waits=%u", g_dbg_present_us[0], g_dbg_pace_waits);
+			fastboot_info(lbuf);
+			snprintf(lbuf, sizeof lbuf, "pace: dt=%uus edge=%uus timeouts=%u", g_dbg_pace_dt_us, g_dbg_pace_edge_us, g_dbg_pace_timeouts);
+			fastboot_info(lbuf);
+			{
+				extern volatile unsigned int g_dbg_present_fps, g_dbg_emu_fps, g_dbg_emu_frame_us, g_dbg_emu_total;
+				extern unsigned int gpt4_get_current_tick(void);
+				snprintf(lbuf, sizeof lbuf, "speed: presents/s=%u emu_frames/s=%u frame_us=%u",
+					 g_dbg_present_fps, g_dbg_emu_fps, g_dbg_emu_frame_us);
+				fastboot_info(lbuf);
+				/* two reads a few seconds apart: d(total) / d(ms) * 1000 = true emulated fps */
+				snprintf(lbuf, sizeof lbuf, "clock: total_frames=%u now_ms=%u",
+					 g_dbg_emu_total, gpt4_get_current_tick() / 13000u);
+				fastboot_info(lbuf);
+				{
+					extern volatile unsigned int g_dbg_bt_frame1, g_dbg_bt_intro_end, g_dbg_bt_intro_frames;
+					snprintf(lbuf, sizeof lbuf, "intro: first=%ums end=%ums frames=%u (4520ms nominal)",
+						 g_dbg_bt_frame1, g_dbg_bt_intro_end, g_dbg_bt_intro_frames);
+					fastboot_info(lbuf);
+				}
+			}
+		}
 		snprintf(lbuf, sizeof lbuf, "render_us=%u peak_us=%u fps=%u",
 			 g_dbg_render_us, g_dbg_peak_us, g_dbg_fps);
 		fastboot_info(lbuf);
@@ -81,8 +111,20 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 	{
 		/* per-phase render breakdown (us): where the frame goes. */
 		extern unsigned g_perf[8];
-		snprintf(lbuf, sizeof lbuf, "perf_us: wp=%u chrome=%u carousel=%u filmstrip=%u rest=%u",
-			 g_perf[0] / 13u, g_perf[1] / 13u, g_perf[2] / 13u, g_perf[3] / 13u, g_perf[4] / 13u);
+		extern unsigned g_perf_xf[2];
+		snprintf(lbuf, sizeof lbuf, "perf_us: wp=%u chrome=%u carousel=%u",
+			 g_perf[0] / 13u, g_perf[1] / 13u, g_perf[2] / 13u);
+		fastboot_info(lbuf);
+		snprintf(lbuf, sizeof lbuf, "perf_us: filmstrip=%u rest=%u tiles dark=%u active=%u",
+			 g_perf[3] / 13u, g_perf[4] / 13u, g_perf_xf[0], g_perf_xf[1]);
+		fastboot_info(lbuf);
+	}
+	{
+		/* frame drops: menu loop periods over 20 ms since the last peak reset (oem nav), and
+		 * whether the overlay really showed the buffer presented one frame earlier. */
+		extern volatile unsigned int g_dbg_menu_frames, g_dbg_menu_long, g_dbg_latch_hit, g_dbg_latch_miss;
+		snprintf(lbuf, sizeof lbuf, "drops: frames=%u long=%u latch hit=%u miss=%u",
+			 g_dbg_menu_frames, g_dbg_menu_long, g_dbg_latch_hit, g_dbg_latch_miss);
 		fastboot_info(lbuf);
 	}
 	{
@@ -91,9 +133,10 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		extern volatile unsigned int g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list;
 		extern volatile unsigned int g_dbg_bt_coreload, g_dbg_bt_coreinit, g_dbg_bt_start, g_dbg_bt_frame1;
 		snprintf(lbuf, sizeof lbuf,
-			 "bt: mount=%u bios=%u list=%u coreload=%u coreinit=%u start=%u frame1=%u ms",
-			 g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list,
-			 g_dbg_bt_coreload, g_dbg_bt_coreinit, g_dbg_bt_start, g_dbg_bt_frame1);
+			 "bt: mount=%u bios=%u list=%u core=%u/%u",
+			 g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list, g_dbg_bt_coreload, g_dbg_bt_coreinit);
+		fastboot_info(lbuf);
+		snprintf(lbuf, sizeof lbuf, "bt: start=%u frame1=%u ms", g_dbg_bt_start, g_dbg_bt_frame1);
 		fastboot_info(lbuf);
 	}
 	{
@@ -293,14 +336,39 @@ static void cmd_snes_launch(const char *arg, void *data, unsigned sz)
 	while (*arg == ' ' || *arg == ':') arg++;
 	while (*arg >= '0' && *arg <= '9') n = n * 10 + (unsigned)(*arg++ - '0');
 	if (n < 1) n = 240;
+	/* optional :name picks the first SNES ROM whose name contains it (case insensitive), e.g.
+	 * snes-launch:600:mario for the PAL Super Mario World (E); default = the first SNES ROM */
+	{
+		extern char g_dbg_snes_name[32];
+		unsigned k = 0;
+		while (*arg == ' ' || *arg == ':') arg++;
+		while (*arg && *arg != ' ' && k + 1 < sizeof g_dbg_snes_name) g_dbg_snes_name[k++] = *arg++;
+		g_dbg_snes_name[k] = 0;
+	}
 	g_snes_test_limit = n;
 	g_dbg_snes_launch = 1;
 	/* wait for the menu to pick it up + the session to run n frames + return (~n/50 s) */
-	for (i = 0; i < 40 + n; i++) {
-		thread_sleep(50);
-		if (g_snes_dbg_exit != 0 && g_snes_test_limit == 0) break;
+	{
+		extern unsigned int gpt4_get_current_tick(void);
+		extern volatile unsigned g_snes_dbg_stage;
+		unsigned t0 = 0, t1 = 0;
+		for (i = 0; i < 40 + n; i++) {
+			thread_sleep(50);
+			if (!t0 && g_snes_dbg_stage >= 4) t0 = gpt4_get_current_tick();   /* first frames running */
+			if (g_snes_dbg_exit != 0 && g_snes_test_limit == 0) { t1 = gpt4_get_current_tick(); break; }
+		}
+		snprintf(lbuf, sizeof lbuf, "snes-launch: req=%u ran=%u exit=%u", n, g_snes_dbg_frames, g_snes_dbg_exit);
+		fastboot_info(lbuf);
+		{
+			extern const char *g_dbg_snes_chosen;
+			extern volatile unsigned g_snes_dbg_fps_milli;
+			const char *nm = g_dbg_snes_chosen ? g_dbg_snes_chosen : "?";
+			while (*nm == ' ') nm++;
+			snprintf(lbuf, sizeof lbuf, "snes-launch: fps_milli=%u run_ms=%u", g_snes_dbg_fps_milli, (t0 && t1) ? (t1 - t0) / 13000u : 0u);
+			fastboot_info(lbuf);
+			snprintf(lbuf, sizeof lbuf, "snes-launch: rom=%.44s", nm);
+		}
 	}
-	snprintf(lbuf, sizeof lbuf, "snes-launch: requested %u frames, ran=%u exit=%u", n, g_snes_dbg_frames, g_snes_dbg_exit);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -398,6 +466,16 @@ static void cmd_snes_ra(const char *arg, void *data, unsigned sz)
  * clean nav press + report the peak render us for that movement (reset first) so the
  * flicker campaign can measure any state. g_dbg_force_launch when arg is empty. */
 extern volatile int g_dbg_key, g_dbg_key_hold, g_dbg_peak_reset, g_dbg_force_launch;
+static unsigned fb_dec(const char **pp);
+/* oem igm - toggle the GBA in-game (Pico) menu, so it can be screenshotted with oem shot. */
+static void cmd_igm(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_igm_toggle;
+	(void)arg; (void)data; (void)sz;
+	g_dbg_igm_toggle = 1;
+	thread_sleep(200);
+	fastboot_okay("");
+}
 static void cmd_nav(const char *arg, void *data, unsigned sz)
 {
 	static const char K[] = "LRUDABST[]";   /* codes 0..9 */
@@ -410,9 +488,13 @@ static void cmd_nav(const char *arg, void *data, unsigned sz)
 	if (c >= 'a' && c <= 'z') c -= 32;
 	for (i = 0; i < 10; i++) if (K[i] == c) { code = i; break; }
 	if (code < 0) { fastboot_okay(""); return; }
+	/* nav:R:600 holds the key for 600 frames (10 s) so a sustained scroll can be measured
+	 * with oem diag while it runs; the default 7 is one tap. */
+	arg++;
+	while (*arg == ' ' || *arg == ':') arg++;
+	{ unsigned hold = fb_dec(&arg); if (hold < 1u || hold > 6000u) hold = 7u; g_dbg_key_hold = (int)hold; }
 	g_dbg_peak_reset = 1;
 	g_dbg_key = code;
-	g_dbg_key_hold = 7;
 	thread_sleep(300);
 	fastboot_okay("");   /* read the resulting peak via `oem diag` */
 }
@@ -814,13 +896,480 @@ static void cmd_odup(const char *arg, void *data, unsigned sz)
 /* Konkr: flip the quarter-turn direction of the rotation layer live (oem rot:0 clockwise, oem rot:1
  * counter clockwise) so the right one can be picked on the device without a reflash. Takes effect
  * on the next presented frame. On the pairmini the layer is the identity and this is inert. */
+extern volatile int g_rot_ccw;
 static void cmd_rot(const char *arg, void *data, unsigned sz)
 {
-	extern volatile int g_rot_ccw;
 	(void)data; (void)sz;
 	while (*arg == ' ' || *arg == ':') arg++;
 	g_rot_ccw = fb_dec(&arg) ? 1 : 0;
 	snprintf(lbuf, sizeof lbuf, "rot: %s", g_rot_ccw ? "ccw" : "cw");
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+#ifdef KONKR_KPA
+/* Konkr panel bring-up: `oem lcm` reports the glass ID pins (raw and as read at init), the live
+ * DSI porch and the frame buffer geometry; `oem lcminit:N` re-runs the panel reset + init with
+ * table N (0 WEIHUI, 1 HONGZHAN) regardless of the ID pins; `oem gpio:N` reads one GPIO. */
+extern unsigned int st7123_read_id_raw(void);
+extern void st7123_force_init(int which);
+extern volatile unsigned int g_st7123_init_id;
+extern unsigned int ayaneo_dsi_get_vfp(void);
+extern unsigned int ayaneo_screen_w(void), ayaneo_screen_h(void);
+
+static void cmd_lcm(const char *arg, void *data, unsigned sz)
+{
+	unsigned raw = st7123_read_id_raw();
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "lcm: id1=%u id2=%u init_pick=%d (0 weihui 1 hongzhan -1 none)",
+		 (raw >> 1) & 1u, raw & 1u, (int)g_st7123_init_id);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "lcm: dsi vfp=%u logical=%ux%u rot_ccw=%d",
+		 ayaneo_dsi_get_vfp(), ayaneo_screen_w(), ayaneo_screen_h(), g_rot_ccw);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+static void cmd_lcminit(const char *arg, void *data, unsigned sz)
+{
+	unsigned which;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	which = fb_dec(&arg);
+	st7123_force_init((int)which);
+	snprintf(lbuf, sizeof lbuf, "lcminit: reset + table %u sent", which);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+static void cmd_gpio(const char *arg, void *data, unsigned sz)
+{
+	extern int mt_get_gpio_in(unsigned pin);
+	extern int mt_set_gpio_dir(unsigned pin, unsigned dir);
+	extern int mt_set_gpio_mode(unsigned pin, unsigned mode);
+	unsigned n;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	n = fb_dec(&arg);
+	mt_set_gpio_mode(n | 0x80000000u, 0);
+	mt_set_gpio_dir(n | 0x80000000u, 0);
+	snprintf(lbuf, sizeof lbuf, "gpio%u=%d", n, mt_get_gpio_in(n | 0x80000000u));
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+#endif
+
+/* `oem mode`: which fastboot we are talking to. The same oem commands are registered in the
+ * plain bootloader and in the emulator's USB channel, so a tool cannot tell them apart by
+ * probing commands; this answers directly: boot_mode (FASTBOOT = plain bootloader, flashing
+ * works), whether the ROM menu loop is live, and whether a game is presenting (resizer up). */
+static void cmd_mode(const char *arg, void *data, unsigned sz)
+{
+	extern int g_boot_mode;
+	enum { AYANEO_BM_FASTBOOT = 99 };   /* platform/boot_mode.h: FASTBOOT = 99 */
+	extern volatile int g_menu_live;
+	extern int ayaneo_shot_source(unsigned int *pa, unsigned int *w, unsigned int *h, unsigned int *pitch_px);
+	unsigned pa, w, h, pitch;
+	int game = ayaneo_shot_source(&pa, &w, &h, &pitch);
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "mode: boot=%d %s menu=%d game=%d",
+		 g_boot_mode, g_boot_mode == AYANEO_BM_FASTBOOT ? "BOOTLOADER(flash ok)" : "EMU(no flash)",
+		 g_menu_live, game);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* `oem shot[:step]`: dump the currently displayed picture downscaled by step (default 16) as
+ * RGB565 hex, 13 pixels per INFO line, rows as "NNN:" + continuations "NNN+" (decode with
+ * tools/ayaneo/gba/fastboot_menu_shot.py). Source = the game's resizer buffer when a game runs,
+ * else the front frame buffer; both in PHYSICAL (panel) orientation. Bounded INFO writes only. */
+static void cmd_shot(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_shot_source(unsigned int *pa, unsigned int *w, unsigned int *h, unsigned int *pitch_px);
+	extern int ayaneo_shot_overlay(unsigned int *pa, unsigned int *w, unsigned int *h, unsigned int *pitch_px);
+	unsigned pa, w, h, pitch, step, x, y, n, k;
+	const unsigned int *src;
+	int game, ovl = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	step = fb_dec(&arg); if (step < 2u) step = 16u;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == 'o') ovl = 1;   /* shot:N:o = the in-game overlay paint buffer (logical orientation) */
+	game = ovl ? (ayaneo_shot_overlay(&pa, &w, &h, &pitch) ? 2 : ayaneo_shot_source(&pa, &w, &h, &pitch))
+		   : ayaneo_shot_source(&pa, &w, &h, &pitch);
+	src = (const unsigned int *)pa;
+	snprintf(lbuf, sizeof lbuf, "shot: %s %ux%u pitch=%u step=%u -> %ux%u", game == 2 ? "overlay" : game ? "game" : "fb",
+		 w, h, pitch, step, w / step, h / step);
+	fastboot_info(lbuf);
+	for (y = 0, n = 0; y + step <= h; y += step, n++) {
+		unsigned row = y / step, col = 0;
+		for (x = 0; x + step <= w; ) {
+			int len = snprintf(lbuf, sizeof lbuf, "%u%c", row, col ? '+' : ':');
+			for (k = 0; k < 13u && x + step <= w; k++, x += step, col++) {
+				unsigned int p = src[y * pitch + x];
+				unsigned int v = (((p >> 19) & 0x1fu) << 11) | (((p >> 10) & 0x3fu) << 5) | ((p >> 3) & 0x1fu);
+				len += snprintf(lbuf + len, sizeof lbuf - (unsigned)len, "%04x", v);
+			}
+			fastboot_info(lbuf);
+		}
+	}
+	fastboot_okay("");
+}
+
+/* Full resolution capture without thousands of INFO lines (a 12k line text dump wedged the
+ * USB link): `oem shotstage[:o]` packs the displayed frame (or the in-game overlay with :o)
+ * as RGB565 behind a 16 byte header into free DRAM, and the standard fastboot `upload`
+ * command (host: fastboot get_staged <file>) streams it back in one bulk transfer. */
+#define SHOT_STAGE_PA  0x55E00000u   /* 2 MB free on the Konkr (the active tiles moved to 0x54470000) */
+#define SHOT_STAGE_MAX 0x1F0000u
+static unsigned s_stage_len;
+static void cmd_shotstage(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_shot_source(unsigned int *pa, unsigned int *w, unsigned int *h, unsigned int *pitch_px);
+	extern int ayaneo_shot_overlay(unsigned int *pa, unsigned int *w, unsigned int *h, unsigned int *pitch_px);
+	unsigned pa, w, h, pitch, x, y;
+	const unsigned int *src;
+	unsigned int *hdr = (unsigned int *)SHOT_STAGE_PA;
+	unsigned short *dst = (unsigned short *)(SHOT_STAGE_PA + 16u);
+	int kind;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == 'o' && ayaneo_shot_overlay(&pa, &w, &h, &pitch)) kind = 2;
+	else kind = ayaneo_shot_source(&pa, &w, &h, &pitch);
+	if (16u + w * h * 2u > SHOT_STAGE_MAX) { fastboot_fail("frame too large"); return; }
+	src = (const unsigned int *)pa;
+	for (y = 0; y < h; y++)
+		for (x = 0; x < w; x++) {
+			unsigned int p = src[y * pitch + x];
+			dst[y * w + x] = (unsigned short)((((p >> 19) & 0x1fu) << 11) | (((p >> 10) & 0x3fu) << 5) | ((p >> 3) & 0x1fu));
+		}
+	hdr[0] = 0x544F4853u;   /* "SHOT" */
+	hdr[1] = w; hdr[2] = h; hdr[3] = (unsigned)kind;   /* 0 fb, 1 game plane, 2 overlay; all RGB565 */
+	s_stage_len = 16u + w * h * 2u;
+	snprintf(lbuf, sizeof lbuf, "stage: %s %ux%u rgb565 %u bytes (fastboot get_staged <file>)",
+		 kind == 2 ? "overlay" : kind ? "game" : "fb", w, h, s_stage_len);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+/* transcript of the last upload for `oem upstat` (the first attempt failed on the host side and
+ * the unbounded bulk writes then hung the fastboot thread: every write here is bounded) */
+static unsigned s_up_step, s_up_sent; static int s_up_rc;
+extern void fastboot_session_recover(void);   /* app/mt_boot/fastboot.c */
+static void cmd_upload(const char *arg, void *data, unsigned sz)
+{
+	extern int usb_write_with_timeout(void *buf, unsigned len, unsigned long timeout);   /* time_t */
+	static char rsp[64];
+	unsigned off = 0;
+	(void)arg; (void)data; (void)sz;
+	s_up_step = 1; s_up_sent = 0; s_up_rc = 0;
+	if (!s_stage_len) { s_up_step = 9; fastboot_fail("nothing staged (oem shotstage first)"); return; }
+	snprintf(rsp, sizeof rsp, "DATA%08x", s_stage_len);
+	s_up_rc = usb_write_with_timeout(rsp, 12, 2000);
+	if (s_up_rc < 0) { s_up_step = 2; fastboot_session_recover(); return; }
+	s_up_step = 3;
+	/* The QMU takes at most GPD_BUF_SIZE_ALIGN (64512) bytes per IN request and the write path
+	 * does not check (65536 byte chunks and a single 1.2 MB request both failed). IN requests
+	 * carry no ZLP, so 64512 = 126 x 512 byte chunks produce no short packet until the real
+	 * tail, and fastboot.exe's 1 MB reads (which end on any short packet) complete. */
+	while (off < s_stage_len) {
+		unsigned n = s_stage_len - off; if (n > 64512u) n = 64512u;
+		s_up_rc = usb_write_with_timeout((void *)(SHOT_STAGE_PA + off), n, 3000);
+		if (s_up_rc < 0) { s_up_step = 4; fastboot_session_recover(); return; }
+		off += n; s_up_sent = off;
+	}
+	s_up_step = 5;
+	fastboot_okay("");
+	s_up_step = 6;
+}
+static void cmd_upstat(const char *arg, void *data, unsigned sz)
+{
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "upstat: step=%u sent=%u rc=%d staged=%u", s_up_step, s_up_sent, s_up_rc, s_stage_len);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem led - the power LED thread's view: charger, battery percent, state (0 off 1 green 2 red) */
+static void cmd_led(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_led_chr, g_dbg_led_pct, g_dbg_led_state, g_dbg_led_ticks;
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "led: chr=%d pct=%d state=%d ticks=%d", g_dbg_led_chr, g_dbg_led_pct, g_dbg_led_state, g_dbg_led_ticks);
+	fastboot_info(lbuf);
+	{
+		extern volatile int g_dbg_alead_min, g_dbg_asnap_n, g_dbg_asnap_lead; extern volatile unsigned g_dbg_asnap_ms;
+		extern volatile unsigned g_dbg_aw_up_ms[2], g_dbg_aw_unmute_ms;
+		extern volatile unsigned g_dbg_idle_sleep_max_us, g_dbg_idle_sleeps;
+		snprintf(lbuf, sizeof lbuf, "aud: lead_min=%d snaps=%d last=%d at=%ums aw_up=%u/%u unmute=%u",
+			 g_dbg_alead_min, g_dbg_asnap_n, g_dbg_asnap_lead, g_dbg_asnap_ms, g_dbg_aw_up_ms[0], g_dbg_aw_up_ms[1], g_dbg_aw_unmute_ms);
+		fastboot_info(lbuf);
+		{ extern volatile int g_dbg_aw_dma;
+		  extern volatile unsigned g_dbg_emu_abs_ms; extern volatile int g_dbg_emu_chime;
+		  snprintf(lbuf, sizeof lbuf, "idle: sleeps=%u max=%uus aw_dma=%d emu@%ums chime=%d", g_dbg_idle_sleeps, g_dbg_idle_sleep_max_us, g_dbg_aw_dma, g_dbg_emu_abs_ms, g_dbg_emu_chime); }
+		fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
+
+/* oem hfp[:wc] - Konkr: DSI horizontal front porch word count (0 = read only); prints the line words */
+static void cmd_hfp(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int ayaneo_dsi_set_hfp_wc(unsigned int wc);
+	extern void ayaneo_dsi_line_words(unsigned int *hsa, unsigned int *hbp, unsigned int *hfp, unsigned int *ps);
+	unsigned v, old, hsa, hbp, hfp, ps;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	v = (*arg >= '0' && *arg <= '9') ? fb_dec(&arg) : 0u;
+	old = ayaneo_dsi_set_hfp_wc(v);
+	ayaneo_dsi_line_words(&hsa, &hbp, &hfp, &ps);
+	snprintf(lbuf, sizeof lbuf, "hfp: was %u now %u; hsa=%u hbp=%u ps=0x%x (measure: oem edges)", old, hfp, hsa, hbp, ps);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem dr:KHZ - Konkr: MIPI data rate live (250001..999999 kHz; stock 353935) */
+static void cmd_dr(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int ayaneo_dsi_set_dr_khz(unsigned int khz);
+	unsigned v, pcw;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	v = fb_dec(&arg);
+	pcw = ayaneo_dsi_set_dr_khz(v);
+	snprintf(lbuf, sizeof lbuf, "dr: %u kHz -> pcw 0x%08x %s (measure: oem edges / diag hz1000)", v, pcw, pcw ? "set" : "REJECTED");
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem chg - Konkr: MT6360 charger block raw registers (0x00 id, 0x4A status, 0x4B..0x4E) */
+static void cmd_chg(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_mt6360_chg_reg(unsigned char reg);
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "chg: 00=%02x 01=%02x 4a=%02x 4b=%02x 4c=%02x 4d=%02x 4e=%02x (4a>>6: 0 ready 1 charging 2 done 3 fault)",
+		 ayaneo_mt6360_chg_reg(0x00) & 0xff, ayaneo_mt6360_chg_reg(0x01) & 0xff, ayaneo_mt6360_chg_reg(0x4A) & 0xff,
+		 ayaneo_mt6360_chg_reg(0x4B) & 0xff, ayaneo_mt6360_chg_reg(0x4C) & 0xff, ayaneo_mt6360_chg_reg(0x4D) & 0xff, ayaneo_mt6360_chg_reg(0x4E) & 0xff);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem rewindmap - the rewind arena islands (phys base + MB) and the ring state line */
+static void cmd_rewindmap(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int ayaneo_rewind_island(unsigned int i, unsigned int *size);
+	extern void ayaneo_rewind_dbg_line(char *out, unsigned int cap);
+	unsigned i, s, b;
+	(void)arg; (void)data; (void)sz;
+	for (i = 0; (b = ayaneo_rewind_island(i, &s)) != 0; i++) {
+		snprintf(lbuf, sizeof lbuf, "island %u: 0x%08x +%u MB (end 0x%08x)", i, b, s >> 20, b + s);
+		fastboot_info(lbuf);
+	}
+	{ char l[160]; ayaneo_rewind_dbg_line(l, sizeof l); snprintf(lbuf, sizeof lbuf, "ring: %s", l); fastboot_info(lbuf); }
+	{
+		extern volatile unsigned int g_dbg_pt_bad, g_dbg_pt_first_va, g_dbg_pt_first_ms, g_dbg_pt_checks, g_dbg_pt_l1[4];
+		extern volatile unsigned int g_dbg_l2_diffs, g_dbg_l2_first_ms, g_dbg_l2_first_idx, g_dbg_l2_first_gb, g_dbg_l2_old_lo, g_dbg_l2_new_lo, g_dbg_l2_ticks;
+		extern unsigned int ayaneo_rewind_tables_addr(unsigned int g);
+		snprintf(lbuf, sizeof lbuf, "pt: checks=%u bad=%u first=0x%08x at %ums", g_dbg_pt_checks, g_dbg_pt_bad, g_dbg_pt_first_va, g_dbg_pt_first_ms);
+		fastboot_info(lbuf);
+		snprintf(lbuf, sizeof lbuf, "l2: ticks=%u diffs=%u first gb%u idx %u at %ums", g_dbg_l2_ticks, g_dbg_l2_diffs, g_dbg_l2_first_gb, g_dbg_l2_first_idx, g_dbg_l2_first_ms);
+		fastboot_info(lbuf);
+		snprintf(lbuf, sizeof lbuf, "l2 first: old %08x new %08x", g_dbg_l2_old_lo, g_dbg_l2_new_lo);
+		fastboot_info(lbuf);
+		{
+			extern volatile unsigned int g_dbg_l2_last[4][4]; extern unsigned int ayaneo_rewind_l2_owned(void);
+			unsigned r;
+			for (r = 0; r < 4u; r++) {
+				snprintf(lbuf, sizeof lbuf, "l2 hit%u: gb%u idx %u new %08x at %ums", r, g_dbg_l2_last[r][0], g_dbg_l2_last[r][1], g_dbg_l2_last[r][2], g_dbg_l2_last[r][3]);
+				fastboot_info(lbuf);
+			}
+			snprintf(lbuf, sizeof lbuf, "l2 owned tables: 0x%x (bit g = GB g table is ours)", ayaneo_rewind_l2_owned());
+			fastboot_info(lbuf);
+		}
+		snprintf(lbuf, sizeof lbuf, "l2 tables: gb1 %08x gb2 %08x gb3 %08x", ayaneo_rewind_tables_addr(1), ayaneo_rewind_tables_addr(2), ayaneo_rewind_tables_addr(3));
+		fastboot_info(lbuf);
+		{
+			extern volatile unsigned int g_dbg_mmu_log[8][3], g_dbg_mmu_log_n;
+			unsigned k, n = g_dbg_mmu_log_n;
+			for (k = (n > 8u ? n - 8u : 0u); k < n; k++) {
+				snprintf(lbuf, sizeof lbuf, "map%u: va %08x +%08x at %ums", k, g_dbg_mmu_log[k % 8u][0], g_dbg_mmu_log[k % 8u][1], g_dbg_mmu_log[k % 8u][2]);
+				fastboot_info(lbuf);
+			}
+		}
+	}
+	fastboot_okay("");
+}
+
+/* oem mmuq:HEXADDR - Konkr: is this VA mapped (page table walk), and the raw descriptors */
+static void cmd_mmuq(const char *arg, void *data, unsigned sz)
+{
+	extern int arch_mmu_probe(unsigned int vaddr, unsigned long long *l1, unsigned long long *l2);
+	unsigned long long l1 = 0, l2 = 0; unsigned a; int k;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	a = fb_hex(&arg);
+	k = arch_mmu_probe(a, &l1, &l2);
+	snprintf(lbuf, sizeof lbuf, "mmuq 0x%08x: %s l1=%08x%08x l2=%08x%08x", a,
+		 k == 1 ? "1GB block" : k == 2 ? "2MB section" : k == 3 ? "page table" : "UNMAPPED",
+		 (unsigned)(l1 >> 32), (unsigned)l1, (unsigned)(l2 >> 32), (unsigned)l2);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem persist - queue a settings write (eMMC + SD mirror) and report the last write's durations */
+static void cmd_persist(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_menu_settings_persist(void);
+	extern volatile unsigned g_dbg_persist_emmc_us, g_dbg_persist_sd_us, g_dbg_persist_n;
+	extern volatile int g_dbg_mlead_min;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (arg[0] == 'r') g_dbg_mlead_min = 99999;
+	else ayaneo_menu_settings_persist();
+	snprintf(lbuf, sizeof lbuf, "persist: n=%u emmc=%uus sd=%uus menu_lead_min=%d", g_dbg_persist_n, g_dbg_persist_emmc_us, g_dbg_persist_sd_us, g_dbg_mlead_min);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem aw[:reinit] - Konkr speaker amps: state per amp, optionally redo the bring-up */
+static void cmd_aw(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_aw88166_diag(int k, char *buf, unsigned cap);
+	extern void ayaneo_aw88166_reinit(void);
+	extern void ayaneo_aw88166_start(void);
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (arg[0] == 'r') ayaneo_aw88166_reinit();
+	else if (arg[0] == 's') ayaneo_aw88166_start();
+	ayaneo_aw88166_diag(0, lbuf, sizeof lbuf); fastboot_info(lbuf);
+	ayaneo_aw88166_diag(1, lbuf, sizeof lbuf); fastboot_info(lbuf);
+	{ extern void ayaneo_aw88166_times(int k, char *buf, unsigned cap);
+	  ayaneo_aw88166_times(0, lbuf, sizeof lbuf); fastboot_info(lbuf);
+	  ayaneo_aw88166_times(1, lbuf, sizeof lbuf); fastboot_info(lbuf); }
+	fastboot_okay("");
+}
+
+/* oem bfi[:window] - Konkr: lit fraction of the frame (1024ths) for the Strobe (BFI) mode */
+static void cmd_bfi(const char *arg, void *data, unsigned sz)
+{
+	extern void disp_pwm_bfi_window(unsigned int w);
+	extern unsigned int disp_pwm_bfi_window_get(void);
+	extern int ayaneo_get_strobe(void);
+	unsigned w;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	w = fb_dec(&arg);
+	if (w) disp_pwm_bfi_window(w);
+	snprintf(lbuf, sizeof lbuf, "bfi: window=%u/1024 strobe=%s", disp_pwm_bfi_window_get(), ayaneo_get_strobe() ? "on" : "off");
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+static void cmd_vdiv(const char *arg, void *data, unsigned sz)
+{
+	extern volatile unsigned int g_vsync_div;
+	extern unsigned int ayaneo_dsi_default_vfp(void);
+	extern void ayaneo_dsi_set_vfp(unsigned int vfp);
+	unsigned v;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	v = fb_dec(&arg); if (v < 1u) v = 1u; if (v > 4u) v = 4u;
+	g_vsync_div = v;
+	ayaneo_dsi_set_vfp(ayaneo_dsi_default_vfp());   /* re-rest the panel at div x GBA rate */
+	snprintf(lbuf, sizeof lbuf, "vdiv: %u, default vfp now %u", v, ayaneo_dsi_default_vfp());
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* `oem edges`: how often does the display pipe actually finish a frame? Counts RDMA0 FRAME_END
+ * rises over 500 ms by polling (clear, wait rise, repeat) and reports edges per second next to
+ * the DSI timing's computed refresh. Also samples the raw status register a few times. */
+static void cmd_edges(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_rdma_wait_frame_end(unsigned int timeout_us);
+	extern unsigned int gpt4_get_current_tick(void), ayaneo_dsi_refresh_milli(void);
+	unsigned int t0 = gpt4_get_current_tick(), n = 0, to = 0, first = 0, last = 0;
+	(void)arg; (void)data; (void)sz;
+	while ((gpt4_get_current_tick() - t0) < 6500000u) {   /* 500 ms */
+		unsigned int t = gpt4_get_current_tick();
+		if (ayaneo_rdma_wait_frame_end(40000u)) { n++; if (!first) first = t; last = gpt4_get_current_tick(); }
+		else to++;
+	}
+	snprintf(lbuf, sizeof lbuf, "edges: rdma0 frame_end %u in 500ms (%u/s) timeouts=%u dsi=%umHz",
+		 n, n * 2u, to, ayaneo_dsi_refresh_milli());
+	fastboot_info(lbuf);
+	if (n > 1) {
+		snprintf(lbuf, sizeof lbuf, "edges: mean period %u us", ((last - first) / 13u) / (n - 1u));
+		fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
+
+/* `oem latch`: how often does the overlay actually switch to a new buffer? Samples the LIVE
+ * OVL0_2L L0 address register for one second and counts changes; the frame buffer layer (menu
+ * canvas, FB_LAYER) and the resizer game layer both sit on OVL0_2L L0. 60 changes/s = every
+ * presented frame reaches the panel; 30 = every other present is lost. */
+static void cmd_latch(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int gpt4_get_current_tick(void);
+	extern void udelay(unsigned long usec);
+	volatile unsigned int *l0 = (volatile unsigned int *)(0x14009000u + 0xF40u);   /* OVL0_2L L0_ADDR */
+	volatile unsigned int *l0b = (volatile unsigned int *)(0x14008000u + 0xF40u);  /* OVL0 L0_ADDR */
+	unsigned int t0 = gpt4_get_current_tick(), a = *l0, b = *l0b, na = 0, nb = 0, samples = 0;
+	(void)arg; (void)data; (void)sz;
+	while ((gpt4_get_current_tick() - t0) < 13000000u) {   /* 1 s */
+		unsigned int x = *l0, y = *l0b;
+		if (x != a) { na++; a = x; }
+		if (y != b) { nb++; b = y; }
+		samples++;
+		udelay(100);
+	}
+	snprintf(lbuf, sizeof lbuf, "latch: ovl0_2l l0 addr changes/s=%u ovl0 l0=%u samples=%u", na, nb, samples);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "latch: ovl0_2l l0 addr now=0x%08x ovl0=0x%08x", a, b);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* `oem clk`: is GPT4 really 13 MHz on this board? Compare it with the ARM architected timer
+ * (CNTFRQ is the CPU's own statement of that timer's rate) over ~100 ms, and dump the GPT4
+ * clock / control registers. Every emulator pacing constant assumes 13 MHz. */
+static void cmd_clk(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int gpt4_get_current_tick(void);
+	unsigned int cntfrq, g0, g1; unsigned long long c0, c1;
+	volatile unsigned int *gpt4_con = (volatile unsigned int *)(0x10008000u + 0x40u);
+	volatile unsigned int *gpt4_clk = (volatile unsigned int *)(0x10008000u + 0x44u);
+	(void)arg; (void)data; (void)sz;
+	__asm__ volatile("mrc p15, 0, %0, c14, c0, 0" : "=r"(cntfrq));
+	__asm__ volatile("mrrc p15, 0, %Q0, %R0, c14" : "=r"(c0));
+	g0 = gpt4_get_current_tick();
+	while ((gpt4_get_current_tick() - g0) < 1300000u) ;   /* "100 ms" of gpt4 at 13 MHz */
+	__asm__ volatile("mrrc p15, 0, %Q0, %R0, c14" : "=r"(c1));
+	g1 = gpt4_get_current_tick();
+	{
+		unsigned int dg = g1 - g0, dc = (unsigned int)(c1 - c0);
+		/* gpt4 rate = dg / (dc / cntfrq) */
+		unsigned long long gpt_hz = dc ? ((unsigned long long)dg * cntfrq) / dc : 0;
+		snprintf(lbuf, sizeof lbuf, "clk: cntfrq=%u archticks=%u gpt4ticks=%u -> gpt4=%u Hz",
+			 cntfrq, dc, dg, (unsigned int)gpt_hz);
+		fastboot_info(lbuf);
+	}
+	snprintf(lbuf, sizeof lbuf, "clk: GPT4_CON=0x%08x GPT4_CLK=0x%08x", *gpt4_con, *gpt4_clk);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+static void cmd_vfp(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_dsi_set_vfp(unsigned int vfp);
+	extern unsigned int ayaneo_dsi_get_vfp(void), ayaneo_dsi_refresh_milli(void);
+	unsigned v;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	v = fb_dec(&arg);
+	ayaneo_dsi_set_vfp(v);
+	snprintf(lbuf, sizeof lbuf, "vfp: asked %u now %u -> computed %u mHz (measure with oem diag hz1000)",
+		 v, ayaneo_dsi_get_vfp(), ayaneo_dsi_refresh_milli());
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -855,6 +1404,33 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem strobelk:", cmd_strobelk, 1, 0); /* vsync-locked strobe: div,duty */
 	fastboot_register("oem od:", cmd_od, 1, 0);             /* software overdrive: on,kup,kdn,thr,cap */
 	fastboot_register("oem odup:", cmd_odup, 1, 0);         /* prev-indexed rising curve: kuphi,kuplo,gam */
-	fastboot_register("oem rot:", cmd_rot, 1, 0);           /* Konkr: 0 clockwise / 1 counter clockwise turn */
+	fastboot_register("oem rot:", cmd_rot, 1, 0);
+	fastboot_register("oem igm", cmd_igm, 1, 0);           /* Konkr: 0 clockwise / 1 counter clockwise turn */
+	fastboot_register("oem shot", cmd_shot, 1, 0);
+#if defined(KONKR_KPA)
+	fastboot_register("oem aw", cmd_aw, 1, 0);
+	fastboot_register("oem bfi", cmd_bfi, 1, 0);
+	fastboot_register("oem led", cmd_led, 1, 0);
+	fastboot_register("oem persist", cmd_persist, 1, 0);
+	fastboot_register("oem hfp", cmd_hfp, 1, 0);
+	fastboot_register("oem chg", cmd_chg, 1, 0);
+	fastboot_register("oem rewindmap", cmd_rewindmap, 1, 0);
+	fastboot_register("oem mmuq:", cmd_mmuq, 1, 0);
+	fastboot_register("oem dr:", cmd_dr, 1, 0);
+#endif
+	fastboot_register("oem shotstage", cmd_shotstage, 1, 0);   /* pack the frame for `upload` */
+	fastboot_register("upload", cmd_upload, 1, 0);              /* fastboot get_staged <file> */
+	fastboot_register("oem upstat", cmd_upstat, 1, 0);          /* dump the displayed frame (game buffer or fb), /step */
+	fastboot_register("oem mode", cmd_mode, 1, 0);          /* bootloader vs emulator channel, menu/game state */
+	fastboot_register("oem vfp:", cmd_vfp, 1, 0);           /* set the DSI vertical front porch live */
+	fastboot_register("oem edges", cmd_edges, 1, 0);        /* measure display frame-end rate */
+	fastboot_register("oem latch", cmd_latch, 1, 0);        /* overlay buffer switches per second */
+	fastboot_register("oem clk", cmd_clk, 1, 0);            /* gpt4 rate vs the ARM architected timer */
+	fastboot_register("oem vdiv:", cmd_vdiv, 1, 0);         /* vsync divider (panel = N x core rate) */
+#ifdef KONKR_KPA
+	fastboot_register("oem lcm", cmd_lcm, 1, 0);            /* Konkr: glass id pins + dsi state */
+	fastboot_register("oem lcminit:", cmd_lcminit, 1, 0);   /* Konkr: force panel init with table N */
+	fastboot_register("oem gpio:", cmd_gpio, 1, 0);         /* Konkr: read one gpio */
+#endif
 	fastboot_register("oem selftest", cmd_selftest, 1, 0);
 }

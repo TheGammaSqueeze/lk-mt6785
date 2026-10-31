@@ -2729,6 +2729,26 @@ static void udc_devcapa_desc_fill_u3(unsigned char *data) {
 }
 #endif
 
+/* Drop a queued request whose host side went away (fastboot INFO write that timed out). Stops
+ * the endpoint's QMU, flushes its queue and forgets the request, so the bytes are never handed
+ * to the next host that connects. Without this a stale response is delivered as the reply to
+ * the next command and every later command is answered one step late. */
+int udc_request_cancel(struct udc_endpoint *ept, struct udc_request *req)
+{
+	if (!ept)
+		return -1;
+	enter_critical_section();
+	if (ept->req == req || req == NULL) {
+#ifdef SUPPORT_QMU
+		mu3d_hal_flush_qmu(ept->num, ept->in ? USB_DIR_IN : USB_DIR_OUT);
+#endif
+		ept->req = NULL;
+		ept->status = -1;
+	}
+	exit_critical_section();
+	return 0;
+}
+
 int udc_start(void) {
 	struct udc_descriptor *desc;
 	unsigned char *data;

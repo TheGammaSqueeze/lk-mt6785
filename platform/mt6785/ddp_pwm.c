@@ -83,8 +83,50 @@ static disp_pwm_id_t g_pwm_main_id = DISP_PWM0;
  * (normal ~kHz dimming). 256 gives ~98Hz on this panel (flicker-free, real blur reduction). The
  * user's brightness rides on the duty (CON_1), so brightness and strobe cooperate. */
 static unsigned int g_strobe_div = 0;
+static volatile int g_strobe_locked;   /* 1 = re-align the pulse every frame (disp_pwm_strobe_tick) */
+#if defined(KONKR_KPA)
+/* Konkr: "Strobe" is black frame insertion done with the backlight. One PWM period per panel
+ * frame (26 MHz / (424 + 1) / 1024 = 59.74 Hz), the counter restarted at every RDMA frame end
+ * by the pacer (disp_pwm_strobe_tick from rot_pace), so the lit part of the period is the
+ * vertical blanking right after the panel finished scanning the new frame (the ~3.8 ms at
+ * vfp 294) plus a little: the pulse is at most BFI_WINDOW/1024 of the period and the user's
+ * brightness scales it (disp_pwm_set_backlight), so brightness still works under BFI. */
+#define BFI_DIV     424u
+/* lit fraction of the frame in 1024ths at full brightness: 512 = half the frame dark (the
+ * usual BFI duty; a quarter was far too dark). oem bfi:N tunes it live. */
+static unsigned int g_bfi_window = 512u;
+static int g_bfi;
+static unsigned int s_last_level_1024 = 1023u;
+static int g_bfi_mode;                 /* 0 off, 1 one pulse per frame */
+void disp_pwm_bfi_window(unsigned int w)
+{
+	if (w < 64u) w = 64u;
+	if (w > 1024u) w = 1024u;
+	g_bfi_window = w;
+	if (g_bfi && g_pwm_inited)
+		disp_pwm_set_backlight(g_pwm_main_id, (int)s_last_level_1024);
+}
+unsigned int disp_pwm_bfi_window_get(void) { return g_bfi_window; }
+#endif
 void disp_pwm_strobe_mode(int on)
 {
+#if defined(KONKR_KPA)
+	/* on = BFI level as the user reads it, the DARK fraction: 1 = 25 % dark (lit 768/1024),
+	 * 2 = 50 % (512), 3 = 75 % dark (lit 256); 4..6 = the same fractions with TWO pulses per
+	 * frame (carrier at half the period, ~119 Hz: far less flicker, a faint double image on
+	 * fast motion), still re-aligned to the frame end every frame */
+	{
+		int lvl = on ? ((on - 1) % 3) + 1 : 0;
+		g_bfi_mode = on ? 1 : 0;   /* one pulse per frame */
+		if (lvl) g_bfi_window = (lvl >= 3) ? 256u : (lvl == 2 ? 512u : 768u);
+		g_bfi = lvl ? 1 : 0;
+		g_strobe_div = lvl ? BFI_DIV : 0u;
+	}
+	g_strobe_locked = on ? 1 : 0;
+	if (g_pwm_inited)
+		disp_pwm_set_backlight(g_pwm_main_id, (int)s_last_level_1024);   /* re-applies divider + scaled duty */
+	return;
+#endif
 	g_strobe_div = on ? 256u : 0u;
 	/* Apply the divider to CON_0 immediately. The brightness path caches same-level calls and
 	 * skips the PWM write, so a menu toggle would otherwise not take effect until the next
@@ -227,7 +269,21 @@ int disp_pwm_set_backlight(disp_pwm_id_t id, int level_1024)
 
 	reg_base = pwm_get_reg_base(id);
 
+#if defined(KONKR_KPA)
+	s_last_level_1024 = (unsigned int)level_1024;
+#endif
 	level_1024 = disp_pwm_level_remap(id, level_1024);
+#if defined(KONKR_KPA)
+	if (g_bfi && level_1024 > 0) {
+		/* BFI: the brightness becomes the pulse width inside the per frame lit window. A low
+		 * brightness setting must not shrink the pulse to nothing: clamp it to a fifth of the
+		 * window so the panel stays readable at the lowest setting. */
+		level_1024 = (level_1024 * (int)g_bfi_window + 512) / 1024;
+		/* the boost on the flex does not light pulses much under 3 ms: keep the pulse at least
+		 * 192/1024 of the frame (3.1 ms) whatever the brightness setting */
+		if (level_1024 < 192) level_1024 = 192;
+	}
+#endif
 
 	PWM_REG_SET(reg_base + DISP_PWM_COMMIT_OFF, 0);
 	PWM_REG_SET(reg_base + DISP_PWM_CON_0_OFF, g_strobe_div << 16);  /* strobe divider (0 = normal dimming) */
@@ -266,8 +322,6 @@ int disp_pwm_set_backlight(disp_pwm_id_t id, int level_1024)
  *    pulse fires per frame, phase-locked to the panel. That removes the double-image while
  *    keeping the persistence cut. div sets the period (~1 frame), duty the ON fraction.
  * div=0 disables the strobe and restores the normal dimming carrier at the given duty. */
-static volatile int          g_strobe_locked;   /* 1 = re-align the pulse every frame */
-
 void disp_pwm_strobe(unsigned int div, unsigned int duty)
 {
 	unsigned int reg_base = pwm_get_reg_base(g_pwm_main_id);

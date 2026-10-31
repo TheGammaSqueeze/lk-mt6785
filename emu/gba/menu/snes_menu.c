@@ -7,6 +7,7 @@
  * g_perf_tick is NULL (host / release without the hook). */
 unsigned (*g_perf_tick)(void) = 0;
 unsigned g_perf[8];              /* 0 wp, 1 chrome, 2 carousel, 3 filmstrip, 4 rest */
+unsigned g_perf_xf[2];           /* card tiles rendered since boot: 0 dark (ctile), 1 active (fct) */
 static unsigned g_perf_last;
 #define PERF_BEGIN() do { if (g_perf_tick) g_perf_last = g_perf_tick(); } while (0)
 #define PERF_END(i)  do { if (g_perf_tick) { unsigned n_ = g_perf_tick(); \
@@ -21,24 +22,46 @@ static unsigned g_perf_last;
 enum { VIEW_CONTENT, VIEW_TOP, VIEW_BOTTOM, VIEW_WALL, VIEW_CONTAIN, VIEW_BANNERX };
 #define ASP_CONTENT_S 1.18519f    /* (16/9)/(3/2): capped content zoom */
 #define ASP_WALL_S    1.75824f    /* 480/273: wallpaper fill zoom */
+
+/* m->aspect: 0 = 16:9 (native 1280x720, letterboxed), 1 = 4:3 (1280x960, the Pocket Air Mini),
+ * 2 = 3:2 (1280x853, the Konkr Pocket Advance's 960x640 screen drawn on the 4/3 scaled canvas).
+ * renderer.js setAspect: a = min(aspect, 16/9); halfH = 640 / a; barShiftY = halfH - 360;
+ * wallpaperScale = halfH / 273 (WALL_FILL_HALF); contentScale = min(halfH / 360, (16/9)/(3/2)).
+ * 4:3: halfH 480, bar 120, wall 1.75824, content 1.18519. 3:2: halfH 426.5 (853 rows), bar 66.5,
+ * wall 1.56227, content 1.18519 (the cap is exactly the 3:2 fill, so both zoom the same). */
+static float asp_cy(const snes_menu *m)     { return m->aspect == 2 ? 426.5f : (m->aspect ? 480.0f : 360.0f); }
+static float asp_bar(const snes_menu *m)    { return m->aspect == 2 ? 66.5f : (m->aspect ? 120.0f : 0.0f); }
+static float asp_wall_s(const snes_menu *m) { return m->aspect == 2 ? 1.56227f : (m->aspect ? ASP_WALL_S : 1.0f); }
+static int   asp_h(const snes_menu *m)      { return m->aspect == 2 ? 853 : (m->aspect ? 960 : SNES_VH); }
+static float m_base(const snes_menu *m)     { return (m->base > 0.0f) ? m->base : 1.0f; }
+/* warped wallpaper cache geometry per aspect, in framebuffer pixels (period = WP_CACHE_W * wall
+ * scale * base, rows = screen rows * base). At base 1 these are the historical 2701 x 960 (4:3)
+ * and 2400 x 853 (3:2). */
+static int   wpw_period(const snes_menu *m) { return (int)((float)WP_CACHE_W * asp_wall_s(m) * m_base(m) + 0.5f); }
+static int   wpw_h(const snes_menu *m)      { return (int)((float)asp_h(m) * m_base(m) + 0.5f); }
+static int   wpw_top_skip(const snes_menu *m) { return (int)((float)WP43_TOP_SKIP * m_base(m)); }
+static int   wpw_bot_keep(const snes_menu *m) { return (int)((float)(m->aspect == 2 ? WP43_BOT_KEEP - (960 - 853) : WP43_BOT_KEEP) * m_base(m)); }
+static int   fb_vw(const snes_menu *m)      { return (int)((float)SNES_VW * m_base(m) + 0.5f); }
+static void  fct_invalidate(snes_menu *m)   { int k; m->fct_ready = 0; m->fct_gi = -1; for (k = 0; k < 8; k++) m->fct_key[k] = -1; }
+
 static void set_view(snes_menu *m, snes_target *t, int group)
 {
+	float cy = asp_cy(m), bar = asp_bar(m), ws = asp_wall_s(m);
 	if (!m->aspect) { snes_target_view(t, 1.0f, 1.0f, 0.0f, 0.0f); return; }
 	switch (group) {
 	case VIEW_TOP:
 		snes_target_view(t, 1.0f, 1.0f, 0.0f, 0.0f); break;
 	case VIEW_BOTTOM:
-		snes_target_view(t, 1.0f, 1.0f, 0.0f, 240.0f); break;
+		snes_target_view(t, 1.0f, 1.0f, 0.0f, 2.0f * bar); break;
 	case VIEW_WALL:
-		snes_target_view(t, ASP_WALL_S, ASP_WALL_S,
-				 640.0f - ASP_WALL_S * 640.0f, 480.0f - ASP_WALL_S * 360.0f); break;
+		snes_target_view(t, ws, ws, 640.0f - ws * 640.0f, cy - ws * 360.0f); break;
 	case VIEW_CONTAIN:
-		snes_target_view(t, 1.0f, 1.0f, 0.0f, 120.0f); break;
+		snes_target_view(t, 1.0f, 1.0f, 0.0f, bar); break;
 	case VIEW_BANNERX:
-		snes_target_view(t, 1.0f, ASP_CONTENT_S, 0.0f, 480.0f - ASP_CONTENT_S * 360.0f); break;
+		snes_target_view(t, 1.0f, ASP_CONTENT_S, 0.0f, cy - ASP_CONTENT_S * 360.0f); break;
 	default: /* VIEW_CONTENT */
 		snes_target_view(t, ASP_CONTENT_S, ASP_CONTENT_S,
-				 640.0f - ASP_CONTENT_S * 640.0f, 480.0f - ASP_CONTENT_S * 360.0f); break;
+				 640.0f - ASP_CONTENT_S * 640.0f, cy - ASP_CONTENT_S * 360.0f); break;
 	}
 }
 
@@ -292,19 +315,19 @@ static inline uint32_t wp_lerp(uint32_t a, uint32_t b, int fx)
 }
 static void build_wp43(snes_menu *m)
 {
-	float inv = 1.0f / ASP_WALL_S;
-	float vdy = 480.0f - ASP_WALL_S * 360.0f;
-	int Y, s;
+	float bs = m_base(m), ws = asp_wall_s(m) * bs, inv = 1.0f / ws;
+	float vdy = (asp_cy(m) - asp_wall_s(m) * 360.0f) * bs;
+	int Y, s, period = wpw_period(m), rows = wpw_h(m);
 	if (!m->wp43 || !m->wp_ready) return;
 	/* The 4:3 warp upscales the 1536-wide wp horizontally ~1.76x and warps it
 	 * vertically. Nearest sampling here duplicated whole columns/rows = the visible
 	 * aliasing/shimmer on the wallpaper. Bilinear over the 2x2 wp neighbourhood
 	 * removes it. This runs ONCE (cached in wp43), so there is zero per-frame cost -
 	 * the interpolation is off the render hot path entirely. */
-	for (Y = 0; Y < WP43_H; Y++) {
+	for (Y = 0; Y < rows; Y++) {
 		float wyf = ((float)Y - vdy) * inv;
 		int wy0 = (int)wyf, wy1, fy;
-		uint32_t *dst = m->wp43 + (unsigned)Y * WP43_PERIOD;
+		uint32_t *dst = m->wp43 + (unsigned)Y * (unsigned)period;
 		const uint32_t *r0, *r1;
 		fy = (int)((wyf - (float)wy0) * 256.0f);
 		wy1 = wy0 + 1;
@@ -312,7 +335,7 @@ static void build_wp43(snes_menu *m)
 		if (wy1 < 0) wy1 = 0; else if (wy1 >= WP_CACHE_H) wy1 = WP_CACHE_H - 1;
 		r0 = m->wp + (unsigned)wy0 * WP_CACHE_W;
 		r1 = m->wp + (unsigned)wy1 * WP_CACHE_W;
-		for (s = 0; s < WP43_PERIOD; s++) {
+		for (s = 0; s < period; s++) {
 			float wxf = (float)s * inv;
 			int wxi = (int)wxf;
 			int fx = (int)((wxf - (float)wxi) * 256.0f);
@@ -324,6 +347,7 @@ static void build_wp43(snes_menu *m)
 		}
 	}
 	m->wp43_ready = 1;
+	m->wp43_aspect = m->aspect;
 }
 /* Pre-build the wallpaper + 4:3 warped caches now (at menu init), so the one-time
  * ~2.6M-pixel bilinear warp does not land on the first on-screen frame/scroll as a
@@ -348,7 +372,7 @@ static void build_rcache(snes_menu *m, snes_target *t)
 	snes_target ct = *t;
 	unsigned i, n = (unsigned)t->pitch * (unsigned)t->H;
 	float save_y = m->resume->tf[5];
-	int y, x, y0 = t->H, y1 = 0, W = t->W < SNES_VW ? t->W : SNES_VW;
+	int y, x, y0 = t->H, y1 = 0, vw = snes_target_vw(t), W = t->W < vw ? t->W : vw;
 	if (!m->rcache) return;
 	ct.fb = m->rcache;
 	for (i = 0; i < n; i++) m->rcache[i] = 0;      /* transparent */
@@ -381,38 +405,39 @@ static void build_rcache(snes_menu *m, snes_target *t)
 static void draw_wp_43(snes_menu *m, snes_target *t, int scroll_px)
 {
 	int Y, X, off = ((scroll_px % WP_CACHE_W) + WP_CACHE_W) % WP_CACHE_W;
-	float inv = 1.0f / ASP_WALL_S;
-	float vdx = 640.0f - ASP_WALL_S * 640.0f, vdy = 480.0f - ASP_WALL_S * 360.0f;
+	float bs = m_base(m), ws = asp_wall_s(m) * bs, inv = 1.0f / ws;
+	float vdx = (640.0f - asp_wall_s(m) * 640.0f) * bs, vdy = (asp_cy(m) - asp_wall_s(m) * 360.0f) * bs;
+	int period = wpw_period(m), rows = wpw_h(m), VW = fb_vw(m);
 	if (!m->wp_ready) return;
 
 	if (m->wp43) {
 		int s0;
-		if (!m->wp43_ready) build_wp43(m);
+		if (!m->wp43_ready || m->wp43_aspect != m->aspect) build_wp43(m);
 		/* screen col X maps to cache col wrap(X - vdx + off*ASP_WALL_S); as X steps
 		 * by 1 the cache col steps by 1, so a screen row is a contiguous cache run. */
 		/* In 4:3, skip the rows fully hidden behind the opaque top menubar and bottom
 		 * SUPER NINTENDO bars (they overwrite them anyway): not writing the wallpaper
 		 * in [0,WP43_TOP_SKIP) + [WP43_BOT_KEEP,H) cuts ~18% of this full-screen memcpy
 		 * = real headroom on the memory-bound A55. Host-validated clip==noclip. */
-		int y0 = m->aspect ? WP43_TOP_SKIP : 0;
-		int y1 = m->aspect ? WP43_BOT_KEEP : t->H;
+		int y0 = m->aspect ? wpw_top_skip(m) : 0;
+		int y1 = m->aspect ? wpw_bot_keep(m) : t->H;
 		if (y1 > t->H) y1 = t->H;
-		if (y1 > WP43_H) y1 = WP43_H;
-		s0 = (int)(-vdx + (float)off * ASP_WALL_S + 0.5f) % WP43_PERIOD;
-		if (s0 < 0) s0 += WP43_PERIOD;
+		if (y1 > rows) y1 = rows;
+		s0 = (int)(-vdx + (float)off * ws + 0.5f) % period;
+		if (s0 < 0) s0 += period;
 		for (Y = y0; Y < y1; Y++) {
 			uint32_t *dst = t->fb + (unsigned)Y * t->pitch + t->offx;
 			const uint32_t *crow;
 			int first;
 			if (m->wp_skip1 > m->wp_skip0 && Y >= m->wp_skip0 && Y < m->wp_skip1)
 				continue;    /* row is fully hidden by an opaque overlay (submenu panel) */
-			crow = m->wp43 + (unsigned)Y * WP43_PERIOD;
-			first = WP43_PERIOD - s0;
-			if (first >= SNES_VW) {
-				memcpy(dst, crow + s0, (unsigned)SNES_VW * 4u);
+			crow = m->wp43 + (unsigned)Y * (unsigned)period;
+			first = period - s0;
+			if (first >= VW) {
+				memcpy(dst, crow + s0, (unsigned)VW * 4u);
 			} else {
 				memcpy(dst, crow + s0, (unsigned)first * 4u);
-				memcpy(dst + first, crow, (unsigned)(SNES_VW - first) * 4u);
+				memcpy(dst + first, crow, (unsigned)(VW - first) * 4u);
 			}
 		}
 		return;
@@ -421,17 +446,17 @@ static void draw_wp_43(snes_menu *m, snes_target *t, int scroll_px)
 	/* fallback: per-pixel gather */
 	{
 		static int xmap[SNES_VW];
-		for (X = 0; X < SNES_VW; X++) {
+		for (X = 0; X < VW; X++) {
 			int wx = (int)(((float)X - vdx) * inv) + off;
 			wx %= WP_CACHE_W; if (wx < 0) wx += WP_CACHE_W;
 			xmap[X] = wx;
 		}
-		for (Y = 0; Y < t->H && Y < 960; Y++) {
+		for (Y = 0; Y < t->H && Y < rows; Y++) {
 			int wy = (int)(((float)Y - vdy) * inv);
 			uint32_t *src, *dst = t->fb + (unsigned)Y * t->pitch + t->offx;
 			if (wy < 0) wy = 0; if (wy >= WP_CACHE_H) wy = WP_CACHE_H - 1;
 			src = m->wp + (unsigned)wy * WP_CACHE_W;
-			for (X = 0; X < SNES_VW; X++) dst[X] = src[xmap[X]];
+			for (X = 0; X < VW; X++) dst[X] = src[xmap[X]];
 		}
 	}
 }
@@ -440,6 +465,21 @@ static void draw_wp(snes_menu *m, snes_target *t, int scroll_px)
 	int cy, off = ((scroll_px % WP_CACHE_W) + WP_CACHE_W) % WP_CACHE_W;
 	if (m->aspect) { draw_wp_43(m, t, scroll_px); return; }
 	if (!m->wp_ready) return;
+	if (m_base(m) != 1.0f) {
+		/* native scale: nearest resample of the design wide cache rows */
+		float inv = 1.0f / m_base(m);
+		int VW = fb_vw(m), rows = (int)((float)WP_CACHE_H * m_base(m) + 0.5f), X;
+		for (cy = 0; cy < rows && t->offy + cy < t->H; cy++) {
+			int sy = (int)((float)cy * inv); if (sy >= WP_CACHE_H) sy = WP_CACHE_H - 1;
+			uint32_t *src = m->wp + (unsigned)sy * WP_CACHE_W;
+			uint32_t *dst = t->fb + (unsigned)(t->offy + cy) * t->pitch + t->offx;
+			for (X = 0; X < VW; X++) {
+				int sx = ((int)((float)X * inv) + off) % WP_CACHE_W;
+				dst[X] = src[sx];
+			}
+		}
+		return;
+	}
 	for (cy = 0; cy < WP_CACHE_H; cy++) {
 		uint32_t *src = m->wp + cy * WP_CACHE_W;
 		uint32_t *dst = t->fb + (unsigned)(t->offy + cy) * t->pitch + t->offx;
@@ -523,12 +563,12 @@ static uint16_t s_chrome_nrun[CHROME_H];
 static void build_chrome(snes_menu *m)
 {
 	snes_target ct;
-	int H = m->aspect ? CHROME_H : SNES_VH;
+	int H = wpw_h(m), VW = fb_vw(m);
 	unsigned i, n = (unsigned)SNES_VW * (unsigned)H;
 	if (!m->chrome || !m->homemenu) return;
 	for (i = 0; i < n; i++) m->chrome[i] = CHROME_SENTINEL;
-	ct.fb = m->chrome; ct.pitch = SNES_VW; ct.W = SNES_VW; ct.H = H;
-	ct.offx = 0; ct.offy = 0;
+	ct.fb = m->chrome; ct.pitch = SNES_VW; ct.W = VW; ct.H = H;
+	ct.offx = 0; ct.offy = 0; ct.base = m_base(m);
 	if (!m->aspect) {
 		snes_target_view(&ct, 1.0f, 1.0f, 0.0f, 0.0f);
 		snes_render_node(&ct, &m->home, m->homemenu);
@@ -562,18 +602,18 @@ static void build_chrome(snes_menu *m)
 	 * every frame in the home/resume states) can memcpy the runs instead of doing
 	 * a per-pixel alpha branch over 921600 pixels - a big per-frame CPU saving. */
 	{
-		int y, x, H = m->aspect ? CHROME_H : SNES_VH;
+		int y, x, H = wpw_h(m), VW = fb_vw(m);
 		for (y = 0; y < H; y++) {
 			const uint32_t *src = m->chrome + (unsigned)y * SNES_VW;
 			int nr = 0, x0 = -1;
-			for (x = 0; x < SNES_VW; x++) {
+			for (x = 0; x < VW; x++) {
 				if (src[x] & 0xFF000000u) { if (x0 < 0) x0 = x; }
 				else if (x0 >= 0) {
 					if (nr < CHROME_MAXRUN) { s_chrome_run[(y*CHROME_MAXRUN+nr)*2]=(uint16_t)x0; s_chrome_run[(y*CHROME_MAXRUN+nr)*2+1]=(uint16_t)x; nr++; }
 					x0 = -1;
 				}
 			}
-			if (x0 >= 0 && nr < CHROME_MAXRUN) { s_chrome_run[(y*CHROME_MAXRUN+nr)*2]=(uint16_t)x0; s_chrome_run[(y*CHROME_MAXRUN+nr)*2+1]=(uint16_t)SNES_VW; nr++; }
+			if (x0 >= 0 && nr < CHROME_MAXRUN) { s_chrome_run[(y*CHROME_MAXRUN+nr)*2]=(uint16_t)x0; s_chrome_run[(y*CHROME_MAXRUN+nr)*2+1]=(uint16_t)VW; nr++; }
 			s_chrome_nrun[y] = (uint16_t)nr;
 		}
 	}
@@ -581,7 +621,7 @@ static void build_chrome(snes_menu *m)
 }
 static void draw_chrome(snes_menu *m, snes_target *t)
 {
-	int y, i, H = m->aspect ? CHROME_H : SNES_VH;
+	int y, i, H = wpw_h(m);
 	if (!m->chrome_ready) { snes_render_node(t, &m->home, m->homemenu); return; }
 	for (y = 0; y < H; y++) {
 		const uint32_t *src = m->chrome + (unsigned)y * SNES_VW;
@@ -774,7 +814,7 @@ static int draw_focus_slide(snes_menu *m, snes_target *t)
 	mbx   = 448.0f + 96.0f * (float)m->mb_focus;
 	cvx  = m->aspect ? ASP_CONTENT_S : 1.0f;
 	cvdx = m->aspect ? 640.0f - ASP_CONTENT_S * 640.0f : 0.0f;
-	cvdy = m->aspect ? 480.0f - ASP_CONTENT_S * 360.0f : 0.0f;
+	cvdy = m->aspect ? asp_cy(m) - ASP_CONTENT_S * 360.0f : 0.0f;
 	cx = cvx * cardx + cvdx; cy = cvx * 360.0f + cvdy; cw = 246.0f * cvx; ch = 270.0f * cvx;
 	mx = mbx; my = 64.0f; mw = 96.0f; mh = 70.0f;
 	if (m->state == 1) {            /* up: card -> menubar (square cursor) */
@@ -947,8 +987,10 @@ static void render_card_tile(snes_menu *m, int gi, uint32_t *tile, float blue_a)
 	int save_nc = m->no_cursor;
 	{ char *zp = (char *)&tt; for (z = 0; z < (int)sizeof(tt); z++) zp[z] = 0; }
 	tt.fb = tile; tt.pitch = SNES_CT_W; tt.W = SNES_CT_W; tt.H = SNES_CT_H;
-	tt.offx = 0; tt.offy = 0;
-	/* world (0, CAR_CY) -> tile centre (CT_W/2, CT_H/2), scale S */
+	tt.offx = 0; tt.offy = 0; tt.base = m_base(m);
+	/* world (0, CAR_CY) -> tile centre (CT_W/2, CT_H/2), scale S. At a native scale the
+	 * content lands in the top left SNES_CT_W*base x SNES_CT_H*base of the tile and is
+	 * blitted with that size (screen = base * (S*x + d)). */
 	snes_target_view(&tt, S, S, (float)SNES_CT_W / 2.0f,
 			 (float)SNES_CT_H / 2.0f - S * CAR_CY);
 	for (i = 0; i < CT_PIX; i++) tile[i] = 0;          /* transparent */
@@ -965,34 +1007,53 @@ static void render_card_tile(snes_menu *m, int gi, uint32_t *tile, float blue_a)
  * per-frame live card render (~2.7ms on the A55). Rebuilt when the aspect flips. */
 static const uint32_t *fct_get(snes_menu *m, int gi)
 {
+	int want = gi, slot = 0, k;
+	uint32_t *tile;
 	if (!m->fct) return 0;
-	/* Rebuild when: never built / aspect flipped / (per-ROM boxart) the focused game
-	 * changed / (console badges, no boxart) the focused TYPE changed. In the badge
-	 * case the focused body only depends on the console type, so scrolling within one
-	 * console reuses the tile and only a type boundary rebuilds it. fct_gi holds the
-	 * game index for boxart mode, or 0x40000000|type for the type-keyed badge case. */
-	{
-		int want = gi;
-		if (!m->gba_boxart && m->gba_types && m->ngames > 0) {
-			int gidx = m->order[((gi % m->ngames) + m->ngames) % m->ngames];
-			int ty = m->gba_types[gidx];
-			if (ty < 0 || ty > 7) ty = 7;
-			want = 0x40000000 | ty;
-		}
-		if (!m->fct_ready || m->fct_aspect != m->aspect ||
-		    ((m->gba_boxart || m->gba_types) && m->fct_gi != want)) {
-			render_card_tile(m, gi, m->fct, 1.0f);         /* blue_a=1 -> active body */
-			m->fct_ready = 1;
-			m->fct_aspect = m->aspect;
-			m->fct_gi = want;
-		}
+	/* Key: the game index (per-ROM boxart), the console type (badges, no boxart: the body
+	 * only depends on the type), or a sentinel (identical placeholder for every game). With
+	 * more than one slot the type keyed tiles spread over the slots so the outgoing and the
+	 * incoming card of a type boundary crossfade both stay cached. */
+	if (!m->gba_boxart && m->gba_types && m->ngames > 0) {
+		int gidx = m->order[((gi % m->ngames) + m->ngames) % m->ngames];
+		int ty = m->gba_types[gidx];
+		if (ty < 0 || ty > 7) ty = 7;
+		want = 0x40000000 | ty;
+		if (m->fct_cap > 1) slot = ty % m->fct_cap;
+	} else if (!m->gba_boxart) {
+		want = 0x7fffffff;
 	}
-	return m->fct;
+	if (m->fct_aspect != m->aspect) {
+		for (k = 0; k < 8; k++) m->fct_key[k] = -1;
+		m->fct_aspect = m->aspect;
+	}
+	if (m->gba_boxart && m->fct_cap > 1) {
+		/* per-game keys (box art): fully associative over the bank, least recently used slot
+		 * replaced, so the focus moving back and forth over a few games never re-renders */
+		int lru = 0;
+		slot = -1;
+		for (k = 0; k < m->fct_cap; k++) {
+			if (m->fct_key[k] == want) { slot = k; break; }
+			if (m->fct_key[k] == -1) { lru = k; break; }
+			if ((int)(m->fct_stamp[k] - m->fct_stamp[lru]) < 0) lru = k;
+		}
+		if (slot < 0) { slot = lru; m->fct_key[slot] = -1; }
+		m->fct_stamp[slot] = ++m->tile_clock;
+	}
+	tile = m->fct + (unsigned)slot * CT_PIX;
+	if (m->fct_key[slot] != want) {
+		render_card_tile(m, gi, tile, 1.0f);         /* blue_a=1 -> active body */
+		g_perf_xf[1]++;
+		m->fct_key[slot] = want;
+		m->fct_ready = 1; m->fct_gi = want;
+	}
+	return tile;
 }
 
-void snes_menu_set_fct(snes_menu *m, uint32_t *buf)
+void snes_menu_set_fct(snes_menu *m, uint32_t *buf, int cap)
 {
-	m->fct = buf; m->fct_ready = 0; m->fct_aspect = -1; m->fct_gi = -1;
+	m->fct = buf; m->fct_aspect = -1; m->fct_cap = (cap < 1) ? 1 : (cap > 8 ? 8 : cap);
+	fct_invalidate(m);
 }
 
 /* Fetch game gi's cached tile, rendering+caching on a miss. Direct-mapped by gi so a
@@ -1022,6 +1083,7 @@ static const uint32_t *ctile_get(snes_menu *m, int gi)
 		if (!m->gba_types) {
 			if (m->ctile_gi[0] != 0x40000000) {
 				render_card_tile(m, gi, m->ctile, 0.0f);
+				g_perf_xf[0]++;
 				m->ctile_gi[0] = 0x40000000;
 			}
 			return m->ctile;
@@ -1035,14 +1097,32 @@ static const uint32_t *ctile_get(snes_menu *m, int gi)
 			key = 0x40000000 | ty;               /* slot == console type (0..2) */
 			if (m->ctile_gi[ty] != key) {
 				render_card_tile(m, gi, m->ctile + (unsigned)ty * CT_PIX, 0.0f);
+				g_perf_xf[0]++;
 				m->ctile_gi[ty] = key;
 			}
 			return m->ctile + (unsigned)ty * CT_PIX;
 		}
 	}
-	slot = gi % m->ctile_cap; if (slot < 0) slot += m->ctile_cap;
+	if (m->ctile_cap <= 16) {
+		/* Per-game keys (box art) in a small cache: associative with least recently used
+		 * replacement. Direct mapping by gi % cap collided at the ring wrap (cards 19 and 3
+		 * share slot 3 in a 21 game roster at focus 0), re-rendering two tiles EVERY frame
+		 * (2.7 ms each on the Konkr). */
+		int k, lru = 0;
+		slot = -1;
+		for (k = 0; k < m->ctile_cap; k++) {
+			if (m->ctile_gi[k] == gi) { slot = k; break; }
+			if (m->ctile_gi[k] == -1) { lru = k; break; }
+			if ((int)(m->ctile_stamp[k] - m->ctile_stamp[lru]) < 0) lru = k;
+		}
+		if (slot < 0) { slot = lru; m->ctile_gi[slot] = -1; }
+		m->ctile_stamp[slot] = ++m->tile_clock;
+	} else {
+		slot = gi % m->ctile_cap; if (slot < 0) slot += m->ctile_cap;
+	}
 	if (m->ctile_gi[slot] != gi) {
 		render_card_tile(m, gi, m->ctile + (unsigned)slot * CT_PIX, 0.0f);
+		g_perf_xf[0]++;
 		m->ctile_gi[slot] = gi;
 	}
 	return m->ctile + (unsigned)slot * CT_PIX;
@@ -1064,8 +1144,26 @@ void snes_menu_set_ctile(snes_menu *m, uint32_t *buf, int *gi, int cap)
 void snes_menu_prewarm_cards(snes_menu *m)
 {
 	int i, lim;
-	if (!m || !m->gba_boxart || !m->ctile || m->ctile_cap <= 0)
+	if (!m || !m->ctile || m->ctile_cap <= 0)
 		return;
+	if (!m->gba_boxart) {
+		/* Console badges, no per-ROM art: the tiles are keyed by console type. Build the dark
+		 * and (when the bank has a slot per type) the active tile of every type present once,
+		 * so a held scroll across type boundaries never renders a tile mid-frame (2.7 ms each
+		 * on the Konkr, the remaining source of long frames). */
+		int seen = 0;
+		if (!m->gba_mode || !m->gba_types) { (void)ctile_get(m, m->focus); (void)fct_get(m, m->focus); return; }
+		for (i = 0; i < m->ngames; i++) {
+			int ty = m->gba_types[m->order[i]];
+			if (ty < 0 || ty > 7) ty = 7;
+			if (seen & (1 << ty)) continue;
+			seen |= 1 << ty;
+			(void)ctile_get(m, i);
+			if (m->fct_cap >= 8) (void)fct_get(m, i);
+		}
+		(void)fct_get(m, m->focus);
+		return;
+	}
 	lim = (m->ngames < m->ctile_cap) ? m->ngames : m->ctile_cap;
 	for (i = 0; i < lim; i++)
 		(void)ctile_get(m, i);
@@ -1097,7 +1195,7 @@ void snes_menu_set_gba_boxart(snes_menu *m, const snes_img_entry *img, const sne
 	m->gba_boxart_pk = pk;
 	/* per-ROM art makes every card distinct: invalidate the shared/keyed tile caches */
 	m->ctile_aspect = -1;
-	m->fct_ready = 0; m->fct_gi = -1;
+	fct_invalidate(m);
 	if (m->ctile_gi) for (i = 0; i < m->ctile_cap; i++) m->ctile_gi[i] = -1;
 }
 
@@ -1136,9 +1234,26 @@ int snes_menu_take_sysreset(snes_menu *m)
 	return r;
 }
 
+/* Is game gi's dark / active tile already cached? (per-game keyed, box art mode) */
+static int ctile_cached(const snes_menu *m, int gi)
+{
+	int k;
+	if (!m->ctile || m->ctile_cap <= 0 || m->ctile_cap > 16) return 1;
+	for (k = 0; k < m->ctile_cap; k++) if (m->ctile_gi[k] == gi) return 1;
+	return 0;
+}
+static int fct_cached(const snes_menu *m, int gi)
+{
+	int k;
+	if (!m->fct || m->fct_cap <= 1) return 1;
+	for (k = 0; k < m->fct_cap; k++) if (m->fct_key[k] == gi) return 1;
+	return 0;
+}
+
 static void draw_carousel(snes_menu *m, snes_target *t)
 {
 	int n = m->ngames, j;
+	unsigned renders0 = g_perf_xf[0] + g_perf_xf[1];
 	/* blue-frame crossfade: on a nav the outgoing card's blue frame fades out
 	 * while the incoming one's fades in over CAR_XFADE (sys_gametitlelist). */
 	float prog = (m->xfade_t > 0.0f && m->prev_focus != m->focus)
@@ -1169,7 +1284,24 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 			const uint32_t *tile = ctile_get(m, j);
 			if (tile) {
 				float cyr = CAR_CY - RESUME_CARD_DY * m->resume_dim;
-				snes_blit_raw(t, tile, SNES_CT_W, SNES_CT_H, cx, cyr, ndim);
+				snes_blit_raw_p(t, tile, SNES_CT_W, (int)((float)SNES_CT_W * m_base(m) + 0.5f),
+						(int)((float)SNES_CT_H * m_base(m) + 0.5f), cx, cyr, ndim);
+				continue;
+			}
+		} else if (m->gba_mode && m->fct_cap > 1) {
+			/* Outgoing crossfade from cache: the dark tile, then the type's active tile at
+			 * alpha blue_a (same silhouette, so this is the exact lerp draw_card produces),
+			 * then the fading cursor. A held scroll keeps a crossfade alive on nearly every
+			 * frame, and two live cards per frame (~5 ms) broke 60 fps on the Konkr. */
+			const uint32_t *tile = ctile_get(m, j), *act = fct_get(m, j);
+			if (tile && act) {
+				const snes_spr_entry *cf = m->card_norm ? m->card_norm : m->card_act;
+				float cyr = CAR_CY - RESUME_CARD_DY * m->resume_dim;
+				int tw = (int)((float)SNES_CT_W * m_base(m) + 0.5f), th = (int)((float)SNES_CT_H * m_base(m) + 0.5f);
+				snes_blit_raw_p(t, tile, SNES_CT_W, tw, th, cx, cyr, ndim);
+				snes_blit_raw_pa(t, act, SNES_CT_W, tw, th, cx, cyr, ndim, blue_a > 1.0f ? 1.0f : blue_a);
+				if (!m->no_cursor && m->state == 0 && m->cur_slide_t >= CUR_SLIDE_DUR)
+					draw_card_cursor(m, t, cx, cyr, blue_a > 1.0f ? 1.0f : blue_a, ndim, cf ? cf->img : 0);
 				continue;
 			}
 		}
@@ -1187,14 +1319,47 @@ static void draw_carousel(snes_menu *m, snes_target *t)
 		 * on the focus change, then it is a cache hit) so the focused card is not a
 		 * live box-art blit every crossfade frame. */
 		const uint32_t *fct = (prog <= 0.003f || m->gba_boxart) ? fct_get(m, m->focus) : 0;
-		if (fct) {
+		if (!fct && m->gba_mode && m->fct_cap > 1) {
+			/* incoming crossfade from cache: dark tile + active tile at 1 - prog, cursor fading in */
+			const uint32_t *tile = ctile_get(m, m->focus), *act = fct_get(m, m->focus);
+			if (tile && act) {
+				const snes_spr_entry *cf = m->card_norm ? m->card_norm : m->card_act;
+				int tw = (int)((float)SNES_CT_W * m_base(m) + 0.5f), th = (int)((float)SNES_CT_H * m_base(m) + 0.5f);
+				float a = 1.0f - prog;
+				snes_blit_raw_p(t, tile, SNES_CT_W, tw, th, fcx, CAR_CY, 1.0f);
+				snes_blit_raw_pa(t, act, SNES_CT_W, tw, th, fcx, CAR_CY, 1.0f, a);
+				if (a > 0.003f && !m->no_cursor && m->state == 0 && m->cur_slide_t >= CUR_SLIDE_DUR)
+					draw_card_cursor(m, t, fcx, CAR_CY, a, 1.0f, cf ? cf->img : 0);
+				fct = 0; prog = -1.0f;   /* handled */
+			}
+		}
+		if (prog < 0.0f) {
+		} else if (fct) {
 			const snes_spr_entry *cf = m->card_norm ? m->card_norm : m->card_act;
-			snes_blit_raw(t, fct, SNES_CT_W, SNES_CT_H, fcx, CAR_CY, 1.0f);
+			snes_blit_raw_p(t, fct, SNES_CT_W, (int)((float)SNES_CT_W * m_base(m) + 0.5f),
+					(int)((float)SNES_CT_H * m_base(m) + 0.5f), fcx, CAR_CY, 1.0f);
 			if (m->state == 0 && m->cur_slide_t >= CUR_SLIDE_DUR)
 				draw_card_cursor(m, t, fcx, CAR_CY, 1.0f, 1.0f,
 						 cf ? cf->img : 0);
 		} else {
 			draw_card(m, t, m->focus, fcx, 1.0f - prog, 1.0f);
+		}
+	}
+	/* Box art prefetch: while a direction key is held, a frame that rendered no tile builds
+	 * ONE tile the scroll is about to need (the next focus's active tile, then the dark tiles
+	 * of the cards entering view), so the step frame itself never renders. Held steps come
+	 * every 3.6 frames, a tile costs 2.7 ms on the Konkr, and a step frame that had to build
+	 * both tiles (11 ms + the present) was the last source of long frames. The LRU banks keep
+	 * the prefetched tiles alongside the visible ones (8 slots, about 6 cards on screen). */
+	if (m->gba_boxart && m->rep_dir != 0 && n > 0 && g_perf_xf[0] + g_perf_xf[1] == renders0) {
+		int d = m->rep_dir, k;
+		int next = ((m->focus + d) % n + n) % n;
+		if (!fct_cached(m, next)) { (void)fct_get(m, next); return; }
+		/* one card of lookahead: about six cards are on screen, the bank has eight slots, so
+		 * two lookahead cards made the LRU evict a visible tile and rebuild one every frame */
+		for (k = 4; k <= 4; k++) {
+			int gi = ((m->focus + d * k) % n + n) % n;
+			if (!ctile_cached(m, gi)) { (void)ctile_get(m, gi); return; }
 		}
 	}
 }
@@ -1477,7 +1642,8 @@ static void draw_copyright_list(snes_menu *m, snes_target *t)
  * icon + "Back" label centred at x640 (refreshHud). Drawn in identity view. */
 static void draw_resume_hint(snes_menu *m, snes_target *t)
 {
-	const float sc = 0.85f, gap = 6.0f, y = 916.0f;
+	/* bottom-pinned: 916 on the 960 panel, the same distance from the bottom edge elsewhere */
+	const float sc = 0.85f, gap = 6.0f, y = 916.0f - (float)(960 - asp_h(m));
 	const char *lab = snes_text(m->pk, "sys_resume_hud_Return");
 	float iw = 12.0f * 3.0f, lw, total, x;
 	snes_spr_entry ic;
@@ -1725,7 +1891,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->gba_types = 0;
 	{ int ci; for (ci = 0; ci < 8; ci++) m->console_logo[ci] = 0; }
 	m->ctile = 0; m->ctile_gi = 0; m->ctile_cap = 0; m->ctile_aspect = -1;
-	m->fct = 0; m->fct_ready = 0; m->fct_aspect = -1; m->no_cursor = 0;
+	m->fct = 0; m->fct_aspect = -1; m->no_cursor = 0; m->fct_cap = 1; fct_invalidate(m);
 	m->chrome = chrome; m->chrome_ready = 0; m->aspect = 0;
 	m->disp_cur = m->disp_sel = 1; m->sub_rep_t = 0.0f; m->sub_rep_ctrl = 0;
 	m->disp_zone = 0; m->frame_sel = 0; m->frame_scroll = 0; m->frame_applied = 0;
@@ -2553,7 +2719,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			for (k = 0; k < n; k++)
 				if (m->order[k] == cur) { m->focus = k; m->car_x = k; break; }
 			if (m->gba_boxart) {
-				m->fct_ready = 0; m->fct_gi = -1;
+				fct_invalidate(m);
 				if (m->ctile_gi)
 					for (k = 0; k < m->ctile_cap; k++) m->ctile_gi[k] = -1;
 			}
@@ -2858,7 +3024,7 @@ static void draw_submenu_contain(snes_menu *m, snes_target *t)
 static void blit_cached_panel(snes_menu *m, snes_target *t,
 			      int y0, int y1, int op0, int op1, int oy)
 {
-	int W = t->W < SNES_VW ? t->W : SNES_VW, y;
+	int vw = snes_target_vw(t), W = t->W < vw ? t->W : vw, y;
 	for (y = y0; y < y1; y++) {
 		int dy = y - oy;
 		const uint32_t *src;
@@ -3254,7 +3420,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			/* hideBackElements: the web hides the bottom SNES bezel bar in resume,
 			 * so the area below the content-zoomed panel is black (not the cached
 			 * chrome's bezel). Paint over the bezel strip, then the Back hint. */
-			snes_fill_quad(t, 640.0f, 932.0f, 1280.0f, 56.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+			snes_fill_quad(t, 640.0f, 932.0f - (float)(960 - asp_h(m)), 1280.0f, 56.0f, 0.0f, 0.0f, 0.0f, 1.0f);
 			draw_resume_hint(m, t);
 			}
 		} else {

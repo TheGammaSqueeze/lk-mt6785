@@ -144,5 +144,22 @@ void platform_early_init_timer(void)
 	//dprintf(SPEW, "platform_early_init_timer\n");
 
 	gpt_power_on(1);
+
+	/* The Konkr Pocket Advance preloader hands GPT4 over with its clock divider at 2
+	 * (GPT4_CLK = 0x1), so the free running "13 MHz" counter that every LK delay, the
+	 * frame pacer and the fastboot timeouts are built on really ticks at 6.5 MHz and
+	 * everything timed from it runs at half speed. Re-arm it on the undivided 13 MHz
+	 * system clock when the divider is not 1. The counter restarts from zero; nothing
+	 * has sampled it before this point. */
+	{
+		volatile unsigned int *gpt4_con = (volatile unsigned int *)(APXGPT_BASE + 0x0040);
+		volatile unsigned int *gpt4_clk = (volatile unsigned int *)(APXGPT_BASE + 0x0044);
+		if (*gpt4_clk != 0) {
+			*gpt4_con = 0x0;    /* disable */
+			*gpt4_con = 0x2;    /* clear the counter */
+			*gpt4_clk = 0x0;    /* 13 MHz system clock, divider 1 */
+			*gpt4_con = 0x31;   /* enable, free run */
+		}
+	}
 }
 

@@ -239,7 +239,28 @@ static int fat_wr_put_i(fat_vol *v, const char *dirpath, const char *name,
 
 /* public entry: run the op, then flush the write-back FAT cache so the FAT is
  * fully persisted before returning (the caller may power off right after). */
-int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
+static int fat_wr_put_locked(fat_vol *v, const char *dirpath, const char *name,
+			     const void *data, uint32_t len);
+#ifdef __arm__
+#include <kernel/mutex.h>
+static mutex_t s_fat_wr_mtx; static int s_fat_wr_mtx_init;
+#endif
+/* a whole file write (data clusters + FAT + directory entry) is one critical section: the
+ * settings writer thread and the game thread (saves, states) may both call this */
+int fat_wr_put(fat_vol *v, const char *dirpath, const char *name, const void *data, uint32_t len)
+{
+	int r;
+#ifdef __arm__
+	if (!s_fat_wr_mtx_init) { mutex_init(&s_fat_wr_mtx); s_fat_wr_mtx_init = 1; }
+	mutex_acquire(&s_fat_wr_mtx);
+#endif
+	r = fat_wr_put_locked(v, dirpath, name, data, len);
+#ifdef __arm__
+	mutex_release(&s_fat_wr_mtx);
+#endif
+	return r;
+}
+static int fat_wr_put_locked(fat_vol *v, const char *dirpath, const char *name,
 	       const void *buf, uint32_t len)
 {
 	int r = fat_wr_put_i(v, dirpath, name, buf, len);

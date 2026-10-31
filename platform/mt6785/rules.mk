@@ -295,6 +295,9 @@ INCLUDES += -I$(DRVGEN_OUT)/inc
 # reuses the pins the pairmini ADC path drives, so it links neutral stubs instead.
 ifeq ($(KONKR_KPA),yes)
 OBJS += $(LOCAL_DIR)/ayaneo_joypad_kpa.o
+OBJS += $(LOCAL_DIR)/ayaneo_aw88166.o
+OBJS += $(LOCAL_DIR)/ayaneo_rot_neon.o
+$(BUILDDIR)/$(LOCAL_DIR)/ayaneo_rot_neon.o: CFLAGS += -O2 -mfpu=neon -mfloat-abi=softfp
 else
 OBJS += $(LOCAL_DIR)/ayaneo_joypad.o
 endif

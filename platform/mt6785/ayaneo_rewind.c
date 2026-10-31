@@ -45,6 +45,7 @@ static unsigned int    s_base_phys;    /* segment-0 physical base */
 static unsigned int    s_region;       /* TOTAL mapped bytes across all islands, 0 = not mapped */
 static int             s_mapped;
 static int             s_tried;
+static unsigned int    s_l2_owned;    /* bit g: the GB g second level table is our static page */
 
 /* Map EVERY usable+unreserved DRAM island above the emulator scratch and inside the 32-bit VA space,
  * 2MB-aligned, each min(block - headroom, CAP). Purely from the runtime mblock map, so it is per-SKU
@@ -98,6 +99,16 @@ unsigned int ayaneo_rewind_map(void)
 			t = s_seg_size[0]; s_seg_size[0] = s_seg_size[bi]; s_seg_size[bi] = t;
 		}
 	}
+	/* the second level tables for the islands' 1 GB ranges live in this static, page aligned area
+	 * (not the LK heap: a heap page holding them was found rewritten under a running game) */
+	{
+		extern int arch_mmu_install_l2(uint32_t l1_index, void *page);
+		static unsigned char s_l2_pages[4][4096] __attribute__((aligned(4096)));
+		for (i = 0; i < n; i++) {
+			unsigned int g = s_seg_phys[i] >> 30;
+			if (arch_mmu_install_l2(g, s_l2_pages[g]) == 0) s_l2_owned |= 1u << g;
+		}
+	}
 	/* map each island; if one fails, keep the prefix that mapped and stop (still a valid arena) */
 	for (i = 0; i < n; i++) {
 		if (arch_mmu_map((uint64_t)s_seg_phys[i], (vaddr_t)s_seg_phys[i],
@@ -116,10 +127,107 @@ unsigned int ayaneo_rewind_map(void)
 	s_base_phys = s_seg_phys[0];
 	s_region = total;
 	s_mapped = 1;
+	{ extern void ayaneo_rewind_tables_arm(void); ayaneo_rewind_tables_arm(); }
 	return total;
 }
 
+/* Walk every 2 MB section of every mapped island through the page tables. A section that is no
+ * longer mapped is counted, its VA and the time recorded, and (heal) mapped again. Run from the
+ * LED thread every half second: a stray write into the heap-resident L2 tables showed up as a
+ * data abort in the arena writer (Metroid Fusion, 0xc5e00000). */
+volatile unsigned int g_dbg_pt_bad, g_dbg_pt_first_va, g_dbg_pt_first_ms, g_dbg_pt_checks, g_dbg_pt_l1[4];
+unsigned int ayaneo_rewind_verify_tables(int heal)
+{
+	extern int arch_mmu_probe(vaddr_t vaddr, uint64_t *l1, uint64_t *l2);
+	extern unsigned gpt4_get_current_tick(void);
+	unsigned int i, off, bad = 0;
+	if (!s_mapped) return 0;
+	for (i = 0; i < 4u; i++) { uint64_t e1 = 0; arch_mmu_probe(i << 30, &e1, 0); g_dbg_pt_l1[i] = (unsigned int)e1; }
+	for (i = 0; i < s_seg_n; i++) {
+		for (off = 0; off < s_seg_size[i]; off += SECTION_SIZE) {
+			vaddr_t va = (vaddr_t)s_seg_phys[i] + off;
+			if (arch_mmu_probe(va, 0, 0) == 0) {
+				bad++;
+				if (!g_dbg_pt_bad) { g_dbg_pt_first_va = va; g_dbg_pt_first_ms = gpt4_get_current_tick() / 13000u; }
+				g_dbg_pt_bad++;
+				if (heal)
+					arch_mmu_map((uint64_t)va, va, MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA, SECTION_SIZE);
+			}
+		}
+	}
+	g_dbg_pt_checks++;
+	return bad;
+}
+
+/* Page table watch: a private copy of each second level table that covers an island (one 4 KB
+ * page per 1 GB), compared every presented frame. The first difference is recorded (which entry,
+ * old and new value, time) and every difference is repaired from the copy. Cheap: 512 words per
+ * table. This is the fast version of the half second walk above. */
+static uint64_t s_l2_copy[4][512] __attribute__((aligned(64)));
+static uint64_t *s_l2_live[4];
+static int s_l2_watch;
+volatile unsigned int g_dbg_l2_diffs, g_dbg_l2_first_ms, g_dbg_l2_first_idx, g_dbg_l2_first_gb, g_dbg_l2_old_lo, g_dbg_l2_new_lo, g_dbg_l2_ticks;
+volatile unsigned int g_dbg_l2_last[4][4];   /* ring of the last four hits: gb, idx, new lo, ms */
+unsigned int ayaneo_rewind_l2_owned(void) { return s_l2_owned; }
+void ayaneo_rewind_tables_arm(void)
+{
+	extern int arch_mmu_probe(vaddr_t vaddr, uint64_t *l1, uint64_t *l2);
+	unsigned int i, g;
+	if (!s_mapped) return;
+	for (g = 0; g < 4u; g++) s_l2_live[g] = 0;
+	for (i = 0; i < s_seg_n; i++) {
+		uint64_t e1 = 0;
+		g = s_seg_phys[i] >> 30;
+		arch_mmu_probe((vaddr_t)s_seg_phys[i], &e1, 0);
+		if ((e1 & 3u) == 3u) {   /* a table: remember it and copy it */
+			s_l2_live[g] = (uint64_t *)(addr_t)(e1 & 0xFFFFF000ULL);
+			memcpy(s_l2_copy[g], s_l2_live[g], 4096);
+		}
+	}
+	s_l2_watch = 1;
+}
+void ayaneo_rewind_tables_tick(void)
+{
+	extern unsigned gpt4_get_current_tick(void);
+	extern void arch_clean_cache_range(addr_t start, size_t len);
+	unsigned int g, k;
+	if (!s_l2_watch) return;
+	g_dbg_l2_ticks++;
+	for (g = 0; g < 4u; g++) {
+		uint64_t *live = s_l2_live[g];
+		unsigned int i;
+		if (!live) continue;
+		for (i = 0; i < s_seg_n; i++) {
+		unsigned int k0, k1;
+		if ((s_seg_phys[i] >> 30) != g) continue;
+		k0 = (s_seg_phys[i] >> 21) & 511u; k1 = k0 + (s_seg_size[i] >> 21);
+		for (k = k0; k < k1 && k < 512u; k++) {
+			if (live[k] != s_l2_copy[g][k]) {
+				if (!g_dbg_l2_diffs) {
+					g_dbg_l2_first_ms = gpt4_get_current_tick() / 13000u; g_dbg_l2_first_idx = k; g_dbg_l2_first_gb = g;
+					g_dbg_l2_old_lo = (unsigned int)s_l2_copy[g][k]; g_dbg_l2_new_lo = (unsigned int)live[k];
+				}
+				{ unsigned int r = g_dbg_l2_diffs & 3u; g_dbg_l2_last[r][0] = g; g_dbg_l2_last[r][1] = k; g_dbg_l2_last[r][2] = (unsigned int)live[k]; g_dbg_l2_last[r][3] = gpt4_get_current_tick() / 13000u; }
+				g_dbg_l2_diffs++;
+				live[k] = s_l2_copy[g][k];
+				arch_clean_cache_range((addr_t)&live[k], 64);
+			}
+		}
+		}
+	}
+}
+unsigned int ayaneo_rewind_tables_addr(unsigned int g) { return g < 4u ? (unsigned int)(addr_t)s_l2_live[g] : 0u; }
+
 unsigned int ayaneo_rewind_phys(void) { return s_base_phys; }
+/* island i: physical base and mapped bytes (0 when i is out of range) */
+unsigned int ayaneo_rewind_island(unsigned int i, unsigned int *size)
+{
+	if (i >= s_seg_n) { if (size) *size = 0; return 0; }
+	if (size) *size = s_seg_size[i];
+	return s_seg_phys[i];
+}
+/* one line of ring state for the fault banner: write offset, arena size, records, staging pointers */
+void ayaneo_rewind_dbg_line(char *out, unsigned int cap);
 unsigned int ayaneo_rewind_segs(void) { return s_seg_n; }
 
 unsigned char *ayaneo_rewind_base(void) { return s_base; }
@@ -246,13 +354,17 @@ static unsigned int arena_seg_of(unsigned int off)
 /* Copy `len` bytes from src into the arena starting at offset `off`, splitting at every island
  * boundary AND the arena-end wrap so each contiguous chunk stays within one mapped island. Callers
  * guarantee len <= s_arena_sz (eviction makes room), so the walk terminates. */
+volatile unsigned int g_dbg_rw_bad, g_dbg_rw_last_off, g_dbg_rw_last_len;   /* oem rewindmap / fault banner */
 static void arena_write(unsigned int off, const unsigned char *src, unsigned int len)
 {
 	unsigned int si = arena_seg_of(off);
 	unsigned int local = off - s_aseg_off[si];
+	g_dbg_rw_last_off = off; g_dbg_rw_last_len = len;
 	while (len) {
-		unsigned int seg_rem = s_aseg_len[si] - local;
-		unsigned int chunk = len < seg_rem ? len : seg_rem;
+		unsigned int seg_rem, chunk;
+		if (si >= s_seg_n || local >= s_aseg_len[si] || off >= s_arena_sz) { g_dbg_rw_bad++; return; }   /* never write outside an island */
+		seg_rem = s_aseg_len[si] - local;
+		chunk = len < seg_rem ? len : seg_rem;
 		memcpy(s_aseg_va[si] + local, src, chunk);
 		src += chunk; len -= chunk; local += chunk;
 		if (local >= s_aseg_len[si]) {                 /* crossed an island end */
@@ -329,6 +441,20 @@ unsigned int ayaneo_rewind_reset(unsigned int max_payload)
 	return REC_DIR_CAP;
 }
 
+static char *rw_hex(char *p, unsigned int v) { int i; for (i = 28; i >= 0; i -= 4) *p++ = "0123456789abcdef"[(v >> i) & 15]; return p; }
+void ayaneo_rewind_dbg_line(char *out, unsigned int cap)
+{
+	char *p = out;
+	extern volatile unsigned int g_dbg_rw_bad, g_dbg_rw_last_off, g_dbg_rw_last_len;
+	if (cap < 120) { if (cap) *out = 0; return; }
+	/* wr lastoff+len recs | l2 diffs first(gb:idx) old new ms  (fits a 60 column banner line) */
+	p = rw_hex(p, s_wr); *p++ = ' ';
+	p = rw_hex(p, g_dbg_rw_last_off); *p++ = '+'; p = rw_hex(p, g_dbg_rw_last_len); *p++ = ' ';
+	p = rw_hex(p, s_dir_count); *p++ = ' '; *p++ = 'L'; *p++ = '2'; *p++ = ' ';
+	p = rw_hex(p, g_dbg_l2_diffs); *p++ = ' ';
+	*p++ = "0123"[g_dbg_l2_first_gb & 3]; *p++ = ':'; p = rw_hex(p, g_dbg_l2_first_idx); *p++ = ' ';
+	p = rw_hex(p, g_dbg_l2_old_lo); *p++ = ' '; p = rw_hex(p, g_dbg_l2_new_lo); *p++ = ' '; p = rw_hex(p, g_dbg_l2_first_ms); *p = 0;
+}
 int ayaneo_rewind_ready(void)  { return s_state_sz != 0; }
 int ayaneo_rewind_active(void) { return s_rewinding; }
 unsigned int ayaneo_rewind_slots(void) { return s_state_sz ? REC_DIR_CAP : 0u; }

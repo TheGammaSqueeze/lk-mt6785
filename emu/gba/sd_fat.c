@@ -18,6 +18,8 @@ extern int mmc_legacy_init(int verbose);
  * not power them otherwise (only the eMMC boot rail is left on by the preloader),
  * so mmc_init(1) would find no card. Defined in platform/mt6785/msdc_io.c. */
 extern void msdc_ext_sd_power_on(void);
+void ayaneo_storage_lock(void);
+void ayaneo_storage_unlock(void);
 
 /* mmc_legacy_init(1) in platform.c -> id = verbose-1 = 0, so the external microSD
  * (MMC_SLOT=1 hardware; UFS is the boot device, so this MMC slot is the card) is
@@ -67,12 +69,36 @@ static unsigned sd_read(void *ctx, uint32_t lba, uint32_t count, void *buf)
 	 * loads and the mount reads uniformly. */
 	{ extern void mtk_wdt_restart(void); mtk_wdt_restart(); }
 #endif
-	return (unsigned)mmc_wrap_bread(SD_DEV_NUM, (unsigned long)lba,
-					(unsigned long)count, buf, SD_PART_USER);
+	{
+		unsigned r;
+		ayaneo_storage_lock();
+		r = (unsigned)mmc_wrap_bread(SD_DEV_NUM, (unsigned long)lba,
+					     (unsigned long)count, buf, SD_PART_USER);
+		ayaneo_storage_unlock();
+		return r;
+	}
+}
+
+/* One mutex serialises every block transfer (SD and the eMMC settings block): the settings
+ * writer runs on its own low priority thread while a game plays, and the game thread may
+ * read or write the card at the same moment (saves, states, box art). Lazily initialised
+ * (the first users run single threaded at boot). */
+#include <kernel/mutex.h>
+static mutex_t s_storage_mtx;
+static int s_storage_mtx_init;
+void ayaneo_storage_lock(void)
+{
+	if (!s_storage_mtx_init) { mutex_init(&s_storage_mtx); s_storage_mtx_init = 1; }
+	mutex_acquire(&s_storage_mtx);
+}
+void ayaneo_storage_unlock(void)
+{
+	if (s_storage_mtx_init) mutex_release(&s_storage_mtx);
 }
 
 static unsigned sd_write(void *ctx, uint32_t lba, uint32_t count, const void *buf)
 {
+	unsigned r;
 	(void)ctx;
 #ifdef AYANEO_GBA_SD
 	/* Kick the 10s LK watchdog on every SD sector write so a long save (state or
@@ -80,8 +106,11 @@ static unsigned sd_write(void *ctx, uint32_t lba, uint32_t count, const void *bu
 	 * save when the power key is pressed in game. */
 	{ extern void mtk_wdt_restart(void); mtk_wdt_restart(); }
 #endif
-	return (unsigned)mmc_wrap_bwrite(SD_DEV_NUM, (unsigned long)lba,
-					 (unsigned long)count, buf, SD_PART_USER);
+	ayaneo_storage_lock();
+	r = (unsigned)mmc_wrap_bwrite(SD_DEV_NUM, (unsigned long)lba,
+				      (unsigned long)count, buf, SD_PART_USER);
+	ayaneo_storage_unlock();
+	return r;
 }
 
 /* Bring up the microSD host (msdc1) once. Returns 0 on success (card present +
@@ -98,14 +127,35 @@ int gba_sd_hw_init(void)
 	return 0;
 }
 
+/* Card detect: msdc1 cd-gpios = GPIO8, cd_level 0 (the pin reads 0 with a card inserted,
+ * measured on the Konkr). Internal pull up so an empty slot reads 1. Instant, no host init. */
+int gba_sd_card_present(void)
+{
+	extern int mt_get_gpio_in(unsigned int pin);
+	extern int mt_set_gpio_mode(unsigned int pin, unsigned int mode);
+	extern int mt_set_gpio_dir(unsigned int pin, unsigned int dir);
+	extern int mt_set_gpio_pull_enable(unsigned int pin, unsigned int en);
+	extern int mt_set_gpio_pull_select(unsigned int pin, unsigned int sel);
+	extern void udelay(unsigned long usec);
+	const unsigned int cd = 8u | 0x80000000u;
+	mt_set_gpio_mode(cd, 0); mt_set_gpio_dir(cd, 0);
+	mt_set_gpio_pull_enable(cd, 1); mt_set_gpio_pull_select(cd, 1);
+	udelay(200);
+	return mt_get_gpio_in(cd) == 0;
+}
+
 /* Raw return code of the last microSD host init attempt (mmc error code). */
 int gba_sd_hw_rc(void) { return s_sd_hw_rc; }
 
 /* Raw sector read from the microSD (post hw-init), for the fastboot debug probe. */
 unsigned gba_sd_bread(uint32_t lba, uint32_t count, void *buf)
 {
-	return (unsigned)mmc_wrap_bread(SD_DEV_NUM, (unsigned long)lba,
-					(unsigned long)count, buf, SD_PART_USER);
+	unsigned r;
+	ayaneo_storage_lock();
+	r = (unsigned)mmc_wrap_bread(SD_DEV_NUM, (unsigned long)lba,
+				     (unsigned long)count, buf, SD_PART_USER);
+	ayaneo_storage_unlock();
+	return r;
 }
 
 int gba_sd_mount(fat_vol *v)

@@ -24,6 +24,7 @@
 extern const struct gbc_core_exports *gbc_core_load(void);   /* gbc_core_loader.c */
 extern void     ayaneo_gb_show_frame(const unsigned short *pix);   /* dedicated 160x144x6 GB/GBC path */
 extern void     ayaneo_gbc_audio_init(void);
+extern void     ayaneo_idle_until(unsigned target_tick);
 extern void     ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count);
 extern void     ayaneo_menu_audio_silence(void);
 extern void     ayaneo_display_prepare(void);
@@ -268,7 +269,7 @@ static int  s_pick_hold;        /* frames the direction has been held */
 static int  s_pick_tick;        /* frames since the last auto-repeat step */
 
 enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_ASPECT, GM_PALETTE, GM_COLORCC, GM_CCMODE, GM_DARK,
-       GM_PREEMPT, GM_CPU, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
+       GM_PREEMPT, GM_CPU, GM_BFI, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
 
 /* Display aspect (0=Pixel integer, 1=Fit native-aspect fill, 2=Stretch full panel). Read by
  * ayaneo_gb_show_frame (mt_disp_drv.c); session-scoped, defaults to Pixel = current behaviour. */
@@ -297,6 +298,8 @@ static const char *gm_label(int i)
 	case GM_DARK:    return "Dark Filter";
 	case GM_PREEMPT: return "Run-Ahead";
 	case GM_CPU:     return "CPU Clock";
+	case GM_BFI:     return "BFI";
+	case GM_RESUME:  return "Resume Game on Boot";
 	case GM_SLOT:    return "Save Slot";
 	case GM_SAVE:    return "Save State";
 	case GM_LOAD:    return "Load State";
@@ -305,7 +308,7 @@ static const char *gm_label(int i)
 	}
 	return "";
 }
-static const char *filt_name(int f) { return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : "Off"; }
+static const char *filt_name(int f) { return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : f == 4 ? "LCD1x" : f == 5 ? "LCD3x" : "Off"; }
 static const char *gm_value(int i, char *buf)
 {
 	char *p = buf;
@@ -334,6 +337,8 @@ static const char *gm_value(int i, char *buf)
 	case GM_PREEMPT: { int pf = ayaneo_get_preempt_frames();
 			   p = mput(p, pf == 0 ? "Off" : pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : "Max"); } break;
 	case GM_CPU:     p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
+	case GM_BFI:     { extern int ayaneo_get_strobe(void); int b = ayaneo_get_strobe(); p = mput(p, (b == 3 ? "75%" : b == 2 ? "50%" : b == 1 ? "25%" : "Off")); } break;
+	case GM_RESUME:  { extern int ayaneo_get_resume_on_boot(void); p = mput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case GM_SLOT:    p = mputu(p, (unsigned)s_gbc_slot); break;
 	case GM_SAVE: case GM_LOAD: p = mput(p, "[A]"); break;
 	default: break;
@@ -348,7 +353,7 @@ static int gm_change(int i, int dir, int act)
 	switch (i) {
 	case GM_BRIGHT:  if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case GM_VOLUME:  if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
-	case GM_FILTER:  if (dir) ayaneo_set_lcd_filter_core(2, (ayaneo_get_lcd_filter_core(2) + dir + 4) % 4); else changed = 0; break;
+	case GM_FILTER:  if (dir) ayaneo_set_lcd_filter_core(2, (ayaneo_get_lcd_filter_core(2) + dir + 6) % 6); else changed = 0; break;
 	case GM_ASPECT:  if (dir) g_gbc_aspect = (g_gbc_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
 	case GM_PALETTE: if (s_menu_is_dmg && s_menu_pal) {
 				 if (act == 1) {   /* A = open the full palette list picker */
@@ -366,6 +371,10 @@ static int gm_change(int i, int dir, int act)
 	case GM_DARK:    if (dir) { s_dark += dir * 10; if (s_dark < 0) s_dark = 0; if (s_dark > 100) s_dark = 100; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
 	case GM_PREEMPT: if (dir) ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + dir + 4) % 4); else changed = 0; break;
 	case GM_CPU:     if (dir) gbc_cpu_step(dir); changed = 0; break;
+	case GM_BFI:     { extern int ayaneo_get_strobe(void); extern void ayaneo_set_strobe(int v);
+			   if (dir) ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); else changed = 0; } break;
+	case GM_RESUME:  { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
+			   if (dir) ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); else changed = 0; } break;
 	case GM_SLOT:    if (dir) s_gbc_slot = (s_gbc_slot + dir + GBC_SLOT_COUNT) % GBC_SLOT_COUNT; changed = 0; break;
 	case GM_SAVE:    if (act && s_menu_ahead_sz) { s_menu_c->state_save(s_menu_ahead);
 			     mput(s_mstat, gba_sd_write_state(s_menu_vol, s_menu_rom->name, s_gbc_slot, s_menu_ahead, s_menu_ahead_sz) == 0 ? "State saved" : "Save failed"); }
@@ -397,7 +406,7 @@ static void gbc_pal_pick_paint(unsigned int *buf, unsigned int pitch, unsigned i
 	int panelW = 760, panelH = 80 + rows * rowH + 40;
 	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2;
 	int r, y = py + 80;
-	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
+	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xD010141Cu);   /* translucent: the game shows through (hardware blend) */
 	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
 	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "Select Palette");
 	for (r = -half; r <= half; r++, y += rowH) {
@@ -422,12 +431,20 @@ void gbc_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsig
 	int rowH = 38, panelW = 780, panelH;
 	int px, py, x, y, i; char val[48];
 	if (s_pal_pick) { gbc_pal_pick_paint(buf, pitch, W, H); return; }
-	panelH = 84 + GM_COUNT * rowH + 42;   /* wide enough for long palette names */
+	panelH = 60 + GM_COUNT * rowH + 34;   /* wide enough for long palette names */
+	/* Fit the panel to the screen: the Konkr's logical height is 640, where 38 px rows with the
+	 * 84 px title band and 42 px footer overflow; shrink the row pitch (never below 20) until
+	 * title + rows + footer leave a 16 px margin. */
+	if (panelH > (int)H - 16) {
+		rowH = ((int)H - 16 - 60 - 34) / GM_COUNT;
+		if (rowH < 20) rowH = 20;
+		panelH = 60 + GM_COUNT * rowH + 34;
+	}
 	px = ((int)W - panelW) / 2; py = ((int)H - panelH) / 2;
-	x = px + 28; y = py + 84;
-	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);
+	x = px + 28; y = py + 60;
+	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xD010141Cu);   /* translucent: the game shows through (hardware blend) */
 	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
-	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "GammaOS Pico");
+	ayaneo_text(buf, pitch, px + 28, py + 20, 3, 0xFFFFFFFFu, "GammaOS Pico");
 	for (i = 0; i < GM_COUNT; i++, y += rowH) {
 		unsigned int fg = (i == s_msel) ? 0xFF101018u : 0xFFC8D0E0u; int vw;
 		if (i == s_msel) ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
@@ -435,8 +452,8 @@ void gbc_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsig
 		gm_value(i, val); for (vw = 0; val[vw]; vw++) ;
 		ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, val);
 	}
-	if (s_mstat[0]) ayaneo_text(buf, pitch, x, py + panelH - 40, 2, 0xFF80E080u, s_mstat);
-	ayaneo_text(buf, pitch, x, py + panelH - 16, 1, 0xFF8890A0u,
+	if (s_mstat[0]) ayaneo_text(buf, pitch, x, py + panelH - 32, 2, 0xFF80E080u, s_mstat);
+	ayaneo_text(buf, pitch, x, py + panelH - 14, 1, 0xFF8890A0u,
 		    "Up/Down move  Left/Right change  A select  B/AYA close");
 }
 
@@ -582,12 +599,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers */
 		gbc_sd_poll_volume();   /* hardware volume rocker + SELECT-brightness (parity with all cores) */
 		{  /* power key: arm on release, fire on press -> save cartridge + suspend, then power off (parity) */
-			static int pk_armed;
-			int pk = pmic_detect_powerkey();
-			if (!pk) pk_armed = 1;
-			else if (pk_armed) {
+			extern int ayaneo_power_hold(int menu_open, int use_overlay);
+			if (ayaneo_power_hold(g_gbc_menu_open, 1)) {
 				unsigned savsz;
-				pk_armed = 0;
 				ayaneo_menu_audio_silence();
 				savsz = c->savedata_size(); if (savsz > 128u * 1024u) savsz = 0;
 				if (c->savedata_ptr() && savsz)
@@ -598,6 +612,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				}
 				gbc_prefs_save(vol);
 				if (is_dmg) gbc_pal_save(vol, rom->name, pal_idx);
+				{ extern void ayaneo_resume_mark(const char *name); ayaneo_resume_mark(rom->name); ayaneo_menu_settings_persist(); }
+				{ extern void ayaneo_settings_persist_flush(void); ayaneo_settings_persist_flush(); }
+				{ extern void ayaneo_leds_off_for_poweroff(void); ayaneo_leds_off_for_poweroff(); }
 				mt_power_off();   /* no return */
 			}
 		}
@@ -641,6 +658,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				ayaneo_gb_show_frame(vbuf);
 				pace_n++;
 				{ unsigned target = pace_base + (unsigned)(pace_n * TPF_NUM / TPF_DEN);
+				  ayaneo_idle_until(target);
 				  while ((int)(gpt4_get_current_tick() - target) < 0) ; }
 				continue;
 			}
@@ -830,6 +848,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			pace_n++;
 			{
 				unsigned target = pace_base + (unsigned)(pace_n * TPF_NUM / TPF_DEN);
+				ayaneo_idle_until(target);
 				while ((int)(gpt4_get_current_tick() - target) < 0)
 					;
 			}

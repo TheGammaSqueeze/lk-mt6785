@@ -468,6 +468,26 @@ void RDMASetTargetLine(DISP_MODULE_ENUM module, unsigned int line,void * handle)
 	DISP_REG_SET(handle,idx*DISP_RDMA_INDEX_OFFSET+ DISP_REG_RDMA_TARGET_LINE, line);
 }
 
+/* A real refresh edge for the presenter: RDMA0 raises FRAME_END at the end of every scanned
+ * frame in video mode. Clear that flag (the status register is write-zero-to-clear, so write
+ * all ones except bit 2), then poll until it rises again. Bounded by timeout_us. Returns 1 on
+ * an edge, 0 on timeout. dpmgr's event waits are not usable here: the frame-done event is not
+ * initialised on this path in LK and returns at once. */
+int ayaneo_rdma_wait_frame_end(unsigned int timeout_us)
+{
+	const unsigned int fe = 1u << 2;   /* INT_STATUS_FLD_FRAME_END_INT_FLAG */
+	unsigned int waited = 0;
+	DISP_CPU_REG_SET(DISP_REG_RDMA_INT_STATUS, ~fe);
+	while ((DISP_REG_GET(DISP_REG_RDMA_INT_STATUS) & fe) == 0) {
+		extern void ayaneo_volume_sample(void);
+		if (waited >= timeout_us) return 0;
+		ayaneo_volume_sample();   /* the volume wheel is decoded at this rate while we wait */
+		udelay(20);
+		waited += 20;
+	}
+	return 1;
+}
+
 static int RDMAPollingInterrupt(DISP_MODULE_ENUM module, int bit, int timeout)
 {
 	unsigned int idx = rdma_index(module);

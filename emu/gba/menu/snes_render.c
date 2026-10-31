@@ -46,8 +46,9 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	/* Apply the per-view-group aspect transform to the screen matrix: screen
 	 * coords (X,Y) become (vsx*X + vdx, vsy*Y + vdy). At the native no-op
 	 * (1,1,0,0) this leaves M unchanged bit-for-bit (x*1==x, x+0==x). */
-	float a = M[0] * t->vsx, b = M[1] * t->vsy, c = M[2] * t->vsx, dd = M[3] * t->vsy;
-	float e = M[4] * t->vsx + t->vdx, f = M[5] * t->vsy + t->vdy;
+	float bs = snes_target_base(t);
+	float a = M[0] * t->vsx * bs, b = M[1] * t->vsy * bs, c = M[2] * t->vsx * bs, dd = M[3] * t->vsy * bs;
+	float e = (M[4] * t->vsx + t->vdx) * bs, f = (M[5] * t->vsy + t->vdy) * bs;
 	/* local dest rect corners: [-px, dw-px] x [-py, dh-py] */
 	float lx0 = -d->px, lx1 = d->dw - d->px, ly0 = -d->py, ly1 = d->dh - d->py;
 	float cx[4], cy[4];
@@ -72,8 +73,8 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	 * bit-identical; in 4:3 (offy=0, H=960) it lets the view-transformed content
 	 * and the bottom-pinned bar reach panel rows 720..959 instead of clipping. */
 	{
-		int xlim = t->W - t->offx, ylim = t->H - t->offy;
-		if (xlim > SNES_VW) xlim = SNES_VW;   /* never exceed the virtual design width */
+		int xlim = t->W - t->offx, ylim = t->H - t->offy, vw = snes_target_vw(t);
+		if (xlim > vw) xlim = vw;   /* never exceed the design width (in fb pixels) */
 		if (x1 > xlim) x1 = xlim;
 		if (y1 > ylim) y1 = ylim;
 	}
@@ -684,7 +685,7 @@ int snes_render_count(void) { return g_ndr; }
  * positions, which is imperceptible while the strip is moving. */
 void snes_composite(snes_target *t, const uint32_t *ov, int y0, int y1)
 {
-	int y, x, W = t->W < SNES_VW ? t->W : SNES_VW;
+	int y, x, vw = snes_target_vw(t), W = t->W < vw ? t->W : vw;
 	if (y0 < 0) y0 = 0;
 	if (y1 > t->H) y1 = t->H;
 	for (y = y0; y < y1; y++) {
@@ -709,7 +710,13 @@ void snes_composite(snes_target *t, const uint32_t *ov, int y0, int y1)
 
 void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, float cy, float dim)
 {
-	float scx = t->vsx * cx + t->vdx, scy = t->vsy * cy + t->vdy;
+	snes_blit_raw_p(t, pix, w, w, h, cx, cy, dim);
+}
+
+void snes_blit_raw_p(snes_target *t, const uint32_t *pix, int pitch, int w, int h, float cx, float cy, float dim)
+{
+	float bs = snes_target_base(t);
+	float scx = (t->vsx * cx + t->vdx) * bs, scy = (t->vsy * cy + t->vdy) * bs;
 	int cxp = (int)(scx + (scx >= 0 ? 0.5f : -0.5f));
 	int cyp = (int)(scy + (scy >= 0 ? 0.5f : -0.5f));
 	int x0 = cxp - w / 2, y0 = cyp - h / 2;      /* virtual-space top-left */
@@ -718,14 +725,14 @@ void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, 
 	int idim = (int)(dim * 256.0f + 0.5f);       /* 256 = 1.0 (no dim = exact copy) */
 	if (idim > 256) idim = 256; if (idim < 0) idim = 0;
 	if (!pix || w <= 0 || h <= 0) return;
-	if (xlim > SNES_VW) xlim = SNES_VW;          /* never exceed the design width */
+	{ int vw = snes_target_vw(t); if (xlim > vw) xlim = vw; }   /* never exceed the design width */
 	/* clip source rect to [0,xlim)x[0,ylim) in virtual space */
 	if (x0 < 0)      { sx0 = -x0; x0 = 0; }
 	if (y0 < 0)      { sy0 = -y0; y0 = 0; }
 	if (x0 + (sx1 - sx0) > xlim) sx1 = sx0 + (xlim - x0);
 	if (y0 + (sy1 - sy0) > ylim) sy1 = sy0 + (ylim - y0);
 	for (Y = sy0; Y < sy1; Y++) {
-		const uint32_t *srow = pix + (unsigned)Y * w;
+		const uint32_t *srow = pix + (unsigned)Y * (unsigned)pitch;
 		uint32_t *drow = t->fb + (unsigned)(t->offy + y0 + (Y - sy0)) * t->pitch
 			       + t->offx + x0;
 		X = sx0;
@@ -848,6 +855,91 @@ void snes_blit_raw(snes_target *t, const uint32_t *pix, int w, int h, float cx, 
 				db = (sb * sa + db * ia + 127) / 255;
 				drow[X - sx0] = 0xff000000u | (dr << 16) | (dg << 8) | db;
 			}
+		}
+	}
+}
+
+void snes_blit_raw_pa(snes_target *t, const uint32_t *pix, int pitch, int w, int h, float cx, float cy, float dim, float alpha)
+{
+	float bs = snes_target_base(t);
+	float scx = (t->vsx * cx + t->vdx) * bs, scy = (t->vsy * cy + t->vdy) * bs;
+	int cxp = (int)(scx + (scx >= 0 ? 0.5f : -0.5f));
+	int cyp = (int)(scy + (scy >= 0 ? 0.5f : -0.5f));
+	int x0 = cxp - w / 2, y0 = cyp - h / 2;
+	int sx0 = 0, sy0 = 0, sx1 = w, sy1 = h, X, Y;
+	int xlim = t->W - t->offx, ylim = t->H - t->offy;
+	int idim = (int)(dim * 256.0f + 0.5f);
+	int ia = (int)(alpha * 255.0f + 0.5f);        /* 255 = opaque */
+	if (idim > 256) idim = 256; if (idim < 0) idim = 0;
+	if (ia > 255) ia = 255;
+	if (ia <= 0 || !pix || w <= 0 || h <= 0) return;
+	if (ia == 255) { snes_blit_raw_p(t, pix, pitch, w, h, cx, cy, dim); return; }
+	{ int vw = snes_target_vw(t); if (xlim > vw) xlim = vw; }
+	if (x0 < 0)      { sx0 = -x0; x0 = 0; }
+	if (y0 < 0)      { sy0 = -y0; y0 = 0; }
+	if (x0 + (sx1 - sx0) > xlim) sx1 = sx0 + (xlim - x0);
+	if (y0 + (sy1 - sy0) > ylim) sy1 = sy0 + (ylim - y0);
+	for (Y = sy0; Y < sy1; Y++) {
+		const uint32_t *srow = pix + (unsigned)Y * (unsigned)pitch;
+		uint32_t *drow = t->fb + (unsigned)(t->offy + y0 + (Y - sy0)) * t->pitch
+			       + t->offx + x0;
+		X = sx0;
+#ifdef __ARM_NEON
+		{
+		/* all-opaque runs of 8 (the card body): dst = (dim(src) * ia + dst * (255 - ia)) / 255 */
+		uint8x8_t via = vdup_n_u8((uint8_t)ia), vinv = vdup_n_u8((uint8_t)(255 - ia));
+		uint8x8_t vidim = vdup_n_u8((uint8_t)(idim > 255 ? 255 : idim));
+		static const uint8_t amask_b[8] = { 0,0,0,0xff, 0,0,0,0xff };
+		uint8x8_t amask = vld1_u8(amask_b);
+		for (; X + 8 <= sx1; X += 8) {
+			const uint32_t *sp = &srow[X];
+			uint32x4_t lo = vld1q_u32(sp), hi = vld1q_u32(sp + 4);
+			uint32x2_t a2 = vand_u32(vget_low_u32(vandq_u32(lo, hi)), vget_high_u32(vandq_u32(lo, hi)));
+			uint32x2_t o2 = vorr_u32(vget_low_u32(vorrq_u32(lo, hi)), vget_high_u32(vorrq_u32(lo, hi)));
+			unsigned aand = vget_lane_u32(a2, 0) & vget_lane_u32(a2, 1);
+			unsigned aor  = vget_lane_u32(o2, 0) | vget_lane_u32(o2, 1);
+			if ((aand & 0xff000000u) == 0xff000000u) {
+				uint32_t *dp = &drow[X - sx0];
+				uint8x16_t s0 = vreinterpretq_u8_u32(lo), s1 = vreinterpretq_u8_u32(hi);
+				uint8x16_t d0 = vreinterpretq_u8_u32(vld1q_u32(dp)), d1 = vreinterpretq_u8_u32(vld1q_u32(dp + 4));
+				uint8x8_t q[4];
+				int k;
+				for (k = 0; k < 4; k++) {
+					uint8x8_t sv = (k == 0) ? vget_low_u8(s0) : (k == 1) ? vget_high_u8(s0) : (k == 2) ? vget_low_u8(s1) : vget_high_u8(s1);
+					uint8x8_t dv = (k == 0) ? vget_low_u8(d0) : (k == 1) ? vget_high_u8(d0) : (k == 2) ? vget_low_u8(d1) : vget_high_u8(d1);
+					uint8x8_t sd = (idim < 256) ? vshrn_n_u16(vmull_u8(sv, vidim), 8) : sv;
+					uint16x8_t acc = vmlal_u8(vmull_u8(sd, via), dv, vinv);
+					q[k] = vorr_u8(vrshrn_n_u16(acc, 8), amask);   /* /256 rounded; alpha forced opaque */
+				}
+				vst1q_u32(dp, vreinterpretq_u32_u8(vcombine_u8(q[0], q[1])));
+				vst1q_u32(dp + 4, vreinterpretq_u32_u8(vcombine_u8(q[2], q[3])));
+			} else if ((aor & 0xff000000u) == 0u) {
+				/* transparent margin */
+			} else {
+				int qq;
+				for (qq = 0; qq < 8; qq++) {
+					uint32_t s = srow[X + qq]; unsigned sa = ((s >> 24) * (unsigned)ia) / 255u;
+					unsigned sr, sg, sb; uint32_t *dp = &drow[X - sx0 + qq];
+					if (!sa) continue;
+					sr = (((s >> 16) & 0xff) * idim) >> 8; sg = (((s >> 8) & 0xff) * idim) >> 8; sb = ((s & 0xff) * idim) >> 8;
+					{ uint32_t dv = *dp; unsigned inv = 255 - sa;
+					  unsigned dr = (dv >> 16) & 0xff, dg = (dv >> 8) & 0xff, db = dv & 0xff;
+					  dr = (sr * sa + dr * inv + 127) / 255; dg = (sg * sa + dg * inv + 127) / 255; db = (sb * sa + db * inv + 127) / 255;
+					  *dp = 0xff000000u | (dr << 16) | (dg << 8) | db; }
+				}
+			}
+		}
+		}
+#endif
+		for (; X < sx1; X++) {
+			uint32_t s = srow[X]; unsigned sa = ((s >> 24) * (unsigned)ia) / 255u;
+			unsigned sr, sg, sb; uint32_t *dp = &drow[X - sx0];
+			if (!sa) continue;
+			sr = (((s >> 16) & 0xff) * idim) >> 8; sg = (((s >> 8) & 0xff) * idim) >> 8; sb = ((s & 0xff) * idim) >> 8;
+			{ uint32_t dv = *dp; unsigned inv = 255 - sa;
+			  unsigned dr = (dv >> 16) & 0xff, dg = (dv >> 8) & 0xff, db = dv & 0xff;
+			  dr = (sr * sa + dr * inv + 127) / 255; dg = (sg * sa + dg * inv + 127) / 255; db = (sb * sa + db * inv + 127) / 255;
+			  *dp = 0xff000000u | (dr << 16) | (dg << 8) | db; }
 		}
 	}
 }

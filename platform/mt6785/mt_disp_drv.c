@@ -843,17 +843,20 @@ static int s_fb_flip;
  * the snapshot (0x54000000+fb), reveal (0x55000000+fb), boxart (0x55500000..0x557E4000), freeze
  * (0x55800000), game-full / overlay / RSZ_BUF1 (0x55900000+fb) and fct (0x55E00000..) regions. The
  * 4:3 warped-wallpaper cache that starts at 0x54000000 is never built on this board (3:2 screen). */
-/* The menu, dialogs and transitions draw on a VIRTUAL canvas of the pairmini's design width
- * (1280) at the 3:2 height (853) so none of their layout code changes; ayaneo_canvas_present
- * scales it by exactly 3/4 to the 960x640 logical screen and turns it into the frame buffer.
- * The canvas and the rotated-native-frame scratch share one region: the canvas is only drawn
+/* The menu, dialogs and transitions draw on a canvas the size of the logical 960x640 screen
+ * (the menu engine renders at its native 0.75 scale); ayaneo_canvas_present turns it into the
+ * portrait frame buffer. (Until build33 this was a 1280x853 virtual canvas downscaled by 3/4
+ * on every present, which cost about 10 ms real per frame.) The canvas and the rotated-native-frame scratch share one region: the canvas is only drawn
  * while no emulator frame is being presented (menu, dialogs, transitions) and vice versa. The
  * downscale temp shares the overlay paint target for the same reason (menu time vs game time).
  * 0x54800000 sits above the (3:2 sized) warped-wallpaper cache and below the relocated card
  * tile cache (gba_snes_menu.c, KONKR_KPA map). */
-#define ROT_CANVAS_W    1280u
-#define ROT_CANVAS_H    853u
-#define ROT_CANVAS_PA   0x54800000u   /* 1280x853x4 = 0x42A400, ends 0x54C2A400 */
+/* The canvas is the logical (landscape) screen itself, 960x640 on the Konkr: the menu renders
+ * at its native 0.75 scale (snes_target_fit) and the present is a plain quarter turn. The
+ * region is sized for the earlier 1280x853 virtual canvas, so anything up to that still fits. */
+#define ROT_CANVAS_W    ((unsigned int)CFG_DISPLAY_HEIGHT)
+#define ROT_CANVAS_H    ((unsigned int)CFG_DISPLAY_WIDTH)
+#define ROT_CANVAS_PA   0x54800000u   /* up to 1280x853x4 = 0x42A400, ends 0x54C2A400 */
 #define ROT_565_PA      0x54800000u   /* rotated native frame, up to 1280x720 RGB565 (0x1C2000) */
 #define ROT_OVERLAY_PA  0x55B80000u   /* logical ARGB paint target for the game overlay (0x258000) */
 #define ROT_LOGICAL_PA  0x55B80000u   /* logical 960x640 temp of the downscaled canvas */
@@ -873,6 +876,103 @@ void ayaneo_canvas_dims(unsigned int *cw, unsigned int *ch)
 #endif
 }
 volatile int g_rot_ccw;   /* 0 = clockwise quarter turn (default), 1 = counter clockwise */
+volatile unsigned int g_dbg_present_us[2];   /* canvas present cost: [0] downscale, [1] turn (us) */
+volatile unsigned int g_dbg_pace_waits;      /* refresh edges waited by the last present (Konkr: 2 = on cadence) */
+volatile unsigned int g_dbg_pace_dt_us;      /* interval between the last two presents (us) */
+volatile unsigned int g_dbg_pace_timeouts;   /* frame-done waits that timed out (should stay 0) */
+volatile unsigned int g_dbg_pace_edge_us;    /* duration of the last single edge wait (us) */
+volatile unsigned int g_dbg_present_fps;     /* paced presents in the last second */
+#if AYANEO_ROT
+/* Deadline pacing. A frame must be shown for exactly g_vsync_div refreshes (1 on the Konkr:
+ * the panel is 60 Hz class, the earlier "120 Hz" reading came from GPT4 ticking at 6.5 MHz). Waiting "frame-done, then a vsync, then one more" costs two or three refreshes
+ * depending on where the render finished, which alternates 16.7 / 25 ms and judders the menu.
+ * Instead: present without the frame-done block, then wait vsync edges only until div periods
+ * have passed since the previous frame's edge. Steady 2 refreshes whenever render + present
+ * fit in the budget; a late frame slips one refresh, never two. */
+static unsigned int s_pace_edge;
+/* Did the overlay really switch to the buffer presented one frame ago? Checked right after the
+ * frame end edge against the live OVL0_2L L0 address (the sampler in oem latch starves behind
+ * the render thread and under-counts). Only the canvas path arms s_pace_expect. */
+static unsigned int s_pace_expect;
+volatile unsigned int g_dbg_latch_hit, g_dbg_latch_miss;
+int ayaneo_rdma_wait_frame_end(unsigned int timeout_us);   /* ddp_rdma.c */
+static unsigned int s_pace_next;   /* time paced mode: deadline of the frame being presented */
+extern void ayaneo_idle_until(unsigned target_tick);   /* ayaneo_volume_input.c */
+static void rot_pace(void)
+{
+	extern volatile unsigned int g_vsync_div;
+	extern unsigned int ayaneo_dsi_refresh_milli(void);
+	extern unsigned int gpt4_get_current_tick(void);
+	extern volatile unsigned int g_pace_fps_milli;
+	unsigned int r = ayaneo_dsi_refresh_milli();
+	unsigned int period = r ? (unsigned int)(13000000000ULL / r) : 108800u;   /* 13 MHz ticks per refresh */
+	unsigned int div = g_vsync_div ? g_vsync_div : 1u;
+	unsigned int fps = g_pace_fps_milli ? g_pace_fps_milli : 59727u;
+	unsigned int frame = (unsigned int)(13000000000ULL / fps);                /* ticks per core frame */
+	unsigned int target, now, n = 0;
+	/* Pace by the 13 MHz clock to the core's own frame period. The OVL latches a presented
+	 * buffer at the next refresh, so with the panel tuned to 2x the core rate every frame lands
+	 * on two refreshes and the phase stays put; a core the porch cannot follow (PAL) gets 2/3
+	 * holds averaging its rate. The display interrupt flags were tried as the clock first and
+	 * failed three ways on this board (DSI FRAME_DONE never fires in video mode, dpmgr's event
+	 * is not initialised on the LK path, RDMA0 FRAME_END did not behave as a per frame edge),
+	 * so the wall clock is the one reference that cannot lie. thread_yield keeps the fastboot
+	 * USB thread served while we wait. */
+	/* Returns right after an RDMA0 FRAME_END edge (the one safe phase to write the layer config,
+	 * measured on the device: a config written elsewhere in the refresh is dropped about half
+	 * the time). Integer cadence (panel within 1% of div x the core rate): take edges from the
+	 * previous present's edge until div periods have passed, so the frame period is exactly div
+	 * refreshes and the render may use all of it. Otherwise (PAL) a time deadline picks whether
+	 * the frame holds 2 or 3 refreshes, averaging the core rate. */
+	if (frame > period * div - period / 100u && frame < period * div + period / 100u) {
+		target = s_pace_edge + period * div - period / 4u;
+		s_pace_next = 0;
+		ayaneo_idle_until(s_pace_edge + period * div);   /* sleep until a few ms before the edge we want */
+	} else {
+		now = gpt4_get_current_tick();
+		if (s_pace_next == 0u || (int)(now - s_pace_next) > (int)(2u * frame) || (int)(s_pace_next - now) > (int)(2u * frame))
+			s_pace_next = now;
+		s_pace_next += frame;
+		target = s_pace_next - period / 2u;   /* the first edge at or after this is the one */
+		ayaneo_idle_until(target);
+	}
+	do {
+		if (!ayaneo_rdma_wait_frame_end(30000u)) g_dbg_pace_timeouts++;
+		now = gpt4_get_current_tick();
+		n++;
+	} while ((int)(now - target) < 0 && n < 8u);
+	{ extern void disp_pwm_strobe_tick(void); disp_pwm_strobe_tick(); }   /* BFI: the lit pulse starts now (no-op unless Strobe is on) */
+	{ extern void ayaneo_rewind_tables_tick(void); ayaneo_rewind_tables_tick(); }   /* rewind island page tables: compare + repair every frame */
+	if (s_pace_expect) {
+		if ((*(volatile unsigned int *)(0x14009000u + 0xF40u)) == s_pace_expect) g_dbg_latch_hit++;
+		else g_dbg_latch_miss++;
+	}
+	g_dbg_pace_edge_us = (unsigned int)((int)(now - target)) / 13u;   /* how far past the deadline the edge was */
+	g_dbg_pace_dt_us = (now - s_pace_edge) / 13u;
+	s_pace_edge = now;
+	g_dbg_pace_waits = n;
+	{
+		static unsigned int win0, cnt;
+		cnt++;
+		if (!win0) win0 = now;
+		if (now - win0 >= 13000000u) { g_dbg_present_fps = cnt; cnt = 0; win0 = now; }
+	}
+}
+#endif
+/* NEON implementations (ayaneo_rot_neon.c, compiled with -mfpu=neon on the Konkr) */
+void ayaneo_rot8888_neon(const unsigned int *src, unsigned w, unsigned h, unsigned spitch,
+			 unsigned int *dst, unsigned dpitch, int ccw);
+void ayaneo_rot_turn_band_neon(const unsigned int *src, unsigned w, unsigned h, unsigned spitch,
+			       unsigned int *dst, unsigned dpitch, int ccw);
+void ayaneo_rot8888_alpha_neon(const unsigned int *src, unsigned w, unsigned h, unsigned spitch,
+			       unsigned int *dst, unsigned dpitch, int ccw);
+void ayaneo_scale43_neon(const unsigned int *src, unsigned sw, unsigned sh, unsigned spitch,
+			 unsigned int *dst, unsigned dw, unsigned dh, unsigned dpitch);
+void ayaneo_canvas_present_neon(const unsigned int *src, unsigned sw, unsigned sh, unsigned spitch,
+				unsigned int *fb, unsigned fbpitch, unsigned dw, unsigned dh, int ccw);
+/* What `oem shot` should dump: the last resizer input (the game, turned, prescaled) while a
+ * resizer session is up, otherwise the front frame buffer. All physical geometry. */
+static unsigned int s_shot_pa, s_shot_w, s_shot_h, s_shot_pitch;
 
 unsigned int ayaneo_screen_w(void) { return AYANEO_ROT ? CFG_DISPLAY_HEIGHT : CFG_DISPLAY_WIDTH; }
 unsigned int ayaneo_screen_h(void) { return AYANEO_ROT ? CFG_DISPLAY_WIDTH : CFG_DISPLAY_HEIGHT; }
@@ -986,11 +1086,20 @@ static unsigned rot_int_scale(unsigned sw, unsigned sh)
 
 /* ---- primitive drawing into a 32-bit BGRA back buffer (used by the menu) ---- */
 
-/* filled rectangle, clipped to the panel */
+/* Clip extent for the primitive drawers below. They clip to the panel by default, which is
+ * right for the pairmini's panel sized buffers; the Konkr hands out logical / virtual canvases
+ * that are wider than its portrait frame buffer, so whoever hands out such a buffer sets the
+ * extent to that buffer's size (0,0 = back to the panel). */
+static unsigned int s_clip_w, s_clip_h;
+void ayaneo_draw_clip(unsigned int w, unsigned int h) { s_clip_w = w; s_clip_h = h; }
+#define CLIP_W (s_clip_w ? s_clip_w : CFG_DISPLAY_WIDTH)
+#define CLIP_H (s_clip_h ? s_clip_h : CFG_DISPLAY_HEIGHT)
+
+/* filled rectangle, clipped to the buffer extent */
 void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
 		 int x, int y, int w, int h, unsigned int argb)
 {
-	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	unsigned int W = CLIP_W, H = CLIP_H;
 	int iy, ix;
 
 	if (x < 0) { w += x; x = 0; }
@@ -1009,7 +1118,7 @@ void ayaneo_fill(unsigned int *buf, unsigned int pitch_w,
 void ayaneo_fill_blend(unsigned int *buf, unsigned int pitch_w,
 		       int x, int y, int w, int h, unsigned int argb, int alpha)
 {
-	unsigned int Wd = CFG_DISPLAY_WIDTH, Hd = CFG_DISPLAY_HEIGHT;
+	unsigned int Wd = CLIP_W, Hd = CLIP_H;
 	/* 0-255 alpha mapped to 0-256 so the blend is a shift, not a divide (per-
 	 * pixel divides were heavy enough to push the menu frame past one refresh
 	 * and halve the emulation rate). Pre-scale the source term once. */
@@ -1133,6 +1242,7 @@ unsigned int *ayaneo_canvas_back(unsigned int *pitch_w, unsigned int *W, unsigne
 	*pitch_w = ROT_CANVAS_W;
 	*W = ROT_CANVAS_W;
 	*H = ROT_CANVAS_H;
+	ayaneo_draw_clip(ROT_CANVAS_W, ROT_CANVAS_H);
 	return (unsigned int *)ROT_CANVAS_PA;
 #else
 	*pitch_w = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT);
@@ -1158,6 +1268,32 @@ const unsigned int *ayaneo_canvas_front(unsigned int *pitch_w, unsigned int *W, 
 	*H = CFG_DISPLAY_HEIGHT;
 	return (const unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? 0 : fb_size));
 #endif
+}
+
+/* Source for the fastboot `oem shot` dump (see s_shot_*). Returns 1 when a resizer session is
+ * live and the game buffer is returned, 0 for the front frame buffer. */
+static int s_rsz_setup;   /* tentative; the RSZ path defines it below */
+/* The in-game overlay as painted (logical landscape 960x640 on the Konkr), for oem shot:N:o. */
+int ayaneo_shot_overlay(unsigned int *pa, unsigned int *w, unsigned int *h, unsigned int *pitch_px)
+{
+#if AYANEO_ROT
+	*pa = ROT_OVERLAY_PA; *w = ayaneo_screen_w(); *h = ayaneo_screen_h(); *pitch_px = ayaneo_screen_w();
+	return 1;
+#else
+	(void)pa; (void)w; (void)h; (void)pitch_px;
+	return 0;
+#endif
+}
+
+int ayaneo_shot_source(unsigned int *pa, unsigned int *w, unsigned int *h, unsigned int *pitch_px)
+{
+	if (s_rsz_setup && s_shot_pa) {
+		*pa = s_shot_pa; *w = s_shot_w; *h = s_shot_h; *pitch_px = s_shot_pitch;
+		return 1;
+	}
+	*pa = (unsigned int)fb_addr_pa + (s_fb_flip ? 0 : fb_size);
+	*w = CFG_DISPLAY_WIDTH; *h = CFG_DISPLAY_HEIGHT; *pitch_px = ALIGN_TO(CFG_DISPLAY_WIDTH, MTK_FB_ALIGNMENT);
+	return 0;
 }
 
 /* flush the whole back buffer and present it, then flip */
@@ -1186,13 +1322,37 @@ void ayaneo_canvas_present(void)
 		ayaneo_snes_rsz_restore();
 
 #if AYANEO_ROT
-	scale43_down((const unsigned int *)ROT_CANVAS_PA, ROT_CANVAS_W, ROT_CANVAS_H, ROT_CANVAS_W,
-		     (unsigned int *)ROT_LOGICAL_PA, ayaneo_screen_w(), ayaneo_screen_h(), ayaneo_screen_w());
-	rot8888((const unsigned int *)ROT_LOGICAL_PA, ayaneo_screen_w(), ayaneo_screen_h(), ayaneo_screen_w(),
-		(unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0)), pitch_w);
+	{
+		extern unsigned int gpt4_get_current_tick(void);
+		unsigned int t0 = gpt4_get_current_tick();
+		/* a canvas the size of the logical screen is just turned; a larger (4:3 wider) one goes
+		 * through the fused box downscale + quarter turn */
+		if (ROT_CANVAS_W == ayaneo_screen_w() && ROT_CANVAS_H == ayaneo_screen_h())
+			ayaneo_rot_turn_band_neon((const unsigned int *)ROT_CANVAS_PA, ROT_CANVAS_W, ROT_CANVAS_H, ROT_CANVAS_W,
+						  (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0)), pitch_w, g_rot_ccw);
+		else
+			ayaneo_canvas_present_neon((const unsigned int *)ROT_CANVAS_PA, ROT_CANVAS_W, ROT_CANVAS_H, ROT_CANVAS_W,
+						   (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0)), pitch_w,
+						   ayaneo_screen_w(), ayaneo_screen_h(), g_rot_ccw);
+		g_dbg_present_us[0] = (gpt4_get_current_tick() - t0) / 13u;
+		g_dbg_present_us[1] = 0;
+	}
 #endif
 	arch_clean_cache_range((unsigned int)((unsigned char *)fb_addr +
 			       (s_fb_flip ? fb_size : 0)), fb_size);
+#if AYANEO_ROT
+	{
+		extern int ayaneo_present_skip_framedone;
+		int save = ayaneo_present_skip_framedone;
+		rot_pace();                            /* deadline + phase: returns right after a frame end */
+		ayaneo_present_skip_framedone = 1;     /* no frame-done block inside: we just aligned */
+		ayaneo_present(dpa, W, H, pitch_w);
+		ayaneo_present_skip_framedone = save;
+		s_pace_expect = dpa;                   /* the next frame end must show this buffer */
+		s_fb_flip ^= 1;
+		return;
+	}
+#endif
 	ayaneo_present(dpa, W, H, pitch_w);
 	/* Video mode: the OVL latches the new buffer address at the NEXT vsync, but
 	 * primary_display_trigger returns immediately. Without waiting, the loop starts
@@ -1203,6 +1363,11 @@ void ayaneo_canvas_present(void)
 	 * This is exactly what the flicker-free b369be3 build did; dropping it was the
 	 * regression. It also paces the loop cleanly to the panel. */
 	priamry_display_wait_for_vsync();
+	{
+		extern volatile unsigned int g_vsync_div;
+		unsigned int k;
+		for (k = 1u; k < g_vsync_div; k++) priamry_display_wait_for_vsync();
+	}
 	s_fb_flip ^= 1;
 }
 
@@ -1703,6 +1868,10 @@ volatile unsigned g_rsz_show_us;      /* generic RSZ present cost (us), for oem 
 void ayaneo_overlay_layer_set(unsigned int argb_pa, unsigned int w, unsigned int h,
 			      unsigned int dst_x, unsigned int dst_y, int enable)
 {
+	/* A layer config written at an arbitrary point of the scan shows a frame or two of torn,
+	 * tiled garbage (CMDQ is off: the registers change mid frame). Land it right after an
+	 * RDMA0 frame end, the one phase the presenter uses for its own configs. */
+	{ extern int ayaneo_rdma_wait_frame_end(unsigned int timeout_us); ayaneo_rdma_wait_frame_end(30000u); }
 	if (enable && argb_pa && w && h) {
 		disp_input_config in;
 		memset(&in, 0, sizeof(in));
@@ -1770,10 +1939,40 @@ static volatile int s_overlay_dirty;
  * the frame budget, so the panel scanned a half-cleared overlay = stale content torn across the top.
  * The game still animates live underneath through its own present; only the menu panel is static. */
 void ayaneo_menu_overlay_mark_dirty(void) { s_overlay_dirty = 1; }
+/* Power hold bar: while the power key is held the overlay layer shows a "Hold to power off" bar
+ * (unless a core's own menu owns the layer). -1 = no bar. */
+static volatile int g_power_bar_pct = -1;
+extern int ayaneo_text(unsigned int *buf, unsigned int pitch_w,
+			int x, int y, int scale, unsigned int argb, const char *s);
+static void power_bar_draw(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int onto_canvas)
+{
+	int w = (int)W * 2 / 3, x0 = ((int)W - w) / 2, y0 = (int)H / 2 + 30, pct = g_power_bar_pct < 0 ? 0 : g_power_bar_pct;
+	const char *t = "Hold to power off";
+	int n = 0; while (t[n]) n++;
+	/* dark scrim over the whole screen: alpha on the overlay layer, blended into an opaque canvas */
+	if (onto_canvas) ayaneo_fill_blend(buf, pitch, 0, 0, (int)W, (int)H, 0xFF000000u, 208);
+	else             ayaneo_fill(buf, pitch, 0, 0, (int)W, (int)H, 0xD0000000u);
+	ayaneo_text(buf, pitch, (int)W / 2 - n * 8 * 4 / 2, y0 - 80, 4, 0xFFFFFFFFu, t);
+	ayaneo_fill(buf, pitch, x0, y0, w, 20, 0xFF303840u);
+	ayaneo_fill(buf, pitch, x0, y0, w * (pct > 100 ? 100 : pct) / 100, 20, 0xFFFFFFFFu);
+}
+static void power_bar_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H) { power_bar_draw(buf, pitch, W, H, 0); }
+/* the carousel draws the bar straight into its canvas every frame (its present path owns the
+ * OVL layers, so the overlay layer is not used there); no-op while no hold is in progress */
+void ayaneo_power_bar_draw(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
+{
+	if (g_power_bar_pct >= 0) power_bar_draw(buf, pitch, W, H, 1);
+}
+void ayaneo_power_bar(int pct)
+{
+	if (pct >= 0) pct = (pct / 5) * 5;   /* repaint in 5 % steps: the layer is re-turned on every repaint */
+	if (pct != g_power_bar_pct) { g_power_bar_pct = pct; s_overlay_dirty = 1; }
+}
 void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int *b = (unsigned int *)MENU_OVERLAY_PA;
+	if (!(open && paint) && g_power_bar_pct >= 0) { paint = power_bar_paint; open = 1; }   /* the bar borrows the layer */
 	if (open && paint) {
 		if (!g_overlay_active || s_overlay_dirty) {
 			/* Clear to transparent (alpha=0) then draw the opaque panel. Full-screen clear each
@@ -1785,8 +1984,10 @@ void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned in
 				unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h();
 				unsigned int *lb = (unsigned int *)ROT_OVERLAY_PA;
 				memset(lb, 0, LW * LH * 4u);
+				ayaneo_draw_clip(LW, LH);
 				paint(lb, LW, LW, LH);
-				rot8888(lb, LW, LH, LW, b, W);
+				ayaneo_draw_clip(0, 0);
+				ayaneo_rot8888_alpha_neon(lb, LW, LH, LW, b, W, g_rot_ccw);   /* keep the alpha: the game shows through */
 			}
 #else
 			memset(b, 0, W * H * 4u);
@@ -2009,6 +2210,150 @@ static const unsigned short *od_apply(const unsigned short *pix, unsigned int sw
 	return s_od_out;
 }
 
+#if AYANEO_ROT
+/* In-game OSD and FF/RW badge on the turned panel. The prescaled game in the resizer buffer is
+ * physical (turned); the badge and the volume bar are drawn upright by pulling the small logical
+ * box they cover out of that buffer, drawing with the ordinary helpers, and pushing the box back
+ * turned. Boxes are a few hundred pixels wide, so this costs almost nothing per frame.
+ * Logical prescaled game: LGW = ih (physical height), LGH = iw (physical width). */
+#define ROT_BOX_W 640
+#define ROT_BOX_H 64
+static unsigned int s_rot_box[ROT_BOX_W * ROT_BOX_H];
+
+static inline unsigned int *rot_game_px(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsigned ih,
+					int x, int y)
+{
+	unsigned px, py;
+	if (!g_rot_ccw) { px = iw - 1u - (unsigned)y; py = (unsigned)x; }
+	else            { px = (unsigned)y;           py = ih - 1u - (unsigned)x; }
+	return vbuf + py * fbpitch + px;
+}
+
+static void rot_box_pull(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsigned ih,
+			 int lx, int ly, int lw, int lh)
+{
+	int x, y;
+	for (y = 0; y < lh; y++)
+		for (x = 0; x < lw; x++)
+			s_rot_box[y * lw + x] = *rot_game_px(vbuf, fbpitch, iw, ih, lx + x, ly + y);
+}
+
+static void rot_box_push(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsigned ih,
+			 int lx, int ly, int lw, int lh)
+{
+	int x, y;
+	for (y = 0; y < lh; y++)
+		for (x = 0; x < lw; x++)
+			*rot_game_px(vbuf, fbpitch, iw, ih, lx + x, ly + y) = s_rot_box[y * lw + x];
+}
+
+static void rot_hud_osd(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsigned ih)
+{
+	int LGW = (int)ih, LGH = (int)iw;
+
+	/* FF / RW badge: top right of the game, as ayaneo_hud_draw lays it out */
+	if (g_hud_mode == 1 || g_hud_mode == 2) {
+		int lw = 332, lh = 68, lx, ly = 0;
+		if (lw > LGW) lw = LGW;
+		if (lh > LGH) lh = LGH;
+		lx = LGW - lw;
+		rot_box_pull(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
+		ayaneo_draw_clip((unsigned)lw, (unsigned)lh);
+		ayaneo_hud_draw(s_rot_box, (unsigned)lw, -lx, -ly, LGW, LGH);
+		ayaneo_draw_clip(0, 0);
+		rot_box_push(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
+	}
+
+	/* volume / brightness bar: bottom centre of the game, same look as ayaneo_draw_osd */
+	if (s_osd_kind && (int)(s_osd_until_ms - (unsigned int)current_time()) > 0) {
+		int barW = (LGW * 3) / 5, barH = 22, bx, by, fillW, x, y;
+		unsigned int fill = (s_osd_kind == 1) ? 0xFF20D0FFu : 0xFFFFC020u;
+		if (barW > ROT_BOX_W) barW = ROT_BOX_W;
+		bx = (LGW - barW) / 2;
+		by = LGH - barH - 12;
+		if (by < 0) by = 0;
+		fillW = ((barW - 4) * s_osd_pct) / 100;
+		for (y = 0; y < barH; y++) {
+			unsigned int *o = s_rot_box + y * barW;
+			int edge_row = (y < 2 || y >= barH - 2);
+			for (x = 0; x < barW; x++)
+				o[x] = (edge_row || x < 2 || x >= barW - 2) ? 0xFFFFFFFFu
+				     : ((x - 2 < fillW) ? fill : 0xFF202020u);
+		}
+		rot_box_push(vbuf, fbpitch, iw, ih, bx, by, barW, barH);
+	}
+}
+#endif
+
+/* LCD1x / LCD3x (RetroArch handheld shaders, Gigaherz / jdgleaver, public domain / GPL):
+ *   lcd1x: colour * (16 + sin(2 pi (y - 0.25))) / 17 * (4 + sin(2 pi (x - 0.25))) / 5
+ *   lcd3x: colour * (16 + sin(2 pi y)) / 17 * (4 + sin(2 pi x + off_c)) / 5, off = pi/2,
+ *          pi/2 - 2pi/3, pi/2 - 4pi/3 for R, G, B (the colour separation)
+ * with x, y in source pixel units. With an integer prescale of ph x pv the factors depend only
+ * on the sub position, so one 8 bit table per (sub row, sub column, channel) does the whole
+ * frame with one multiply per channel. On the turned panel the game's rows run along the
+ * output columns, so the scanline axis and the LCD axis swap. */
+static const short s_sin256[256] = { 0,804,1608,2410,3212,4011,4808,5602,6393,7179,7962,8739,9512,10278,11039,11793,12539,13279,14010,14732,15446,16151,16846,17530,18204,18868,19519,20159,20787,21403,22005,22594,23170,23731,24279,24811,25329,25832,26319,26790,27245,27683,28105,28510,28898,29268,29621,29956,30273,30571,30852,31113,31356,31580,31785,31971,32137,32285,32412,32521,32609,32678,32728,32757,32767,32757,32728,32678,32609,32521,32412,32285,32137,31971,31785,31580,31356,31113,30852,30571,30273,29956,29621,29268,28898,28510,28105,27683,27245,26790,26319,25832,25329,24811,24279,23731,23170,22594,22005,21403,20787,20159,19519,18868,18204,17530,16846,16151,15446,14732,14010,13279,12539,11793,11039,10278,9512,8739,7962,7179,6393,5602,4808,4011,3212,2410,1608,804,0,-804,-1608,-2410,-3212,-4011,-4808,-5602,-6393,-7179,-7962,-8739,-9512,-10278,-11039,-11793,-12539,-13279,-14010,-14732,-15446,-16151,-16846,-17530,-18204,-18868,-19519,-20159,-20787,-21403,-22005,-22594,-23170,-23731,-24279,-24811,-25329,-25832,-26319,-26790,-27245,-27683,-28105,-28510,-28898,-29268,-29621,-29956,-30273,-30571,-30852,-31113,-31356,-31580,-31785,-31971,-32137,-32285,-32412,-32521,-32609,-32678,-32728,-32757,-32767,-32757,-32728,-32678,-32609,-32521,-32412,-32285,-32137,-31971,-31785,-31580,-31356,-31113,-30852,-30571,-30273,-29956,-29621,-29268,-28898,-28510,-28105,-27683,-27245,-26790,-26319,-25832,-25329,-24811,-24279,-23731,-23170,-22594,-22005,-21403,-20787,-20159,-19519,-18868,-18204,-17530,-16846,-16151,-15446,-14732,-14010,-13279,-12539,-11793,-11039,-10278,-9512,-8739,-7962,-7179,-6393,-5602,-4808,-4011,-3212,-2410,-1608,-804 };
+static unsigned s_lcd_key;
+static unsigned char s_lcd_m[8][8][3];   /* [sub row][sub col][channel], 255 = x1 */
+static void lcd_filter_tables(int filt, unsigned ph, unsigned pv, int turned)
+{
+	unsigned j, k, c;
+	unsigned key = ((unsigned)filt << 24) | (ph << 16) | (pv << 8) | (unsigned)turned;
+	if (key == s_lcd_key) return;
+	s_lcd_key = key;
+	if (ph > 8u) ph = 8u;
+	if (pv > 8u) pv = 8u;
+	for (j = 0; j < pv; j++) {
+		for (k = 0; k < ph; k++) {
+			/* sub position centre in 1/256 turns along each axis */
+			unsigned srow = (unsigned)(((2u * j + 1u) * 128u) / pv);   /* along output rows */
+			unsigned scol = (unsigned)(((2u * k + 1u) * 128u) / ph);   /* along output columns */
+			unsigned ys = turned ? scol : srow;   /* the game's vertical (scanline) axis */
+			unsigned xs = turned ? srow : scol;   /* the game's horizontal (LCD column) axis */
+			int fy, sy, fx[3];
+			if (filt == 4) { ys = (ys + 256u - 64u) & 255u; xs = (xs + 256u - 64u) & 255u; }
+			sy = s_sin256[ys & 255u];
+			fy = (16 * 32767 + sy) / 17;   /* x 32767 */
+			for (c = 0; c < 3; c++) {
+				unsigned a = xs;
+				if (filt == 5) a = (a + (c == 0 ? 64u : c == 1 ? (256u + 64u - 85u) : (256u + 64u - 171u))) & 255u;
+				fx[c] = (4 * 32767 + s_sin256[a & 255u]) / 5;
+				{
+					long m = ((long)fy * (long)fx[c]) / 32767L;   /* x 32767 */
+					m = (m * 255L) / 32767L;
+					s_lcd_m[j][k][c] = (unsigned char)(m < 0 ? 0 : (m > 255 ? 255 : m));
+				}
+			}
+		}
+	}
+}
+static void lcd_filter_prescale(unsigned int *vbuf, unsigned fbpitch, const unsigned short *pix,
+				unsigned sw, unsigned sh, unsigned spitch_px, unsigned ph, unsigned pv,
+				int filt, const unsigned short *cc_lut, int turned)
+{
+	unsigned y, j, x, k;
+	lcd_filter_tables(filt, ph, pv, turned);
+	for (y = 0; y < sh; y++) {
+		const unsigned short *srow = pix + y * spitch_px;
+		for (j = 0; j < pv; j++) {
+			unsigned int *drow = vbuf + (y * pv + j) * fbpitch;
+			const unsigned char (*mj)[3] = s_lcd_m[j < 8u ? j : 7u];
+			for (x = 0; x < sw; x++) {
+				unsigned int v = srow[x];
+				unsigned r, g, b;
+				unsigned int *o = drow + x * ph;
+				if (cc_lut) v = cc_lut[(((v >> 12) & 0xFu) << 8) | (((v >> 7) & 0xFu) << 4) | ((v >> 1) & 0xFu)];
+				r = ((v >> 11) & 0x1fu) << 3; g = ((v >> 5) & 0x3fu) << 2; b = (v & 0x1fu) << 3;
+				for (k = 0; k < ph; k++) {
+					const unsigned char *m = mj[k < 8u ? k : 7u];
+					o[k] = 0xFF000000u | (((r * m[0]) >> 8) << 16) | (((g * m[1]) >> 8) << 8) | ((b * m[2]) >> 8);
+				}
+			}
+		}
+	}
+}
+
 void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int sh, unsigned int spitch_px,
 			unsigned int dw, unsigned int dh, unsigned int xoff, unsigned int yoff,
 			int filt, int wait_vsync, const unsigned short *cc_lut)
@@ -2099,8 +2444,15 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	unsigned int fbpitch = ALIGN_TO(W, MTK_FB_ALIGNMENT);   /* = panel pitch in pixels (1280) */
 
 	/* RGB565 -> ARGB8888 integer nearest prescale (ph x pv). Optional LCD filter: scanlines
-	 * dim the last of each pv rows; grid (filt>=2) also dims the last of each ph columns. */
-	{
+	 * dim the last of each pv rows; grid (filt>=2) also dims the last of each ph columns.
+	 * On the turned panel (AYANEO_ROT) this runs on the ROTATED frame: the game's horizontal
+	 * scanlines are columns here, so "scanlines" dims the last of each ph columns instead.
+	 * Filters 4 (LCD1x) and 5 (LCD3x) are the RetroArch handheld shaders as per sub pixel
+	 * factor tables (lcd_filter_prescale below). */
+	if (filt >= 4) {
+		lcd_filter_prescale(vbuf, fbpitch, pix, sw, sh, spitch_px, ph, pv, filt, cc_lut, AYANEO_ROT ? 1 : 0);
+	} else {
+		const int scan_cols = AYANEO_ROT ? 1 : 0;
 		unsigned int y, x, k, r_;
 		for (y = 0; y < sh; y++) {
 			const unsigned short *srow = pix + y * spitch_px;
@@ -2114,12 +2466,12 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 				unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
 				unsigned int *o = drow + x * ph;
 				for (k = 0; k < ph; k++) o[k] = px;
-				if (filt >= 2 && ph > 0u)   /* grid: dim last column of this pixel's run */
+				if ((filt >= 2 || (scan_cols && filt == 1)) && ph > 0u)   /* grid, or turned scanlines: dim last column of this run */
 					o[ph - 1u] = 0xFF000000u | ((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
 			}
 			for (r_ = 1u; r_ < pv; r_++)
 				memcpy(drow + r_ * fbpitch, drow, iw * 4u);   /* replicate the widened row */
-			if (filt >= 1 && pv > 0u) {   /* scanline: dim the last of the pv rows */
+			if ((filt >= 2 || (!scan_cols && filt == 1)) && pv > 0u) {   /* grid, or upright scanlines: dim the last of the pv rows */
 				unsigned int *lr = drow + (pv - 1u) * fbpitch;
 				for (x = 0; x < iw; x++) {
 					unsigned int v = lr[x];
@@ -2129,8 +2481,12 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 			}
 		}
 	}
-	if (!AYANEO_ROT)   /* the badge is drawn upright; on the turned buffer it would lie on its side */
-		ayaneo_hud_draw(vbuf, fbpitch, 0, 0, (int)iw, (int)ih);   /* FF/RW speed badge (scaled with the game) */
+#if AYANEO_ROT
+	rot_hud_osd(vbuf, fbpitch, iw, ih);   /* FF/RW badge + volume bar, drawn upright on the turned game */
+#else
+	ayaneo_hud_draw(vbuf, fbpitch, 0, 0, (int)iw, (int)ih);   /* FF/RW speed badge (scaled with the game) */
+#endif
+	s_shot_pa = pbuf; s_shot_w = iw; s_shot_h = ih; s_shot_pitch = fbpitch;
 	arch_clean_cache_range((unsigned int)vbuf, ih * fbpitch * 4u);
 
 	/* Detect geometry changes (source res or output rect - dw/dh uniquely encode the aspect mode)
@@ -2138,6 +2494,15 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	int geom_changed = (!s_rsz_setup || s_rsz_sw != sw || s_rsz_sh != sh ||
 	                    s_rsz_dw != dw || s_rsz_dh != dh);
 
+#if AYANEO_ROT
+	/* Pace first, then align to the next frame end, THEN write the layer config: a config
+	 * written at an arbitrary phase of the refresh is dropped by the overlay about half the
+	 * time at a locked 2-refresh cadence (measured: 60 presents, 31 buffer switches per second),
+	 * while one written right after frame end always lands (the pairmini's config_input did
+	 * exactly that through its frame-done wait). */
+	s_pace_expect = 0;   /* the game layer is checked elsewhere */
+	rot_pace();   /* returns right after a frame end */
+#endif
 	/* Per-frame layer config: points OVL0_2L at the freshly written buffer, sized iw x ih,
 	 * placed at (ox, oy). In video mode config_input waits frame-done then latches at the next
 	 * vsync = paced + tear-free buffer handoff. */
@@ -2150,7 +2515,17 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 		in.src_x = 0; in.src_y = 0; in.src_w = iw; in.src_h = ih; in.src_pitch = fbpitch * 4u;
 		in.dst_x = ox; in.dst_y = oy; in.dst_w = iw; in.dst_h = ih;
 		in.aen = 1; in.alpha = 0xff;
+#if AYANEO_ROT
+		{
+			extern int ayaneo_present_skip_framedone;
+			int save = ayaneo_present_skip_framedone;
+			ayaneo_present_skip_framedone = 1;
+			primary_display_config_input(&in);
+			ayaneo_present_skip_framedone = save;
+		}
+#else
 		primary_display_config_input(&in);
+#endif
 		primary_display_trigger(1);
 	}
 	/* Post-trigger direct writes are live on OVL0_2L: pad the ROI (bars) and re-assert the
@@ -2176,7 +2551,11 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 		s_rsz_dw = dw; s_rsz_dh = dh;
 	}
 	g_rsz_show_us = (gpt4_get_current_tick() - t0) / 13u;
+#if AYANEO_ROT
+	(void)wait_vsync;   /* paced + aligned above, before the layer config */
+#else
 	if (wait_vsync) priamry_display_wait_for_vsync();
+#endif
 	s_fb_flip ^= 1;
 }
 
@@ -2194,6 +2573,14 @@ static void ayaneo_snes_show_frame_rsz(const unsigned short *pix, unsigned int s
 	if (!pix || !fb_addr) return;
 	if (g_snes_stretch) {
 		dw = W; dh = H;
+	} else if (AYANEO_ROT) {
+		/* Konkr (960x640): the pairmini's 4x height (896 rows) does not fit, and clamping it
+		 * made every aspect choice the same full screen rect. Fill the height and take the
+		 * width from the core's aspect (4:3 -> 853, Pixel 8:7 -> 731, NTSC/PAL as reported). */
+		unsigned int asp = g_snes_aspect_x1000;
+		if (!asp) asp = (sw * 1000u) / (sh ? sh : 1u);
+		dh = H; dw = (dh * asp) / 1000u;
+		if (dw > W) { dw = W; dh = (W * 1000u) / asp; }
 	} else {
 		unsigned int asp = g_snes_aspect_x1000;
 		dh = sh * sy_scale;
@@ -2358,10 +2745,23 @@ void ayaneo_snes_show_frame(const unsigned short *pix, unsigned int sw, unsigned
  * 256x192, GG cropped), RGB565 at a fixed 720px source stride. BASIC integer-scale CPU blit +
  * vsync-locked present (mirrors ayaneo_gb_show_frame); Fit/Stretch RSZ + LCD filter are added in
  * the parity phase. Centered, letterbox cleared once on a geometry change; FF/RW HUD drawn on top. */
+/* Genesis display aspect (x1000) for the fit modes: 1 the core's own ratio (PAR corrected, ~4:3),
+ * 3 exactly 4:3, 4 square pixels (the frame's own w:h), 5 16:9. 0 Pixel and 2 Stretch never ask. */
+static unsigned gen_aspect_x1000(int mode, unsigned sw, unsigned sh)
+{
+	extern volatile unsigned g_genesis_aspect_x1000;
+	switch (mode) {
+	case 3:  return 1333u;
+	case 4:  return sh ? sw * 1000u / sh : 1333u;
+	case 5:  return 1778u;
+	default: return g_genesis_aspect_x1000 ? g_genesis_aspect_x1000 : 1333u;
+	}
+}
+
 void ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px)
 {
 	extern unsigned int gpt4_get_current_tick(void);
-	extern volatile int g_genesis_aspect;          /* 0=Pixel 1=Fit 2=Stretch (genesis_sd_run.c) */
+	extern volatile int g_genesis_aspect;          /* 0 Pixel, 1 Core, 2 Stretch, 3 4:3, 4 Square, 5 16:9 (genesis_sd_run.c) */
 	extern volatile unsigned g_genesis_aspect_x1000;
 	extern volatile int g_genesis_filter;          /* 0=off 1=scanlines 2/3=grid */
 	unsigned int t0 = gpt4_get_current_tick();
@@ -2377,8 +2777,8 @@ void ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw, unsigned 
 	{
 		unsigned LW = ayaneo_screen_w(), LH = ayaneo_screen_h(), dwr, dhr, a;
 		if (g_genesis_aspect == 2) { dwr = LW; dhr = LH; }
-		else if (g_genesis_aspect == 1) {
-			a = g_genesis_aspect_x1000; if (!a) a = 1333u;
+		else if (g_genesis_aspect != 0) {
+			a = gen_aspect_x1000(g_genesis_aspect, sw, sh);
 			dhr = LH; dwr = LH * a / 1000u; if (dwr > LW) { dwr = LW; dhr = LW * 1000u / a; }
 		} else { unsigned k = rot_int_scale(sw, sh); dwr = sw * k; dhr = sh * k; }
 		ayaneo_rsz_present(pix, sw, sh, spitch_px, dwr, dhr, (LW - dwr) / 2u, (LH - dhr) / 2u, filt, 0, 0);
@@ -2392,7 +2792,7 @@ void ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw, unsigned 
 	if (g_genesis_aspect != 0) {
 		unsigned int dwr, dhr, a;
 		if (g_genesis_aspect == 2) { dwr = W; dhr = H; }
-		else { a = g_genesis_aspect_x1000; if (!a) a = 1333u;
+		else { a = gen_aspect_x1000(g_genesis_aspect, sw, sh);
 		       dhr = H; dwr = H * a / 1000u; if (dwr > W) { dwr = W; dhr = W * 1000u / a; } }
 		ayaneo_rsz_present(pix, sw, sh, spitch_px, dwr, dhr, (W - dwr) / 2u, (H - dhr) / 2u, filt, 0, 0);
 		g_dbg_blit_us = g_rsz_show_us;
@@ -2764,8 +3164,8 @@ void ayaneo_genesis_punch_prerender(const unsigned short *pix, unsigned int sw, 
 		(void)pitch; (void)gf; (void)xoff; (void)yoff; (void)xstep; (void)ystep; (void)x; (void)y;
 		ayaneo_canvas_dims(&CW, &CH);
 		if (g_genesis_aspect == 2) { dwr = LW; dhr = LH; }
-		else if (g_genesis_aspect == 1) {
-			a = g_genesis_aspect_x1000; if (!a) a = 1333u;
+		else if (g_genesis_aspect != 0) {
+			a = gen_aspect_x1000(g_genesis_aspect, sw, sh);
 			dhr = LH; dwr = LH * a / 1000u; if (dwr > LW) { dwr = LW; dhr = LW * 1000u / a; }
 		} else { unsigned k = rot_int_scale(sw, sh); dwr = sw * k; dhr = sh * k; }
 		punch_fill_scaled((unsigned int *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, CW, CW, CH,
@@ -2775,8 +3175,8 @@ void ayaneo_genesis_punch_prerender(const unsigned short *pix, unsigned int sw, 
 	}
 #endif
 	if (g_genesis_aspect == 2) { dw = W; dh = H; }
-	else if (g_genesis_aspect == 1) {
-		unsigned int a = g_genesis_aspect_x1000; if (!a) a = 1333u;
+	else if (g_genesis_aspect != 0) {
+		unsigned int a = gen_aspect_x1000(g_genesis_aspect, sw, sh);
 		dh = H; dw = H * a / 1000u; if (dw > W) { dw = W; dh = W * 1000u / a; }
 	} else {                                     /* Pixel: integer scale = min(W/sw, H/sh) */
 		unsigned int s = W / sw, s2 = H / sh; if (s2 < s) s = s2; if (s < 1) s = 1;
@@ -3125,7 +3525,9 @@ void video_rainbow_boot_start(void)
 	 * power-on (offline charging) - in that last case the emulator hook shows
 	 * the charging screen instead of booting the game. */
 	ayaneo_settings_load();
+	{ extern int ayaneo_resume_pending(void); if (ayaneo_resume_pending()) goto skip_boot_anim; }
 	if (ayaneo_gbc_select_held() || ayaneo_get_skip_boot()) {
+skip_boot_anim:
 		s_anim_complete = 1;
 		s_rainbow_exited = 1;
 		return;

@@ -145,20 +145,34 @@ static int gbc_ready;
 /* Start/Select physical GPIOs. Swapped from the original mapping (Start was 90,
  * Select was 91) so the two buttons trade functions. Select doubles as the
  * brightness modifier (Select + Volume). */
+#if defined(KONKR_KPA)
+/* Konkr: the device tree labels match the shell, no swaps (see gba_driver.c). */
+#define GBC_GPIO_START	90
+#define GBC_GPIO_SELECT	91
+#define GBC_GPIO_A	82
+#define GBC_GPIO_B	83
+#else
 #define GBC_GPIO_START	91
 #define GBC_GPIO_SELECT	90
+#define GBC_GPIO_A	83	/* swapped vs the DTS labels to match the physical layout */
+#define GBC_GPIO_B	82
+#endif
 
-/* gpio-keys mapping (from the device tree, active-low): GB buttons -> SoC GPIO.
- * A/B are swapped vs the DTS labels to match the physical layout. */
+/* gpio-keys mapping (from the device tree, active-low): GB buttons -> SoC GPIO. */
 static const struct { unsigned gpio; unsigned mask; } s_btn[] = {
 	{ 89, IG_UP },   { 79, IG_DOWN }, { 78, IG_LEFT }, { 80, IG_RIGHT },
-	{ 83, IG_A },    { 82, IG_B },
+	{ GBC_GPIO_A, IG_A },    { GBC_GPIO_B, IG_B },
 	{ GBC_GPIO_START, IG_START }, { GBC_GPIO_SELECT, IG_SEL },
 };
 
 /* extra buttons used for functions, not direct GB inputs */
+#if defined(KONKR_KPA)
+#define GBC_GPIO_X	85	/* autofire A (Konkr: the caps read X on 85, Y on 84) */
+#define GBC_GPIO_Y	84	/* autofire B */
+#else
 #define GBC_GPIO_X	84	/* autofire A */
 #define GBC_GPIO_Y	85	/* autofire B */
+#endif
 #define GBC_GPIO_R	81	/* hold = fast-forward */
 #define GBC_AUTOFIRE_HZ	12
 
@@ -436,12 +450,8 @@ static void gbc_save_and_poweroff(unsigned char *scratch)
 /* Poll power key (armed after first release so a boot-time hold is ignored). */
 static void gbc_check_power(unsigned char *scratch)
 {
-	static int armed;
-	int p = pmic_detect_powerkey();
-
-	if (!p)
-		armed = 1;
-	else if (armed)
+	extern int ayaneo_power_hold(int menu_open, int use_overlay);
+	if (ayaneo_power_hold(0, 1))
 		gbc_save_and_poweroff(scratch);		/* no return */
 }
 
@@ -606,8 +616,8 @@ static unsigned gbc_menu_keys(void)
 	if (GBC_PRESSED(79)) raw |= MK_DOWN;
 	if (GBC_PRESSED(78)) raw |= MK_LEFT;
 	if (GBC_PRESSED(80)) raw |= MK_RIGHT;
-	if (GBC_PRESSED(83)) raw |= MK_A;	/* physical A (see button table) */
-	if (GBC_PRESSED(82)) raw |= MK_B;	/* physical B */
+	if (GBC_PRESSED(GBC_GPIO_A)) raw |= MK_A;	/* physical A (see button table) */
+	if (GBC_PRESSED(GBC_GPIO_B)) raw |= MK_B;	/* physical B */
 	if (GBC_PRESSED(GBC_GPIO_AYA)) raw |= MK_AYA;
 	edge = raw & ~prev;
 	prev = raw;
@@ -616,8 +626,8 @@ static unsigned gbc_menu_keys(void)
 
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_COLORCC, MI_DARKF,
-	MI_LOADBOOT, MI_SKIPBOOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY,
-	MI_CPU, MI_BENCH, MI_CLOSE, MI_COUNT
+	MI_LOADBOOT, MI_RESUME, MI_SKIPBOOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY,
+	MI_CPU, MI_BFI, MI_BENCH, MI_CLOSE, MI_COUNT
 };
 
 /* Benchmark mode: run the emulator uncapped (no 59.7 Hz pacing, no audio) and
@@ -630,7 +640,7 @@ int gbc_get_fps(void) { return s_fps; }
 
 static const char *filter_name(int f)
 {
-	return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : "Off";
+	return f == 1 ? "Scanlines" : f == 2 ? "LCD Grid" : f == 3 ? "Dot Matrix" : f == 4 ? "LCD1x" : f == 5 ? "LCD3x" : "Off";
 }
 
 /* build the value string for one row into buf; returns buf */
@@ -642,10 +652,13 @@ static const char *gbc_menu_value(int item, char *buf, unsigned char *state)
 	case MI_BRIGHT:   p = mi_putu(p, (unsigned)ayaneo_brightness_pct()); p = mi_puts(p, "%"); break;
 	case MI_VOLUME:   p = mi_putu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mi_puts(p, "%"); break;
 	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter_core(2))); break;
+	case MI_BFI:      { extern int ayaneo_get_strobe(void);
+extern const char *ayaneo_strobe_name(int b);
 	case MI_COLORCC:  p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
 	case MI_DARKF:    p = mi_putu(p, (unsigned)ayaneo_get_dark_filter()); break;
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
+	case MI_RESUME:   { extern int ayaneo_get_resume_on_boot(void); p = mi_puts(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case MI_LOADSTATE:
 	case MI_SAVESTATE: p = mi_puts(p, "[A]"); break;
 	case MI_BATTERY:
@@ -683,10 +696,12 @@ static const char *gbc_menu_label(int item)
 	case MI_DARKF:     return "Dark Filter";
 	case MI_LOADBOOT:  return "Load State on Boot";
 	case MI_SKIPBOOT:  return "Skip Boot Anim/Chime";
+	case MI_RESUME:    return "Resume Game on Boot";
 	case MI_LOADSTATE: return "Load State";
 	case MI_SAVESTATE: return "Save State";
 	case MI_BATTERY:   return "Battery";
 	case MI_CPU:       return "CPU Clock";
+	case MI_BFI:       return "BFI";
 	case MI_BENCH:     return "Benchmark (Uncap)";
 	case MI_CLOSE:     return "Close";
 	}
@@ -702,12 +717,16 @@ static int gbc_menu_change(int item, int dir, int act, unsigned char *state, cha
 	switch (item) {
 	case MI_BRIGHT:   if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case MI_VOLUME:   if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
-	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter_core(2, (ayaneo_get_lcd_filter_core(2) + dir + 4) % 4); else changed = 0; break;
+	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter_core(2, (ayaneo_get_lcd_filter_core(2) + dir + 6) % 6); else changed = 0; break;
 	case MI_COLORCC:  if (dir || act) { ayaneo_set_color_correct(!ayaneo_get_color_correct()); gbc_apply_video_settings(); } else changed = 0; break;
 	case MI_DARKF:    if (dir) { ayaneo_set_dark_filter(ayaneo_get_dark_filter() + dir); gbc_apply_video_settings(); } else changed = 0; break;
 	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;
 	case MI_SKIPBOOT: if (dir || act) ayaneo_set_skip_boot(!ayaneo_get_skip_boot()); else changed = 0; break;
+	case MI_RESUME:   { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
+			    if (dir || act) ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); else changed = 0; } break;
 	case MI_CPU:       if (dir) gbc_cpu_step(dir); changed = 0; break;	/* not persisted */
+	case MI_BFI:      { extern int ayaneo_get_strobe(void); extern void ayaneo_set_strobe(int v);
+			    if (dir) ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); else changed = 0; } break;
 	case MI_BENCH:     if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
 	case MI_LOADSTATE: if (act) { mi_puts(status, gbc_read_state(state) ? "State loaded" : "No save state"); } changed = 0; break;
 	case MI_SAVESTATE: if (act) { int ok = gbc_write_state(state); gbc_sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;
@@ -766,17 +785,26 @@ static void gbc_menu_tick(unsigned char *state)
 void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 			   unsigned int W, unsigned int H)
 {
-	int panelW = 660, panelH = 700;
-	int px = ((int)W - panelW) / 2, py = ((int)H - panelH) / 2;
-	int rowH = 38, x = px + 28, y = py + 84, i;
+	int rowH = 38, panelW = 660, panelH = 60 + MI_COUNT * rowH + 34;   /* was a fixed 700 */
+	int px, py, x, y, i;
+	/* Fit the panel to the screen: the Konkr's logical height is 640, where 38 px rows with the
+	 * 84 px title band and 42 px footer overflow; shrink the row pitch (never below 20) until
+	 * title + rows + footer leave a 16 px margin. */
+	if (panelH > (int)H - 16) {
+		rowH = ((int)H - 16 - 60 - 34) / MI_COUNT;
+		if (rowH < 20) rowH = 20;
+		panelH = 60 + MI_COUNT * rowH + 34;
+	}
+	px = ((int)W - panelW) / 2; py = ((int)H - panelH) / 2;
+	x = px + 28; y = py + 60;
 	char val[48];
 
 	/* Opaque panel so its pixels are identical in both scan-out buffers: a
 	 * mid-scan buffer swap then shows the same menu either way, with no drifting
 	 * tear on the static text. The game stays visible and live AROUND the panel. */
-	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xFF10141Cu);		/* panel */
+	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xD010141Cu);   /* translucent: the game shows through (hardware blend) */		/* panel */
 	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);			/* top bar */
-	ayaneo_text(buf, pitch, px + 28, py + 32, 3, 0xFFFFFFFFu, "GammaOS Pico");
+	ayaneo_text(buf, pitch, px + 28, py + 20, 3, 0xFFFFFFFFu, "GammaOS Pico");
 
 	for (i = 0; i < MI_COUNT; i++, y += rowH) {
 		unsigned int fg = (i == s_menu_sel) ? 0xFF101018u : 0xFFC8D0E0u;
@@ -789,8 +817,8 @@ void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 		ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, val);
 	}
 	if (s_menu_status[0])
-		ayaneo_text(buf, pitch, x, py + panelH - 40, 2, 0xFF80E080u, s_menu_status);
-	ayaneo_text(buf, pitch, x, py + panelH - 16, 1, 0xFF8890A0u,
+		ayaneo_text(buf, pitch, x, py + panelH - 32, 2, 0xFF80E080u, s_menu_status);
+	ayaneo_text(buf, pitch, x, py + panelH - 14, 1, 0xFF8890A0u,
 		    "Up/Down move  Left/Right change  A select  B/AYA close");
 }
 
@@ -940,8 +968,9 @@ static int gbc_emu_thread(void *arg)
 					pace_base = gpt4_get_current_tick();
 					pace_n = 0;
 				} else {
+					{ extern void ayaneo_idle_until(unsigned target_tick); ayaneo_idle_until(target); }
 					while ((int)(gpt4_get_current_tick() - target) < 0)
-						; /* busy-wait ~<16 ms; we own the CPU */
+						; /* the fine remainder */
 				}
 			}
 		}

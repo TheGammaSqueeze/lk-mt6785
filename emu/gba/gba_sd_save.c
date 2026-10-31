@@ -65,7 +65,7 @@ extern void ayaneo_settings_deserialize(const unsigned char *b, int len);
 
 int gba_sd_settings_load(fat_vol *v)
 {
-	unsigned char b[64];
+	unsigned char b[192];
 	fat_file f;
 	if (fat_open(v, "/gba/settings.bin", &f) != 0) return -1;
 	if (fat_read(&f, 0, b, (uint32_t)sizeof b) != (uint32_t)sizeof b) return -1;
@@ -75,7 +75,7 @@ int gba_sd_settings_load(fat_vol *v)
 
 int gba_sd_settings_save(fat_vol *v)
 {
-	unsigned char b[64];
+	unsigned char b[192];
 	int n = ayaneo_settings_serialize(b, (int)sizeof b);
 	if (n <= 0) return -1;
 	fat_wr_mkpath(v, "/gba");

@@ -159,13 +159,21 @@ extern int  mt_get_gpio_in(unsigned pin);
 #define K_RIGHT 80
 #define K_UP 89
 #define K_DOWN 79
+#if defined(KONKR_KPA)
+/* Konkr: the device tree labels match the shell (see gba_driver.c) */
+#define K_A 82
+#define K_B 83
+#define K_START 90
+#define K_SELECT 91
+#else
 #define K_A 83
 #define K_B 82
 #define K_START 91
 #define K_SELECT 90
+#endif
 #define K_LB 92    /* GBA L shoulder = page jump back */
 #define K_RB 81    /* GBA R shoulder = page jump forward */
-#define K_X  84    /* GBA X button (autofire B in-game) = cycle the system filter in the menu */
+#define K_X  84    /* the cap the user reads as X in the carousel = cycle the system filter */
 #define PRESSED(g) (mt_get_gpio_in(GP(g)) == 0)
 
 extern int pmic_detect_powerkey(void);
@@ -190,6 +198,7 @@ volatile unsigned int g_dbg_peak_us;       /* peak render over ~2s */
 volatile unsigned int g_dbg_fps;           /* measured loop rate */
 volatile unsigned int g_dbg_present_cnt;   /* frames actually presented (re-latched) */
 volatile unsigned int g_dbg_hz1000;        /* measured panel refresh * 1000 (averaged) */
+volatile int          g_menu_live;         /* 1 while the ROM-select menu loop is running (oem mode) */
 volatile int          g_dbg_focus;         /* current focused game index */
 volatile unsigned int g_dbg_boxart_ok;     /* per-ROM boxart tiles that decoded from SD */
 volatile unsigned int g_dbg_boxart_tot;    /* ROMs the boxart preload attempted */
@@ -199,6 +208,24 @@ volatile unsigned int g_dbg_boxart_tot;    /* ROMs the boxart preload attempted 
  * 0..9 = L R U D A B Select Start LB RB; -1 = none. */
 volatile int          g_dbg_force_launch;   /* fastboot `oem launch`: force-launch focused ROM */
 volatile int          g_dbg_snes_launch;    /* fastboot `oem snes-launch`: launch the first SNES ROM */
+char                  g_dbg_snes_name[32];   /* ... whose name contains this (case insensitive), if set */
+const char           *g_dbg_snes_chosen;      /* the ROM name that matched (for the oem reply) */
+static int dbg_name_match(const char *name, const char *sub)
+{
+	int i, j;
+	if (!sub || !sub[0]) return 1;
+	if (!name) return 0;
+	for (i = 0; name[i]; i++) {
+		for (j = 0; sub[j]; j++) {
+			char a = name[i + j], b = sub[j];
+			if (a >= 'A' && a <= 'Z') a += 32;
+			if (b >= 'A' && b <= 'Z') b += 32;
+			if (a != b) break;
+		}
+		if (!sub[j]) return 1;
+	}
+	return 0;
+}
 
 /* fastboot `oem key:<name>`: inject one button into the live menu for a few frames so
  * the menu edge-detects a clean press. g_dbg_key = code 0..9 (L R U D A B Sel Start LB
@@ -206,6 +233,7 @@ volatile int          g_dbg_snes_launch;    /* fastboot `oem snes-launch`: launc
  * the next movement's peak render us is measured clean (set at the start of an inject). */
 volatile int          g_dbg_key = -1;
 volatile int          g_dbg_key_hold;
+volatile unsigned int g_dbg_menu_frames, g_dbg_menu_long;   /* loop periods seen / over 20 ms since the last peak reset */
 volatile int          g_dbg_peak_reset;
 
 /* ---- menu volume / brightness (OSD + deferred persist) ---- */
@@ -306,7 +334,17 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
 #define SNES_BOXART_PA   0x55500000u /* per-ROM boxart tiles (between reveal and freeze) */
 #define SNES_BOXART_SLOT 0x25000u    /* bytes per tile slot (>= 224*224*3) */
 #define SNES_BOXART_CAP  20          /* 20 * 0x25000 = 0x2E4000 -> ends 0x557E4000 < freeze */
+#if defined(KONKR_KPA)
+/* Konkr: the active (blue) card tiles, one per console type (8 x 320*360*4 = 0x384000), sit
+ * above the 3:2 warped wallpaper cache (1800 x 640 x 4 at the 0.75 native scale ends at
+ * 0x54465000) and below the menu canvas at 0x54800000: 0x54470000..0x547F4000. A held scroll
+ * across mixed console types then never re-renders a focused tile (2.7 ms each). */
+#define SNES_FCT_PA      0x54470000u
+#define SNES_FCT_CAP     8
+#else
 #define SNES_FCT_PA      0x55E00000u /* focused (blue) card-body tile (320*360*4 = 450KB) */
+#define SNES_FCT_CAP     1
+#endif
 /* the decompressed blob must stay strictly inside [BLOB_PA, HOME_PA); cap it 2MB
  * short of the 24MB region so it can never overrun the home node pool */
 #define SNES_RAW_MAX   ((SNES_HOME_PA - SNES_BLOB_PA) - 2u * 1024 * 1024)  /* 22MB */
@@ -418,17 +456,26 @@ static void pump_audio(void)
  * Shared by the close-re-entry path and the `oem rev` isolation test. Captures its own
  * frames if a motion capture is armed (g_cap_want) so the transition is inspectable. */
 volatile int g_dbg_reverse_ran;
+/* Keep the menu's layout (aspect) and native scale in step with the target it renders to; a
+ * change invalidates the chrome, wallpaper and tile caches (they are built per aspect/scale). */
+static void menu_sync_target(const snes_target *t)
+{
+	int want = snes_aspect_for(t->W, t->H);
+	float base = snes_target_base(t);
+	if (want != s_menu.aspect || base != (s_menu.base > 0.0f ? s_menu.base : 1.0f)) {
+		s_menu.aspect = want; s_menu.base = base; s_menu.chrome_ready = 0;
+	}
+}
 static void play_reverse_punch(unsigned int ms)
 {
 	unsigned int cp, cw, ch, pstart, ticks = ms * 13000u;
 	unsigned int *cfb = ayaneo_canvas_back(&cp, &cw, &ch);
 	snes_target lt;
-	lt.fb = cfb; lt.pitch = cp; lt.W = (int)cw; lt.H = (int)ch;
-	lt.offx = ((int)cw - SNES_VW) / 2; lt.offy = ((int)ch - SNES_VH) / 2;
-	snes_target_view(&lt, 1.0f, 1.0f, 0.0f, 0.0f);
+	snes_target_fit(&lt, cfb, (int)cp, (int)cw, (int)ch);
+	menu_sync_target(&lt);
 	if (lt.offy > 0) {
 		ayaneo_fill(cfb, cp, 0, 0, (int)cw, lt.offy, 0xFF000000u);
-		ayaneo_fill(cfb, cp, 0, lt.offy + SNES_VH, (int)cw, lt.offy, 0xFF000000u);
+		ayaneo_fill(cfb, cp, 0, lt.offy + snes_target_vh(&lt), (int)cw, lt.offy, 0xFF000000u);
 	}
 	snes_menu_render(&s_menu, &lt);
 	memcpy((void *)(uintptr_t)GBA_REVERSE_SNAP_PA, cfb, (size_t)cp * ch * 4);
@@ -549,12 +596,30 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	const snes_img_entry *cart;
 	unsigned int saved_mhz;
 	int pwr_armed = 0;
+#if defined(KONKR_KPA)
+	{ extern void ayaneo_joypad_kpa_reset_toggles(void); ayaneo_joypad_kpa_reset_toggles(); }   /* L2/R2 toggles never carry across sessions */
+#endif
 	int do_reverse = g_reverse_punch;	/* consume now so a failed re-entry (pack missing)
 						 * cannot leave a stale reverse armed for next time */
 	g_reverse_punch = 0;
 	/* Calibrate the analog joypad once here at the carousel (sticks centred / triggers released,
 	 * before any game): powers the rail, inits the SGM58031, and samples the rest baseline. */
 	{ extern void ayaneo_joypad_calibrate(int force); ayaneo_joypad_calibrate(0); }
+	/* Resume Game on Boot: a ROM suspended with the power key starts straight away, before the
+	 * menu paints anything, loads its pack or reads the box art (the core reloads its suspend
+	 * state and runs from its first frame; no launch transition). The record is consumed here so
+	 * a later power off from the menu boots to the menu. */
+	if (!do_reverse) {
+		extern int ayaneo_get_resume_on_boot(void);
+		extern int ayaneo_resume_take(char *out, int cap);
+		char rn[100];
+		if (ayaneo_get_resume_on_boot() && ayaneo_resume_take(rn, sizeof rn)) {
+			int k;
+			ayaneo_menu_settings_persist();   /* the cleared record */
+			for (k = 0; k < nrom; k++)
+				if (strcmp(roms[k].name, rn) == 0) return k;
+		}
+	}
 	int fade_in = 18;   /* fade the menu in from WHITE on entry over 0.3s (the boot-logo
 			     * animation ends on a whiteout, so a white->menu fade is a seamless
 			     * handover; was black). matching
@@ -632,7 +697,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		static int s_ctile_gi[SNES_CTILE2_CAP];
 		snes_menu_set_ctile(&s_menu, (uint32_t *)SNES_CTILE2_PA, s_ctile_gi, SNES_CTILE2_CAP);
 	}
-	snes_menu_set_fct(&s_menu, (uint32_t *)SNES_FCT_PA);
+	snes_menu_set_fct(&s_menu, (uint32_t *)SNES_FCT_PA, SNES_FCT_CAP);
 	snes_menu_set_wp43(&s_menu, (uint32_t *)SNES_WP43_PA);
 
 	/* Load each ROM's box art from the SD card (/roms/gba/boxart/<romstem>.ART) into
@@ -696,8 +761,10 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * already 4:3 (no 16:9 flash + chrome rebuild). The loop keeps this in sync. */
 	{
 		unsigned int pitch0, W0, H0;
-		(void)ayaneo_canvas_back(&pitch0, &W0, &H0);
-		s_menu.aspect = ((int)H0 >= 960) ? 1 : 0;
+		snes_target t0;
+		unsigned int *fb0 = ayaneo_canvas_back(&pitch0, &W0, &H0);
+		snes_target_fit(&t0, fb0, (int)pitch0, (int)W0, (int)H0);
+		menu_sync_target(&t0);   /* 4:3 / 3:2 / 16:9 and the native scale (0.75 on the 960x640 Konkr canvas) */
 		s_menu.chrome_ready = 0;
 	}
 
@@ -814,6 +881,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			g_dbg_key_hold--;
 		}
 
+		g_menu_live = 1;
 		menu_av_poll();   /* volume / brightness keys (+ deferred persist) */
 
 		/* X cycles the system filter (All -> each present system -> All). Edge-detected with a
@@ -826,17 +894,12 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			px_last = xnow;
 		}
 
-		t.fb = fb; t.pitch = pitch; t.W = (int)W; t.H = (int)H;
-		t.offx = ((int)W - SNES_VW) / 2; t.offy = ((int)H - SNES_VH) / 2;
-		snes_target_view(&t, 1.0f, 1.0f, 0.0f, 0.0f);
-		{
-			int want = ((int)H >= 960) ? 1 : 0;
-			if (want != s_menu.aspect) { s_menu.aspect = want; s_menu.chrome_ready = 0; }
-		}
-		/* clear letterbox bars (wallpaper covers the 720 region) */
+		snes_target_fit(&t, fb, (int)pitch, (int)W, (int)H);
+		menu_sync_target(&t);
+		/* clear letterbox bars (wallpaper covers the design rows) */
 		if (t.offy > 0) {
 			ayaneo_fill(fb, pitch, 0, 0, (int)W, t.offy, 0xFF000000u);
-			ayaneo_fill(fb, pitch, 0, t.offy + SNES_VH, (int)W, t.offy, 0xFF000000u);
+			ayaneo_fill(fb, pitch, 0, t.offy + snes_target_vh(&t), (int)W, t.offy, 0xFF000000u);
 		}
 
 		snes_menu_update(&s_menu, &in, dt);
@@ -897,7 +960,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 					}
 				}
 			}
-			if (g_dbg_peak_reset) { g_dbg_peak_reset = 0; peak_us = 0; peak_hold = 0; }
+			if (g_dbg_peak_reset) { g_dbg_peak_reset = 0; peak_us = 0; peak_hold = 0; g_dbg_menu_frames = 0; g_dbg_menu_long = 0; }
+			if (lus) { g_dbg_menu_frames++; if (lus > 20000u) g_dbg_menu_long++; }
 			if (rus > peak_us) { peak_us = rus; peak_hold = 120; }
 			else if (peak_hold) peak_hold--; else peak_us = rus;   /* decay after ~2s */
 			g_dbg_render_us = rus; g_dbg_peak_us = peak_us; g_dbg_fps = fps;
@@ -938,7 +1002,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			int i;
 			g_dbg_snes_launch = 0;
 			for (i = 0; i < s_vn && i < 128; i++)   /* search the current view (index space the menu uses) */
-				if (s_vtypes[i] == GBA_CONSOLE_SNES) { s_menu.launch = i; break; }
+				if (s_vtypes[i] == GBA_CONSOLE_SNES && dbg_name_match(s_vnameptr[i], g_dbg_snes_name)) { s_menu.launch = i; g_dbg_snes_chosen = s_vnameptr[i]; break; }
 		}
 		launch = snes_menu_take_launch(&s_menu);
 		/* the menu returns a VIEW index (current filter); map it back to the full roms[] index */
@@ -953,12 +1017,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			unsigned int cp, cw, ch;
 			unsigned int *cfb = ayaneo_canvas_back(&cp, &cw, &ch);
 			snes_target lt;
-			lt.fb = cfb; lt.pitch = cp; lt.W = (int)cw; lt.H = (int)ch;
-			lt.offx = ((int)cw - SNES_VW) / 2; lt.offy = ((int)ch - SNES_VH) / 2;
-			snes_target_view(&lt, 1.0f, 1.0f, 0.0f, 0.0f);
+			snes_target_fit(&lt, cfb, (int)cp, (int)cw, (int)ch);
+			menu_sync_target(&lt);
 			if (lt.offy > 0) {
 				ayaneo_fill(cfb, cp, 0, 0, (int)cw, lt.offy, 0xFF000000u);
-				ayaneo_fill(cfb, cp, 0, lt.offy + SNES_VH, (int)cw, lt.offy, 0xFF000000u);
+				ayaneo_fill(cfb, cp, 0, lt.offy + snes_target_vh(&lt), (int)cw, lt.offy, 0xFF000000u);
 			}
 			snes_menu_render(&s_menu, &lt);
 			memcpy((void *)(uintptr_t)GBA_PUNCH_SNAP_PA, cfb, (size_t)cp * ch * 4);
@@ -983,17 +1046,31 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		 * a DIFFERENT scanline each time = the rolling band the user sees. A constant
 		 * every-frame cadence latches at the same phase every frame, so there is no
 		 * roll. Do NOT reintroduce a frame-skipping present gate. */
+		{	/* power hold: the bar is drawn into the frame about to be presented */
+			extern void ayaneo_power_bar_draw(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H);
+			unsigned int bp, bw, bh; unsigned int *bb = ayaneo_canvas_back(&bp, &bw, &bh);
+			ayaneo_power_bar_draw(bb, bp, bw, bh);
+		}
 		ayaneo_canvas_present();
 		g_dbg_present_cnt++;
 		mtk_wdt_restart();
 		{
-			int p = pmic_detect_powerkey();
-			if (!p) pwr_armed = 1;
-			else if (pwr_armed) {
+			extern int ayaneo_power_hold(int menu_open, int use_overlay);
+			(void)pwr_armed;
+			if (ayaneo_power_hold(0, 0)) {
 				/* Flush a pending volume/brightness change BEFORE powering off, so a
 				 * change made within the ~0.7s deferred-flush window is not lost. The
 				 * settings write is synchronous, so it completes before mt_power_off. */
-				if (s_av_dirty) { s_av_dirty = 0; ayaneo_menu_settings_persist(); }
+				/* Powering off from the menu: the next boot lands on the menu, whatever record a
+				 * game left; the write is waited for (the writer thread only runs while we sleep). */
+				{
+					extern void ayaneo_resume_clear(void), ayaneo_settings_persist_flush(void), ayaneo_leds_off_for_poweroff(void);
+					ayaneo_resume_clear();
+					s_av_dirty = 0;
+					ayaneo_menu_settings_persist();
+					ayaneo_settings_persist_flush();
+					ayaneo_leds_off_for_poweroff();
+				}
 				mt_power_off();
 			}
 		}
