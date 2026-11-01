@@ -90,7 +90,9 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 				extern volatile unsigned int g_dbg_present_fps, g_dbg_emu_fps, g_dbg_emu_frame_us, g_dbg_emu_total;
 				extern unsigned int gpt4_get_current_tick(void);
 				{ extern volatile unsigned int g_dbg_loop_us, g_dbg_apace_us, g_dbg_apace_fill; extern volatile unsigned g_rsz_show_us;
-				  snprintf(lbuf, sizeof lbuf, "loop: us=%u apace=%uus fill=%u show=%uus", g_dbg_loop_us, g_dbg_apace_us, g_dbg_apace_fill, g_rsz_show_us);
+				  extern int ayaneo_get_lcd_filter_core(int c); extern unsigned ayaneo_core_clock(int core, unsigned t, unsigned t0); extern unsigned ayaneo_cpu_manual_get(int core);
+				  snprintf(lbuf, sizeof lbuf, "loop: us=%u apace=%uus fill=%u show=%uus filt=%d clk=%u man=%u", g_dbg_loop_us, g_dbg_apace_us, g_dbg_apace_fill, g_rsz_show_us,
+					   ayaneo_get_lcd_filter_core(1), ayaneo_core_clock(0, 1000u, 600u), ayaneo_cpu_manual_get(0));
 				  fastboot_info(lbuf); }
 				snprintf(lbuf, sizeof lbuf, "speed: presents/s=%u emu_frames/s=%u frame_us=%u",
 					 g_dbg_present_fps, g_dbg_emu_fps, g_dbg_emu_frame_us);

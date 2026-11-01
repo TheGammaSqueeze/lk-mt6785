@@ -2401,7 +2401,10 @@ static int emu_thread(void *arg)
 				 * changes (covers the Pico menu, oem preempt:, and boot). */
 				static int s_pf_applied = -1;
 				int cur_pf = ayaneo_get_preempt_frames();
-				if (cur_pf != s_pf_applied) { s_pf_applied = cur_pf; preempt_apply_cpu(cur_pf); }
+				/* the clock follows the CONFIGURED tier, not the shed depth: lowering the clock
+				 * when the adaptive depth drops kept the depth from ever coming back (the loop
+				 * sat at tier 0 speed with run-ahead off while the setting said Balanced) */
+				if (cur_pf != s_pf_applied) { s_pf_applied = cur_pf; preempt_apply_cpu(ayaneo_get_preempt_frames()); }
 			}
 			{
 				extern volatile unsigned int g_dbg_frame_ticks;
