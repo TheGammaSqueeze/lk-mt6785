@@ -1313,7 +1313,7 @@ unsigned int ayaneo_dsi_default_vfp(void)
 	/* the Konkr data rate is tuned so that 1298 lines are exactly 59.7275 Hz: round (1297.6 ->
 	 * 1298, vfp 294, the LCM resting value); flooring rested the menu one line short (293) */
 	unsigned int vtotal = (AYANEO_DSI_LINE_CONST + fps / 2u) / fps;
-	if (g_pace_fps_milli < 20000u || g_pace_fps_milli > 130000u) g_pace_fps_milli = 59727u;
+	g_pace_fps_milli = 59727u;                  /* the resting mode paces at the GBA rate: a PAL session's 50 Hz must not linger */
 	g_vsync_div = 1u;                           /* the resting mode: stock rate and porch, one refresh per frame */
 	ayaneo_dsi_set_dr_khz(AYANEO_GBA_DR_KHZ);
 	fps = 59727u;
