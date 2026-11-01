@@ -151,8 +151,8 @@ extern int      mt_get_gpio_in(unsigned pin);
 #define GPIO_START     90
 #define GPIO_B         83
 #define GPIO_A         82
-#define GPIO_X         85      /* Konkr: the caps read X on 85, Y on 84 */
-#define GPIO_Y         84
+#define GPIO_X         84
+#define GPIO_Y         85
 #else
 #define GPIO_SELECT    90
 #define GPIO_START     91

@@ -166,13 +166,8 @@ static const struct { unsigned gpio; unsigned mask; } s_btn[] = {
 };
 
 /* extra buttons used for functions, not direct GB inputs */
-#if defined(KONKR_KPA)
-#define GBC_GPIO_X	85	/* autofire A (Konkr: the caps read X on 85, Y on 84) */
-#define GBC_GPIO_Y	84	/* autofire B */
-#else
 #define GBC_GPIO_X	84	/* autofire A */
 #define GBC_GPIO_Y	85	/* autofire B */
-#endif
 #define GBC_GPIO_R	81	/* hold = fast-forward */
 #define GBC_AUTOFIRE_HZ	12
 

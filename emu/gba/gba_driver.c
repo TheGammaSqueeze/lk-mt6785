@@ -265,7 +265,7 @@ long gba_host_time(void)
 #define GPIO_SELECT	91
 #define GPIO_LB		92	/* L shoulder */
 #define GPIO_RB		81	/* R shoulder */
-#define GPIO_X		85	/* autofire B (Konkr: the caps read X on 85, Y on 84) */
+#define GPIO_X		85	/* autofire B: the Konkr X cap (the GBA's autofire pair was the one reading swapped) */
 #define GPIO_Y		84	/* autofire A */
 #else
 #define GPIO_A		83	/* swapped vs DTS to match the physical layout */
