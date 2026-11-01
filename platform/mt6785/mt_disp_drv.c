@@ -2524,7 +2524,11 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	 * while one written right after frame end always lands (the pairmini's config_input did
 	 * exactly that through its frame-done wait). */
 	s_pace_expect = 0;   /* the game layer is checked elsewhere */
-	rot_pace();   /* returns right after a frame end */
+	{	/* the frame wait is not blit work: keep it out of g_rsz_show_us (the run-ahead budget) */
+		unsigned int tw = gpt4_get_current_tick();
+		rot_pace();   /* returns right after a frame end */
+		t0 += gpt4_get_current_tick() - tw;
+	}
 #endif
 	/* Per-frame layer config: points OVL0_2L at the freshly written buffer, sized iw x ih,
 	 * placed at (ox, oy). In video mode config_input waits frame-done then latches at the next
