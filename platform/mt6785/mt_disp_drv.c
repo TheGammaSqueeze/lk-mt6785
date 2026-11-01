@@ -2334,6 +2334,24 @@ static void lcd_filter_prescale(unsigned int *vbuf, unsigned fbpitch, const unsi
 {
 	unsigned y, j, x, k;
 	lcd_filter_tables(filt, ph, pv, turned);
+#if defined(KONKR_KPA)
+	if (ph >= 1u && ph <= 4u && pv <= 8u) {
+		/* NEON: eight source pixels per step, the sub columns stored interleaved; the GBA colour
+		 * correction (cc_lut) is applied into a row scratch first */
+		extern void ayaneo_lcd_prescale_row_neon(const unsigned short *src, unsigned sw, unsigned int *dst, unsigned fbpitch,
+							 unsigned ph, unsigned pv, const unsigned char (*mtab)[8][3]);
+		static unsigned short s_ccrow[1024];
+		for (y = 0; y < sh; y++) {
+			const unsigned short *srow = pix + y * spitch_px;
+			if (cc_lut && sw <= 1024u) {
+				for (x = 0; x < sw; x++) { unsigned v = srow[x]; s_ccrow[x] = cc_lut[(((v >> 12) & 0xFu) << 8) | (((v >> 7) & 0xFu) << 4) | ((v >> 1) & 0xFu)]; }
+				srow = s_ccrow;
+			}
+			ayaneo_lcd_prescale_row_neon(srow, sw, vbuf + (y * pv) * fbpitch, fbpitch, ph, pv, (const unsigned char (*)[8][3])s_lcd_m);
+		}
+		return;
+	}
+#endif
 	for (y = 0; y < sh; y++) {
 		const unsigned short *srow = pix + y * spitch_px;
 		for (j = 0; j < pv; j++) {

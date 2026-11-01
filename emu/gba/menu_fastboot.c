@@ -89,6 +89,9 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			{
 				extern volatile unsigned int g_dbg_present_fps, g_dbg_emu_fps, g_dbg_emu_frame_us, g_dbg_emu_total;
 				extern unsigned int gpt4_get_current_tick(void);
+				{ extern volatile unsigned int g_dbg_loop_us, g_dbg_apace_us, g_dbg_apace_fill; extern volatile unsigned g_rsz_show_us;
+				  snprintf(lbuf, sizeof lbuf, "loop: us=%u apace=%uus fill=%u show=%uus", g_dbg_loop_us, g_dbg_apace_us, g_dbg_apace_fill, g_rsz_show_us);
+				  fastboot_info(lbuf); }
 				snprintf(lbuf, sizeof lbuf, "speed: presents/s=%u emu_frames/s=%u frame_us=%u",
 					 g_dbg_present_fps, g_dbg_emu_fps, g_dbg_emu_frame_us);
 				fastboot_info(lbuf);

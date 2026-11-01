@@ -100,6 +100,13 @@ static void gbc_cpu_step(int dir)
 	if (s_cpu_idx < 0) s_cpu_idx = 0;
 	if (s_cpu_idx >= n) s_cpu_idx = n - 1;
 	ayaneo_set_cpu_mhz(s_cpu_opp[s_cpu_idx]);
+	{ extern void ayaneo_cpu_manual_set(int core, unsigned mhz); ayaneo_cpu_manual_set(1, s_cpu_opp[s_cpu_idx]); }
+}
+static void gbc_apply_clock(void)
+{
+	extern unsigned ayaneo_core_clock(int core, unsigned tier_mhz, unsigned tier0_mhz);
+	int pf = ayaneo_get_preempt_frames();
+	ayaneo_set_cpu_mhz(ayaneo_core_clock(1, s_gbc_opp[(pf >= 0 && pf <= 3) ? pf : 0], s_gbc_opp[0]));
 }
 
 /* GBA arena reuse (only one core runs at a time). Non-overlapping regions with margin:
@@ -353,7 +360,7 @@ static int gm_change(int i, int dir, int act)
 	switch (i) {
 	case GM_BRIGHT:  if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case GM_VOLUME:  if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
-	case GM_FILTER:  if (dir) ayaneo_set_lcd_filter_core(2, (ayaneo_get_lcd_filter_core(2) + dir + 6) % 6); else changed = 0; break;
+	case GM_FILTER:  if (dir) { ayaneo_set_lcd_filter_core(2, (ayaneo_get_lcd_filter_core(2) + dir + 6) % 6); gbc_apply_clock(); } else changed = 0; break;
 	case GM_ASPECT:  if (dir) g_gbc_aspect = (g_gbc_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
 	case GM_PALETTE: if (s_menu_is_dmg && s_menu_pal) {
 				 if (act == 1) {   /* A = open the full palette list picker */
@@ -370,7 +377,7 @@ static int gm_change(int i, int dir, int act)
 	case GM_CCMODE:  if (dir) { s_cc_mode = !s_cc_mode; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
 	case GM_DARK:    if (dir) { s_dark += dir * 10; if (s_dark < 0) s_dark = 0; if (s_dark > 100) s_dark = 100; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
 	case GM_PREEMPT: if (dir) ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + dir + 4) % 4); else changed = 0; break;
-	case GM_CPU:     if (dir) gbc_cpu_step(dir); changed = 0; break;
+	case GM_CPU:     if (dir) gbc_cpu_step(dir); else changed = 0; break;   /* persisted per core */
 	case GM_BFI:     { extern int ayaneo_get_strobe(void); extern void ayaneo_set_strobe(int v);
 			   if (dir) ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); else changed = 0; } break;
 	case GM_RESUME:  { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
@@ -535,8 +542,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	/* Drop from the menu's 2000 MHz to the run-ahead-tier emulation clock (Off = 600,
 	 * escalating with pf so the (pf+1) emulations per frame still fit the 16.7 ms budget). */
 	{
-		int pf = ayaneo_get_preempt_frames();
-		ayaneo_set_cpu_mhz(s_gbc_opp[(pf >= 0 && pf <= 3) ? pf : 0]);
+		gbc_apply_clock();   /* ladder by run-ahead tier, manual choice, filter bump */
 	}
 
 	ayaneo_gbc_audio_init();

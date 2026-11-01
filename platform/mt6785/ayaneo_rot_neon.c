@@ -372,3 +372,55 @@ void ayaneo_canvas_present_neon(const unsigned int *src, unsigned sw, unsigned s
 		}
 	}
 }
+
+/* LCD1x / LCD3x prescale, NEON. For each source row and each of the pv sub rows, eight 565
+ * source pixels become 8 x ph output pixels: the three channels are scaled by the sub row /
+ * sub column factor table (m[k][c], 255 = x1) and the ph sub columns are written interleaved
+ * with vst2/vst3/vst4 so the output row is the same layout as the C version
+ * (drow[x * ph + k]). ph 1..4 only; the caller keeps the C loop for anything else. */
+static inline void lcd_row8(const uint16_t *s, uint32_t *o, const unsigned char (*m)[3], unsigned ph)
+{
+	uint16x8_t v = vld1q_u16(s);
+	uint16x8_t r = vshlq_n_u16(vshrq_n_u16(v, 11), 3);
+	uint16x8_t g = vshlq_n_u16(vandq_u16(vshrq_n_u16(v, 5), vdupq_n_u16(0x3f)), 2);
+	uint16x8_t b = vshlq_n_u16(vandq_u16(v, vdupq_n_u16(0x1f)), 3);
+	uint32x4_t lo[4], hi[4];
+	unsigned k;
+	for (k = 0; k < ph; k++) {
+		uint16x8_t rk = vshrq_n_u16(vmulq_u16(r, vdupq_n_u16(m[k][0])), 8);
+		uint16x8_t gk = vshrq_n_u16(vmulq_u16(g, vdupq_n_u16(m[k][1])), 8);
+		uint16x8_t bk = vshrq_n_u16(vmulq_u16(b, vdupq_n_u16(m[k][2])), 8);
+		uint32x4_t a = vdupq_n_u32(0xFF000000u);
+		lo[k] = vorrq_u32(vorrq_u32(a, vshlq_n_u32(vmovl_u16(vget_low_u16(rk)), 16)),
+				  vorrq_u32(vshlq_n_u32(vmovl_u16(vget_low_u16(gk)), 8), vmovl_u16(vget_low_u16(bk))));
+		hi[k] = vorrq_u32(vorrq_u32(a, vshlq_n_u32(vmovl_u16(vget_high_u16(rk)), 16)),
+				  vorrq_u32(vshlq_n_u32(vmovl_u16(vget_high_u16(gk)), 8), vmovl_u16(vget_high_u16(bk))));
+	}
+	switch (ph) {
+	case 1: vst1q_u32(o, lo[0]); vst1q_u32(o + 4, hi[0]); break;
+	case 2: { uint32x4x2_t t; t.val[0] = lo[0]; t.val[1] = lo[1]; vst2q_u32(o, t);
+		  t.val[0] = hi[0]; t.val[1] = hi[1]; vst2q_u32(o + 8, t); break; }
+	case 3: { uint32x4x3_t t; t.val[0] = lo[0]; t.val[1] = lo[1]; t.val[2] = lo[2]; vst3q_u32(o, t);
+		  t.val[0] = hi[0]; t.val[1] = hi[1]; t.val[2] = hi[2]; vst3q_u32(o + 12, t); break; }
+	default: { uint32x4x4_t t; t.val[0] = lo[0]; t.val[1] = lo[1]; t.val[2] = lo[2]; t.val[3] = lo[3]; vst4q_u32(o, t);
+		  t.val[0] = hi[0]; t.val[1] = hi[1]; t.val[2] = hi[2]; t.val[3] = hi[3]; vst4q_u32(o + 16, t); break; }
+	}
+}
+/* row: sw source pixels (already colour corrected), written as pv rows of sw*ph pixels at
+ * dst (row pitch fbpitch pixels); mtab = the 8x8x3 factor table indexed [sub row][sub col]. */
+void ayaneo_lcd_prescale_row_neon(const uint16_t *src, unsigned sw, uint32_t *dst, unsigned fbpitch,
+				  unsigned ph, unsigned pv, const unsigned char (*mtab)[8][3])
+{
+	unsigned j, x;
+	for (j = 0; j < pv; j++) {
+		uint32_t *drow = dst + j * fbpitch;
+		const unsigned char (*m)[3] = mtab[j < 8u ? j : 7u];
+		for (x = 0; x + 8u <= sw; x += 8u)
+			lcd_row8(src + x, drow + x * ph, m, ph);
+		for (; x < sw; x++) {   /* tail */
+			unsigned v = src[x], r = ((v >> 11) & 0x1fu) << 3, g = ((v >> 5) & 0x3fu) << 2, b = (v & 0x1fu) << 3, k;
+			for (k = 0; k < ph; k++)
+				drow[x * ph + k] = 0xFF000000u | (((r * m[k][0]) >> 8) << 16) | (((g * m[k][1]) >> 8) << 8) | ((b * m[k][2]) >> 8);
+		}
+	}
+}

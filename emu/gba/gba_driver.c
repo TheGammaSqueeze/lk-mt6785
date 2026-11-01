@@ -221,6 +221,7 @@ static volatile int s_reset_req;	/* soft reset: restart the current game (menu R
  * oem diag `em=` to size the run-ahead/preemptive-frames headroom (each extra
  * predicted frame costs one more of these). */
 volatile unsigned int g_dbg_emu_us;
+volatile unsigned int g_dbg_loop_us;	/* whole game loop iteration (us), oem diag loop: */
 volatile unsigned int g_dbg_frame_ticks;	/* GBA cycles advanced by the committed frame */
 volatile unsigned int g_dbg_asub_calls, g_dbg_asub_done, g_dbg_asub_frames;	/* audio submit counters */
 volatile int g_dbg_eff_pf;			/* last effective run-ahead depth */
@@ -1164,7 +1165,7 @@ static int s_panel_hz100;	/* measured panel refresh * 100 (e.g. 5973 = 59.73 Hz)
  * 60 s battery read (an auxadc spin) nor the I2C writes touch a frame: charger connected =
  * red (green once full), on battery = green, at 5 % or less = red flashing at 1 Hz. The first
  * write waits for the speaker amps' bring-up, which shares i2c6. */
-#define LED_LEVEL 128   /* half brightness (PWM of 255) */
+#define LED_LEVEL 12    /* the lowest clearly visible level (PWM of 255) */
 volatile int g_dbg_led_chr, g_dbg_led_pct, g_dbg_led_state, g_dbg_led_ticks;   /* oem led */
 static int led_thread(void *arg)
 {
@@ -1251,6 +1252,8 @@ static void cpu_step(int dir)
 	if (s_cpu_idx < 0) s_cpu_idx = 0;
 	if (s_cpu_idx >= n) s_cpu_idx = n - 1;
 	ayaneo_set_cpu_mhz(s_cpu_opp[s_cpu_idx]);
+	{ extern void ayaneo_cpu_manual_set(int core, unsigned mhz); ayaneo_cpu_manual_set(0, s_cpu_opp[s_cpu_idx]); }
+	s_settings_dirty = 1; s_settings_tick = gpt4_get_current_tick();   /* persisted like volume/brightness */
 	s_cpu_dirty = 1;
 }
 
@@ -1267,8 +1270,10 @@ static void preempt_apply_cpu(int pf)
 {
 	static const int tier_idx[] = { 0, 2, 3, 4 };	/* Off, Balanced, Responsive, Max */
 	int idx = (pf >= 1 && pf <= 3) ? tier_idx[pf] : tier_idx[0];
-	ayaneo_set_cpu_mhz(s_cpu_opp[idx]);
-	s_cpu_idx = idx;		/* keep the CPU-menu index in sync with the tier */
+	extern unsigned ayaneo_core_clock(int core, unsigned tier_mhz, unsigned tier0_mhz);
+	unsigned mhz = ayaneo_core_clock(0, s_cpu_opp[idx], s_cpu_opp[0]);   /* manual choice, filter bump */
+	ayaneo_set_cpu_mhz(mhz);
+	s_cpu_idx = -1;		/* re-seed the CPU-menu index from the live clock */
 	s_cpu_dirty = 1;
 }
 
@@ -1432,7 +1437,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	switch (item) {
 	case MI_BRIGHT:   if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case MI_VOLUME:   if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
-	case MI_FILTER:   if (dir) ayaneo_set_lcd_filter_core(1, (ayaneo_get_lcd_filter_core(1) + dir + 6) % 6); else changed = 0; break;
+	case MI_FILTER:   if (dir) { ayaneo_set_lcd_filter_core(1, (ayaneo_get_lcd_filter_core(1) + dir + 6) % 6); preempt_apply_cpu(ayaneo_get_preempt_frames()); } else changed = 0; break;
 	case MI_COLORCORRECT: if (dir || act) ayaneo_set_color_correct(!ayaneo_get_color_correct()); else changed = 0; break;
 	case MI_STROBE:   if (dir) ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); else if (act) ayaneo_set_strobe((ayaneo_get_strobe() + 1) % 4); else changed = 0; break;
 	case MI_PREEMPT:  if (dir || act) { int d = dir ? dir : 1;
@@ -2286,6 +2291,7 @@ static int emu_thread(void *arg)
 		gba_rewind_arm();		/* size + clear the rewind ring for this game */
 		for (;;) {
 			int uncapped;
+			{ static unsigned last; unsigned now = gpt4_get_current_tick(); if (last) g_dbg_loop_us = (now - last) / 13u; last = now; }
 
 			/* precise IN-GAME panel refresh (vsync-locked show_frame): average the loop
 			 * period over 128 frames -> Hz*1000. The boot-time primary_display_get_

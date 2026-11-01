@@ -113,6 +113,13 @@ static void snes_cpu_step(int dir)
 		if (d < bd) { bd = d; best = i; } }
 	best += dir; if (best < 0) best = 0; if (best >= n) best = n - 1;
 	ayaneo_set_cpu_mhz(s_snes_cpu_opp[best]);
+	{ extern void ayaneo_cpu_manual_set(int core, unsigned mhz); ayaneo_cpu_manual_set(2, s_snes_cpu_opp[best]); }
+}
+static void snes_apply_clock(void)
+{
+	extern unsigned ayaneo_core_clock(int core, unsigned tier_mhz, unsigned tier0_mhz);
+	int pf = ayaneo_get_preempt_frames();
+	ayaneo_set_cpu_mhz(ayaneo_core_clock(2, s_snes_ra_opp[(pf > 0 && pf <= 3) ? pf : 0], s_snes_ra_opp[0]));
 }
 
 /* Panel vfp derived from the core's native refresh. vtotal = 976 + vfp; shipped-build line const
@@ -479,7 +486,7 @@ static int sm_change(int i, int dir, int act)
 	switch (i) {
 	case SM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); snes_settings_touch(); } break;
 	case SM_VOLUME: if (dir) { ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); snes_settings_touch(); } break;
-	case SM_FILTER: if (dir) { ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 6) % 6); snes_settings_touch(); } break;
+	case SM_FILTER: if (dir) { ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 6) % 6); snes_apply_clock(); snes_settings_touch(); } break;
 	case SM_ASPECT: case SM_OVERSCAN: case SM_AUDIO: case SM_HIRES:
 		if (dir && s_menu_c->set_option) {
 			int oi = i - SM_ASPECT, n = s_opt_def[oi].n, k;
@@ -499,11 +506,11 @@ static int sm_change(int i, int dir, int act)
 			snes_settings_touch();
 		}
 		break;
-	case SM_CPU:    if (dir) snes_cpu_step(dir); break;   /* not persisted (session floors at 1800) */
+	case SM_CPU:    if (dir) { snes_cpu_step(dir); snes_settings_touch(); } break;   /* persisted per core */
 	case SM_RUNAHEAD: if (dir) {
 		int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
 		ayaneo_set_preempt_frames(pf);
-		ayaneo_set_cpu_mhz(s_snes_ra_opp[pf]);   /* escalate the clock for pf+1 emulations/frame */
+		snes_apply_clock();   /* escalate the clock for pf+1 emulations/frame */
 		snes_settings_touch();
 	} break;
 	case SM_TURBO: if (dir) { g_snes_turbo = (g_snes_turbo + dir + 4) % 4;
@@ -699,7 +706,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	if (!g_snes_dbg_bench) {   /* bench pins 1400 itself; do not disturb it */
 		int pf0 = ayaneo_get_preempt_frames();   /* persisted run-ahead tier: pin its escalated clock */
-		if (pf0 > 0 && pf0 <= 3) ayaneo_set_cpu_mhz(s_snes_ra_opp[pf0]);   /* 1600/1800/2000 by tier */
+		snes_apply_clock();   /* 1400/1600/1800/2000 by tier, manual choice, filter bump */
 	}
 
 	int reset_hold = 0, aya_prev = 0, ff_prev = 0;

@@ -221,6 +221,14 @@ static void genesis_cpu_step(int dir)
 	}
 	s_cpu_idx += dir; if (s_cpu_idx < 0) s_cpu_idx = 0; if (s_cpu_idx >= n) s_cpu_idx = n - 1;
 	ayaneo_set_cpu_mhz(s_cpu_opp[s_cpu_idx]);
+	{ extern void ayaneo_cpu_manual_set(int core, unsigned mhz); ayaneo_cpu_manual_set(3, s_cpu_opp[s_cpu_idx]); }
+}
+static void genesis_apply_clock(void)
+{
+	extern unsigned ayaneo_core_clock(int core, unsigned tier_mhz, unsigned tier0_mhz);
+	extern int ayaneo_get_preempt_frames(void);
+	int pf = ayaneo_get_preempt_frames();
+	ayaneo_set_cpu_mhz(ayaneo_core_clock(3, s_gen_ra_opp[(pf >= 0 && pf < 4) ? pf : 0], s_gen_ra_opp[0]));
 }
 
 extern int  ayaneo_get_preempt_frames(void);
@@ -320,7 +328,7 @@ static int gm_change(int i, int dir, int act)
 	case GM_ASPECT: if (dir) { g_genesis_aspect = gen_aspect_step(g_genesis_aspect, dir);   /* live preview */
 		ayaneo_set_gen_aspect(g_genesis_aspect); genesis_settings_touch(); } break;
 	case GM_FILTER: if (dir) { g_genesis_filter = (g_genesis_filter + dir + 6) % 6;
-		ayaneo_set_gen_filter(g_genesis_filter); genesis_settings_touch(); } break;
+		ayaneo_set_gen_filter(g_genesis_filter); genesis_apply_clock(); genesis_settings_touch(); } break;
 	case GM_REGION: if (dir) { s_gen_region = (s_gen_region + dir + 4) % 4;
 		if (s_menu_c && s_menu_c->set_option)
 			s_menu_c->set_option("genesis_plus_gx_region_detect", gen_region_opt(s_gen_region));
@@ -337,9 +345,9 @@ static int gm_change(int i, int dir, int act)
 	case GM_RESUME: if (dir) { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
 			ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); genesis_settings_touch(); } break;
 	case GM_RUNAHEAD: if (dir) { int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
-		ayaneo_set_preempt_frames(pf); ayaneo_set_cpu_mhz(s_gen_ra_opp[pf]); s_cpu_idx = -1;
+		ayaneo_set_preempt_frames(pf); genesis_apply_clock(); s_cpu_idx = -1;
 		genesis_settings_touch(); } break;   /* persist run-ahead (shared preempt-frames blob) */
-	case GM_CPU:    if (dir) genesis_cpu_step(dir); break;
+	case GM_CPU:    if (dir) { genesis_cpu_step(dir); genesis_settings_touch(); } break;   /* persisted per core */
 	case GM_SLOT:   if (dir) { s_save_slot = (s_save_slot + dir + 3) % 3;
 		ayaneo_set_gen_slot(s_save_slot); genesis_settings_touch(); } break;
 	case GM_SAVE: if (act) {
@@ -492,7 +500,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * emulations + a save + a load per display). The menu holds a lower idle clock; restored on
 	 * exit. ayaneo_set_cpu_mhz reprograms only the PLL (boot Vproc), like the SNES gameplay tiers. */
 	saved_mhz = ayaneo_get_cpu_mhz();
-	{ int pf0 = ayaneo_get_preempt_frames(); ayaneo_set_cpu_mhz(s_gen_ra_opp[(pf0 >= 0 && pf0 < 4) ? pf0 : 0]); }
+	genesis_apply_clock();   /* ladder by run-ahead tier, manual choice, filter bump */
 
 	/* menu context (actions reference the session core + save target) */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom; s_menu_rw_payload = rw_payload;

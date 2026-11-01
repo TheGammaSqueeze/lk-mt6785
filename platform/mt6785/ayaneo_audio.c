@@ -277,9 +277,11 @@ static void resume_fields_write(unsigned char *b)
 	wr32(b + 68, s_resume_set ? AYANEO_RESUME_MAGIC : 0u);
 	for (i = 0; i < sizeof s_resume_name; i++) b[72 + i] = s_resume_set ? (unsigned char)s_resume_name[i] : 0;
 }
+static unsigned char s_cpu_manual[4];   /* manual CPU clock per core, grid index + 1, 0 = automatic */
 static void resume_fields_read(const unsigned char *b, int len)
 {
 	unsigned i;
+	if (len >= 176) { s_cpu_manual[0] = b[172] & 15; s_cpu_manual[1] = b[173] & 15; s_cpu_manual[2] = b[174] & 15; s_cpu_manual[3] = b[175] & 15; }
 	if (len < 172) return;
 	{ unsigned int r = rd32(b + 64); if (r == 1u || r == 2u) s_resume_on_boot = (r == 2u); }
 	if (rd32(b + 68) == AYANEO_RESUME_MAGIC) {
@@ -370,6 +372,47 @@ void ayaneo_set_gen_region(int v)     { s_gen_region = (v < 0) ? 0 : (v > 3 ? 3 
 int  ayaneo_get_gen_slot(void)        { return s_gen_slot; }
 void ayaneo_set_gen_slot(int v)       { s_gen_slot = (v < 0) ? 0 : (v > 2 ? 2 : v); }
 int  ayaneo_get_strobe(void)          { return s_strobe; }
+
+/* CPU clock policy. Cores: 0 GBA, 1 GBC, 2 SNES, 3 Genesis. Every core has its own ladder of
+ * clocks by run-ahead tier; the manual CPU Clock row used to set the PLL for the session only.
+ * Now: a manual choice is persisted per core (b+172.. as grid index + 1, 0 = automatic) and
+ * applied at every session start; otherwise the ladder value is used, raised when an LCD1x or
+ * LCD3x filter is active (those cost real CPU): at least two grid steps above the core's tier 0
+ * clock and one step above its current tier, whichever is higher. */
+static const unsigned s_cpu_grid[8] = { 600, 800, 1000, 1200, 1400, 1600, 1800, 2000 };
+static int cpu_grid_idx(unsigned mhz)
+{
+	int i, best = 0; unsigned bd = ~0u;
+	for (i = 0; i < 8; i++) { unsigned d = s_cpu_grid[i] > mhz ? s_cpu_grid[i] - mhz : mhz - s_cpu_grid[i]; if (d < bd) { bd = d; best = i; } }
+	return best;
+}
+static unsigned cpu_step_up(unsigned mhz, int steps)
+{
+	int i = cpu_grid_idx(mhz) + steps;
+	if (i > 7) i = 7;
+	return s_cpu_grid[i] > mhz ? s_cpu_grid[i] : mhz;
+}
+static int core_filter_heavy(int core)
+{
+	int f = core == 3 ? s_gen_filter : s_lcd_filter[core == 2 ? 0 : core == 0 ? 1 : 2];
+	return f >= 4;   /* 4 LCD1x, 5 LCD3x */
+}
+unsigned ayaneo_cpu_manual_get(int core) { return (core < 0 || core > 3 || !s_cpu_manual[core]) ? 0u : s_cpu_grid[(s_cpu_manual[core] - 1) & 7]; }
+void ayaneo_cpu_manual_set(int core, unsigned mhz)
+{
+	if (core < 0 || core > 3) return;
+	s_cpu_manual[core] = mhz ? (unsigned char)(cpu_grid_idx(mhz) + 1) : 0;
+}
+unsigned ayaneo_core_clock(int core, unsigned tier_mhz, unsigned tier0_mhz)
+{
+	unsigned m = ayaneo_cpu_manual_get(core);
+	if (m) return m;
+	if (core_filter_heavy(core)) {
+		unsigned a = cpu_step_up(tier0_mhz, 2), b = cpu_step_up(tier_mhz, 1), lo = a > b ? a : b;
+		return tier_mhz > lo ? tier_mhz : lo;
+	}
+	return tier_mhz;
+}
 /* 0 Off, 1..3 = 25/50/75 % dark with one pulse per frame, 4..6 = the same with two pulses */
 const char *ayaneo_strobe_name(int b)
 {
@@ -507,6 +550,7 @@ int ayaneo_settings_serialize(unsigned char *b, int cap)
 	wr32(b + 56, (unsigned int)s_snes_slot);
 	wr32(b + 60, (unsigned int)s_snes_turbo);
 	resume_fields_write(b);
+	b[172] = s_cpu_manual[0]; b[173] = s_cpu_manual[1]; b[174] = s_cpu_manual[2]; b[175] = s_cpu_manual[3];
 	return 192;
 }
 void ayaneo_settings_deserialize(const unsigned char *b, int len)
@@ -623,6 +667,7 @@ void ayaneo_settings_save(void)
 	wr32(b + 56, (unsigned int)s_snes_slot);
 	wr32(b + 60, (unsigned int)s_snes_turbo);
 	resume_fields_write(b);
+	b[172] = s_cpu_manual[0]; b[173] = s_cpu_manual[1]; b[174] = s_cpu_manual[2]; b[175] = s_cpu_manual[3];
 	s_settings_loaded = 1;			/* our value is now authoritative */
 	arch_clean_cache_range((addr_t)b, sizeof(b));
 	{
@@ -1497,6 +1542,7 @@ extern unsigned gpt4_get_current_tick(void);
 #define GBA_AUDIO_LEAD		3072u		/* frames buffered ahead (~64 ms) */
 #define GBA_FRAME_TICKS		217663u		/* 13e6 * 280896 / 16777216 */
 
+volatile unsigned int g_dbg_apace_us, g_dbg_apace_fill;   /* oem diag: time waited in the audio pacer, ring fill at entry */
 void ayaneo_gba_audio_pace(void)
 {
 	unsigned base = (unsigned)(addr_t)s_gbc_ring;
@@ -1505,6 +1551,7 @@ void ayaneo_gba_audio_pace(void)
 	if (!s_gbc_audio_on || s_gbc_paused)
 		return;
 	start = gpt4_get_current_tick();
+	{ unsigned cur = afe_r(AFE_DL1_CUR), rd = (cur >= base) ? (cur - base) / 4u : 0u; g_dbg_apace_fill = (s_gbc_widx - rd) & (GBC_RING_FRAMES - 1); }
 	for (;;) {
 		unsigned cur = afe_r(AFE_DL1_CUR);
 		unsigned rd  = (cur >= base) ? (cur - base) / 4u : 0u;
@@ -1521,6 +1568,7 @@ void ayaneo_gba_audio_pace(void)
 		if ((int)(gpt4_get_current_tick() - start) > (int)(3u * GBA_FRAME_TICKS))
 			break;
 	}
+	g_dbg_apace_us = (gpt4_get_current_tick() - start) / 13u;
 }
 
 /* ---- direct 48 kHz stereo submit for the carousel-menu mixer ----
