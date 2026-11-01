@@ -128,6 +128,7 @@ void ayaneo_idle_until(unsigned target_tick)
 	 * stop sleeping 4 ms before the deadline and let the caller spin the rest */
 	extern int critical_section_count;
 	if (critical_section_count > 0) return;   /* interrupts off: a sleep would never return, let the caller spin */
+	if ((int)(target_tick - gpt4_get_current_tick()) > 2 * 13000000) return;   /* over 2 s away: a stale target, never sleep on it */
 	while ((int)(target_tick - gpt4_get_current_tick()) > 4 * 13000) {
 		unsigned t0 = gpt4_get_current_tick(), d;
 		thread_sleep(1);

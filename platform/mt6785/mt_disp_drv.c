@@ -924,6 +924,11 @@ static void rot_pace(void)
 	 * previous present's edge until div periods have passed, so the frame period is exactly div
 	 * refreshes and the render may use all of it. Otherwise (PAL) a time deadline picks whether
 	 * the frame holds 2 or 3 refreshes, averaging the core rate. */
+	/* After a gap (a dark charging screen, a long load) the last edge is stale: a 13 MHz
+	 * difference older than ~165 s reads positive again and the idle sleep would wait minutes.
+	 * Rebase on the clock and take the next edge instead. */
+	now = gpt4_get_current_tick();
+	if (now - s_pace_edge > 4u * period) s_pace_edge = now - period * div;
 	if (frame > period * div - period / 100u && frame < period * div + period / 100u) {
 		target = s_pace_edge + period * div - period / 4u;
 		s_pace_next = 0;
