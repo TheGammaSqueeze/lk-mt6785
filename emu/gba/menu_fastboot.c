@@ -1112,6 +1112,9 @@ static void cmd_led(const char *arg, void *data, unsigned sz)
 		  extern volatile unsigned g_dbg_emu_abs_ms; extern volatile int g_dbg_emu_chime;
 		  snprintf(lbuf, sizeof lbuf, "idle: sleeps=%u max=%uus aw_dma=%d emu@%ums chime=%d", g_dbg_idle_sleeps, g_dbg_idle_sleep_max_us, g_dbg_aw_dma, g_dbg_emu_abs_ms, g_dbg_emu_chime); }
 		fastboot_info(lbuf);
+		{ extern volatile unsigned int g_dbg_usb_suspends, g_dbg_usb_recovers, g_dbg_usb_backoff;
+		  snprintf(lbuf, sizeof lbuf, "usb: suspends=%u recovers=%u backoff=%u", g_dbg_usb_suspends, g_dbg_usb_recovers, g_dbg_usb_backoff); }
+		fastboot_info(lbuf);
 	}
 	fastboot_okay("");
 }

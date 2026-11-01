@@ -37,6 +37,50 @@
 #include <dev/udc.h>
 
 #include <mt_ssusb.h>
+void mt_udc_reset(USB_SPEED speed);
+void mt_usb_disconnect_internal(void);
+void mt_usb_connect_internal(void);
+/* The suspend handler used to run mt_udc_reset + reconnect INSIDE the USB interrupt: about
+ * 100 ms of busy waiting with interrupts off per suspend. A hub that fails to enumerate the
+ * device raises suspend after suspend, and every emulator frame stalled with it (the stutter
+ * seen behind a powered hub). The work now runs on the usb_recover thread with real sleeps and
+ * a back-off; s_udc_sleepy turns the mdelays of the shared helpers into thread sleeps there. */
+#include <kernel/event.h>
+static volatile int s_udc_sleepy;
+static void udc_delay_ms(unsigned int ms) { if (s_udc_sleepy) thread_sleep(ms); else mdelay(ms); }
+static event_t s_usb_recover_ev;
+static int s_usb_recover_up;
+volatile unsigned int g_dbg_usb_suspends, g_dbg_usb_recovers, g_dbg_usb_backoff;
+static int usb_recover_thread(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		event_wait(&s_usb_recover_ev);
+		{
+			/* back-off: more than three suspends inside two seconds means the host side cannot
+			 * enumerate us (a hub, a bad cable); stop reconnecting for ten seconds */
+			static unsigned int win_start, win_n;
+			unsigned int now = current_time();
+			if (now - win_start > 2000u) { win_start = now; win_n = 0; }
+			if (++win_n > 3u) { g_dbg_usb_backoff++; thread_sleep(10000); win_start = current_time(); win_n = 0; continue; }
+		}
+		s_udc_sleepy = 1;
+		mt_udc_reset(U3D_DFT_SPEED);
+		mt_usb_disconnect_internal();
+		mt_usb_connect_internal();
+		s_udc_sleepy = 0;
+		g_dbg_usb_recovers++;
+	}
+	return 0;
+}
+static void usb_recover_start(void)
+{
+	thread_t *t;
+	if (s_usb_recover_up) return;
+	event_init(&s_usb_recover_ev, false, EVENT_FLAG_AUTOUNSIGNAL);
+	t = thread_create("usb_recover", &usb_recover_thread, NULL, DEFAULT_PRIORITY, 8192);
+	if (t) { thread_resume(t); s_usb_recover_up = 1; }
+}
 #include <mt_ssusb_sifslv_ippc.h>
 #include <mt_ssusb_usb3_mac_csr.h>
 
@@ -694,7 +738,7 @@ void mu3d_hal_rst_dev(void)
 	if (ret == RET_FAIL)
 		DBG_C("[ERR]: %d SSUSB_DEV_RST_B_STS NG\n", __LINE__);
 
-	mdelay(50);
+	udc_delay_ms(50);
 }
 
 /*
@@ -1103,7 +1147,7 @@ void mt_udc_reset(USB_SPEED speed)
 	writel(dwtmp2, U3D_SSUSB_PRB_CTRL2);
 	writel(dwtmp3, U3D_SSUSB_PRB_CTRL3);
 
-	mdelay(50);
+	udc_delay_ms(50);
 
 	mu3d_hal_ssusb_en();
 	mu3d_hal_set_speed(speed);
@@ -2225,10 +2269,9 @@ void mt_udc_irq(u32 ltssm, u32 intrusb, u32 dmaintr, u16 intrtx, u16 intrrx,
 		 * Otherwise U3 cannot detect speed.
 		 */
 #if defined(USB_RESET_AFTER_SUSPEND)
-		mt_udc_reset(U3D_DFT_SPEED);
-		mt_usb_disconnect_internal();
-		/* soft connect U2 or U3 by g_speed */
-		mt_usb_connect_internal();
+		g_dbg_usb_suspends++;
+		if (s_usb_recover_up) event_signal(&s_usb_recover_ev, false);   /* reset + reconnect on the thread, not here */
+		else { mt_udc_reset(U3D_DFT_SPEED); mt_usb_disconnect_internal(); mt_usb_connect_internal(); }
 #else
 		mt_usb_disconnect_internal();
 		mu3d_hal_u3dev_connect();
@@ -2883,6 +2926,7 @@ int udc_start(void) {
 
 	/* register interrupt handler */
 	mt_usb_irq_init();
+	usb_recover_start();
 
 	/* go to RUN mode */
 	mt_usb_phy_recover();
