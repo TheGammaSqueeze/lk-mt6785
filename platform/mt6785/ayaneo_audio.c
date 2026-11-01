@@ -434,12 +434,24 @@ void ayaneo_set_strobe(int v)
  * at bright origins = the proven halo-free floor) since this panel's slow rises are dark-origin and
  * over-driving bright rises is the halo. thr/cap are guards. The menu is On/Off (the good setting is a
  * fixed recipe); power users retune live via `oem od:` / `oem odup:`. */
+#if defined(KONKR_KPA)
+/* Konkr ST7123, stepped through by eye 2026-11-01 (Super Mario Advance): cap 3 left a light
+ * outline trailing high contrast sprites and cap 6 made it a clear halo; cap 2 removed it, kdn
+ * 10 brought smear back, thr 2 was judged fine. */
+#define OD_DEF_KUPHI 8
+#define OD_DEF_KUPLO 2
+#define OD_DEF_KDN   6
+#define OD_DEF_THR   2
+#define OD_DEF_CAP   2
+#define OD_DEF_GAM   22
+#else
 #define OD_DEF_KUPHI 6
 #define OD_DEF_KUPLO 2
 #define OD_DEF_KDN   6
 #define OD_DEF_THR   3
 #define OD_DEF_CAP   3
 #define OD_DEF_GAM   22
+#endif
 int  ayaneo_get_overdrive(void)       { return s_overdrive; }
 void ayaneo_set_overdrive_level(int on)
 {
