@@ -720,17 +720,20 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					unsigned int blit = g_dbg_blit_us < 15500u ? g_dbg_blit_us : 0u;
 					int n = 1;
 					ff = 1;
-					do {
+					for (;;) {
 						unsigned s2 = GBC_SND_MAX;
+						int more;
 						c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);
 						{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 						ayaneo_gbc_audio_submit(snd, s2);
-						if (ahead_sz && ayaneo_rewind_ready()) {   /* capture each FF frame too */
+						n++;
+						more = (n < 120 && ayaneo_ff_fits(ff_t0, blit, fe, 0));
+						if (!more && ahead_sz && ayaneo_rewind_ready()) {   /* one snapshot per shown frame */
 							void *p = ayaneo_rewind_capture_begin();
 							if (p) { c->state_save(p); ayaneo_rewind_capture_commit(ahead_sz); }
 						}
-						n++;
-					} while (n < 120 && ayaneo_ff_fits(ff_t0, blit, fe, 0));
+						if (!more) break;
+					}
 					ayaneo_hud_set(1, n * 10);
 				} else {
 					ayaneo_hud_set(0, 0);

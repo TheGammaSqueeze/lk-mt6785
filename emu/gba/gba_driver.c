@@ -202,6 +202,7 @@ static int s_ready;
 static volatile int s_fast_forward;
 static volatile int s_ff_level;			/* right-trigger fast-forward level 0..255 (0 = off) */
 static unsigned int s_ff_t0;			/* tick the committed frame started (fast forward budget) */
+static int s_ff_active;				/* this loop frame ran a fast forward batch */
 #define FF_MAX_MULT   10			/* full press = up to 10x (CPU-bound = fastest, audio kept) */
 
 /* Rewind (left trigger): a snapshot (core state + 128 KB sound ring) is pushed for EVERY committed
@@ -2479,7 +2480,7 @@ static int emu_thread(void *arg)
 			}
 			/* Rewind capture: snapshot this committed frame (and each FF frame below), so FF'd frames
 			 * can be rewound. Not the run-ahead look-ahead frames (rewound anyway). Skipped in-menu. */
-			if (!s_menu_open) gba_rewind_snap();
+			if (!s_menu_open && !s_benchmark) gba_rewind_snap();   /* benchmark measures emulation: no 640 KB snapshot per frame */
 			/* Variable fast-forward (right analog trigger): after the committed frame, run extra
 			 * MUTED frames so the game advances s_ff_level -> 2..FF_MAX_MULT x per displayed frame.
 			 * The display stays vsync-locked at 60 Hz (normal present below), so the speed is
@@ -2495,7 +2496,8 @@ static int emu_thread(void *arg)
 				 * up). We deliberately do NOT use the old s_fast_forward present-every-8th path - it
 				 * frame-skips, PAUSES audio, and was slower than this. Keep s_fast_forward off. */
 				s_fast_forward = 0;
-				if (s_ff_level > 0 && !s_menu_open) {
+				s_ff_active = (s_ff_level > 0 && !s_menu_open);
+				if (s_ff_active) {
 					/* Adaptive cap: run only as many extra frames as fit ~one vsync so the panel
 					 * stays a smooth 60fps instead of overrunning at a fixed 10x. Every GBA FF frame
 					 * is a full render, so the committed-frame cost (s_committed_us) is the per-frame
@@ -2525,8 +2527,7 @@ static int emu_thread(void *arg)
 						us = (gpt4_get_current_tick() - t) / 13u;
 						s_ff_skip_us += ((int)us - (int)s_ff_skip_us) / 4; skipc = s_ff_skip_us;
 						{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }   /* every emulated frame counts */
-						gba_rewind_snap();   /* capture each FF frame so it can be rewound */
-						n++;
+						n++;   /* no rewind snapshot for frames between presents: one per shown frame */
 					}
 					{	/* the last frame of the batch is rendered: it is the one presented */
 						unsigned int t = gpt4_get_current_tick(), us;
@@ -2767,6 +2768,15 @@ static int emu_thread(void *arg)
 					mtk_wdt_restart();
 				}
 				ayaneo_gbc_clear_letterbox();
+				ayaneo_gbc_show_frame(gba_core_screen());
+				continue;
+			}
+			/* Fast forward presents the batch's last frame as it is: no run-ahead on top
+			 * (the look-ahead frames ate the time the batch had measured for itself, the
+			 * budget then missed the panel edge and widened, which is the capped feel), and
+			 * no run-ahead depth adaptation from a loop that is busy by design. */
+			if (s_ff_active) {
+				g_dbg_preempt_emu_us = 0;
 				ayaneo_gbc_show_frame(gba_core_screen());
 				continue;
 			}

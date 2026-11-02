@@ -696,7 +696,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (last) s_gen_rend_us += ((int)us - (int)s_gen_rend_us) / 4;
 				else { s_gen_skip_us += ((int)us - (int)s_gen_skip_us) / 4; skipc = s_gen_skip_us; }
 				g_gen_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
-				if (rw_payload && ayaneo_rewind_ready()) {   /* capture each FF frame too */
+				if (last && rw_payload && ayaneo_rewind_ready()) {   /* one snapshot per shown frame */
 					void *p = ayaneo_rewind_capture_begin();
 					if (p && c->state_save(p, rw_payload) == 0) ayaneo_rewind_capture_commit(rw_payload);
 				}

@@ -884,7 +884,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * FF'd frames can be rewound (NOT the run-ahead look-ahead frames, which get rewound anyway).
 		 * State is at the committed frame here. Skipped in-menu / headless test. The raw save is cheap
 		 * (run-ahead already does one every frame), so per-frame capture fits the budget. */
-		if (s_snes_rw_payload && !g_snes_menu_open && !g_snes_test_limit && ayaneo_rewind_ready()) {
+		if (s_snes_rw_payload && !g_snes_menu_open && !g_snes_test_limit && !g_snes_benchmark && ayaneo_rewind_ready()) {
 			void *p = ayaneo_rewind_capture_begin();
 			if (p) {
 				unsigned n = (unsigned)c->state_save_ra(p, s_snes_rw_payload);
@@ -922,7 +922,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				g_snes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 				if (f.audio && f.frames)
 					ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
-				if (s_snes_rw_payload && ayaneo_rewind_ready()) {   /* capture each FF frame too */
+				if (last && s_snes_rw_payload && ayaneo_rewind_ready()) {   /* one snapshot per shown frame */
 					void *p = ayaneo_rewind_capture_begin();
 					if (p) { unsigned nn = (unsigned)c->state_save_ra(p, s_snes_rw_payload);
 						 if (nn) ayaneo_rewind_capture_commit(nn); }

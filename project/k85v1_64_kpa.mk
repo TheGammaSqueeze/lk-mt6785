@@ -16,6 +16,9 @@ include project/k85v1_64.mk
 # portrait frame buffer rotated 90 degrees.
 KONKR_KPA := yes
 DEFINES += KONKR_KPA
+# a unique fastboot / androidboot serial from the SoC efuse key (devinfo 12/13) instead of the
+# shared default 0123456789ABCDEF (the stock LK shipped the default too)
+DEFINES += CONFIG_MTK_USB_UNIQUE_SERIAL
 
 # Sitronix ST7123, 640x960 native portrait, mounted landscape. The LK frame buffer
 # stays portrait and everything is rotated into it in software, exactly as the

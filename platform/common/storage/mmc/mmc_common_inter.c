@@ -844,3 +844,12 @@ int mmc_do_erase(int dev_num, u64 start_addr, u64 len, u32 part_id)
 
 #endif //!defined(MMC_MSDC_DRV_CTP)
 
+/* the boot eMMC's raw CID words (oem serialinfo, a unique serial source); 0 on success */
+int ayaneo_emmc_cid(unsigned int out[4])
+{
+	struct mmc_card *card = mmc_get_card(MMC_HOST_ID);
+	int i;
+	if (!card) return -1;
+	for (i = 0; i < 4; i++) out[i] = card->raw_cid[i];
+	return 0;
+}

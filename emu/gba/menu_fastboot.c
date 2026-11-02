@@ -1340,6 +1340,26 @@ static void cmd_gauge(const char *arg, void *data, unsigned sz)
 
 static int g_hud_fps_read(void) { extern volatile int g_hud_fps; return g_hud_fps; }
 
+/* oem serialinfo - the candidate unique serial sources: the SoC efuse key (devinfo 12..15,
+ * MediaTek's CONFIG_MTK_USB_UNIQUE_SERIAL source) and the boot eMMC CID; and the serial now */
+static void cmd_serialinfo(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int get_devinfo_with_index(unsigned int index);
+	extern int ayaneo_emmc_cid(unsigned int out[4]);
+	extern char sn_buf[];
+	unsigned int cid[4] = {0, 0, 0, 0}; int rc;
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "efuse: %08x %08x %08x %08x", get_devinfo_with_index(12), get_devinfo_with_index(13),
+		 get_devinfo_with_index(14), get_devinfo_with_index(15));
+	fastboot_info(lbuf);
+	rc = ayaneo_emmc_cid(cid);
+	snprintf(lbuf, sizeof lbuf, "emmc cid: rc=%d %08x %08x %08x %08x", rc, cid[0], cid[1], cid[2], cid[3]);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "serial now: %s", sn_buf);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem rewindmap - the rewind arena islands (phys base + MB) and the ring state line */
 static void cmd_rewindmap(const char *arg, void *data, unsigned sz)
 {
@@ -1652,6 +1672,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem chgw", cmd_chgw, 1, 0);
 	fastboot_register("oem pmicw", cmd_pmicw, 1, 0);
 	fastboot_register("oem gauge", cmd_gauge, 1, 0);
+	fastboot_register("oem serialinfo", cmd_serialinfo, 1, 0);
 	fastboot_register("oem dsiw", cmd_dsiw, 1, 0);
 	fastboot_register("oem gray", cmd_gray, 1, 0);
 	fastboot_register("oem awdump", cmd_awdump, 1, 0);
