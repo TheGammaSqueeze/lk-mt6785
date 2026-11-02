@@ -1161,6 +1161,80 @@ static void cmd_chg(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem chrind - MT6360 PMU RGB_EN (0x80) before and after taking the red charger indicator into software mode, off */
+static void cmd_chrind(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_mt6360_chg_reg(unsigned char reg);
+	extern int ayaneo_mt6360_chrind_off(void);
+	int before = ayaneo_mt6360_chg_reg(0x80), after;
+	(void)arg; (void)data; (void)sz;
+	after = ayaneo_mt6360_chrind_off();
+	snprintf(lbuf, sizeof lbuf, "chrind: rgb_en before=%02x after=%02x (bit3 sw mode, bit7 isink1 on)", before & 0xff, after & 0xff);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem chgw:REG,VAL - write one MT6360 PMU register (hex), report 0x80..0x8f afterwards */
+static void cmd_chgw(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_mt6360_chg_reg(unsigned char reg);
+	extern int ayaneo_mt6360_chg_wr(unsigned char reg, unsigned char val);
+	unsigned reg = 0, val = 0; int i, n = 0, rc = 0;
+	(void)data; (void)sz;
+	if (arg && *arg == ':') arg++;
+	if (arg && *arg) {
+		char *e;
+		reg = strtoul(arg, &e, 16);
+		if (*e == ',') { val = strtoul(e + 1, 0, 16); rc = ayaneo_mt6360_chg_wr((unsigned char)reg, (unsigned char)val); }
+	}
+	n = snprintf(lbuf, sizeof lbuf, "chgw %02x<-%02x rc=%d rd=%02x |", reg, val, rc, ayaneo_mt6360_chg_reg((unsigned char)reg) & 0xff);
+	for (i = 0x80; i < 0x90; i++) n += snprintf(lbuf + n, sizeof lbuf - n, " %02x", ayaneo_mt6360_chg_reg((unsigned char)i) & 0xff);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem pmicw:ADDR[,VAL] - read (or write then read) one MT6359 PMIC register over the wrapper (hex),
+ * then the ISINK block 0x210a..0x2110 */
+static void cmd_pmicw(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int pmic_read_interface(unsigned int RegNum, unsigned int *val, unsigned int MASK, unsigned int SHIFT);
+	extern unsigned int pmic_config_interface(unsigned int RegNum, unsigned int val, unsigned int MASK, unsigned int SHIFT);
+	unsigned reg = 0, val = 0, rd = 0, a; int n, wr = 0;
+	(void)data; (void)sz;
+	if (arg && *arg == ':') arg++;
+	if (arg && *arg) {
+		char *e;
+		reg = strtoul(arg, &e, 16);
+		if (*e == ',') { val = strtoul(e + 1, 0, 16); pmic_config_interface(reg, val & 0xffff, 0xffff, 0); wr = 1; }
+		pmic_read_interface(reg, &rd, 0xffff, 0);
+	}
+	n = snprintf(lbuf, sizeof lbuf, "pmicw %04x%s%04x rd=%04x | isink", reg, wr ? "<-" : " ", wr ? val : 0, rd);
+	for (a = 0x210a; a <= 0x2110; a += 2) { unsigned v = 0; pmic_read_interface(a, &v, 0xffff, 0); n += snprintf(lbuf + n, sizeof lbuf - n, " %04x", v); }
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem awdump[:REG,VAL] - AW2033 registers 0x00..0x0f and 0x30..0x3f, after an optional write (hex) */
+static void cmd_awdump(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_aw2033_read(unsigned char reg);
+	extern int ayaneo_aw2033_write(unsigned char reg, unsigned char val);
+	int i, n;
+	(void)data; (void)sz;
+	if (arg && *arg == ':') arg++;
+	if (arg && *arg) {
+		char *e; unsigned reg = strtoul(arg, &e, 16);
+		if (*e == ',') ayaneo_aw2033_write((unsigned char)reg, (unsigned char)strtoul(e + 1, 0, 16));
+	}
+	n = snprintf(lbuf, sizeof lbuf, "aw 00:");
+	for (i = 0; i < 0x10; i++) n += snprintf(lbuf + n, sizeof lbuf - n, " %02x", ayaneo_aw2033_read((unsigned char)i) & 0xff);
+	fastboot_info(lbuf);
+	n = snprintf(lbuf, sizeof lbuf, "aw 30:");
+	for (i = 0x30; i < 0x40; i++) n += snprintf(lbuf + n, sizeof lbuf - n, " %02x", ayaneo_aw2033_read((unsigned char)i) & 0xff);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem rewindmap - the rewind arena islands (phys base + MB) and the ring state line */
 static void cmd_rewindmap(const char *arg, void *data, unsigned sz)
 {
@@ -1234,6 +1308,20 @@ static void cmd_env(const char *arg, void *data, unsigned sz)
 	name[n] = 0;
 	val = get_env(name);
 	snprintf(lbuf, sizeof lbuf, "env %s = %s", name, val ? val : "(unset)");
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem ledset:R,G,B - drive the AW2033 channels directly (0..255 each) to check the wiring by eye */
+static void cmd_ledset(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_charge_led(int r, int g, int b);
+	unsigned r, g, b;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	r = fb_dec(&arg); g = fb_dec(&arg); b = fb_dec(&arg);
+	ayaneo_charge_led((int)r, (int)g, (int)b);
+	snprintf(lbuf, sizeof lbuf, "ledset: r=%u g=%u b=%u (channel order as the driver assumes)", r, g, b);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -1436,8 +1524,13 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem led", cmd_led, 1, 0);
 	fastboot_register("oem persist", cmd_persist, 1, 0);
 	fastboot_register("oem env:", cmd_env, 1, 0);
+	fastboot_register("oem ledset:", cmd_ledset, 1, 0);
 	fastboot_register("oem hfp", cmd_hfp, 1, 0);
 	fastboot_register("oem chg", cmd_chg, 1, 0);
+	fastboot_register("oem chrind", cmd_chrind, 1, 0);
+	fastboot_register("oem chgw", cmd_chgw, 1, 0);
+	fastboot_register("oem pmicw", cmd_pmicw, 1, 0);
+	fastboot_register("oem awdump", cmd_awdump, 1, 0);
 	fastboot_register("oem rewindmap", cmd_rewindmap, 1, 0);
 	fastboot_register("oem mmuq:", cmd_mmuq, 1, 0);
 	fastboot_register("oem dr:", cmd_dr, 1, 0);

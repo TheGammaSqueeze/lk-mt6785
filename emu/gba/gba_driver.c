@@ -1107,6 +1107,26 @@ int ayaneo_mt6360_chg_reg(unsigned char reg)
 	if (i2c_write_read(&i2c, b, 1, 1) < 0) return -1;
 	return b[0];
 }
+int ayaneo_mt6360_chg_wr(unsigned char reg, unsigned char val)
+{
+	mt_i2c i2c; unsigned char b[2];
+	memset(&i2c, 0, sizeof i2c);
+	i2c.id = I2C5; i2c.addr = 0x34; i2c.mode = FS_MODE; i2c.speed = 400; i2c.pushpull = true;
+	b[0] = reg; b[1] = val;
+	return i2c_write(&i2c, b, 2) < 0 ? -1 : 0;
+}
+/* The MT6360 also drives its own red charger indicator (CHRIND on ISINK1, PMU RGB_EN 0x80:
+ * bit 3 = CHRIND under software control, bit 7 = ISINK1 on). Stock Android's rgbled driver
+ * takes ISINK1 over the same way; here the AW2033 is the only power LED, so the hardware
+ * indicator is switched to software mode and left off. Returns the register after the write. */
+int ayaneo_mt6360_chrind_off(void)
+{
+	int v = ayaneo_mt6360_chg_reg(0x80);
+	if (v < 0) return -1;
+	v = (v | 0x08) & ~0x80;
+	if (ayaneo_mt6360_chg_wr(0x80, (unsigned char)v) < 0) return -1;
+	return ayaneo_mt6360_chg_reg(0x80);
+}
 static int charger_status(void)
 {
 	int v = ayaneo_mt6360_chg_reg(0x4A);
@@ -1136,15 +1156,17 @@ static int battery_read(int *charging)
 	return pct;
 }
 
+/* charging screen: same colours as the running system (led_thread): charging = red + green,
+ * full (97 %+ or the charger done) = green only, unplugged = off */
 static void set_charge_led(int charging, int pct)
 {
 	static int prev = -1;
-	int state = !charging ? 0 : (pct >= 99 ? 2 : 1);
+	int state = !charging ? 0 : (pct >= 97 ? 2 : 1);
 	if (state == prev)
 		return;
 	prev = state;
-	if (state == 2)      ayaneo_charge_led(0, 128, 0);
-	else if (state == 1) ayaneo_charge_led(128, 0, 0);
+	if (state == 2)      ayaneo_charge_led(0, 12, 0);
+	else if (state == 1) ayaneo_charge_led(12, 12, 0);
 	else                 ayaneo_charge_led(0, 0, 0);
 }
 
@@ -1173,6 +1195,9 @@ static int led_thread(void *arg)
 	int pct = -1, chr = 0, tick = 0, flash = 0, last = -1, state;
 	(void)arg;
 	thread_sleep(2500);
+#ifdef KONKR_KPA
+	{ extern int ayaneo_mt6360_chrind_off(void); ayaneo_mt6360_chrind_off(); }
+#endif
 	for (;;) {
 		if ((tick & 1) == 0) chr = pmic_upmu_get_rgs_chrdet() ? 1 : 0;   /* every second, cheap */
 		if (pct < 0 || (tick % (chr ? 20 : 120)) == 0) pct = battery_read(&chr);   /* every 10 s on the charger, 60 s on battery */
@@ -1196,7 +1221,8 @@ static int led_thread(void *arg)
 /* every power off path: LED dark first (the AW2033 keeps its state across the SoC power off) */
 void ayaneo_leds_off_for_poweroff(void)
 {
-	ayaneo_charge_led(0, 0, 0);
+	extern void ayaneo_charge_led_standby(void);
+	ayaneo_charge_led_standby();
 }
 static void led_thread_start(void)
 {
@@ -2722,6 +2748,9 @@ void ayaneo_gbc_charging_screen(void)
 	int chg_st = -1;
 
 	ayaneo_settings_load();
+#ifdef KONKR_KPA
+	{ extern int ayaneo_mt6360_chrind_off(void); ayaneo_mt6360_chrind_off(); }
+#endif
 	ayaneo_display_prepare();
 	ayaneo_apply_backlight(40);
 	mtk_wdt_disable();

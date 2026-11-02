@@ -486,7 +486,25 @@ static int aw2033_write(unsigned char reg, unsigned char val)
 	return i2c_write(&i2c, buf, 2);
 }
 
-/* Set the charge LED to an RGB value (each 0-255). 0,0,0 = off. */
+/* Read one AW2033 register, -1 on a bus error (oem awdump) */
+int ayaneo_aw2033_read(unsigned char reg)
+{
+	mt_i2c i2c = {0};
+	unsigned char b[2];
+	i2c.id = AW2033_I2C_ID; i2c.addr = AW2033_ADDR; i2c.mode = FS_MODE; i2c.speed = 400;
+	b[0] = reg;
+	if (i2c_write_read(&i2c, b, 1, 1) < 0) return -1;
+	return b[0];
+}
+int ayaneo_aw2033_write(unsigned char reg, unsigned char val) { return aw2033_write(reg, val) < 0 ? -1 : 0; }
+
+/* Set the charge LED to an RGB value (each 0-255). 0,0,0 = off.
+ *
+ * GCR1 (0x01) is written as 0x03, CHIPEN plus CHGDIS. The AW2033 has an auto charging
+ * indication: its CHRG pin is wired to the charger status on this board, and with CHGDIS
+ * clear the chip lights LED0 (red) in hardware whenever CHRG is active, with no relation to
+ * the PWM registers. That was the red that stayed on while the cable was in whatever the
+ * channels were set to. The stock LK and kernel keep CHGDIS set (GCR1 0x03, 0x02 when idle). */
 void ayaneo_charge_led(int r, int g, int b)
 {
 	static int inited;
@@ -494,7 +512,7 @@ void ayaneo_charge_led(int r, int g, int b)
 
 	if (!inited) {
 		aw2033_write(0x00, 0x55);	/* soft reset */
-		aw2033_write(0x01, 0x01);	/* GCR: chip enable */
+		aw2033_write(0x01, 0x03);	/* GCR1: CHIPEN | CHGDIS */
 		aw2033_write(0x31, 0x03);	/* LED0 (red) current config */
 		aw2033_write(0x32, 0x03);	/* LED1 (green) */
 		aw2033_write(0x33, 0x03);	/* LED2 (blue) */
@@ -505,4 +523,13 @@ void ayaneo_charge_led(int r, int g, int b)
 	aw2033_write(0x36, (unsigned char)b);	/* PWM blue */
 	en = (r ? 0x01 : 0) | (g ? 0x02 : 0) | (b ? 0x04 : 0);
 	aw2033_write(0x30, (unsigned char)en);	/* LED enable bits */
+}
+
+/* Power off: channels dark, chip in standby with the hardware charge indication still disabled,
+ * so the red does not return when the cable is plugged into the switched off device (the
+ * offline charging screen drives the LED itself). */
+void ayaneo_charge_led_standby(void)
+{
+	ayaneo_charge_led(0, 0, 0);
+	aw2033_write(0x01, 0x02);	/* CHIPEN 0, CHGDIS 1 */
 }
