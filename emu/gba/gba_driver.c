@@ -50,6 +50,7 @@ static const struct gba_core_exports *g_core;
 #define reset_gba(...)              g_core->reset(__VA_ARGS__)
 #define gba_core_cpu_loop(...)      g_core->cpu_loop(__VA_ARGS__)
 #define gba_core_pre_frame(...)     g_core->pre_frame(__VA_ARGS__)
+#define gba_core_skip_render(v)     (*g_core->skip_next_frame = (unsigned int)(v))
 #define gba_core_post_frame(...)    g_core->post_frame(__VA_ARGS__)
 #define gba_frame_boundary_finish(...) g_core->frame_boundary_finish(__VA_ARGS__)
 #define gba_core_cpu_ticks(...)     g_core->cpu_ticks(__VA_ARGS__)
@@ -200,6 +201,7 @@ extern int  mtk_detect_key(unsigned short hwkey);
 static int s_ready;
 static volatile int s_fast_forward;
 static volatile int s_ff_level;			/* right-trigger fast-forward level 0..255 (0 = off) */
+static unsigned int s_ff_t0;			/* tick the committed frame started (fast forward budget) */
 #define FF_MAX_MULT   10			/* full press = up to 10x (CPU-bound = fastest, audio kept) */
 
 /* Rewind (left trigger): a snapshot (core state + 128 KB sound ring) is pushed for EVERY committed
@@ -905,8 +907,11 @@ static void preempt_present(void)
 		gba_core_state_save(s_ahead_state);
 		gba_sound_ring_save(s_ahead_snd);	/* ring contents (not in the savestate) */
 		g_gba_audio_suppress = 1;
-		for (i = 0; i < pf; i++)
+		for (i = 0; i < pf; i++) {
+			gba_core_skip_render(i < pf - 1);   /* only the last look-ahead frame is shown */
 			run_one_frame();		/* look-ahead frames (muted) */
+		}
+		gba_core_skip_render(0);
 		g_gba_audio_suppress = 0;
 		t1 = gpt4_get_current_tick();
 		ayaneo_gbc_show_frame(gba_core_screen());	/* present (blit timed separately) */
@@ -2460,6 +2465,7 @@ static int emu_thread(void *arg)
 				extern volatile unsigned int g_dbg_frame_ticks;
 				unsigned int ct0 = gba_core_cpu_ticks();
 				unsigned int em0 = gpt4_get_current_tick();
+				s_ff_t0 = em0;   /* the frame budget for fast forward starts here */
 				run_one_frame();	/* runs one GBA frame + submits its audio */
 				/* committed GBA cycles this display frame = one full frame (280896);
 				 * run-ahead re-enters as a full frame (no priming stub) so no skew. */
@@ -2496,20 +2502,43 @@ static int emu_thread(void *arg)
 					 * cost; reserve the present blit (g_dbg_blit_us). Keep a 2x floor so a squeeze
 					 * always does something even on a heavy scene / low CPU clock. */
 					extern volatile unsigned int g_dbg_blit_us;
-					int raw = 2 + (s_ff_level * (FF_MAX_MULT - 2)) / 255;   /* press depth -> 2..FF_MAX_MULT */
-					unsigned int fe = s_committed_us ? s_committed_us : 2500u;
+					/* The frames between two presents are never seen: their render is skipped
+					 * (ABI 2 skip_next_frame), only the last one draws. The budget is one
+					 * refresh less the present blit: the rendered committed frame plus the
+					 * rendered last frame, the rest at the cheaper skipped cost. Costs are
+					 * averaged so the multiplier holds steady from frame to frame (a cap that
+					 * jumps between 6 and 8 reads as uneven motion). */
+					/* No multiplier and no cap: run render-skipped frames while another one
+					 * still fits before this refresh's present (ayaneo_ff_fits), then one rendered
+					 * frame, which is the picture shown. The panel gets a new frame every refresh,
+					 * the game advances as far as the CPU allows in between. */
+					extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us);
+					static unsigned int s_ff_skip_us, s_ff_rend_us;
+					unsigned int rend = s_ff_rend_us ? s_ff_rend_us : (s_committed_us ? s_committed_us : 2500u);
+					unsigned int skipc = s_ff_skip_us ? s_ff_skip_us : rend;
 					unsigned int blit = g_dbg_blit_us < 15500u ? g_dbg_blit_us : 0u;
-					int cap = (int)((15500u - blit) / fe);   /* whole frames that fit ~one vsync */
-					int mult = raw < cap ? raw : cap;
-					int i;
-					if (mult < 2) mult = 2;
-					if (mult > FF_MAX_MULT) mult = FF_MAX_MULT;
-					ayaneo_hud_set(1, mult * 10);
-					for (i = 1; i < mult; i++) {
+					int n = 1;
+					while (n < 120 && ayaneo_ff_fits(s_ff_t0, blit, skipc, rend)) {
+						unsigned int t = gpt4_get_current_tick(), us;
+						gba_core_skip_render(1);
 						run_one_frame();
+						us = (gpt4_get_current_tick() - t) / 13u;
+						s_ff_skip_us += ((int)us - (int)s_ff_skip_us) / 4; skipc = s_ff_skip_us;
 						{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }   /* every emulated frame counts */
 						gba_rewind_snap();   /* capture each FF frame so it can be rewound */
+						n++;
 					}
+					{	/* the last frame of the batch is rendered: it is the one presented */
+						unsigned int t = gpt4_get_current_tick(), us;
+						gba_core_skip_render(0);
+						run_one_frame();
+						us = (gpt4_get_current_tick() - t) / 13u;
+						s_ff_rend_us += ((int)us - (int)s_ff_rend_us) / 4;
+						{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
+						gba_rewind_snap();
+						n++;
+					}
+					ayaneo_hud_set(1, n * 10);
 				} else {
 					ayaneo_hud_set(0, 0);
 				}

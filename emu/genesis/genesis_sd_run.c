@@ -679,22 +679,22 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * Audio of every frame is submitted (so the sound speeds up). Only the LAST frame is presented. */
 		ff = g_genesis_menu_open ? 0 : ayaneo_joypad_ff_level();
 		if (ff > 0) {
-			int raw = 2 + (ff * (10 - 2)) / 255;
-			unsigned int rmilli = ayaneo_dsi_core_refresh_milli();   /* the per frame rate (panel / vsync divider) */
-			unsigned int full_us = rmilli ? (1000000000u / rmilli) : 16666u;   /* 1e9/milliHz = 1e6/panel_fps; PAL ~20000us, NTSC ~16666us */
-			unsigned int budget_us = full_us > 1200u ? full_us - 1200u : full_us; /* ~1.2ms present-margin the old 15500-vs-16666 baked in */
-			unsigned int blit = g_dbg_blit_us < budget_us ? g_dbg_blit_us : 0u;
-			unsigned int fef = fe ? fe : 2500u;
-			int cap = (int)((budget_us - blit) / fef);
-			int mult = raw < cap ? raw : cap, k;
-			if (mult < 2) mult = 2;
-			if (mult > 10) mult = 10;
-			ayaneo_hud_set(1, mult * 10);
-			for (k = 1; k < mult; k++) {
-				/* skip the VDP render (the heavy part) on the thrown-away frames; render only
-				 * the LAST one (the frame we present). Audio kept on all so the sound speeds up. */
-				if (c->set_av_skip) c->set_av_skip(k < mult - 1 ? 1 : 0, 0);
+			/* no multiplier and no cap: render-skipped frames while one still fits before this
+			 * refresh's present (ayaneo_ff_fits), then one rendered frame, the picture shown */
+			extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us);
+			static unsigned int s_gen_skip_us, s_gen_rend_us;
+			unsigned int blit = g_dbg_blit_us < 15500u ? g_dbg_blit_us : 0u;
+			unsigned int rend = s_gen_rend_us ? s_gen_rend_us : (fe ? fe : 2500u);
+			unsigned int skipc = s_gen_skip_us ? s_gen_skip_us : rend;
+			int n = 1, last = 0;
+			while (!last) {
+				unsigned int _t = gpt4_get_current_tick(), us;
+				last = !(n < 120 && ayaneo_ff_fits(em0, blit, skipc, rend));
+				if (c->set_av_skip) c->set_av_skip(last ? 0 : 1, 0);
 				c->run(&fr);
+				us = (gpt4_get_current_tick() - _t) / 13u;
+				if (last) s_gen_rend_us += ((int)us - (int)s_gen_rend_us) / 4;
+				else { s_gen_skip_us += ((int)us - (int)s_gen_skip_us) / 4; skipc = s_gen_skip_us; }
 				g_gen_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 				if (rw_payload && ayaneo_rewind_ready()) {   /* capture each FF frame too */
 					void *p = ayaneo_rewind_capture_begin();
@@ -702,8 +702,10 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				}
 				if (fr.audio && fr.frames)
 					ayaneo_snes_audio_submit(fr.audio, fr.frames, sr);
+				n++;
 			}
 			if (c->set_av_skip) c->set_av_skip(0, 0);
+			ayaneo_hud_set(1, n * 10);
 		} else {
 			ayaneo_hud_set(0, 0);
 		}

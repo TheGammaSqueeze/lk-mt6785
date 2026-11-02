@@ -26,7 +26,7 @@ SECTIONS
 
 	.header : {
 		LONG(0x41424743);                    /* [0] magic "GCBA" */
-		LONG(1);                             /* [1] version */
+		LONG(2);                             /* [1] version */
 		LONG(gba_core_blob_init - BLOB_VMA); /* [2] entry offset */
 		LONG(__blob_load_end - BLOB_VMA);    /* [3] load_size: bytes present in the file */
 		LONG(__blob_end - BLOB_VMA);         /* [4] total_span: zero [load_size, total_span] */

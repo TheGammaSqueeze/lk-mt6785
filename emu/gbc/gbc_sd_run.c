@@ -606,7 +606,8 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	int up_prev = 0, dn_prev = 0, lt_prev = 0, rt_prev = 0, a_prev = 0, b_prev = 0, x_prev = 0;
 	int aya_hold = 0;
 	int rw_acc = 0;                  /* rewind fractional-speed accumulator (256ths), reset on entry */
-	unsigned int gbc_emu_us = 0;     /* committed-frame emu cost (us), feeds the adaptive FF cap */
+	unsigned int gbc_emu_us = 0;     /* committed-frame emu cost (us), feeds the FF budget */
+	unsigned int ff_t0 = 0;          /* tick the committed frame started (FF budget) */
 	for (;;) {
 		unsigned samples = GBC_SND_MAX;
 		long r;
@@ -683,8 +684,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 		samples = GBC_SND_MAX;
 		{ unsigned int _t = gpt4_get_current_tick();
+		  ff_t0 = _t;
 		  r = c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &samples);
-		  gbc_emu_us = (gpt4_get_current_tick() - _t) / 13u; }   /* committed frame cost for the FF cap */
+		  gbc_emu_us = (gpt4_get_current_tick() - _t) / 13u; }   /* committed frame cost for the FF budget */
 
 		ayaneo_gbc_audio_submit(snd, samples);
 
@@ -711,17 +713,14 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					 * fixed choppy 10x). GB/GBC render every FF frame, so the committed cost
 					 * (gbc_emu_us) is the per-frame cost; reserve the present blit (g_dbg_blit_us).
 					 * 2x floor so a squeeze always advances even on a low CPU clock. */
-					int raw = 2 + (ff_lvl * (10 - 2)) / 255;   /* press depth -> 2..10 */
+					/* no multiplier and no cap: more frames while one still fits before this
+					 * refresh's present (gambatte renders every frame, so each costs gbc_emu_us) */
+					extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us);
 					unsigned int fe = gbc_emu_us ? gbc_emu_us : 2500u;
 					unsigned int blit = g_dbg_blit_us < 15500u ? g_dbg_blit_us : 0u;
-					int cap = (int)((15500u - blit) / fe);
-					int mult = raw < cap ? raw : cap;
-					int k;
-					if (mult < 2) mult = 2;
-					if (mult > 10) mult = 10;
+					int n = 1;
 					ff = 1;
-					ayaneo_hud_set(1, mult * 10);
-					for (k = 1; k < mult; k++) {
+					do {
 						unsigned s2 = GBC_SND_MAX;
 						c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);
 						{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
@@ -730,7 +729,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 							void *p = ayaneo_rewind_capture_begin();
 							if (p) { c->state_save(p); ayaneo_rewind_capture_commit(ahead_sz); }
 						}
-					}
+						n++;
+					} while (n < 120 && ayaneo_ff_fits(ff_t0, blit, fe, 0));
+					ayaneo_hud_set(1, n * 10);
 				} else {
 					ayaneo_hud_set(0, 0);
 				}

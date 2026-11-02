@@ -42,6 +42,7 @@ extern unsigned gba_core_scratch_size(void);
 extern void *gba_core_backup_ptr(void);
 extern unsigned gba_core_backup_size(void);
 extern int   dynarec_enable;
+extern unsigned int skip_next_frame;   /* gba_wrap.c, read by video.c */
 extern volatile int g_gba_audio_suppress;
 extern int   g_gba_load_light;
 
@@ -79,6 +80,7 @@ const struct gba_core_exports *gba_core_blob_init(const struct gba_core_imports 
 		gba_core_scratch_ptr, gba_core_scratch_size,
 		gba_core_backup_ptr, gba_core_backup_size,
 		&dynarec_enable, &g_gba_audio_suppress, &g_gba_load_light,
+		&skip_next_frame,
 	};
 	s_imp = imp;
 	return &exports;

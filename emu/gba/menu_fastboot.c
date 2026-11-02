@@ -70,9 +70,10 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		extern unsigned int ayaneo_get_cpu_mhz(void);
 		extern volatile unsigned int g_dbg_blit_us;
 		snprintf(lbuf, sizeof lbuf,
-			 "hz1000=%u em=%u epf=%d mhz=%u smt=%d afr=%u",
+			 "hz1000=%u em=%u epf=%d mhz=%u ticks=%u afr=%u",
 			 g_dbg_hz1000, g_dbg_emu_us,
-			 g_dbg_eff_pf, ayaneo_get_cpu_mhz(), g_dbg_btn_smt, g_dbg_asub_frames);
+			 g_dbg_eff_pf, ayaneo_get_cpu_mhz(), g_dbg_frame_ticks, g_dbg_asub_frames);
+		(void)g_dbg_btn_smt;
 	}
 	fastboot_info(lbuf);
 	{
@@ -1261,6 +1262,8 @@ static void cmd_gauge(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+static int g_hud_fps_read(void) { extern volatile int g_hud_fps; return g_hud_fps; }
+
 /* oem rewindmap - the rewind arena islands (phys base + MB) and the ring state line */
 static void cmd_rewindmap(const char *arg, void *data, unsigned sz)
 {
@@ -1409,6 +1412,9 @@ static void cmd_bfi(const char *arg, void *data, unsigned sz)
 		fastboot_info(lbuf);
 		snprintf(lbuf, sizeof lbuf, "panel: hz=%u vdiv=%u fps=%u tmo=%u", ayaneo_dsi_refresh_milli(), g_vsync_div, g_pace_fps_milli, g_dbg_pace_timeouts);
 		fastboot_info(lbuf);
+		{ extern volatile unsigned int g_dbg_ff_margin_us, g_dbg_ff_misses, g_dbg_ff_frames;
+		  snprintf(lbuf, sizeof lbuf, "ff: margin=%u us misses=%u frames=%u hud_fps=%d", g_dbg_ff_margin_us, g_dbg_ff_misses, g_dbg_ff_frames, g_hud_fps_read());
+		  fastboot_info(lbuf); }
 	}
 	fastboot_okay("");
 }

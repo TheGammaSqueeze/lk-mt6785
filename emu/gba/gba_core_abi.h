@@ -39,7 +39,7 @@
 #define GBA_CORE_ABI_H
 
 #define GBA_CORE_ABI_MAGIC   0x41424743u   /* "GCBA" */
-#define GBA_CORE_ABI_VERSION 1u
+#define GBA_CORE_ABI_VERSION 2u   /* 2: skip_next_frame */
 
 /* Services LK provides to the core (core -> LK calls). Everything else the core needs
  * (libc, libgcc) is bundled into the blob. */
@@ -99,6 +99,9 @@ struct gba_core_exports {
 	int          *dynarec_enable;      /* 0 = pure interpreter */
 	volatile int *audio_suppress;      /* mute discarded run-ahead frames (g_gba_audio_suppress) */
 	int          *load_light;          /* RAM-only dynarec flush on same-ROM rewind (g_gba_load_light) */
+	/* version 2: set to 1 before a frame whose picture is never shown (fast forward and
+	 * run-ahead look-ahead frames): the core skips the render, the emulation is unchanged */
+	unsigned int *skip_next_frame;
 };
 
 /* The blob's single fixed entry symbol. The loader resolves it at a known offset (e.g.

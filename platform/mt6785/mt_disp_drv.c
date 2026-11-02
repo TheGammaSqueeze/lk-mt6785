@@ -1219,6 +1219,39 @@ void ayaneo_fps_tick(void)
 }
 void ayaneo_fps_reset(void) { g_hud_fps = 0; }
 void ayaneo_hud_bench(int on) { g_hud_bench = on ? 1 : 0; }
+
+/* Fast forward budget: the frame started at t0 (13 MHz ticks) and must end with the present
+ * blit (blit_us) before the next panel edge. Another emulated frame fits when the time used so
+ * far plus that frame (next_us), the final rendered frame (rend_us) and the blit still leave the
+ * 1.2 ms edge margin. Every core asks this per frame and keeps running frames while it says yes:
+ * the speed is whatever the CPU allows, the panel still gets one new picture per refresh. */
+volatile unsigned int g_dbg_ff_margin_us = 1200, g_dbg_ff_misses, g_dbg_ff_frames;
+int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us)
+{
+	extern unsigned int ayaneo_dsi_core_refresh_milli(void);
+	static unsigned int s_last_t0;
+	unsigned int rm = ayaneo_dsi_core_refresh_milli();
+	unsigned int full = rm ? 1000000000u / rm : 16666u;
+	unsigned int budget, used;
+	/* Closed loop on the real outcome: t0 changes once per loop frame, so the gap between two
+	 * t0 values is the achieved frame period. A gap over 1.5 refreshes means the batch ran
+	 * past the panel edge and the present slipped a whole refresh (60 became 30): widen the
+	 * margin at once; relax it slowly while frames land. The estimates feeding this (frame
+	 * costs averaged over a few frames) cannot see a dynarec translation burst, the loop can. */
+	if (t0 != s_last_t0) {
+		unsigned int gap = (t0 - s_last_t0) / 13u;
+		if (s_last_t0 && gap < 10u * full) {
+			g_dbg_ff_frames++;
+			if (gap > full + full / 2u) { g_dbg_ff_misses++; if (g_dbg_ff_margin_us < 9000u) g_dbg_ff_margin_us += 600u; }
+			else if (g_dbg_ff_margin_us > 1200u) g_dbg_ff_margin_us -= 25u;
+		}
+		s_last_t0 = t0;
+	}
+	budget = full > g_dbg_ff_margin_us ? full - g_dbg_ff_margin_us : 0u;
+	used = (gpt4_get_current_tick() - t0) / 13u;
+	return used + blit_us + next_us + rend_us < budget;
+}
+#define AYANEO_FF_MAX_FRAMES 120   /* a guard against a zero cost estimate, not a speed cap */
 int ayaneo_hud_fps_visible(void) { return !g_hud_hide && (g_show_fps || g_hud_bench); }
 /* the FPS badge, top left of the game rect */
 static void ayaneo_hud_draw_fps(unsigned int *buf, unsigned int pitch_w, int gx, int gy)
@@ -2008,9 +2041,14 @@ void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned in
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int *b = (unsigned int *)MENU_OVERLAY_PA;
+	static unsigned int s_overlay_paint_tick;
 	if (!(open && paint) && g_power_bar_pct >= 0) { paint = power_bar_paint; open = 1; }   /* the bar borrows the layer */
 	if (open && paint) {
+		/* live rows (battery, clock, refresh, fps): repaint twice a second while open, not only
+		 * on a key press, so the figures do not go stale until the menu is reopened */
+		if (g_overlay_active && gpt4_get_current_tick() - s_overlay_paint_tick >= 6500000u) s_overlay_dirty = 1;
 		if (!g_overlay_active || s_overlay_dirty) {
+			s_overlay_paint_tick = gpt4_get_current_tick();
 			/* Clear to transparent (alpha=0) then draw the opaque panel. Full-screen clear each
 			 * repaint handles GBA/GBC swapping between differently-sized panels (menu vs palette/
 			 * aspect pickers) with no stale opaque pixels - but only on a real content change.

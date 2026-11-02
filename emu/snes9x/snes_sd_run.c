@@ -719,7 +719,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	int reset_hold = 0, aya_prev = 0, ff_prev = 0;
 	int rw_acc = 0;                  /* rewind fractional-speed accumulator (256ths), reset on entry */
-	unsigned int snes_emu_us = 0;    /* committed-frame emu cost (us), feeds the adaptive FF cap */
+	unsigned int snes_emu_us = 0;    /* committed-frame emu cost (us), feeds the FF budget */
+	unsigned int ff_t0 = 0;          /* tick the committed frame started (FF budget) */
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	int up_h = 0, dn_h = 0, lt_h = 0, rt_h = 0;   /* hold-frame counters for nav auto-repeat */
 	struct snes_frame f;
@@ -840,8 +841,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * game visibly keeps running under the menu and setting changes preview live. */
 			if (c->set_av_skip) c->set_av_skip(((pf > 0 || ff) && !g_snes_test_limit) ? 1 : 0, 0);
 			{ extern unsigned int gpt4_get_current_tick(void); unsigned int _t = gpt4_get_current_tick();
+			  ff_t0 = _t;
 			  c->run(&f);
-			  snes_emu_us = (gpt4_get_current_tick() - _t) / 13u; }   /* committed frame cost for the FF cap */
+			  snes_emu_us = (gpt4_get_current_tick() - _t) / 13u; }   /* committed frame cost for the FF budget */
 			g_snes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 			/* keep the display's target aspect current (cheap; refreshed periodically) - it
 			 * changes when the player switches Aspect Ratio or Overscan in the menu. */
@@ -903,38 +905,32 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			extern unsigned int gpt4_get_current_tick(void);
 			extern void ayaneo_hud_set(int mode, int speed_x10);
 			static unsigned int s_snes_render_us;   /* last FF final-render cost (us), for the reserve */
-			int raw = 2 + (ff_lvl * (10 - 2)) / 255;   /* press depth -> 2..10 */
+			/* no multiplier and no cap: render-skipped frames while one still fits before this
+			 * refresh's present (ayaneo_ff_fits), then one rendered frame, the picture shown */
+			extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us);
 			unsigned int skip = snes_emu_us ? snes_emu_us : 1500u;   /* committed (render-skipped) cost */
 			unsigned int rend = s_snes_render_us ? s_snes_render_us : 4000u;
 			unsigned int blit = g_snes_show_us;
-			unsigned int rmilli = ayaneo_dsi_core_refresh_milli();   /* the per frame rate (panel / vsync divider) */
-			unsigned int full_us = rmilli ? (1000000000u / rmilli) : 16666u;   /* 1e9/milliHz = 1e6/panel_fps; PAL ~20000us, NTSC ~16666us */
-			unsigned int budget_us = full_us > 1200u ? full_us - 1200u : full_us; /* present-margin (old 15500 vs 16666) */
-			unsigned int avail = (budget_us > blit + rend) ? (budget_us - blit - rend) : 0u;
-			int cap = 1 + (int)(avail / skip);
-			int mult = raw < cap ? raw : cap;
-			int k;
-			if (mult < 2) mult = 2;
-			if (mult > 10) mult = 10;
-			ayaneo_hud_set(1, mult * 10);
-			for (k = 1; k < mult; k++) {
+			int n = 1, last = 0;
+			while (!last) {
 				unsigned int _t = 0;
-				/* skip the PPU render (the heavy part) on the thrown-away frames; render only
-				 * the LAST one (the frame we actually present). Audio kept on all -> speeds up. */
-				if (c->set_av_skip) c->set_av_skip(k < mult - 1 ? 1 : 0, 0);
-				if (k == mult - 1) _t = gpt4_get_current_tick();
+				last = !(n < 120 && ayaneo_ff_fits(ff_t0, blit, skip, rend));
+				if (c->set_av_skip) c->set_av_skip(last ? 0 : 1, 0);
+				if (last) _t = gpt4_get_current_tick();
 				c->run(&f);
-				if (k == mult - 1) s_snes_render_us = (gpt4_get_current_tick() - _t) / 13u;   /* measure final render */
+				if (last) s_snes_render_us = (gpt4_get_current_tick() - _t) / 13u;   /* measure final render */
 				g_snes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 				if (f.audio && f.frames)
 					ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 				if (s_snes_rw_payload && ayaneo_rewind_ready()) {   /* capture each FF frame too */
 					void *p = ayaneo_rewind_capture_begin();
-					if (p) { unsigned n = (unsigned)c->state_save_ra(p, s_snes_rw_payload);
-						 if (n) ayaneo_rewind_capture_commit(n); }
+					if (p) { unsigned nn = (unsigned)c->state_save_ra(p, s_snes_rw_payload);
+						 if (nn) ayaneo_rewind_capture_commit(nn); }
 				}
+				n++;
 			}
 			if (c->set_av_skip) c->set_av_skip(0, 0);
+			ayaneo_hud_set(1, n * 10);
 		} else {
 			ayaneo_hud_set(0, 0);
 		}

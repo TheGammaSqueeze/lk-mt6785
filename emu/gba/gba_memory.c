@@ -1404,9 +1404,31 @@ cpu_alert_type write_io_register16(u32 address, u32 value)
       address16(io_registers, 0x202) &= ~value;
       break;
 
-    // WAITCNT
+    // WAITCNT: the cartridge wait states. Games program 1 wait (sequential) on ws0 plus the
+    // prefetch buffer at boot (0x4317 is typical); charging the power on default of 2 waits
+    // on every ROM fetch made every ROM resident game run slower than the console and lag in
+    // heavy scenes where the real cartridge does not. Same model as upstream gpSP: the per
+    // region sequential cost becomes 1 + {2,1}[ws0 bit 4] (ws1 bit 7: {4,1}, ws2 bit 10:
+    // {8,1}), a 32 bit fetch two 16 bit accesses. Blocks already translated keep their old
+    // counts (upstream does the same); games set this once at boot, before most code runs.
     case 0x204:
+    {
+      static const u32 ws0_seq[2] = { 2, 1 }, ws1_seq[2] = { 4, 1 }, ws2_seq[2] = { 8, 1 };
+      u32 s0 = 1 + ws0_seq[(value >> 4) & 1];
+      u32 s1 = 1 + ws1_seq[(value >> 7) & 1];
+      u32 s2 = 1 + ws2_seq[(value >> 10) & 1];
+      waitstate_cycles_sequential[0x8][0] = waitstate_cycles_sequential[0x9][0] = s0;
+      waitstate_cycles_sequential[0x8][1] = waitstate_cycles_sequential[0x9][1] = s0;
+      waitstate_cycles_sequential[0x8][2] = waitstate_cycles_sequential[0x9][2] = s0 * 2;
+      waitstate_cycles_sequential[0xA][0] = waitstate_cycles_sequential[0xB][0] = s1;
+      waitstate_cycles_sequential[0xA][1] = waitstate_cycles_sequential[0xB][1] = s1;
+      waitstate_cycles_sequential[0xA][2] = waitstate_cycles_sequential[0xB][2] = s1 * 2;
+      waitstate_cycles_sequential[0xC][0] = waitstate_cycles_sequential[0xD][0] = s2;
+      waitstate_cycles_sequential[0xC][1] = waitstate_cycles_sequential[0xD][1] = s2;
+      waitstate_cycles_sequential[0xC][2] = waitstate_cycles_sequential[0xD][2] = s2 * 2;
+      address16(io_registers, 0x204) = value;
       break;
+    }
 
     // Halt
     case 0x300:
