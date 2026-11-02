@@ -1158,6 +1158,11 @@ static int battery_read(int *charging)
 
 /* charging screen: same colours as the running system (led_thread): charging = red + green,
  * full (97 %+ or the charger done) = green only, unplugged = off */
+#define LED_LEVEL 12    /* the lowest clearly visible level (PWM of 255) */
+/* charging = orange: red and green mixed at the low level, stepped by eye on the device
+ * (12/12 read as lime green, the stock 24/4 too red) */
+#define LED_CHG_R 17
+#define LED_CHG_G 6
 static void set_charge_led(int charging, int pct)
 {
 	static int prev = -1;
@@ -1165,8 +1170,8 @@ static void set_charge_led(int charging, int pct)
 	if (state == prev)
 		return;
 	prev = state;
-	if (state == 2)      ayaneo_charge_led(0, 12, 0);
-	else if (state == 1) ayaneo_charge_led(12, 12, 0);
+	if (state == 2)      ayaneo_charge_led(0, LED_LEVEL, 0);
+	else if (state == 1) ayaneo_charge_led(LED_CHG_R, LED_CHG_G, 0);
 	else                 ayaneo_charge_led(0, 0, 0);
 }
 
@@ -1187,7 +1192,6 @@ static int s_panel_hz100;	/* measured panel refresh * 100 (e.g. 5973 = 59.73 Hz)
  * 60 s battery read (an auxadc spin) nor the I2C writes touch a frame: charger connected =
  * red (green once full), on battery = green, at 5 % or less = red flashing at 1 Hz. The first
  * write waits for the speaker amps' bring-up, which shares i2c6. */
-#define LED_LEVEL 12    /* the lowest clearly visible level (PWM of 255) */
 volatile int g_dbg_led_chr, g_dbg_led_pct, g_dbg_led_state, g_dbg_led_ticks;   /* oem led */
 static int led_thread(void *arg)
 {
@@ -1210,7 +1214,7 @@ static int led_thread(void *arg)
 			last = state;
 			if (state == 1)      ayaneo_charge_led(0, LED_LEVEL, 0);
 			else if (state == 2) ayaneo_charge_led(LED_LEVEL, 0, 0);
-			else if (state == 3) ayaneo_charge_led(LED_LEVEL, LED_LEVEL, 0);
+			else if (state == 3) ayaneo_charge_led(LED_CHG_R, LED_CHG_G, 0);
 			else                 ayaneo_charge_led(0, 0, 0);
 		}
 		thread_sleep(500);
