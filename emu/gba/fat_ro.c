@@ -1,5 +1,6 @@
-/* Minimal read-only FAT16/FAT32 reader - see fat_ro.h. */
+/* Minimal read-only FAT16/FAT32 reader - see fat_ro.h. exFAT volumes are handed to fat_exfat.c. */
 #include "fat_ro.h"
+#include "fat_exfat.h"
 
 /* ---- tiny mem helpers (no libc dependency in LK) ---- */
 static void fr_memcpy(void *d, const void *s, unsigned n)
@@ -94,39 +95,128 @@ static int is_exfat_vbr(const uint8_t *s)
 	return 1;
 }
 
+/* ---- volume probing: bare VBR, MBR, GPT, and a fallback scan for a damaged table ---- */
+
+/* Try a volume boot record at `lba`: FAT16/32 (BPB) or exFAT. 0 when mounted. */
+static int s_saw_bad_exfat;   /* an exFAT boot sector was found but its volume did not mount */
+static int try_vbr(fat_vol *v, fat_read_fn rd, void *ctx, uint32_t lba)
+{
+	uint8_t vbr[512];
+	if (rd(ctx, lba, 1, vbr) != 1) return -1;
+	if (vbr[510] != 0x55 || vbr[511] != 0xAA) return -1;
+	if (is_exfat_vbr(vbr)) { if (exfat_mount(v, lba, vbr) == 0) return 0; s_saw_bad_exfat = 1; return -4; }
+	if ((vbr[0] == 0xEB || vbr[0] == 0xE9) && parse_bpb(v, vbr, lba) == 0) return 0;
+	return -1;
+}
+
+/* CRC32 (IEEE, reflected) for the GPT header and entry array checks */
+static uint32_t crc32_buf(uint32_t crc, const uint8_t *p, uint32_t n)
+{
+	crc = ~crc;
+	while (n--) {
+		int k;
+		crc ^= *p++;
+		for (k = 0; k < 8; k++) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+	}
+	return ~crc;
+}
+
+/* Walk a GPT whose header sits at `hdr_lba` (1 for the primary, the alternate LBA for the
+ * backup). Every number is range checked and both CRCs verified before any entry is used.
+ * Returns 0 when a FAT or exFAT volume mounted, -1 when the header is unusable, -3 when it
+ * is sound but holds no readable volume. */
+static int try_gpt(fat_vol *v, fat_read_fn rd, void *ctx, uint32_t hdr_lba, uint32_t *alt_lba)
+{
+	static const char sig[8] = { 'E','F','I',' ','P','A','R','T' };
+	uint8_t h[512];
+	uint32_t hsize, hcrc, calc, ent_lba, nent, esz, acrc, i, got_any = 0;
+	if (alt_lba) *alt_lba = 0;
+	if (rd(ctx, hdr_lba, 1, h) != 1) return -1;
+	for (i = 0; i < 8; i++) if (h[i] != (uint8_t)sig[i]) return -1;
+	hsize = rd32(h + 12);
+	if (hsize < 92 || hsize > 512) return -1;
+	hcrc = rd32(h + 16);
+	h[16] = h[17] = h[18] = h[19] = 0;
+	calc = crc32_buf(0, h, hsize);
+	if (calc != hcrc) return -1;
+	if (rd32(h + 24) != hdr_lba || rd32(h + 28) != 0) return -1;      /* MyLBA must match where we read it */
+	if (alt_lba) *alt_lba = rd32(h + 32) ? (rd32(h + 36) ? 0u : rd32(h + 32)) : 0u;
+	ent_lba = rd32(h + 72);
+	if (rd32(h + 76) != 0 || ent_lba < 2u) return -1;
+	nent = rd32(h + 80); esz = rd32(h + 84); acrc = rd32(h + 88);
+	if (esz < 128 || esz > 512 || (esz & (esz - 1u)) || nent == 0 || nent > 128u) return -1;
+	/* the entry array CRC covers nent * esz bytes: read the whole bounded array (<= 16 KB) */
+	{
+		static uint8_t arr[128 * 128];
+		uint32_t total = nent * esz, lba = ent_lba, off = 0;
+		if (total > sizeof arr) return -1;
+		while (off < total) {
+			if (rd(ctx, lba, 1, arr + off) != 1) return -1;
+			off += 512u; lba++;
+		}
+		if (crc32_buf(0, arr, total) != acrc) return -1;
+		for (i = 0; i < nent; i++) {
+			const uint8_t *pe = arr + i * esz;
+			uint32_t first = rd32(pe + 32), first_hi = rd32(pe + 36), last = rd32(pe + 40), last_hi = rd32(pe + 44);
+			int zero = 1, k;
+			for (k = 0; k < 16; k++) if (pe[k]) { zero = 0; break; }
+			if (zero) continue;                                   /* unused slot */
+			if (first_hi || last_hi || first < 2u || last < first) continue;
+			got_any = 1;
+			if (try_vbr(v, rd, ctx, first) == 0) return 0;
+		}
+	}
+	return got_any ? -3 : -2;
+}
+
 int fat_mount(fat_vol *v, fat_read_fn rd, void *ctx)
 {
-	v->wr = 0;
 	uint8_t s0[512];
-	int i;
-	v->rd = rd; v->ctx = ctx; v->mounted = 0;
+	int i, r, saw_protective = 0;
+	v->wr = 0;
+	v->rd = rd; v->ctx = ctx; v->mounted = 0; v->is_exfat = 0;
 	v->fatw_valid = 0; v->fatw_dirty = 0;   /* drop any stale write-back FAT cache */
+	s_saw_bad_exfat = 0;
 	if (rd(ctx, 0, 1, s0) != 1) return -1;
-	if (s0[510] != 0x55 || s0[511] != 0xAA) return -2;
-	/* Bare VBR ("superfloppy")? A VBR starts with a jump (0xEB/0xE9) and has a
-	 * plausible BPB. Try it first; else walk the MBR partition table. */
-	if (is_exfat_vbr(s0)) return -4;                  /* bare exFAT superfloppy */
-	if ((s0[0] == 0xEB || s0[0] == 0xE9) && parse_bpb(v, s0, 0) == 0) {
-		v->mounted = 1; return 0;
-	}
-	for (i = 0; i < 4; i++) {
-		const uint8_t *e = s0 + 0x1BE + i * 16;
-		uint8_t type = e[4];
-		uint32_t lba = rd32(e + 8);
-		uint8_t vbr[512];
-		if (type == 0 || lba == 0) continue;
-		/* FAT16: 0x04/0x06/0x0E ; FAT32: 0x0B/0x0C ; 0x07 = exFAT/NTFS */
-		if (type == 0x07) {                       /* likely exFAT - confirm + report */
-			if (rd(ctx, lba, 1, vbr) == 1 && is_exfat_vbr(vbr)) return -4;
-			continue;
+	/* 1. bare volume ("superfloppy"): the first sector is itself a VBR */
+	if (s0[510] == 0x55 && s0[511] == 0xAA) {
+		if (is_exfat_vbr(s0)) { if (exfat_mount(v, 0, s0) == 0) { v->mounted = 1; return 0; } return -4; }
+		if ((s0[0] == 0xEB || s0[0] == 0xE9) && parse_bpb(v, s0, 0) == 0) { v->mounted = 1; return 0; }
+		/* 2. MBR partition table: every entry is range checked; a protective entry (0xEE)
+		 * or an empty table sends us to the GPT */
+		for (i = 0; i < 4; i++) {
+			const uint8_t *e = s0 + 0x1BE + i * 16;
+			uint8_t type = e[4];
+			uint32_t lba = rd32(e + 8), cnt = rd32(e + 12);
+			if (type == 0xEE) { saw_protective = 1; continue; }
+			if (type == 0 || lba < 1u || lba + cnt < lba) continue;   /* a zero length is tolerated (sloppy tools) */
+			/* FAT16 0x04/0x06/0x0E, FAT32 0x0B/0x0C, exFAT/NTFS 0x07: but the type byte is
+			 * advisory (formatters leave it stale), so any entry gets its VBR looked at */
+			if (try_vbr(v, rd, ctx, lba) == 0) { v->mounted = 1; return 0; }
 		}
-		if (type != 0x04 && type != 0x06 && type != 0x0E &&
-		    type != 0x0B && type != 0x0C) continue;
-		if (rd(ctx, lba, 1, vbr) != 1) continue;
-		if (vbr[510] != 0x55 || vbr[511] != 0xAA) continue;
-		if (parse_bpb(v, vbr, lba) == 0) { v->mounted = 1; return 0; }
+	} else {
+		saw_protective = 1;   /* no MBR signature: still look for a GPT, then the raw scan */
 	}
-	return -3;
+	/* 3. GPT: the primary header at LBA 1, then the backup named by it (a damaged primary
+	 * is exactly what the backup is for) */
+	{
+		uint32_t alt = 0;
+		r = try_gpt(v, rd, ctx, 1u, &alt);
+		if (r == 0) { v->mounted = 1; return 0; }
+		if (r == -1 && alt && alt != 1u) {
+			r = try_gpt(v, rd, ctx, alt, 0);
+			if (r == 0) { v->mounted = 1; return 0; }
+		}
+	}
+	(void)saw_protective;
+	/* 4. damaged or missing table: probe the alignments formatters use for the first
+	 * partition (1 MB, 4 MB, 8 MB, 16 MB; the legacy 63 sectors; 32 KB) */
+	{
+		static const uint32_t probe[] = { 2048u, 8192u, 16384u, 32768u, 63u, 64u, 128u, 256u, 65536u, 4096u };
+		for (i = 0; i < (int)(sizeof probe / sizeof probe[0]); i++)
+			if (try_vbr(v, rd, ctx, probe[i]) == 0) { v->mounted = 1; return 0; }
+	}
+	return s_saw_bad_exfat ? -4 : -3;   /* -4: an exFAT volume is there but unreadable (damaged) */
 }
 
 /* ---- directory iteration ---- */
@@ -196,6 +286,7 @@ int fat_opendir(fat_vol *v, const char *path, fat_dir *d)
 	fat_dir cur;
 	const char *p = path;
 	if (!v->mounted) return -1;
+	if (v->is_exfat) return exfat_opendir(v, path, d);
 	dir_init(v, &cur, v->is_fat32 ? v->root_cluster : 0);
 	while (*p == '/') p++;
 	while (*p) {                                      /* walk each component */
@@ -224,6 +315,7 @@ int fat_readdir(fat_dir *d, fat_dirent *e)
 	uint8_t rec[32];
 	char lfn[260];
 	int have_lfn = 0, i;
+	if (d->v && d->v->is_exfat) return exfat_readdir(d, e);
 	lfn[0] = 0;
 	while (next_raw(d, rec)) {
 		uint8_t attr = rec[11];
@@ -271,6 +363,7 @@ int fat_open(fat_vol *v, const char *path, fat_file *f)
 	char dirpath[256]; int dn;
 	fat_dir d; fat_dirent e;
 	if (!v->mounted) return -1;
+	if (v->is_exfat) return exfat_open(v, path, f);
 	for (; *p; p++) if (*p == '/') slash = p;         /* last slash */
 	dn = slash ? (int)(slash - path) : 0;
 	if (dn >= 256) return -1;
@@ -313,6 +406,7 @@ static uint32_t nextc_cached(fat_vol *v, uint32_t n, uint8_t *fatb, uint32_t *fa
 uint32_t fat_read(fat_file *f, uint32_t off, void *buf, uint32_t len)
 {
 	fat_vol *v = f->v;
+	if (v->is_exfat) return exfat_read(f, off, buf, len);
 	uint32_t cbytes = (uint32_t)v->sec_per_clus * 512u;
 	uint32_t got = 0, clus = f->first_clus, skip, i;
 	uint8_t *out = buf;

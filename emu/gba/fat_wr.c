@@ -1,5 +1,6 @@
-/* Minimal FAT16/FAT32 write support - see fat_wr.h. */
+/* Minimal FAT16/FAT32 write support - see fat_wr.h. exFAT volumes are handed to fat_exfat.c. */
 #include "fat_wr.h"
+#include "fat_exfat.h"
 
 static char up(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
@@ -263,7 +264,9 @@ int fat_wr_put(fat_vol *v, const char *dirpath, const char *name, const void *da
 static int fat_wr_put_locked(fat_vol *v, const char *dirpath, const char *name,
 	       const void *buf, uint32_t len)
 {
-	int r = fat_wr_put_i(v, dirpath, name, buf, len);
+	int r;
+	if (v->is_exfat) return exfat_wr_put(v, dirpath, name, buf, len);
+	r = fat_wr_put_i(v, dirpath, name, buf, len);
 	if (fatw_flush(v) != 0 && r == 0) r = -9;
 	return r;
 }
@@ -540,7 +543,9 @@ static int fat_wr_mkpath_i(fat_vol *v, const char *path);
 
 int fat_wr_mkpath(fat_vol *v, const char *path)
 {
-	int r = fat_wr_mkpath_i(v, path);
+	int r;
+	if (v->is_exfat) return exfat_wr_mkpath(v, path);
+	r = fat_wr_mkpath_i(v, path);
 	if (fatw_flush(v) != 0 && r == 0) r = -9;
 	return r;
 }

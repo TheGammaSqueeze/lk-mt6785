@@ -83,6 +83,7 @@ static unsigned sd_read(void *ctx, uint32_t lba, uint32_t count, void *buf)
  * writer runs on its own low priority thread while a game plays, and the game thread may
  * read or write the card at the same moment (saves, states, box art). Lazily initialised
  * (the first users run single threaded at boot). */
+#ifdef __arm__
 #include <kernel/mutex.h>
 static mutex_t s_storage_mtx;
 static int s_storage_mtx_init;
@@ -95,6 +96,10 @@ void ayaneo_storage_unlock(void)
 {
 	if (s_storage_mtx_init) mutex_release(&s_storage_mtx);
 }
+#else
+void ayaneo_storage_lock(void) {}
+void ayaneo_storage_unlock(void) {}
+#endif
 
 static unsigned sd_write(void *ctx, uint32_t lba, uint32_t count, const void *buf)
 {

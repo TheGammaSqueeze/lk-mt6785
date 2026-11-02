@@ -380,6 +380,7 @@ OBJS += emu/gba/gba_boxart_sd.o
 OBJS += emu/gba/fat_ro.o
 OBJS += emu/gba/sd_fat.o
 OBJS += emu/gba/fat_wr.o
+OBJS += emu/gba/fat_exfat.o
 OBJS += emu/gba/gba_sd_save.o
 ifeq ($(AYANEO_GBA_SD),yes)
 OBJS += emu/gba/sd_fastboot.o
@@ -424,6 +425,7 @@ $(BUILDDIR)/emu/gba/gba_sd_save.o:      CFLAGS += -Os
 $(BUILDDIR)/emu/gba/sd_fastboot.o:      CFLAGS += -Os
 $(BUILDDIR)/emu/gba/fat_ro.o:           CFLAGS += -Os
 $(BUILDDIR)/emu/gba/fat_wr.o:           CFLAGS += -Os
+$(BUILDDIR)/emu/gba/fat_exfat.o:        CFLAGS += -Os
 $(BUILDDIR)/emu/snes9x/snes_core_loader.o: CFLAGS += -Os
 $(BUILDDIR)/emu/snes9x/snes_sd_run.o:      CFLAGS += -Os
 $(BUILDDIR)/emu/genesis/genesis_core_loader.o: CFLAGS += -Os

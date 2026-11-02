@@ -16,13 +16,13 @@ MNT=/tmp/gba_sd_mnt
 mkdir -p "$MNT" 2>/dev/null || true
 
 echo "== building =="
-gcc -O2 -I. -o /tmp/wr_test   fat_wr_test.c      fat_ro.c fat_wr.c
-gcc -O2 -I. -o /tmp/save_test gba_sd_save_test.c fat_ro.c fat_wr.c gba_sd_save.c
-gcc -O2 -I. -o /tmp/dirext_test fat_dirext_test.c fat_ro.c fat_wr.c
-gcc -O2 -I. -o /tmp/sdfat_test  sd_fat_test.c      fat_ro.c sd_fat.c fat_wr.c
+gcc -O2 -I. -o /tmp/wr_test   fat_wr_test.c      fat_ro.c fat_wr.c fat_exfat.c
+gcc -O2 -I. -o /tmp/save_test gba_sd_save_test.c fat_ro.c fat_wr.c fat_exfat.c gba_sd_save.c
+gcc -O2 -I. -o /tmp/dirext_test fat_dirext_test.c fat_ro.c fat_wr.c fat_exfat.c
+gcc -O2 -I. -o /tmp/sdfat_test  sd_fat_test.c      fat_ro.c sd_fat.c fat_wr.c fat_exfat.c
 gcc -O2 -I. -o /tmp/nav_test    rom_select_nav_test.c
-gcc -O2 -I. -o /tmp/mkdir_test  fat_mkdir_test.c   fat_ro.c fat_wr.c
-gcc -O2 -I. -o /tmp/exfat_test  fat_exfat_test.c   fat_ro.c
+gcc -O2 -I. -o /tmp/mkdir_test  fat_mkdir_test.c   fat_ro.c fat_wr.c fat_exfat.c
+gcc -O2 -I. -o /tmp/exfat_test  fat_exfat_test.c   fat_ro.c fat_wr.c fat_exfat.c
 echo "== ROM-select nav math =="; /tmp/nav_test
 echo "== exFAT detection =="; /tmp/exfat_test
 

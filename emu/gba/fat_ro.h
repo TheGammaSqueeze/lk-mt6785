@@ -39,6 +39,17 @@ typedef struct {
 	uint8_t  num_fats;        /* FAT copies (mirror writes across all) */
 	uint8_t  is_fat32;
 	uint8_t  mounted;
+	/* exFAT (fat_exfat.c): cluster size may exceed 255 sectors, so it has its own fields */
+	uint8_t  is_exfat;
+	uint8_t  ex_spc_shift;     /* log2 sectors per cluster */
+	uint32_t ex_spc;           /* sectors per cluster */
+	uint32_t ex_heap_lba;      /* absolute LBA of cluster 2 */
+	uint32_t ex_fat_lba;       /* absolute LBA of the active FAT */
+	uint32_t ex_fat_len;       /* FAT length in sectors */
+	uint32_t ex_bitmap_clus;   /* allocation bitmap first cluster (chain) */
+	uint32_t ex_bitmap_len;    /* bitmap length in bytes */
+	uint32_t ex_upcase_clus;   /* up-case table first cluster */
+	uint32_t ex_upcase_len;    /* up-case table length in bytes */
 	uint8_t  sec_buf[512];     /* scratch sector for FAT/dir reads */
 	/* fat_wr.c write-back cache of ONE FAT sector (FAT copy #0). A save touches
 	 * the same FAT sector hundreds of times (alloc + mirror writes); caching it
@@ -55,6 +66,8 @@ typedef struct {
 	uint32_t size;            /* bytes (0 for dirs) */
 	uint32_t first_clus;
 	uint8_t  is_dir;
+	uint8_t  ex_nofat;        /* exFAT: the data is one contiguous run, the FAT holds no chain */
+	uint32_t ex_dir_len;      /* exFAT: a directory's data length (its allocation) */
 } fat_dirent;
 
 typedef struct {
@@ -66,12 +79,17 @@ typedef struct {
 	uint32_t root_left;       /* FAT16 root: sectors remaining */
 	uint32_t hops;            /* cluster hops taken (loop guard vs a corrupt chain) */
 	uint8_t  end;
+	uint8_t  ex_nofat;        /* exFAT: contiguous directory */
+	uint32_t ex_first;        /* exFAT: first cluster of the directory */
+	uint32_t ex_len;          /* exFAT: directory data length (0 = unknown: the root) */
+	uint32_t ex_pos;          /* exFAT: byte position within the directory */
 } fat_dir;
 
 typedef struct {
 	fat_vol *v;
 	uint32_t first_clus;
 	uint32_t size;
+	uint8_t  ex_nofat;        /* exFAT: contiguous file */
 } fat_file;
 
 /* Probe the block device (MBR or bare VBR), locate the first FAT16/32 volume,

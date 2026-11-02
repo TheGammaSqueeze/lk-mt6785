@@ -18,3 +18,7 @@ int main(int ac,char**av){ fat_vol v; static unsigned char sav[8192],st[262144],
  uint32_t m=gba_sd_load_state(&v,rom,0,rb,sizeof rb); printf("load_state len=%u match=%d\n",m,(m==262144 && !memcmp(rb,st,262144)));
  uint32_t z=gba_sd_load_sav(&v,"NoSuch.gba",rb,sizeof rb); printf("load absent -> %u (want 0)\n",z);
  return 0; }
+
+/* host stubs for the settings mirror hooks the device build provides elsewhere */
+int  ayaneo_settings_serialize(unsigned char *b, int cap) { (void)b; (void)cap; return 0; }
+void ayaneo_settings_deserialize(const unsigned char *b, int len) { (void)b; (void)len; }

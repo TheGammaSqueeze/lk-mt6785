@@ -56,8 +56,8 @@ int main(int argc, char **argv)
 	}
 	for (i = 0; i < n; i++) {
 		printf("  %-24s size=%u\n", roms[i].name, roms[i].size);
-		if (!strcmp(roms[i].name, "empty.gba")) { printf("  FAIL: empty.gba listed\n"); fails++; }
-		if (!strcmp(roms[i].name, "good.gba")) gi = i;
+		if (!strcmp(roms[i].name, "empty")) { printf("  FAIL: empty.gba listed\n"); fails++; }
+		if (!strcmp(roms[i].name, "good")) gi = i;
 	}
 	if (gi < 0) { printf("  FAIL: good.gba missing\n"); fails++; }
 
@@ -103,3 +103,11 @@ int main(int argc, char **argv)
 	printf(fails ? "SD_FAT TEST: %d FAIL\n" : "SD_FAT TEST: PASS\n", fails);
 	return fails ? 1 : 0;
 }
+
+/* host stubs for the card-detect GPIO poll the device build gets from the platform */
+void mt_set_gpio_mode(unsigned long pin, unsigned long mode) { (void)pin; (void)mode; }
+void mt_set_gpio_dir(unsigned long pin, unsigned long dir) { (void)pin; (void)dir; }
+void mt_set_gpio_pull_enable(unsigned long pin, unsigned long en) { (void)pin; (void)en; }
+void mt_set_gpio_pull_select(unsigned long pin, unsigned long sel) { (void)pin; (void)sel; }
+int  mt_get_gpio_in(unsigned long pin) { (void)pin; return 0; }
+void udelay(unsigned long us) { (void)us; }
