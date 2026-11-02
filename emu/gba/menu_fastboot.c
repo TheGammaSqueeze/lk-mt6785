@@ -791,6 +791,68 @@ static void cmd_lcmwr(const char *arg, void *data, unsigned sz)
 }
 
 /* VCOM convenience: page01 0x28/0x29/0x2A = lo,hi,off (stock 0x1F,0x29,0x63). */
+/* oem dsiw:REG[,b0,b1,...|,stock] - Konkr ST7123 live register write (hex). The vendor pages
+ * are unlocked with the stock 0x60 71 23 A2/A3/A4 sequence and locked again with 0x60 71 23 00
+ * around the write, as the init table does. With no bytes the stock table bytes are shown;
+ * "stock" writes them back. The panel keeps the value until the next reset, nothing persists. */
+static int s_dsiw_fail;
+static void dsi_write(unsigned char reg, unsigned char *b, unsigned n)
+{
+	extern int ayaneo_dsi_vm_cmd(unsigned char cmd, unsigned int n, const unsigned char *p);
+	unsigned char u[3] = { 0x71, 0x23, 0xA2 };
+	s_dsiw_fail = 0;
+	if (reg < 0xB0 && reg != 0x60) {   /* a standard DCS command needs no vendor unlock */
+		s_dsiw_fail += ayaneo_dsi_vm_cmd(reg, n, b) != 0;
+		return;
+	}
+	s_dsiw_fail += ayaneo_dsi_vm_cmd(0x60, 3, u) != 0; u[2] = 0xA3;
+	s_dsiw_fail += ayaneo_dsi_vm_cmd(0x60, 3, u) != 0; u[2] = 0xA4;
+	s_dsiw_fail += ayaneo_dsi_vm_cmd(0x60, 3, u) != 0;
+	s_dsiw_fail += ayaneo_dsi_vm_cmd(reg, n, b) != 0;
+	u[2] = 0x00;
+	s_dsiw_fail += ayaneo_dsi_vm_cmd(0x60, 3, u) != 0;
+}
+static void cmd_dsiw(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int st7123_stock_reg(unsigned char reg, unsigned char *out, unsigned int max);
+	unsigned char b[64], stock[64]; unsigned n = 0, ns, reg, i; int p;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	reg = fb_hex(&arg);
+	ns = st7123_stock_reg((unsigned char)reg, stock, sizeof stock);
+	while (*arg == ' ' || *arg == ',') arg++;
+	if (arg[0] == 's') { memcpy(b, stock, ns); n = ns; }
+	else while (*arg && n < sizeof b) { b[n++] = (unsigned char)fb_hex(&arg); while (*arg == ' ' || *arg == ',') arg++; }
+	if (n) dsi_write((unsigned char)reg, b, n);
+	if (n > 15) { fastboot_fail("at most 15 bytes in video mode"); return; }
+	p = snprintf(lbuf, sizeof lbuf, "dsiw %02x %s%s:", reg & 0xff, n ? "wrote" : "stock", (n && s_dsiw_fail) ? " (TIMEOUT)" : "");
+	for (i = 0; i < (n ? n : ns) && p < (int)sizeof lbuf - 4; i++) p += snprintf(lbuf + p, sizeof lbuf - p, " %02x", n ? b[i] : stock[i]);
+	fastboot_info(lbuf);
+	if (n && ns) {
+		p = snprintf(lbuf, sizeof lbuf, "stock:");
+		for (i = 0; i < ns && p < (int)sizeof lbuf - 4; i++) p += snprintf(lbuf + p, sizeof lbuf - p, " %02x", stock[i]);
+		fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
+
+/* oem gray:LEVEL - flat gray field (0..255) over the game, 0 clears; oem gray:rgb,RRGGBB for a colour */
+static void cmd_gray(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_test_fill(unsigned int argb, int motion);
+	unsigned v, argb; int motion = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (arg[0] == 'r') { while (*arg && *arg != ',') arg++; v = fb_hex(&arg); argb = 0xFF000000u | (v & 0xFFFFFFu); }
+	else { v = fb_dec(&arg); if (v > 255) v = 255; argb = v ? (0xFF000000u | (v << 16) | (v << 8) | v) : 0u; }
+	while (*arg && *arg != ',') arg++;
+	if (*arg == ',' && arg[1] == 'm') motion = 1;   /* oem gray:LEVEL,m - the moving square */
+	ayaneo_test_fill(argb, motion);
+	snprintf(lbuf, sizeof lbuf, "gray: %08x %s%s", argb, argb ? "shown (in game only)" : "cleared", motion ? " + moving square" : "");
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 static void cmd_vcom(const char *arg, void *data, unsigned sz)
 {
 	unsigned lo, hi, off;
@@ -884,6 +946,20 @@ static void cmd_od(const char *arg, void *data, unsigned sz)
  * falloff shape (16 linear, higher collapses the boost toward the darkest origins sooner). Leaves
  * ON/KDN/THR/CAP as-is; a preceding `oem od:` flattens the curve, this restores it. */
 extern void ayaneo_set_overdrive_curve(int kuphi, int kuplo, int gam);
+/* oem odcap:UP,DN,HEAD (decimal) - rising cap, falling cap, rail headroom (0..3 levels) */
+static void cmd_odcap(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_set_overdrive_caps(int up, int dn, int head);
+	extern void ayaneo_get_overdrive_caps(int *up, int *dn, int *head);
+	int up, dn, head;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg) { up = (int)fb_dec(&arg); dn = (int)fb_dec(&arg); head = (int)fb_dec(&arg); ayaneo_set_overdrive_caps(up, dn, head); }
+	ayaneo_get_overdrive_caps(&up, &dn, &head);
+	snprintf(lbuf, sizeof lbuf, "odcap: up=%d dn=%d head=%d", up, dn, head);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
 
 static void cmd_odup(const char *arg, void *data, unsigned sz)
 {
@@ -1558,7 +1634,8 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem strobe:", cmd_strobe, 1, 0); /* free-running strobe: div,duty */
 	fastboot_register("oem strobelk:", cmd_strobelk, 1, 0); /* vsync-locked strobe: div,duty */
 	fastboot_register("oem od:", cmd_od, 1, 0);             /* software overdrive: on,kup,kdn,thr,cap */
-	fastboot_register("oem odup:", cmd_odup, 1, 0);         /* prev-indexed rising curve: kuphi,kuplo,gam */
+	fastboot_register("oem odup:", cmd_odup, 1, 0);
+	fastboot_register("oem odcap", cmd_odcap, 1, 0);         /* prev-indexed rising curve: kuphi,kuplo,gam */
 	fastboot_register("oem rot:", cmd_rot, 1, 0);
 	fastboot_register("oem igm", cmd_igm, 1, 0);           /* Konkr: 0 clockwise / 1 counter clockwise turn */
 	fastboot_register("oem shot", cmd_shot, 1, 0);
@@ -1575,6 +1652,8 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem chgw", cmd_chgw, 1, 0);
 	fastboot_register("oem pmicw", cmd_pmicw, 1, 0);
 	fastboot_register("oem gauge", cmd_gauge, 1, 0);
+	fastboot_register("oem dsiw", cmd_dsiw, 1, 0);
+	fastboot_register("oem gray", cmd_gray, 1, 0);
 	fastboot_register("oem awdump", cmd_awdump, 1, 0);
 	fastboot_register("oem rewindmap", cmd_rewindmap, 1, 0);
 	fastboot_register("oem mmuq:", cmd_mmuq, 1, 0);

@@ -445,7 +445,11 @@ void ayaneo_set_strobe(int v)
 #define OD_DEF_KUPLO 2
 #define OD_DEF_KDN   6
 #define OD_DEF_THR   2
-#define OD_DEF_CAP   2
+#define OD_DEF_CAP   2      /* the falling cap */
+#define OD_DEF_CAPUP 3      /* the rising cap: 2026-11-02 four box test, rising from black was the
+                             * remaining tint at 2, 4 haloed, 3 balanced; the falling side stays at 2.
+                             * Rail headroom (oem odcap third value) cleared the last tint but read as
+                             * washed out in games at 1 level already, so it stays off. */
 #define OD_DEF_GAM   22
 #else
 #define OD_DEF_KUPHI 6
@@ -453,6 +457,7 @@ void ayaneo_set_strobe(int v)
 #define OD_DEF_KDN   6
 #define OD_DEF_THR   3
 #define OD_DEF_CAP   3
+#define OD_DEF_CAPUP 3
 #define OD_DEF_GAM   22
 #endif
 int  ayaneo_get_overdrive(void)       { return s_overdrive; }
@@ -461,6 +466,7 @@ void ayaneo_set_overdrive_level(int on)
 	s_overdrive = on ? 1 : 0;
 	ayaneo_set_overdrive(s_overdrive, OD_DEF_KUPLO, OD_DEF_KDN, OD_DEF_THR, OD_DEF_CAP);   /* on/kdn/thr/cap + flat floor */
 	ayaneo_set_overdrive_curve(OD_DEF_KUPHI, OD_DEF_KUPLO, OD_DEF_GAM);                    /* override rising with the curve */
+	{ extern void ayaneo_set_overdrive_caps(int up, int dn, int head); ayaneo_set_overdrive_caps(OD_DEF_CAPUP, OD_DEF_CAP, 0); }
 }
 
 /* load the persisted settings from boot_b (once). Missing/invalid -> keep the

@@ -187,6 +187,22 @@ static struct LCM_setting_table lcm_init_hongzhan[] = {
 	{REGFLAG_END_OF_TABLE, 0x00, {}}
 };
 
+/* The stock bytes of one init register for the glass that was initialised (oem dsiw: show
+ * or restore a register after a live experiment). Returns the byte count, 0 if unknown. */
+unsigned int st7123_stock_reg(unsigned char reg, unsigned char *out, unsigned int max)
+{
+	struct LCM_setting_table *t = (g_st7123_init_id == LCM_ID_HONGZHAN) ? lcm_init_hongzhan : lcm_init_weihui;
+	unsigned int i, n;
+	for (i = 0; t[i].cmd != REGFLAG_END_OF_TABLE; i++) {
+		if (t[i].cmd != reg || t[i].cmd == REGFLAG_DELAY) continue;
+		if (reg == 0x60) continue;   /* the page unlock/lock sequence itself */
+		n = t[i].count; if (n > max) n = max;
+		memcpy(out, t[i].para_list, n);
+		return n;
+	}
+	return 0;
+}
+
 static void push_table(struct LCM_setting_table *table, unsigned int count,
 		       unsigned char force_update)
 {

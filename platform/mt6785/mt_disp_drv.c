@@ -2037,11 +2037,33 @@ void ayaneo_power_bar(int pct)
 	if (pct >= 0) pct = (pct / 5) * 5;   /* repaint in 5 % steps: the layer is re-turned on every repaint */
 	if (pct != g_power_bar_pct) { g_power_bar_pct = pct; s_overlay_dirty = 1; }
 }
+/* oem gray:LEVEL - a flat opaque field over the whole screen on the overlay layer (panel
+ * experiments: VCOM mistune shows as flicker on mid gray). 0 clears it. In game only: the
+ * carousel owns its layers itself. */
+volatile unsigned int g_test_fill_argb;
+volatile int g_test_motion;   /* a yellow square with a black outline sweeping side to side (trail check) */
+static void test_fill_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
+{
+	unsigned int y, x, c = g_test_fill_argb;
+	for (y = 0; y < H; y++) { unsigned int *o = buf + y * pitch; for (x = 0; x < W; x++) o[x] = c; }
+	if (g_test_motion) {
+		/* 120 px square, 4 px outline, one full sweep (there and back) every 1.5 s on the 13 MHz clock */
+		int sq = (int)(H / 5u), st = 4, span = (int)W - sq;
+		unsigned int t = gpt4_get_current_tick() / 13000u;          /* ms */
+		unsigned int ph = t % 1500u;
+		int px = (int)((ph < 750u ? ph : 1500u - ph) * (unsigned)span / 750u);
+		int py = (int)(H - sq) / 2;
+		ayaneo_fill(buf, pitch, px, py, sq, sq, 0xFF000000u);
+		ayaneo_fill(buf, pitch, px + st, py + st, sq - 2 * st, sq - 2 * st, 0xFFFFE000u);
+	}
+}
+void ayaneo_test_fill(unsigned int argb, int motion) { g_test_fill_argb = argb; g_test_motion = argb ? motion : 0; s_overlay_dirty = 1; }
 void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	unsigned int *b = (unsigned int *)MENU_OVERLAY_PA;
 	static unsigned int s_overlay_paint_tick;
+	(void)test_fill_paint;   /* the test field is drawn into the game frame now (ayaneo_rsz_present), so the overdrive sees it */
 	if (!(open && paint) && g_power_bar_pct >= 0) { paint = power_bar_paint; open = 1; }   /* the bar borrows the layer */
 	if (open && paint) {
 		/* live rows (battery, clock, refresh, fps): repaint twice a second while open, not only
@@ -2183,6 +2205,10 @@ static volatile int   g_od_cap = 3;   /* max |overshoot| per 5-bit channel (0 = 
 static volatile int   g_od_kuphi = 6; /* rising gain /16 at prev=BLACK (dark-origin smear killer) */
 static volatile int   g_od_kuplo = 2; /* rising gain /16 at prev=WHITE (halo-free floor) */
 static volatile int   g_od_gam   = 22;/* rising falloff shape: 16 linear, higher = faster collapse to kuplo */
+static volatile int   g_od_capup = 3; /* separate rising / falling caps (oem odcap); ayaneo_set_overdrive sets both */
+static volatile int   g_od_capdn = 3;
+static volatile int   g_od_head = 0;  /* rail headroom in 5-bit levels: the picture is mapped into [head, max-head]
+                                       * so a transition to full black or full colour can still be overshot */
 static unsigned char  g_od_up5[32];   /* rising gain per 5-bit origin level (R/B) */
 static unsigned char  g_od_up6[64];   /* rising gain per 6-bit origin level (G)   */
 static volatile int   g_od_need_build = 1;    /* rebuild the tables at next od_apply */
@@ -2219,7 +2245,7 @@ void ayaneo_set_overdrive(int on, int kup, int kdn, int thr, int cap)
 	if (thr < 0) thr = 0; else if (thr > 16) thr = 16;
 	if (cap < 0) cap = 0; else if (cap > 31) cap = 31;
 	g_od_kuphi = kup; g_od_kuplo = kup;   /* flat rising == scalar */
-	g_od_kdn = kdn; g_od_thr = thr; g_od_cap = cap;
+	g_od_kdn = kdn; g_od_thr = thr; g_od_cap = cap; g_od_capup = cap; g_od_capdn = cap;
 	g_od_need_build = 1;
 	g_od_on = on ? 1 : 0;
 	if (!g_od_on) { s_od_pw = 0; s_od_ph = 0; }   /* drop history so a re-enable starts clean */
@@ -2227,6 +2253,16 @@ void ayaneo_set_overdrive(int on, int kup, int kdn, int thr, int cap)
 
 /* Set the prev-indexed RISING curve (leaves on/kdn/thr/cap): kuphi = dark-origin gain, kuplo =
  * bright-origin gain, gam = falloff shape. */
+/* oem odcap:UP,DN,HEAD - rising cap, falling cap (5-bit levels, 0 = uncapped), rail headroom 0..3 */
+void ayaneo_set_overdrive_caps(int up, int dn, int head)
+{
+	if (up < 0) up = 0; else if (up > 31) up = 31;
+	if (dn < 0) dn = 0; else if (dn > 31) dn = 31;
+	if (head < 0) head = 0; else if (head > 3) head = 3;
+	g_od_capup = up; g_od_capdn = dn; g_od_head = head;
+}
+void ayaneo_get_overdrive_caps(int *up, int *dn, int *head) { *up = g_od_capup; *dn = g_od_capdn; *head = g_od_head; }
+
 void ayaneo_set_overdrive_curve(int kuphi, int kuplo, int gam)
 {
 	if (kuphi < 0) kuphi = 0; else if (kuphi > 64) kuphi = 64;
@@ -2236,14 +2272,18 @@ void ayaneo_set_overdrive_curve(int kuphi, int kuplo, int gam)
 	g_od_need_build = 1;
 }
 
-static inline int od_ch(int c, int p, int maxv, int cap, const unsigned char *uptab)
+static inline int od_ch(int c, int p, int maxv, int scale, const unsigned char *uptab)
 {
 	int d = c - p;
 	int ad = d < 0 ? -d : d;
-	int ov, r, k;
-	if (ad <= g_od_thr) return c;                          /* tiny change: leave it, no halo */
+	int ov, r, k, cap, h = g_od_head * scale;
+	int cu = g_od_capup * scale, cd = g_od_capdn * scale;
 	k = (d > 0) ? uptab[p] : g_od_kdn;                     /* RISING gain from ORIGIN(prev); FALLING flat */
+	cap = (d > 0) ? cu : cd;
+	if (h) c = h + (c * (maxv - 2 * h) + maxv / 2) / maxv; /* headroom: the steady picture sits inside the rails */
+	if (ad <= g_od_thr) return c;                          /* tiny change: leave it, no halo */
 	ov = (k * d) / 16;
+	if (h) ov = (ov * (maxv - 2 * h)) / maxv;
 	if (cap > 0) { if (ov > cap) ov = cap; else if (ov < -cap) ov = -cap; }   /* bound the halo on big deltas */
 	r = c + ov;
 	if (r < 0) return 0;
@@ -2253,10 +2293,10 @@ static inline int od_ch(int c, int p, int maxv, int cap, const unsigned char *up
 
 static inline unsigned short od_pixel(unsigned short c, unsigned short p)
 {
-	int cap = g_od_cap;                                    /* 5-bit units; green (6-bit) gets 2x to match */
-	int r = od_ch((c >> 11) & 0x1F, (p >> 11) & 0x1F, 31, cap,     g_od_up5);
-	int g = od_ch((c >> 5) & 0x3F, (p >> 5) & 0x3F, 63, cap * 2, g_od_up6);
-	int b = od_ch(c & 0x1F, p & 0x1F, 31, cap,     g_od_up5);
+	/* caps and headroom are in 5-bit units; green (6-bit) gets 2x to match */
+	int r = od_ch((c >> 11) & 0x1F, (p >> 11) & 0x1F, 31, 1, g_od_up5);
+	int g = od_ch((c >> 5) & 0x3F, (p >> 5) & 0x3F, 63, 2, g_od_up6);
+	int b = od_ch(c & 0x1F, p & 0x1F, 31, 1, g_od_up5);
 	return (unsigned short)((r << 11) | (g << 5) | b);
 }
 
@@ -2468,6 +2508,32 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	unsigned int t0 = gpt4_get_current_tick();
 
 	if (!pix || !fb_addr || !sw || !sh) return;
+	if (g_test_fill_argb && sw <= 512u && sh <= 512u) {
+		/* oem gray: replace the game picture, at its native size and before the overdrive, with a
+		 * flat gray and four outlined boxes (red, green, blue, yellow) sweeping side to side in
+		 * step, so the trails and the overdrive halos are judged on the real pipeline */
+		static unsigned short s_test_px[512 * 512];
+		unsigned int c = g_test_fill_argb, x, y, i;
+		unsigned int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+		unsigned short bg = (unsigned short)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+		static const unsigned short cols[4] = { 0xF800, 0x07E0, 0x001F, 0xFFE0 };
+		for (y = 0; y < sh; y++) { unsigned short *o = s_test_px + y * sw; for (x = 0; x < sw; x++) o[x] = bg; }
+		if (g_test_motion) {
+			int sq = (int)sh / 8, gap = ((int)sh - 4 * sq) / 5, span = (int)sw - sq;
+			unsigned int ph = (gpt4_get_current_tick() / 13000u) % 1500u;          /* ms in the sweep */
+			int px = (int)((ph < 750u ? ph : 1500u - ph) * (unsigned)span / 750u);
+			if (sq < 4) sq = 4;
+			for (i = 0; i < 4; i++) {
+				int py = gap + (int)i * (sq + gap), yy, xx;
+				for (yy = 0; yy < sq; yy++) {
+					unsigned short *o = s_test_px + (unsigned)(py + yy) * sw + px;
+					for (xx = 0; xx < sq; xx++)
+						o[xx] = (yy == 0 || yy == sq - 1 || xx == 0 || xx == sq - 1) ? 0x0000 : cols[i];
+				}
+			}
+		}
+		pix = s_test_px; spitch_px = sw;
+	}
 	pix = od_apply(pix, sw, sh, spitch_px, &spitch_px);   /* software overdrive (no-op unless enabled) */
 #if AYANEO_ROT
 	/* Callers describe the picture on the logical landscape screen. Turn the native frame now,
