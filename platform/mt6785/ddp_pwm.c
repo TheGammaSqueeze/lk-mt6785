@@ -97,6 +97,7 @@ static volatile int g_strobe_locked;   /* 1 = re-align the pulse every frame (di
 static unsigned int g_bfi_window = 512u;
 static int g_bfi;
 static unsigned int s_last_level_1024 = 1023u;
+volatile unsigned int g_dbg_strobe_ticks;   /* oem bfi: frame ticks seen (locked strobe only) */
 static int g_bfi_mode;                 /* 0 off, 1 one pulse per frame */
 void disp_pwm_bfi_window(unsigned int w)
 {
@@ -107,6 +108,17 @@ void disp_pwm_bfi_window(unsigned int w)
 		disp_pwm_set_backlight(g_pwm_main_id, (int)s_last_level_1024);
 }
 unsigned int disp_pwm_bfi_window_get(void) { return g_bfi_window; }
+/* oem bfi: the live strobe state and the PWM registers */
+int disp_pwm_bfi_state(char *out, int n)
+{
+	unsigned int rb = g_pwm_inited ? pwm_get_reg_base(g_pwm_main_id) : 0;
+	if (n < 0)   /* second line: the registers and the tick count */
+		return snprintf(out, -n, "pwm: en=%x con0=%08x con1=%08x ticks=%u",
+				rb ? PWM_REG_GET(rb + DISP_PWM_EN_OFF) : 0, rb ? PWM_REG_GET(rb + DISP_PWM_CON_0_OFF) : 0,
+				rb ? PWM_REG_GET(rb + DISP_PWM_CON_1_OFF) : 0, g_dbg_strobe_ticks);
+	return snprintf(out, n, "lock=%d div=%u win=%u bfi=%d mode=%d last=%u init=%d",
+			g_strobe_locked, g_strobe_div, g_bfi_window, g_bfi, g_bfi_mode, s_last_level_1024, g_pwm_inited);
+}
 #endif
 void disp_pwm_strobe_mode(int on)
 {
@@ -363,6 +375,7 @@ void disp_pwm_strobe_tick(void)
 
 	if (!g_strobe_locked)
 		return;
+	g_dbg_strobe_ticks++;
 	reg_base = pwm_get_reg_base(g_pwm_main_id);
 	PWM_REG_SET(reg_base + DISP_PWM_EN_OFF, 0x0);
 	PWM_REG_SET(reg_base + DISP_PWM_EN_OFF, 0x1);

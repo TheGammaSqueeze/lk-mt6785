@@ -1372,6 +1372,18 @@ static void cmd_bfi(const char *arg, void *data, unsigned sz)
 	if (w) disp_pwm_bfi_window(w);
 	snprintf(lbuf, sizeof lbuf, "bfi: window=%u/1024 strobe=%s", disp_pwm_bfi_window_get(), ayaneo_get_strobe() ? "on" : "off");
 	fastboot_info(lbuf);
+	{
+		extern int disp_pwm_bfi_state(char *out, int n);
+		extern unsigned int ayaneo_dsi_refresh_milli(void);
+		extern volatile unsigned int g_vsync_div, g_pace_fps_milli;
+		extern volatile unsigned int g_dbg_pace_timeouts;
+		disp_pwm_bfi_state(lbuf, sizeof lbuf);
+		fastboot_info(lbuf);
+		disp_pwm_bfi_state(lbuf, -(int)sizeof lbuf);
+		fastboot_info(lbuf);
+		snprintf(lbuf, sizeof lbuf, "panel: hz=%u vdiv=%u fps=%u tmo=%u", ayaneo_dsi_refresh_milli(), g_vsync_div, g_pace_fps_milli, g_dbg_pace_timeouts);
+		fastboot_info(lbuf);
+	}
 	fastboot_okay("");
 }
 
