@@ -1175,8 +1175,8 @@ static int led_thread(void *arg)
 	thread_sleep(2500);
 	for (;;) {
 		if ((tick & 1) == 0) chr = pmic_upmu_get_rgs_chrdet() ? 1 : 0;   /* every second, cheap */
-		if (pct < 0 || (tick % 120) == 0) pct = battery_read(&chr);   /* every 60 s */
-		if (chr)              state = (pct >= 99) ? 1 : 3;             /* full: green, charging: red + green */
+		if (pct < 0 || (tick % (chr ? 20 : 120)) == 0) pct = battery_read(&chr);   /* every 10 s on the charger, 60 s on battery */
+		if (chr)              state = (pct >= 97) ? 1 : 3;             /* full (charger done or 97 %+): green only; charging: red + green */
 		else if (pct <= 5)    { flash = !flash; state = flash ? 2 : 0; } /* low: red flash */
 		else                  state = 1;                               /* battery: green */
 		g_dbg_led_chr = chr; g_dbg_led_pct = pct; g_dbg_led_state = state; g_dbg_led_ticks = tick;

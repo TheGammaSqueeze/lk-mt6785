@@ -1223,6 +1223,21 @@ static void cmd_mmuq(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem env:NAME - the LK environment (para partition) value, as the serial number code reads it */
+static void cmd_env(const char *arg, void *data, unsigned sz)
+{
+	extern char *get_env(char *name);
+	char name[64]; int n = 0; char *val;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg && n < 63) name[n++] = *arg++;
+	name[n] = 0;
+	val = get_env(name);
+	snprintf(lbuf, sizeof lbuf, "env %s = %s", name, val ? val : "(unset)");
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem persist - queue a settings write (eMMC + SD mirror) and report the last write's durations */
 static void cmd_persist(const char *arg, void *data, unsigned sz)
 {
@@ -1420,6 +1435,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem bfi", cmd_bfi, 1, 0);
 	fastboot_register("oem led", cmd_led, 1, 0);
 	fastboot_register("oem persist", cmd_persist, 1, 0);
+	fastboot_register("oem env:", cmd_env, 1, 0);
 	fastboot_register("oem hfp", cmd_hfp, 1, 0);
 	fastboot_register("oem chg", cmd_chg, 1, 0);
 	fastboot_register("oem rewindmap", cmd_rewindmap, 1, 0);
