@@ -1196,6 +1196,45 @@ volatile int g_hud_mode;
 volatile int g_hud_speed_x10;
 void ayaneo_hud_set(int mode, int speed_x10) { g_hud_mode = mode; g_hud_speed_x10 = speed_x10; }
 
+/* Frame rate meter shared by every core: one call per emulated frame (fast forward and
+ * benchmark frames included), the figure is refreshed every half second. Shown as a badge in
+ * the top left of the game when the Show FPS setting is on or a core's benchmark runs. */
+volatile int g_hud_fps;
+static int s_hud_no_fps;   /* the rotated path draws the fps badge in its own box */
+volatile int g_show_fps;
+volatile int g_hud_bench;
+volatile int g_hud_hide;   /* the BIOS intro and other non game screens */
+void ayaneo_hud_hide(int on) { g_hud_hide = on ? 1 : 0; }
+void ayaneo_fps_tick(void)
+{
+	static unsigned int t0, n;
+	unsigned int now = gpt4_get_current_tick(), el;
+	if (!t0) { t0 = now; n = 0; return; }
+	n++;
+	el = now - t0;
+	if (el >= 6500000u) {                     /* half a second at 13 MHz */
+		g_hud_fps = (int)((unsigned long long)n * 13000000ull / el);
+		t0 = now; n = 0;
+	}
+}
+void ayaneo_fps_reset(void) { g_hud_fps = 0; }
+void ayaneo_hud_bench(int on) { g_hud_bench = on ? 1 : 0; }
+int ayaneo_hud_fps_visible(void) { return !g_hud_hide && (g_show_fps || g_hud_bench); }
+/* the FPS badge, top left of the game rect */
+static void ayaneo_hud_draw_fps(unsigned int *buf, unsigned int pitch_w, int gx, int gy)
+{
+	char s[12]; int n = 0, v = g_hud_fps, t[8], k = 0;
+	const int scale = 2, pad = 10;
+	int th = MTK_VFH * scale, bh = th + 12, bw;
+	if (!ayaneo_hud_fps_visible()) return;
+	if (v < 0) v = 0; if (v > 9999) v = 9999;
+	if (!v) s[n++] = '0'; else { while (v) { t[k++] = (char)('0' + v % 10); v /= 10; } while (k) s[n++] = t[--k]; }
+	s[n++] = ' '; s[n++] = 'F'; s[n++] = 'P'; s[n++] = 'S'; s[n] = 0;
+	bw = pad + n * MTK_VFW * scale + pad;
+	ayaneo_fill_blend(buf, pitch_w, gx + 12, gy + 12, bw, bh, 0xFF0A0A0Fu, 190);
+	ayaneo_text(buf, pitch_w, gx + 12 + pad, gy + 12 + (bh - th) / 2, scale, 0xFF3CFF78u, s);
+}
+
 /* one filled triangle in a size x size box, pointing right (right=1) or left (right=0) */
 static void ayaneo_hud_tri(unsigned int *buf, unsigned int pitch_w, int x0, int y0, int size,
 			   int right, unsigned int argb)
@@ -1218,6 +1257,7 @@ static void ayaneo_hud_draw(unsigned int *buf, unsigned int pitch_w, int gx, int
 	const int scale = 2, icon = 22, gap = 8, pad = 10;
 	int th = MTK_VFH * scale, bh = th + 12, bw, bx, by, iy, tx;
 	(void)gh;
+	if (!s_hud_no_fps) ayaneo_hud_draw_fps(buf, pitch_w, gx, gy);
 	if (mode != 1 && mode != 2) return;
 	col = (mode == 1) ? 0xFF3CFF78u : 0xFF46C8FFu;       /* FF green / RW cyan */
 	whole = sx10 / 10; frac = sx10 % 10;
@@ -1610,15 +1650,6 @@ void ayaneo_gbc_show_frame(const unsigned short *pix)
 	}
 	if (!gbc_menu_is_open())			/* menu is now a hardware overlay (OVL0 L0); only the OSD paints in-frame */
 		ayaneo_draw_osd(dst, pitch_w, W, H);	/* volume/brightness slider */
-	if (gbc_benchmark_on()) {		/* FPS counter, top-left of the game area */
-		char s[16]; int fps = gbc_get_fps(), n = 0, t[8], k = 0;
-		s[n++]='F'; s[n++]='P'; s[n++]='S'; s[n++]=':'; s[n++]=' ';
-		if (fps <= 0) s[n++]='0';
-		else { while (fps) { t[k++]='0'+fps%10; fps/=10; } while (k) s[n++]=t[--k]; }
-		s[n]=0;
-		ayaneo_fill(dst, pitch_w, xoff + 4, yoff + 4, 200, 28, 0xFF000000u);
-		ayaneo_text(dst, pitch_w, xoff + 8, yoff + 6, 2, 0xFF30FF60u, s);
-	}
 	ayaneo_hud_draw(dst, pitch_w, (int)xoff, (int)yoff, (int)dw, (int)dh);   /* FF/RW speed badge */
 	arch_clean_cache_range((unsigned int)(dst + yoff * pitch_w), dh * pitch_w * 4);
 	g_dbg_blit_us = (gpt4_get_current_tick() - t_blit0) / 13u;	/* work before the vsync wait */
@@ -2256,6 +2287,17 @@ static void rot_hud_osd(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsig
 {
 	int LGW = (int)ih, LGH = (int)iw;
 
+	/* FPS badge: top left of the game */
+	if (ayaneo_hud_fps_visible()) {
+		int lw = 220, lh = 68, lx = 0, ly = 0;
+		if (lw > LGW) lw = LGW;
+		if (lh > LGH) lh = LGH;
+		rot_box_pull(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
+		ayaneo_draw_clip((unsigned)lw, (unsigned)lh);
+		ayaneo_hud_draw_fps(s_rot_box, (unsigned)lw, -lx, -ly);
+		ayaneo_draw_clip(0, 0);
+		rot_box_push(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
+	}
 	/* FF / RW badge: top right of the game, as ayaneo_hud_draw lays it out */
 	if (g_hud_mode == 1 || g_hud_mode == 2) {
 		int lw = 332, lh = 68, lx, ly = 0;
@@ -2264,7 +2306,9 @@ static void rot_hud_osd(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsig
 		lx = LGW - lw;
 		rot_box_pull(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
 		ayaneo_draw_clip((unsigned)lw, (unsigned)lh);
+		s_hud_no_fps = 1;
 		ayaneo_hud_draw(s_rot_box, (unsigned)lw, -lx, -ly, LGW, LGH);
+		s_hud_no_fps = 0;
 		ayaneo_draw_clip(0, 0);
 		rot_box_push(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
 	}

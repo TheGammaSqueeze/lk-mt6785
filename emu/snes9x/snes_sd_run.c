@@ -363,7 +363,7 @@ static void snes_slot_check(void)
 	s_slot_used = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, tmp, sizeof tmp) > 0;
 }
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
-       SM_CPU, SM_RUNAHEAD, SM_TURBO, SM_BENCH, SM_PANEL, SM_STROBE, SM_RESUME,
+       SM_CPU, SM_RUNAHEAD, SM_TURBO, SM_BENCH, SM_SHOWFPS, SM_BATTERY, SM_PANEL, SM_STROBE, SM_RESUME,
        SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
 #define SNES_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -415,6 +415,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_CPU:    return "CPU Clock"; case SM_RUNAHEAD: return "Run-Ahead";
 	case SM_TURBO:  return "Turbo (auto-fire)";
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
+	case SM_SHOWFPS: return "Show FPS"; case SM_BATTERY: return "Battery";
 	case SM_STROBE: return "BFI"; case SM_RESUME: return "Resume Game on Boot";
 	case SM_SLOT:   return "Save Slot";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
@@ -438,6 +439,10 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 	case SM_TURBO: p = smput(p, snes_turbo_name(g_snes_turbo)); break;
 	case SM_BENCH: if (g_snes_benchmark) { p = smputu(p, (unsigned)s_snes_fps); p = smput(p, " fps"); }
 		else p = smput(p, "Off"); break;
+	case SM_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = smput(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
+	case SM_BATTERY: { extern int ayaneo_gauge_pct(void); extern int ayaneo_gauge_time_str(char *out, int n); extern int upmu_is_chr_det(void);
+		char ts[24]; p = smputu(p, (unsigned)ayaneo_gauge_pct()); p = smput(p, upmu_is_chr_det() ? "% Charging" : "%");
+		if (ayaneo_gauge_time_str(ts, sizeof ts)) { p = smput(p, " "); p = smput(p, ts); } } break;
 	case SM_PANEL: { unsigned hz = s_snes_hz1000;   /* Hz*1000 -> "60.11 Hz" */
 		p = smputu(p, hz / 1000); p = smput(p, ".");
 		{ unsigned f = (hz % 1000) / 10; if (f < 10) p = smput(p, "0"); p = smputu(p, f); }
@@ -516,6 +521,9 @@ static int sm_change(int i, int dir, int act)
 	case SM_TURBO: if (dir) { g_snes_turbo = (g_snes_turbo + dir + 4) % 4;
 			ayaneo_set_snes_turbo(g_snes_turbo); snes_settings_touch(); } break;
 	case SM_BENCH:  if (act) g_snes_benchmark = !g_snes_benchmark; break;   /* A toggles (not L/R, which auto-repeat) */
+	case SM_SHOWFPS: if (dir || act) { extern int ayaneo_get_show_fps(void); extern void ayaneo_set_show_fps(int v);
+			ayaneo_set_show_fps(!ayaneo_get_show_fps()); snes_settings_touch(); } break;
+	case SM_BATTERY: break;   /* read-only */
 	case SM_PANEL:  break;   /* read-only */
 	case SM_STROBE: if (dir) { ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); snes_settings_touch(); } break;
 	case SM_RESUME: if (dir) { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
@@ -783,7 +791,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					c->state_load_ra(st);                   /* raw restore (matches the raw capture) */
 					if (c->set_av_skip) c->set_av_skip(0, 0);
 					c->run(&f);                             /* render video + audio */
-					g_snes_dbg_frames++;
+					g_snes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 					if (f.audio && f.frames) {              /* reverse (+ decimate) -> play backwards */
 						const short *a = (const short *)f.audio;
 						unsigned fr = f.frames, i, j = 0;
@@ -834,7 +842,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			{ extern unsigned int gpt4_get_current_tick(void); unsigned int _t = gpt4_get_current_tick();
 			  c->run(&f);
 			  snes_emu_us = (gpt4_get_current_tick() - _t) / 13u; }   /* committed frame cost for the FF cap */
-			g_snes_dbg_frames++;
+			g_snes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 			/* keep the display's target aspect current (cheap; refreshed periodically) - it
 			 * changes when the player switches Aspect Ratio or Overscan in the menu. */
 			if (c->aspect_x1000 && (g_snes_dbg_frames & 15u) == 0) g_snes_aspect_x1000 = c->aspect_x1000();
@@ -917,7 +925,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (k == mult - 1) _t = gpt4_get_current_tick();
 				c->run(&f);
 				if (k == mult - 1) s_snes_render_us = (gpt4_get_current_tick() - _t) / 13u;   /* measure final render */
-				g_snes_dbg_frames++;
+				g_snes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 				if (f.audio && f.frames)
 					ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 				if (s_snes_rw_payload && ayaneo_rewind_ready()) {   /* capture each FF frame too */
@@ -965,6 +973,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * emulation throughput (ayaneo_snes_show_frame also skips the vsync wait when
 			 * snes_benchmark_on(), so nothing paces it). */
 			int uncapped = g_snes_benchmark;   /* FF uses the normal vsync present; the extra committed frames above rate-limit it */
+			{ extern void ayaneo_hud_bench(int on); ayaneo_hud_bench(uncapped); }
 			if (uncapped) {
 				if ((g_snes_dbg_frames & 7u) == 0 && f.video && f.width && f.height)
 					ayaneo_snes_show_frame((const unsigned short *)f.video, f.width, f.height, f.pitch / 2u);

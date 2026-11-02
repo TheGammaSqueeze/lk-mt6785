@@ -1098,6 +1098,8 @@ static int ocv_pct(int mv)
  * 0 ready, 1 charging, 2 done, 3 fault; -1 when the read fails. The voltage table cannot
  * tell a full pack under charge apart from one still taking current (it rests at ~94%). */
 #include <platform/mt_i2c.h>
+#include <platform/boot_mode.h>
+int ayaneo_boot_reason(void) { extern BOOT_ARGUMENT *g_boot_arg; return g_boot_arg ? (int)g_boot_arg->boot_reason : -1; }
 int ayaneo_mt6360_chg_reg(unsigned char reg)
 {
 	mt_i2c i2c; unsigned char b[2];
@@ -1138,8 +1140,16 @@ static int charger_status(void) { return -1; }
 static int battery_read(int *charging)
 {
 	int chr = upmu_is_chr_det();
+	int pct;
+#ifdef KONKR_KPA
+	/* the fuel gauge path: pack profile, current compensation, filtered (ayaneo_gauge.c) */
+	extern int ayaneo_gauge_sample(void);
+	pct = ayaneo_gauge_sample();
+	if (charging)
+		*charging = chr;
+#else
 	long sum = 0;
-	int i, vmv, pct;
+	int i, vmv;
 	for (i = 0; i < BATTERY_SAMPLES; i++)
 		sum += get_bat_sense_volt(1);
 	vmv = (int)(sum / BATTERY_SAMPLES);
@@ -1148,9 +1158,10 @@ static int battery_read(int *charging)
 	if (charging)
 		*charging = chr;
 	pct = ocv_pct(vmv);
+#endif
 	if (chr) {
 		int st = charger_status();
-		if (st == 2) pct = 100;                       /* the charger says done: full */
+		if (st == 2) { pct = 100; { extern void ayaneo_gauge_set_full(void); ayaneo_gauge_set_full(); } }   /* the charger says done: full */
 		else if (st == 1 && pct > 99) pct = 99;       /* still taking current: never show full */
 	}
 	return pct;
@@ -1204,7 +1215,7 @@ static int led_thread(void *arg)
 #endif
 	for (;;) {
 		if ((tick & 1) == 0) chr = pmic_upmu_get_rgs_chrdet() ? 1 : 0;   /* every second, cheap */
-		if (pct < 0 || (tick % (chr ? 20 : 120)) == 0) pct = battery_read(&chr);   /* every 10 s on the charger, 60 s on battery */
+		if (pct < 0 || (tick % 20) == 0) pct = battery_read(&chr);   /* every 10 s: the gauge filter and the time estimate feed on it */
 		if (chr)              state = (pct >= 97) ? 1 : 3;             /* full (charger done or 97 %+): green only; charging: red + green */
 		else if (pct <= 5)    { flash = !flash; state = flash ? 2 : 0; } /* low: red flash */
 		else                  state = 1;                               /* battery: green */
@@ -1347,7 +1358,7 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_RESUME, MI_SKIPBOOT, MI_SKIPINTRO,
-	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_BENCH, MI_RESET, MI_CLOSE, MI_COUNT
+	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_BENCH, MI_SHOWFPS, MI_RESET, MI_CLOSE, MI_COUNT
 };
 #define GBA_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -1396,10 +1407,13 @@ static const char *menu_value(int item, char *buf)
 	case MI_LOADSTATE:
 	case MI_SAVESTATE:
 	case MI_RESET:     p = mi_puts(p, "[A]"); break;
-	case MI_BATTERY:
+	case MI_BATTERY: {
+		extern int ayaneo_gauge_time_str(char *out, int n);
+		char ts[24];
 		p = mi_putu(p, (unsigned)s_batt_pct); p = mi_puts(p, "% ");
 		p = mi_puts(p, upmu_is_chr_det() ? "Charging" : "Battery");
-		break;
+		if (ayaneo_gauge_time_str(ts, sizeof ts)) { p = mi_puts(p, "  "); p = mi_puts(p, ts); }
+		break; }
 	case MI_CPU: {
 		static unsigned mhz, tick;
 		if (s_cpu_dirty || !mhz || tick-- <= 0) { mhz = ayaneo_get_cpu_mhz(); tick = 40; s_cpu_dirty = 0; }
@@ -1424,6 +1438,7 @@ static const char *menu_value(int item, char *buf)
 		if (s_benchmark) { p = mi_putu(p, (unsigned)s_fps); p = mi_puts(p, " fps"); }
 		else p = mi_puts(p, "Off");
 		break;
+	case MI_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = mi_puts(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
 	case MI_CLOSE: default: break;
 	}
 	*p = 0;
@@ -1451,6 +1466,7 @@ static const char *menu_label(int item)
 	case MI_STROBE:    return "BFI";
 	case MI_PREEMPT:   return "Run-Ahead";
 	case MI_BENCH:     return "Benchmark (Uncap)";
+	case MI_SHOWFPS:   return "Show FPS";
 	case MI_RESET:     return "Reset Game";
 	case MI_CLOSE:     return "Close";
 	}
@@ -1482,6 +1498,8 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;
 	case MI_CPU:      if (dir) cpu_step(dir); changed = 0; break;
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
+	case MI_SHOWFPS:  { extern int ayaneo_get_show_fps(void); extern void ayaneo_set_show_fps(int v);
+			    if (dir || act) ayaneo_set_show_fps(!ayaneo_get_show_fps()); else changed = 0; } break;
 	case MI_ASPECT:   if (dir) g_gba_aspect = (g_gba_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
 	case MI_SLOT:     if (dir) s_gba_slot = (s_gba_slot + dir + GBA_SLOT_COUNT) % GBA_SLOT_COUNT; changed = 0; break;
 	case MI_LOADSTATE: if (act) { int ok = manual_state_read(state); if (ok) gba_rewind_arm(); mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
@@ -2252,6 +2270,7 @@ static int emu_thread(void *arg)
 			 * emulated BIOS runs through the game audio path here). Pause across the
 			 * intro, then unpause so the menu/game audio is restored. */
 			if (ayaneo_get_mute_bios()) ayaneo_gbc_audio_pause(1);
+			{ extern void ayaneo_hud_hide(int on); ayaneo_hud_hide(1); }   /* no FPS badge over the BIOS logo */
 			for (fi = 0; fi < intro_frames; fi++) {
 				update_buttons();
 				run_one_frame();
@@ -2261,6 +2280,7 @@ static int emu_thread(void *arg)
 				if (PRESSED(GPIO_B)) break;	/* hold B to skip the logo */
 			}
 			if (ayaneo_get_mute_bios()) ayaneo_gbc_audio_pause(0);
+			{ extern void ayaneo_hud_hide(int on); extern void ayaneo_fps_reset(void); ayaneo_hud_hide(0); ayaneo_fps_reset(); }
 			{	/* intro wall time (oem diag): 270 frames at 59.73 Hz = 4520 ms when paced right */
 				extern volatile unsigned int g_dbg_bt_intro_end, g_dbg_bt_intro_frames;
 				g_dbg_bt_intro_end = BT_MS(); g_dbg_bt_intro_frames = (unsigned int)fi;
@@ -2487,6 +2507,7 @@ static int emu_thread(void *arg)
 					ayaneo_hud_set(1, mult * 10);
 					for (i = 1; i < mult; i++) {
 						run_one_frame();
+						{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }   /* every emulated frame counts */
 						gba_rewind_snap();   /* capture each FF frame so it can be rewound */
 					}
 				} else {
@@ -2525,6 +2546,7 @@ static int emu_thread(void *arg)
 			if (!s_menu_open)
 				battery_poll(BATTERY_GAMEPLAY_FRAMES);	/* ~once/10 min, no pause */
 			frame++;
+			{ extern void ayaneo_fps_tick(void); extern void ayaneo_hud_bench(int on); ayaneo_fps_tick(); ayaneo_hud_bench(s_benchmark); }
 
 			if (aya_edge())
 				menu_toggle();
@@ -2658,8 +2680,11 @@ static int emu_thread(void *arg)
 					s_fps = (int)((unsigned long long)bench_cnt * 13000000ull / el);
 					bench_base = now; bench_cnt = 0;
 				}
-				ayaneo_present_skip_framedone = 1;	/* uncapped, every frame */
-				ayaneo_gbc_show_frame(gba_core_screen());
+				/* present every 8th frame like fast forward: on the Konkr a present is
+				 * paced to the panel edge, so one per emulated frame capped the loop */
+				ayaneo_present_skip_framedone = 1;
+				if ((frame & 7) == 0)
+					ayaneo_gbc_show_frame(gba_core_screen());
 				continue;
 			}
 

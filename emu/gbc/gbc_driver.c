@@ -528,6 +528,9 @@ static int gbc_battery_read(int *charging)
 	int chr = upmu_is_chr_det();
 	long sum = 0;
 	int i, vmv;
+#ifdef KONKR_KPA
+	{ extern int ayaneo_gauge_sample(void); if (charging) *charging = chr; return ayaneo_gauge_sample(); }
+#endif
 
 	for (i = 0; i < 16; i++)
 		sum += get_bat_sense_volt(1);
@@ -622,7 +625,7 @@ static unsigned gbc_menu_keys(void)
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_COLORCC, MI_DARKF,
 	MI_LOADBOOT, MI_RESUME, MI_SKIPBOOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY,
-	MI_CPU, MI_BFI, MI_BENCH, MI_CLOSE, MI_COUNT
+	MI_CPU, MI_BFI, MI_BENCH, MI_SHOWFPS, MI_CLOSE, MI_COUNT
 };
 
 /* Benchmark mode: run the emulator uncapped (no 59.7 Hz pacing, no audio) and
@@ -661,6 +664,8 @@ extern const char *ayaneo_strobe_name(int b);
 		 * gauge here would hitch the render and flicker the overlay. */
 		p = mi_putu(p, (unsigned)s_batt_pct); p = mi_puts(p, "% ");
 		p = mi_puts(p, upmu_is_chr_det() ? "Charging" : "Battery");
+		{ extern int ayaneo_gauge_time_str(char *out, int n); char ts[24];
+		  if (ayaneo_gauge_time_str(ts, sizeof ts)) { p = mi_puts(p, "  "); p = mi_puts(p, ts); } }
 		break;
 	case MI_CPU: {
 		/* cache so the value is identical in both scan-out buffers (the PLL
@@ -675,6 +680,7 @@ extern const char *ayaneo_strobe_name(int b);
 		if (s_benchmark) { p = mi_putu(p, (unsigned)s_fps); p = mi_puts(p, " fps"); }
 		else p = mi_puts(p, "Off");
 		break;
+	case MI_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = mi_puts(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
 	case MI_CLOSE: default: break;
 	}
 	*p = 0;
@@ -698,6 +704,7 @@ static const char *gbc_menu_label(int item)
 	case MI_CPU:       return "CPU Clock";
 	case MI_BFI:       return "BFI";
 	case MI_BENCH:     return "Benchmark (Uncap)";
+	case MI_SHOWFPS:   return "Show FPS";
 	case MI_CLOSE:     return "Close";
 	}
 	return "";
@@ -723,6 +730,8 @@ static int gbc_menu_change(int item, int dir, int act, unsigned char *state, cha
 	case MI_BFI:      { extern int ayaneo_get_strobe(void); extern void ayaneo_set_strobe(int v);
 			    if (dir) ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); else changed = 0; } break;
 	case MI_BENCH:     if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
+	case MI_SHOWFPS:   { extern int ayaneo_get_show_fps(void); extern void ayaneo_set_show_fps(int v);
+			     if (dir || act) ayaneo_set_show_fps(!ayaneo_get_show_fps()); else changed = 0; } break;
 	case MI_LOADSTATE: if (act) { mi_puts(status, gbc_read_state(state) ? "State loaded" : "No save state"); } changed = 0; break;
 	case MI_SAVESTATE: if (act) { int ok = gbc_write_state(state); gbc_sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;
 	case MI_CLOSE:    if (act) return 1; changed = 0; break;
@@ -909,6 +918,7 @@ static int gbc_emu_thread(void *arg)
 				gbc_poll_led();		/* charge LED reflects charging */
 				gbc_check_power(state);	/* power -> save + off */
 				frame++;
+				{ extern void ayaneo_fps_tick(void); extern void ayaneo_hud_bench(int on); ayaneo_fps_tick(); ayaneo_hud_bench(s_benchmark); }
 
 				/* AYA toggles the live overlay menu; while open, drive the
 				 * menu each frame (game keeps running underneath). */

@@ -278,6 +278,9 @@ int pmic_detect_powerkey(void)
 	if (Enable_PMIC_LOG > 1)
 		dprintf(INFO, "%d", ret);
 
+	/* a failed read is not a press: val stays 0 on failure, which is the pressed code */
+	if (ret != 0)
+		return 0;
 	if (val == 1) {
 #ifndef USER_BUILD
 		dprintf(INFO, "LK pmic powerkey Release\n");

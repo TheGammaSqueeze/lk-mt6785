@@ -276,7 +276,7 @@ static int  s_pick_hold;        /* frames the direction has been held */
 static int  s_pick_tick;        /* frames since the last auto-repeat step */
 
 enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_ASPECT, GM_PALETTE, GM_COLORCC, GM_CCMODE, GM_DARK,
-       GM_PREEMPT, GM_CPU, GM_BFI, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
+       GM_PREEMPT, GM_CPU, GM_BFI, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
 
 /* Display aspect (0=Pixel integer, 1=Fit native-aspect fill, 2=Stretch full panel). Read by
  * ayaneo_gb_show_frame (mt_disp_drv.c); session-scoped, defaults to Pixel = current behaviour. */
@@ -306,6 +306,8 @@ static const char *gm_label(int i)
 	case GM_PREEMPT: return "Run-Ahead";
 	case GM_CPU:     return "CPU Clock";
 	case GM_BFI:     return "BFI";
+	case GM_SHOWFPS: return "Show FPS";
+	case GM_BATTERY: return "Battery";
 	case GM_RESUME:  return "Resume Game on Boot";
 	case GM_SLOT:    return "Save Slot";
 	case GM_SAVE:    return "Save State";
@@ -346,6 +348,10 @@ static const char *gm_value(int i, char *buf)
 	case GM_CPU:     p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
 	case GM_BFI:     { extern int ayaneo_get_strobe(void); int b = ayaneo_get_strobe(); p = mput(p, (b == 3 ? "75%" : b == 2 ? "50%" : b == 1 ? "25%" : "Off")); } break;
 	case GM_RESUME:  { extern int ayaneo_get_resume_on_boot(void); p = mput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
+	case GM_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = mput(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
+	case GM_BATTERY: { extern int ayaneo_gauge_pct(void); extern int ayaneo_gauge_time_str(char *out, int n); extern int upmu_is_chr_det(void);
+			   char ts[24]; p = mputu(p, (unsigned)ayaneo_gauge_pct()); p = mput(p, upmu_is_chr_det() ? "% Charging" : "%");
+			   if (ayaneo_gauge_time_str(ts, sizeof ts)) { p = mput(p, " "); p = mput(p, ts); } } break;
 	case GM_SLOT:    p = mputu(p, (unsigned)s_gbc_slot); break;
 	case GM_SAVE: case GM_LOAD: p = mput(p, "[A]"); break;
 	default: break;
@@ -382,6 +388,9 @@ static int gm_change(int i, int dir, int act)
 			   if (dir) ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); else changed = 0; } break;
 	case GM_RESUME:  { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
 			   if (dir) ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); else changed = 0; } break;
+	case GM_SHOWFPS: { extern int ayaneo_get_show_fps(void); extern void ayaneo_set_show_fps(int v);
+			   if (dir || act) ayaneo_set_show_fps(!ayaneo_get_show_fps()); else changed = 0; } break;
+	case GM_BATTERY: changed = 0; break;
 	case GM_SLOT:    if (dir) s_gbc_slot = (s_gbc_slot + dir + GBC_SLOT_COUNT) % GBC_SLOT_COUNT; changed = 0; break;
 	case GM_SAVE:    if (act && s_menu_ahead_sz) { s_menu_c->state_save(s_menu_ahead);
 			     mput(s_mstat, gba_sd_write_state(s_menu_vol, s_menu_rom->name, s_gbc_slot, s_menu_ahead, s_menu_ahead_sz) == 0 ? "State saved" : "Save failed"); }
@@ -661,6 +670,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					if (atold) break;                       /* rendered the oldest: hold */
 				}
 				mtk_wdt_restart();
+				{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 				ayaneo_gb_show_frame(vbuf);
 				pace_n++;
 				{ unsigned target = pace_base + (unsigned)(pace_n * TPF_NUM / TPF_DEN);
@@ -714,6 +724,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					for (k = 1; k < mult; k++) {
 						unsigned s2 = GBC_SND_MAX;
 						c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);
+						{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 						ayaneo_gbc_audio_submit(snd, s2);
 						if (ahead_sz && ayaneo_rewind_ready()) {   /* capture each FF frame too */
 							void *p = ayaneo_rewind_capture_begin();
@@ -837,6 +848,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * menu is open (do not race the game ahead under the overlay, and a menu
 			 * Load State just replaced the state). */
 			pf = (!g_gbc_menu_open && !ff && GBC_RUNAHEAD) ? ayaneo_get_preempt_frames() : 0;
+			{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 			if (pf > 0 && ahead_sz) {
 				int i;
 				c->state_save(ahead);

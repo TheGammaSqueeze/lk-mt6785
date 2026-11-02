@@ -981,6 +981,12 @@ static void cmd_mode(const char *arg, void *data, unsigned sz)
 		 g_boot_mode, g_boot_mode == AYANEO_BM_FASTBOOT ? "BOOTLOADER(flash ok)" : "EMU(no flash)",
 		 g_menu_live, game);
 	fastboot_info(lbuf);
+	{	/* why the preloader started us: 0 power key, 1 usb, 2 rtc, 3/4/9/10 watchdog, 8 kernel panic,
+		 * 30 power exception, 31 long power key, 32 power loss */
+		extern int ayaneo_boot_reason(void);   /* gba_driver.c: g_boot_arg->boot_reason */
+		snprintf(lbuf, sizeof lbuf, "boot reason: %d", ayaneo_boot_reason());
+		fastboot_info(lbuf);
+	}
 	fastboot_okay("");
 }
 
@@ -1114,6 +1120,9 @@ static void cmd_led(const char *arg, void *data, unsigned sz)
 		fastboot_info(lbuf);
 		{ extern volatile unsigned int g_dbg_usb_suspends, g_dbg_usb_recovers, g_dbg_usb_backoff;
 		  snprintf(lbuf, sizeof lbuf, "usb: suspends=%u recovers=%u backoff=%u", g_dbg_usb_suspends, g_dbg_usb_recovers, g_dbg_usb_backoff); }
+	fastboot_info(lbuf);
+	{ extern volatile unsigned int g_dbg_pwrap_waits, g_dbg_pwrap_fails;
+	  snprintf(lbuf, sizeof lbuf, "pwrap: waits=%u fails=%u", g_dbg_pwrap_waits, g_dbg_pwrap_fails); }
 		fastboot_info(lbuf);
 	}
 	fastboot_okay("");
@@ -1231,6 +1240,23 @@ static void cmd_awdump(const char *arg, void *data, unsigned sz)
 	fastboot_info(lbuf);
 	n = snprintf(lbuf, sizeof lbuf, "aw 30:");
 	for (i = 0x30; i < 0x40; i++) n += snprintf(lbuf + n, sizeof lbuf - n, " %02x", ayaneo_aw2033_read((unsigned char)i) & 0xff);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem gauge - battery gauge internals (ayaneo_gauge.c), after a fresh sample */
+static void cmd_gauge(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_gauge_sample(void);
+	extern int ayaneo_gauge_report(char *out, int n);
+	extern void ayaneo_gauge_hist(void (*emit)(const char *line), char *buf, int n);
+	(void)data; (void)sz;
+	if (arg && *arg == ':') arg++;
+	if (arg && arg[0] == 'h') { ayaneo_gauge_hist(fastboot_info, lbuf, sizeof lbuf); fastboot_okay(""); return; }
+	ayaneo_gauge_sample();
+	ayaneo_gauge_report(lbuf, sizeof lbuf);
+	fastboot_info(lbuf);
+	ayaneo_gauge_report(lbuf, -(int)sizeof lbuf);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -1542,6 +1568,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem chrind", cmd_chrind, 1, 0);
 	fastboot_register("oem chgw", cmd_chgw, 1, 0);
 	fastboot_register("oem pmicw", cmd_pmicw, 1, 0);
+	fastboot_register("oem gauge", cmd_gauge, 1, 0);
 	fastboot_register("oem awdump", cmd_awdump, 1, 0);
 	fastboot_register("oem rewindmap", cmd_rewindmap, 1, 0);
 	fastboot_register("oem mmuq:", cmd_mmuq, 1, 0);

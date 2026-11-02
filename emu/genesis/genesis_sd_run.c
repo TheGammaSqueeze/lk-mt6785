@@ -234,7 +234,7 @@ static void genesis_apply_clock(void)
 extern int  ayaneo_get_preempt_frames(void);
 extern void ayaneo_set_preempt_frames(int v);
 
-enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_CPU, GM_REFRESH, GM_STROBE, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
+enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_CPU, GM_REFRESH, GM_STROBE, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
 /* Overdrive is On/Off: On applies the tuned halo-free profile (ayaneo_set_overdrive_level). The exact
  * kup/kdn/thr/cap are still pokeable live via `oem od:` for tuning. */
 #define OD_MENU_MAX 1
@@ -296,6 +296,7 @@ static const char *gm_label(int i) { switch (i) {
 	case GM_REGION: return "Region"; case GM_REFRESH: return "Refresh Rate";
 	case GM_RUNAHEAD: return "Run-Ahead"; case GM_CPU: return "CPU Clock";
 	case GM_STROBE: return "BFI"; case GM_RESUME: return "Resume Game on Boot";
+	case GM_SHOWFPS: return "Show FPS"; case GM_BATTERY: return "Battery";
 	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
 	case GM_RESET: return "Reset Game"; case GM_EXIT: return "Exit Game"; } return ""; }
 
@@ -309,6 +310,10 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 	case GM_REFRESH: { unsigned mhz = ayaneo_dsi_core_refresh_milli();   /* read-only: XX.X Hz per frame */
 		p = mputu(p, mhz / 1000u); *p++ = '.'; *p++ = (char)('0' + (mhz % 1000u) / 100u); p = mput(p, " Hz"); } break;
 	case GM_STROBE: { int b = ayaneo_get_strobe(); p = mput(p, ayaneo_strobe_name(b)); } break;
+	case GM_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = mput(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
+	case GM_BATTERY: { extern int ayaneo_gauge_pct(void); extern int ayaneo_gauge_time_str(char *out, int n); extern int upmu_is_chr_det(void);
+		char ts[24]; p = mputu(p, (unsigned)ayaneo_gauge_pct()); p = mput(p, upmu_is_chr_det() ? "% Charging" : "%");
+		if (ayaneo_gauge_time_str(ts, sizeof ts)) { p = mput(p, " "); p = mput(p, ts); } } break;
 	case GM_RESUME: { extern int ayaneo_get_resume_on_boot(void); p = mput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case GM_RUNAHEAD: p = mput(p, gen_ra_name(ayaneo_get_preempt_frames())); break;
 	case GM_CPU:    p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
@@ -342,6 +347,9 @@ static int gm_change(int i, int dir, int act)
 		mput(s_mstat, "Region set (some games need Reset)"); } break;
 	case GM_REFRESH: break;   /* read-only display (panel Hz); no adjust */
 	case GM_STROBE: if (dir) { ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); genesis_settings_touch(); } break;
+	case GM_SHOWFPS: if (dir || act) { extern int ayaneo_get_show_fps(void); extern void ayaneo_set_show_fps(int v);
+			ayaneo_set_show_fps(!ayaneo_get_show_fps()); genesis_settings_touch(); } break;
+	case GM_BATTERY: break;   /* read-only */
 	case GM_RESUME: if (dir) { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
 			ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); genesis_settings_touch(); } break;
 	case GM_RUNAHEAD: if (dir) { int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
@@ -616,7 +624,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				c->run(&fr);                              /* render the target rewound frame ONCE */
 				tc = gpt4_get_current_tick();
 				t_load = (tb - ta) / 13u; t_run = (tc - tb) / 13u;
-				g_gen_dbg_frames++;
+				g_gen_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 				/* Reverse the target frame's audio: one frame's worth ~= one present's consumption, so the
 				 * AFE ring neither underruns nor overruns. Normal-pitch reverse (no per-speed blend) - the
 				 * intermediate frames are no longer emulated, and it is smoother this way. */
@@ -645,7 +653,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		em0 = gpt4_get_current_tick();
 		c->run(&fr);                                 /* committed frame */
 		fe = (gpt4_get_current_tick() - em0) / 13u;  /* per-frame emu cost (us) for the FF cap */
-		g_gen_dbg_frames++;
+		g_gen_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 		/* Real-time panel refresh follow: a GM_REGION change armed s_gen_refresh_retune; the region
 		 * option was applied by the c->run() just above (check_variables -> get_region recomputes fps),
 		 * so read the (now new) fps and retune the panel vfp. Retry a couple of frames in case the
@@ -687,7 +695,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				 * the LAST one (the frame we present). Audio kept on all so the sound speeds up. */
 				if (c->set_av_skip) c->set_av_skip(k < mult - 1 ? 1 : 0, 0);
 				c->run(&fr);
-				g_gen_dbg_frames++;
+				g_gen_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 				if (rw_payload && ayaneo_rewind_ready()) {   /* capture each FF frame too */
 					void *p = ayaneo_rewind_capture_begin();
 					if (p && c->state_save(p, rw_payload) == 0) ayaneo_rewind_capture_commit(rw_payload);

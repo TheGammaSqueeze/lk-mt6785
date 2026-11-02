@@ -430,7 +430,41 @@ static inline unsigned int wait_for_state_ready(loop_condition_fp fp,
  * Parameter :
  * Return :
  ******************************************************/
+/* One PMIC wrapper transaction at a time. The wrapper is a single hardware FIFO with a
+ * handshake: two threads interleaving it (the battery gauge on its own thread, the power key
+ * and backlight on the game thread) corrupt each other's transactions, and a failed power
+ * key read used to read as "pressed". A flag under a short critical section, the waiter
+ * yields; usable before the scheduler too (nothing else can hold it then). */
+#include <kernel/thread.h>
+static inline int pwrap_ints_off(void) { unsigned int cpsr; __asm__ volatile("mrs %0, cpsr" : "=r"(cpsr)); return (cpsr & (1u << 7)) != 0; }
+static volatile int s_pwrap_busy;
+volatile unsigned int g_dbg_pwrap_waits, g_dbg_pwrap_fails;
+static signed int pwrap_wacs2_unlocked(unsigned int write, unsigned int adr,
+	unsigned int wdata, unsigned int *rdata);
 signed int pwrap_wacs2(unsigned int write, unsigned int adr,
+	unsigned int wdata, unsigned int *rdata)
+{
+	signed int r;
+	unsigned int spins = 0;
+	for (;;) {
+		enter_critical_section();
+		if (!s_pwrap_busy) { s_pwrap_busy = 1; exit_critical_section(); break; }
+		exit_critical_section();
+		g_dbg_pwrap_waits++;
+		/* The holder may be a lower priority thread: a yield never runs it under this
+		 * kernel's strict priorities (the waiter spun forever, build 140 locked up a minute
+		 * into the boot). Sleep a tick instead; with interrupts off (no scheduler) spin, and
+		 * after a long wait give up the lock: a transaction is microseconds, not seconds. */
+		if (pwrap_ints_off() || in_critical_section()) { if (++spins > 200000u) { s_pwrap_busy = 0; } continue; }
+		thread_sleep(1);
+		if (++spins > 2000u) s_pwrap_busy = 0;   /* two seconds: the holder is gone */
+	}
+	r = pwrap_wacs2_unlocked(write, adr, wdata, rdata);
+	if (r != 0) g_dbg_pwrap_fails++;
+	s_pwrap_busy = 0;
+	return r;
+}
+static signed int pwrap_wacs2_unlocked(unsigned int write, unsigned int adr,
 	unsigned int wdata, unsigned int *rdata)
 {
 	unsigned int reg_rdata = 0;
