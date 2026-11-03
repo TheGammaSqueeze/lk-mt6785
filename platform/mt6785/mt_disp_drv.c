@@ -1253,16 +1253,30 @@ int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, 
 }
 #define AYANEO_FF_MAX_FRAMES 120   /* a guard against a zero cost estimate, not a speed cap */
 int ayaneo_hud_fps_visible(void) { return !g_hud_hide && (g_show_fps || g_hud_bench); }
-/* the FPS badge, top left of the game rect */
-static void ayaneo_hud_draw_fps(unsigned int *buf, unsigned int pitch_w, int gx, int gy)
+/* the FPS badge text and its box size (the same layout ayaneo_hud_draw_fps draws) */
+static int ayaneo_hud_fps_text(char *s)
 {
-	char s[12]; int n = 0, v = g_hud_fps, t[8], k = 0;
-	const int scale = 2, pad = 10;
-	int th = MTK_VFH * scale, bh = th + 12, bw;
-	if (!ayaneo_hud_fps_visible()) return;
+	int n = 0, v = g_hud_fps, t[8], k = 0;
 	if (v < 0) v = 0; if (v > 9999) v = 9999;
 	if (!v) s[n++] = '0'; else { while (v) { t[k++] = (char)('0' + v % 10); v /= 10; } while (k) s[n++] = t[--k]; }
 	s[n++] = ' '; s[n++] = 'F'; s[n++] = 'P'; s[n++] = 'S'; s[n] = 0;
+	return n;
+}
+static void __attribute__((unused)) ayaneo_hud_fps_size(int *w, int *h)
+{
+	char s[12];
+	int n = ayaneo_hud_fps_text(s);
+	*w = 10 + n * MTK_VFW * 2 + 10;
+	*h = MTK_VFH * 2 + 12;
+}
+/* the FPS badge, top left of the game rect */
+static void ayaneo_hud_draw_fps(unsigned int *buf, unsigned int pitch_w, int gx, int gy)
+{
+	char s[12]; int n;
+	const int scale = 2, pad = 10;
+	int th = MTK_VFH * scale, bh = th + 12, bw;
+	if (!ayaneo_hud_fps_visible()) return;
+	n = ayaneo_hud_fps_text(s);
 	bw = pad + n * MTK_VFW * scale + pad;
 	ayaneo_fill_blend(buf, pitch_w, gx + 12, gy + 12, bw, bh, 0xFF0A0A0Fu, 190);
 	ayaneo_text(buf, pitch_w, gx + 12 + pad, gy + 12 + (bh - th) / 2, scale, 0xFF3CFF78u, s);
@@ -1924,6 +1938,9 @@ static void snes_rsz_program(unsigned iw, unsigned ih, unsigned ow, unsigned oh)
 static unsigned s_rsz_sw, s_rsz_sh;   /* source geometry the path was configured for */
 static unsigned s_rsz_dw, s_rsz_dh;  /* output rect at last setup (source+rect key the reprogram) */
 volatile unsigned g_rsz_show_us;      /* generic RSZ present cost (us), for oem diag */
+/* oem diag showparts: the RSZ present split in us (overdrive, turn, prescale, hud, cache clean, layer config) */
+volatile unsigned g_dbg_show_parts[6];
+volatile unsigned int g_dbg_pace_last_ticks;   /* last present's pace wait (13 MHz ticks) */
 
 /* ---- hardware overlay layer (foundation for the live-menu-over-running-game feature) ----------
  * The menu will be composited by the OVL hardware as a SEPARATE layer over the game, so the game
@@ -2215,6 +2232,16 @@ static volatile int   g_od_need_build = 1;    /* rebuild the tables at next od_a
 static unsigned short s_od_prev[512 * 512];   /* previous native frame, packed at sw stride */
 static unsigned short s_od_out[512 * 512];    /* overshot output handed to the resizer */
 static unsigned int   s_od_pw, s_od_ph;       /* dims of the stored previous frame */
+/* The whole overdrive as two tables, rebuilt with the gain tables: the output level for every
+ * (previous, current) pair, [p << 5 | c] for the 5 bit red and blue, [p << 6 | c] for the 6 bit
+ * green. Three loads per pixel instead of od_ch's arithmetic three times; same values exactly. */
+static unsigned char  s_od5[32 * 32];
+static unsigned char  s_od6[64 * 64];
+volatile int g_dbg_od_lut = 1;   /* oem perf bit 0: 0 = the arithmetic per pixel path, for A/B timing */
+volatile int g_dbg_plain_neon = 1;   /* oem perf bit 1: NEON plain prescale (no LCD filter) */
+volatile int g_dbg_filt_ovr = -1;   /* oem perf third value: runtime LCD filter for the game picture, -1 = setting */
+volatile int g_dbg_lcd_neon8 = 1;    /* oem perf bit 3: LCD filters in 8 bit lanes */
+volatile int g_dbg_od_pair = 1;      /* oem perf bit 5: overdrive two pixels a step */
 
 /* Fill a rising-gain table t[0..maxv]: lo..hi across origin darkness, gam bends linear<->squared. */
 static void od_build_up(unsigned char *t, int maxv, int hi, int lo, int gam)
@@ -2229,11 +2256,13 @@ static void od_build_up(unsigned char *t, int maxv, int hi, int lo, int gam)
 		t[p] = (unsigned char)(lo + (((hi - lo) * wf) >> 8));   /* lo..hi, monotone in darkness */
 	}
 }
+static void od_build_lut(void);
 static void od_rebuild(void)
 {
 	od_build_up(g_od_up5, 31, g_od_kuphi, g_od_kuplo, g_od_gam);
 	od_build_up(g_od_up6, 63, g_od_kuphi, g_od_kuplo, g_od_gam);
 	g_od_need_build = 0;
+	od_build_lut();
 }
 
 /* Scalar entry (legacy `oem od:` + the off path): flattens the rising curve to KUP so it reproduces the
@@ -2260,6 +2289,7 @@ void ayaneo_set_overdrive_caps(int up, int dn, int head)
 	if (dn < 0) dn = 0; else if (dn > 31) dn = 31;
 	if (head < 0) head = 0; else if (head > 3) head = 3;
 	g_od_capup = up; g_od_capdn = dn; g_od_head = head;
+	g_od_need_build = 1;   /* the per pair tables hold the caps and headroom */
 }
 void ayaneo_get_overdrive_caps(int *up, int *dn, int *head) { *up = g_od_capup; *dn = g_od_capdn; *head = g_od_head; }
 
@@ -2300,6 +2330,72 @@ static inline unsigned short od_pixel(unsigned short c, unsigned short p)
 	return (unsigned short)((r << 11) | (g << 5) | b);
 }
 
+static void od_build_lut(void)
+{
+	int p, c;
+	for (p = 0; p < 32; p++)
+		for (c = 0; c < 32; c++) s_od5[(p << 5) | c] = (unsigned char)od_ch(c, p, 31, 1, g_od_up5);
+	for (p = 0; p < 64; p++)
+		for (c = 0; c < 64; c++) s_od6[(p << 6) | c] = (unsigned char)od_ch(c, p, 63, 2, g_od_up6);
+}
+
+static inline unsigned short od_pixel_lut(unsigned c, unsigned p)
+{
+	return (unsigned short)((s_od5[((p >> 6) & 0x3E0u) | (c >> 11)] << 11) |
+				(s_od6[((p << 1) & 0xFC0u) | ((c >> 5) & 0x3Fu)] << 5) |
+				 s_od5[((p & 0x1Fu) << 5) | (c & 0x1Fu)]);
+}
+
+static int __attribute__((unused)) od_active(unsigned int sw, unsigned int sh)
+{
+	return g_od_on && !(g_od_kuphi <= 0 && g_od_kuplo <= 0 && g_od_kdn <= 0) && sw <= 512u && sh <= 512u;
+}
+
+#if AYANEO_ROT
+/* Overdrive and the quarter turn in one pass: the overshot frame is written straight into the
+ * turned buffer (sh x sw, pitch sh) that rot565 would have produced from od_apply's output.
+ * The previous frame stays in source order. Same pixels as od_apply + rot565. */
+static void od_apply_rot(const unsigned short *pix, unsigned int sw, unsigned int sh, unsigned int spitch_px,
+			 unsigned short *dst)
+{
+	unsigned int x, y;
+	int have_prev;
+	if (g_od_need_build) od_rebuild();
+	have_prev = (s_od_pw == sw && s_od_ph == sh);
+	/* row order (8 row bands writing 16 byte runs measured slower: 2.0 against 1.4 ms at 600 MHz) */
+	for (y = 0; y < sh; y++) {
+		const unsigned short *src = pix + y * spitch_px;
+		unsigned short *prv = s_od_prev + y * sw;
+		if (!g_rot_ccw) {
+			unsigned short *dc = dst + (sh - 1u - y);
+			if (have_prev && g_dbg_od_pair && !(((unsigned long)src | (unsigned long)prv) & 3u) && !(sw & 1u)) {
+				/* two pixels a step from 32 bit loads: more independent work for the in-order core */
+				const unsigned int *s2 = (const unsigned int *)src;
+				unsigned int *p2 = (unsigned int *)prv;
+				unsigned short *d = dc;
+				for (x = 0; x < sw; x += 2u, d += 2u * sh) {
+					unsigned int c2 = *s2++, q2 = *p2;
+					unsigned short o0 = od_pixel_lut(c2 & 0xFFFFu, q2 & 0xFFFFu);
+					unsigned short o1 = od_pixel_lut(c2 >> 16, q2 >> 16);
+					*p2++ = c2;
+					d[0] = o0; d[sh] = o1;
+				}
+			} else if (have_prev)
+				for (x = 0; x < sw; x++) { unsigned c = src[x]; dc[x * sh] = od_pixel_lut(c, prv[x]); prv[x] = (unsigned short)c; }
+			else
+				for (x = 0; x < sw; x++) { unsigned short c = src[x]; dc[x * sh] = c; prv[x] = c; }
+		} else {
+			unsigned short *dc = dst + (sw - 1u) * sh + y;
+			if (have_prev)
+				for (x = 0; x < sw; x++) { unsigned c = src[x]; dc[-(int)(x * sh)] = od_pixel_lut(c, prv[x]); prv[x] = (unsigned short)c; }
+			else
+				for (x = 0; x < sw; x++) { unsigned short c = src[x]; dc[-(int)(x * sh)] = c; prv[x] = c; }
+		}
+	}
+	s_od_pw = sw; s_od_ph = sh;
+}
+#endif
+
 /* Returns the buffer + stride to present: the overshot output when overdrive is active, or the
  * original frame unchanged (off, or the native resolution just changed so there is no valid prev). */
 static const unsigned short *od_apply(const unsigned short *pix, unsigned int sw, unsigned int sh,
@@ -2315,7 +2411,10 @@ static const unsigned short *od_apply(const unsigned short *pix, unsigned int sw
 		unsigned short *prv = s_od_prev + y * sw;
 		unsigned short *dst = s_od_out + y * sw;
 		if (have_prev)
-			for (x = 0; x < sw; x++) { unsigned short c = src[x]; dst[x] = od_pixel(c, prv[x]); prv[x] = c; }
+			if (g_dbg_od_lut)
+				for (x = 0; x < sw; x++) { unsigned c = src[x]; dst[x] = od_pixel_lut(c, prv[x]); prv[x] = (unsigned short)c; }
+			else
+				for (x = 0; x < sw; x++) { unsigned short c = src[x]; dst[x] = od_pixel(c, prv[x]); prv[x] = c; }
 		else
 			for (x = 0; x < sw; x++) { unsigned short c = src[x]; dst[x] = c; prv[x] = c; }
 	}
@@ -2343,33 +2442,55 @@ static inline unsigned int *rot_game_px(unsigned int *vbuf, unsigned fbpitch, un
 	return vbuf + py * fbpitch + px;
 }
 
+/* Pull / push walk the turned buffer in its own row order: one logical column of the box is one
+ * physical row, and the box's logical rows are neighbouring pixels in it. The per pixel address
+ * helper (rot_game_px) read the box a pixel per cache line, 1.1 ms a frame at 600 MHz for the
+ * FPS badge alone. */
+static void rot_box_xfer(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsigned ih,
+			 int lx, int ly, int lw, int lh, int push)
+{
+	int x, y;
+	for (x = 0; x < lw; x++) {
+		unsigned int *b = s_rot_box + x;
+		if (!g_rot_ccw) {
+			/* logical (x, y) -> physical row x, column iw - 1 - y */
+			unsigned int *r = vbuf + (unsigned)(lx + x) * fbpitch + (iw - 1u - (unsigned)ly);
+			if (push) for (y = 0; y < lh; y++) r[-y] = b[y * lw];
+			else      for (y = 0; y < lh; y++) b[y * lw] = r[-y];
+		} else {
+			/* logical (x, y) -> physical row ih - 1 - x, column y */
+			unsigned int *r = vbuf + (ih - 1u - (unsigned)(lx + x)) * fbpitch + (unsigned)ly;
+			if (push) for (y = 0; y < lh; y++) r[y] = b[y * lw];
+			else      for (y = 0; y < lh; y++) b[y * lw] = r[y];
+		}
+	}
+}
+
 static void rot_box_pull(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsigned ih,
 			 int lx, int ly, int lw, int lh)
 {
-	int x, y;
-	for (y = 0; y < lh; y++)
-		for (x = 0; x < lw; x++)
-			s_rot_box[y * lw + x] = *rot_game_px(vbuf, fbpitch, iw, ih, lx + x, ly + y);
+	rot_box_xfer(vbuf, fbpitch, iw, ih, lx, ly, lw, lh, 0);
 }
 
 static void rot_box_push(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsigned ih,
 			 int lx, int ly, int lw, int lh)
 {
-	int x, y;
-	for (y = 0; y < lh; y++)
-		for (x = 0; x < lw; x++)
-			*rot_game_px(vbuf, fbpitch, iw, ih, lx + x, ly + y) = s_rot_box[y * lw + x];
+	rot_box_xfer(vbuf, fbpitch, iw, ih, lx, ly, lw, lh, 1);
 }
 
 static void rot_hud_osd(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsigned ih)
 {
 	int LGW = (int)ih, LGH = (int)iw;
 
-	/* FPS badge: top left of the game */
+	/* FPS badge: top left of the game; the box is the badge itself (ayaneo_hud_draw_fps puts it
+	 * at 12, 12 of the game), nothing around it is touched */
 	if (ayaneo_hud_fps_visible()) {
-		int lw = 220, lh = 68, lx = 0, ly = 0;
-		if (lw > LGW) lw = LGW;
-		if (lh > LGH) lh = LGH;
+		int lw, lh, lx = 12, ly = 12;
+		ayaneo_hud_fps_size(&lw, &lh);
+		if (lx + lw > LGW) lw = LGW - lx;
+		if (ly + lh > LGH) lh = LGH - ly;
+		if (lw > ROT_BOX_W) lw = ROT_BOX_W;
+		if (lh > ROT_BOX_H) lh = ROT_BOX_H;
 		rot_box_pull(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
 		ayaneo_draw_clip((unsigned)lw, (unsigned)lh);
 		ayaneo_hud_draw_fps(s_rot_box, (unsigned)lw, -lx, -ly);
@@ -2467,6 +2588,8 @@ static void lcd_filter_prescale(unsigned int *vbuf, unsigned fbpitch, const unsi
 		 * correction (cc_lut) is applied into a row scratch first */
 		extern void ayaneo_lcd_prescale_row_neon(const unsigned short *src, unsigned sw, unsigned int *dst, unsigned fbpitch,
 							 unsigned ph, unsigned pv, const unsigned char (*mtab)[8][3]);
+		extern void ayaneo_lcd_prescale_row_neon8(const unsigned short *src, unsigned sw, unsigned int *dst, unsigned fbpitch,
+							  unsigned ph, unsigned pv, const unsigned char (*mtab)[8][3]);
 		static unsigned short s_ccrow[1024];
 		for (y = 0; y < sh; y++) {
 			const unsigned short *srow = pix + y * spitch_px;
@@ -2474,7 +2597,10 @@ static void lcd_filter_prescale(unsigned int *vbuf, unsigned fbpitch, const unsi
 				for (x = 0; x < sw; x++) { unsigned v = srow[x]; s_ccrow[x] = cc_lut[(((v >> 12) & 0xFu) << 8) | (((v >> 7) & 0xFu) << 4) | ((v >> 1) & 0xFu)]; }
 				srow = s_ccrow;
 			}
-			ayaneo_lcd_prescale_row_neon(srow, sw, vbuf + (y * pv) * fbpitch, fbpitch, ph, pv, (const unsigned char (*)[8][3])s_lcd_m);
+			if (g_dbg_lcd_neon8 && ph != 3u)
+				ayaneo_lcd_prescale_row_neon8(srow, sw, vbuf + (y * pv) * fbpitch, fbpitch, ph, pv, (const unsigned char (*)[8][3])s_lcd_m);
+			else
+				ayaneo_lcd_prescale_row_neon(srow, sw, vbuf + (y * pv) * fbpitch, fbpitch, ph, pv, (const unsigned char (*)[8][3])s_lcd_m);
 		}
 		return;
 	}
@@ -2508,6 +2634,7 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	unsigned int t0 = gpt4_get_current_tick();
 
 	if (!pix || !fb_addr || !sw || !sh) return;
+	if (g_dbg_filt_ovr >= 0 && g_dbg_filt_ovr <= 5) filt = g_dbg_filt_ovr;
 	if (g_test_fill_argb && sw <= 512u && sh <= 512u) {
 		/* oem gray: replace the game picture, at its native size and before the overdrive, with a
 		 * flat gray and four outlined boxes (red, green, blue, yellow) sweeping side to side in
@@ -2534,7 +2661,16 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 		}
 		pix = s_test_px; spitch_px = sw;
 	}
+#if AYANEO_ROT
+	int od_turned = 0;   /* overdrive and the turn done together into ROT_565_PA */
+	if (g_dbg_od_lut && od_active(sw, sh) && sw * sh <= ROT_565_MAX_PX) {
+		od_apply_rot(pix, sw, sh, spitch_px, (unsigned short *)ROT_565_PA);
+		od_turned = 1;
+	} else
+#endif
 	pix = od_apply(pix, sw, sh, spitch_px, &spitch_px);   /* software overdrive (no-op unless enabled) */
+	unsigned int tp_od = gpt4_get_current_tick(), tp_rot = tp_od, tp_pre, tp_hud, tp_cln, tp_pace = 0;
+	unsigned int p_od = (tp_od - t0) / 13u;
 #if AYANEO_ROT
 	/* Callers describe the picture on the logical landscape screen. Turn the native frame now,
 	 * while it is small, and map the target rect onto the portrait frame buffer; everything
@@ -2546,11 +2682,12 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 		if (dw < 1u) dw = 1u; if (dh < 1u) dh = 1u;
 		if (xoff + dw > LW) xoff = (LW - dw) / 2u;
 		if (yoff + dh > LH) yoff = (LH - dh) / 2u;
-		rot565(pix, sw, sh, spitch_px, (unsigned short *)ROT_565_PA);
+		if (!od_turned) rot565(pix, sw, sh, spitch_px, (unsigned short *)ROT_565_PA);
 		pix = (const unsigned short *)ROT_565_PA;
 		t = sw; sw = sh; sh = t; spitch_px = sw;
 		rot_rect(xoff, yoff, dw, dh, &px, &py, &pw, &ph2);
 		xoff = px; yoff = py; dw = pw; dh = ph2;
+		tp_rot = gpt4_get_current_tick();
 	}
 #endif
 	if (dw > W) dw = W; if (dh > H) dh = H;
@@ -2622,7 +2759,24 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	 * factor tables (lcd_filter_prescale below). */
 	if (filt >= 4) {
 		lcd_filter_prescale(vbuf, fbpitch, pix, sw, sh, spitch_px, ph, pv, filt, cc_lut, AYANEO_ROT ? 1 : 0);
-	} else {
+	}
+#if defined(KONKR_KPA)
+	else if (filt == 0 && g_dbg_plain_neon && ph >= 1u && ph <= 4u) {
+		extern void ayaneo_plain_prescale_row_neon(const unsigned short *src, unsigned sw, unsigned int *dst,
+							   unsigned fbpitch, unsigned ph, unsigned pv);
+		static unsigned short s_ccrow0[1024];
+		unsigned int y, x;
+		for (y = 0; y < sh; y++) {
+			const unsigned short *srow = pix + y * spitch_px;
+			if (cc_lut && sw <= 1024u) {
+				for (x = 0; x < sw; x++) { unsigned v = srow[x]; s_ccrow0[x] = cc_lut[(((v >> 12) & 0xFu) << 8) | (((v >> 7) & 0xFu) << 4) | ((v >> 1) & 0xFu)]; }
+				srow = s_ccrow0;
+			}
+			ayaneo_plain_prescale_row_neon(srow, sw, vbuf + (y * pv) * fbpitch, fbpitch, ph, pv);
+		}
+	}
+#endif
+	else {
 		const int scan_cols = AYANEO_ROT ? 1 : 0;
 		unsigned int y, x, k, r_;
 		for (y = 0; y < sh; y++) {
@@ -2652,13 +2806,16 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 			}
 		}
 	}
+	tp_pre = gpt4_get_current_tick();
 #if AYANEO_ROT
 	rot_hud_osd(vbuf, fbpitch, iw, ih);   /* FF/RW badge + volume bar, drawn upright on the turned game */
 #else
 	ayaneo_hud_draw(vbuf, fbpitch, 0, 0, (int)iw, (int)ih);   /* FF/RW speed badge (scaled with the game) */
 #endif
+	tp_hud = gpt4_get_current_tick();
 	s_shot_pa = pbuf; s_shot_w = iw; s_shot_h = ih; s_shot_pitch = fbpitch;
 	arch_clean_cache_range((unsigned int)vbuf, ih * fbpitch * 4u);
+	tp_cln = gpt4_get_current_tick();
 
 	/* Detect geometry changes (source res or output rect - dw/dh uniquely encode the aspect mode)
 	 * - only then is the RSZ (a clock-only LK stub, so it persists across config_input) reprogrammed. */
@@ -2675,7 +2832,9 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	{	/* the frame wait is not blit work: keep it out of g_rsz_show_us (the run-ahead budget) */
 		unsigned int tw = gpt4_get_current_tick();
 		rot_pace();   /* returns right after a frame end */
-		t0 += gpt4_get_current_tick() - tw;
+		tp_pace = gpt4_get_current_tick() - tw;
+		g_dbg_pace_last_ticks = tp_pace;
+		t0 += tp_pace;
 	}
 #endif
 	/* Per-frame layer config: points OVL0_2L at the freshly written buffer, sized iw x ih,
@@ -2724,6 +2883,15 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 		g_rszdbg[11] = (wp << 16) | hp;
 		s_rsz_setup = 1; s_rsz_sw = sw; s_rsz_sh = sh;
 		s_rsz_dw = dw; s_rsz_dh = dh;
+	}
+	{
+		unsigned int tend = gpt4_get_current_tick();
+		g_dbg_show_parts[0] = p_od;
+		g_dbg_show_parts[1] = (tp_rot - tp_od) / 13u;
+		g_dbg_show_parts[2] = (tp_pre - tp_rot) / 13u;
+		g_dbg_show_parts[3] = (tp_hud - tp_pre) / 13u;
+		g_dbg_show_parts[4] = (tp_cln - tp_hud) / 13u;
+		g_dbg_show_parts[5] = (tend - tp_cln - tp_pace) / 13u;   /* without the pace wait */
 	}
 	g_rsz_show_us = (gpt4_get_current_tick() - t0) / 13u;
 #if AYANEO_ROT

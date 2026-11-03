@@ -323,6 +323,8 @@ static int            s_have_prev;     /* s_prev holds a valid previous state */
 static unsigned int   s_back;          /* rewind: deltas applied from newest */
 static int            s_rewinding;
 
+extern unsigned ayaneo_xor_scan_neon(const unsigned *a, const unsigned *b, unsigned i, unsigned n);
+volatile int g_dbg_rw_neon = 1;   /* oem perf bit 2: NEON scan of the unchanged runs */
 /* RLE-encode (a XOR b) over nwords into out; b==0 => encode a itself. Token = [u32 gap][u32 lit]
  * [lit u32 xor-words]: skip `gap` unchanged words, then `lit` changed words. Returns byte length
  * (always a multiple of 4), 0 if it would exceed outcap (caller sizes outcap = state + slack). */
@@ -332,7 +334,11 @@ static unsigned int xor_rle_encode(unsigned char *out, unsigned int outcap,
 	unsigned int i = 0, olen = 0;
 	while (i < nwords) {
 		unsigned int gap = 0, lit = 0, ls, k;
-		while (i < nwords && (a[i] ^ (b ? b[i] : 0u)) == 0u) { gap++; i++; }
+		if (g_dbg_rw_neon) {   /* the unchanged run, sixteen words a step */
+			unsigned int j = ayaneo_xor_scan_neon(a, b, i, nwords);
+			gap = j - i; i = j;
+		} else
+			while (i < nwords && (a[i] ^ (b ? b[i] : 0u)) == 0u) { gap++; i++; }
 		ls = i;
 		while (i < nwords && (a[i] ^ (b ? b[i] : 0u)) != 0u) { lit++; i++; }
 		if (olen + 8u + lit * 4u > outcap) return 0u;

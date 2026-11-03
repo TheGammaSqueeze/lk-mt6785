@@ -424,3 +424,165 @@ void ayaneo_lcd_prescale_row_neon(const uint16_t *src, unsigned sw, uint32_t *ds
 		}
 	}
 }
+
+/* Plain integer prescale (no LCD filter), NEON: eight 565 source pixels become 8 x ph ARGB
+ * pixels, the same value repeated across the ph sub columns, and that row is stored to all pv
+ * sub rows from registers (the C path rebuilt one row then copied it pv - 1 times). Same
+ * pixels as the C loop: r, g, b shifted up without bit replication, alpha opaque. ph 1..4. */
+static inline void plain_px8(const uint16_t *s, uint32x4_t *lo, uint32x4_t *hi)
+{
+	uint16x8_t v = vld1q_u16(s);
+	uint16x8_t r = vshlq_n_u16(vshrq_n_u16(v, 11), 3);
+	uint16x8_t g = vshlq_n_u16(vandq_u16(vshrq_n_u16(v, 5), vdupq_n_u16(0x3f)), 2);
+	uint16x8_t b = vshlq_n_u16(vandq_u16(v, vdupq_n_u16(0x1f)), 3);
+	uint32x4_t a = vdupq_n_u32(0xFF000000u);
+	*lo = vorrq_u32(vorrq_u32(a, vshlq_n_u32(vmovl_u16(vget_low_u16(r)), 16)),
+			vorrq_u32(vshlq_n_u32(vmovl_u16(vget_low_u16(g)), 8), vmovl_u16(vget_low_u16(b))));
+	*hi = vorrq_u32(vorrq_u32(a, vshlq_n_u32(vmovl_u16(vget_high_u16(r)), 16)),
+			vorrq_u32(vshlq_n_u32(vmovl_u16(vget_high_u16(g)), 8), vmovl_u16(vget_high_u16(b))));
+}
+void ayaneo_plain_prescale_row_neon(const uint16_t *src, unsigned sw, uint32_t *dst, unsigned fbpitch,
+				    unsigned ph, unsigned pv)
+{
+	unsigned x, j;
+	for (x = 0; x + 8u <= sw; x += 8u) {
+		uint32x4_t lo, hi;
+		uint32_t *o = dst + x * ph;
+		plain_px8(src + x, &lo, &hi);
+		switch (ph) {
+		case 1:
+			for (j = 0; j < pv; j++, o += fbpitch) { vst1q_u32(o, lo); vst1q_u32(o + 4, hi); }
+			break;
+		case 2: {
+			uint32x4x2_t l, h; l.val[0] = l.val[1] = lo; h.val[0] = h.val[1] = hi;
+			for (j = 0; j < pv; j++, o += fbpitch) { vst2q_u32(o, l); vst2q_u32(o + 8, h); }
+			break; }
+		case 3: {
+			uint32x4x3_t l, h; l.val[0] = l.val[1] = l.val[2] = lo; h.val[0] = h.val[1] = h.val[2] = hi;
+			for (j = 0; j < pv; j++, o += fbpitch) { vst3q_u32(o, l); vst3q_u32(o + 12, h); }
+			break; }
+		default: {
+			uint32x4x4_t l, h; l.val[0] = l.val[1] = l.val[2] = l.val[3] = lo; h.val[0] = h.val[1] = h.val[2] = h.val[3] = hi;
+			for (j = 0; j < pv; j++, o += fbpitch) { vst4q_u32(o, l); vst4q_u32(o + 16, h); }
+			break; }
+		}
+	}
+	for (; x < sw; x++) {   /* tail */
+		unsigned v = src[x], k;
+		uint32_t p = 0xFF000000u | ((((v >> 11) & 0x1fu) << 3) << 16) | ((((v >> 5) & 0x3fu) << 2) << 8) | ((v & 0x1fu) << 3);
+		for (j = 0; j < pv; j++)
+			for (k = 0; k < ph; k++) dst[j * fbpitch + x * ph + k] = p;
+	}
+}
+
+/* Rewind delta scan: the first word index >= i (below n) where a ^ b is not zero, n when none.
+ * b == 0 scans a against zero. Sixteen words per step while they are all equal, which is most
+ * of a state from one frame to the next. */
+unsigned ayaneo_xor_scan_neon(const unsigned *a, const unsigned *b, unsigned i, unsigned n)
+{
+	if (b) {
+		while (i + 16u <= n) {
+			uint32x4_t d = vorrq_u32(vorrq_u32(veorq_u32(vld1q_u32(a + i), vld1q_u32(b + i)),
+							   veorq_u32(vld1q_u32(a + i + 4u), vld1q_u32(b + i + 4u))),
+						 vorrq_u32(veorq_u32(vld1q_u32(a + i + 8u), vld1q_u32(b + i + 8u)),
+							   veorq_u32(vld1q_u32(a + i + 12u), vld1q_u32(b + i + 12u))));
+			uint32x2_t m = vorr_u32(vget_low_u32(d), vget_high_u32(d));
+			if (vget_lane_u32(m, 0) | vget_lane_u32(m, 1)) break;
+			i += 16u;
+		}
+		while (i < n && a[i] == b[i]) i++;
+	} else {
+		while (i + 16u <= n) {
+			uint32x4_t d = vorrq_u32(vorrq_u32(vld1q_u32(a + i), vld1q_u32(a + i + 4u)),
+						 vorrq_u32(vld1q_u32(a + i + 8u), vld1q_u32(a + i + 12u)));
+			uint32x2_t m = vorr_u32(vget_low_u32(d), vget_high_u32(d));
+			if (vget_lane_u32(m, 0) | vget_lane_u32(m, 1)) break;
+			i += 16u;
+		}
+		while (i < n && a[i] == 0u) i++;
+	}
+	return i;
+}
+
+/* oem perf:bench memory probe on a free scratch range: 0 = stores, 1 = loads (returns a sum so
+ * the reads are not dropped), 2 = copy of the first half onto the second. */
+unsigned ayaneo_membench_neon(int which, void *buf, unsigned bytes)
+{
+	uint32_t *p = (uint32_t *)buf;
+	unsigned i, n = bytes / 4u;
+	if (which == 0) {
+		uint32x4_t v = vdupq_n_u32(0xFF102030u);
+		for (i = 0; i + 16u <= n; i += 16u) { vst1q_u32(p + i, v); vst1q_u32(p + i + 4, v); vst1q_u32(p + i + 8, v); vst1q_u32(p + i + 12, v); }
+		return 0;
+	} else if (which == 1) {
+		uint32x4_t s = vdupq_n_u32(0);
+		for (i = 0; i + 16u <= n; i += 16u)
+			s = vaddq_u32(s, vaddq_u32(vaddq_u32(vld1q_u32(p + i), vld1q_u32(p + i + 4)), vaddq_u32(vld1q_u32(p + i + 8), vld1q_u32(p + i + 12))));
+		return vgetq_lane_u32(s, 0) + vgetq_lane_u32(s, 1) + vgetq_lane_u32(s, 2) + vgetq_lane_u32(s, 3);
+	} else {
+		uint32_t *q = p + n / 2u;
+		for (i = 0; i + 16u <= n / 2u; i += 16u) {
+			vst1q_u32(q + i, vld1q_u32(p + i)); vst1q_u32(q + i + 4, vld1q_u32(p + i + 4));
+			vst1q_u32(q + i + 8, vld1q_u32(p + i + 8)); vst1q_u32(q + i + 12, vld1q_u32(p + i + 12));
+		}
+		return 0;
+	}
+}
+
+/* LCD1x / LCD3x prescale in 8 bit lanes: sixteen source pixels a step, each channel times the
+ * sub position factor with an 8 x 8 -> 16 bit multiply and the top byte kept ((c * m) >> 8, the
+ * same as the 16 bit version), the ph sub columns interleaved with zips and the ARGB pixels
+ * written with vst4 (bytes B, G, R, A). About half the work of ayaneo_lcd_prescale_row_neon.
+ * ph 1, 2 or 4; the caller uses the 16 bit version for 3. */
+static inline uint8x16_t lcd_mul8(uint8x16_t c, uint8_t m)
+{
+	uint8x8_t mm = vdup_n_u8(m);
+	return vcombine_u8(vshrn_n_u16(vmull_u8(vget_low_u8(c), mm), 8), vshrn_n_u16(vmull_u8(vget_high_u8(c), mm), 8));
+}
+void ayaneo_lcd_prescale_row_neon8(const uint16_t *src, unsigned sw, uint32_t *dst, unsigned fbpitch,
+				   unsigned ph, unsigned pv, const unsigned char (*mtab)[8][3])
+{
+	const uint8x16_t A = vdupq_n_u8(0xFF);
+	unsigned x, j;
+	for (x = 0; x + 16u <= sw; x += 16u) {
+		uint16x8_t v0 = vld1q_u16(src + x), v1 = vld1q_u16(src + x + 8u);
+		uint8x16_t r = vandq_u8(vcombine_u8(vshrn_n_u16(v0, 8), vshrn_n_u16(v1, 8)), vdupq_n_u8(0xF8));   /* (v >> 11) << 3 */
+		uint8x16_t g = vshlq_n_u8(vcombine_u8(vshrn_n_u16(v0, 5), vshrn_n_u16(v1, 5)), 2);                 /* ((v >> 5) & 63) << 2 */
+		uint8x16_t b = vshlq_n_u8(vcombine_u8(vmovn_u16(v0), vmovn_u16(v1)), 3);   /* low 5 bits, shifted out the rest */
+		for (j = 0; j < pv; j++) {
+			const unsigned char (*m)[3] = mtab[j < 8u ? j : 7u];
+			uint8_t *o = (uint8_t *)(dst + j * fbpitch + x * ph);
+			uint8x16x4_t q;
+			q.val[3] = A;
+			if (ph == 1) {
+				q.val[2] = lcd_mul8(r, m[0][0]); q.val[1] = lcd_mul8(g, m[0][1]); q.val[0] = lcd_mul8(b, m[0][2]);
+				vst4q_u8(o, q);
+			} else if (ph == 2) {
+				uint8x16x2_t R = vzipq_u8(lcd_mul8(r, m[0][0]), lcd_mul8(r, m[1][0]));
+				uint8x16x2_t G = vzipq_u8(lcd_mul8(g, m[0][1]), lcd_mul8(g, m[1][1]));
+				uint8x16x2_t B = vzipq_u8(lcd_mul8(b, m[0][2]), lcd_mul8(b, m[1][2]));
+				q.val[2] = R.val[0]; q.val[1] = G.val[0]; q.val[0] = B.val[0]; vst4q_u8(o, q);
+				q.val[2] = R.val[1]; q.val[1] = G.val[1]; q.val[0] = B.val[1]; vst4q_u8(o + 64, q);
+			} else {
+				/* zip(k0, k2) and zip(k1, k3), then zip those: k0 k1 k2 k3 per source pixel */
+				uint8x16x2_t r02 = vzipq_u8(lcd_mul8(r, m[0][0]), lcd_mul8(r, m[2][0]));
+				uint8x16x2_t r13 = vzipq_u8(lcd_mul8(r, m[1][0]), lcd_mul8(r, m[3][0]));
+				uint8x16x2_t g02 = vzipq_u8(lcd_mul8(g, m[0][1]), lcd_mul8(g, m[2][1]));
+				uint8x16x2_t g13 = vzipq_u8(lcd_mul8(g, m[1][1]), lcd_mul8(g, m[3][1]));
+				uint8x16x2_t b02 = vzipq_u8(lcd_mul8(b, m[0][2]), lcd_mul8(b, m[2][2]));
+				uint8x16x2_t b13 = vzipq_u8(lcd_mul8(b, m[1][2]), lcd_mul8(b, m[3][2]));
+				uint8x16x2_t R0 = vzipq_u8(r02.val[0], r13.val[0]), R1 = vzipq_u8(r02.val[1], r13.val[1]);
+				uint8x16x2_t G0 = vzipq_u8(g02.val[0], g13.val[0]), G1 = vzipq_u8(g02.val[1], g13.val[1]);
+				uint8x16x2_t B0 = vzipq_u8(b02.val[0], b13.val[0]), B1 = vzipq_u8(b02.val[1], b13.val[1]);
+				q.val[2] = R0.val[0]; q.val[1] = G0.val[0]; q.val[0] = B0.val[0]; vst4q_u8(o, q);
+				q.val[2] = R0.val[1]; q.val[1] = G0.val[1]; q.val[0] = B0.val[1]; vst4q_u8(o + 64, q);
+				q.val[2] = R1.val[0]; q.val[1] = G1.val[0]; q.val[0] = B1.val[0]; vst4q_u8(o + 128, q);
+				q.val[2] = R1.val[1]; q.val[1] = G1.val[1]; q.val[0] = B1.val[1]; vst4q_u8(o + 192, q);
+			}
+		}
+	}
+	if (x < sw) {   /* the last pixels through the 16 bit version (eight a step, scalar tail) */
+		ayaneo_lcd_prescale_row_neon(src + x, sw - x, dst + x * ph, fbpitch, ph, pv, mtab);
+	}
+}
+

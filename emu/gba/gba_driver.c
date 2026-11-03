@@ -224,6 +224,28 @@ static volatile int s_reset_req;	/* soft reset: restart the current game (menu R
  * oem diag `em=` to size the run-ahead/preemptive-frames headroom (each extra
  * predicted frame costs one more of these). */
 volatile unsigned int g_dbg_emu_us;
+volatile unsigned int g_dbg_snap_us;
+volatile unsigned int g_dbg_snap_parts[3];   /* core state save, sound ring, delta encode + store (us) */
+/* oem diag lp: the game loop split (us), average and worst over 64 loops:
+ * [0] before the frame (input, rewind, clock), [1] the committed frame, [2] rewind snapshot,
+ * [3] the rest up to the present (FF, volume, power, menu), [4] present work, [5] present wait */
+volatile unsigned int g_dbg_lp_avg[6], g_dbg_lp_max[6];
+static unsigned int s_lp_t[6], s_lp_acc[6], s_lp_mx[6], s_lp_n;
+static void lp_mark(int i) { s_lp_t[i] = gpt4_get_current_tick(); }
+static void lp_commit(void)
+{
+	extern volatile unsigned int g_dbg_pace_last_ticks;
+	unsigned int d[6], i, pw = g_dbg_pace_last_ticks;
+	d[0] = s_lp_t[1] - s_lp_t[0]; d[1] = s_lp_t[2] - s_lp_t[1]; d[2] = s_lp_t[3] - s_lp_t[2];
+	d[3] = s_lp_t[4] - s_lp_t[3]; d[4] = s_lp_t[5] - s_lp_t[4];
+	if (pw > d[4]) pw = d[4];
+	d[4] -= pw; d[5] = pw;
+	for (i = 0; i < 6; i++) { s_lp_acc[i] += d[i]; if (d[i] > s_lp_mx[i]) s_lp_mx[i] = d[i]; }
+	if (++s_lp_n >= 64) {
+		for (i = 0; i < 6; i++) { g_dbg_lp_avg[i] = s_lp_acc[i] / (64u * 13u); g_dbg_lp_max[i] = s_lp_mx[i] / 13u; s_lp_acc[i] = 0; s_lp_mx[i] = 0; }
+		s_lp_n = 0;
+	}
+}	/* rewind snapshot of the committed frame (us), oem diag */
 volatile unsigned int g_dbg_loop_us;	/* whole game loop iteration (us), oem diag loop: */
 volatile unsigned int g_dbg_frame_ticks;	/* GBA cycles advanced by the committed frame */
 volatile unsigned int g_dbg_asub_calls, g_dbg_asub_done, g_dbg_asub_frames;	/* audio submit counters */
@@ -235,6 +257,15 @@ static unsigned s_settings_tick;	/* 13 MHz tick of the last volume/brightness ch
 static volatile int s_benchmark;
 static volatile int s_fps;
 static volatile int s_menu_open;
+/* GBA core choice (armGBA-pico from the SD card, gpSP from boot_b) and the Core Settings page */
+static int s_core_is_sd;              /* g_core is the SD card's core */
+static int s_core_pref;               /* 0 = the card's core when it is there, 1 = gpSP */
+static int s_sdcore_present = -1;     /* checked at the first GBA launch, once the card is mounted */
+static int s_menu_page;               /* 0 the Pico menu, 1 Core Settings */
+static int s_core_sel;                /* the selected row on the Core Settings page */
+static volatile int s_corecfg_dirty;
+const char *g_gba_state_dir = "/states/gba";   /* gba_sd_save.c: savestates are per core */
+static void core_opt_store(const char *key, int val);
 static volatile unsigned s_keys;	/* GBA mask, refreshed once per frame */
 /* Release-latch for the A/B that dismissed the Pico menu: the menu closes on the press edge
  * while the button is still held, so without this the held A/B bleeds into the game as an
@@ -779,9 +810,12 @@ static void run_one_frame(void)
 static void gba_rewind_arm(void)
 {
 	unsigned ss = gba_core_state_size();
-	if (!ss || ss > (512u * 1024u)) { s_gba_rw_payload = 0; ayaneo_rewind_reset(0); return; }
+	if (!ss || ss > (1024u * 1024u)) { s_gba_rw_payload = 0; ayaneo_rewind_reset(0); return; }   /* gpSP 512 KiB, armGBA ~770 KiB */
 	s_gba_rw_snd_off = (ss + 7u) & ~7u;
-	s_gba_rw_payload = s_gba_rw_snd_off + GBA_RW_SND_SZ;
+	/* gpSP keeps its sound ring outside the state; the SD card's core carries its audio in the
+	 * state and its ring save/load do nothing, so the slot is the state alone (the 128 KB tail was
+	 * scanned by the delta encoder every frame for nothing) */
+	s_gba_rw_payload = s_gba_rw_snd_off + (s_core_is_sd ? 0u : GBA_RW_SND_SZ);
 	ayaneo_rewind_reset(s_gba_rw_payload);
 }
 
@@ -794,9 +828,15 @@ static void gba_rewind_snap(void)
 	if (!s_gba_rw_payload || !ayaneo_rewind_ready()) return;
 	p = ayaneo_rewind_capture_begin();
 	if (p) {
+		unsigned t0 = gpt4_get_current_tick(), t1, t2;
 		gba_core_state_save(p);
+		t1 = gpt4_get_current_tick();
 		gba_sound_ring_save((unsigned char *)p + s_gba_rw_snd_off);
+		t2 = gpt4_get_current_tick();
 		ayaneo_rewind_capture_commit(s_gba_rw_payload);
+		g_dbg_snap_parts[0] = (t1 - t0) / 13u;
+		g_dbg_snap_parts[1] = (t2 - t1) / 13u;
+		g_dbg_snap_parts[2] = (gpt4_get_current_tick() - t2) / 13u;
 	}
 }
 
@@ -900,7 +940,7 @@ static void preempt_present(void)
 		return;
 	}
 	{
-		static unsigned char s_ahead_state[512 * 1024] __attribute__((aligned(8)));
+		static unsigned char s_ahead_state[1024 * 1024] __attribute__((aligned(8)));   /* armGBA's state is ~770 KiB */
 		static unsigned char s_ahead_snd[128 * 1024] __attribute__((aligned(8)));	/* sound ring */
 		unsigned t0, t1, t2, t3;
 		int i;
@@ -935,6 +975,7 @@ static unsigned int fnv1a(unsigned int h, const unsigned char *p, unsigned long 
 	for (i = 0; i < n; i++) { h ^= p[i]; h *= 16777619u; }
 	return h;
 }
+
 
 /* Hash the full observable committed state - the 512 KB savestate + the 128 KB sound
  * ring (which the savestate omits) + the rendered 240x160 framebuffer (so VISUAL output
@@ -999,6 +1040,7 @@ static void gba_run_ahead_selftest(int nframes)
 	static unsigned char tmp_state[512 * 1024] __attribute__((aligned(8)));
 	static unsigned char tmp_snd[128 * 1024] __attribute__((aligned(8)));
 	unsigned int cref[3], ctest[3];
+	if (gba_core_state_size() > sizeof s0_state) return;   /* the selftest buffers are gpSP sized */
 	int pf = ayaneo_get_preempt_frames();
 	int i, j, cmp;
 
@@ -1373,7 +1415,7 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_RESUME, MI_SKIPBOOT, MI_SKIPINTRO,
-	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_BENCH, MI_SHOWFPS, MI_RESET, MI_CLOSE, MI_COUNT
+	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_BENCH, MI_SHOWFPS, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_COUNT
 };
 #define GBA_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -1454,6 +1496,14 @@ static const char *menu_value(int item, char *buf)
 		else p = mi_puts(p, "Off");
 		break;
 	case MI_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = mi_puts(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
+	case MI_CORE:
+		if (s_sdcore_present == 0) p = mi_puts(p, "gpSP");
+		else p = mi_puts(p, s_core_pref ? "gpSP" : "armGBA");
+		if ((s_core_pref == 0 && s_sdcore_present > 0) != s_core_is_sd) p = mi_puts(p, " (next game)");
+		break;
+	case MI_CORESET:
+		p = mi_puts(p, (g_core && g_core->version >= GBA_CORE_ABI_V3 && g_core->opt_count && g_core->opt_count() > 0) ? ">" : "None");
+		break;
 	case MI_CLOSE: default: break;
 	}
 	*p = 0;
@@ -1482,6 +1532,8 @@ static const char *menu_label(int item)
 	case MI_PREEMPT:   return "Run-Ahead";
 	case MI_BENCH:     return "Benchmark (Uncap)";
 	case MI_SHOWFPS:   return "Show FPS";
+	case MI_CORE:      return "GBA Core";
+	case MI_CORESET:   return "Core Settings";
 	case MI_RESET:     return "Reset Game";
 	case MI_CLOSE:     return "Close";
 	}
@@ -1515,6 +1567,21 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
 	case MI_SHOWFPS:  { extern int ayaneo_get_show_fps(void); extern void ayaneo_set_show_fps(int v);
 			    if (dir || act) ayaneo_set_show_fps(!ayaneo_get_show_fps()); else changed = 0; } break;
+	case MI_CORE:
+		if (!(dir || act)) { changed = 0; break; }
+		if (s_sdcore_present == 0) { mi_puts(status, "No armGBA core on the card"); changed = 0; break; }
+		s_core_pref = !s_core_pref;
+		core_opt_store("core", s_core_pref);
+		mi_puts(status, "Takes effect at the next game start");
+		break;
+	case MI_CORESET:
+		changed = 0;
+		if ((act || dir > 0) && g_core && g_core->version >= GBA_CORE_ABI_V3 && g_core->opt_count && g_core->opt_count() > 0) {
+			s_menu_page = 1; s_core_sel = 0;
+		} else if (act || dir) {
+			mi_puts(status, "gpSP has no core settings");
+		}
+		break;
 	case MI_ASPECT:   if (dir) g_gba_aspect = (g_gba_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
 	case MI_SLOT:     if (dir) s_gba_slot = (s_gba_slot + dir + GBA_SLOT_COUNT) % GBA_SLOT_COUNT; changed = 0; break;
 	case MI_LOADSTATE: if (act) { int ok = manual_state_read(state); if (ok) gba_rewind_arm(); mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
@@ -1551,6 +1618,7 @@ static void menu_toggle(void)
 	extern void ayaneo_menu_overlay_mark_dirty(void);
 	s_menu_open = !s_menu_open;
 	s_menu_status[0] = 0;
+	s_menu_page = 0;
 	ayaneo_menu_overlay_mark_dirty();	/* repaint the static overlay on open/close */
 	if (s_menu_open)
 		battery_poll(BATTERY_MENU_FRAMES);	/* refresh the shown % on open (<= once/min) */
@@ -1563,6 +1631,28 @@ static void menu_tick(unsigned char *state)
 	unsigned k = menu_keys();
 	battery_poll(BATTERY_MENU_FRAMES);	/* menu open: refresh the shown % at most once/min */
 	if (k) ayaneo_menu_overlay_mark_dirty();	/* any nav/value key changes the panel -> repaint */
+	if (s_menu_page == 1) {
+		/* Core Settings: the core's own options, then Back */
+		int n = g_core->opt_count(), rows = n + 1;
+		if (k & MK_UP)   { s_core_sel = (s_core_sel + rows - 1) % rows; s_menu_status[0] = 0; }
+		if (k & MK_DOWN) { s_core_sel = (s_core_sel + 1) % rows; s_menu_status[0] = 0; }
+		if ((k & (MK_LEFT | MK_RIGHT | MK_A)) && s_core_sel < n) {
+			const struct gba_core_option *o = g_core->opt_info(s_core_sel);
+			int d = (k & MK_LEFT) ? -1 : 1;
+			if (o && o->nvalues > 0) {
+				int v = (g_core->opt_get(s_core_sel) + d + o->nvalues) % o->nvalues;
+				g_core->opt_set(s_core_sel, v);
+				core_opt_store(o->key, v);
+				s_menu_status[0] = 0;
+				if (o->flags & GBA_CORE_OPT_RESTART) mi_puts(s_menu_status, "Takes effect at the next game start");
+				s_settings_dirty = 1;
+				s_settings_tick = gpt4_get_current_tick();
+			}
+		}
+		if ((k & MK_A) && s_core_sel == n) { s_menu_page = 0; s_menu_status[0] = 0; }
+		if (k & MK_B) { s_menu_page = 0; s_menu_status[0] = 0; }
+		return;
+	}
 	if (k & MK_UP)    { s_menu_sel = (s_menu_sel + MI_COUNT - 1) % MI_COUNT; s_menu_status[0] = 0; }
 	if (k & MK_DOWN)  { s_menu_sel = (s_menu_sel + 1) % MI_COUNT; s_menu_status[0] = 0; }
 	if (k & MK_LEFT)  { if (menu_change(s_menu_sel, -1, 0, state, s_menu_status)) s_menu_open = 0; }
@@ -1595,6 +1685,33 @@ void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 
 	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xD010141Cu);   /* translucent: the game shows through (hardware blend) */
 	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
+	if (s_menu_page == 1 && g_core && g_core->version >= GBA_CORE_ABI_V3) {
+		/* Core Settings: title, the core's name, its options and Back, in the same panel */
+		int n = g_core->opt_count(), r;
+		ayaneo_text(buf, pitch, px + 28, py + 20, 3, 0xFFFFFFFFu, "Core Settings");
+		ayaneo_text(buf, pitch, px + 28, py + 46, 1, 0xFF8890A0u, g_core->name ? g_core->name : "");
+		for (r = 0; r <= n; r++, y += rowH) {
+			unsigned int fg = (r == s_core_sel) ? 0xFF101018u : 0xFFC8D0E0u;
+			const char *lab = "Back", *v = "";
+			int vw;
+			if (r == s_core_sel)
+				ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
+			if (r < n) {
+				const struct gba_core_option *o = g_core->opt_info(r);
+				int cur = g_core->opt_get(r);
+				lab = o ? o->label : "";
+				v = (o && cur >= 0 && cur < o->nvalues) ? o->values[cur] : "";
+			}
+			ayaneo_text(buf, pitch, x, y, 2, fg, lab);
+			for (vw = 0; v[vw]; vw++) ;
+			ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, v);
+		}
+		if (s_menu_status[0])
+			ayaneo_text(buf, pitch, x, py + panelH - 32, 2, 0xFF80E080u, s_menu_status);
+		ayaneo_text(buf, pitch, x, py + panelH - 14, 1, 0xFF8890A0u,
+			    "Up/Down move  Left/Right change  B back");
+		return;
+	}
 	ayaneo_text(buf, pitch, px + 28, py + 20, 3, 0xFFFFFFFFu, "GammaOS Pico");
 
 	for (i = 0; i < MI_COUNT; i++, y += rowH) {
@@ -1731,6 +1848,118 @@ extern void snes_sd_session(fat_vol *vol, const gba_rom_entry *rom);   /* snes9x
 extern void genesis_sd_session(fat_vol *vol, const gba_rom_entry *rom); /* Genesis-Plus-GX (MD/SMS/GG/SG) blob */
 static int s_gpsp_dirty;
 
+/* ---- GBA core choice: armGBA-pico from the card, gpSP from boot_b ----
+ * Boot and the BIOS intro always run on gpSP from boot_b (the card is still being mounted then).
+ * At each GBA game launch gba_core_for_launch loads /cores/armgba-pico.blob into the core slot
+ * when it is on the card and GBA Core is not set to gpSP; if the file is missing or rejected,
+ * gpSP stays (or is loaded back). The CPU thread is parked in gba_yield_to_main while this
+ * happens, and the launch sets s_cpu_restart_req, so it re-enters the new core's cpu_loop.
+ * The menu reuses the arena while it runs, so the core is initialised again at every launch.
+ * /gba/armgba-pico.cfg holds the choice ("core") and the core's options (by key). */
+#define SDCORE_PATH "/cores/armgba-pico.blob"
+#define CORECFG_MAX 24
+static struct { char key[32]; int val; } s_corecfg[CORECFG_MAX];
+static int s_corecfg_n, s_corecfg_loaded;
+extern const struct gba_core_exports *gba_core_load_file(fat_vol *v, const char *path);
+
+static void core_opt_store(const char *key, int val)
+{
+	int i, k;
+	for (i = 0; i < s_corecfg_n; i++)
+		if (!strcmp(s_corecfg[i].key, key)) { s_corecfg[i].val = val; s_corecfg_dirty = 1; return; }
+	if (s_corecfg_n >= CORECFG_MAX) return;
+	for (k = 0; key[k] && k < (int)sizeof s_corecfg[0].key - 1; k++) s_corecfg[s_corecfg_n].key[k] = key[k];
+	s_corecfg[s_corecfg_n].key[k] = 0;
+	s_corecfg[s_corecfg_n].val = val;
+	s_corecfg_n++;
+	s_corecfg_dirty = 1;
+}
+static int core_opt_lookup(const char *key, int *val)
+{
+	int i;
+	for (i = 0; i < s_corecfg_n; i++) if (!strcmp(s_corecfg[i].key, key)) { *val = s_corecfg[i].val; return 1; }
+	return 0;
+}
+static void corecfg_load(void)
+{
+	static char buf[2048];
+	uint32_t n = gba_sd_read_named(&s_sd_vol, "/gba", "armgba-pico", "cfg", (unsigned char *)buf, sizeof buf - 1);
+	char *p = buf, *e;
+	int v;
+	s_corecfg_loaded = 1;
+	s_corecfg_n = 0;
+	buf[n] = 0;
+	while (*p) {
+		char *eq;
+		e = p; while (*e && *e != '\n') e++;
+		eq = p; while (eq < e && *eq != '=') eq++;
+		if (eq < e) {
+			char key[32]; int k = 0; char *q = eq + 1;
+			while (p < eq && k < (int)sizeof key - 1) key[k++] = *p++;
+			key[k] = 0;
+			v = 0; while (q < e && *q >= '0' && *q <= '9') v = v * 10 + (*q++ - '0');
+			core_opt_store(key, v);
+		}
+		p = *e ? e + 1 : e;
+	}
+	s_corecfg_dirty = 0;
+	if (core_opt_lookup("core", &v)) s_core_pref = v ? 1 : 0;
+}
+static void corecfg_save(void)
+{
+	static char buf[2048];
+	int i, n = 0;
+	for (i = 0; i < s_corecfg_n && n < (int)sizeof buf - 48; i++)
+		n += snprintf(buf + n, sizeof buf - n, "%s=%d\n", s_corecfg[i].key, s_corecfg[i].val);
+	gba_sd_write_named(&s_sd_vol, "/gba", "armgba-pico", "cfg", buf, (uint32_t)n);
+}
+/* the saved value of every option the core offers (its default where nothing is saved) */
+static void core_apply_opts(void)
+{
+	int i, n, v;
+	if (!g_core || g_core->version < GBA_CORE_ABI_V3 || !g_core->opt_count) return;
+	n = g_core->opt_count();
+	for (i = 0; i < n; i++) {
+		const struct gba_core_option *o = g_core->opt_info(i);
+		if (!o) continue;
+		if (!core_opt_lookup(o->key, &v) || v < 0 || v >= o->nvalues) v = o->def;
+		g_core->opt_set(i, v);
+	}
+}
+volatile unsigned int g_dbg_core_switch_ms, g_dbg_core_is_sd;   /* oem core */
+const struct gba_core_exports *gba_core_current(void) { return g_core; }
+static unsigned char *gba_core_for_launch(void)
+{
+	unsigned t0 = gpt4_get_current_tick();
+	int want_sd;
+	if (!s_corecfg_loaded) corecfg_load();
+	if (s_sdcore_present < 0) { fat_file f; s_sdcore_present = (fat_open(&s_sd_vol, SDCORE_PATH, &f) == 0) ? 1 : 0; }
+	want_sd = s_sdcore_present > 0 && s_core_pref == 0;
+	if (want_sd && !s_core_is_sd) {
+		const struct gba_core_exports *ex = gba_core_load_file(&s_sd_vol, SDCORE_PATH);
+		if (ex) { g_core = ex; s_core_is_sd = 1; }
+		else {
+			GBA_LOG("gba: %s rejected, staying on gpSP\n", SDCORE_PATH);
+			s_sdcore_present = 0;
+			want_sd = 0;
+			if (s_core_is_sd == 0) { /* gpSP still in the slot: the load wrote over it */ g_core = gba_core_load(); s_gpsp_dirty = 1; }
+		}
+	} else if (!want_sd && s_core_is_sd) {
+		g_core = gba_core_load();       /* back to gpSP from boot_b */
+		s_core_is_sd = 0;
+		s_gpsp_dirty = 1;
+	}
+	if (s_core_is_sd || s_gpsp_dirty) {
+		gba_core_init((void *)GBA_ARENA_PA, GBA_ARENA_SZ - GBA_DRV_RESERVE);
+		s_gpsp_dirty = 0;
+	}
+	if (s_core_is_sd) core_apply_opts();
+	g_gba_state_dir = (g_core->version >= GBA_CORE_ABI_V3 && g_core->state_dir) ? g_core->state_dir : "/states/gba";
+	g_dbg_core_is_sd = (unsigned)s_core_is_sd;
+	g_dbg_core_switch_ms = (gpt4_get_current_tick() - t0) / 13000u;
+	return gba_core_rom_ptr();
+}
+
 /* Cold-start stage timings (ms since the SD gate started), read via `fastboot oem
  * diag` as the bt=... line. Pinpoints where the black-backlight time-to-first-BIOS-
  * frame goes (SD mount / bios read / rom list / core blob load / core init / core
@@ -1831,13 +2060,13 @@ static int sd_state_write(unsigned char *scratch)
 	unsigned sz = gba_core_state_size();
 	if (!sz) return 0;
 	gba_core_state_save(scratch);   /* raw gpSP state (no boot_b header needed) */
-	return gba_sd_write_named(&s_sd_vol, "/states/gba", s_roms[s_sel_rom].name, "sus", scratch, sz) == 0;
+	return gba_sd_write_named(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, "sus", scratch, sz) == 0;
 }
 
 static int sd_state_read(unsigned char *scratch)
 {
 	unsigned sz = gba_core_state_size();
-	uint32_t n = gba_sd_read_named(&s_sd_vol, "/states/gba", s_roms[s_sel_rom].name, "sus", scratch, GBA_STATE_MAX);
+	uint32_t n = gba_sd_read_named(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, "sus", scratch, GBA_STATE_MAX);
 	if (!sz || n != sz) return 0;   /* absent or size mismatch (version guard) */
 	gba_core_state_load(scratch);
 	return 1;
@@ -1859,6 +2088,58 @@ static int sd_manual_read(unsigned char *scratch)
 	if (!sz || n != sz) return 0;
 	gba_core_state_load(scratch);
 	return 1;
+}
+
+/* oem gbabench[:N]: the same N frames every time, to compare core builds and settings on the
+ * device. Loads the game's save state slot 0 (the control scene, or the slot given; with no state
+ * there the game is started afresh instead), runs N frames (audio muted,
+ * pictures not shown) and puts the game back where it was. Results: the first 60 frames
+ * (recompiling after the load), the average and worst of the rest, and a hash of the last picture
+ * (equal across builds = the same emulation). The buffers sit in the menu canvas region, unused
+ * while a game runs. */
+volatile int g_dbg_corebench_slot;   /* the control scene: save state slot 0 unless oem gbabench names one */
+volatile int g_dbg_corebench_skip;   /* K > 1: draw one frame in K, the others render skipped (as fast forward) */
+const char *gba_bench_rom_name(void) { return s_roms[s_sel_rom].name; }
+volatile int g_dbg_corebench_req;
+volatile unsigned int g_dbg_corebench[6];   /* warm avg, steady avg, steady max, slot loaded, hash, frames */
+static void gba_corebench(int n)
+{
+	unsigned sz = gba_core_state_size(), i, warm = 0, steady = 0, mx = 0;
+	unsigned char *bench = (unsigned char *)0x54900000u, *cur = (unsigned char *)0x54A00000u;
+	g_dbg_corebench[3] = 0;
+	if (!sz || sz > (1024u * 1024u) || n < 61) { g_dbg_corebench[5] = 0; return; }
+	int from_reset = gba_sd_load_state(&s_sd_vol, s_roms[s_sel_rom].name, g_dbg_corebench_slot, bench,
+					   1024u * 1024u) != sz;
+	gba_core_state_save(cur);
+	if (from_reset) {
+		/* no state in that slot for this game and core: start the game afresh instead, the same
+		 * frames every time as well (no input, the same start) */
+		reset_gba();
+		s_cpu_restart_req = 1;
+	} else {
+		g_gba_load_light = 1; gba_core_state_load(bench); g_gba_load_light = 0;
+		s_cpu_clean_boundary = 1; s_cpu_restart_req = 1;
+	}
+	g_gba_audio_suppress = 1;
+	for (i = 0; i < (unsigned)n; i++) {
+		unsigned t = gpt4_get_current_tick(), us, k = (unsigned)g_dbg_corebench_skip;
+		gba_core_skip_render(k > 1u && (i % k) != k - 1u);
+		run_one_frame();
+		us = (gpt4_get_current_tick() - t) / 13u;
+		if (i < 60u) warm += us;
+		else { steady += us; if (us > mx) mx = us; }
+		if ((i % 60u) == 59u) mtk_wdt_restart();
+	}
+	gba_core_skip_render(0);
+	g_gba_audio_suppress = 0;
+	g_dbg_corebench[4] = fnv1a(2166136261u, (const unsigned char *)gba_core_screen(), 240ul * 160ul * 2ul);
+	g_gba_load_light = 1; gba_core_state_load(cur); g_gba_load_light = 0;
+	s_cpu_clean_boundary = 1; s_cpu_restart_req = 1;
+	g_dbg_corebench[0] = warm / 60u;
+	g_dbg_corebench[1] = steady / ((unsigned)n - 60u);
+	g_dbg_corebench[2] = mx;
+	g_dbg_corebench[3] = from_reset ? 0u : (unsigned)g_dbg_corebench_slot + 1u;
+	g_dbg_corebench[5] = (unsigned)n;
 }
 
 static void sd_sav_write(void)
@@ -1905,6 +2186,7 @@ static int persist_thread(void *arg)
 			ayaneo_settings_save();
 			t1 = gpt4_get_current_tick();
 			sd_settings_mirror();
+			if (s_corecfg_dirty) { s_corecfg_dirty = 0; corecfg_save(); }
 			g_dbg_persist_emmc_us = (t1 - t0) / 13u;
 			g_dbg_persist_sd_us = (gpt4_get_current_tick() - t1) / 13u;
 			g_dbg_persist_n++;
@@ -2324,10 +2606,7 @@ static int emu_thread(void *arg)
 						s_gpsp_dirty = 1;                          /* arena clobbered */
 						continue;                                  /* back to the selector */
 					}
-					if (s_gpsp_dirty) {   /* rebuild the gpSP arena a GB/GBC session reused */
-						gba_core_init((void *)GBA_ARENA_PA, GBA_ARENA_SZ - GBA_DRV_RESERVE);
-						s_gpsp_dirty = 0;
-					}
+					rp = gba_core_for_launch();   /* armGBA from the card or gpSP; rebuilds the arena */
 					romsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp, gba_core_rom_capacity());
 					if (romsz) break;
 					gba_dbg("GBA ERR: SD ROM load failed, back to selector");
@@ -2361,6 +2640,7 @@ static int emu_thread(void *arg)
 		for (;;) {
 			int uncapped;
 			{ static unsigned last; unsigned now = gpt4_get_current_tick(); if (last) g_dbg_loop_us = (now - last) / 13u; last = now; }
+			lp_mark(0);
 
 			/* precise IN-GAME panel refresh (vsync-locked show_frame): average the loop
 			 * period over 128 frames -> Hz*1000. The boot-time primary_display_get_
@@ -2480,9 +2760,11 @@ static int emu_thread(void *arg)
 				unsigned int ct0 = gba_core_cpu_ticks();
 				unsigned int em0 = gpt4_get_current_tick();
 				s_ff_t0 = em0;   /* the frame budget for fast forward starts here */
+				lp_mark(1);
 				run_one_frame();	/* runs one GBA frame + submits its audio */
 				/* committed GBA cycles this display frame = one full frame (280896);
 				 * run-ahead re-enters as a full frame (no priming stub) so no skew. */
+				lp_mark(2);
 				g_dbg_frame_ticks = gba_core_cpu_ticks() - ct0;
 				s_committed_us = (gpt4_get_current_tick() - em0) / 13u;	/* this frame us */
 				{	/* average the emulation wall time over 16 frames -> us */
@@ -2493,7 +2775,10 @@ static int emu_thread(void *arg)
 			}
 			/* Rewind capture: snapshot this committed frame (and each FF frame below), so FF'd frames
 			 * can be rewound. Not the run-ahead look-ahead frames (rewound anyway). Skipped in-menu. */
-			if (!s_menu_open && !s_benchmark) gba_rewind_snap();   /* benchmark measures emulation: no 640 KB snapshot per frame */
+			{ unsigned ts0 = gpt4_get_current_tick();
+			if (!s_menu_open && !s_benchmark) gba_rewind_snap();
+			  g_dbg_snap_us = (gpt4_get_current_tick() - ts0) / 13u; }
+			lp_mark(3);   /* benchmark measures emulation: no 640 KB snapshot per frame */
 			/* Variable fast-forward (right analog trigger): after the committed frame, run extra
 			 * MUTED frames so the game advances s_ff_level -> 2..FF_MAX_MULT x per displayed frame.
 			 * The display stays vsync-locked at 60 Hz (normal present below), so the speed is
@@ -2559,6 +2844,9 @@ static int emu_thread(void *arg)
 			}
 			/* (Rewind capture is done above per committed + FF frame, so the run-ahead look-ahead
 			 * frames below are correctly NOT captured.) */
+#ifdef AYANEO_GBA_SD
+			if (g_dbg_corebench_req && !s_menu_open) { int nb = g_dbg_corebench_req; g_dbg_corebench_req = 0; gba_corebench(nb); }
+#endif
 			if (g_dbg_selftest_req) {	/* `oem selftest[:N]`: validate the rewind path */
 				int nf = g_dbg_selftest_req;	/* N frames (1 = single-rewind) */
 				g_dbg_selftest_req = 0;
@@ -2667,10 +2955,7 @@ static int emu_thread(void *arg)
 							s_gpsp_dirty = 1;
 							continue;
 						}
-						if (s_gpsp_dirty) {
-							gba_core_init((void *)GBA_ARENA_PA, GBA_ARENA_SZ - GBA_DRV_RESERVE);
-							s_gpsp_dirty = 0;
-						}
+						rp = gba_core_for_launch();
 						rsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp,
 								      gba_core_rom_capacity());
 						if (rsz) break;
@@ -2795,7 +3080,10 @@ static int emu_thread(void *arg)
 			}
 			/* run-ahead present: look-ahead pf frames then rewind (or a plain
 			 * present when Off), paced to the panel vsync. */
+			lp_mark(4);
 			preempt_present();
+			lp_mark(5);
+			lp_commit();
 			/* closed-loop: shed run-ahead depth if the full frame period shows
 			 * the loop overrunning vsync (which would starve audio). */
 			preempt_adapt(s_menu_open);

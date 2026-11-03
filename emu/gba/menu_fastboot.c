@@ -28,6 +28,7 @@ extern void fastboot_register(const char *prefix,
 			      void (*handle)(const char *arg, void *data, unsigned sz),
 			      int allow_locked, int need_download);
 extern void fastboot_info(const char *reason);
+#include "gba_core_abi.h"
 extern void fastboot_okay(const char *info);
 extern void fastboot_fail(const char *reason);
 extern int  snprintf(char *str, unsigned long size, const char *fmt, ...);
@@ -94,6 +95,22 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 				  extern int ayaneo_get_lcd_filter_core(int c); extern unsigned ayaneo_core_clock(int core, unsigned t, unsigned t0); extern unsigned ayaneo_cpu_manual_get(int core);
 				  snprintf(lbuf, sizeof lbuf, "loop: us=%u apace=%uus fill=%u show=%uus filt=%d clk=%u man=%u", g_dbg_loop_us, g_dbg_apace_us, g_dbg_apace_fill, g_rsz_show_us,
 					   ayaneo_get_lcd_filter_core(1), ayaneo_core_clock(0, 1000u, 600u), ayaneo_cpu_manual_get(0));
+				  fastboot_info(lbuf); }
+				{ extern volatile unsigned g_dbg_show_parts[6]; extern volatile unsigned int g_dbg_snap_us;
+				  extern volatile unsigned int g_dbg_lp_avg[6], g_dbg_lp_max[6];
+				  (void)g_dbg_snap_us;
+				  snprintf(lbuf, sizeof lbuf, "show: od=%u rot=%u pre=%u hud=%u cln=%u cfg=%u",
+					   g_dbg_show_parts[0], g_dbg_show_parts[1], g_dbg_show_parts[2], g_dbg_show_parts[3],
+					   g_dbg_show_parts[4], g_dbg_show_parts[5]);
+				  fastboot_info(lbuf);
+				  { extern volatile unsigned int g_dbg_snap_parts[3];
+				    snprintf(lbuf, sizeof lbuf, "snap: save=%u ring=%u enc=%u", g_dbg_snap_parts[0], g_dbg_snap_parts[1], g_dbg_snap_parts[2]);
+				    fastboot_info(lbuf); }
+				  snprintf(lbuf, sizeof lbuf, "lp avg %u %u %u %u %u %u", g_dbg_lp_avg[0], g_dbg_lp_avg[1],
+					   g_dbg_lp_avg[2], g_dbg_lp_avg[3], g_dbg_lp_avg[4], g_dbg_lp_avg[5]);
+				  fastboot_info(lbuf);
+				  snprintf(lbuf, sizeof lbuf, "lp max %u %u %u %u %u %u", g_dbg_lp_max[0], g_dbg_lp_max[1],
+					   g_dbg_lp_max[2], g_dbg_lp_max[3], g_dbg_lp_max[4], g_dbg_lp_max[5]);
 				  fastboot_info(lbuf); }
 				snprintf(lbuf, sizeof lbuf, "speed: presents/s=%u emu_frames/s=%u frame_us=%u",
 					 g_dbg_present_fps, g_dbg_emu_fps, g_dbg_emu_frame_us);
@@ -961,6 +978,98 @@ static void cmd_odcap(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem perf[:MASK[,MHZ[,FILT]]] - runtime only switches for timing the present path (never persisted):
+ * bit 0 = overdrive through the per pair tables, fused with the quarter turn
+ * bit 1 = NEON plain prescale (no LCD filter)
+ * bit 2 = NEON scan in the rewind delta encoder
+ * bit 3 = LCD1x / LCD3x prescale in 8 bit lanes
+ * bit 5 = overdrive two pixels a step
+ * MHZ (optional) sets the CPU clock until the next clock change (menu, tier); not saved.
+ * FILT (optional) = LCD filter + 1 for the game picture, 0 = the saved setting; not saved.
+ * oem perf:bench - memory probe on free scratch at the current clock */
+static void cmd_perf(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_od_lut, g_dbg_plain_neon, g_dbg_rw_neon, g_dbg_lcd_neon8, g_dbg_od_pair;
+	extern unsigned int gpt4_get_current_tick(void);
+	extern unsigned int ayaneo_get_cpu_mhz(void);
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (!strncmp(arg, "bench", 5)) {
+		extern unsigned ayaneo_membench_neon(int which, void *buf, unsigned bytes);
+		void *buf = (void *)0x54900000u;   /* inside the menu canvas, unused while a game runs */
+		const unsigned n = 640u * 960u * 4u;
+		unsigned t[5], k;
+		t[0] = gpt4_get_current_tick();
+		ayaneo_membench_neon(0, buf, n);
+		t[1] = gpt4_get_current_tick();
+		arch_clean_cache_range((unsigned long)buf, n);
+		t[2] = gpt4_get_current_tick();
+		k = ayaneo_membench_neon(1, buf, n);
+		t[3] = gpt4_get_current_tick();
+		ayaneo_membench_neon(2, buf, n);
+		t[4] = gpt4_get_current_tick();
+		snprintf(lbuf, sizeof lbuf, "bench %uMHz st=%u cln=%u ld=%u cp=%u us", ayaneo_get_cpu_mhz(),
+			 (t[1] - t[0]) / 13u, (t[2] - t[1]) / 13u, (t[3] - t[2]) / 13u, (t[4] - t[3]) / 13u);
+		fastboot_info(lbuf);
+		(void)k;
+		fastboot_okay("");
+		return;
+	}
+	if (*arg) {
+		unsigned m = fb_dec(&arg), mhz = fb_dec(&arg), fo = fb_dec(&arg);
+		{ extern volatile int g_dbg_filt_ovr; g_dbg_filt_ovr = (int)fo - 1; }
+		g_dbg_od_lut = (int)(m & 1u); g_dbg_plain_neon = (int)((m >> 1) & 1u); g_dbg_rw_neon = (int)((m >> 2) & 1u); g_dbg_lcd_neon8 = (int)((m >> 3) & 1u); g_dbg_od_pair = (int)((m >> 5) & 1u);
+		if (mhz >= 500u && mhz <= 2100u) { extern void ayaneo_set_cpu_mhz(unsigned int mhz); ayaneo_set_cpu_mhz(mhz); }
+	}
+	{
+		unsigned midr, mpidr;
+		__asm__ volatile("mrc p15, 0, %0, c0, c0, 0" : "=r"(midr));
+		__asm__ volatile("mrc p15, 0, %0, c0, c0, 5" : "=r"(mpidr));
+		snprintf(lbuf, sizeof lbuf, "perf: mask=%u mhz=%u midr=%08x mpidr=%08x",
+			 (unsigned)((g_dbg_od_lut ? 1u : 0u) | (g_dbg_plain_neon ? 2u : 0u) | (g_dbg_rw_neon ? 4u : 0u) | (g_dbg_lcd_neon8 ? 8u : 0u) | (g_dbg_od_pair ? 32u : 0u)),
+			 ayaneo_get_cpu_mhz(), midr, mpidr);
+	}
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem gbabench[:N[,SLOT[,K]]] - K > 1 draws one frame in K (the rest render skipped, as fast forward);
+ * N frames (default 600) of the game from a save state slot (default 0),
+ * or from a fresh start of the game when that slot is empty, timed */
+static void cmd_corebench(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_corebench_req;
+	extern volatile unsigned int g_dbg_corebench[6];
+	extern unsigned int ayaneo_get_cpu_mhz(void);
+	unsigned n, w;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	n = *arg ? fb_dec(&arg) : 600u;
+	if (n < 61u) n = 61u; if (n > 6000u) n = 6000u;
+	{ extern volatile int g_dbg_corebench_slot, g_dbg_corebench_skip; g_dbg_corebench_slot = (int)(fb_dec(&arg) % 10u);
+	  g_dbg_corebench_skip = (int)(fb_dec(&arg) % 61u); }
+	g_dbg_corebench[5] = 0xFFFFFFFFu;
+	g_dbg_corebench_req = (int)n;
+	for (w = 0; w < 1200u && g_dbg_corebench_req; w++) thread_sleep(50);   /* picked up by the game loop */
+	for (w = 0; w < 2400u && g_dbg_corebench[5] == 0xFFFFFFFFu; w++) thread_sleep(50);
+	if (g_dbg_corebench[5] == 0xFFFFFFFFu || g_dbg_corebench_req) { g_dbg_corebench_req = 0; fastboot_fail("no game running"); return; }
+	if (!g_dbg_corebench[5]) { fastboot_fail("no game state to bench"); return; }
+	snprintf(lbuf, sizeof lbuf, "cb %uMHz n=%u warm=%u avg=%u max=%u us", ayaneo_get_cpu_mhz(), g_dbg_corebench[5],
+		 g_dbg_corebench[0], g_dbg_corebench[1], g_dbg_corebench[2]);
+	fastboot_info(lbuf);
+	{
+		extern const char *gba_bench_rom_name(void);
+		char from[12];
+		if (g_dbg_corebench[3]) snprintf(from, sizeof from, "slot %u", g_dbg_corebench[3] - 1u);
+		else snprintf(from, sizeof from, "reset");
+		snprintf(lbuf, sizeof lbuf, "cb hash=%08x from %s", g_dbg_corebench[4], from);
+		fastboot_info(lbuf);
+		snprintf(lbuf, sizeof lbuf, "cb rom %.50s", gba_bench_rom_name());
+	}
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 static void cmd_odup(const char *arg, void *data, unsigned sz)
 {
 	unsigned kuphi, kuplo, gam;
@@ -1391,6 +1500,31 @@ static void cmd_bbram(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem core - the GBA core in the slot: gpSP (boot_b) or the SD card's (armGBA-pico) */
+static void cmd_core(const char *arg, void *data, unsigned sz)
+{
+	extern const struct gba_core_exports *gba_core_current(void);
+	extern volatile unsigned int g_dbg_core_switch_ms, g_dbg_core_is_sd;
+	const struct gba_core_exports *c = gba_core_current();
+	(void)arg; (void)data; (void)sz;
+	if (!c) { fastboot_info("core: none loaded"); fastboot_okay(""); return; }
+	snprintf(lbuf, sizeof lbuf, "core: v%u %s sd=%u switch=%ums state=%u", c->version,
+		 (c->version >= 3 && c->name) ? c->name : "gpSP", g_dbg_core_is_sd, g_dbg_core_switch_ms, c->state_size ? c->state_size() : 0);
+	fastboot_info(lbuf);
+	if (c->version >= 3) {
+		int i, n = c->opt_count ? c->opt_count() : 0;
+		snprintf(lbuf, sizeof lbuf, "core: rate=%u heap=%u KiB states=%s", c->audio_rate, c->heap_used ? c->heap_used() / 1024u : 0, c->state_dir ? c->state_dir : "");
+		fastboot_info(lbuf);
+		for (i = 0; i < n; i++) {
+			const struct gba_core_option *o = c->opt_info(i);
+			int v = c->opt_get(i);
+			snprintf(lbuf, sizeof lbuf, " %s = %s", o ? o->key : "?", (o && v >= 0 && v < o->nvalues) ? o->values[v] : "?");
+			fastboot_info(lbuf);
+		}
+	}
+	fastboot_okay("");
+}
+
 /* oem blackbox[:clear] - the event records kept on the eMMC (faults, charging screen hand overs) */
 static void cmd_blackbox(const char *arg, void *data, unsigned sz)
 {
@@ -1698,6 +1832,8 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem strobelk:", cmd_strobelk, 1, 0); /* vsync-locked strobe: div,duty */
 	fastboot_register("oem od:", cmd_od, 1, 0);             /* software overdrive: on,kup,kdn,thr,cap */
 	fastboot_register("oem odup:", cmd_odup, 1, 0);
+	fastboot_register("oem perf", cmd_perf, 1, 0);
+	fastboot_register("oem gbabench", cmd_corebench, 1, 0);
 	fastboot_register("oem odcap", cmd_odcap, 1, 0);         /* prev-indexed rising curve: kuphi,kuplo,gam */
 	fastboot_register("oem rot:", cmd_rot, 1, 0);
 	fastboot_register("oem igm", cmd_igm, 1, 0);           /* Konkr: 0 clockwise / 1 counter clockwise turn */
@@ -1717,6 +1853,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem gauge", cmd_gauge, 1, 0);
 	fastboot_register("oem serialinfo", cmd_serialinfo, 1, 0);
 	fastboot_register("oem blackbox", cmd_blackbox, 1, 0);
+	fastboot_register("oem core", cmd_core, 1, 0);
 	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);
 	fastboot_register("oem bbram", cmd_bbram, 1, 0);
 	fastboot_register("oem dsiw", cmd_dsiw, 1, 0);

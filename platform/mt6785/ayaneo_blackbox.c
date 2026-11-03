@@ -42,7 +42,12 @@ static void bb_write(struct bb_rec *r)
 	if (partition_read(BB_PART, BB_OFF, buf, sizeof buf) == (ssize_t)sizeof buf)
 		for (i = 0; i < BB_SLOTS; i++) {
 			struct bb_rec *o = (struct bb_rec *)(buf + i * 512u);
-			if (o->magic == BB_MAGIC && o->seq > max) max = o->seq;
+			if (o->magic != BB_MAGIC) continue;
+			if (o->seq > max) max = o->seq;
+			/* the same event already in the ring (a DRAM record moved twice): keep one copy */
+			if (o->type == r->type && o->up_ms == r->up_ms && o->pc == r->pc && o->dfar == r->dfar &&
+			    !memcmp(o->msg, r->msg, sizeof o->msg))
+				return;
 		}
 	r->magic = BB_MAGIC;
 	r->seq = max + 1u;
@@ -105,8 +110,9 @@ void ayaneo_bb_boot_check(void)
 	struct bb_rec r;
 	memcpy(&r, rp, sizeof r);
 	if (r.magic != BB_RAM_MAGIC || r.seq != bb_sum(&r)) return;
-	rp->magic = 0;
+	memset(rp, 0, sizeof r);
 	arch_clean_cache_range((addr_t)rp, sizeof r);
+	__asm__ volatile("dsb sy" : : : "memory");
 	bb_write(&r);
 }
 

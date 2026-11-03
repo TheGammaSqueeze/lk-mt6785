@@ -47,11 +47,18 @@ static void core_sync_code(unsigned long start, unsigned long len)
 	__asm__ __volatile__("dsb\n\tisb" ::: "memory");
 }
 
+/* a monotonic millisecond count for the core (the black box keeps it wrap safe) */
+extern unsigned int ayaneo_bb_uptime_ms(void);
+static unsigned int core_host_ms(void) { return ayaneo_bb_uptime_ms(); }
+
 static const struct gba_core_imports s_imports = {
 	ayaneo_gba_audio_submit,
 	gba_host_time,
 	gba_yield_to_main,
+	core_host_ms,
 };
+
+static int core_version_ok(unsigned v) { return v >= GBA_CORE_ABI_VERSION && v <= GBA_CORE_ABI_MAX; }
 
 /* Load the GBA core blob and return its export table, or 0 on any failure (bad header,
  * short read, entry rejected). Called once during emu init before gba_core_init(). */
@@ -65,7 +72,7 @@ const struct gba_core_exports *gba_core_load(void)
 
 	if (partition_read(GBA_CORE_BLOB_PART, GBA_CORE_BLOB_OFF, (unsigned char *)hdr, sizeof hdr) != (ssize_t)sizeof hdr)
 		return 0;
-	if (hdr[0] != GBA_CORE_ABI_MAGIC || hdr[1] != GBA_CORE_ABI_VERSION)
+	if (hdr[0] != GBA_CORE_ABI_MAGIC || !core_version_ok(hdr[1]))
 		return 0;
 	entry = hdr[2]; load_size = hdr[3]; total_span = hdr[4];
 	if (load_size < sizeof hdr || total_span < load_size)
@@ -81,7 +88,43 @@ const struct gba_core_exports *gba_core_load(void)
 
 	init = (gba_core_blob_init_fn)(void *)(dst + entry);
 	ex = init(&s_imports);
-	if (!ex || ex->magic != GBA_CORE_ABI_MAGIC || ex->version != GBA_CORE_ABI_VERSION)
+	if (!ex || ex->magic != GBA_CORE_ABI_MAGIC || !core_version_ok(ex->version))
 		return 0;
 	return ex;
 }
+
+#ifdef AYANEO_GBA_SD
+#include "fat_ro.h"
+/* The same, from a file on the SD card (armGBA-pico: /cores/armgba-pico.blob). The file is the flat
+ * image with the same header; it loads into the same slot, so it replaces whatever GBA core was
+ * there. Returns 0 if the file is missing, short, too big for the slot or its entry rejects it; the
+ * caller then reloads the boot_b core. */
+#define GBA_CORE_SLOT_END 0x4E800000u   /* the GB/GBC core slot starts here */
+const struct gba_core_exports *gba_core_load_file(fat_vol *v, const char *path)
+{
+	unsigned char *dst = (unsigned char *)GBA_CORE_BLOB_VMA;
+	unsigned hdr[5];
+	fat_file f;
+	gba_core_blob_init_fn init;
+	const struct gba_core_exports *ex;
+
+	if (!v || fat_open(v, path, &f) != 0 || f.size < sizeof hdr)
+		return 0;
+	if (fat_read(&f, 0, hdr, sizeof hdr) != sizeof hdr)
+		return 0;
+	if (hdr[0] != GBA_CORE_ABI_MAGIC || !core_version_ok(hdr[1]))
+		return 0;
+	if (hdr[3] < sizeof hdr || hdr[3] > f.size || hdr[4] < hdr[3] || hdr[2] >= hdr[3] ||
+	    GBA_CORE_BLOB_VMA + hdr[4] > GBA_CORE_SLOT_END)
+		return 0;
+	if (fat_read(&f, 0, dst, hdr[3]) != hdr[3])
+		return 0;
+	memset(dst + hdr[3], 0, hdr[4] - hdr[3]);
+	core_sync_code(GBA_CORE_BLOB_VMA, hdr[3]);
+	init = (gba_core_blob_init_fn)(void *)(dst + hdr[2]);
+	ex = init(&s_imports);
+	if (!ex || ex->magic != GBA_CORE_ABI_MAGIC || !core_version_ok(ex->version))
+		return 0;
+	return ex;
+}
+#endif

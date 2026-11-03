@@ -1,6 +1,7 @@
 /* Save/state persistence to the microSD - see gba_sd_save.h. */
 #include "gba_sd_save.h"
 #include "fat_wr.h"
+extern const char *g_gba_state_dir;   /* gba_driver.c: "/states/gba" for gpSP, the core's own folder for armGBA */
 
 /* "<rombase>.<ext>" from a ROM name into out[<=cap]. The roster already drops the ROM's
  * extension (sd_fat.c scan_rom_folder), so only a real ROM extension is stripped here: cutting at
@@ -78,13 +79,13 @@ int gba_sd_write_sav(fat_vol *v, const char *rom, const void *buf, uint32_t len)
 uint32_t gba_sd_load_state(fat_vol *v, const char *rom, int slot, unsigned char *dst, uint32_t cap)
 {
 	char ext[4]; ext[0] = 's'; ext[1] = 't'; ext[2] = (char)('0' + (slot % 10)); ext[3] = 0;
-	return gba_sd_read_named(v, "/states/gba", rom, ext, dst, cap);
+	return gba_sd_read_named(v, g_gba_state_dir, rom, ext, dst, cap);
 }
 
 int gba_sd_write_state(fat_vol *v, const char *rom, int slot, const void *buf, uint32_t len)
 {
 	char ext[4]; ext[0] = 's'; ext[1] = 't'; ext[2] = (char)('0' + (slot % 10)); ext[3] = 0;
-	return gba_sd_write_named(v, "/states/gba", rom, ext, buf, len);
+	return gba_sd_write_named(v, g_gba_state_dir, rom, ext, buf, len);
 }
 
 /* GammaOS Pico menu settings, persisted ON THE SD CARD so they travel with the

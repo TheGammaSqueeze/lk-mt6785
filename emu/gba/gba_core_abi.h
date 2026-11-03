@@ -39,7 +39,21 @@
 #define GBA_CORE_ABI_H
 
 #define GBA_CORE_ABI_MAGIC   0x41424743u   /* "GCBA" */
-#define GBA_CORE_ABI_VERSION 2u   /* 2: skip_next_frame */
+#define GBA_CORE_ABI_VERSION 2u   /* 2: skip_next_frame (the gpSP blob in boot_b) */
+#define GBA_CORE_ABI_V3      3u   /* 3: name, audio rate, state folder, options (armGBA-pico from the SD card) */
+#define GBA_CORE_ABI_MAX     GBA_CORE_ABI_V3
+
+/* A core option the LK can show in the Core Settings submenu (version 3). The LK persists the
+ * chosen index per key and hands it back with opt_set before the next game starts. */
+#define GBA_CORE_OPT_RESTART 1u   /* takes effect when the next game starts */
+struct gba_core_option {
+	const char *key;              /* stable identifier, used in the saved settings */
+	const char *label;            /* shown in the menu */
+	const char *const *values;    /* value labels */
+	int nvalues;
+	int def;                      /* default index */
+	unsigned flags;               /* GBA_CORE_OPT_* */
+};
 
 /* Services LK provides to the core (core -> LK calls). Everything else the core needs
  * (libc, libgcc) is bundled into the blob. */
@@ -50,6 +64,8 @@ struct gba_core_imports {
 	                                                                   * thread yields at vblank;
 	                                                                   * LK owns the longjmp/restart
 	                                                                   * re-entry state. */
+	/* added with version 3 (a version 2 core never reads it) */
+	unsigned int (*host_ms)(void);                                   /* monotonic milliseconds */
 };
 
 /* The core's surface as the LK driver uses it (LK -> core calls). Names mirror the
@@ -102,6 +118,16 @@ struct gba_core_exports {
 	/* version 2: set to 1 before a frame whose picture is never shown (fast forward and
 	 * run-ahead look-ahead frames): the core skips the render, the emulation is unchanged */
 	unsigned int *skip_next_frame;
+
+	/* version 3 */
+	const char *name;                                     /* "armGBA 1.3.1 pico" */
+	unsigned audio_rate;                                  /* Hz of the s16 stereo given to audio_submit */
+	const char *state_dir;                                /* savestates (not compatible between cores) */
+	int  (*opt_count)(void);
+	const struct gba_core_option *(*opt_info)(int index);
+	int  (*opt_get)(int index);
+	void (*opt_set)(int index, int value);
+	unsigned (*heap_used)(void);                          /* diagnostics: arena bytes in use */
 };
 
 /* The blob's single fixed entry symbol. The loader resolves it at a known offset (e.g.
