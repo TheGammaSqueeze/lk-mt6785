@@ -2191,6 +2191,36 @@ static void gba_corebench(int n)
 	g_dbg_corebench[5] = (unsigned)n;
 }
 
+/* oem gamefile: one of the running game's files from the card, for a look on the PC:
+ * st0..st9 (save state slots) and sus (the suspend state) from the core's state folder, sav
+ * (the battery save). Returns the bytes read, 0 when absent; name gets "<folder>/<rom>". */
+unsigned gba_dbg_game_file(const char *ext, unsigned char *dst, unsigned cap, char *name, int ncap)
+{
+	const char *dir;
+	int i = 0, k;
+	if (!s_sd_mode || s_sel_rom < 0 || s_sel_rom >= s_nrom || !ext) return 0;
+	if (ext[0] == 'r' && ext[1] == 'o' && ext[2] == 'm') {
+		/* romN: 1 MB piece N of the ROM as loaded in the core's buffer */
+		unsigned piece = 0, size = s_roms[s_sel_rom].size, off, len;
+		for (k = 3; ext[k] >= '0' && ext[k] <= '9'; k++) piece = piece * 10u + (unsigned)(ext[k] - '0');
+		if (size > gba_core_rom_capacity()) size = gba_core_rom_capacity();
+		off = piece << 20;
+		if (off >= size) return 0;
+		len = size - off; if (len > (1u << 20)) len = 1u << 20; if (len > cap) len = cap;
+		memcpy(dst, gba_core_rom_ptr() + off, len);
+		if (name && ncap > 12) { const char *t = "ROM in RAM"; for (k = 0; t[k]; k++) name[k] = t[k]; name[k] = 0; }
+		return len;
+	}
+	dir = (ext[0] == 's' && ext[1] == 'a' && ext[2] == 'v') ? "/saves/gba" : g_gba_state_dir;
+	if (name && ncap > 1) {
+		for (k = 0; dir[k] && i + 1 < ncap; k++) name[i++] = dir[k];
+		if (i + 1 < ncap) name[i++] = '/';
+		for (k = 0; s_roms[s_sel_rom].name[k] && i + 1 < ncap; k++) name[i++] = s_roms[s_sel_rom].name[k];
+		name[i] = 0;
+	}
+	return gba_sd_read_named(&s_sd_vol, dir, s_roms[s_sel_rom].name, ext, dst, cap);
+}
+
 static void sd_sav_write(void)
 {
 	gba_sd_write_sav(&s_sd_vol, s_roms[s_sel_rom].name,
@@ -2426,6 +2456,7 @@ static unsigned gba_sd_build_logo_cart(unsigned char *rp)
 
 /* ===================== emulator thread ===================== */
 volatile int g_dbg_boot_step;   /* oem mode: how far the emulator thread got */
+volatile unsigned int g_dbg_intro_aw_wait_ms;   /* oem diag intro: how long the intro waited for the speaker amps */
 static int emu_thread(void *arg)
 {
 	unsigned char *scratch = (unsigned char *)(GBA_ARENA_PA + GBA_ARENA_SZ - GBA_DRV_RESERVE);
@@ -2635,6 +2666,21 @@ static int emu_thread(void *arg)
 			 * emulated BIOS runs through the game audio path here). Pause across the
 			 * intro, then unpause so the menu/game audio is restored. */
 			if (ayaneo_get_mute_bios()) ayaneo_gbc_audio_pause(1);
+#ifdef KONKR_KPA
+			/* The speaker amps (AW88166, their own thread from the top of emu_thread) take
+			 * ~0.5 s to load and unmute; the intro now starts ~1.1 s after power on, before
+			 * they are up, and the start of the BIOS jingle was lost. Wait for them when the
+			 * jingle is going to be heard, sleeping so their thread gets the CPU; capped so a
+			 * failed amp never holds the boot. (A boot stall at an early card read used to
+			 * hide this until 2e2a62c removed that read.) */
+			if (intro_frames > 0 && !ayaneo_get_mute_bios()) {
+				extern int ayaneo_aw88166_started(void);
+				unsigned w0 = gpt4_get_current_tick();
+				while (!ayaneo_aw88166_started() && (gpt4_get_current_tick() - w0) < 800u * 13000u)
+					thread_sleep(5);
+				g_dbg_intro_aw_wait_ms = (gpt4_get_current_tick() - w0) / 13000u;
+			}
+#endif
 			{ extern void ayaneo_hud_hide(int on); ayaneo_hud_hide(1); }   /* no FPS badge over the BIOS logo */
 			for (fi = 0; fi < intro_frames; fi++) {
 				update_buttons();

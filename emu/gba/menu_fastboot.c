@@ -121,8 +121,9 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 				fastboot_info(lbuf);
 				{
 					extern volatile unsigned int g_dbg_bt_frame1, g_dbg_bt_intro_end, g_dbg_bt_intro_frames;
-					snprintf(lbuf, sizeof lbuf, "intro: first=%ums end=%ums frames=%u (4520ms nominal)",
-						 g_dbg_bt_frame1, g_dbg_bt_intro_end, g_dbg_bt_intro_frames);
+					extern volatile unsigned int g_dbg_intro_aw_wait_ms;
+					snprintf(lbuf, sizeof lbuf, "intro: first=%ums end=%ums frames=%u aw_wait=%ums",
+						 g_dbg_bt_frame1, g_dbg_bt_intro_end, g_dbg_bt_intro_frames, g_dbg_intro_aw_wait_ms);
 					fastboot_info(lbuf);
 				}
 			}
@@ -1294,6 +1295,34 @@ static void cmd_shotstage(const char *arg, void *data, unsigned sz)
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
+/* oem gamefile:EXT - stage one of the running game's card files (st0..st9, sus, sav) for
+ * `fastboot get_staged <file>`; the staged bytes are the file as it is on the card */
+static void cmd_gamefile(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned gba_dbg_game_file(const char *ext, unsigned char *dst, unsigned cap, char *name, int ncap);
+	char ext[8], name[160];
+	unsigned n, i = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (arg[i] && i + 1 < sizeof ext) { ext[i] = arg[i]; i++; }
+	ext[i] = 0;
+	if (!ext[0]) { fastboot_fail("oem gamefile:st0|st1|st2|sus|sav"); return; }
+	n = gba_dbg_game_file(ext, (unsigned char *)SHOT_STAGE_PA, SHOT_STAGE_MAX, name, sizeof name);
+	if (!n) { fastboot_fail("no such file for the running game"); return; }
+	s_stage_len = n;
+	for (i = 0; name[i]; i += 50) {
+		char piece[56]; unsigned k;
+		for (k = 0; k < 50 && name[i + k]; k++) piece[k] = name[i + k];
+		piece[k] = 0;
+		snprintf(lbuf, sizeof lbuf, "file: %s", piece);
+		fastboot_info(lbuf);
+		if (k < 50) break;
+	}
+	snprintf(lbuf, sizeof lbuf, "staged %u bytes (fastboot get_staged <file>)", n);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* transcript of the last upload for `oem upstat` (the first attempt failed on the host side and
  * the unbounded bulk writes then hung the fastboot thread: every write here is bounded) */
 static unsigned s_up_step, s_up_sent; static int s_up_rc;
@@ -1881,6 +1910,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem perf", cmd_perf, 1, 0);
 	fastboot_register("oem suspendtest", cmd_suspendtest, 1, 0);
 	fastboot_register("oem resumeinfo", cmd_resumeinfo, 1, 0);
+	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
 	fastboot_register("oem gbabench", cmd_corebench, 1, 0);
 	fastboot_register("oem odcap", cmd_odcap, 1, 0);         /* prev-indexed rising curve: kuphi,kuplo,gam */
 	fastboot_register("oem rot:", cmd_rot, 1, 0);
