@@ -254,6 +254,12 @@ static void wr32(unsigned char *p, unsigned int v);
  * recorded (b+68 magic, b+72.. name) and the next boot skips the animation, the BIOS intro and
  * the menu and launches it straight away (each core reloads its own suspend state). */
 static int  s_resume_on_boot = 1;
+/* Rewind (every core's Pico menu), default Off: with it off no core takes the per frame rewind
+ * snapshot (1.5 ms a frame for armGBA at 600 MHz) and the trigger does nothing. b+176: 0 never
+ * written (Off), 1 Off, 2 On. */
+static int  s_rewind_on = 0;
+int  ayaneo_get_rewind(void)  { return s_rewind_on; }
+void ayaneo_set_rewind(int v) { s_rewind_on = v ? 1 : 0; }
 static char s_resume_name[100];
 static int  s_resume_set;
 #define AYANEO_RESUME_MAGIC 0x52455355u   /* "RESU" */
@@ -267,6 +273,18 @@ void ayaneo_resume_mark(const char *name)
 	for (i = 0; i + 1u < sizeof s_resume_name && name[i]; i++) s_resume_name[i] = name[i];
 	s_resume_name[i] = 0;
 	s_resume_set = 1;
+}
+/* oem resumeinfo: the record as it stands, and what this boot did with it ([0] pending at the
+ * GBA intro, [1] taken by the menu, [2] matched game index + 1, [3] Resume Game on Boot) */
+volatile int g_dbg_resume[4];
+volatile int g_dbg_set_step;   /* oem mode: 1 reading the eMMC settings, 2 parsed, 3 resume fields read */
+int ayaneo_resume_peek(char *out, int cap)
+{
+	int i;
+	if (!out || cap <= 1) return 0;
+	for (i = 0; i + 1 < cap && s_resume_name[i]; i++) out[i] = s_resume_name[i];
+	out[i] = 0;
+	return s_resume_set;
 }
 void ayaneo_resume_clear(void) { s_resume_set = 0; s_resume_name[0] = 0; }   /* powering off outside a game */
 /* hand the recorded name to the caller and clear the record (saved by the caller's persist) */
@@ -285,11 +303,13 @@ static void resume_fields_write(unsigned char *b)
 	wr32(b + 64, (unsigned int)(s_resume_on_boot ? 2u : 1u));   /* 0 = never written -> default on */
 	wr32(b + 68, s_resume_set ? AYANEO_RESUME_MAGIC : 0u);
 	for (i = 0; i < sizeof s_resume_name; i++) b[72 + i] = s_resume_set ? (unsigned char)s_resume_name[i] : 0;
+	b[176] = (unsigned char)(s_rewind_on ? 2u : 1u);
 }
 static unsigned char s_cpu_manual[4];   /* manual CPU clock per core, grid index + 1, 0 = automatic */
 static void resume_fields_read(const unsigned char *b, int len)
 {
 	unsigned i;
+	if (len >= 177) { if (b[176] == 2u) s_rewind_on = 1; else if (b[176] == 1u) s_rewind_on = 0; }
 	if (len >= 176) { s_cpu_manual[0] = b[172] & 15; s_cpu_manual[1] = b[173] & 15; s_cpu_manual[2] = b[174] & 15; s_cpu_manual[3] = b[175] & 15; }
 	if (len < 172) return;
 	{ unsigned int r = rd32(b + 64); if (r == 1u || r == 2u) s_resume_on_boot = (r == 2u); }
@@ -481,11 +501,16 @@ void ayaneo_set_overdrive_level(int on)
  * compile-time defaults. Does not touch the hardware; callers apply brightness. */
 void ayaneo_settings_load(void)
 {
-	unsigned char b[64];
+	/* the whole block as ayaneo_settings_save writes it: the resume record (b+64..171), the
+	 * per core CPU clocks (172..175) and Rewind (176) sit past the first 64 bytes, and reading
+	 * only those lost them at every boot that did not also load the card's copy */
+	static unsigned char b[512] __attribute__((aligned(64)));
 	unsigned int ver;
+	extern volatile int g_dbg_set_step;
 
 	if (s_settings_loaded)
 		return;
+	g_dbg_set_step = 1;
 	/* If storage is not up yet (early boot), leave s_settings_loaded clear so a
 	 * later call retries; only commit once we have actually read the block. */
 	if (partition_read(AYANEO_AUDIO_PART, AYANEO_SET_OFF, b, sizeof(b)) != (ssize_t)sizeof(b))
@@ -549,7 +574,9 @@ void ayaneo_settings_load(void)
 		ayaneo_set_snes_slot((int)rd32(b + 56));
 	if (ver >= 8)
 		ayaneo_set_snes_turbo((int)rd32(b + 60));
-	resume_fields_read(b, (int)sizeof(b));
+	g_dbg_set_step = 2;
+	resume_fields_read(b, 192);
+	g_dbg_set_step = 3;
 }
 
 /* Serialize/deserialize the settings block so a caller can persist it elsewhere

@@ -276,7 +276,7 @@ static int  s_pick_hold;        /* frames the direction has been held */
 static int  s_pick_tick;        /* frames since the last auto-repeat step */
 
 enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_ASPECT, GM_PALETTE, GM_COLORCC, GM_CCMODE, GM_DARK,
-       GM_PREEMPT, GM_CPU, GM_BFI, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
+       GM_PREEMPT, GM_REWIND, GM_CPU, GM_BFI, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
 
 /* Display aspect (0=Pixel integer, 1=Fit native-aspect fill, 2=Stretch full panel). Read by
  * ayaneo_gb_show_frame (mt_disp_drv.c); session-scoped, defaults to Pixel = current behaviour. */
@@ -304,6 +304,7 @@ static const char *gm_label(int i)
 	case GM_CCMODE:  return "Correction Mode";
 	case GM_DARK:    return "Dark Filter";
 	case GM_PREEMPT: return "Run-Ahead";
+	case GM_REWIND:  return "Rewind";
 	case GM_CPU:     return "CPU Clock";
 	case GM_BFI:     return "BFI";
 	case GM_SHOWFPS: return "Show FPS";
@@ -345,6 +346,7 @@ static const char *gm_value(int i, char *buf)
 	case GM_DARK:    if (s_dark <= 0) p = mput(p, "Off"); else { p = mputu(p, (unsigned)s_dark); p = mput(p, "%"); } break;
 	case GM_PREEMPT: { int pf = ayaneo_get_preempt_frames();
 			   p = mput(p, pf == 0 ? "Off" : pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : "Max"); } break;
+	case GM_REWIND:  { extern int ayaneo_get_rewind(void); p = mput(p, ayaneo_get_rewind() ? "On" : "Off"); } break;
 	case GM_CPU:     p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
 	case GM_BFI:     { extern int ayaneo_get_strobe(void); int b = ayaneo_get_strobe(); p = mput(p, (b == 3 ? "75%" : b == 2 ? "50%" : b == 1 ? "25%" : "Off")); } break;
 	case GM_RESUME:  { extern int ayaneo_get_resume_on_boot(void); p = mput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
@@ -383,6 +385,8 @@ static int gm_change(int i, int dir, int act)
 	case GM_CCMODE:  if (dir) { s_cc_mode = !s_cc_mode; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
 	case GM_DARK:    if (dir) { s_dark += dir * 10; if (s_dark < 0) s_dark = 0; if (s_dark > 100) s_dark = 100; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
 	case GM_PREEMPT: if (dir) ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + dir + 4) % 4); else changed = 0; break;
+	case GM_REWIND:  { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
+			   if (dir || act) ayaneo_set_rewind(!ayaneo_get_rewind()); else changed = 0; } break;
 	case GM_CPU:     if (dir) gbc_cpu_step(dir); else changed = 0; break;   /* persisted per core */
 	case GM_BFI:     { extern int ayaneo_get_strobe(void); extern void ayaneo_set_strobe(int v);
 			   if (dir) ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); else changed = 0; } break;

@@ -514,6 +514,7 @@ static void wr32le(unsigned char *p, unsigned v)
 
 /* ---- save state (boot_b) ---- */
 #define GBA_STATE_OFF	0x01C00000u	/* 28 MB */
+volatile unsigned int g_dbg_legacy_refused;   /* oem mode: partition state / save writes refused in the SD build */
 #define GBA_STATE_MAGIC	0x53414247u	/* "GBAS" */
 #define GBA_STATE_MAX	(1u * 1024 * 1024)	/* 512 KB gpSP state + hdr, block-aligned */
 
@@ -536,6 +537,12 @@ static int state_write(unsigned char *scratch)
 
 #ifdef AYANEO_GBA_SD
 	if (sd_mode_on()) return sd_state_write(scratch);
+	/* The partition state slot is boot_b+28 MB, where the SD build keeps the gpSP core blob:
+	 * a save with no game selected (the bare BIOS) overwrote it and the next boot could not
+	 * load gpSP (2026-11-03). The SD build keeps states on the card only. */
+	g_dbg_legacy_refused++;
+	(void)sz; (void)total;
+	return 0;
 #endif
 	if (!sz || (unsigned long long)sz + 8 > GBA_STATE_MAX)
 		return 0;
@@ -601,6 +608,10 @@ static int manual_state_read(unsigned char *scratch)
 
 static void sav_save(unsigned char *scratch)
 {
+#ifdef AYANEO_GBA_SD
+	/* the SD build keeps battery saves on the card (sd_sav_write); boot_b holds core blobs */
+	if (!sd_mode_on()) { g_dbg_legacy_refused++; (void)scratch; return; }
+#endif
 	unsigned sz = gba_core_backup_size();		/* fixed 128 KB */
 	unsigned total = 8 + sz;
 
@@ -658,6 +669,41 @@ static void try_load_state(unsigned char *scratch)
 #ifdef AYANEO_GBA_SD
 static const char *gba_sd_current_name(void);   /* the ROM running from the card, or NULL */
 #endif
+/* The suspend save of the power key, timed per step (oem suspendtest: [0] state, [1] battery save,
+ * [2] eMMC settings, [3] SD settings, ms; [4] state write result) */
+volatile unsigned int g_dbg_suspend_ms[5];
+volatile int g_dbg_suspend_test;
+static int s_game_live;   /* a game (not the bare BIOS) runs: only then is there anything to save */
+static void save_for_suspend(unsigned char *scratch)
+{
+	unsigned t0 = gpt4_get_current_tick(), t1, t2, t3;
+	if (s_game_live) {
+		g_dbg_suspend_ms[4] = (unsigned)state_write(scratch);
+		t1 = gpt4_get_current_tick();
+		sav_save(scratch);
+		t2 = gpt4_get_current_tick();
+#ifdef AYANEO_GBA_SD
+		{ extern void ayaneo_resume_mark(const char *name); const char *nm = gba_sd_current_name(); if (nm) ayaneo_resume_mark(nm); }
+#endif
+	} else {
+		/* the bare BIOS (no game on the card, or the list not read): saving here would write
+		 * the BIOS's state and an empty battery save over the selected game's files */
+		extern void ayaneo_resume_clear(void);
+		ayaneo_resume_clear();
+		g_dbg_suspend_ms[4] = 2u;
+		t1 = t2 = gpt4_get_current_tick();
+	}
+	ayaneo_settings_save();
+	t3 = gpt4_get_current_tick();
+#ifdef AYANEO_GBA_SD
+	sd_settings_mirror();
+#endif
+	g_dbg_suspend_ms[0] = (t1 - t0) / 13000u;
+	g_dbg_suspend_ms[1] = (t2 - t1) / 13000u;
+	g_dbg_suspend_ms[2] = (t3 - t2) / 13000u;
+	g_dbg_suspend_ms[3] = (gpt4_get_current_tick() - t3) / 13000u;
+}
+
 static void save_and_poweroff(unsigned char *scratch)
 {
 	/* Mute the game audio FIRST so the ~1s eMMC/SD save does not replay the AFE ring
@@ -665,15 +711,7 @@ static void save_and_poweroff(unsigned char *scratch)
 	 * the submit path refeeding it; the permanent mute is fine here - we are shutting
 	 * down anyway (audio_shutdown follows). */
 	ayaneo_gbc_audio_pause(1);
-	state_write(scratch);
-	sav_save(scratch);
-#ifdef AYANEO_GBA_SD
-	{ extern void ayaneo_resume_mark(const char *name); const char *nm = gba_sd_current_name(); if (nm) ayaneo_resume_mark(nm); }
-#endif
-	ayaneo_settings_save();
-#ifdef AYANEO_GBA_SD
-	sd_settings_mirror();
-#endif
+	save_for_suspend(scratch);
 	ayaneo_gbc_audio_shutdown();
 	ayaneo_leds_off_for_poweroff();
 	mt_power_off();
@@ -682,6 +720,12 @@ static void save_and_poweroff(unsigned char *scratch)
 static void check_power(unsigned char *scratch)
 {
 	extern int ayaneo_power_hold(int menu_open, int use_overlay);
+	if (g_dbg_suspend_test) {   /* oem suspendtest: the power key's save without the power off */
+		ayaneo_gbc_audio_pause(1);
+		save_for_suspend(scratch);
+		ayaneo_gbc_audio_pause(0);
+		g_dbg_suspend_test = 0;
+	}
 	if (ayaneo_power_hold(s_menu_open, 1))
 		save_and_poweroff(scratch);		/* no return */
 }
@@ -1277,6 +1321,7 @@ static int led_thread(void *arg)
 		else                  state = 1;                               /* battery: green */
 		g_dbg_led_chr = chr; g_dbg_led_pct = pct; g_dbg_led_state = state; g_dbg_led_ticks = tick;
 		{ extern unsigned int ayaneo_bb_uptime_ms(void); ayaneo_bb_uptime_ms(); }
+		if (tick == 60) { extern void ayaneo_sd_guard_stable(void); ayaneo_sd_guard_stable(); }   /* 30 s up: a stable run */
 		{ extern unsigned int ayaneo_rewind_verify_tables(int heal); ayaneo_rewind_verify_tables(1); }   /* page tables of the rewind islands, healed if hit */
 		if (state != last) {
 			last = state;
@@ -1415,7 +1460,7 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_RESUME, MI_SKIPBOOT, MI_SKIPINTRO,
-	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_BENCH, MI_SHOWFPS, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_COUNT
+	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_REWIND, MI_BENCH, MI_SHOWFPS, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_COUNT
 };
 #define GBA_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -1439,6 +1484,7 @@ static const char *menu_value(int item, char *buf)
 	case MI_FILTER:   p = mi_puts(p, filter_name(ayaneo_get_lcd_filter_core(1))); break;
 	case MI_COLORCORRECT: p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
 	case MI_STROBE:   { int b = ayaneo_get_strobe(); p = mi_puts(p, ayaneo_strobe_name(b)); } break;
+	case MI_REWIND:   { extern int ayaneo_get_rewind(void); p = mi_puts(p, ayaneo_get_rewind() ? "On" : "Off"); } break;
 	case MI_PREEMPT: { int pf = ayaneo_get_preempt_frames();
 		/* Named tiers (max desired depth) + the depth the closed loop is running
 		 * right now (it backs off to hold 60 fps), so the user sees it adapt -
@@ -1530,6 +1576,7 @@ static const char *menu_label(int item)
 	case MI_PANEL:     return "Panel Refresh";
 	case MI_STROBE:    return "BFI";
 	case MI_PREEMPT:   return "Run-Ahead";
+	case MI_REWIND:    return "Rewind";
 	case MI_BENCH:     return "Benchmark (Uncap)";
 	case MI_SHOWFPS:   return "Show FPS";
 	case MI_CORE:      return "GBA Core";
@@ -1558,6 +1605,8 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 		/* CPU clock escalation is applied in the game loop on any level change,
 		 * so it also covers the oem preempt: path. */
 	} else changed = 0; break;
+	case MI_REWIND:   { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
+			    if (dir || act) ayaneo_set_rewind(!ayaneo_get_rewind()); else changed = 0; } break;
 	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;
 	case MI_RESUME:   { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
 			    if (dir || act) ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); else changed = 0; } break;
@@ -2052,7 +2101,7 @@ static int sd_mode_on(void) { return s_sd_mode && s_sel_rom >= 0 && s_sel_rom < 
  * and vice-versa (mirrors the SNES "sus" vs st0..2 split). */
 static const char *gba_sd_current_name(void)
 {
-	return s_sd_mode ? s_roms[s_sel_rom].name : (const char *)0;
+	return (s_sd_mode && s_sel_rom >= 0 && s_sel_rom < s_nrom) ? s_roms[s_sel_rom].name : (const char *)0;
 }
 
 static int sd_state_write(unsigned char *scratch)
@@ -2376,6 +2425,7 @@ static unsigned gba_sd_build_logo_cart(unsigned char *rp)
 #endif
 
 /* ===================== emulator thread ===================== */
+volatile int g_dbg_boot_step;   /* oem mode: how far the emulator thread got */
 static int emu_thread(void *arg)
 {
 	unsigned char *scratch = (unsigned char *)(GBA_ARENA_PA + GBA_ARENA_SZ - GBA_DRV_RESERVE);
@@ -2383,8 +2433,10 @@ static int emu_thread(void *arg)
 
 	(void)arg;
 
+	g_dbg_boot_step = 1;
 	gba_disable_align_faults();		/* gpSP relies on unaligned host accesses */
 	ayaneo_display_prepare();		/* own the panel + backlight for on-screen debug */
+	g_dbg_boot_step = 2;
 	g_dbg_emu_abs_ms = gpt4_get_current_tick() / 13000u;
 	g_dbg_emu_chime = ayaneo_boot_audio_active();
 #ifdef KONKR_KPA
@@ -2396,9 +2448,11 @@ static int emu_thread(void *arg)
 	/* the speaker amps lock to the I2S clocks and load their DSP image: start that now, under
 	 * the core load and the card mount, so sound is there from the first BIOS frame (the ring
 	 * is silence until a core feeds it); a boot chime still playing keeps the usual order */
+	g_dbg_boot_step = 3;
 	if (!ayaneo_boot_audio_active())
 		ayaneo_gbc_audio_init();
 #endif
+	g_dbg_boot_step = 4;
 
 	/* Load the GBA core blob from boot_b into its DRAM slot and bind the export table.
 	 * The core is no longer part of lk_a; everything below drives it through g_core. */
@@ -2408,6 +2462,7 @@ static int emu_thread(void *arg)
 		return 0;
 	}
 	g_dbg_bt_coreload = BT_MS();
+	g_dbg_boot_step = 5;
 
 #ifdef AYANEO_GBA_INTERP
 	dynarec_enable = 0;			/* diagnostic: pure interpreter, no JIT */
@@ -2421,6 +2476,7 @@ static int emu_thread(void *arg)
 		return 0;
 	}
 	g_dbg_bt_coreinit = BT_MS();
+	g_dbg_boot_step = 6;
 	sd_bg_launch();   /* fast boot path: the card work starts now, during the intro */
 #ifdef AYANEO_GBA_SD
 	if (s_sd_mode) {
@@ -2428,8 +2484,12 @@ static int emu_thread(void *arg)
 		input_init();                        /* need the D-pad/A for the ROM-select */
 		/* Load GammaOS Pico settings from the SD card (portable with the card);
 		 * marks settings loaded so the later boot_b load keeps the SD values, and
-		 * lets us honour skip-boot-logo before the intro/menu. */
-		gba_sd_settings_load(&s_sd_vol);
+		 * lets us honour skip-boot-logo before the intro/menu. Not on the fast path:
+		 * there the card is still being mounted by the card thread (reading it here
+		 * failed, and raced the mount), and the eMMC block, written together with the
+		 * card's copy at every save, already holds the same settings. */
+		if (!s_sd_fast)
+			gba_sd_settings_load(&s_sd_vol);
 		/* Boot the emulator with NO cartridge, using the SD card's own
 		 * gba_bios.bin (s_sd_bios), so the real GBA BIOS plays its boot logo as
 		 * the intro. The ROM-select menu and the chosen game are driven after the
@@ -2559,7 +2619,11 @@ static int emu_thread(void *arg)
 		 * (SD setting); the user can also cut the logo short by holding B. */
 		if (s_sd_mode) {
 			extern int ayaneo_resume_pending(void);
-			int fi, intro_frames = (ayaneo_get_skip_gba_intro() || ayaneo_resume_pending()) ? 0 : GBA_SD_INTRO_FRAMES;
+			extern volatile int g_dbg_resume[4];
+			int pend = ayaneo_resume_pending();
+			int fi, intro_frames = (ayaneo_get_skip_gba_intro() || pend) ? 0 : GBA_SD_INTRO_FRAMES;
+			g_dbg_resume[0] = pend;
+			g_dbg_boot_step = 7;
 			/* Run the BIOS-logo intro on the pure INTERPRETER: the dynarec faults
 			 * in translate_block_arm here, and the interpreter also naturally picks
 			 * up the reset PC after the intro->game gba_core_start (it re-reads PC
@@ -2586,6 +2650,12 @@ static int emu_thread(void *arg)
 				extern volatile unsigned int g_dbg_bt_intro_end, g_dbg_bt_intro_frames;
 				g_dbg_bt_intro_end = BT_MS(); g_dbg_bt_intro_frames = (unsigned int)fi;
 			}
+			/* The card thread may still be listing the games: the intro used to cover it, but
+			 * a resumed game skips the intro, and with the list still empty this went to the
+			 * no ROMs branch and ran the bare BIOS for ever (the resume bug). */
+			g_dbg_boot_step = 8;
+			sd_bg_wait();
+			g_dbg_boot_step = 9;
 			if (s_nrom > 0) {
 				unsigned char *rp = gba_core_rom_ptr();
 				for (;;) {
@@ -2619,6 +2689,7 @@ static int emu_thread(void *arg)
 					gba_dbg("GBA ERR: SD game core_start failed");
 					return 0;
 				}
+				s_game_live = 1;
 				gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
 						(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
 				if (!PRESSED(GPIO_B))
@@ -2962,6 +3033,7 @@ static int emu_thread(void *arg)
 					}
 					if (gba_core_start(rsz, s_sd_bios) != 0)
 						return 0;
+					s_game_live = 1;
 					gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
 							(unsigned char *)gba_core_backup_ptr(),
 							gba_core_backup_size());
@@ -3304,18 +3376,19 @@ int ayaneo_gba_sd_boot(void)
 		}
 	}
 
-	/* NEVER-BRICK GUARD: if the previous boot was reset by the watchdog, the last
-	 * SD attempt may have crashed (data abort -> "halting" -> HW watchdog reset) or
-	 * hung. Skip the SD emulator path this boot and fall through to normal Android
-	 * boot, so the device always self-recovers instead of boot looping. A later
-	 * clean (non-watchdog) boot will retry the SD path automatically. SELECT held
-	 * overrides this (the user is explicitly asking for the emulator). */
-	if (!force_emu) {
+	/* NEVER-BRICK GUARD: a crash in the SD path ends in a watchdog reset. Skip the SD
+	 * emulator path and fall through to normal Android boot only when that keeps
+	 * happening: the last reset was the watchdog and two SD attempts in a row died
+	 * before 30 s of stable running (ayaneo_sd_guard_enter, black box DRAM). A single
+	 * crash no longer disables the card for good (the RGU keeps its watchdog status
+	 * across later reboots, which left every boot after one crash on a blank screen).
+	 * SELECT held overrides this (the user is explicitly asking for the emulator). */
+	{
 		extern unsigned int mtk_wdt_check_status(void);
+		extern int ayaneo_sd_guard_enter(unsigned int wdt_status);
 		unsigned int wsta = mtk_wdt_check_status();
-		/* HWWDT_RST | SWWDT_RST | IRQWDT_RST */
-		if (wsta & (0x80000000u | 0x40000000u | 0x20000000u)) {
-			GBA_LOG("gba-sd: prior boot was a watchdog reset (0x%x) - skipping SD to avoid a loop -> normal boot\n", wsta);
+		if (ayaneo_sd_guard_enter(wsta) && !force_emu) {
+			GBA_LOG("gba-sd: two watchdog resets in the SD path in a row (0x%x) - skipping SD -> normal boot\n", wsta);
 			return -9;
 		}
 	}

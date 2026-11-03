@@ -165,3 +165,36 @@ void ayaneo_bb_clear(void)
 	memset(z, 0, sizeof z);
 	partition_write(BB_PART, BB_OFF, z, sizeof z);
 }
+
+/* Boot loop guard for the SD card emulator. The guard used to skip the card after ANY watchdog
+ * reset; the RGU keeps that status over later reboots, so one crash left every boot after it on
+ * a blank screen (2026-11-03). Now a counter in the same watchdog proof DRAM as the fault record
+ * (the end of its 4 KB slot) counts SD boot attempts that did not reach a stable run: each start
+ * of the SD path adds one, 30 s of running (LED thread) clears it. The card is skipped only when
+ * the last reset was the watchdog AND two attempts in a row died before running stable. */
+#define BB_GUARD       ((volatile unsigned int *)0x4D0EFF00u)
+#define BB_GUARD_MAGIC 0x44524755u   /* "UGRD" */
+static void bb_guard_put(unsigned int n)
+{
+	BB_GUARD[0] = BB_GUARD_MAGIC;
+	BB_GUARD[1] = n;
+	BB_GUARD[2] = ~n;
+	arch_clean_cache_range((addr_t)0x4D0EFF00u, 64);
+}
+static unsigned int bb_guard_get(void)
+{
+	if (BB_GUARD[0] != BB_GUARD_MAGIC || BB_GUARD[2] != ~BB_GUARD[1]) return 0;   /* cold boot: random */
+	return BB_GUARD[1];
+}
+volatile unsigned int g_dbg_sd_guard[2];   /* oem mode: attempts seen at this boot, watchdog status */
+/* returns 1 when the SD path should be skipped this boot */
+int ayaneo_sd_guard_enter(unsigned int wdt_status)
+{
+	unsigned int wdt = wdt_status & (0x80000000u | 0x40000000u | 0x20000000u);
+	unsigned int n = wdt ? bb_guard_get() : 0u;   /* a clean reset starts the count again */
+	g_dbg_sd_guard[0] = n; g_dbg_sd_guard[1] = wdt_status;
+	if (wdt && n >= 2u) return 1;
+	bb_guard_put(n + 1u);
+	return 0;
+}
+void ayaneo_sd_guard_stable(void) { bb_guard_put(0u); }

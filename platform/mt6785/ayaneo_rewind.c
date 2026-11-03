@@ -490,6 +490,16 @@ static void rw_evict_oldest(void)
  * the XOR-delta vs the previous state, RLE-encodes it, and appends it (evicting oldest as needed). */
 void *ayaneo_rewind_capture_begin(void)
 {
+	extern int ayaneo_get_rewind(void);
+	if (!ayaneo_get_rewind()) {
+		/* Rewind is off: no snapshot, and the history goes, so switching it back on starts a
+		 * clean timeline instead of one with a jump in it */
+		if (s_dir_count || s_have_prev) {
+			s_wr = s_used = s_dir_head = s_dir_count = 0;
+			s_have_base = 0; s_have_prev = 0;
+		}
+		return 0;
+	}
 	if (!ayaneo_rewind_ready() || s_rewinding) return 0;
 	return s_recon;
 }

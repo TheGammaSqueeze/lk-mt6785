@@ -613,11 +613,14 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		extern int ayaneo_get_resume_on_boot(void);
 		extern int ayaneo_resume_take(char *out, int cap);
 		char rn[100];
+		extern volatile int g_dbg_resume[4];
+		g_dbg_resume[3] = ayaneo_get_resume_on_boot();
 		if (ayaneo_get_resume_on_boot() && ayaneo_resume_take(rn, sizeof rn)) {
 			int k;
+			g_dbg_resume[1] = 1;
 			ayaneo_menu_settings_persist();   /* the cleared record */
 			for (k = 0; k < nrom; k++)
-				if (strcmp(roms[k].name, rn) == 0) return k;
+				if (strcmp(roms[k].name, rn) == 0) { g_dbg_resume[2] = k + 1; return k; }
 		}
 	}
 	int fade_in = 18;   /* fade the menu in from WHITE on entry over 0.3s (the boot-logo

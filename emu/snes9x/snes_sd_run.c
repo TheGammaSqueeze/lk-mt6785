@@ -363,7 +363,7 @@ static void snes_slot_check(void)
 	s_slot_used = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, tmp, sizeof tmp) > 0;
 }
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
-       SM_CPU, SM_RUNAHEAD, SM_TURBO, SM_BENCH, SM_SHOWFPS, SM_BATTERY, SM_PANEL, SM_STROBE, SM_RESUME,
+       SM_CPU, SM_RUNAHEAD, SM_REWIND, SM_TURBO, SM_BENCH, SM_SHOWFPS, SM_BATTERY, SM_PANEL, SM_STROBE, SM_RESUME,
        SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
 #define SNES_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -413,6 +413,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_ASPECT: return "Aspect Ratio"; case SM_OVERSCAN: return "Overscan";
 	case SM_AUDIO:  return "Audio Filter";  case SM_HIRES:    return "Hi-Res Blend";
 	case SM_CPU:    return "CPU Clock"; case SM_RUNAHEAD: return "Run-Ahead";
+	case SM_REWIND: return "Rewind";
 	case SM_TURBO:  return "Turbo (auto-fire)";
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
 	case SM_SHOWFPS: return "Show FPS"; case SM_BATTERY: return "Battery";
@@ -448,6 +449,7 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 		{ unsigned f = (hz % 1000) / 10; if (f < 10) p = smput(p, "0"); p = smputu(p, f); }
 		p = smput(p, " Hz"); break; }
 	case SM_STROBE: { int b = ayaneo_get_strobe(); p = smput(p, ayaneo_strobe_name(b)); } break;
+	case SM_REWIND: { extern int ayaneo_get_rewind(void); p = smput(p, ayaneo_get_rewind() ? "On" : "Off"); } break;
 	case SM_RESUME: { extern int ayaneo_get_resume_on_boot(void); p = smput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case SM_SLOT: p = smputu(p, (unsigned)s_save_slot); p = smput(p, s_slot_used ? " used" : " empty"); break;
 	case SM_SAVE: case SM_LOAD: case SM_RESET: case SM_CLOSE: p = smput(p, "[A]"); break;
@@ -526,6 +528,8 @@ static int sm_change(int i, int dir, int act)
 	case SM_BATTERY: break;   /* read-only */
 	case SM_PANEL:  break;   /* read-only */
 	case SM_STROBE: if (dir) { ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); snes_settings_touch(); } break;
+	case SM_REWIND: if (dir || act) { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
+			ayaneo_set_rewind(!ayaneo_get_rewind()); snes_settings_touch(); } break;
 	case SM_RESUME: if (dir) { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
 			ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); snes_settings_touch(); } break;
 	case SM_SLOT: if (dir) { s_save_slot = (s_save_slot + dir + SNES_SLOT_COUNT) % SNES_SLOT_COUNT;

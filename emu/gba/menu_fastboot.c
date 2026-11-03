@@ -1070,6 +1070,44 @@ static void cmd_corebench(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem suspendtest - the power key's suspend save (state, battery save, resume record, settings)
+ * without the power off, timed; a reboot afterwards then boots the way a power on would */
+static void cmd_suspendtest(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_suspend_test;
+	extern volatile unsigned int g_dbg_suspend_ms[5];
+	unsigned w;
+	(void)arg; (void)data; (void)sz;
+	g_dbg_suspend_test = 1;
+	for (w = 0; w < 400u && g_dbg_suspend_test; w++) thread_sleep(50);
+	if (g_dbg_suspend_test) { g_dbg_suspend_test = 0; fastboot_fail("no game running"); return; }
+	snprintf(lbuf, sizeof lbuf, "suspend: state=%ums ok=%u sav=%ums emmc=%ums sd=%ums", g_dbg_suspend_ms[0],
+		 g_dbg_suspend_ms[4], g_dbg_suspend_ms[1], g_dbg_suspend_ms[2], g_dbg_suspend_ms[3]);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem resumeinfo - the Resume Game on Boot record and what this boot did with it */
+static void cmd_resumeinfo(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_resume[4];
+	extern int ayaneo_resume_peek(char *out, int cap);
+	char nm[100];
+	int set = ayaneo_resume_peek(nm, sizeof nm), i;
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "resume: set=%d boot: pending=%d taken=%d match=%d on=%d", set,
+		 g_dbg_resume[0], g_dbg_resume[1], g_dbg_resume[2], g_dbg_resume[3]);
+	fastboot_info(lbuf);
+	for (i = 0; nm[i] && i < 96; i += 40) {   /* the name in 40 character pieces */
+		char piece[48]; int k;
+		for (k = 0; k < 40 && nm[i + k]; k++) piece[k] = nm[i + k];
+		piece[k] = 0;
+		snprintf(lbuf, sizeof lbuf, "name: %s", piece);
+		fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
+
 static void cmd_odup(const char *arg, void *data, unsigned sz)
 {
 	unsigned kuphi, kuplo, gam;
@@ -1167,6 +1205,14 @@ static void cmd_mode(const char *arg, void *data, unsigned sz)
 		 g_boot_mode, g_boot_mode == AYANEO_BM_FASTBOOT ? "BOOTLOADER(flash ok)" : "EMU(no flash)",
 		 g_menu_live, game);
 	fastboot_info(lbuf);
+	{
+		extern volatile unsigned int g_dbg_sd_guard[2];
+		extern volatile int g_dbg_boot_step, g_dbg_set_step;
+		extern volatile unsigned int g_dbg_legacy_refused;
+		snprintf(lbuf, sizeof lbuf, "sd guard: attempts=%u wdt=0x%08x step=%d set=%d refused=%u", g_dbg_sd_guard[0],
+			 g_dbg_sd_guard[1], g_dbg_boot_step, g_dbg_set_step, g_dbg_legacy_refused);
+		fastboot_info(lbuf);
+	}
 	{	/* why the preloader started us: 0 power key, 1 usb, 2 rtc, 3/4/9/10 watchdog, 8 kernel panic,
 		 * 30 power exception, 31 long power key, 32 power loss */
 		extern int ayaneo_boot_reason(void);   /* gba_driver.c: g_boot_arg->boot_reason */
@@ -1833,6 +1879,8 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem od:", cmd_od, 1, 0);             /* software overdrive: on,kup,kdn,thr,cap */
 	fastboot_register("oem odup:", cmd_odup, 1, 0);
 	fastboot_register("oem perf", cmd_perf, 1, 0);
+	fastboot_register("oem suspendtest", cmd_suspendtest, 1, 0);
+	fastboot_register("oem resumeinfo", cmd_resumeinfo, 1, 0);
 	fastboot_register("oem gbabench", cmd_corebench, 1, 0);
 	fastboot_register("oem odcap", cmd_odcap, 1, 0);         /* prev-indexed rising curve: kuphi,kuplo,gam */
 	fastboot_register("oem rot:", cmd_rot, 1, 0);

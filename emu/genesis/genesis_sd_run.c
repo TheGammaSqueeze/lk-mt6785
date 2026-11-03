@@ -234,7 +234,7 @@ static void genesis_apply_clock(void)
 extern int  ayaneo_get_preempt_frames(void);
 extern void ayaneo_set_preempt_frames(int v);
 
-enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_CPU, GM_REFRESH, GM_STROBE, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
+enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_REWIND, GM_CPU, GM_REFRESH, GM_STROBE, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
 /* Overdrive is On/Off: On applies the tuned halo-free profile (ayaneo_set_overdrive_level). The exact
  * kup/kdn/thr/cap are still pokeable live via `oem od:` for tuning. */
 #define OD_MENU_MAX 1
@@ -294,7 +294,7 @@ static const char *gm_label(int i) { switch (i) {
 	case GM_BRIGHT: return "Brightness"; case GM_VOLUME: return "Volume";
 	case GM_ASPECT: return "Aspect Ratio"; case GM_FILTER: return "LCD Filter";
 	case GM_REGION: return "Region"; case GM_REFRESH: return "Refresh Rate";
-	case GM_RUNAHEAD: return "Run-Ahead"; case GM_CPU: return "CPU Clock";
+	case GM_RUNAHEAD: return "Run-Ahead"; case GM_REWIND: return "Rewind"; case GM_CPU: return "CPU Clock";
 	case GM_STROBE: return "BFI"; case GM_RESUME: return "Resume Game on Boot";
 	case GM_SHOWFPS: return "Show FPS"; case GM_BATTERY: return "Battery";
 	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
@@ -310,6 +310,7 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 	case GM_REFRESH: { unsigned mhz = ayaneo_dsi_core_refresh_milli();   /* read-only: XX.X Hz per frame */
 		p = mputu(p, mhz / 1000u); *p++ = '.'; *p++ = (char)('0' + (mhz % 1000u) / 100u); p = mput(p, " Hz"); } break;
 	case GM_STROBE: { int b = ayaneo_get_strobe(); p = mput(p, ayaneo_strobe_name(b)); } break;
+	case GM_REWIND: { extern int ayaneo_get_rewind(void); p = mput(p, ayaneo_get_rewind() ? "On" : "Off"); } break;
 	case GM_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = mput(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
 	case GM_BATTERY: { extern int ayaneo_gauge_pct(void); extern int ayaneo_gauge_time_str(char *out, int n); extern int upmu_is_chr_det(void);
 		char ts[24]; p = mputu(p, (unsigned)ayaneo_gauge_pct()); p = mput(p, upmu_is_chr_det() ? "% Charging" : "%");
@@ -347,6 +348,8 @@ static int gm_change(int i, int dir, int act)
 		mput(s_mstat, "Region set (some games need Reset)"); } break;
 	case GM_REFRESH: break;   /* read-only display (panel Hz); no adjust */
 	case GM_STROBE: if (dir) { ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); genesis_settings_touch(); } break;
+	case GM_REWIND: if (dir || act) { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
+			ayaneo_set_rewind(!ayaneo_get_rewind()); genesis_settings_touch(); } break;
 	case GM_SHOWFPS: if (dir || act) { extern int ayaneo_get_show_fps(void); extern void ayaneo_set_show_fps(int v);
 			ayaneo_set_show_fps(!ayaneo_get_show_fps()); genesis_settings_touch(); } break;
 	case GM_BATTERY: break;   /* read-only */
