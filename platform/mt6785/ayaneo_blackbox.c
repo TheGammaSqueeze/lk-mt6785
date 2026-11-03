@@ -9,6 +9,7 @@
 #include <printf.h>
 #include <kernel/thread.h>
 #include <part_interface.h>
+#include <arch/arm/mmu.h>
 extern unsigned int gpt4_get_current_tick(void);
 
 #define BB_PART   "boot_b"
@@ -71,6 +72,21 @@ static int bb_boot_reason(void) { extern int ayaneo_boot_reason(void); return ay
 #define BB_RAM_MAGIC 0x52424241u          /* "ABBR": a fault record waiting for the eMMC */
 extern void arch_clean_cache_range(addr_t start, size_t len);
 
+/* The page is outside the LK's own RAM mapping (0x4C400000 + 9 MB): it was usable only when
+ * the kernel dump code had mapped the pstore carve-out, which it does after a watchdog reset but
+ * not on a cold power on (2026-11-03: the first boot after Android faulted on the boot loop
+ * counter, then the fault handler faulted again writing its record). Map it before any use;
+ * the fault handler only writes it once mapped. */
+static volatile int s_bb_mapped;
+static void bb_map(void)
+{
+	extern int arch_mmu_map(uint64_t paddr, vaddr_t vaddr, uint flags, uint count);
+	if (s_bb_mapped) return;
+	if (arch_mmu_map((uint64_t)0x4D0EF000u, (vaddr_t)0x4D0EF000u,
+			 MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA, 0x1000u) == 0)
+		s_bb_mapped = 1;
+}
+
 static unsigned int bb_sum(const struct bb_rec *r)
 {
 	const unsigned int *w = (const unsigned int *)r;
@@ -87,6 +103,7 @@ void ayaneo_bb_fault(const char *msg, unsigned pc, unsigned dfar, unsigned spsr,
 	struct bb_rec r;
 	unsigned int i;
 	thread_t *t = current_thread;
+	if (!s_bb_mapped) return;   /* the page is not mapped: writing it would fault again */
 	memset(&r, 0, sizeof r);
 	r.type = 1; r.up_ms = ayaneo_bb_uptime_ms(); r.boot_reason = (unsigned)bb_boot_reason();
 	r.pc = pc; r.dfar = dfar; r.spsr = spsr; r.lr = lr; r.sp = sp;
@@ -108,6 +125,8 @@ void ayaneo_bb_boot_check(void)
 {
 	struct bb_rec *rp = (struct bb_rec *)BB_RAM;
 	struct bb_rec r;
+	bb_map();
+	if (!s_bb_mapped) return;
 	memcpy(&r, rp, sizeof r);
 	if (r.magic != BB_RAM_MAGIC || r.seq != bb_sum(&r)) return;
 	memset(rp, 0, sizeof r);
@@ -191,10 +210,13 @@ volatile unsigned int g_dbg_sd_guard[2];   /* oem mode: attempts seen at this bo
 int ayaneo_sd_guard_enter(unsigned int wdt_status)
 {
 	unsigned int wdt = wdt_status & (0x80000000u | 0x40000000u | 0x20000000u);
-	unsigned int n = wdt ? bb_guard_get() : 0u;   /* a clean reset starts the count again */
+	unsigned int n;
+	bb_map();
+	if (!s_bb_mapped) { g_dbg_sd_guard[0] = 0; g_dbg_sd_guard[1] = wdt_status; return 0; }   /* no counter: never skip */
+	n = wdt ? bb_guard_get() : 0u;   /* a clean reset starts the count again */
 	g_dbg_sd_guard[0] = n; g_dbg_sd_guard[1] = wdt_status;
 	if (wdt && n >= 2u) return 1;
 	bb_guard_put(n + 1u);
 	return 0;
 }
-void ayaneo_sd_guard_stable(void) { bb_guard_put(0u); }
+void ayaneo_sd_guard_stable(void) { if (s_bb_mapped) bb_guard_put(0u); }

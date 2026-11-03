@@ -1150,6 +1150,47 @@ void ayaneo_fill_blend(unsigned int *buf, unsigned int pitch_w,
 	}
 }
 
+/* Pico menu lists (every core's in-game menu): row pitch, panel height and the first row shown.
+ * Rows are 38 px when the whole list fits. On a shorter screen they go down to 32 px, the least
+ * that keeps the 2x font's ink (pixels 4..29 of its 32 px cell) inside the selection bar, and the
+ * list scrolls to keep the selection in view instead of squeezing further (at 22 px the bar
+ * covered only the top of the text and the rows ran into each other). Title band 60 px, footer
+ * 34 px, 16 px margin, as before. Returns the number of rows shown. */
+int ayaneo_pico_layout(int count, int H, int sel, int *top, int *rowH, int *panelH)
+{
+	int avail = H - 16 - 60 - 34, rh = 38, vis;
+	if (count < 1) count = 1;
+	if (count * rh > avail) { rh = avail / count; if (rh < 32) rh = 32; }
+	vis = avail / rh;
+	if (vis > count) vis = count;
+	if (vis < 1) vis = 1;
+	if (sel < *top) *top = sel;
+	if (sel >= *top + vis) *top = sel - vis + 1;
+	if (*top > count - vis) *top = count - vis;
+	if (*top < 0) *top = 0;
+	*rowH = rh;
+	*panelH = 60 + vis * rh + 34;
+	return vis;
+}
+
+/* the selection bar for a row whose 2x text is drawn at y: centred on the text's 32 px cell */
+void ayaneo_pico_bar(unsigned int *buf, unsigned int pitch, int x, int w, int y, int rowH)
+{
+	ayaneo_fill(buf, pitch, x, y + 16 - rowH / 2, w, rowH, 0xFF5090F0u);
+}
+
+/* more rows above / below the ones shown: small triangles at the right of the title band and
+ * of the footer */
+void ayaneo_pico_more(unsigned int *buf, unsigned int pitch, int px, int py, int panelW, int panelH,
+		      int up, int down)
+{
+	int r, cx = px + panelW - 28 - 8;
+	for (r = 0; r < 8; r++) {
+		if (up)   ayaneo_fill(buf, pitch, cx - r, py + 28 + r, 2 * r + 1, 1, 0xFFC8D0E0u);
+		if (down) ayaneo_fill(buf, pitch, cx - r, py + panelH - 22 - r, 2 * r + 1, 1, 0xFFC8D0E0u);
+	}
+}
+
 /* one glyph from the 8x16 font, integer-scaled */
 static void ayaneo_glyph(unsigned int *buf, unsigned int pitch_w,
 			 int x, int y, int scale, unsigned int argb, unsigned char c)

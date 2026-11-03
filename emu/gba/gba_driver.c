@@ -1710,24 +1710,21 @@ static void menu_tick(unsigned char *state)
 	if (k & MK_B)     { s_menu_open = 0; s_ab_latch |= GB_B; }
 }
 
+extern int ayaneo_pico_layout(int count, int H, int sel, int *top, int *rowH, int *panelH);
+extern void ayaneo_pico_bar(unsigned int *buf, unsigned int pitch, int x, int w, int y, int rowH);
+extern void ayaneo_pico_more(unsigned int *buf, unsigned int pitch, int px, int py, int panelW, int panelH, int up, int down);
 /* called by ayaneo_gbc_show_frame() (mt_disp_drv.c) to paint the overlay */
 void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 			   unsigned int W, unsigned int H)
 {
-	int rowH = 38;
-	/* panel height scales with the item count (title band 84 + rows + 42 for the
-	 * status/help footer) so the backdrop always covers every row - adding menu
-	 * items (Color Correction, Reset Game) used to push Close below the fixed panel. */
-	int panelW = 660, panelH = 60 + MI_COUNT * rowH + 34;
+	static int s_top, s_core_top;
+	int rowH, panelW = 660, panelH, vis;
 	int px, py;
-	/* Fit the panel to the screen: the Konkr's logical height is 640, where 38 px rows with the
-	 * 84 px title band and 42 px footer overflow; shrink the row pitch (never below 20) until
-	 * title + rows + footer leave a 16 px margin. */
-	if (panelH > (int)H - 16) {
-		rowH = ((int)H - 16 - 60 - 34) / MI_COUNT;
-		if (rowH < 20) rowH = 20;
-		panelH = 60 + MI_COUNT * rowH + 34;
-	}
+	/* the row pitch, the panel height and the rows shown (the list scrolls when it does not fit) */
+	if (s_menu_page == 1 && g_core && g_core->version >= GBA_CORE_ABI_V3)
+		vis = ayaneo_pico_layout(g_core->opt_count() + 1, (int)H, s_core_sel, &s_core_top, &rowH, &panelH);
+	else
+		vis = ayaneo_pico_layout(MI_COUNT, (int)H, s_menu_sel, &s_top, &rowH, &panelH);
 	px = ((int)W - panelW) / 2; py = ((int)H - panelH) / 2;
 	int x = px + 28, y = py + 60, i;
 	char val[48];
@@ -1739,12 +1736,12 @@ void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 		int n = g_core->opt_count(), r;
 		ayaneo_text(buf, pitch, px + 28, py + 20, 3, 0xFFFFFFFFu, "Core Settings");
 		ayaneo_text(buf, pitch, px + 28, py + 46, 1, 0xFF8890A0u, g_core->name ? g_core->name : "");
-		for (r = 0; r <= n; r++, y += rowH) {
+		for (r = s_core_top; r <= n && r < s_core_top + vis; r++, y += rowH) {
 			unsigned int fg = (r == s_core_sel) ? 0xFF101018u : 0xFFC8D0E0u;
 			const char *lab = "Back", *v = "";
 			int vw;
 			if (r == s_core_sel)
-				ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
+				ayaneo_pico_bar(buf, pitch, px + 10, panelW - 20, y, rowH);
 			if (r < n) {
 				const struct gba_core_option *o = g_core->opt_info(r);
 				int cur = g_core->opt_get(r);
@@ -1755,6 +1752,7 @@ void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 			for (vw = 0; v[vw]; vw++) ;
 			ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, v);
 		}
+		ayaneo_pico_more(buf, pitch, px, py, panelW, panelH, s_core_top > 0, s_core_top + vis < n + 1);
 		if (s_menu_status[0])
 			ayaneo_text(buf, pitch, x, py + panelH - 32, 2, 0xFF80E080u, s_menu_status);
 		ayaneo_text(buf, pitch, x, py + panelH - 14, 1, 0xFF8890A0u,
@@ -1763,16 +1761,17 @@ void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 	}
 	ayaneo_text(buf, pitch, px + 28, py + 20, 3, 0xFFFFFFFFu, "GammaOS Pico");
 
-	for (i = 0; i < MI_COUNT; i++, y += rowH) {
+	for (i = s_top; i < MI_COUNT && i < s_top + vis; i++, y += rowH) {
 		unsigned int fg = (i == s_menu_sel) ? 0xFF101018u : 0xFFC8D0E0u;
 		int vw;
 		if (i == s_menu_sel)
-			ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
+			ayaneo_pico_bar(buf, pitch, px + 10, panelW - 20, y, rowH);
 		ayaneo_text(buf, pitch, x, y, 2, fg, menu_label(i));
 		menu_value(i, val);
 		for (vw = 0; val[vw]; vw++) ;
 		ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, val);
 	}
+	ayaneo_pico_more(buf, pitch, px, py, panelW, panelH, s_top > 0, s_top + vis < MI_COUNT);
 	if (s_menu_status[0])
 		ayaneo_text(buf, pitch, x, py + panelH - 32, 2, 0xFF80E080u, s_menu_status);
 	ayaneo_text(buf, pitch, x, py + panelH - 14, 1, 0xFF8890A0u,

@@ -382,30 +382,30 @@ static int gm_change(int i, int dir, int act)
 
 int genesis_menu_open(void) { return g_genesis_menu_open; }
 
+extern int ayaneo_pico_layout(int count, int H, int sel, int *top, int *rowH, int *panelH);
+extern void ayaneo_pico_bar(unsigned int *buf, unsigned int pitch, int x, int w, int y, int rowH);
+extern void ayaneo_pico_more(unsigned int *buf, unsigned int pitch, int px, int py, int panelW, int panelH, int up, int down);
 void genesis_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
 {
+	int vis, top;
 	int rowH = 38, panelW = 520, panelH = 60 + GM_COUNT * rowH + 34;
 	int px, py, x, y, i;
-	/* Fit the panel to the screen: the Konkr's logical height is 640, where 38 px rows with the
-	 * 84 px title band and 42 px footer overflow; shrink the row pitch (never below 20) until
-	 * title + rows + footer leave a 16 px margin. */
-	if (panelH > (int)H - 16) {
-		rowH = ((int)H - 16 - 60 - 34) / GM_COUNT;
-		if (rowH < 20) rowH = 20;
-		panelH = 60 + GM_COUNT * rowH + 34;
-	}
+	/* Fit the panel to the screen (ayaneo_pico_layout): 38 px rows when everything fits, down to
+	 * 32 px on the Konkr's 640 px height, and the list scrolls beyond that. */
+	{ static int s_top; vis = ayaneo_pico_layout(GM_COUNT, (int)H, s_msel, &s_top, &rowH, &panelH); top = s_top; }
 	px = ((int)W - panelW) / 2; py = ((int)H - panelH) / 2; x = px + 28; y = py + 60;
 	char val[48];
 	ayaneo_fill(buf, pitch, px, py, panelW, panelH, 0xD010141Cu);   /* translucent: the game shows through (hardware blend) */
 	ayaneo_fill(buf, pitch, px, py, panelW, 6, 0xFF5090F0u);
 	ayaneo_text(buf, pitch, px + 28, py + 20, 3, 0xFFFFFFFFu, "GammaOS Pico");
-	for (i = 0; i < GM_COUNT; i++, y += rowH) {
+	for (i = top; i < GM_COUNT && i < top + vis; i++, y += rowH) {
 		unsigned int fg = (i == s_msel) ? 0xFF101018u : 0xFFC8D0E0u; int vw;
-		if (i == s_msel) ayaneo_fill(buf, pitch, px + 10, y - 4, panelW - 20, rowH, 0xFF5090F0u);
+		if (i == s_msel) ayaneo_pico_bar(buf, pitch, px + 10, panelW - 20, y, rowH);
 		ayaneo_text(buf, pitch, x, y, 2, fg, gm_label(i));
 		gm_value(i, val); for (vw = 0; val[vw]; vw++) ;
 		ayaneo_text(buf, pitch, px + panelW - 28 - vw * 16, y, 2, fg, val);
 	}
+	ayaneo_pico_more(buf, pitch, px, py, panelW, panelH, top > 0, top + vis < GM_COUNT);
 	if (s_mstat[0]) ayaneo_text(buf, pitch, x, py + panelH - 32, 2, 0xFF80E080u, s_mstat);
 	ayaneo_text(buf, pitch, x, py + panelH - 14, 1, 0xFF8890A0u,
 		    "Up/Down move  Left/Right change  A select  B/AYA close");
