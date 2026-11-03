@@ -308,6 +308,7 @@ OBJS += \
 	$(LOCAL_DIR)/mt_disp_drv.o \
 	$(LOCAL_DIR)/ayaneo_audio.o \
 	$(LOCAL_DIR)/ayaneo_gauge.o \
+	$(LOCAL_DIR)/ayaneo_blackbox.o \
 	$(LOCAL_DIR)/ayaneo_volume_input.o \
 	$(LOCAL_DIR)/ayaneo_meminfo.o \
 	$(LOCAL_DIR)/ayaneo_rewind.o \

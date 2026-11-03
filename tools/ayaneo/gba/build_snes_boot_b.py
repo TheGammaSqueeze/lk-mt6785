@@ -50,7 +50,14 @@ def main():
     ap.add_argument("--gbc-blob", default=DEF_GBC_BLOB)
     ap.add_argument("--snes-blob", default=DEF_SNES_BLOB)
     ap.add_argument("--genesis-blob", default=DEF_GENESIS_BLOB)
+    ap.add_argument("--konkr", action="store_true",
+                    help="Konkr layout: boot_b is 32 MB; the tail holds the BIOS cache at 0x01FF0000, "
+                         "the black box at 0x01FFC000 and the settings at 0x01FFF000")
     a = ap.parse_args()
+    global SETTINGS_OFF, BOOT_B_END
+    if a.konkr:
+        SETTINGS_OFF = 0x01FF0000   # the first of the tail areas (BIOS cache): the snes blob must end before it
+        BOOT_B_END = 0x02000000
 
     pack = open(a.pack, "rb").read()
     anim = open(a.anim, "rb").read() if os.path.exists(a.anim) else b""

@@ -196,7 +196,15 @@ static unsigned int s_audio_ms;
  * Moved to a dedicated 512 B slot in the boot_b tail, past all three core blobs; the packer
  * (build_snes_boot_b.py) guards the snes blob against overlapping it. Settings are also
  * mirrored to the SD card, which stays authoritative, so this relocation loses nothing. */
+#if defined(KONKR_KPA)
+/* The Konkr's boot_b is 32 MB (the pairmini's 33 MB): 0x020FF000 was past its end, inside
+ * vendor_boot_b, and partition_write does not stop it. The block lives in the last 4 KB now; the
+ * old place is still read once if the new one is empty (AYANEO_SET_OFF_OLD). */
+#define AYANEO_SET_OFF		0x01FFF000u
+#define AYANEO_SET_OFF_OLD	0x020FF000u
+#else
 #define AYANEO_SET_OFF		0x020FF000u	/* ~33 MB into boot_b, after the snes blob */
+#endif
 #define AYANEO_SET_MAGIC	0x54455341u	/* "ASET" LE */
 #define AYANEO_SET_VER		10u	/* v10: software-overdrive strength (b+24 bits 19-22); ver<10 migrates to k=3 default */
 #define AYANEO_BL_MIN		16		/* keep the panel visible (never 0) */
@@ -482,6 +490,10 @@ void ayaneo_settings_load(void)
 	 * later call retries; only commit once we have actually read the block. */
 	if (partition_read(AYANEO_AUDIO_PART, AYANEO_SET_OFF, b, sizeof(b)) != (ssize_t)sizeof(b))
 		return;
+#ifdef AYANEO_SET_OFF_OLD
+	if (rd32(b) != AYANEO_SET_MAGIC)   /* not moved yet: the next save writes the new place */
+		partition_read(AYANEO_AUDIO_PART, AYANEO_SET_OFF_OLD, b, sizeof(b));
+#endif
 	s_settings_loaded = 1;			/* storage worked: decide once */
 	if (rd32(b) != AYANEO_SET_MAGIC)
 		return;				/* no/invalid blob: keep defaults */

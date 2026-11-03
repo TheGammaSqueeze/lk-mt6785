@@ -1105,6 +1105,13 @@ static int ocv_pct(int mv)
  * tell a full pack under charge apart from one still taking current (it rests at ~94%). */
 #include <platform/mt_i2c.h>
 #include <platform/boot_mode.h>
+void ayaneo_ramcon_info(char *out, int n)
+{
+	extern BOOT_ARGUMENT *g_boot_arg;
+	if (!g_boot_arg) { snprintf(out, n, "ramcon: no boot args"); return; }
+	snprintf(out, n, "ramcon: sram %08x+%x def %u", g_boot_arg->ram_console_sram_addr,
+		 g_boot_arg->ram_console_sram_size, g_boot_arg->ram_console_def_type);
+}
 int ayaneo_boot_reason(void) { extern BOOT_ARGUMENT *g_boot_arg; return g_boot_arg ? (int)g_boot_arg->boot_reason : -1; }
 int ayaneo_mt6360_chg_reg(unsigned char reg)
 {
@@ -1218,6 +1225,7 @@ static int led_thread(void *arg)
 	thread_sleep(2500);
 #ifdef KONKR_KPA
 	{ extern int ayaneo_mt6360_chrind_off(void); ayaneo_mt6360_chrind_off(); }
+	{ extern void ayaneo_bb_boot_check(void); ayaneo_bb_boot_check(); }   /* a fault from the last run -> eMMC */
 #endif
 	for (;;) {
 		if ((tick & 1) == 0) chr = pmic_upmu_get_rgs_chrdet() ? 1 : 0;   /* every second, cheap */
@@ -1226,6 +1234,7 @@ static int led_thread(void *arg)
 		else if (pct <= 5)    { flash = !flash; state = flash ? 2 : 0; } /* low: red flash */
 		else                  state = 1;                               /* battery: green */
 		g_dbg_led_chr = chr; g_dbg_led_pct = pct; g_dbg_led_state = state; g_dbg_led_ticks = tick;
+		{ extern unsigned int ayaneo_bb_uptime_ms(void); ayaneo_bb_uptime_ms(); }
 		{ extern unsigned int ayaneo_rewind_verify_tables(int heal); ayaneo_rewind_verify_tables(1); }   /* page tables of the rewind islands, healed if hit */
 		if (state != last) {
 			last = state;
@@ -1937,7 +1946,11 @@ static int gba_sd_assets_ok(fat_vol *v);   /* defined with the gate below */
  * reaches the gate instead of after the card mount and the ROM listing (~0.7 s of black).
  * 0x02000000: [512 B header][16384 B BIOS][512 B: the first GBA ROM's 0xC0 cart header]. The
  * card is still the source of truth: the background thread compares and refreshes the cache. */
+#if defined(KONKR_KPA)
+#define GBA_BIOS_CACHE_OFF   0x01FF0000u   /* inside the 32 MB boot_b (0x02000000 was vendor_boot_b); rebuilt from the card when empty */
+#else
 #define GBA_BIOS_CACHE_OFF   0x02000000u
+#endif
 #define GBA_BIOS_CACHE_MAGIC 0x4F494247u   /* "GBIO" */
 static unsigned char s_cart_hdr_cache[512] __attribute__((aligned(64)));
 static int s_cart_hdr_valid;
@@ -2812,6 +2825,7 @@ static void text_center(unsigned int *buf, unsigned int pitch, int cx, int y,
 void ayaneo_gbc_charging_screen(void)
 {
 	int disp_on = 1, pct = 0, dummy, chr_prev = -1, pct_prev = -1, holding_prev = -1;
+	unsigned pk_reads = 0, pk_runs = 0;   /* power key: reads in the current hold, holds started */
 	unsigned t_hold0 = 0, t_unplug0 = 0, t_idle0, t_bat0, t_draw0 = 0, loops = 0;
 	int chg_st = -1;
 
@@ -2831,6 +2845,7 @@ void ayaneo_gbc_charging_screen(void)
 		int pk = pmic_detect_powerkey();
 		int holding;
 		loops++;
+		{ extern unsigned int ayaneo_bb_uptime_ms(void); ayaneo_bb_uptime_ms(); }   /* keep the wrap safe uptime running */
 
 		if (now - t_bat0 >= 13000000u) { pct = battery_read(&dummy); chg_st = charger_status(); t_bat0 = now; }
 		set_charge_led(chr, pct);
@@ -2841,8 +2856,20 @@ void ayaneo_gbc_charging_screen(void)
 
 		/* POWER: a tap wakes the screen, 1.2 s held boots */
 		if (pk) {
-			if (!t_hold0) t_hold0 = now ? now : 1u;
-			if (now - t_hold0 >= 15600000u) { ayaneo_apply_persisted_brightness(); return; }
+			if (!t_hold0) { t_hold0 = now ? now : 1u; pk_runs++; pk_reads = 0; }
+			pk_reads++;
+			if (now - t_hold0 >= 15600000u) {
+				/* record why the charging screen handed over: a night-time start nobody asked for
+				 * (2026-11-03) has to be told apart from a real press */
+				extern void ayaneo_bb_note(unsigned type, const char *msg, const unsigned *a, unsigned n);
+				extern unsigned int ayaneo_bb_uptime_ms(void);
+				extern volatile unsigned int g_dbg_pwrap_waits, g_dbg_pwrap_fails;
+				unsigned a[8];
+				a[0] = (now - t_hold0) / 13000u; a[1] = pk_reads; a[2] = pk_runs; a[3] = loops;
+				a[4] = g_dbg_pwrap_waits; a[5] = g_dbg_pwrap_fails; a[6] = (unsigned)pct; a[7] = (unsigned)chr;
+				ayaneo_bb_note(2, "charging screen: power held, starting", a, 8);
+				ayaneo_apply_persisted_brightness(); return;
+			}
 			holding = 1 + (int)((now - t_hold0) / 1300000u);   /* tenths of the way */
 		} else {
 			if (t_hold0 && !disp_on) { disp_on = 1; ayaneo_apply_backlight(40); }

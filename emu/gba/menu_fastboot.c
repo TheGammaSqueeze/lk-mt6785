@@ -1360,6 +1360,49 @@ static void cmd_serialinfo(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem faulttest - a deliberate data abort (unmapped read), to check that the fault screen and the
+ * black box record work; the device halts and needs a long POWER press */
+static void cmd_faulttest(const char *arg, void *data, unsigned sz)
+{
+	volatile unsigned int *bad = (volatile unsigned int *)0x39cd4479u;   /* the address of the 11-03 fault */
+	(void)arg; (void)data; (void)sz;
+	fastboot_info("faulttest: reading an unmapped address now");
+	(void)*bad;
+	fastboot_okay("");
+}
+
+/* oem bbram[:p][,set] - DRAM retention test: print the first words of a slot or write a marker. Default
+ * 0x55FFF000 (does NOT survive a watchdog reset), p = the pstore tail 0x4D0EF000 (the black box slot) */
+static void cmd_bbram(const char *arg, void *data, unsigned sz)
+{
+	extern void arch_clean_cache_range(unsigned long start, unsigned int len);
+	volatile unsigned int *w = (volatile unsigned int *)0x55FFF000u;
+	(void)data; (void)sz;
+	if (arg && *arg == ':') arg++;
+	if (arg && arg[0] == 'p') { w = (volatile unsigned int *)0x4D0EF000u; arg++; if (*arg == ',') arg++; }   /* the pstore tail */
+	{	/* where the RAM console sits (it shares the pstore carve-out) */
+		extern void ayaneo_ramcon_info(char *out, int n);
+		ayaneo_ramcon_info(lbuf, sizeof lbuf);
+		fastboot_info(lbuf);
+	}
+	if (arg && arg[0] == 's') { w[0] = 0x1234ABCDu; w[1] = 0xCAFEF00Du; w[2] = ~0x1234ABCDu; arch_clean_cache_range((unsigned long)w, 64); }
+	snprintf(lbuf, sizeof lbuf, "bbram: %08x %08x %08x %08x", w[0], w[1], w[2], w[3]);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem blackbox[:clear] - the event records kept on the eMMC (faults, charging screen hand overs) */
+static void cmd_blackbox(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_bb_dump(void (*emit)(const char *), char *line, int n);
+	extern void ayaneo_bb_clear(void);
+	(void)data; (void)sz;
+	if (arg && *arg == ':') arg++;
+	if (arg && arg[0] == 'c') { ayaneo_bb_clear(); fastboot_info("blackbox: cleared"); fastboot_okay(""); return; }
+	ayaneo_bb_dump(fastboot_info, lbuf, sizeof lbuf);
+	fastboot_okay("");
+}
+
 /* oem rewindmap - the rewind arena islands (phys base + MB) and the ring state line */
 static void cmd_rewindmap(const char *arg, void *data, unsigned sz)
 {
@@ -1673,6 +1716,9 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem pmicw", cmd_pmicw, 1, 0);
 	fastboot_register("oem gauge", cmd_gauge, 1, 0);
 	fastboot_register("oem serialinfo", cmd_serialinfo, 1, 0);
+	fastboot_register("oem blackbox", cmd_blackbox, 1, 0);
+	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);
+	fastboot_register("oem bbram", cmd_bbram, 1, 0);
 	fastboot_register("oem dsiw", cmd_dsiw, 1, 0);
 	fastboot_register("oem gray", cmd_gray, 1, 0);
 	fastboot_register("oem awdump", cmd_awdump, 1, 0);

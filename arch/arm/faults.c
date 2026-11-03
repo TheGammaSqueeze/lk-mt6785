@@ -146,14 +146,21 @@ static void exception_die(struct arm_fault_frame *frame, int pc_off, const char 
 		extern void ayaneo_gba_fault_screen(const char *msg, unsigned pc,
 						     unsigned addr, unsigned spsr);
 		extern unsigned g_fault_regs[5];   /* r0 r1 r2 r3 + the SVC lr (the faulting code's return address) */
-		unsigned svc_lr = 0;
+		unsigned svc_lr = 0, svc_sp = frame->usp;
 		/* the fault came from SVC mode (LK runs there): its banked lr is the caller of a leaf
 		 * such as memcpy; the exception frame only holds the user-mode lr */
 		if ((frame->spsr & 0x1f) == 0x13)
-			__asm__ volatile("cps #0x13\n\tmov %0, lr\n\tcps #0x17" : "=r"(svc_lr) : : "memory");
+			__asm__ volatile("cps #0x13\n\tmov %0, lr\n\tmov %1, sp\n\tcps #0x17" : "=r"(svc_lr), "=r"(svc_sp) : : "memory");
 		g_fault_regs[0] = frame->r[0]; g_fault_regs[1] = frame->r[1]; g_fault_regs[2] = frame->r[2];
 		g_fault_regs[3] = frame->r[3]; g_fault_regs[4] = svc_lr;
 		ayaneo_gba_fault_screen(msg, frame->pc, arch_read_dfar(), frame->spsr);
+#if defined(KONKR_KPA)
+		{	/* keep it for the next boot (oem blackbox): nobody may be watching the screen */
+			extern void ayaneo_bb_fault(const char *msg, unsigned pc, unsigned dfar, unsigned spsr,
+						    const unsigned *r4, unsigned lr, unsigned sp);
+			ayaneo_bb_fault(msg, frame->pc, arch_read_dfar(), frame->spsr, g_fault_regs, svc_lr, svc_sp);
+		}
+#endif
 	}
 #endif
 

@@ -71,7 +71,7 @@ if [ -d "$SNES_ASSETS" ]; then
 		--logo-sg      tools/ayaneo/snes/logos/sg.png
 
 	echo ">> Packaging boot_b (animation + chime + menu pack + cores)"
-	python3 tools/ayaneo/gba/build_snes_boot_b.py out/snes_pack.bin out/kpa_menu_boot_b.img
+	python3 tools/ayaneo/gba/build_snes_boot_b.py --konkr out/snes_pack.bin out/kpa_menu_boot_b.img
 else
 	echo "!! SNES_ASSETS dir not found: $SNES_ASSETS (LK built and signed; no boot_b)" >&2
 fi
