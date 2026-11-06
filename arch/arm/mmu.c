@@ -103,6 +103,21 @@ void mmu_update_tt_entry(uint64_t* tt_entry, uint64_t value)
 	//arch_clean_invalidate_cache_range(tt_entry, CACHE_LINE);
 	arch_clean_cache_range((addr_t)tt_entry, CACHE_LINE);
 }
+/* A block split into a table of the next level (to map part of it differently) starts as a copy of
+ * the block: every entry maps the same addresses with the same attributes, so the split itself
+ * unmaps nothing and only the entries the caller then rewrites change. (A fresh table is all
+ * no-access, which unmapped the rest of the block.) step = the size one entry of the new table
+ * maps; the last level's entries are pages (type 3), the others blocks (type 1). */
+static void tt_fill_from_block(uint64_t *table, uint64_t old, uint64_t step, int last_level)
+{
+	uint i;
+	uint64_t attrs = old & 0xFFF0000000000FFCull;
+	uint64_t base = old & 0x000000FFFFFFF000ull & ~(step * 512u - 1u);
+	for (i = 0; i < 512u; i++)
+		table[i] = (base + (uint64_t)i * step) | attrs | (last_level ? 3u : 1u);
+	arch_clean_cache_range((addr_t)table, PAGE_SIZE);
+}
+
 static status_t get_l2_table(uint32_t l1_index, uint64_t *ppa)
 {
 	uint64_t pa;
@@ -210,6 +225,8 @@ int arch_mmu_map(uint64_t paddr, vaddr_t vaddr, uint flags, uint count)
 						dprintf(CRITICAL, "failed to allocate l2 pagetable\n");
 						goto _done;
 					}
+					if ((tt_entry & MMU_MEMORY_L1_DESCRIPTOR_MASK) == MMU_MEMORY_L1_DESCRIPTOR_BLOCK)
+						tt_fill_from_block((uint64_t *)(uint32_t)l2_pa, tt_entry, SECTION_SIZE, 0);
 					tt_entry = l2_pa | MMU_MEMORY_L1_DESCRIPTOR_TABLE;
 					mmu_update_tt_entry(&ld_tt_l1[l1_index], tt_entry);
 					/* fallthrough */
@@ -240,6 +257,8 @@ int arch_mmu_map(uint64_t paddr, vaddr_t vaddr, uint flags, uint count)
 						dprintf(CRITICAL, "failed to allocate l2 pagetable\n");
 						goto _done;
 					}
+					if ((tt_entry & MMU_MEMORY_L1_DESCRIPTOR_MASK) == MMU_MEMORY_L1_DESCRIPTOR_BLOCK)
+						tt_fill_from_block((uint64_t *)(uint32_t)l2_pa, tt_entry, SECTION_SIZE, 0);
 					tt_entry = l2_pa | MMU_MEMORY_L1_DESCRIPTOR_TABLE;
 					mmu_update_tt_entry(&ld_tt_l1[l1_index], tt_entry);
 					/* fallthrough */
@@ -259,6 +278,8 @@ int arch_mmu_map(uint64_t paddr, vaddr_t vaddr, uint flags, uint count)
 								dprintf(CRITICAL, "failed to allocate l3 pagetable\n");
 								goto _done;
 							}
+							if ((tt_entry & MMU_MEMORY_L1_DESCRIPTOR_MASK) == MMU_MEMORY_L1_DESCRIPTOR_BLOCK)
+								tt_fill_from_block((uint64_t *)(uint32_t)l3_pa, tt_entry, PAGE_SIZE, 1);
 							tt_entry = l3_pa | MMU_MEMORY_L1_DESCRIPTOR_TABLE;
 							mmu_update_tt_entry(&l2_table[l2_index], tt_entry);
 							/* fallthrough */

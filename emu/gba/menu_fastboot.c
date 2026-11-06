@@ -1388,6 +1388,26 @@ static void cmd_fdmargin(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem fbwc[:0|1] - the frame buffers and the game layer's buffers write combined (1, the default)
+ * or write back (0), live, for A/B checks; reports the frame buffer, its mapping and the state */
+static void cmd_fbwc(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_fb_wc(int on, unsigned int *va, unsigned int *pa, unsigned int *size);
+	extern int arch_mmu_probe(unsigned int vaddr, unsigned long long *l1, unsigned long long *l2);
+	unsigned int va, pa, n; int r, k; unsigned long long l1 = 0, l2 = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	r = ayaneo_fb_wc(*arg == '1' ? 1 : *arg == '0' ? 0 : -1, &va, &pa, &n);
+	k = arch_mmu_probe(va, &l1, &l2);
+	snprintf(lbuf, sizeof lbuf, "fbwc %d: fb va %08x pa %08x size %u", r, va, pa, n);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "map %d l1 %08x%08x l2 %08x%08x", k, (unsigned)(l1 >> 32), (unsigned)l1, (unsigned)(l2 >> 32), (unsigned)l2);
+	fastboot_info(lbuf);
+	{ extern volatile int g_dbg_fb_wc_boot, g_dbg_fb_wc_res;
+	  snprintf(lbuf, sizeof lbuf, "boot request %d, last result %d", g_dbg_fb_wc_boot, g_dbg_fb_wc_res); fastboot_info(lbuf); }
+	fastboot_okay("");
+}
+
 /* oem palate[:a|0|us] - the late hand over (mt_disp_drv.c rot_pace): a = the front porch less a
  * margin (default), 0 = off, else a fixed window in us. Reports the window, frames handed over
  * late and frames that measured the edge since the last call. Not saved. */
@@ -2233,6 +2253,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);
 	fastboot_register("oem palate", cmd_palate, 1, 0);
+	fastboot_register("oem fbwc", cmd_fbwc, 1, 0);
 	fastboot_register("oem fdmargin", cmd_fdmargin, 1, 0);
 	fastboot_register("oem close", cmd_close, 1, 0);
 	fastboot_register("oem latled", cmd_latled, 1, 0);

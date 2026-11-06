@@ -83,6 +83,31 @@ extern void disp_log_enable(int enable);
 extern void dbi_log_enable(int enable);
 extern void * memset(void *,int,unsigned int);
 extern void arch_clean_cache_range(addr_t start, size_t len);
+/* The panel's two frame buffers and the game layer's two buffers (rsz present, RSZ_BUF0/1) are
+ * mapped write combined on the Konkr (fb_wc_apply, at display init; oem fbwc switches it for A/B
+ * checks): the display reads what the CPU wrote with no cache to clean, so a clean of them is
+ * skipped, which took 170 us of every game frame at 1999 MHz. The CPU writes them in long runs
+ * (no slower uncached); the transitions and the Pico overlay that read some back were checked on
+ * the device. Every clean in this file goes through here; other ranges are cleaned as always. */
+volatile int g_fb_wc, g_dbg_fb_wc_boot, g_dbg_fb_wc_res = 99;
+static volatile int s_fb_wc_req;
+static void fb_wc_apply(void);
+static int disp_wc_range(addr_t start, size_t len)
+{
+	addr_t fb0 = (addr_t)fb_addr, fb1 = fb0 + 2u * fb_size;
+	if (start >= fb0 && start + len <= fb1) return 1;
+	/* the game layer's two buffers (ayaneo_rsz_present RSZ_BUF0 / RSZ_BUF1) */
+	if (start >= 0x55000000u && start + len <= 0x55000000u + fb_size) return 1;
+	if (start >= 0x55900000u && start + len <= 0x55900000u + fb_size) return 1;
+	return 0;
+}
+static void disp_clean_range(addr_t start, size_t len)
+{
+	if (g_fb_wc && disp_wc_range(start, len))
+		return;
+	(arch_clean_cache_range)(start, len);
+}
+#define arch_clean_cache_range(a, n) disp_clean_range((addr_t)(a), (size_t)(n))
 extern UINT32 memory_size(void);
 
 UINT32 mt_disp_get_vram_size(void)
@@ -374,6 +399,14 @@ void mt_disp_init(void *lcdbase)
 
 	primary_display_init(NULL);
 	memset((void*)lcdbase, 0x0, DISP_GetVRamSize());
+#if defined(KONKR_KPA)   /* (AYANEO_ROT is defined further down this file) */
+	/* the panel's frame buffers and the game layer's buffers write combined: the display reads what
+	 * the CPU wrote with no cache clean per frame (see disp_clean_range). Applied by the pacer at the
+	 * first present: splitting the sections around them needs page tables from the heap, which is
+	 * not up yet here (the early pool ran out and the map failed). */
+	s_fb_wc_req = 2;
+	g_dbg_fb_wc_boot = 1;
+#endif
 
 	disp_input_config input;
 
@@ -917,8 +950,8 @@ static int s_fd_delayed;                   /* this frame's button read was delay
 static unsigned int s_fd_work[FD_HIST], s_fd_n;
 /* the slack kept on top of the measured work (us): the floor it starts from and returns to, and
  * the part of the front porch the late hand over leaves unused (oem fdmargin sets both) */
-volatile unsigned int g_fd_base_us = 500u, g_pace_latch_margin_us = 300u;
-static unsigned int s_fd_margin = 500u * 13u;
+volatile unsigned int g_fd_base_us = 250u, g_pace_latch_margin_us = 150u;
+static unsigned int s_fd_margin = 250u * 13u;
 static unsigned int s_fd_off_until;
 static int s_fd_off;
 static int s_fd_whole;                     /* the last present paced whole refreshes */
@@ -1042,6 +1075,7 @@ static void rot_pace(void)
 	/* After a gap (a dark charging screen, a long load) the last edge is stale: a 13 MHz
 	 * difference older than ~165 s reads positive again and the idle sleep would wait minutes.
 	 * Rebase on the clock and take the next edge instead. */
+	if (s_fb_wc_req) fb_wc_apply();   /* oem fbwc: between frames, nothing drawing */
 	now = gpt4_get_current_tick();
 	fd_present_entry(now);
 	if (now - s_pace_edge > 4u * period) s_pace_edge = now - period * div;
@@ -1049,7 +1083,7 @@ static void rot_pace(void)
 	if (s_fd_whole) {
 		/* Late hand over. The layer settings written after a frame end are taken when the front
 		 * porch ends (OVL commit and RDMA frame start, measured 3.78 ms after the frame end at
-		 * vfp 294: the porch's share of the refresh; vfp 332 since the back porch trim, 4.27 ms),
+		 * vfp 294: the porch's share of the refresh; vfp 334 since the sync and back porch trim, 4.29 ms),
 		 * so a frame that arrives in the porch still
 		 * makes the coming refresh: it is handed over at once instead of waiting a whole one, and
 		 * the frame delay aims at the porch's end less a margin, not at the frame end. Safe only
@@ -4286,3 +4320,50 @@ void video_set_lut(unsigned int index,  /* color number */
 }
 
 #endif  // CONFIG_CFB_CONSOLE
+
+/* Map the frame buffers and the game layer's buffers write combined (1) or write back (0). At
+ * display init, and for oem fbwc by the pacer between frames (from rot_pace), when the frame just
+ * written has been cleaned and nothing is drawing: the lines are written back and dropped, then
+ * remapped, so no stale line is ever written over the display's data. Only for frame buffers the
+ * LK maps at their physical address. ayaneo_fb_wc returns the state, or a negative error (no frame
+ * buffer, not identity mapped, the map failed, no present ran to apply it). */
+static volatile int s_fb_wc_res;
+static void fb_wc_apply(void)
+{
+	extern void arch_clean_invalidate_cache_range(addr_t start, size_t len);
+	extern int arch_mmu_map(uint64_t paddr, vaddr_t vaddr, uint flags, uint count);
+	int on = s_fb_wc_req - 1;
+	unsigned int base, end;
+	s_fb_wc_req = 0;
+	if (!fb_addr || !fb_size) { s_fb_wc_res = -1; g_dbg_fb_wc_res = s_fb_wc_res; return; }
+	if ((unsigned int)fb_addr != (unsigned int)fb_addr_pa) { s_fb_wc_res = -2; g_dbg_fb_wc_res = s_fb_wc_res; return; }
+	if (!on) g_fb_wc = 0;                     /* cleans resume before the mapping turns cached */
+	{
+		unsigned int r[3][2], i;
+		r[0][0] = (unsigned int)fb_addr; r[0][1] = 2u * fb_size;
+		r[1][0] = 0x55000000u; r[1][1] = fb_size;
+		r[2][0] = 0x55900000u; r[2][1] = fb_size;
+		for (i = 0; i < 3; i++) {
+			base = r[i][0] & ~0xFFFu;
+			end = (r[i][0] + r[i][1] + 0xFFFu) & ~0xFFFu;
+			(arch_clean_invalidate_cache_range)(base, end - base);
+			if (arch_mmu_map(base, base, (on ? MMU_MEMORY_TYPE_NORMAL : MMU_MEMORY_TYPE_NORMAL_WRITE_BACK) |
+					 MMU_MEMORY_AP_P_RW_U_NA, end - base) != 0) { s_fb_wc_res = -3; g_dbg_fb_wc_res = s_fb_wc_res; return; }
+		}
+	}
+	g_fb_wc = on ? 1 : 0;
+	s_fb_wc_res = g_fb_wc;
+	g_dbg_fb_wc_res = s_fb_wc_res;
+}
+int ayaneo_fb_wc(int on, unsigned int *va, unsigned int *pa, unsigned int *size)
+{
+	int i;
+	if (va) *va = (unsigned int)fb_addr;
+	if (pa) *pa = (unsigned int)fb_addr_pa;
+	if (size) *size = fb_size;
+	if (on < 0) return g_fb_wc;
+	s_fb_wc_res = -4;
+	s_fb_wc_req = (on ? 1 : 0) + 1;
+	for (i = 0; i < 50 && s_fb_wc_req; i++) thread_sleep(10);
+	return s_fb_wc_res;
+}
