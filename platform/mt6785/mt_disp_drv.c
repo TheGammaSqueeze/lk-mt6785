@@ -1045,7 +1045,8 @@ static void rot_pace(void)
 	if (s_fd_whole) {
 		/* Late hand over. The layer settings written after a frame end are taken when the front
 		 * porch ends (OVL commit and RDMA frame start, measured 3.78 ms after the frame end at
-		 * vfp 294: the porch's share of the refresh), so a frame that arrives in the porch still
+		 * vfp 294: the porch's share of the refresh; vfp 332 since the back porch trim, 4.27 ms),
+		 * so a frame that arrives in the porch still
 		 * makes the coming refresh: it is handed over at once instead of waiting a whole one, and
 		 * the frame delay aims at the porch's end less a margin, not at the frame end. Safe only
 		 * when the frame end has happened (its flag, cleared at every hand over), the scan is still

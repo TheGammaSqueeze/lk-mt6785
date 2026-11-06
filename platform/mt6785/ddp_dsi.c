@@ -86,12 +86,21 @@
 /* Two measured points on the device (build87, stock rate): vfp 294 -> 59.730 Hz, vfp 4 -> 76.806 Hz.
  * They solve to 1010 non-vfp lines (not the 1004 the timing table suggests) with 59.7275 Hz at
  * vfp 294 kept exact: 59727.5 x 1304 = 77884660. The 1004/77507000 pair was only right at vfp 294. */
+/* The vertical back porch is 2 lines, not the stock 40 (the panel's own start line, ST7123 0xD7,
+ * follows it, see the LCM driver): the 38 lines moved to the front porch, so the non-vfp lines are
+ * 972 and the GBA rate is vfp 332. Same refresh and blanking, but the next frame's settings are
+ * taken 38 lines (0.49 ms) later, which the late hand over (mt_disp_drv.c rot_pace) gives to the
+ * frame delay. */
 #define AYANEO_DSI_LINE_CONST  77884660u
-#define AYANEO_DSI_FIXED_LINES 1010u
+#define AYANEO_DSI_FIXED_LINES 972u
 /* The ST7123 does not hold its image through a long vertical blanking: vfp 524 (100 Hz) fades
  * slowly to black, vfp 626 (94 Hz) flickers; stock is 280. Keep the porch near stock and pace
- * cores that cannot be doubled into that window (PAL 50 Hz) by time instead (rot_pace). */
-#define AYANEO_DSI_VFP_MAX     340u
+ * cores that cannot be doubled into that window (PAL 50 Hz) by time instead (rot_pace). The limit
+ * is the blanking time, so it carries the 38 lines the back porch gave up (340 at back porch 40). */
+#define AYANEO_DSI_VFP_MAX     378u
+/* The PAL 2x mode (about 100 Hz from the PLL) ran at vfp 4 with back porch 40: it keeps the same
+ * 1014 total lines and blanking at back porch 2, so the same data rate is asked of the link. */
+#define AYANEO_DSI_VFP_2X      42u
 #elif defined(AYANEO_GBA) && AYANEO_GBA_DR_KHZ
 #define AYANEO_DSI_LINE_CONST  59667000u
 #define AYANEO_DSI_FIXED_LINES 976u
@@ -100,6 +109,10 @@
 #define AYANEO_DSI_LINE_CONST  59684000u
 #define AYANEO_DSI_FIXED_LINES 976u
 #define AYANEO_DSI_VFP_MAX     256u
+#endif
+
+#ifndef AYANEO_DSI_VFP_2X
+#define AYANEO_DSI_VFP_2X      4u
 #endif
 
 #include <platform/mt_gpio.h>
@@ -1183,10 +1196,10 @@ static unsigned int dsi_line_const(void)
 {
 	return (unsigned int)(((unsigned long long)AYANEO_DSI_LINE_CONST * g_dsi_dr_khz + AYANEO_GBA_DR_KHZ / 2u) / AYANEO_GBA_DR_KHZ);
 }
-/* the MIPI rate that puts the panel on refresh_milli with the porch at 4 lines */
+/* the MIPI rate that puts the panel on refresh_milli with the porch at AYANEO_DSI_VFP_2X lines */
 static unsigned int dsi_dr_for_refresh(unsigned int refresh_milli)
 {
-	unsigned long long n = (unsigned long long)refresh_milli * AYANEO_GBA_DR_KHZ * (AYANEO_DSI_FIXED_LINES + 4u);
+	unsigned long long n = (unsigned long long)refresh_milli * AYANEO_GBA_DR_KHZ * (AYANEO_DSI_FIXED_LINES + AYANEO_DSI_VFP_2X);
 	unsigned int khz = (unsigned int)((n + AYANEO_DSI_LINE_CONST / 2u) / AYANEO_DSI_LINE_CONST);
 	/* measured on the device (build88): the 500-1000 MHz band (ratio 4, posdiv 2) runs the panel
 	 * 0.165% slower than the same formula gives in the 250-500 band (119.25 Hz asked as 119.45) */
@@ -1302,7 +1315,7 @@ unsigned int ayaneo_dsi_vfp_for_fps(unsigned int fps_milli)
 		 * every frame shown for two refreshes */
 		g_vsync_div = 2u;
 		ayaneo_dsi_set_dr_khz(dsi_dr_for_refresh(fps_milli * 2u));
-		return 4u;
+		return AYANEO_DSI_VFP_2X;
 	}
 	g_vsync_div = 1u;
 	ayaneo_dsi_set_dr_khz(AYANEO_GBA_DR_KHZ);   /* stock rate, the porch does the work */

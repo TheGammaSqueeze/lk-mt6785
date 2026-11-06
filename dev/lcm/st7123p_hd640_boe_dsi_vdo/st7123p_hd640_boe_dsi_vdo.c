@@ -63,6 +63,21 @@ struct LCM_setting_table {
 	unsigned char para_list[64];
 };
 
+/* The second byte of 0xD7 is the line after vertical sync where the panel starts the picture:
+ * stock 0x2C = 44 = sync 4 + back porch 40 (another ST7123 board runs 0x0A with sync 2 + back
+ * porch 8). It has to equal the DSI's sync + back porch, or the picture is shifted (the first lines
+ * cut off at the scan's start, the last ones repeated). The Konkr runs back porch 2 (lines checked
+ * clean down to 1 on the device, 2026-11-06), so the next frame's settings are taken 38 lines later
+ * for the same refresh: more time for the frame delay before the picture starts. */
+#if defined(KONKR_KPA)
+#define ST7123_VSYNC_LINES 4
+#define ST7123_VBP_LINES   2
+#else
+#define ST7123_VSYNC_LINES 4
+#define ST7123_VBP_LINES   40
+#endif
+#define ST7123_START_LINE  (ST7123_VSYNC_LINES + ST7123_VBP_LINES)
+
 /* GPIO12 = 0, GPIO13 = 1 ("USE WEIHUI BOE"). LK 0x4c4b2ae4, kernel identical. */
 static struct LCM_setting_table lcm_init_weihui[] = {
 	{0x60, 3, {0x71, 0x23, 0xA2}},
@@ -71,7 +86,7 @@ static struct LCM_setting_table lcm_init_weihui[] = {
 	{0xB7, 4, {0x00, 0x00, 0x64, 0x64}},
 	{0xB0, 7, {0x22, 0x61, 0x11, 0x7F, 0x25, 0x39, 0x39}},
 	{0xBF, 2, {0x90, 0x90}},
-	{0xD7, 10, {0x00, 0x2C, 0xD2, 0x19, 0xE0, 0xE0, 0xE0, 0x80, 0x00, 0x50}},
+	{0xD7, 10, {0x00, ST7123_START_LINE, 0xD2, 0x19, 0xE0, 0xE0, 0xE0, 0x80, 0x00, 0x50}},
 	{0x90, 7, {0x71, 0x23, 0x5A, 0x20, 0x24, 0x10, 0x24}},
 	{0xA3, 39, {0x80, 0x01, 0x80, 0x7F, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46, 0x00,
 		    0x00, 0x1E, 0x5C, 0x1E, 0x80, 0x10, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00,
@@ -134,7 +149,7 @@ static struct LCM_setting_table lcm_init_hongzhan[] = {
 	{0xB7, 4, {0x00, 0x00, 0x64, 0x64}},
 	{0xB0, 7, {0x22, 0x61, 0x11, 0x7F, 0x25, 0x39, 0x39}},
 	{0xBF, 2, {0x50, 0x50}},
-	{0xD7, 10, {0x00, 0x2C, 0xD2, 0x19, 0xE0, 0xE0, 0xE0, 0x80, 0x00, 0x50}},
+	{0xD7, 10, {0x00, ST7123_START_LINE, 0xD2, 0x19, 0xE0, 0xE0, 0xE0, 0x80, 0x00, 0x50}},
 	{0x90, 7, {0x71, 0x23, 0x5A, 0x20, 0x24, 0x10, 0x24}},
 	{0xA3, 39, {0x80, 0x01, 0x80, 0x7F, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46, 0x00,
 		    0x00, 0x1E, 0x5C, 0x1E, 0x80, 0x10, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00,
@@ -290,15 +305,16 @@ static void lcm_get_params(LCM_PARAMS *params)
 	/* Stock timing. vtotal 1284 lines, htotal 724 pixels at PLL 177 MHz
 	 * (354 Mbps per lane, 4 lanes, 24 bpp) gives about 63 Hz. The 280 line
 	 * front porch is the refresh knob the dynamic refresh code adjusts. */
-	params->dsi.vertical_sync_active = 4;
-	params->dsi.vertical_backporch = 40;
+	params->dsi.vertical_sync_active = ST7123_VSYNC_LINES;
+	params->dsi.vertical_backporch = ST7123_VBP_LINES;
+	/* the lines the back porch gives up go to the front porch: same total, same refresh */
 #if defined(AYANEO_GBA)
 	/* Measured line rate 77.526 kHz (ddp_dsi.c AYANEO_DSI_LINE_CONST, with the 354021 kHz data
 	 * rate): rest the panel at the GBA's 59.7275 Hz for the vsync locked emulators:
-	 * 77526000 / 59727.5 = 1298 lines -> vfp 294. Stock is 280. */
-	params->dsi.vertical_frontporch = 294;
+	 * 77526000 / 59727.5 = 1298 lines -> vfp 294 at back porch 40. Stock is 280. */
+	params->dsi.vertical_frontporch = 294 + 40 - ST7123_VBP_LINES;
 #else
-	params->dsi.vertical_frontporch = 280;
+	params->dsi.vertical_frontporch = 280 + 40 - ST7123_VBP_LINES;
 #endif
 	params->dsi.vertical_active_line = FRAME_HEIGHT;
 
