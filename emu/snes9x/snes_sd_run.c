@@ -733,6 +733,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		int aya;
 		mtk_wdt_restart();
 
+		{ extern void ayaneo_frame_delay(void); ayaneo_frame_delay(); }   /* read the buttons as late as the frame can still make its refresh */
 		{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers */
 
 		/* Hardware volume rocker works whether or not the menu is open. */

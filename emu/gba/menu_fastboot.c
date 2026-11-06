@@ -1346,6 +1346,56 @@ static void cmd_gamefile(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem latled[:0|1] - the latency light (gba_driver.c): the power LED white while any button is
+ * down; not saved */
+static void cmd_latled(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_latency_led;
+	extern volatile unsigned int g_dbg_latled_presses;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == '0') g_latency_led = 0;
+	else if (*arg == '1') g_latency_led = 1;
+	snprintf(lbuf, sizeof lbuf, "latled %s, presses seen %u", g_latency_led ? "on" : "off", g_dbg_latled_presses);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem close - close the running GBA game as the Pico menu's Close does (saves, back to the
+ * carousel), to test the exit path over USB */
+static void cmd_close(const char *arg, void *data, unsigned sz)
+{
+	(void)arg; (void)data; (void)sz;
+	g_dbg_force_close = 1;
+	fastboot_okay("");
+}
+
+/* oem fdelay[:0|1] - the frame delay (mt_disp_drv.c ayaneo_frame_delay): the last frame's delay
+ * before the button read, its measured work, delayed frames that still missed their refresh,
+ * whether it is backed off; with :0 / :1 turns it off / on (not saved, for A/B checks). */
+static void cmd_fdelay(const char *arg, void *data, unsigned sz)
+{
+	extern int g_fd_enable;
+	extern volatile unsigned int g_dbg_fd_us, g_dbg_fd_work_us, g_dbg_fd_misses, g_dbg_fd_off;
+	extern volatile unsigned int g_dbg_pace_dt_us;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == '0') g_fd_enable = 0;
+	else if (*arg == '1') g_fd_enable = 1;
+	snprintf(lbuf, sizeof lbuf, "fdelay %s: delay=%uus work=%uus misses=%u off=%u dt=%uus",
+		 g_fd_enable ? "on" : "off", g_dbg_fd_us, g_dbg_fd_work_us, g_dbg_fd_misses, g_dbg_fd_off, g_dbg_pace_dt_us);
+	fastboot_info(lbuf);
+	{	/* averages since the last read, then reset */
+		extern volatile unsigned int g_dbg_fd_frames, g_dbg_fd_sum_us, g_dbg_fd_sum_work_us, g_dbg_fd_max_work_us;
+		unsigned n = g_dbg_fd_frames;
+		snprintf(lbuf, sizeof lbuf, "since last: frames=%u delay avg=%uus work avg=%uus max=%uus", n,
+			 n ? g_dbg_fd_sum_us / n : 0u, n ? g_dbg_fd_sum_work_us / n : 0u, g_dbg_fd_max_work_us);
+		fastboot_info(lbuf);
+		g_dbg_fd_frames = 0; g_dbg_fd_sum_us = 0; g_dbg_fd_sum_work_us = 0; g_dbg_fd_max_work_us = 0;
+	}
+	fastboot_okay("");
+}
+
 /* oem sd-ls:/dir - list a card directory (name and size per line). Read only. */
 static fat_vol s_fb_vol;
 static void cmd_sd_ls(const char *arg, void *data, unsigned sz)
@@ -2145,6 +2195,9 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem resumeinfo", cmd_resumeinfo, 1, 0);
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
+	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);
+	fastboot_register("oem close", cmd_close, 1, 0);
+	fastboot_register("oem latled", cmd_latled, 1, 0);
 	fastboot_register("oem boottime", cmd_boottime, 1, 0);
 	fastboot_register("oem pllog", cmd_pllog, 1, 0);
 	fastboot_register("oem doe", cmd_doe, 1, 0);

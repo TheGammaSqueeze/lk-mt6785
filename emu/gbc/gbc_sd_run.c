@@ -616,6 +616,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		unsigned samples = GBC_SND_MAX;
 		long r;
 
+		{ extern void ayaneo_frame_delay(void); ayaneo_frame_delay(); }   /* read the buttons as late as the frame can still make its refresh */
 		{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers */
 		gbc_sd_poll_volume();   /* hardware volume rocker + SELECT-brightness (parity with all cores) */
 		{  /* power key: arm on release, fire on press -> save cartridge + suspend, then power off (parity) */

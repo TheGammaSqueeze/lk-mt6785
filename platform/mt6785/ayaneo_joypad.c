@@ -30,6 +30,25 @@ extern void udelay(unsigned long usec);
 static int s_powered;
 static int s_sgm_inited;
 
+/* i2c6 is shared with the LED and the speaker amps: every transfer takes the bus lock (mt_leds.c) */
+extern void ayaneo_i2c6_lock(void), ayaneo_i2c6_unlock(void);
+static S32 joy_i2c_write(mt_i2c *i2c, U8 *buf, U32 len)
+{
+	S32 r;
+	ayaneo_i2c6_lock();
+	r = i2c_write(i2c, buf, len);
+	ayaneo_i2c6_unlock();
+	return r;
+}
+static S32 joy_i2c_write_read(mt_i2c *i2c, U8 *buf, U32 wlen, U32 rlen)
+{
+	S32 r;
+	ayaneo_i2c6_lock();
+	r = i2c_write_read(i2c, buf, wlen, rlen);
+	ayaneo_i2c6_unlock();
+	return r;
+}
+
 /* Fill a fresh mt_i2c client for the SGM58031 on I2C6. */
 static void sgm_i2c_setup(mt_i2c *i2c)
 {
@@ -48,7 +67,7 @@ static int sgm_write_reg(mt_i2c *i2c, unsigned char reg, unsigned int val)
 	buf[0] = reg;
 	buf[1] = (unsigned char)(val >> 8);
 	buf[2] = (unsigned char)(val & 0xff);
-	return i2c_write(i2c, buf, 3);
+	return joy_i2c_write(i2c, buf, 3);
 }
 
 /* One-time SGM58031 configuration, mirroring the stock sgm58031_init: threshold regs plus the
@@ -109,7 +128,7 @@ static int sgm58031_read(unsigned int config)
 	buf[0] = SGM_REG_CONFIG;
 	buf[1] = (unsigned char)(config >> 8);
 	buf[2] = (unsigned char)(config & 0xff);
-	ret = i2c_write(&i2c, buf, 3);
+	ret = joy_i2c_write(&i2c, buf, 3);
 	if (ret != I2C_OK)
 		return -1;
 
@@ -119,7 +138,7 @@ static int sgm58031_read(unsigned int config)
 		for (i = 0; i < 100; i++) {
 			udelay(500);
 			buf[0] = SGM_REG_CONFIG;
-			if (i2c_write_read(&i2c, buf, 1, 2) != I2C_OK)
+			if (joy_i2c_write_read(&i2c, buf, 1, 2) != I2C_OK)
 				return -2;
 			if (buf[0] & 0x80)          /* OS=1 -> conversion done */
 				break;
@@ -128,7 +147,7 @@ static int sgm58031_read(unsigned int config)
 
 	/* point at the conversion register and read the 16-bit BE result */
 	buf[0] = SGM_REG_CONV;
-	ret = i2c_write_read(&i2c, buf, 1, 2);
+	ret = joy_i2c_write_read(&i2c, buf, 1, 2);
 	if (ret != I2C_OK)
 		return -3;
 	return (int)(((unsigned)buf[0] << 8) | buf[1]);
@@ -257,7 +276,7 @@ void ayaneo_joypad_poll(void)
 	sgm_i2c_setup(&i2c);
 	if (s_pl_started) {                         /* read the previously-started conversion (done) */
 		buf[0] = SGM_REG_CONV;
-		if (i2c_write_read(&i2c, buf, 1, 2) == I2C_OK) {
+		if (joy_i2c_write_read(&i2c, buf, 1, 2) == I2C_OK) {
 			int raw = (int)(((unsigned)buf[0] << 8) | buf[1]);
 			if (s_pl_ch) s_ff_cache = level_from_raw(1, raw);
 			else         s_rw_cache = level_from_raw(0, raw);
@@ -268,7 +287,7 @@ void ayaneo_joypad_poll(void)
 	buf[0] = SGM_REG_CONFIG;
 	buf[1] = (unsigned char)(cfg >> 8);
 	buf[2] = (unsigned char)(cfg & 0xff);
-	i2c_write(&i2c, buf, 3);
+	joy_i2c_write(&i2c, buf, 3);
 	s_pl_started = 1;
 }
 

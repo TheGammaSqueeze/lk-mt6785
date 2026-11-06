@@ -898,6 +898,93 @@ volatile unsigned int g_dbg_latch_hit, g_dbg_latch_miss;
 int ayaneo_rdma_wait_frame_end(unsigned int timeout_us);   /* ddp_rdma.c */
 static unsigned int s_pace_next;   /* time paced mode: deadline of the frame being presented */
 extern void ayaneo_idle_until(unsigned target_tick);   /* ayaneo_volume_input.c */
+/* Frame delay. A core reads its buttons at the top of its loop, emulates, presents, and the
+ * present waits in rot_pace for the refresh edge: the time left over (often half the refresh or
+ * more) used to sit between the button read and the picture. ayaneo_frame_delay(), called by each
+ * core just before it reads its buttons, sleeps that leftover away first, so the buttons are read
+ * as late as the frame can still make its edge. The room it leaves is learnt here: rot_pace
+ * measures each frame's work from that call to the present, and the delay keeps the worst of the
+ * last FD_HIST frames plus a margin. A delayed frame that still reaches the present after its
+ * edge (it would stay up a refresh longer) turns the delay off for two seconds and widens the
+ * margin. Only with whole refresh pacing (every core but a PAL one); fast forward and rewind fill
+ * the refresh, so the delay falls to nothing by itself while they run. */
+#define FD_HIST 32
+extern unsigned int gpt4_get_current_tick(void);
+static unsigned int s_fd_start;            /* tick this frame's work started, 0 = none to measure */
+static int s_fd_delayed;                   /* this frame's button read was delayed */
+static unsigned int s_fd_work[FD_HIST], s_fd_n;
+static unsigned int s_fd_margin = 2u * 13000u;
+static unsigned int s_fd_off_until;
+static int s_fd_off;
+static int s_fd_whole;                     /* the last present paced whole refreshes */
+static unsigned int s_fd_period;           /* ticks between two presents' edges */
+int g_fd_enable = 1;                       /* oem fdelay:0|1 */
+volatile unsigned int g_dbg_fd_us, g_dbg_fd_work_us, g_dbg_fd_misses, g_dbg_fd_off;
+/* totals since oem fdelay last read them: frames, delay and work (us), worst work (us) */
+volatile unsigned int g_dbg_fd_frames, g_dbg_fd_sum_us, g_dbg_fd_sum_work_us, g_dbg_fd_max_work_us;
+
+static void fd_present_entry(unsigned int now)
+{
+	unsigned int work, edge = s_pace_edge + s_fd_period;
+	if (!s_fd_start) return;
+	work = now - s_fd_start;
+	s_fd_start = 0;
+	if (work < 2u * s_fd_period) {
+		s_fd_work[s_fd_n++ % FD_HIST] = work;
+		g_dbg_fd_work_us = work / 13u;
+		g_dbg_fd_frames++;
+		g_dbg_fd_sum_us += g_dbg_fd_us;
+		g_dbg_fd_sum_work_us += work / 13u;
+		if (work / 13u > g_dbg_fd_max_work_us) g_dbg_fd_max_work_us = work / 13u;
+	}
+	if (!s_fd_delayed || !s_fd_whole) return;
+	if ((int)(now - edge) > 0) {               /* the edge has gone: this frame slips a refresh */
+		g_dbg_fd_misses++;
+		s_fd_off = 1;
+		s_fd_off_until = now + 2u * 13000000u;
+		if (s_fd_margin < 8u * 13000u) s_fd_margin += 13000u;
+	} else if (s_fd_margin > 2u * 13000u) {
+		s_fd_margin -= 13u;                    /* back by 1 us a frame while frames land */
+	}
+}
+
+/* The ticks left until the next present's edge, or 0 when that is not known (PAL pacing, a
+ * stale edge). Fast forward budgets its extra frames to it. */
+unsigned int ayaneo_pace_ticks_left(void)
+{
+	unsigned int now = gpt4_get_current_tick(), edge = s_pace_edge + s_fd_period;
+	if (!s_fd_whole || !s_fd_period) return 0;
+	if ((int)(edge - now) <= 0 || (int)(edge - now) > (int)(2u * s_fd_period)) return 0;
+	return edge - now;
+}
+
+void ayaneo_frame_delay(void)
+{
+	unsigned int now = gpt4_get_current_tick(), left, est = 0, need, i;
+	s_fd_delayed = 0;
+	if (s_fd_off && (int)(now - s_fd_off_until) >= 0) s_fd_off = 0;
+	g_dbg_fd_off = s_fd_off;
+	left = ayaneo_pace_ticks_left();
+	if (g_fd_enable && !s_fd_off && left && s_fd_n >= FD_HIST) {
+		for (i = 0; i < FD_HIST; i++) if (s_fd_work[i] > est) est = s_fd_work[i];
+		need = est + est / 8u + s_fd_margin;
+		/* Sleep in 1 ms ticks (each returns within about 2 ms) while more than that is left, then
+		 * yield until the wake time: the yields keep threads of the same priority (fastboot) served
+		 * without the 1 ms tick's error. */
+		if (left > need + 13000u / 2u) {
+			unsigned int wake = now + (left - need);
+			while ((int)(wake - gpt4_get_current_tick()) > (int)(5u * 13000u / 2u))
+				thread_sleep(1);
+			while ((int)(wake - gpt4_get_current_tick()) > 0)
+				thread_yield();
+			s_fd_delayed = 1;
+		}
+	}
+	s_fd_start = gpt4_get_current_tick();
+	if (!s_fd_start) s_fd_start = 1;
+	g_dbg_fd_us = (s_fd_start - now) / 13u;
+}
+
 static void rot_pace(void)
 {
 	extern volatile unsigned int g_vsync_div;
@@ -928,8 +1015,11 @@ static void rot_pace(void)
 	 * difference older than ~165 s reads positive again and the idle sleep would wait minutes.
 	 * Rebase on the clock and take the next edge instead. */
 	now = gpt4_get_current_tick();
+	fd_present_entry(now);
 	if (now - s_pace_edge > 4u * period) s_pace_edge = now - period * div;
-	if (frame > period * div - period / 100u && frame < period * div + period / 100u) {
+	s_fd_whole = frame > period * div - period / 100u && frame < period * div + period / 100u;
+	s_fd_period = period * div;
+	if (s_fd_whole) {
 		target = s_pace_edge + period * div - period / 4u;
 		s_pace_next = 0;
 		ayaneo_idle_until(s_pace_edge + period * div);   /* sleep until a few ms before the edge we want */
@@ -963,6 +1053,9 @@ static void rot_pace(void)
 		if (now - win0 >= 13000000u) { g_dbg_present_fps = cnt; cnt = 0; win0 = now; }
 	}
 }
+#else
+void ayaneo_frame_delay(void) {}
+unsigned int ayaneo_pace_ticks_left(void) { return 0; }
 #endif
 /* NEON implementations (ayaneo_rot_neon.c, compiled with -mfpu=neon on the Konkr) */
 void ayaneo_rot8888_neon(const unsigned int *src, unsigned w, unsigned h, unsigned spitch,
@@ -1290,6 +1383,13 @@ int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, 
 	}
 	budget = full > g_dbg_ff_margin_us ? full - g_dbg_ff_margin_us : 0u;
 	used = (gpt4_get_current_tick() - t0) / 13u;
+	{	/* with the next edge known, budget to it: the loop may have started later than the last
+		 * edge (frame delay), and the edge is what the present has to make */
+		extern unsigned int ayaneo_pace_ticks_left(void);
+		unsigned int left = ayaneo_pace_ticks_left() / 13u;
+		if (left)
+			return blit_us + next_us + rend_us + g_dbg_ff_margin_us < left;
+	}
 	return used + blit_us + next_us + rend_us < budget;
 }
 #define AYANEO_FF_MAX_FRAMES 120   /* a guard against a zero cost estimate, not a speed cap */

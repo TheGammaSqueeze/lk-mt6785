@@ -78,6 +78,7 @@ static struct aw_amp s_amp[2] = {
 };
 static int s_started;
 
+extern void ayaneo_i2c6_lock(void), ayaneo_i2c6_unlock(void);   /* mt_leds.c: the LED shares the bus */
 static void aw_i2c(mt_i2c *i2c, unsigned char addr)
 {
 	memset(i2c, 0, sizeof(*i2c));
@@ -93,7 +94,9 @@ static int aw_wr(struct aw_amp *a, unsigned char reg, unsigned short val)
 	mt_i2c i2c; unsigned char buf[3];
 	aw_i2c(&i2c, a->addr);
 	buf[0] = reg; buf[1] = (unsigned char)(val >> 8); buf[2] = (unsigned char)val;
+	ayaneo_i2c6_lock();
 	a->rc = i2c_write(&i2c, buf, 3);
+	ayaneo_i2c6_unlock();
 	return a->rc;
 }
 
@@ -102,7 +105,9 @@ static int aw_rd(struct aw_amp *a, unsigned char reg, unsigned short *val)
 	mt_i2c i2c; unsigned char buf[2];
 	aw_i2c(&i2c, a->addr);
 	buf[0] = reg; buf[1] = 0;
+	ayaneo_i2c6_lock();
 	a->rc = i2c_write_read(&i2c, buf, 1, 2);
+	ayaneo_i2c6_unlock();
 	if (a->rc < 0) return a->rc;
 	*val = (unsigned short)((buf[0] << 8) | buf[1]);
 	return 0;
@@ -144,7 +149,9 @@ static int aw_stream(struct aw_amp *a, unsigned short base, const unsigned char 
 			while (n < 240u && i + 2u <= len) { s_aw_dma_buf[1 + n] = data[i]; s_aw_dma_buf[2 + n] = data[i + 1]; n += 2u; i += 2u; }
 			arch_clean_cache_range((addr_t)s_aw_dma_buf, sizeof s_aw_dma_buf);
 			aw_yield_to_core();
-			if (i2c_write_dma(&i2c, s_aw_dma_buf, 1 + n) != 0) { ok = 0; break; }
+			ayaneo_i2c6_lock();
+			if (i2c_write_dma(&i2c, s_aw_dma_buf, 1 + n) != 0) { ayaneo_i2c6_unlock(); ok = 0; break; }
+			ayaneo_i2c6_unlock();
 		}
 		if (ok) { g_dbg_aw_dma = 1; return 0; }
 		g_dbg_aw_dma = 0;
@@ -157,7 +164,9 @@ static int aw_stream(struct aw_amp *a, unsigned short base, const unsigned char 
 		aw_i2c(&i2c, a->addr);
 		buf[0] = AW_DSPMDAT_REG;
 		while (n < 6u && i + 2u <= len) { buf[1 + n] = data[i]; buf[2 + n] = data[i + 1]; n += 2u; i += 2u; }
+		ayaneo_i2c6_lock();
 		a->rc = i2c_write(&i2c, buf, 1 + n);
+		ayaneo_i2c6_unlock();
 		if (a->rc < 0) return -1;
 	}
 	return 0;

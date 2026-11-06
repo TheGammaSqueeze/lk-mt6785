@@ -1304,6 +1304,7 @@ static int s_panel_hz100;	/* measured panel refresh * 100 (e.g. 5973 = 59.73 Hz)
  * red (green once full), on battery = green, at 5 % or less = red flashing at 1 Hz. The first
  * write waits for the speaker amps' bring-up, which shares i2c6. */
 volatile int g_dbg_led_chr, g_dbg_led_pct, g_dbg_led_state, g_dbg_led_ticks;   /* oem led */
+extern volatile int g_latency_led;   /* the latency light (below) owns the LED while it is on */
 static int led_thread(void *arg)
 {
 	extern unsigned int pmic_upmu_get_rgs_chrdet(void);   /* the live CHRDET bit (upmu_is_chr_det prints to the UART) */
@@ -1324,7 +1325,9 @@ static int led_thread(void *arg)
 		{ extern unsigned int ayaneo_bb_uptime_ms(void); ayaneo_bb_uptime_ms(); }
 		if (tick == 60) { extern void ayaneo_sd_guard_stable(void); ayaneo_sd_guard_stable(); }   /* 30 s up: a stable run */
 		{ extern unsigned int ayaneo_rewind_verify_tables(int heal); ayaneo_rewind_verify_tables(1); }   /* page tables of the rewind islands, healed if hit */
-		if (state != last) {
+		if (g_latency_led) {
+			last = -1;                   /* the latency light owns the LED; restore once it is off */
+		} else if (state != last) {
 			last = state;
 			if (state == 1)      ayaneo_charge_led(0, LED_LEVEL, 0);
 			else if (state == 2) ayaneo_charge_led(LED_LEVEL, 0, 0);
@@ -1336,6 +1339,44 @@ static int led_thread(void *arg)
 	}
 	return 0;
 }
+/* Latency light: while on, the power LED shows white for as long as any button is down, switched
+ * within a millisecond of the press, so a camera filming the LED and the screen together measures
+ * the whole path from the button to the picture (the game's reaction minus the LED's). Its own
+ * thread at the highest priority samples the button pins every 1 ms tick and only sleeps in
+ * between; a change costs one two byte I2C transfer (the enable bits, the levels set once). Not
+ * saved: off at every boot. oem latled[:0|1] or the Pico menu's Latency LED. */
+volatile int g_latency_led;
+volatile unsigned int g_dbg_latled_presses;
+static int latency_led_thread(void *arg)
+{
+	extern void ayaneo_led_enable(int mask);
+	int on = 0, lit = 0;
+	(void)arg;
+	for (;;) {
+		if (g_latency_led != on) {
+			on = g_latency_led;
+			lit = 0;
+			if (on) { ayaneo_charge_led(255, 255, 255); ayaneo_led_enable(0); }
+			/* off: led_thread puts the battery colour back at its next tick */
+		}
+		if (on) {
+			unsigned i;
+			int down = PRESSED(GPIO_X) || PRESSED(GPIO_Y);
+			for (i = 0; !down && i < sizeof(s_btn) / sizeof(s_btn[0]); i++)
+				down = PRESSED(s_btn[i].gpio);
+			if (down != lit) {
+				lit = down;
+				ayaneo_led_enable(down ? 7 : 0);
+				if (down) g_dbg_latled_presses++;
+			}
+			thread_sleep(1);
+		} else {
+			thread_sleep(50);
+		}
+	}
+	return 0;
+}
+
 /* every power off path: LED dark first (the AW2033 keeps its state across the SoC power off) */
 void ayaneo_leds_off_for_poweroff(void)
 {
@@ -1349,6 +1390,8 @@ static void led_thread_start(void)
 	if (up) return;
 	up = 1;
 	t = thread_create("ayaneo_led", &led_thread, NULL, LOW_PRIORITY, 8192);
+	if (t) thread_resume(t);
+	t = thread_create("ayaneo_latled", &latency_led_thread, NULL, HIGHEST_PRIORITY, 4096);
 	if (t) thread_resume(t);
 }
 
@@ -1461,7 +1504,7 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_RESUME, MI_SKIPBOOT, MI_SKIPINTRO,
-	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_REWIND, MI_BENCH, MI_SHOWFPS, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_COUNT
+	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_REWIND, MI_BENCH, MI_SHOWFPS, MI_LATLED, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_COUNT
 };
 #define GBA_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -1543,6 +1586,7 @@ static const char *menu_value(int item, char *buf)
 		else p = mi_puts(p, "Off");
 		break;
 	case MI_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = mi_puts(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
+	case MI_LATLED:  p = mi_puts(p, g_latency_led ? "On" : "Off"); break;
 	case MI_CORE:
 		if (s_sdcore_present == 0) p = mi_puts(p, "gpSP");
 		else p = mi_puts(p, s_core_pref ? "gpSP" : "armGBA");
@@ -1580,6 +1624,7 @@ static const char *menu_label(int item)
 	case MI_REWIND:    return "Rewind";
 	case MI_BENCH:     return "Benchmark (Uncap)";
 	case MI_SHOWFPS:   return "Show FPS";
+	case MI_LATLED:    return "Latency LED";
 	case MI_CORE:      return "GBA Core";
 	case MI_CORESET:   return "Core Settings";
 	case MI_RESET:     return "Reset Game";
@@ -1617,6 +1662,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
 	case MI_SHOWFPS:  { extern int ayaneo_get_show_fps(void); extern void ayaneo_set_show_fps(int v);
 			    if (dir || act) ayaneo_set_show_fps(!ayaneo_get_show_fps()); else changed = 0; } break;
+	case MI_LATLED:   if (dir || act) g_latency_led = !g_latency_led; else changed = 0; break;   /* not saved */
 	case MI_CORE:
 		if (!(dir || act)) { changed = 0; break; }
 		if (s_sdcore_present == 0) { mi_puts(status, "No armGBA core on the card"); changed = 0; break; }
@@ -2801,6 +2847,7 @@ static int emu_thread(void *arg)
 				}
 			}
 
+			{ extern void ayaneo_frame_delay(void); ayaneo_frame_delay(); }   /* read the buttons as late as the frame can still make its refresh */
 			{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers (non-blocking) */
 			update_buttons();
 

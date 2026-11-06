@@ -578,6 +578,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		unsigned int em0, fe;
 		int ff, rw;
 
+		{ extern void ayaneo_frame_delay(void); ayaneo_frame_delay(); }   /* read the buttons as late as the frame can still make its refresh */
 		ayaneo_joypad_poll();
 		genesis_poll_volume();     /* hardware volume rocker + SELECT-brightness (parity with all cores) */
 		genesis_settings_tick();   /* debounced volume/brightness persist */

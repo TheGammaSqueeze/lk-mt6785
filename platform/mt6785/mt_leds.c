@@ -473,10 +473,24 @@ out:
 #include <platform/mt_i2c.h>
 #define AW2033_I2C_ID	I2C6
 #define AW2033_ADDR	0x45
+/* i2c6 carries the LED and the two speaker amps (ayaneo_aw88166.c) and the LK driver does not
+ * serialise a bus: every transfer on it takes this lock. A mutex, so a waiter sleeps instead of
+ * spinning (the latency light's thread runs at the highest priority). */
+#include <kernel/mutex.h>
+static mutex_t s_i2c6_mtx;
+static volatile int s_i2c6_init;
+void ayaneo_i2c6_lock(void)
+{
+	if (!s_i2c6_init) { mutex_init(&s_i2c6_mtx); s_i2c6_init = 1; }
+	mutex_acquire(&s_i2c6_mtx);
+}
+void ayaneo_i2c6_unlock(void) { mutex_release(&s_i2c6_mtx); }
+
 static int aw2033_write(unsigned char reg, unsigned char val)
 {
 	mt_i2c i2c = {0};
 	unsigned char buf[2];
+	int r;
 
 	i2c.id = AW2033_I2C_ID;
 	i2c.addr = AW2033_ADDR;
@@ -484,7 +498,10 @@ static int aw2033_write(unsigned char reg, unsigned char val)
 	i2c.speed = 400;
 	buf[0] = reg;
 	buf[1] = val;
-	return i2c_write(&i2c, buf, 2);
+	ayaneo_i2c6_lock();
+	r = i2c_write(&i2c, buf, 2);
+	ayaneo_i2c6_unlock();
+	return r;
 }
 
 /* Read one AW2033 register, -1 on a bus error (oem awdump) */
@@ -494,7 +511,9 @@ int ayaneo_aw2033_read(unsigned char reg)
 	unsigned char b[2];
 	i2c.id = AW2033_I2C_ID; i2c.addr = AW2033_ADDR; i2c.mode = FS_MODE; i2c.speed = 400;
 	b[0] = reg;
-	if (i2c_write_read(&i2c, b, 1, 1) < 0) return -1;
+	ayaneo_i2c6_lock();
+	if (i2c_write_read(&i2c, b, 1, 1) < 0) { ayaneo_i2c6_unlock(); return -1; }
+	ayaneo_i2c6_unlock();
 	return b[0];
 }
 int ayaneo_aw2033_write(unsigned char reg, unsigned char val) { return aw2033_write(reg, val) < 0 ? -1 : 0; }
@@ -524,6 +543,13 @@ void ayaneo_charge_led(int r, int g, int b)
 	aw2033_write(0x36, (unsigned char)b);	/* PWM blue */
 	en = (r ? 0x01 : 0) | (g ? 0x02 : 0) | (b ? 0x04 : 0);
 	aw2033_write(0x30, (unsigned char)en);	/* LED enable bits */
+}
+
+/* Only the channel enable bits (0x30), the levels as set before: one two byte transfer, the
+ * quickest way to switch the LED (the latency light). */
+void ayaneo_led_enable(int mask)
+{
+	aw2033_write(0x30, (unsigned char)(mask & 7));
 }
 
 /* Power off: channels dark, chip in standby with the hardware charge indication still disabled,
