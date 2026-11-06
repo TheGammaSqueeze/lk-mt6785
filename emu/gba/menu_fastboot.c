@@ -1370,6 +1370,24 @@ static void cmd_close(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem fdmargin[:base_us[:latch_us]] - the frame delay's slack floor on top of the measured work and
+ * the part of the front porch the late hand over leaves unused; shows the live slack. Not saved. */
+static void cmd_fdmargin(const char *arg, void *data, unsigned sz)
+{
+	extern volatile unsigned int g_fd_base_us, g_pace_latch_margin_us, g_dbg_fd_margin_us, g_dbg_fd_misses;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg >= '0' && *arg <= '9') {
+		g_fd_base_us = fb_dec(&arg);
+		while (*arg == ' ' || *arg == ':') arg++;
+		if (*arg >= '0' && *arg <= '9') g_pace_latch_margin_us = fb_dec(&arg);
+	}
+	snprintf(lbuf, sizeof lbuf, "fdmargin base %uus latch %uus, live slack %uus, misses %u",
+		 g_fd_base_us, g_pace_latch_margin_us, g_dbg_fd_margin_us, g_dbg_fd_misses);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem palate[:a|0|us] - the late hand over (mt_disp_drv.c rot_pace): a = the front porch less a
  * margin (default), 0 = off, else a fixed window in us. Reports the window, frames handed over
  * late and frames that measured the edge since the last call. Not saved. */
@@ -2215,6 +2233,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);
 	fastboot_register("oem palate", cmd_palate, 1, 0);
+	fastboot_register("oem fdmargin", cmd_fdmargin, 1, 0);
 	fastboot_register("oem close", cmd_close, 1, 0);
 	fastboot_register("oem latled", cmd_latled, 1, 0);
 	fastboot_register("oem boottime", cmd_boottime, 1, 0);

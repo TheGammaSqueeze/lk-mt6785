@@ -915,7 +915,10 @@ extern unsigned int gpt4_get_current_tick(void);
 static unsigned int s_fd_start;            /* tick this frame's work started, 0 = none to measure */
 static int s_fd_delayed;                   /* this frame's button read was delayed */
 static unsigned int s_fd_work[FD_HIST], s_fd_n;
-static unsigned int s_fd_margin = 2u * 13000u;
+/* the slack kept on top of the measured work (us): the floor it starts from and returns to, and
+ * the part of the front porch the late hand over leaves unused (oem fdmargin sets both) */
+volatile unsigned int g_fd_base_us = 500u, g_pace_latch_margin_us = 300u;
+static unsigned int s_fd_margin = 500u * 13u;
 static unsigned int s_fd_off_until;
 static int s_fd_off;
 static int s_fd_whole;                     /* the last present paced whole refreshes */
@@ -928,7 +931,7 @@ volatile unsigned int g_dbg_pace_late, g_dbg_pace_edges, g_dbg_pace_win_us;
 static unsigned int s_pace_win;            /* ticks after the edge a frame may still be handed over */
 static int s_fd_resync;                    /* this frame aims at the edge itself, to measure it */
 static unsigned int s_fd_count;
-volatile unsigned int g_dbg_fd_us, g_dbg_fd_work_us, g_dbg_fd_misses, g_dbg_fd_off;
+volatile unsigned int g_dbg_fd_us, g_dbg_fd_work_us, g_dbg_fd_misses, g_dbg_fd_off, g_dbg_fd_margin_us;
 /* totals since oem fdelay last read them: frames, delay and work (us), worst work (us) */
 volatile unsigned int g_dbg_fd_frames, g_dbg_fd_sum_us, g_dbg_fd_sum_work_us, g_dbg_fd_max_work_us;
 
@@ -957,8 +960,8 @@ static void fd_present_entry(unsigned int now)
 		s_fd_off = 1;
 		s_fd_off_until = now + 2u * 13000000u;
 		if (s_fd_margin < 8u * 13000u) s_fd_margin += 13000u;
-	} else if (s_fd_margin > 2u * 13000u) {
-		s_fd_margin -= 130u;                   /* back by 10 us a frame while frames land */
+	} else if (s_fd_margin > g_fd_base_us * 13u + 26u) {
+		s_fd_margin -= 26u;                    /* back by 2 us a frame while frames land */
 	}
 }
 
@@ -981,7 +984,7 @@ void ayaneo_frame_delay(void)
 	 * game's work and missed frames never shape the next one's delay */
 	if (!s_fd_last_call || now - s_fd_last_call > 8u * 13000000u / 60u) {
 		s_fd_n = 0;
-		s_fd_margin = 2u * 13000u;
+		s_fd_margin = g_fd_base_us * 13u;
 		s_fd_off = 0;
 	}
 	s_fd_last_call = now;
@@ -992,6 +995,7 @@ void ayaneo_frame_delay(void)
 	if (g_fd_enable && !s_fd_off && left && s_fd_n >= FD_HIST) {
 		for (i = 0; i < FD_HIST; i++) if (s_fd_work[i] > est) est = s_fd_work[i];
 		need = est + est / 8u + s_fd_margin;
+		g_dbg_fd_margin_us = s_fd_margin / 13u;
 		/* Sleep in 1 ms ticks (each returns within about 2 ms) while more than that is left, then
 		 * yield until the wake time: the yields keep threads of the same priority (fastboot) served
 		 * without the 1 ms tick's error. */
@@ -1068,7 +1072,8 @@ static void rot_pace(void)
 		if (g_pace_late_us > 0) s_pace_win = (unsigned int)g_pace_late_us * 13u;
 		else if (g_pace_late_us < 0 && vt) {
 			unsigned int porch = (unsigned int)((unsigned long long)P * vfp / vt);
-			s_pace_win = porch > 2u * 6500u ? porch - 6500u : 0u;   /* 0.5 ms margin */
+			unsigned int m = g_pace_latch_margin_us * 13u;
+			s_pace_win = porch > 2u * m ? porch - m : 0u;
 		}
 		if (ayaneo_get_strobe()) s_pace_win = 0;
 		g_dbg_pace_win_us = s_pace_win / 13u;
