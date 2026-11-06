@@ -1211,6 +1211,21 @@ void ayaneo_dsi_line_words(unsigned int *hsa, unsigned int *hbp, unsigned int *h
 	*ps  = AS_UINT32(DSI_REG_BASE[0] + DISP_REG_DSI_PSCON);
 }
 
+/* Where the scan is in video mode (STATE_DBG7 bits 12..15): 1 front porch, 2 active lines, 4 back
+ * porch, 8 sync. The next frame's display settings are taken when the front porch ends, so the
+ * pacer checks for 1 before it hands over a frame after the frame end (mt_disp_drv.c). */
+unsigned int ayaneo_dsi_scan(void)
+{
+	return (AS_UINT32(DSI_REG_BASE[0] + DISP_REG_DSI_STATE_DBG7) >> 12) & 0xFu;
+}
+/* the live vertical front porch and total lines per refresh */
+void ayaneo_dsi_vlines(unsigned int *vfp, unsigned int *vtotal)
+{
+	unsigned int f = AS_UINT32(DSI_REG_BASE[0] + DISP_REG_DSI_VFP_NL);
+	*vfp = f;
+	*vtotal = AYANEO_DSI_FIXED_LINES + f;
+}
+
 /* Read back the live DSI vertical-front-porch (drives vtotal, hence the panel refresh in
  * VDO mode). Used to validate the per-core LCM refresh switch: 23 = menu/GB/GBC/GBA
  * (59.749 Hz), 17 = SNES (60.11 Hz). */

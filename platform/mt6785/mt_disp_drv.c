@@ -897,6 +897,8 @@ static unsigned int s_pace_expect;
 volatile unsigned int g_dbg_latch_hit, g_dbg_latch_miss;
 int ayaneo_rdma_wait_frame_end(unsigned int timeout_us);   /* ddp_rdma.c */
 static unsigned int s_pace_next;   /* time paced mode: deadline of the frame being presented */
+static unsigned int s_pace_period;  /* the refresh as measured between real frame ends, ticks */
+static unsigned int s_pace_measured, s_pace_since_measured;   /* the last measured edge, frames handed over since */
 extern void ayaneo_idle_until(unsigned target_tick);   /* ayaneo_volume_input.c */
 /* Frame delay. A core reads its buttons at the top of its loop, emulates, presents, and the
  * present waits in rot_pace for the refresh edge: the time left over (often half the refresh or
@@ -919,13 +921,25 @@ static int s_fd_off;
 static int s_fd_whole;                     /* the last present paced whole refreshes */
 static unsigned int s_fd_period;           /* ticks between two presents' edges */
 int g_fd_enable = 1;                       /* oem fdelay:0|1 */
+/* Late hand over (see rot_pace): -1 = the front porch less a margin, 0 = off, else that many us
+ * (oem palate). Frames handed over after the frame end, frames that measured the edge. */
+volatile int g_pace_late_us = -1;
+volatile unsigned int g_dbg_pace_late, g_dbg_pace_edges, g_dbg_pace_win_us;
+static unsigned int s_pace_win;            /* ticks after the edge a frame may still be handed over */
+static int s_fd_resync;                    /* this frame aims at the edge itself, to measure it */
+static unsigned int s_fd_count;
 volatile unsigned int g_dbg_fd_us, g_dbg_fd_work_us, g_dbg_fd_misses, g_dbg_fd_off;
 /* totals since oem fdelay last read them: frames, delay and work (us), worst work (us) */
 volatile unsigned int g_dbg_fd_frames, g_dbg_fd_sum_us, g_dbg_fd_sum_work_us, g_dbg_fd_max_work_us;
 
+static unsigned int fd_deadline(void)
+{
+	return s_pace_edge + s_fd_period + (s_fd_resync ? 0u : s_pace_win);
+}
+
 static void fd_present_entry(unsigned int now)
 {
-	unsigned int work, edge = s_pace_edge + s_fd_period;
+	unsigned int work, edge = fd_deadline();
 	if (!s_fd_start) return;
 	work = now - s_fd_start;
 	s_fd_start = 0;
@@ -944,7 +958,7 @@ static void fd_present_entry(unsigned int now)
 		s_fd_off_until = now + 2u * 13000000u;
 		if (s_fd_margin < 8u * 13000u) s_fd_margin += 13000u;
 	} else if (s_fd_margin > 2u * 13000u) {
-		s_fd_margin -= 13u;                    /* back by 1 us a frame while frames land */
+		s_fd_margin -= 130u;                   /* back by 10 us a frame while frames land */
 	}
 }
 
@@ -952,16 +966,26 @@ static void fd_present_entry(unsigned int now)
  * stale edge). Fast forward budgets its extra frames to it. */
 unsigned int ayaneo_pace_ticks_left(void)
 {
-	unsigned int now = gpt4_get_current_tick(), edge = s_pace_edge + s_fd_period;
+	unsigned int now = gpt4_get_current_tick(), dl = fd_deadline();
 	if (!s_fd_whole || !s_fd_period) return 0;
-	if ((int)(edge - now) <= 0 || (int)(edge - now) > (int)(2u * s_fd_period)) return 0;
-	return edge - now;
+	if ((int)(dl - now) <= 0 || (int)(dl - now) > (int)(2u * s_fd_period)) return 0;
+	return dl - now;
 }
 
 void ayaneo_frame_delay(void)
 {
+	static unsigned int s_fd_last_call;
 	unsigned int now = gpt4_get_current_tick(), left, est = 0, need, i;
 	s_fd_delayed = 0;
+	/* a new game, or the loop stood still (a menu, a load): learn again from scratch, so one
+	 * game's work and missed frames never shape the next one's delay */
+	if (!s_fd_last_call || now - s_fd_last_call > 8u * 13000000u / 60u) {
+		s_fd_n = 0;
+		s_fd_margin = 2u * 13000u;
+		s_fd_off = 0;
+	}
+	s_fd_last_call = now;
+	s_fd_resync = (++s_fd_count & 63u) == 0u;   /* one frame in 64 makes the edge, which rot_pace then measures */
 	if (s_fd_off && (int)(now - s_fd_off_until) >= 0) s_fd_off = 0;
 	g_dbg_fd_off = s_fd_off;
 	left = ayaneo_pace_ticks_left();
@@ -1018,12 +1042,52 @@ static void rot_pace(void)
 	fd_present_entry(now);
 	if (now - s_pace_edge > 4u * period) s_pace_edge = now - period * div;
 	s_fd_whole = frame > period * div - period / 100u && frame < period * div + period / 100u;
-	s_fd_period = period * div;
 	if (s_fd_whole) {
-		target = s_pace_edge + period * div - period / 4u;
+		/* Late hand over. The layer settings written after a frame end are taken when the front
+		 * porch ends (OVL commit and RDMA frame start, measured 3.78 ms after the frame end at
+		 * vfp 294: the porch's share of the refresh), so a frame that arrives in the porch still
+		 * makes the coming refresh: it is handed over at once instead of waiting a whole one, and
+		 * the frame delay aims at the porch's end less a margin, not at the frame end. Safe only
+		 * when the frame end has happened (its flag, cleared at every hand over), the scan is still
+		 * in the front porch, and the time since the edge is inside the window. That edge is then
+		 * the predicted one; one frame in 64 aims at the edge itself and measures it here, which
+		 * keeps the prediction and the refresh period exact. Off while BFI runs (its pulse starts
+		 * at the frame end). */
+		extern unsigned int ayaneo_rdma_int_status(void);
+		extern void ayaneo_rdma_int_clear(unsigned int mask);
+		extern unsigned int ayaneo_dsi_scan(void);
+		extern void ayaneo_dsi_vlines(unsigned int *vfp, unsigned int *vtotal);
+		extern int ayaneo_get_strobe(void);
+		unsigned int nom = period * div, P, E, vfp, vt;
+		if (s_pace_period && (s_pace_period < nom - nom / 100u || s_pace_period > nom + nom / 100u))
+			s_pace_period = 0;                 /* the refresh changed (another core's porch) */
+		P = s_pace_period ? s_pace_period : nom;
+		ayaneo_dsi_vlines(&vfp, &vt);
+		s_pace_win = 0;
+		if (g_pace_late_us > 0) s_pace_win = (unsigned int)g_pace_late_us * 13u;
+		else if (g_pace_late_us < 0 && vt) {
+			unsigned int porch = (unsigned int)((unsigned long long)P * vfp / vt);
+			s_pace_win = porch > 2u * 6500u ? porch - 6500u : 0u;   /* 0.5 ms margin */
+		}
+		if (ayaneo_get_strobe()) s_pace_win = 0;
+		g_dbg_pace_win_us = s_pace_win / 13u;
+		s_fd_period = P;
+		E = s_pace_edge + P;
+		if (s_pace_win && (int)(now - E) >= 0 && (int)(now - E) < (int)s_pace_win &&
+		    (ayaneo_rdma_int_status() & 4u) && (ayaneo_dsi_scan() & 1u)) {
+			ayaneo_rdma_int_clear(4u);
+			s_pace_edge = E;
+			s_pace_since_measured++;
+			g_dbg_pace_late++;
+			g_dbg_pace_waits = 0;
+			{ extern void ayaneo_rewind_tables_tick(void); ayaneo_rewind_tables_tick(); }
+			return;
+		}
+		target = s_pace_edge + P - period / 4u;
 		s_pace_next = 0;
-		ayaneo_idle_until(s_pace_edge + period * div);   /* sleep until a few ms before the edge we want */
+		ayaneo_idle_until(s_pace_edge + P);   /* sleep until a few ms before the edge we want */
 	} else {
+		s_fd_period = period * div;
 		now = gpt4_get_current_tick();
 		if (s_pace_next == 0u || (int)(now - s_pace_next) > (int)(2u * frame) || (int)(s_pace_next - now) > (int)(2u * frame))
 			s_pace_next = now;
@@ -1036,6 +1100,20 @@ static void rot_pace(void)
 		now = gpt4_get_current_tick();
 		n++;
 	} while ((int)(now - target) < 0 && n < 8u);
+	{	/* a frame end measured: the next late hand over needs a fresh flag, and the refresh period
+		 * comes from the real edges (the frames handed over late in between counted) */
+		extern void ayaneo_rdma_int_clear(unsigned int mask);
+		unsigned int k = s_pace_since_measured + n;
+		ayaneo_rdma_int_clear(4u);
+		if (s_fd_whole && s_pace_measured && k && k <= 256u) {
+			unsigned int meas = (now - s_pace_measured) / k, nom = period * div;
+			if (meas > nom - nom / 100u && meas < nom + nom / 100u)
+				s_pace_period = s_pace_period ? s_pace_period + ((int)(meas - s_pace_period)) / 4 : meas;
+		}
+		s_pace_measured = now;
+		s_pace_since_measured = 0;
+		g_dbg_pace_edges++;
+	}
 	{ extern void disp_pwm_strobe_tick(void); disp_pwm_strobe_tick(); }   /* BFI: the lit pulse starts now (no-op unless Strobe is on) */
 	{ extern void ayaneo_rewind_tables_tick(void); ayaneo_rewind_tables_tick(); }   /* rewind island page tables: compare + repair every frame */
 	if (s_pace_expect) {

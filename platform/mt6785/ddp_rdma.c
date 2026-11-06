@@ -488,6 +488,11 @@ int ayaneo_rdma_wait_frame_end(unsigned int timeout_us)
 	return 1;
 }
 
+/* RDMA0 interrupt flags, read and cleared (write zero to clear) without waiting: the late present
+ * experiment (mt_disp_drv.c) times frame start and register update against frame end */
+unsigned int ayaneo_rdma_int_status(void) { return DISP_REG_GET(DISP_REG_RDMA_INT_STATUS); }
+void ayaneo_rdma_int_clear(unsigned int mask) { DISP_CPU_REG_SET(DISP_REG_RDMA_INT_STATUS, ~mask); }
+
 static int RDMAPollingInterrupt(DISP_MODULE_ENUM module, int bit, int timeout)
 {
 	unsigned int idx = rdma_index(module);

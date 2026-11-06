@@ -1370,6 +1370,24 @@ static void cmd_close(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem palate[:a|0|us] - the late hand over (mt_disp_drv.c rot_pace): a = the front porch less a
+ * margin (default), 0 = off, else a fixed window in us. Reports the window, frames handed over
+ * late and frames that measured the edge since the last call. Not saved. */
+static void cmd_palate(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_pace_late_us;
+	extern volatile unsigned int g_dbg_pace_late, g_dbg_pace_edges, g_dbg_pace_win_us;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == 'a') g_pace_late_us = -1;
+	else if (*arg >= '0' && *arg <= '9') { unsigned v = fb_dec(&arg); g_pace_late_us = (int)(v > 8000u ? 8000u : v); }
+	snprintf(lbuf, sizeof lbuf, "late %s window=%uus: late=%u edges=%u", g_pace_late_us < 0 ? "auto" : g_pace_late_us ? "fixed" : "off",
+		 g_dbg_pace_win_us, g_dbg_pace_late, g_dbg_pace_edges);
+	fastboot_info(lbuf);
+	g_dbg_pace_late = 0; g_dbg_pace_edges = 0;
+	fastboot_okay("");
+}
+
 /* oem fdelay[:0|1] - the frame delay (mt_disp_drv.c ayaneo_frame_delay): the last frame's delay
  * before the button read, its measured work, delayed frames that still missed their refresh,
  * whether it is backed off; with :0 / :1 turns it off / on (not saved, for A/B checks). */
@@ -2196,6 +2214,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);
+	fastboot_register("oem palate", cmd_palate, 1, 0);
 	fastboot_register("oem close", cmd_close, 1, 0);
 	fastboot_register("oem latled", cmd_latled, 1, 0);
 	fastboot_register("oem boottime", cmd_boottime, 1, 0);
