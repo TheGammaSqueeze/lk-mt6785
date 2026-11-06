@@ -196,6 +196,39 @@ u32 current_lk_buf_addr_get(void)
 	return (u32)(sram_dram_buff->buf_addr + dram_curlog_header->off_lk);
 }
 
+volatile u32 g_dbg_pllog_hdr[6];   /* oem pllog: the raw header when the LK refused it */
+/* oem pllog: the log store's state and where the preloader's part of the log is (status: the
+ * BUFF_* value; addr/size 0 when there is no usable buffer) */
+int ayaneo_pl_log(u32 *addr, u32 *size, u32 *sram_sig, u32 *dram_sig)
+{
+	unsigned int a = 0, sz = 0;
+	struct sram_log_header *h;
+	if (log_store_status == BUFF_NOT_READY) log_store_init();
+	sram_log_store_addr_size(&a, &sz);
+	h = (struct sram_log_header *)a;
+	*sram_sig = a ? h->sig : 0;
+	*dram_sig = (a && sram_dram_buff) ? sram_dram_buff->sig : 0;
+	*addr = 0; *size = 0;
+	if (log_store_status == BUFF_READY || log_store_status == BUFF_FULL) {
+		*addr = (u32)sram_dram_buff->buf_addr + dram_curlog_header->off_pl;
+		*size = dram_curlog_header->sz_pl;
+	} else if (a && sram_dram_buff && sram_dram_buff->sig == DRAM_HEADER_SIG) {
+		/* the LK refused the header (other buffer size than its LOG_STORE_SIZE): report it raw and
+		 * use the preloader part when its signature and size are sane */
+		struct pl_lk_log *c = (struct pl_lk_log *)&(h->dram_curlog_header);
+		g_dbg_pllog_hdr[0] = c->sig; g_dbg_pllog_hdr[1] = c->buff_size; g_dbg_pllog_hdr[2] = c->off_pl;
+		g_dbg_pllog_hdr[3] = c->sz_pl; g_dbg_pllog_hdr[4] = sram_dram_buff->buf_addr; g_dbg_pllog_hdr[5] = sram_dram_buff->buf_size;
+		if (c->sig == LOG_STORE_SIG && c->sz_pl && c->sz_pl < 0x100000u && sram_dram_buff->buf_addr >= DRAM_PHY_ADDR) {
+			unsigned start = ROUNDDOWN((unsigned)sram_dram_buff->buf_addr, PAGE_SIZE);
+			unsigned len = ROUNDUP((unsigned)sram_dram_buff->buf_addr - start + c->off_pl + c->sz_pl, PAGE_SIZE);
+			arch_mmu_map((uint64_t)start, start, MMU_MEMORY_TYPE_DEVICE | MMU_MEMORY_AP_P_RW_U_NA, len);
+			*addr = (u32)sram_dram_buff->buf_addr + c->off_pl;
+			*size = c->sz_pl;
+		}
+	}
+	return log_store_status;
+}
+
 u32 current_buf_pl_lk_log_size_get(void)
 {
 	return (dram_curlog_header->sz_pl + dram_curlog_header->sz_lk);

@@ -544,6 +544,7 @@ void init_storage(void)
 ******************************************************************************/
 void platform_early_init(void)
 {
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(0); }   /* oem boottime: LK start */
 	PROFILING_START("platform_early_init");
 #if 0	/* AYANEO: skip AEE WDT debug registration. It does an SMC and then
 	 * arch_mmu_maps the returned address, which hangs this early on this
@@ -668,6 +669,59 @@ static void lk_vb_vfy_logo(void)
 #endif
 }
 
+#if defined(AYANEO_GBA_SD) && defined(KONKR_KPA)
+/* Fast emulator boot (Konkr). The battery steps the Android kernel wants (the PTIM software
+ * OCV and the DLPT imix/R measurement, about 330 ms on a cold boot) and the charger start are
+ * not needed for a picture: on a normal boot that goes to the emulator they run on a thread
+ * once the emulator has started (imix not at all, only the kernel reads it), and the speaker
+ * amps start before the panel init so their ~0.5 s bring-up is done by the time the BIOS
+ * intro wants them. A boot that ends in Android after all (no card, SELECT + START, the sticky
+ * boot to OS flag, a failed gate) runs everything in the stock order before the kernel's
+ * device tree is filled in (ayaneo_emu_boot_abandoned). Charging screen, fastboot, META and
+ * factory boots are never deferred. */
+#include <kernel/thread.h>
+static int s_bat_late, s_audio_early;
+static int emu_boot_expected(void)
+{
+	extern int ayaneo_boot_to_os_pending(void);
+	return (g_boot_mode == NORMAL_BOOT || g_boot_mode == SW_REBOOT) && !ayaneo_boot_to_os_pending();
+}
+static int bat_late_thread(void *arg)
+{
+	(void)arg;
+	check_sw_ocv();
+	mtk_charger_start();
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(15); }   /* oem boottime: late battery steps done */
+	return 0;
+}
+/* the emulator is up: the charger start and the OCV check on a thread */
+void ayaneo_emu_boot_started(void)
+{
+	thread_t *t;
+	if (!s_bat_late) return;
+	s_bat_late = 0;
+	t = thread_create("bat_late", &bat_late_thread, NULL, DEFAULT_PRIORITY, 8192);
+	if (t) thread_resume(t); else bat_late_thread(NULL);
+}
+/* the boot goes to Android after all: the stock steps now, and the early audio off */
+void ayaneo_emu_boot_abandoned(void)
+{
+	if (s_audio_early) {
+		extern void ayaneo_gbc_audio_shutdown(void);
+		ayaneo_gbc_audio_shutdown();
+		s_audio_early = 0;
+	}
+	if (!s_bat_late) return;
+	s_bat_late = 0;
+	check_sw_ocv();
+	mtk_charger_start();
+	get_dlpt_imix_r();
+}
+#else
+void ayaneo_emu_boot_started(void) { }
+void ayaneo_emu_boot_abandoned(void) { }
+#endif
+
 void platform_init(void)
 {
 	bool bearly_backlight_on = false;
@@ -755,8 +809,17 @@ void platform_init(void)
 #endif
 
 #ifndef MACH_FPGA_NO_DISPLAY
+#if defined(AYANEO_GBA_SD) && defined(KONKR_KPA)
+	if (emu_boot_expected()) {   /* the amps' bring-up runs under the panel init (see above) */
+		extern void ayaneo_gbc_audio_init(void);
+		ayaneo_gbc_audio_init();
+		s_audio_early = 1;
+	}
+#endif
 	PROFILING_START("disp init");
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(1); }   /* oem boottime: panel init begins */
 	mt_disp_init((void *)g_fb_base);
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(2); }   /* oem boottime: panel init done */
 #if (MTK_DUAL_DISPLAY_SUPPORT == 2)
 	mt_ext_disp_init((void *)g_ext_fb_base);
 #endif
@@ -899,11 +962,19 @@ void platform_init(void)
 	PROFILING_START("charger init");
 	mtk_charger_init();
 	PROFILING_END(); /* charger init */
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(12); }   /* oem boottime: charger init done */
 
 	PROFILING_START("DLPT init");
 	pmic_dlpt_init();
 	PROFILING_END(); /* dlpt init */
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(13); }   /* oem boottime: dlpt init done */
 
+#if defined(AYANEO_GBA_SD) && defined(KONKR_KPA)
+	if (emu_boot_expected()) {
+		s_bat_late = 1;   /* after the emulator starts, or before the kernel (see above) */
+	} else
+#endif
+	{
 	PROFILING_START("check sw_ocv");
 	check_sw_ocv();
 	PROFILING_END(); /* battery check sw_ocv */
@@ -911,10 +982,13 @@ void platform_init(void)
 	PROFILING_START("charger start");
 	mtk_charger_start();
 	PROFILING_END(); /* charger start */
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(14); }   /* oem boottime: charger start done (after check_sw_ocv) */
 
 	PROFILING_START(" DLPT get imix");
 	get_dlpt_imix_r();
 	PROFILING_END(); /* DLPT get imix */
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(15); }   /* oem boottime: imix done */
+	}
 
 #else
 	mt65xx_bat_init();
@@ -1007,10 +1081,12 @@ void platform_init(void)
 #endif
 
 #ifndef MACH_FPGA
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(8); }   /* oem boottime: before sw_env */
 	PROFILING_START("sw_env");
 	sw_env();
 	PROFILING_END();
 #endif
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(9); }   /* oem boottime: platform_init done */
 	PROFILING_END(); /* platform_init */
 }
 

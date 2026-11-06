@@ -1198,6 +1198,7 @@ void ayaneo_ramcon_info(char *out, int n)
 	snprintf(out, n, "ramcon: sram %08x+%x def %u", g_boot_arg->ram_console_sram_addr,
 		 g_boot_arg->ram_console_sram_size, g_boot_arg->ram_console_def_type);
 }
+unsigned ayaneo_pl_boot_ms(void) { extern BOOT_ARGUMENT *g_boot_arg; return g_boot_arg ? g_boot_arg->boot_time : 0u; }
 int ayaneo_boot_reason(void) { extern BOOT_ARGUMENT *g_boot_arg; return g_boot_arg ? (int)g_boot_arg->boot_reason : -1; }
 int ayaneo_mt6360_chg_reg(unsigned char reg)
 {
@@ -2464,6 +2465,7 @@ static int emu_thread(void *arg)
 	(void)arg;
 
 	g_dbg_boot_step = 1;
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(5); }   /* oem boottime: emulator thread */
 	gba_disable_align_faults();		/* gpSP relies on unaligned host accesses */
 	ayaneo_display_prepare();		/* own the panel + backlight for on-screen debug */
 	g_dbg_boot_step = 2;
@@ -2493,6 +2495,7 @@ static int emu_thread(void *arg)
 	}
 	g_dbg_bt_coreload = BT_MS();
 	g_dbg_boot_step = 5;
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(6); }   /* oem boottime: core loaded */
 
 #ifdef AYANEO_GBA_INTERP
 	dynarec_enable = 0;			/* diagnostic: pure interpreter, no JIT */
@@ -2686,6 +2689,7 @@ static int emu_thread(void *arg)
 				run_one_frame();
 				ayaneo_gba_show_intro_frame(gba_core_screen());	/* 6x fill-height */
 				if (!g_dbg_bt_frame1) g_dbg_bt_frame1 = BT_MS();  /* first BIOS frame on screen */
+				{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(7); }
 				mtk_wdt_restart();		/* keep the armed watchdog fed during the intro */
 				if (PRESSED(GPIO_B)) break;	/* hold B to skip the logo */
 			}
@@ -3387,6 +3391,7 @@ void ayaneo_boot_to_os(void)
 int ayaneo_gba_sd_boot(void)
 {
 	int rc;
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(4); }   /* oem boottime: SD boot begins */
 	/* Hold SELECT at boot to FORCE the emulator/menu - the deterministic "way back"
 	 * from Android. It overrides both the boot-to-OS one-shot and the watchdog guard
 	 * so the user can always reach the emulator regardless of any skip state. */

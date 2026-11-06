@@ -395,6 +395,7 @@ void leds_deinit(void)
 
 void mt65xx_backlight_on(void)
 {
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(3); }   /* oem boottime: backlight on */
 	enum led_brightness backlight_level = get_cust_led_default_level();
 #if defined(AYANEO_GBC) || defined(AYANEO_RAINBOW_BOOT)
 	/* Honour the user's persisted brightness so the several boot-time

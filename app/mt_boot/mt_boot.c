@@ -1630,6 +1630,7 @@ void get_AB_OTA_name(char *part_name, int size)
 
 int boot_linux_from_storage(void)
 {
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(11); }   /* oem boottime: boot from storage */
 	int ret = 0;
 	uint32_t kernel_target_addr = 0;
 	uint32_t ramdisk_target_addr = 0;
@@ -1688,8 +1689,16 @@ int boot_linux_from_storage(void)
 #else
 		if (ayaneo_gba_sd_boot() >= 0)
 #endif
+		{
+			extern void ayaneo_emu_boot_started(void);
+			ayaneo_emu_boot_started();   /* deferred battery steps on a thread (platform.c) */
 			for (;;)
 				thread_sleep(1000);
+		}
+		{	/* not the emulator after all: the deferred battery steps before the kernel */
+			extern void ayaneo_emu_boot_abandoned(void);
+			ayaneo_emu_boot_abandoned();
+		}
 	}
 #endif
 
@@ -2019,6 +2028,7 @@ void mt_boot_init(const struct app_descriptor *app)
 	int ret;
 #endif
 
+	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(10); }   /* oem boottime: mt_boot app */
 	set_serial_num();
 
 #ifdef MTK_DEBUG_SHELL

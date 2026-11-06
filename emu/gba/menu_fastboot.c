@@ -1109,6 +1109,27 @@ static void cmd_resumeinfo(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem boottime - the boot timeline in ms since the SoC left reset (ARM architected counter) */
+static void cmd_boottime(const char *arg, void *data, unsigned sz)
+{
+	extern volatile unsigned int g_boot_stamp_ms[16];
+	extern unsigned ayaneo_pl_boot_ms(void);
+	extern int ayaneo_boot_reason(void);
+	volatile unsigned int *t = g_boot_stamp_ms;
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "preloader reports %u ms, boot reason %d", ayaneo_pl_boot_ms(), ayaneo_boot_reason());
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "lk start %u, panel init %u..%u, backlight %u", t[0], t[1], t[2], t[3]);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "charger init %u, dlpt %u, charger start %u, imix %u", t[12], t[13], t[14], t[15]);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "sw_env %u, platform done %u, app %u, storage boot %u", t[8], t[9], t[10], t[11]);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "sd boot %u, emu thread %u, core %u, first frame %u", t[4], t[5], t[6], t[7]);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 static void cmd_odup(const char *arg, void *data, unsigned sz)
 {
 	unsigned kuphi, kuplo, gam;
@@ -1320,6 +1341,29 @@ static void cmd_gamefile(const char *arg, void *data, unsigned sz)
 	}
 	snprintf(lbuf, sizeof lbuf, "staged %u bytes (fastboot get_staged <file>)", n);
 	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem pllog - the preloader's log from the pl/lk log store, staged for fastboot get_staged */
+static void cmd_pllog(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_pl_log(unsigned *addr, unsigned *size, unsigned *sram_sig, unsigned *dram_sig);
+	unsigned a, n, ss, ds;
+	int st = ayaneo_pl_log(&a, &n, &ss, &ds);
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "log store status %d sram sig %08x dram sig %08x", st, ss, ds);
+	fastboot_info(lbuf);
+	{ extern volatile unsigned g_dbg_pllog_hdr[6];
+	  snprintf(lbuf, sizeof lbuf, "hdr sig %08x size %x off_pl %x sz_pl %x", g_dbg_pllog_hdr[0], g_dbg_pllog_hdr[1], g_dbg_pllog_hdr[2], g_dbg_pllog_hdr[3]);
+	  fastboot_info(lbuf);
+	  snprintf(lbuf, sizeof lbuf, "buf %08x+%x pl %08x+%u", g_dbg_pllog_hdr[4], g_dbg_pllog_hdr[5], a, n);
+	  fastboot_info(lbuf); }
+	if (a && n) {
+		if (n > SHOT_STAGE_MAX) n = SHOT_STAGE_MAX;
+		memcpy((void *)SHOT_STAGE_PA, (const void *)a, n);
+		s_stage_len = n;
+		fastboot_info("staged (fastboot get_staged <file>)");
+	}
 	fastboot_okay("");
 }
 
@@ -1911,6 +1955,8 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem suspendtest", cmd_suspendtest, 1, 0);
 	fastboot_register("oem resumeinfo", cmd_resumeinfo, 1, 0);
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
+	fastboot_register("oem boottime", cmd_boottime, 1, 0);
+	fastboot_register("oem pllog", cmd_pllog, 1, 0);
 	fastboot_register("oem gbabench", cmd_corebench, 1, 0);
 	fastboot_register("oem odcap", cmd_odcap, 1, 0);         /* prev-indexed rising curve: kuphi,kuplo,gam */
 	fastboot_register("oem rot:", cmd_rot, 1, 0);

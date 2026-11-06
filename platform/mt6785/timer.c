@@ -163,3 +163,16 @@ void platform_early_init_timer(void)
 	}
 }
 
+
+/* Boot timeline (oem boottime): milliseconds since the SoC came out of reset, from the ARM
+ * architected counter (13 MHz, running from reset; GPT4 is restarted by the LK above, so it
+ * cannot place the LK in the whole boot). Each stamp is taken once. */
+volatile unsigned int g_boot_stamp_ms[16];
+void ayaneo_boot_stamp(int i)
+{
+	unsigned long long c;
+	if (i < 0 || i >= 16 || g_boot_stamp_ms[i]) return;
+	__asm__ volatile("mrrc p15, 0, %Q0, %R0, c14" : "=r"(c));
+	g_boot_stamp_ms[i] = (unsigned int)(c / 13000ull);
+	if (!g_boot_stamp_ms[i]) g_boot_stamp_ms[i] = 1;
+}
