@@ -66,11 +66,11 @@ struct LCM_setting_table {
 /* The second byte of 0xD7 is the line after vertical sync where the panel starts the picture:
  * stock 0x2C = 44 = sync 4 + back porch 40 (another ST7123 board runs 0x0A with sync 2 + back
  * porch 8). It has to equal the DSI's sync + back porch, or the picture is shifted (the first lines
- * cut off at the scan's start, the last ones repeated). The Konkr runs back porch 2 (lines checked
- * clean down to 1 on the device, 2026-11-06), so the next frame's settings are taken 38 lines later
- * for the same refresh: more time for the frame delay before the picture starts. */
+ * cut off at the scan's start, the last ones repeated). The Konkr runs sync 2 + back porch 2 (each
+ * checked clean down to 1 line on the device, 2026-11-06), so the next frame's settings are taken
+ * 40 lines later for the same refresh: more time for the frame delay before the picture starts. */
 #if defined(KONKR_KPA)
-#define ST7123_VSYNC_LINES 4
+#define ST7123_VSYNC_LINES 2
 #define ST7123_VBP_LINES   2
 #else
 #define ST7123_VSYNC_LINES 4
@@ -307,14 +307,14 @@ static void lcm_get_params(LCM_PARAMS *params)
 	 * front porch is the refresh knob the dynamic refresh code adjusts. */
 	params->dsi.vertical_sync_active = ST7123_VSYNC_LINES;
 	params->dsi.vertical_backporch = ST7123_VBP_LINES;
-	/* the lines the back porch gives up go to the front porch: same total, same refresh */
+	/* the lines sync and back porch give up go to the front porch: same total, same refresh */
 #if defined(AYANEO_GBA)
 	/* Measured line rate 77.526 kHz (ddp_dsi.c AYANEO_DSI_LINE_CONST, with the 354021 kHz data
 	 * rate): rest the panel at the GBA's 59.7275 Hz for the vsync locked emulators:
-	 * 77526000 / 59727.5 = 1298 lines -> vfp 294 at back porch 40. Stock is 280. */
-	params->dsi.vertical_frontporch = 294 + 40 - ST7123_VBP_LINES;
+	 * 77526000 / 59727.5 = 1298 lines -> vfp 294 at sync 4 + back porch 40. Stock is 280. */
+	params->dsi.vertical_frontporch = 294 + 44 - ST7123_START_LINE;
 #else
-	params->dsi.vertical_frontporch = 280 + 40 - ST7123_VBP_LINES;
+	params->dsi.vertical_frontporch = 280 + 44 - ST7123_START_LINE;
 #endif
 	params->dsi.vertical_active_line = FRAME_HEIGHT;
 

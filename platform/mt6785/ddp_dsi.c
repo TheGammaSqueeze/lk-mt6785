@@ -86,21 +86,21 @@
 /* Two measured points on the device (build87, stock rate): vfp 294 -> 59.730 Hz, vfp 4 -> 76.806 Hz.
  * They solve to 1010 non-vfp lines (not the 1004 the timing table suggests) with 59.7275 Hz at
  * vfp 294 kept exact: 59727.5 x 1304 = 77884660. The 1004/77507000 pair was only right at vfp 294. */
-/* The vertical back porch is 2 lines, not the stock 40 (the panel's own start line, ST7123 0xD7,
- * follows it, see the LCM driver): the 38 lines moved to the front porch, so the non-vfp lines are
- * 972 and the GBA rate is vfp 332. Same refresh and blanking, but the next frame's settings are
- * taken 38 lines (0.49 ms) later, which the late hand over (mt_disp_drv.c rot_pace) gives to the
- * frame delay. */
+/* Vertical sync 2 and back porch 2 lines, not the stock 4 and 40 (the panel's own start line, ST7123
+ * 0xD7, follows them, see the LCM driver): the 40 lines moved to the front porch, so the non-vfp
+ * lines are 970 and the GBA rate is vfp 334. Same refresh and blanking, but the next frame's
+ * settings are taken 40 lines (0.51 ms) later, which the late hand over (mt_disp_drv.c rot_pace)
+ * gives to the frame delay. */
 #define AYANEO_DSI_LINE_CONST  77884660u
-#define AYANEO_DSI_FIXED_LINES 972u
+#define AYANEO_DSI_FIXED_LINES 970u
 /* The ST7123 does not hold its image through a long vertical blanking: vfp 524 (100 Hz) fades
  * slowly to black, vfp 626 (94 Hz) flickers; stock is 280. Keep the porch near stock and pace
  * cores that cannot be doubled into that window (PAL 50 Hz) by time instead (rot_pace). The limit
- * is the blanking time, so it carries the 38 lines the back porch gave up (340 at back porch 40). */
-#define AYANEO_DSI_VFP_MAX     378u
-/* The PAL 2x mode (about 100 Hz from the PLL) ran at vfp 4 with back porch 40: it keeps the same
- * 1014 total lines and blanking at back porch 2, so the same data rate is asked of the link. */
-#define AYANEO_DSI_VFP_2X      42u
+ * is the blanking time, so it carries the 40 lines sync and back porch gave up (340 at stock). */
+#define AYANEO_DSI_VFP_MAX     380u
+/* The PAL 2x mode (about 100 Hz from the PLL) ran at vfp 4 with sync 4 + back porch 40: it keeps
+ * the same 1014 total lines and blanking, so the same data rate is asked of the link. */
+#define AYANEO_DSI_VFP_2X      44u
 #elif defined(AYANEO_GBA) && AYANEO_GBA_DR_KHZ
 #define AYANEO_DSI_LINE_CONST  59667000u
 #define AYANEO_DSI_FIXED_LINES 976u
