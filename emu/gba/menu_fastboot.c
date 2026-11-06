@@ -1367,6 +1367,166 @@ static void cmd_pllog(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem doe[:KEY=VALUE|:clear] - the preloader's own settings (its DOE env): a 2 KB block at the
+ * start of boot_para, read by the stock preloader at every boot (decompiled 2026-11-06):
+ *   0x000 the MediaTek image magic (else "No doconfig setting", nothing read)
+ *   0x400 "ENV_v1", 0x408..0x7F3 "key=value" strings, double NUL at the end
+ *   0x7F4 "ENV_v1", 0x7FC the byte sum of 0x408..0x7F3 (else the area is wiped)
+ * boot_para is unused otherwise on this device; image authentication is off for it. One
+ * key=value per write (the block is rebuilt from it); :clear zeroes the block. */
+static void cmd_doe(const char *arg, void *data, unsigned sz)
+{
+	extern long partition_read(const char *part, long long off, unsigned char *buf, unsigned long len);
+	extern long partition_write(const char *part, long long off, unsigned char *buf, unsigned long len);
+	static unsigned char blk[0x800] __attribute__((aligned(64)));
+	unsigned i, sum;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (partition_read("boot_para", 0, blk, sizeof blk) != (long)sizeof blk) { fastboot_fail("boot_para read failed"); return; }
+	snprintf(lbuf, sizeof lbuf, "doe: now magic %08x env '%.6s' first '%.40s'", *(unsigned *)blk, (char *)blk + 0x400, (char *)blk + 0x408);
+	fastboot_info(lbuf);
+	if (!*arg) { fastboot_okay(""); return; }
+	memset(blk, 0, sizeof blk);
+	if (strncmp(arg, "clear", 5) != 0) {
+		unsigned n = 0;
+		{	/* built at run time: the image signer scans the LK for this magic as a header */
+			volatile unsigned m = 0x58880000u;
+			m |= 0x1688u;
+			*(unsigned *)blk = m;
+		}
+		memcpy(blk + 0x400, "ENV_v1", 6);
+		while (arg[n] && n < 0x3E0u) { blk[0x408 + n] = (unsigned char)arg[n]; n++; }   /* key=value, then NUL NUL (zeroed) */
+		memcpy(blk + 0x7F4, "ENV_v1", 6);
+		for (sum = 0, i = 0x408; i < 0x7F4; i++) sum += blk[i];
+		*(unsigned *)(blk + 0x7FC) = sum;
+	}
+	arch_clean_cache_range((unsigned long)blk, sizeof blk);
+	if (partition_write("boot_para", 0, blk, sizeof blk) != (long)sizeof blk) { fastboot_fail("boot_para write failed"); return; }
+	memset(blk, 0xA5, sizeof blk);
+	partition_read("boot_para", 0, blk, sizeof blk);
+	snprintf(lbuf, sizeof lbuf, "doe: wrote magic %08x env '%.6s' first '%.40s' sum %08x", *(unsigned *)blk, (char *)blk + 0x400,
+		 (char *)blk + 0x408, *(unsigned *)(blk + 0x7FC));
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem plread:NAME - stage the first 512 KB of an eMMC boot area (preloader = the active one,
+ * preloader_a = boot0, preloader_b = boot1) for fastboot get_staged. Read only. */
+static void cmd_plread(const char *arg, void *data, unsigned sz)
+{
+	extern long partition_read(const char *part, long long off, unsigned char *buf, unsigned long len);
+	char name[24]; int n = 0; long r;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg && n < 23) name[n++] = *arg++;
+	name[n] = 0;
+	if (!name[0]) { fastboot_fail("oem plread:preloader|preloader_a|preloader_b"); return; }
+	r = partition_read(name, 0, (unsigned char *)SHOT_STAGE_PA, 0x80000);
+	snprintf(lbuf, sizeof lbuf, "plread %s: %ld bytes", name, r);
+	fastboot_info(lbuf);
+	if (r <= 0) { fastboot_fail("read failed"); return; }
+	s_stage_len = (unsigned)r;
+	fastboot_okay("");
+}
+
+/* oem plwrite:HASH - write a staged preloader image (512 KB, the layout oem plread returns:
+ * EMMC_BOOT header, GFH at 0x800) over the active boot area, in place. HASH is the first 16 hex
+ * digits of the image's SHA-256 so only the intended file goes out. Refused unless the image
+ * keeps the installed header and key block (Block1) byte for byte, and the content hash in its
+ * Block2 matches its GFH content (the RSA signature itself is checked on the host before staging).
+ * The area is read back and compared after the write. */
+#define PL_IMG_SIZE   0x80000u
+#define PL_GFH_OFF    0x800u
+static int pl_layout(const unsigned char *b, unsigned *sig_start, unsigned *blk1, unsigned *blk1_len)
+{
+	unsigned file_len = *(const unsigned *)(b + PL_GFH_OFF + 0x20);
+	unsigned sig_len = *(const unsigned *)(b + PL_GFH_OFF + 0x2c);
+	unsigned sr, b1, b1l;
+	if (memcmp(b, "EMMC_BOOT", 9) != 0) return -1;
+	if (b[PL_GFH_OFF] != 'M' || b[PL_GFH_OFF + 1] != 'M' || b[PL_GFH_OFF + 2] != 'M' || b[PL_GFH_OFF + 3] != 1) return -2;
+	if (file_len > PL_IMG_SIZE - PL_GFH_OFF || sig_len < 0x200 || sig_len >= file_len) return -3;
+	sr = PL_GFH_OFF + file_len - sig_len;
+	b1 = sr + 4;
+	b1l = *(const unsigned *)(b + b1 + 8);
+	if (b1l < 0x200 || b1 + b1l + 0x3c + 0x100 > PL_GFH_OFF + file_len) return -4;
+	*sig_start = sr; *blk1 = b1; *blk1_len = b1l;
+	return 0;
+}
+static void cmd_plwrite(const char *arg, void *data, unsigned sz)
+{
+	extern long partition_read(const char *part, long long off, unsigned char *buf, unsigned long len);
+	extern long partition_write(const char *part, long long off, unsigned char *buf, unsigned long len);
+	extern int sha256(unsigned char *data, unsigned long data_len, unsigned char *output_hash);
+	static const char hx[] = "0123456789abcdef";
+	unsigned char *img = (unsigned char *)data, *cur = (unsigned char *)SHOT_STAGE_PA;
+	unsigned char h[32];
+	char want[17], got[17];
+	unsigned sr, b1, b1l, csr, cb1, cb1l, i;
+	long r;
+	int e;
+
+	while (*arg == ' ' || *arg == ':') arg++;
+	for (i = 0; i < 16 && arg[i]; i++) want[i] = (arg[i] >= 'A' && arg[i] <= 'F') ? arg[i] + 32 : arg[i];
+	want[i] = 0;
+	if (i != 16) { fastboot_fail("oem plwrite:<first 16 hex of the image sha256>"); return; }
+	if (!img || sz != PL_IMG_SIZE) {
+		snprintf(lbuf, sizeof lbuf, "stage a %u byte image first (got %u)", PL_IMG_SIZE, sz);
+		fastboot_fail(lbuf); return;
+	}
+	sha256(img, sz, h);
+	for (i = 0; i < 8; i++) { got[i * 2] = hx[h[i] >> 4]; got[i * 2 + 1] = hx[h[i] & 15]; }
+	got[16] = 0;
+	snprintf(lbuf, sizeof lbuf, "plwrite: image sha256 %s...", got);
+	fastboot_info(lbuf);
+	if (memcmp(want, got, 16) != 0) { fastboot_fail("hash does not match the staged image"); return; }
+	if ((e = pl_layout(img, &sr, &b1, &b1l)) != 0) {
+		snprintf(lbuf, sizeof lbuf, "staged image layout bad (%d)", e); fastboot_fail(lbuf); return;
+	}
+	sha256(img + PL_GFH_OFF, sr - PL_GFH_OFF, h);
+	if (memcmp(h, img + b1 + b1l + 0x1c, 32) != 0) { fastboot_fail("Block2 content hash does not match the image"); return; }
+
+	r = partition_read("preloader", 0, cur, PL_IMG_SIZE);
+	if (r != (long)PL_IMG_SIZE) { fastboot_fail("cannot read the installed preloader"); return; }
+	if ((e = pl_layout(cur, &csr, &cb1, &cb1l)) != 0) {
+		snprintf(lbuf, sizeof lbuf, "installed preloader layout unknown (%d)", e); fastboot_fail(lbuf); return;
+	}
+	if (memcmp(cur, img, PL_GFH_OFF) != 0) { fastboot_fail("EMMC_BOOT header differs from the installed one"); return; }
+	if (cb1l != b1l || memcmp(cur + cb1, img + b1, b1l) != 0) { fastboot_fail("key block (Block1) differs from the installed one"); return; }
+	if (memcmp(cur, img, PL_IMG_SIZE) == 0) { fastboot_info("plwrite: already installed, nothing written"); fastboot_okay(""); return; }
+
+	r = partition_write("preloader", 0, img, PL_IMG_SIZE);
+	snprintf(lbuf, sizeof lbuf, "plwrite: wrote %ld bytes", r);
+	fastboot_info(lbuf);
+	r = partition_read("preloader", 0, cur, PL_IMG_SIZE);
+	if (r != (long)PL_IMG_SIZE || memcmp(cur, img, PL_IMG_SIZE) != 0) {
+		/* leave the staged copy so `oem plread` + get_staged shows what is there now */
+		s_stage_len = PL_IMG_SIZE;
+		fastboot_fail("READBACK MISMATCH: do not power off, rewrite the stock image"); return;
+	}
+	fastboot_info("plwrite: read back OK");
+	fastboot_okay("");
+}
+
+/* oem extcsd - eMMC boot area state, read only: BOOT_WP [173], BOOT_WP_STATUS [174]
+ * (2 bits per boot area: 0 none, 1 power-on, 2 permanent), PARTITION_CONFIG [179]
+ * (bits 3-5: 1 boot from boot0, 2 boot1, 7 user), BOOT_BUS [177], BOOT_SIZE_MULT [226] */
+static void cmd_extcsd(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_emmc_ext_csd(unsigned char *out, int len);
+	static unsigned char e[512];
+	int r;
+	(void)arg; (void)data; (void)sz;
+	r = ayaneo_emmc_ext_csd(e, 512);
+	if (r) { snprintf(lbuf, sizeof lbuf, "ext_csd read failed %d", r); fastboot_fail(lbuf); return; }
+	snprintf(lbuf, sizeof lbuf, "boot_wp=%02x wp_status=%02x part_cfg=%02x boot_bus=%02x",
+	         e[173], e[174], e[179], e[177]);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "boot_size_mult=%u (%u KB) rev=%u user_wp=%02x",
+	         e[226], e[226] * 128u, e[192], e[171]);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* transcript of the last upload for `oem upstat` (the first attempt failed on the host side and
  * the unbounded bulk writes then hung the fastboot thread: every write here is bounded) */
 static unsigned s_up_step, s_up_sent; static int s_up_rc;
@@ -1722,11 +1882,20 @@ static void cmd_mmuq(const char *arg, void *data, unsigned sz)
 static void cmd_env(const char *arg, void *data, unsigned sz)
 {
 	extern char *get_env(char *name);
+	extern int set_env(char *name, char *value);
 	char name[64]; int n = 0; char *val;
 	(void)data; (void)sz;
 	while (*arg == ' ' || *arg == ':') arg++;
-	while (*arg && n < 63) name[n++] = *arg++;
+	while (*arg && *arg != '=' && n < 63) name[n++] = *arg++;
 	name[n] = 0;
+	if (*arg == '=') {   /* oem env:NAME=VALUE writes the para env (the preloader reads it too) */
+		char value[64]; int k = 0;
+		arg++;
+		while (*arg && k < 63) value[k++] = *arg++;
+		value[k] = 0;
+		snprintf(lbuf, sizeof lbuf, "set_env %s = %s -> %d", name, value, set_env(name, value));
+		fastboot_info(lbuf);
+	}
 	val = get_env(name);
 	snprintf(lbuf, sizeof lbuf, "env %s = %s", name, val ? val : "(unset)");
 	fastboot_info(lbuf);
@@ -1957,6 +2126,10 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
 	fastboot_register("oem boottime", cmd_boottime, 1, 0);
 	fastboot_register("oem pllog", cmd_pllog, 1, 0);
+	fastboot_register("oem doe", cmd_doe, 1, 0);
+	fastboot_register("oem plread", cmd_plread, 1, 0);
+	fastboot_register("oem extcsd", cmd_extcsd, 1, 0);
+	fastboot_register("oem plwrite", cmd_plwrite, 1, 0);
 	fastboot_register("oem gbabench", cmd_corebench, 1, 0);
 	fastboot_register("oem odcap", cmd_odcap, 1, 0);         /* prev-indexed rising curve: kuphi,kuplo,gam */
 	fastboot_register("oem rot:", cmd_rot, 1, 0);

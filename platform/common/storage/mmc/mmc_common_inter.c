@@ -853,3 +853,15 @@ int ayaneo_emmc_cid(unsigned int out[4])
 	for (i = 0; i < 4; i++) out[i] = card->raw_cid[i];
 	return 0;
 }
+
+/* Konkr: fresh EXT_CSD bytes for `oem extcsd` (boot area write protect and boot partition) */
+int ayaneo_emmc_ext_csd(unsigned char *out, int len)
+{
+	struct mmc_card *card = mmc_get_card(MMC_HOST_ID);
+	struct mmc_host *host = mmc_get_host(MMC_HOST_ID);
+	int i;
+	if (!card || !host || len > 512) return -1;
+	if (mmc_read_ext_csd(host, card) != MMC_ERR_NONE) return -2;
+	for (i = 0; i < len; i++) out[i] = card->raw_ext_csd[i];
+	return 0;
+}
