@@ -29,6 +29,8 @@ extern void fastboot_register(const char *prefix,
 			      int allow_locked, int need_download);
 extern void fastboot_info(const char *reason);
 #include "gba_core_abi.h"
+#include "fat_ro.h"
+#include "sd_fat.h"
 extern void fastboot_okay(const char *info);
 extern void fastboot_fail(const char *reason);
 extern int  snprintf(char *str, unsigned long size, const char *fmt, ...);
@@ -1344,6 +1346,24 @@ static void cmd_gamefile(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem sd-ls:/dir - list a card directory (name and size per line). Read only. */
+static fat_vol s_fb_vol;
+static void cmd_sd_ls(const char *arg, void *data, unsigned sz)
+{
+	static fat_dir d;
+	static fat_dirent e;
+	int n = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (gba_sd_mount(&s_fb_vol) != 0) { fastboot_fail("sd-ls: mount failed"); return; }
+	if (fat_opendir(&s_fb_vol, *arg ? arg : "/", &d) != 0) { fastboot_fail("sd-ls: no such directory"); return; }
+	while (fat_readdir(&d, &e) == 1 && n < 400) {
+		snprintf(lbuf, sizeof lbuf, "%s%.52s %u", e.is_dir ? "[d] " : "", e.name, e.size);
+		fastboot_info(lbuf);
+		n++;
+	}
+	fastboot_okay("");
+}
 /* oem pllog - the preloader's log from the pl/lk log store, staged for fastboot get_staged */
 static void cmd_pllog(const char *arg, void *data, unsigned sz)
 {
@@ -2124,6 +2144,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem suspendtest", cmd_suspendtest, 1, 0);
 	fastboot_register("oem resumeinfo", cmd_resumeinfo, 1, 0);
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
+	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
 	fastboot_register("oem boottime", cmd_boottime, 1, 0);
 	fastboot_register("oem pllog", cmd_pllog, 1, 0);
 	fastboot_register("oem doe", cmd_doe, 1, 0);
