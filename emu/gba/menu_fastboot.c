@@ -1412,6 +1412,19 @@ static void cmd_fbwc(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem gbcpace[:0|1] - GB/GBC: also pace each frame off the 13 MHz counter (1) or only through the
+ * present (0, the Konkr default: the present already holds the frame to the panel). Not saved. */
+static void cmd_gbcpace(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_gbc_counter_pace;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == '0' || *arg == '1') g_gbc_counter_pace = *arg - '0';
+	snprintf(lbuf, sizeof lbuf, "gbcpace: counter pacing %s", g_gbc_counter_pace ? "on" : "off");
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem memstage:ADDR:LEN (hex) - stages LEN bytes of memory from ADDR for fastboot get_staged, to
  * look at a core's buffers from a PC (the GB/GBC ROM as loaded is at 0x50000000). Only the
  * emulator scratch [0x4E000000, 0x55E00000) below the staging area, at most 0x1F0000 bytes. */
@@ -2293,6 +2306,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);
 	fastboot_register("oem palate", cmd_palate, 1, 0);
 	fastboot_register("oem memstage", cmd_memstage, 1, 0);
+	fastboot_register("oem gbcpace", cmd_gbcpace, 1, 0);
 	fastboot_register("oem fbwc", cmd_fbwc, 1, 0);
 	fastboot_register("oem fdmargin", cmd_fdmargin, 1, 0);
 	fastboot_register("oem close", cmd_close, 1, 0);

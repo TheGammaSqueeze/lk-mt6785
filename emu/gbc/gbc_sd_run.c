@@ -125,6 +125,17 @@ static void gbc_apply_clock(void)
 #define GBC_H          144
 #define GBC_SND_MAX    35208u   /* one 2097152 Hz frame of stereo samples */
 #define GBC_FORCE_DMG  1u       /* gambatte::GB::FORCE_DMG */
+/* Pace each frame off the 13 MHz counter as well as the present. On the Konkr the present
+ * already holds every frame to the panel (mt_disp_drv.c rot_pace), which this session runs at
+ * the Game Boy's 59.7275 Hz; a second clock there only adds a wait at a phase set by when the
+ * session started, anywhere in the refresh, and that pushed the next frame's start and its
+ * button read past the point the frame delay had picked. */
+#if defined(KONKR_KPA)
+volatile int g_gbc_counter_pace = 0;   /* oem gbcpace:0|1, for A/B checks */
+#else
+volatile int g_gbc_counter_pace = 1;
+#endif
+#define GBC_COUNTER_PACE g_gbc_counter_pace
 
 /* GB colorization palettes now come from the gambatte core catalogue (gbcpalettes.h:
  * the real GB/GBC/SGB/Special + TWB64/community list, ~600 entries) rather than a few
@@ -605,6 +616,13 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	s_menu_is_dmg = is_dmg; s_menu_pal = &pal_idx;
 	s_msel = 0; s_mstat[0] = 0; g_gbc_menu_open = 0; s_pal_pick = 0;
 
+#if defined(KONKR_KPA)
+	{	/* the panel at the GB rate, one refresh per frame (the pacer's rate too), whatever the
+		 * last core left it at */
+		extern void ayaneo_dsi_set_vfp(unsigned int vfp); extern unsigned int ayaneo_dsi_default_vfp(void);
+		ayaneo_dsi_set_vfp(ayaneo_dsi_default_vfp());
+	}
+#endif
 	pace_base = gpt4_get_current_tick();
 	{
 	int up_prev = 0, dn_prev = 0, lt_prev = 0, rt_prev = 0, a_prev = 0, b_prev = 0, x_prev = 0;
@@ -679,9 +697,11 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 				ayaneo_gb_show_frame(vbuf);
 				pace_n++;
-				{ unsigned target = pace_base + (unsigned)(pace_n * TPF_NUM / TPF_DEN);
-				  ayaneo_idle_until(target);
-				  while ((int)(gpt4_get_current_tick() - target) < 0) ; }
+				if (GBC_COUNTER_PACE) {
+					unsigned target = pace_base + (unsigned)(pace_n * TPF_NUM / TPF_DEN);
+					ayaneo_idle_until(target);
+					while ((int)(gpt4_get_current_tick() - target) < 0) ;
+				}
 				continue;
 			}
 			if (ayaneo_rewind_active()) { ayaneo_rewind_end(); ayaneo_audio_reverse_flip(); }   /* resume forward */
@@ -871,9 +891,10 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				ayaneo_gb_show_frame(vbuf);
 			}
 
-			/* pace to 59.7 Hz off the 13 MHz counter (cumulative, no drift) */
+			/* pace to 59.7 Hz off the 13 MHz counter (cumulative, no drift), where the present
+			 * does not (GBC_COUNTER_PACE) */
 			pace_n++;
-			{
+			if (GBC_COUNTER_PACE) {
 				unsigned target = pace_base + (unsigned)(pace_n * TPF_NUM / TPF_DEN);
 				ayaneo_idle_until(target);
 				while ((int)(gpt4_get_current_tick() - target) < 0)
