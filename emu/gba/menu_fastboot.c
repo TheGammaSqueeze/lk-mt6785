@@ -114,6 +114,10 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 				  snprintf(lbuf, sizeof lbuf, "lp max %u %u %u %u %u %u", g_dbg_lp_max[0], g_dbg_lp_max[1],
 					   g_dbg_lp_max[2], g_dbg_lp_max[3], g_dbg_lp_max[4], g_dbg_lp_max[5]);
 				  fastboot_info(lbuf); }
+				{ extern volatile unsigned int g_dbg_cskip_us[2]; extern volatile int g_dbg_cskip;
+				  snprintf(lbuf, sizeof lbuf, "ra commit: %s, timed %u/%uus drawn/not",
+					   g_dbg_cskip ? "not drawn" : "drawn", g_dbg_cskip_us[0], g_dbg_cskip_us[1]);
+				  fastboot_info(lbuf); }
 				snprintf(lbuf, sizeof lbuf, "speed: presents/s=%u emu_frames/s=%u frame_us=%u",
 					 g_dbg_present_fps, g_dbg_emu_fps, g_dbg_emu_frame_us);
 				fastboot_info(lbuf);

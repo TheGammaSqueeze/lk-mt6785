@@ -931,6 +931,56 @@ volatile unsigned int g_dbg_selftest_rref, g_dbg_selftest_rtest;
  * screen (1 = REF==TEST for that component) - pinpoints WHERE a FAIL diverged. */
 volatile int g_dbg_selftest_cmp;
 
+/* Whether the committed frame is drawn under run ahead. With run ahead the picture shown is the
+ * last look-ahead frame's, so not drawing the committed frame takes its drawing off the path from
+ * the input read to the hand over. But the committed timeline then never draws, so armGBA's cache
+ * of unchanged lines (the lines it skips stay dirty) is never cleaned there, and the look-ahead
+ * frame redraws every line instead of only those that changed. A scrolling game gains (Sonic
+ * Advance, run ahead 2: 6.72 -> 6.27 ms from the input read to the hand over), a still screen can
+ * lose. So both ways are timed on the running game: the chosen one is kept for CSKIP_HOLD frames,
+ * then the other is tried (CSKIP_SETTLE frames to settle, CSKIP_TIMED timed) and taken when it is
+ * faster. The time is the committed frame plus the look-ahead frames up to the hand over. */
+#define CSKIP_HOLD   1800u
+#define CSKIP_SETTLE 8u
+#define CSKIP_TIMED  64u
+static int s_cskip = 1;			/* the chosen way: 1 = the committed frame is not drawn */
+static unsigned int s_cskip_trial;	/* frames into a trial of the other way, 0 = none */
+static unsigned int s_cskip_held;	/* frames of the chosen way since the last trial */
+static unsigned int s_cskip_acc[2], s_cskip_n[2];
+static int s_cskip_frame;		/* this display runs ahead and timed the committed frame */
+static int s_ahead_shown;		/* preempt_present showed a look-ahead frame */
+static unsigned int s_ahead_us;		/* its look-ahead frames, us, up to the hand over */
+volatile unsigned int g_dbg_cskip_us[2];	/* the last timed averages: [0] drawn, [1] not drawn */
+volatile int g_dbg_cskip = 1;		/* the chosen way */
+
+static int cskip_now(void)
+{
+	return s_cskip_trial ? !s_cskip : s_cskip;
+}
+
+/* one display done the way cskip_now() gave, us from the committed frame to the hand over */
+static void cskip_account(unsigned int us)
+{
+	int way = cskip_now();
+	if (s_cskip_trial) {
+		if (++s_cskip_trial > CSKIP_SETTLE) { s_cskip_acc[way] += us; s_cskip_n[way]++; }
+		if (s_cskip_trial >= CSKIP_SETTLE + CSKIP_TIMED) {
+			unsigned int tried = s_cskip_acc[way] / s_cskip_n[way];
+			unsigned int kept = s_cskip_n[!way] ? s_cskip_acc[!way] / s_cskip_n[!way] : ~0u;
+			g_dbg_cskip_us[way] = tried;
+			if (s_cskip_n[!way]) g_dbg_cskip_us[!way] = kept;
+			if (tried + 50u < kept) s_cskip = way;   /* a margin, so noise does not flip it */
+			g_dbg_cskip = s_cskip;
+			s_cskip_trial = 0; s_cskip_held = 0;
+			s_cskip_acc[0] = s_cskip_acc[1] = 0; s_cskip_n[0] = s_cskip_n[1] = 0;
+		}
+		return;
+	}
+	/* the chosen way's last CSKIP_TIMED frames before a trial are its time */
+	if (++s_cskip_held > CSKIP_HOLD - CSKIP_TIMED) { s_cskip_acc[way] += us; s_cskip_n[way]++; }
+	if (s_cskip_held >= CSKIP_HOLD) s_cskip_trial = 1;
+}
+
 static int preempt_effective_depth(void)
 {
 	int cfg = ayaneo_get_preempt_frames();
@@ -964,6 +1014,7 @@ static void preempt_adapt(int menu_open)
 static void preempt_present(void)
 {
 	int pf;
+	s_ahead_shown = 0;
 	/* While the Pico menu is open the game is not being played (input is zeroed) and
 	 * the overlay makes the present blit heavier. Running the look-ahead frames on top
 	 * of that overran the 16.7 ms budget and starved the audio ring = the skipping heard
@@ -971,6 +1022,9 @@ static void preempt_present(void)
 	 * look-ahead, no rewind), which frees the budget for the overlay. Leave g_dbg_eff_pf
 	 * at the last gameplay value so the menu still shows the chosen depth (e.g. "Max (3)")
 	 * rather than flipping to "(0)". */
+	/* (A menu opened by this frame's button press finds the committed frame undrawn: its picture
+	 * holds the previous frame's pixels on the lines that changed for that one present, and the
+	 * next committed frame, drawn because the menu is open, redraws them since they stayed dirty.) */
 	if (s_menu_open) {
 		g_dbg_preempt_emu_us = 0;
 		ayaneo_gbc_show_frame(gba_core_screen());
@@ -1009,6 +1063,8 @@ static void preempt_present(void)
 		s_cpu_restart_req = 1;
 		t3 = gpt4_get_current_tick();
 		g_dbg_preempt_emu_us = ((t1 - t0) + (t3 - t2)) / 13u;	/* excl the present/blit */
+		s_ahead_us = (t1 - t0) / 13u;
+		s_ahead_shown = 1;
 	}
 }
 
@@ -2927,8 +2983,18 @@ static int emu_thread(void *arg)
 				unsigned int ct0 = gba_core_cpu_ticks();
 				unsigned int em0 = gpt4_get_current_tick();
 				s_ff_t0 = em0;   /* the frame budget for fast forward starts here */
+				/* With run ahead on, the committed frame's picture is never shown, so it may go
+				 * undrawn (cskip_now, see CSKIP_HOLD). The lines it skips stay dirty, so the
+				 * look-ahead frame drawn after it redraws them, and the savestate keeps the line
+				 * cache with the picture, so a rewind to this frame is consistent. Decided before
+				 * the frame from the menu and from last frame's fast forward: a fast forward
+				 * starting now ends in a drawn frame of its own. */
+				s_cskip_frame = !s_menu_open && !s_benchmark && !s_ff_active &&
+				                preempt_effective_depth() > 0;
+				gba_core_skip_render(s_cskip_frame && cskip_now());
 				lp_mark(1);
 				run_one_frame();	/* runs one GBA frame + submits its audio */
+				gba_core_skip_render(0);
 				/* committed GBA cycles this display frame = one full frame (280896);
 				 * run-ahead re-enters as a full frame (no priming stub) so no skew. */
 				lp_mark(2);
@@ -3250,6 +3316,8 @@ static int emu_thread(void *arg)
 			 * present when Off), paced to the panel vsync. */
 			lp_mark(4);
 			preempt_present();
+			if (s_cskip_frame && s_ahead_shown)
+				cskip_account(s_committed_us + s_ahead_us);
 			lp_mark(5);
 			lp_commit();
 			/* closed-loop: shed run-ahead depth if the full frame period shows
