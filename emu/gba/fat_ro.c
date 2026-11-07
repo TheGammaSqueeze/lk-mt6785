@@ -377,7 +377,7 @@ int fat_open(fat_vol *v, const char *path, fat_file *f)
 				int i, eq = 1;
 				for (i = 0; fname[i] || e.name[i]; i++)
 					if (fr_upper(fname[i]) != fr_upper(e.name[i])) { eq = 0; break; }
-				if (eq) { f->v = v; f->first_clus = e.first_clus; f->size = e.size; return 0; }
+				if (eq) { f->v = v; f->first_clus = e.first_clus; f->size = e.size; f->ex_nofat = 0; return 0; }
 			}
 		}
 	}

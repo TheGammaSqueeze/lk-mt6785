@@ -226,6 +226,7 @@ static int scan_rom_folder(fat_vol *v, const char *path, const char *ext,
 			if (k >= el) out[n].name[k - el] = 0;
 			out[n].first_clus = e.first_clus;
 			out[n].size = e.size;
+			out[n].ex_nofat = e.ex_nofat;
 			out[n].type = type;
 			n++;
 		}
@@ -286,6 +287,9 @@ uint32_t gba_sd_load_rom(fat_vol *v, const gba_rom_entry *r, unsigned char *dst,
 	 * falls back to the selector instead of booting a broken game. Also reject
 	 * an empty file. */
 	if (n == 0 || n > cap) return 0;
-	f.v = v; f.first_clus = r->first_clus; f.size = r->size;   /* reuse the cached chain head */
-	return fat_read(&f, 0, dst, n);
+	/* reuse the cached chain head. The exFAT contiguous flag must come with it: left unset the
+	 * reader follows the FAT, which holds nothing for a contiguous file, and stops after the
+	 * first cluster (a GB/GBC game then ran 32 KB of ROM and the rest of the buffer's old data) */
+	f.v = v; f.first_clus = r->first_clus; f.size = r->size; f.ex_nofat = r->ex_nofat;
+	return fat_read(&f, 0, dst, n) == n ? n : 0u;   /* a short read is a corrupt ROM too */
 }

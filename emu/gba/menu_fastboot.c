@@ -1412,6 +1412,28 @@ static void cmd_fbwc(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem memstage:ADDR:LEN (hex) - stages LEN bytes of memory from ADDR for fastboot get_staged, to
+ * look at a core's buffers from a PC (the GB/GBC ROM as loaded is at 0x50000000). Only the
+ * emulator scratch [0x4E000000, 0x55E00000) below the staging area, at most 0x1F0000 bytes. */
+static void cmd_memstage(const char *arg, void *data, unsigned sz)
+{
+	unsigned addr, len;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	addr = fb_hex(&arg);
+	while (*arg == ' ' || *arg == ':') arg++;
+	len = fb_hex(&arg);
+	if (!len || len > SHOT_STAGE_MAX || addr < 0x4E000000u || addr >= SHOT_STAGE_PA || len > SHOT_STAGE_PA - addr) {
+		fastboot_fail("oem memstage:ADDR:LEN, hex, in [4E000000, 55E00000), LEN <= 1F0000");
+		return;
+	}
+	memcpy((void *)SHOT_STAGE_PA, (const void *)addr, len);
+	s_stage_len = len;
+	snprintf(lbuf, sizeof lbuf, "staged %u bytes from %08x (fastboot get_staged <file>)", len, addr);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem palate[:a|0|us] - the late hand over (mt_disp_drv.c rot_pace): a = the front porch less a
  * margin (default), 0 = off, else a fixed window in us. Reports the window, frames handed over
  * late and frames that measured the edge since the last call, and the refresh measured over the
@@ -2270,6 +2292,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);
 	fastboot_register("oem palate", cmd_palate, 1, 0);
+	fastboot_register("oem memstage", cmd_memstage, 1, 0);
 	fastboot_register("oem fbwc", cmd_fbwc, 1, 0);
 	fastboot_register("oem fdmargin", cmd_fdmargin, 1, 0);
 	fastboot_register("oem close", cmd_close, 1, 0);

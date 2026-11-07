@@ -39,6 +39,7 @@ typedef struct {
 	uint32_t first_clus;
 	uint32_t size;
 	unsigned char type;       /* GBA_CONSOLE_GB / _GBC / _GBA */
+	unsigned char ex_nofat;   /* exFAT: one contiguous run, no FAT chain (fat_file.ex_nofat) */
 } gba_rom_entry;
 
 /* Enumerate the ROMs across /roms/gb (*.gb), /roms/gbc (*.gbc) and /roms/gba

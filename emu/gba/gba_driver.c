@@ -2489,6 +2489,7 @@ static int logo_header_from_card(unsigned char *dst)
 		f.v = &s_sd_vol;
 		f.first_clus = s_roms[hdr_rom].first_clus;
 		f.size = s_roms[hdr_rom].size;
+		f.ex_nofat = s_roms[hdr_rom].ex_nofat;
 		return fat_read(&f, 0, dst, 0xC0u) == 0xC0u;
 	}
 }
@@ -2548,6 +2549,7 @@ static unsigned gba_sd_build_logo_cart(unsigned char *rp)
 		f.v = &s_sd_vol;
 		f.first_clus = s_roms[hdr_rom].first_clus;
 		f.size = s_roms[hdr_rom].size;
+		f.ex_nofat = s_roms[hdr_rom].ex_nofat;
 		/* 0..0xC0 = real header: logo(0x04-0x9F) + checksum(0xBD) + entry(0x00,
 		 * which branches to 0x080000C0 -> our loop). Restores the loops beyond. */
 		fat_read(&f, 0, rp, 0xC0u);
