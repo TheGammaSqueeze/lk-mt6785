@@ -3042,34 +3042,62 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 		}
 	}
 #endif
-	else {
+#if defined(KONKR_KPA)
+	else if (filt >= 1 && filt <= 3 && g_dbg_plain_neon && ph >= 1u && ph <= 4u) {
+		/* scanlines / grid: the NEON row writer with the dimming (each pixel stored once) */
+		extern void ayaneo_filter_prescale_row_neon(const unsigned short *src, unsigned sw, unsigned int *dst,
+							    unsigned fbpitch, unsigned ph, unsigned pv, int dim_col, int dim_row);
+		static unsigned short s_ccrow1[1024];
 		const int scan_cols = AYANEO_ROT ? 1 : 0;
+		const int dim_col = (filt >= 2 || (scan_cols && filt == 1));   /* grid, or turned scanlines */
+		const int dim_row = (filt >= 2 || (!scan_cols && filt == 1));  /* grid, or upright scanlines */
+		unsigned int y, x;
+		for (y = 0; y < sh; y++) {
+			const unsigned short *srow = pix + y * spitch_px;
+			if (cc_lut && sw <= 1024u) {
+				for (x = 0; x < sw; x++) { unsigned v = srow[x]; s_ccrow1[x] = cc_lut[(((v >> 12) & 0xFu) << 8) | (((v >> 7) & 0xFu) << 4) | ((v >> 1) & 0xFu)]; }
+				srow = s_ccrow1;
+			}
+			ayaneo_filter_prescale_row_neon(srow, sw, vbuf + (y * pv) * fbpitch, fbpitch, ph, pv, dim_col, dim_row);
+		}
+	}
+#endif
+	else {
+		/* Each widened row is built once in a cached scratch row (and its dimmed copy when the
+		 * last of the pv rows is dimmed), then copied to its pv rows. Nothing is read back from
+		 * vbuf: on the Konkr the game buffers are write combined (oem fbwc), where a read is
+		 * uncached, and copying the rows out of vbuf took 7.8 ms a frame for SNES scanlines
+		 * at 1999 MHz (1.0 ms cached). */
+		static unsigned int s_pre_row[2][2048];
+		const int scan_cols = AYANEO_ROT ? 1 : 0;
+		const int dim_col = (filt >= 2 || (scan_cols && filt == 1)) && ph > 0u;   /* grid, or turned scanlines */
+		const int dim_row = (filt >= 2 || (!scan_cols && filt == 1)) && pv > 0u;  /* grid, or upright scanlines */
+		const unsigned int rw = iw < 2048u ? iw : 2048u;   /* any panel here is narrower; keeps the scratch in bounds */
 		unsigned int y, x, k, r_;
 		for (y = 0; y < sh; y++) {
 			const unsigned short *srow = pix + y * spitch_px;
 			unsigned int *drow = vbuf + (y * pv) * fbpitch;
-			for (x = 0; x < sw; x++) {
+			unsigned int *row = s_pre_row[0];
+			for (x = 0; x < sw && x * ph + ph <= rw; x++) {
 				unsigned int v = srow[x];
 				/* Optional GBA-style RGB444 colour-correction LUT (matches the CPU blit path);
 				 * NULL for SNES/GBC. Applied per SOURCE pixel, before the nearest prescale. */
 				if (cc_lut) v = cc_lut[(((v >> 12) & 0xFu) << 8) | (((v >> 7) & 0xFu) << 4) | ((v >> 1) & 0xFu)];
 				unsigned int r = ((v >> 11) & 0x1fu) << 3, g = ((v >> 5) & 0x3fu) << 2, b = (v & 0x1fu) << 3;
 				unsigned int px = 0xFF000000u | (r << 16) | (g << 8) | b;
-				unsigned int *o = drow + x * ph;
+				unsigned int *o = row + x * ph;
 				for (k = 0; k < ph; k++) o[k] = px;
-				if ((filt >= 2 || (scan_cols && filt == 1)) && ph > 0u)   /* grid, or turned scanlines: dim last column of this run */
+				if (dim_col)   /* dim the last column of this run */
 					o[ph - 1u] = 0xFF000000u | ((r >> 1) << 16) | ((g >> 1) << 8) | (b >> 1);
 			}
-			for (r_ = 1u; r_ < pv; r_++)
-				memcpy(drow + r_ * fbpitch, drow, iw * 4u);   /* replicate the widened row */
-			if ((filt >= 2 || (!scan_cols && filt == 1)) && pv > 0u) {   /* grid, or upright scanlines: dim the last of the pv rows */
-				unsigned int *lr = drow + (pv - 1u) * fbpitch;
-				for (x = 0; x < iw; x++) {
-					unsigned int v = lr[x];
-					lr[x] = 0xFF000000u | ((((v >> 16) & 0xffu) >> 1) << 16) |
-					        ((((v >> 8) & 0xffu) >> 1) << 8) | ((v & 0xffu) >> 1);
+			if (dim_row)   /* the last of the pv rows: every pixel of the row at half */
+				for (x = 0; x < rw; x++) {
+					unsigned int v = row[x];
+					s_pre_row[1][x] = 0xFF000000u | ((((v >> 16) & 0xffu) >> 1) << 16) |
+					                  ((((v >> 8) & 0xffu) >> 1) << 8) | ((v & 0xffu) >> 1);
 				}
-			}
+			for (r_ = 0u; r_ < pv; r_++)
+				memcpy(drow + r_ * fbpitch, (dim_row && r_ == pv - 1u) ? s_pre_row[1] : row, rw * 4u);
 		}
 	}
 	tp_pre = gpt4_get_current_tick();

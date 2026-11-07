@@ -475,6 +475,57 @@ void ayaneo_plain_prescale_row_neon(const uint16_t *src, unsigned sw, uint32_t *
 	}
 }
 
+/* The same with the LCD filter's dimming (scanlines, grid): dim_col halves the last of the ph
+ * columns of each source pixel, dim_row halves the whole last of the pv rows (on top of a dimmed
+ * column, as the C loop does). Half is each channel shifted down one bit, alpha opaque. Every
+ * pixel is stored once and nothing is read back: the game buffers are write combined. ph 1..4. */
+static inline uint32x4_t half_px4(uint32x4_t v)
+{
+	return vorrq_u32(vandq_u32(vshrq_n_u32(v, 1), vdupq_n_u32(0x007F7F7Fu)), vdupq_n_u32(0xFF000000u));
+}
+/* four source pixels, c[k] = column k of each: stored interleaved as 4 x ph pixels */
+static inline void filter_store4(uint32_t *o, unsigned ph, const uint32x4_t *c)
+{
+	switch (ph) {
+	case 1: vst1q_u32(o, c[0]); break;
+	case 2: { uint32x4x2_t t; t.val[0] = c[0]; t.val[1] = c[1]; vst2q_u32(o, t); break; }
+	case 3: { uint32x4x3_t t; t.val[0] = c[0]; t.val[1] = c[1]; t.val[2] = c[2]; vst3q_u32(o, t); break; }
+	default: { uint32x4x4_t t; t.val[0] = c[0]; t.val[1] = c[1]; t.val[2] = c[2]; t.val[3] = c[3]; vst4q_u32(o, t); break; }
+	}
+}
+void ayaneo_filter_prescale_row_neon(const uint16_t *src, unsigned sw, uint32_t *dst, unsigned fbpitch,
+				     unsigned ph, unsigned pv, int dim_col, int dim_row)
+{
+	unsigned x, j, k;
+	for (x = 0; x + 8u <= sw; x += 8u) {
+		uint32x4_t lo, hi, cl[4], chh[4], dl[4], dh[4];
+		uint32_t *o = dst + x * ph;
+		plain_px8(src + x, &lo, &hi);
+		for (k = 0; k < ph; k++) {
+			int d = dim_col && k == ph - 1u;
+			cl[k] = d ? half_px4(lo) : lo;
+			chh[k] = d ? half_px4(hi) : hi;
+			dl[k] = half_px4(cl[k]);
+			dh[k] = half_px4(chh[k]);
+		}
+		for (j = 0; j < pv; j++, o += fbpitch) {
+			int d = dim_row && j == pv - 1u;
+			filter_store4(o, ph, d ? dl : cl);
+			filter_store4(o + 4u * ph, ph, d ? dh : chh);
+		}
+	}
+	for (; x < sw; x++) {   /* tail */
+		unsigned v = src[x];
+		uint32_t p = 0xFF000000u | ((((v >> 11) & 0x1fu) << 3) << 16) | ((((v >> 5) & 0x3fu) << 2) << 8) | ((v & 0x1fu) << 3);
+		for (j = 0; j < pv; j++)
+			for (k = 0; k < ph; k++) {
+				uint32_t q = (dim_col && k == ph - 1u) ? (0xFF000000u | ((p >> 1) & 0x007F7F7Fu)) : p;
+				if (dim_row && j == pv - 1u) q = 0xFF000000u | ((q >> 1) & 0x007F7F7Fu);
+				dst[j * fbpitch + x * ph + k] = q;
+			}
+	}
+}
+
 /* Rewind delta scan: the first word index >= i (below n) where a ^ b is not zero, n when none.
  * b == 0 scans a against zero. Sixteen words per step while they are all equal, which is most
  * of a state from one frame to the next. */
