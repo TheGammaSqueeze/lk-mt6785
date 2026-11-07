@@ -55,10 +55,22 @@
  * integer rate with GPT4 at 13 MHz: 60.611 Hz at 1279 lines (hz1000 60624, pace dt 16495 us).
  * The nearest whole line count for the GBA's 59.7275 Hz is 1298 (59.7240 Hz), so the data rate
  * is raised by 0.0059% to land exactly on it: 354000 x 59.7275 / 59.7240 = 354021 kHz. */
-/* build35 measured 59.742 Hz with 354021 kHz; trimmed by 59.7275/59.742 -> 353935 kHz. */
-#define AYANEO_GBA_DR_KHZ 353935u
+/* build35 measured 59.742 Hz with 354021 kHz; trimmed by 59.7275/59.742 -> 353935 kHz. The line
+ * constant below is given for this rate. */
+#define AYANEO_DSI_REF_DR_KHZ 353935u
+/* Shorter scan: the same 59.7275 Hz sent at 478 Mbps, the time saved moved into the front porch.
+ * The 960 lines take 9.24 ms instead of 12.33 and the blanking grows from 4.41 ms to 7.5 ms, so a
+ * frame handed over at the porch's end reaches the middle of the panel 1.55 ms sooner. Tried on the
+ * device at 59.7275 Hz: clean from 5 to 8.5 ms of blanking, fading at 9.5 ms, so 7.5 ms leaves a
+ * margin for other units and the second glass. 478 MHz also stays in the lower PLL band (ratio 8),
+ * the band the line constant was measured in: the 500 MHz band ran 0.165 to 0.33% slow. The LCM
+ * boots at this rate (PLL_CLOCK 239), 1739 lines at 59.7275 Hz from the line constant. */
+#define AYANEO_GBA_DR_KHZ 477600u
 #elif defined(AYANEO_GBA)
 #define AYANEO_GBA_DR_KHZ 526512u
+#endif
+#if defined(AYANEO_GBA_DR_KHZ) && !defined(AYANEO_DSI_REF_DR_KHZ)
+#define AYANEO_DSI_REF_DR_KHZ AYANEO_GBA_DR_KHZ
 #endif
 
 /* AYANEO: panel line rate numerator (milliHz-per-line * total lines) used to map refresh<->vfp:
@@ -91,13 +103,23 @@
  * lines are 970 and the GBA rate is vfp 334. Same refresh and blanking, but the next frame's
  * settings are taken 40 lines (0.51 ms) later, which the late hand over (mt_disp_drv.c rot_pace)
  * gives to the frame delay. */
-#define AYANEO_DSI_LINE_CONST  77884660u
+/* The shorter scan boots the PHY with timings worked out for its own rate (PLL_CLOCK 239, not 177):
+ * the low power entry and exit at every line take a few more byte clocks, so the lines are longer.
+ * Measured with oem palate at 472004 kHz and 1739 lines: 59.028138 Hz where 77884660 gave 59.727,
+ * so the constant is 77884660 x 59028.138 / 59727; then 59726.554 Hz at 477592 kHz trimmed it by
+ * 59726.554 / 59727.5. Given for AYANEO_DSI_REF_DR_KHZ; the line is a fixed count of byte clocks,
+ * so dsi_line_const() scales it to the live rate. */
+#define AYANEO_DSI_LINE_CONST  76972117u
 #define AYANEO_DSI_FIXED_LINES 970u
 /* The ST7123 does not hold its image through a long vertical blanking: vfp 524 (100 Hz) fades
- * slowly to black, vfp 626 (94 Hz) flickers; stock is 280. Keep the porch near stock and pace
- * cores that cannot be doubled into that window (PAL 50 Hz) by time instead (rot_pace). The limit
- * is the blanking time, so it carries the 40 lines sync and back porch gave up (340 at stock). */
-#define AYANEO_DSI_VFP_MAX     380u
+ * slowly to black, vfp 626 (94 Hz) flickers, and at 59.7275 Hz it fades past 8.5 ms. The 60 Hz
+ * class cores (one refresh per frame) all run 1739 lines, so the scan and the 7.5 ms blanking stay
+ * the same for every one of them and the data rate sets the refresh (ayaneo_dsi_vfp_for_fps). */
+#define AYANEO_DSI_SCAN_LINES  1739u
+#define AYANEO_DSI_VFP_MAX     (AYANEO_DSI_SCAN_LINES - AYANEO_DSI_FIXED_LINES)
+/* The slowest rate shown once per refresh, the floor the porch gave before the shorter scan: the
+ * blanking there is 7.76 ms. A slower core (PAL 50 Hz) runs the panel at twice its rate instead. */
+#define AYANEO_DSI_1X_MIN_MILLI 57692u
 /* The PAL 2x mode (about 100 Hz from the PLL) ran at vfp 4 with sync 4 + back porch 40: it keeps
  * the same 1014 total lines and blanking, so the same data rate is asked of the link. */
 #define AYANEO_DSI_VFP_2X      44u
@@ -1194,13 +1216,14 @@ unsigned int ayaneo_dsi_set_dr_khz(unsigned int khz)
 /* the line constant for the live rate: lines per second scale with the MIPI rate */
 static unsigned int dsi_line_const(void)
 {
-	return (unsigned int)(((unsigned long long)AYANEO_DSI_LINE_CONST * g_dsi_dr_khz + AYANEO_GBA_DR_KHZ / 2u) / AYANEO_GBA_DR_KHZ);
+	return (unsigned int)(((unsigned long long)AYANEO_DSI_LINE_CONST * g_dsi_dr_khz + AYANEO_DSI_REF_DR_KHZ / 2u) / AYANEO_DSI_REF_DR_KHZ);
 }
-/* the MIPI rate that puts the panel on refresh_milli with the porch at AYANEO_DSI_VFP_2X lines */
-static unsigned int dsi_dr_for_refresh(unsigned int refresh_milli)
+/* the MIPI rate that puts the panel on refresh_milli at vtotal lines per refresh */
+static unsigned int dsi_dr_for_refresh(unsigned int refresh_milli, unsigned int vtotal)
 {
-	unsigned long long n = (unsigned long long)refresh_milli * AYANEO_GBA_DR_KHZ * (AYANEO_DSI_FIXED_LINES + AYANEO_DSI_VFP_2X);
-	unsigned int khz = (unsigned int)((n + AYANEO_DSI_LINE_CONST / 2u) / AYANEO_DSI_LINE_CONST);
+	/* in half milli-Hz: the GBA's 59.7275 Hz is carried as 59727 everywhere, the half is put back */
+	unsigned long long n = ((unsigned long long)refresh_milli * 2u + (refresh_milli == 59727u)) * AYANEO_DSI_REF_DR_KHZ * vtotal;
+	unsigned int khz = (unsigned int)((n + AYANEO_DSI_LINE_CONST) / (2ull * AYANEO_DSI_LINE_CONST));
 	/* measured on the device (build88): the 500-1000 MHz band (ratio 4, posdiv 2) runs the panel
 	 * 0.165% slower than the same formula gives in the 250-500 band (119.25 Hz asked as 119.45) */
 	if (khz >= 500000u) khz = (unsigned int)(((unsigned long long)khz * 1001650u + 500000u) / 1000000u);
@@ -1309,16 +1332,17 @@ unsigned int ayaneo_dsi_vfp_for_fps(unsigned int fps_milli)
 	if (fps_milli == 0u) return 4u;
 	g_pace_fps_milli = fps_milli;
 #if defined(KONKR_KPA)
-	vtotal = (AYANEO_DSI_LINE_CONST + fps_milli / 2u) / fps_milli;
-	if (vtotal > AYANEO_DSI_FIXED_LINES + AYANEO_DSI_VFP_MAX) {
-		/* the porch cannot hold this rate (PAL): panel at exactly 2 x the core rate from the PLL,
-		 * every frame shown for two refreshes */
+	if (fps_milli < AYANEO_DSI_1X_MIN_MILLI) {
+		/* the blanking cannot stretch this far (PAL): panel at exactly 2 x the core rate from the
+		 * PLL, every frame shown for two refreshes */
 		g_vsync_div = 2u;
-		ayaneo_dsi_set_dr_khz(dsi_dr_for_refresh(fps_milli * 2u));
+		ayaneo_dsi_set_dr_khz(dsi_dr_for_refresh(fps_milli * 2u, AYANEO_DSI_FIXED_LINES + AYANEO_DSI_VFP_2X));
 		return AYANEO_DSI_VFP_2X;
 	}
+	/* the shorter scan: fixed lines, the data rate lands the refresh on the core rate */
 	g_vsync_div = 1u;
-	ayaneo_dsi_set_dr_khz(AYANEO_GBA_DR_KHZ);   /* stock rate, the porch does the work */
+	ayaneo_dsi_set_dr_khz(dsi_dr_for_refresh(fps_milli, AYANEO_DSI_SCAN_LINES));
+	return AYANEO_DSI_SCAN_LINES - AYANEO_DSI_FIXED_LINES;
 #else
 	fps_milli *= (g_vsync_div ? g_vsync_div : 1u);
 	vtotal = (AYANEO_DSI_LINE_CONST + fps_milli / 2u) / fps_milli;
@@ -1336,22 +1360,17 @@ unsigned int ayaneo_dsi_default_vfp(void)
 {
 	/* floor the line count so the panel rests AT OR ABOVE the GBA rate (never slower than a
 	 * real GBA); the pairmini value 23 (vtotal 999) is unchanged by this. */
-	unsigned int fps = 59727u * (g_vsync_div ? g_vsync_div : 1u);
 #if defined(KONKR_KPA)
-	/* the Konkr data rate is tuned so that 1298 lines are exactly 59.7275 Hz: round (1297.6 ->
-	 * 1298, vfp 294, the LCM resting value); flooring rested the menu one line short (293) */
-	unsigned int vtotal = (AYANEO_DSI_LINE_CONST + fps / 2u) / fps;
-	g_pace_fps_milli = 59727u;                  /* the resting mode paces at the GBA rate: a PAL session's 50 Hz must not linger */
-	g_vsync_div = 1u;                           /* the resting mode: stock rate and porch, one refresh per frame */
-	ayaneo_dsi_set_dr_khz(AYANEO_GBA_DR_KHZ);
-	fps = 59727u;
-	vtotal = (AYANEO_DSI_LINE_CONST + fps / 2u) / fps;
+	/* the resting mode is the GBA rate, one refresh per frame (the boot rate and porch of the LCM):
+	 * a PAL session's 50 Hz and 2x must not linger */
+	return ayaneo_dsi_vfp_for_fps(59727u);
 #else
+	unsigned int fps = 59727u * (g_vsync_div ? g_vsync_div : 1u);
 	unsigned int vtotal = AYANEO_DSI_LINE_CONST / fps;
-#endif
 	if (g_pace_fps_milli < 20000u || g_pace_fps_milli > 130000u) g_pace_fps_milli = 59727u;
 	if (vtotal <= AYANEO_DSI_FIXED_LINES) return 4u;
 	return vtotal - AYANEO_DSI_FIXED_LINES;
+#endif
 }
 
 void DSI_Config_VDO_Timing(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAMS *dsi_params)

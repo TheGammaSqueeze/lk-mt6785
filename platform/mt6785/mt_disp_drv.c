@@ -915,6 +915,8 @@ volatile unsigned int g_dbg_pace_dt_us;      /* interval between the last two pr
 volatile unsigned int g_dbg_pace_timeouts;   /* frame-done waits that timed out (should stay 0) */
 volatile unsigned int g_dbg_pace_edge_us;    /* duration of the last single edge wait (us) */
 volatile unsigned int g_dbg_present_fps;     /* paced presents in the last second */
+volatile unsigned int g_dbg_pace_refreshes;  /* refreshes counted between measured frame ends (oem palate) */
+volatile unsigned int g_dbg_pace_refresh_tick;   /* the 13 MHz tick of the last measured frame end */
 #if AYANEO_ROT
 /* Deadline pacing. A frame must be shown for exactly g_vsync_div refreshes (1 on the Konkr:
  * the panel is 60 Hz class, the earlier "120 Hz" reading came from GPT4 ticking at 6.5 MHz). Waiting "frame-done, then a vsync, then one more" costs two or three refreshes
@@ -1083,7 +1085,8 @@ static void rot_pace(void)
 	if (s_fd_whole) {
 		/* Late hand over. The layer settings written after a frame end are taken when the front
 		 * porch ends (OVL commit and RDMA frame start, measured 3.78 ms after the frame end at
-		 * vfp 294: the porch's share of the refresh; vfp 334 since the sync and back porch trim, 4.29 ms),
+		 * vfp 294: the porch's share of the refresh; vfp 334 since the sync and back porch trim, 4.29 ms;
+		 * 7.4 ms at vfp 769 with the shorter scan),
 		 * so a frame that arrives in the porch still
 		 * makes the coming refresh: it is handed over at once instead of waiting a whole one, and
 		 * the frame delay aims at the porch's end less a margin, not at the frame end. Safe only
@@ -1149,6 +1152,10 @@ static void rot_pace(void)
 			unsigned int meas = (now - s_pace_measured) / k, nom = period * div;
 			if (meas > nom - nom / 100u && meas < nom + nom / 100u)
 				s_pace_period = s_pace_period ? s_pace_period + ((int)(meas - s_pace_period)) / 4 : meas;
+		}
+		if (s_pace_measured && k) {
+			g_dbg_pace_refreshes += k;
+			g_dbg_pace_refresh_tick = now;
 		}
 		s_pace_measured = now;
 		s_pace_since_measured = 0;

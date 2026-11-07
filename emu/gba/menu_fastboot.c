@@ -1410,11 +1410,15 @@ static void cmd_fbwc(const char *arg, void *data, unsigned sz)
 
 /* oem palate[:a|0|us] - the late hand over (mt_disp_drv.c rot_pace): a = the front porch less a
  * margin (default), 0 = off, else a fixed window in us. Reports the window, frames handed over
- * late and frames that measured the edge since the last call. Not saved. */
+ * late and frames that measured the edge since the last call, and the refresh measured over the
+ * refreshes since the last call (two calls a minute apart give it to about 0.001%). Not saved. */
 static void cmd_palate(const char *arg, void *data, unsigned sz)
 {
 	extern volatile int g_pace_late_us;
 	extern volatile unsigned int g_dbg_pace_late, g_dbg_pace_edges, g_dbg_pace_win_us;
+	extern volatile unsigned int g_dbg_pace_refreshes, g_dbg_pace_refresh_tick, g_dbg_pace_timeouts;
+	static unsigned int s_refreshes, s_tick, s_timeouts;
+	unsigned int refreshes = g_dbg_pace_refreshes, tick = g_dbg_pace_refresh_tick, timeouts = g_dbg_pace_timeouts;
 	(void)data; (void)sz;
 	while (*arg == ' ' || *arg == ':') arg++;
 	if (*arg == 'a') g_pace_late_us = -1;
@@ -1423,6 +1427,15 @@ static void cmd_palate(const char *arg, void *data, unsigned sz)
 		 g_dbg_pace_win_us, g_dbg_pace_late, g_dbg_pace_edges);
 	fastboot_info(lbuf);
 	g_dbg_pace_late = 0; g_dbg_pace_edges = 0;
+	if (s_tick && tick != s_tick && refreshes != s_refreshes) {
+		unsigned int n = refreshes - s_refreshes, dt = tick - s_tick;
+		snprintf(lbuf, sizeof lbuf, "refresh measured %u.%03u mHz over %u refreshes (%u ms)%s",
+			 (unsigned int)(13000000000ull * n / dt),
+			 (unsigned int)(13000000000000ull * n / dt % 1000u), n, dt / 13000u,
+			 timeouts != s_timeouts ? ", edge waits timed out: not exact" : "");
+		fastboot_info(lbuf);
+	}
+	s_refreshes = refreshes; s_tick = tick; s_timeouts = timeouts;
 	fastboot_okay("");
 }
 
@@ -1735,7 +1748,7 @@ static void cmd_hfp(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem dr:KHZ - Konkr: MIPI data rate live (250001..999999 kHz; stock 353935) */
+/* oem dr:KHZ - Konkr: MIPI data rate live (250001..999999 kHz; 477600 at the GBA rate) */
 static void cmd_dr(const char *arg, void *data, unsigned sz)
 {
 	extern unsigned int ayaneo_dsi_set_dr_khz(unsigned int khz);

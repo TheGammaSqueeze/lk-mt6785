@@ -312,7 +312,10 @@ static void lcm_get_params(LCM_PARAMS *params)
 	/* Measured line rate 77.526 kHz (ddp_dsi.c AYANEO_DSI_LINE_CONST, with the 354021 kHz data
 	 * rate): rest the panel at the GBA's 59.7275 Hz for the vsync locked emulators:
 	 * 77526000 / 59727.5 = 1298 lines -> vfp 294 at sync 4 + back porch 40. Stock is 280. */
-	params->dsi.vertical_frontporch = 294 + 44 - ST7123_START_LINE;
+	/* The shorter scan (ddp_dsi.c AYANEO_GBA_DR_KHZ): 478 Mbps, 1739 lines with 970 fixed (vsync,
+	 * back porch, 960 active and 6 the line count measured), so a 769 line front porch, still
+	 * 59.7275 Hz, 9.24 ms of scan and 7.5 ms of blanking. */
+	params->dsi.vertical_frontporch = 769;
 #else
 	params->dsi.vertical_frontporch = 280 + 44 - ST7123_START_LINE;
 #endif
@@ -323,7 +326,11 @@ static void lcm_get_params(LCM_PARAMS *params)
 	params->dsi.horizontal_frontporch = 40;
 	params->dsi.horizontal_active_pixel = FRAME_WIDTH;
 
+#if defined(AYANEO_GBA)
+	params->dsi.PLL_CLOCK = 239;   /* the shorter scan's 478 Mbps, so the PHY timings are worked out for it */
+#else
 	params->dsi.PLL_CLOCK = 177;
+#endif
 
 	/* Zero in the stock LK: ssc_disable, cont_clock, noncont_clock,
 	 * clk_lp_per_line_enable, esd_check_enable. The stock kernel copy adds
