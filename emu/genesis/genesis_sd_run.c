@@ -150,6 +150,7 @@ volatile unsigned g_gen_dbg_bench_mhz, g_gen_dbg_bench_rwx10;   /* clock; implie
 volatile unsigned g_gen_dbg_bench_loadfast_us;   /* state_load with the buffer-clear memsets skipped */
 volatile unsigned g_gen_dbg_bench_norender_us;   /* per-frame with the VDP pixel render skipped (CPU+timing) */
 volatile unsigned g_gen_dbg_bench_rw6_us, g_gen_dbg_bench_rwok;   /* headless 6x-rewind present cost + valid-frame flag */
+volatile int g_gen_commit_unshown = 1;   /* oem gencommit:0|1: the run-ahead committed frame sprites only (1) or drawn */
 volatile unsigned g_gen_dbg_bench_crc;   /* FNV-1a of the rendered frame (render-change byte-identity check) */
 
 /* ---- in-game Pico menu (hardware OVL0 L0 overlay over the running game; mirrors the snes menu).
@@ -569,6 +570,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 	}
 
+	int ff_prev = 0;   /* last frame ran a fast forward batch */
 	for (;;) {
 		extern int ayaneo_joypad_ff_level(void);
 		extern int ayaneo_joypad_rewind_level(void);
@@ -654,9 +656,21 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 		if (ayaneo_rewind_active()) { ayaneo_rewind_end(); ayaneo_audio_reverse_flip(); }
 
-		em0 = gpt4_get_current_tick();
-		c->run(&fr);                                 /* committed frame */
-		fe = (gpt4_get_current_tick() - em0) / 13u;  /* per-frame emu cost (us) for the FF cap */
+		/* With run ahead the picture shown is the last look-ahead frame's, never the committed
+		 * frame's, so that one runs without its render, keeping only what the game can observe of
+		 * it, the sprite collision and overflow flags (skip_video 2, core/vdp_render.c
+		 * render_line_status: the same state as the full render frame for frame). The drawing is
+		 * about a third of a frame. Decided before the frame from the menu and from last frame's fast
+		 * forward: a fast forward starting now ends in a drawn frame of its own. */
+		{
+			int unshown = g_gen_commit_unshown && !g_genesis_menu_open && !ff_prev && rw_payload &&
+			              ayaneo_get_preempt_frames() > 0;
+			if (unshown && c->set_av_skip) c->set_av_skip(2, 0);
+			em0 = gpt4_get_current_tick();
+			c->run(&fr);                                 /* committed frame */
+			fe = (gpt4_get_current_tick() - em0) / 13u;  /* per-frame emu cost (us) for the FF cap */
+			if (unshown && c->set_av_skip) c->set_av_skip(0, 0);
+		}
 		g_gen_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 		/* Real-time panel refresh follow: a GM_REGION change armed s_gen_refresh_retune; the region
 		 * option was applied by the c->run() just above (check_variables -> get_region recomputes fps),
@@ -682,6 +696,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * frame, so the committed-frame cost is the per-frame cost; reserve the present blit; 2x floor.
 		 * Audio of every frame is submitted (so the sound speeds up). Only the LAST frame is presented. */
 		ff = g_genesis_menu_open ? 0 : ayaneo_joypad_ff_level();
+		ff_prev = ff > 0;
 		if (ff > 0) {
 			/* no multiplier and no cap: render-skipped frames while one still fits before this
 			 * refresh's present (ayaneo_ff_fits), then one rendered frame, the picture shown */
@@ -694,7 +709,9 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			while (!last) {
 				unsigned int _t = gpt4_get_current_tick(), us;
 				last = !(n < 120 && ayaneo_ff_fits(em0, blit, skipc, rend));
-				if (c->set_av_skip) c->set_av_skip(last ? 0 : 1, 0);
+				/* the frames between two presents stay in the game: sprites only, not a bare skip,
+				 * which drops the sprite collision and overflow flags the game may read */
+				if (c->set_av_skip) c->set_av_skip(last ? 0 : 2, 0);
 				c->run(&fr);
 				us = (gpt4_get_current_tick() - _t) / 13u;
 				if (last) s_gen_rend_us += ((int)us - (int)s_gen_rend_us) / 4;
@@ -745,7 +762,9 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					if (c->set_av_skip) c->set_av_skip(0, 0);
 				}
 			}
-			if (fr.video && fr.width && fr.height) {   /* present the future (or committed) frame */
+			/* present the future (or committed) frame. (Were the run-ahead save ever to fail with the
+			 * committed frame undrawn, the previous picture is shown again for this one refresh.) */
+			if (fr.video && fr.width && fr.height) {
 				g_gen_dbg_w = fr.width; g_gen_dbg_h = fr.height;
 				ayaneo_genesis_show_frame((const unsigned short *)fr.video, fr.width, fr.height,
 							  fr.pitch / 2u);

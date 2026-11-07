@@ -639,6 +639,10 @@ void system_frame_gen(int do_skip)
     {
       render_line(line);
     }
+    else if (render_status_only)
+    {
+      render_line_status(line);
+    }
 
     /* update 6-Buttons & Lightguns */
     input_refresh();
@@ -971,6 +975,10 @@ void system_frame_scd(int do_skip)
     if (!do_skip)
     {
       render_line(line);
+    }
+    else if (render_status_only)
+    {
+      render_line_status(line);
     }
     
     /* update 6-Buttons & Lightguns */
@@ -1379,6 +1387,10 @@ void system_frame_sms(int do_skip)
       if (!do_skip)
       {
         render_line(line);
+      }
+      else if (render_status_only)
+      {
+        render_line_status(line);
       }
     }
 

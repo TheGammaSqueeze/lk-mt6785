@@ -106,6 +106,8 @@ extern uint16 spr_col;
 extern void render_init(void);
 extern void render_reset(void);
 extern void render_line(int line);
+extern int render_status_only;
+extern void render_line_status(int line);
 extern void blank_line(int line, int offset, int width);
 extern void remap_line(int line);
 extern void window_clip(unsigned int data, unsigned int sw);

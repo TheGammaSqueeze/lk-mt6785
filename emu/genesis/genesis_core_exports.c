@@ -82,9 +82,17 @@ static int genesis_set_option(const char *key, const char *value)
 	return 0;
 }
 
-/* per-frame render/audio skip for run-ahead look-ahead frames (GPGX honours GET_AUDIO_VIDEO_ENABLE) */
+/* per-frame render/audio skip (GPGX honours GET_AUDIO_VIDEO_ENABLE). nv 1 skips the render,
+ * for a frame that is thrown away (the run-ahead look-ahead frames); nv 2 keeps only what the
+ * game can observe of it (sprite collision and overflow, core/vdp_render.c render_line_status),
+ * for a frame that stays in the game's timeline but is not shown. */
+extern int render_status_only;   /* core/vdp_render.c */
 static volatile int s_ra_novideo, s_ra_noaudio;
-static void genesis_set_av_skip(int nv, int na) { s_ra_novideo = nv ? 1 : 0; s_ra_noaudio = na ? 1 : 0; }
+static void genesis_set_av_skip(int nv, int na)
+{
+	s_ra_novideo = nv ? 1 : 0; s_ra_noaudio = na ? 1 : 0;
+	render_status_only = (nv == 2);
+}
 
 /* run-ahead FAST_SAVESTATES: OR'd into GET_AUDIO_VIDEO_ENABLE bit 2 (value 4). When on, GPGX's
  * retro_serialize/unserialize save/restore the blip-buffer + FM/CD audio-phase side-channel and

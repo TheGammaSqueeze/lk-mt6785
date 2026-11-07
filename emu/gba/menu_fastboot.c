@@ -1425,6 +1425,19 @@ static void cmd_gbcpace(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem gencommit[:0|1] - Genesis run ahead: the committed frame runs sprites only (1, default) or
+ * fully drawn (0), for A/B checks of the frame delay's work. Not saved. */
+static void cmd_gencommit(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_gen_commit_unshown;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == '0' || *arg == '1') g_gen_commit_unshown = *arg - '0';
+	snprintf(lbuf, sizeof lbuf, "gencommit: committed frame %s", g_gen_commit_unshown ? "sprites only" : "drawn");
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem memstage:ADDR:LEN (hex) - stages LEN bytes of memory from ADDR for fastboot get_staged, to
  * look at a core's buffers from a PC (the GB/GBC ROM as loaded is at 0x50000000). Only the
  * emulator scratch [0x4E000000, 0x55E00000) below the staging area, at most 0x1F0000 bytes. */
@@ -2307,6 +2320,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem palate", cmd_palate, 1, 0);
 	fastboot_register("oem memstage", cmd_memstage, 1, 0);
 	fastboot_register("oem gbcpace", cmd_gbcpace, 1, 0);
+	fastboot_register("oem gencommit", cmd_gencommit, 1, 0);
 	fastboot_register("oem fbwc", cmd_fbwc, 1, 0);
 	fastboot_register("oem fdmargin", cmd_fdmargin, 1, 0);
 	fastboot_register("oem close", cmd_close, 1, 0);

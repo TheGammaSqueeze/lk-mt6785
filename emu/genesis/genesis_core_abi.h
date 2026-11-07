@@ -15,7 +15,7 @@
 #define GENESIS_CORE_ABI_H
 
 #define GENESIS_CORE_ABI_MAGIC   0x31474553u   /* "SEG1" */
-#define GENESIS_CORE_ABI_VERSION 3u   /* v3: + fps_milli (core frame rate for dynamic per-core panel refresh; v2 was set_ra_fast, sound_rebase) */
+#define GENESIS_CORE_ABI_VERSION 4u   /* v4: set_av_skip video 2 = sprites only; v3: + fps_milli (core frame rate for dynamic per-core panel refresh; v2 was set_ra_fast, sound_rebase) */
 
 /* System hint passed to load() so the core forces the right machine for ambiguous files
  * (.bin/.sg can be MD or SMS or SG). 0 = auto-detect from the ROM header. */
@@ -88,9 +88,11 @@ struct genesis_core_exports {
 	void *(*heap_mark)(void);
 	void  (*heap_reset)(void *mark);
 
-	/* run-ahead render/audio skip: set before a run() to skip the video render (skip_video) and/or
-	 * hard-disable audio (skip_audio) for look-ahead frames never presented/heard. Both cleared
-	 * (0,0) for normal frames. */
+	/* run-ahead render/audio skip: set before a run() to skip the video render (skip_video 1) and/or
+	 * hard-disable audio (skip_audio) for look-ahead frames never presented/heard. skip_video 2 keeps
+	 * only what the game can observe of the render (sprite collision and overflow flags), for a frame
+	 * that stays in the game's timeline but is not shown: the run-ahead committed frame, fast forward.
+	 * Both cleared (0,0) for normal frames. */
 	void  (*set_av_skip)(int skip_video, int skip_audio);
 
 	/* run-ahead FAST_SAVESTATES: when on (1), retro_serialize/unserialize ALSO save/restore the

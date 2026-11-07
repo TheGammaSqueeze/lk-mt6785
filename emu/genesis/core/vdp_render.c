@@ -4941,6 +4941,85 @@ void render_line(int line)
   remap_line(line);
 }
 
+/* GammaOS: set by the frontend for a frame it runs but will not show (the committed frame under
+ * run ahead, whose picture is never presented): render_line_status() stands in for render_line()
+ * on the frame's own pass over the lines. */
+int render_status_only;
+
+/* A line with only what the emulation can observe of the render: the sprite collision and
+ * overflow flags (status bits 5 and 6, and the collision position), the sprite masking state and
+ * the next line's sprite list. The background layers and the colour conversion are not done.
+ * Collision is found through the sprite marker bit (d7) in the line buffer, which a background
+ * pixel never carries (make_lut_bg) and which a sprite pixel sets whatever is under it
+ * (make_lut_bgobj), so the bytes plane B would write are cleared instead of drawn: the marker
+ * bits come out exactly as with the full render, in the margins as in the visible area. Shadow
+ * and highlight sprites are collected in their own cleared buffer, which does not depend on the
+ * background at all. Anything other than mode 5 without interlace mode 2 is rendered in full. */
+void render_line_status(int line)
+{
+  if ((system_hw < SYSTEM_MD) ||
+      ((render_obj != render_obj_m5) && (render_obj != render_obj_m5_ste)) ||
+      ((render_bg != render_bg_m5) && (render_bg != render_bg_m5_vs) && (render_bg != render_bg_m5_vs_enhanced)))
+  {
+    render_line(line);
+    return;
+  }
+
+  if (reg[1] & 0x40)
+  {
+    /* plane B fine scroll, read as render_bg_m5 reads it */
+    uint32 xscroll = *(uint32 *)&vram[hscb + ((line & hscroll_mask) << 2)];
+#ifdef LSB_FIRST
+    uint32 shift = (xscroll >> 16) & 0x0F;
+#else
+    uint32 shift = (xscroll & 0x0F);
+#endif
+
+    /* the sprites draw from the pattern cache */
+    if (bg_list_index)
+    {
+      update_bg_pattern_cache(bg_list_index);
+      bg_list_index = 0;
+    }
+
+    /* the bytes plane B writes: one extra column from 0x10 + shift when finely scrolled */
+    if (shift)
+    {
+      memset(&linebuf[0][0x10 + shift], 0, bitmap.viewport.w + 0x10);
+    }
+    else
+    {
+      memset(&linebuf[0][0x20], 0, bitmap.viewport.w);
+    }
+
+    render_obj(line & 1);
+
+    if (reg[0] & 0x20)
+    {
+      if (system_hw >= SYSTEM_MARKIII)
+      {
+        memset(&linebuf[0][0x20], 0x40, 8);
+      }
+    }
+
+    if (line < (bitmap.viewport.h - 1))
+    {
+      parse_satb(line);
+    }
+
+    if (bitmap.viewport.x > 0)
+    {
+      memset(&linebuf[0][0x20 - bitmap.viewport.x], 0x40, bitmap.viewport.x);
+      memset(&linebuf[0][0x20 + bitmap.viewport.w], 0x40, bitmap.viewport.x);
+    }
+  }
+  else
+  {
+    /* blanked line, as render_line leaves it */
+    memset(&linebuf[0][0x20 - bitmap.viewport.x], 0x40, bitmap.viewport.w + 2*bitmap.viewport.x);
+  }
+}
+
 void blank_line(int line, int offset, int width)
 {
   memset(&linebuf[0][0x20 + offset], 0x40, width);
