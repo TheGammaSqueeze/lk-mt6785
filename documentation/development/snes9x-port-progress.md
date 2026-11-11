@@ -2,7 +2,7 @@
 
 Porting the libretro **snes9x** core (https://github.com/libretro/snes9x) into the
 GBA-from-SD flow as a THIRD loadable boot_b blob, alongside gpSP (GBA) and gambatte
-(GB/GBC). Branch `lk-gba-emu-sd-card`. Read `emu/CORE_PORTING_NOTES.md` first - the
+(GB/GBC). Branch `lk-gba-emu-sd-card`. Read `core-porting-notes.md` first - the
 gambatte port established the whole pattern (blob at a fixed VMA, exports/imports ABI,
 bundled libc + shim, boot_b packing, per-console display/dispatch/threading).
 

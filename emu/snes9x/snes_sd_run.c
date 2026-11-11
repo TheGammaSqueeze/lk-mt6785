@@ -7,7 +7,7 @@
  * then run the frame loop: each frame the core produces an RGB565 image (256/512 wide) +
  * audio; we blit it (ayaneo_snes_show_frame) paced off the 13 MHz counter. Holding AYA
  * returns to the selector. Runs on its OWN thread (deep C++ would overflow emu_thread's
- * stack - see emu/CORE_PORTING_NOTES.md item 2). Only one core runs at a time, so we reuse
+ * stack - see documentation/development/core-porting-notes.md item 2). Only one core runs at a time, so we reuse
  * the 0x50000000 arena.
  *
  * First bring-up: video + input. Audio and the in-game menu/run-ahead come next.

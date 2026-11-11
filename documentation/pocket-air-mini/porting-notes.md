@@ -165,7 +165,7 @@ device. The failure point marched forward with each fix.
   stock `ramoops.*` pstore args and, in `part_common.c`, the full stock
   `androidboot.boot_devices` list) to the kernel command line. `/data` then
   mounts with its original policy and the OS boots with data intact.
-- See the lessons-learned section of `BUILD_AYANEO_POCKET_AIR_MINI.md` for the
+- See the lessons-learned section of `build.md` for the
   full diff-against-a-known-good-log method that isolated the one-token cause.
 
 ## Config changes vs the fork's stock `k85v1_64.mk`

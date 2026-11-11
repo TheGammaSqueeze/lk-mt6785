@@ -34,7 +34,7 @@
 /* Shipping profile (clean, no persistence). Response campaign parked: the AVEE+gate+bias combo gives a
  * real response gain but with accumulating DC-retention; VCOM tuning (0x2A up to ~0x88) reduced but
  * could NOT eliminate it (plateau + flicker = positive/negative gamma-curve asymmetry). Next avenue is
- * re-balancing the page02 gamma curves. See DISPLAY_OVERDRIVE_LEVERS.md section 8. */
+ * re-balancing the page02 gamma curves. See documentation/development/display-overdrive-levers.md section 8. */
 #define ST7703_VGH    0x78	/* stock 0x58, shipping 0x78 (0x84 inverts) */
 #define ST7703_VGL    0x78	/* shipping 0x78 */
 #define ST7703_CPUMP  0x48	/* charge pump freq, stock 0x32 / shipping 0x48 */

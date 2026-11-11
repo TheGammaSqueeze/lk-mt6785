@@ -14,6 +14,15 @@ card in the console and power it on. The console needs the GammaOS Pico LK first
   roms/<system>/boxart/<game>.ART   box art, named like the game file
   licences/            the demo games' and the cores' licences and credits
 
+Buttons
+  At power on: hold SELECT for GammaOS Pico, SELECT + START for Android, SELECT + START + R for
+  the bootloader (fastboot). With nothing held the card decides (gammaos/boot.cfg).
+  In a game: Menu opens the Pico menu (hold it 1.5 s for the game list), R2 fast forward on/off,
+  L2 rewind on/off, SELECT + START + L + R held restarts the game, the volume wheel sets the
+  volume (with SELECT held, the brightness), X / Y are autofire B / A, and holding Power for
+  1.2 s saves your place and switches off.
+  In the game list: START plays, SELECT sorts, X switches between systems.
+
 The demo games in roms/ are freely licensed homebrew, redistributed under their licences
 (licences/games/). Add your own games to the system folders. Box art for your games can be made
 with tools/ayaneo/gba/gen_boxart.py from the lk-mt6785 repository (a PNG per game, named like the

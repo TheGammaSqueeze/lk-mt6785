@@ -1,6 +1,6 @@
 # GBA menu: on-device test checklist
 
-The SNES-Classic-mini ROM selector is fully host-validated (see GBA_SNES_MENU.md);
+The SNES-Classic-mini ROM selector is fully host-validated (see gba-snes-menu.md);
 the only things that need real hardware are frame timing (flicker) and the physical
 controls. This is the quick pass to run after flashing.
 

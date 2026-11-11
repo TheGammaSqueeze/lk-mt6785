@@ -2,7 +2,7 @@
 
 Porting libretro **Genesis-Plus-GX** (Sega Genesis/MD, Master System, Game Gear, SG-1000)
 into LK as a 4th boot_b core blob, feature parity with the snes9x core. Branch
-`lk-gba-emu-sd-card`. Started 2026-09-05. See emu/CORE_PORTING_NOTES.md and the snes9x
+`lk-gba-emu-sd-card`. Started 2026-09-05. See core-porting-notes.md and the snes9x
 port for the recipe. Mirrors the emu/snes9x/ file set (both are libretro cores).
 
 ## Decisions (user, 2026-09-05)

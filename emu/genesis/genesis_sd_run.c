@@ -4,7 +4,7 @@
  * emulation thread (emu_thread's 64 KB stack overflows on a full core), the shared 0x50000000
  * arena, ROM/SRAM/state from the card. BASIC bring-up first (display + input + audio + SRAM +
  * suspend-resume); the parity extras (adaptive fast-forward + HUD, rewind, run-ahead, aspect
- * Fit/Stretch, Pico menu, GPGX core options) are layered on afterwards - see GENESIS_PORT_PROGRESS.md.
+ * Fit/Stretch, Pico menu, GPGX core options) are layered on afterwards - see documentation/development/genesis-port-progress.md.
  *
  * Only one core runs at a time, so we reuse the gpSP/gambatte/snes9x arena at 0x50000000.
  */

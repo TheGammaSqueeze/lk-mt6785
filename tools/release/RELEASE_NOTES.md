@@ -5,6 +5,52 @@ console starts a console menu and plays Game Boy, Game Boy Color, Game Boy Advan
 Mega Drive / Genesis, Master System, Game Gear and SG-1000 games from the card. Without the card,
 or after Boot to Android in the menu, Android starts exactly as before.
 
+## What makes it different
+
+GammaOS Pico isn't an app on top of Android or a Linux distro. It runs inside the console's
+bootloader, before any operating system, and owns the hardware outright.
+
+- **Fast on.** From power on to the GBA boot logo in about two and a half seconds (Android takes
+  around 25). Hold Power to save where you are and switch off; turn it back on and you're back
+  in the game.
+- **Low latency by design.** The panel is retimed to each console's real refresh rate (59.73 Hz
+  for GBA and Game Boy, 60.1 Hz for SNES, 50 Hz for PAL), every frame is paced to the panel's scan,
+  buttons are read as late as possible, and run-ahead ("Preemptive Frames") hides the games' own lag.
+- **Android stays.** Only the bootloader changes. Pull the card (or pick Boot to Android) and the
+  console starts its stock Android, untouched.
+- **Everything on the card.** Emulators, settings, saves, states and box art all live on the
+  microSD card. Swap the card, swap the whole setup.
+- **The good stuff from the start.** Rewind, fast forward, save states, suspend points, scanline
+  and LCD filters, colour correction and backlight black frame insertion, in a box art menu.
+
+## Buttons
+
+At power on:
+
+| Hold | Starts |
+|---|---|
+| nothing | whatever the card is set to (GammaOS Pico, or Android after Boot to Android) |
+| SELECT | GammaOS Pico (the way back after Boot to Android) |
+| SELECT + START | Android |
+| SELECT + START + R | the bootloader (fastboot), for updates |
+
+No card, or a card without GammaOS Pico on it, always starts Android.
+
+In a game:
+
+| Button | Does |
+|---|---|
+| Menu | the Pico menu (save and load states, filters, settings); hold 1.5 s to go back to the game list |
+| R2 | fast forward on / off |
+| L2 | rewind on / off |
+| SELECT + START + L + R (hold) | restart the game |
+| Volume wheel | volume; with SELECT held, brightness |
+| X / Y | autofire B / A |
+| Power (hold 1.2 s) | save and switch off |
+
+In the game list, START plays, SELECT sorts and X switches between systems. During the boot logo,
+hold B to skip it; the volume wheel works there too.
+
 ## Downloads
 
 - **gammaos-pico-kpa-@VERSION@-flash.zip**: the LK for `lk_a` and `lk_b`, to install GammaOS Pico and to go

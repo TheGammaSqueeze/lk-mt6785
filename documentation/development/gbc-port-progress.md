@@ -79,7 +79,7 @@ dispatch in emu/gba/gba_driver.c.
   cart placeholder regardless of console).
 
 ## Lessons for future ports
-See **emu/CORE_PORTING_NOTES.md** for the full list of non-obvious pitfalls hit
+See **core-porting-notes.md** for the full list of non-obvious pitfalls hit
 during this port (per-console display geometry, emu-thread stack overflow surfacing
 as an msdc_dma_transfer crash, arena-does-not-survive-a-menu-visit, reload-blob-each-
 session, GBA boot-logo cart must use a GBA ROM header, menu clock fixed 1200 (not
@@ -94,7 +94,7 @@ build specifics, and device/workflow gotchas like oem sd-probe wedging USB).
   destabilising. Per user, dropped the max menu OPP to a stable sustained 1200 MHz
   (set once at setup, re-asserted at loop top only if drifted < 1100), removed the
   active_frames idle logic. Built + flashed lk_a (code-only, boot_b unchanged).
-  See CORE_PORTING_NOTES.md item 6.
+  See core-porting-notes.md item 6.
 - 2026-09-02: GB/GBC launch punch-hole transition (like GBA). The selector already
   captures the frozen menu snapshot (0x54000000) + sets gba_punch_ready for every
   launch; the GBC session now consumes it: run a few frames for real content,
@@ -133,7 +133,7 @@ build specifics, and device/workflow gotchas like oem sd-probe wedging USB).
   because it asked for off-grid 2100; now 2000, carousel 28->15 ms, scrolling 60fps);
   card badge scroll perf (cache 3 tiles keyed by console type). Half-res gba_cart
   placeholder. Gated run-ahead + suspend states behind GBC_ADVANCED (off) for
-  bring-up. Documented all in emu/CORE_PORTING_NOTES.md. NEXT: Pico in-game menu.
+  bring-up. Documented all in core-porting-notes.md. NEXT: Pico in-game menu.
 - 2026-09-02: Phase 2.4 (suspend/resume) done + committed (f1f0b45). All requested
   features now implemented (Phases 1, 2.1-2.4). Attempted an on-device GB/GBC
   smoke test but it needs a screen + a GB/GBC ROM on the card (headless-blocked);

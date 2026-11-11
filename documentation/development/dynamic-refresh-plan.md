@@ -204,7 +204,7 @@ Current:
 ```
 Change `= 2` to `= 3`.
 
-**Genesis version-literal sites (all three):** genesis_core_abi.h:18 (B1), genesis_core_blob.ld:29 (B5, load-bearing), genesis_core_blob.ld:12 (B6, doc). genesis_core_exports.c:272 and genesis_core_loader.c:65/75 use the macro and auto-track. GENESIS_PERF_CAMPAIGN.md:180 is process doc, not a compiled literal.
+**Genesis version-literal sites (all three):** genesis_core_abi.h:18 (B1), genesis_core_blob.ld:29 (B5, load-bearing), genesis_core_blob.ld:12 (B6, doc). genesis_core_exports.c:272 and genesis_core_loader.c:65/75 use the macro and auto-track. genesis-perf-campaign.md:180 is process doc, not a compiled literal.
 
 **B7. `/work/svoboda_lk/emu/genesis/genesis_sd_run.c` - harness edits (loader/LK side).**
 
