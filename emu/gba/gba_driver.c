@@ -1568,6 +1568,14 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 	 * 1/2/4/8). Cache is refreshed by ayaneo_joypad_poll() at the game-loop top; deadzoned, so a
 	 * centred stick contributes nothing (menu behaves exactly as before at rest). */
 	{ extern unsigned int ayaneo_joypad_dpad(void); raw |= ayaneo_joypad_dpad() & (MK_UP|MK_DOWN|MK_LEFT|MK_RIGHT); }
+	{	/* oem nav: a key injected over USB drives the Pico menu too (L R U D A B; screenshots) */
+		extern volatile int g_dbg_key, g_dbg_key_hold;
+		static const unsigned char map[6] = { MK_LEFT, MK_RIGHT, MK_UP, MK_DOWN, MK_A, MK_B };
+		if (s_menu_open && g_dbg_key_hold > 0 && g_dbg_key >= 0 && g_dbg_key < 6) {
+			raw |= map[g_dbg_key];
+			g_dbg_key_hold--;
+		}
+	}
 	deb = ayaneo_menu_debounce(raw, hist);	/* max debounce for the Pico menu */
 	edge = deb & ~prev;
 	prev = deb;
@@ -1871,8 +1879,11 @@ void gbc_menu_draw_overlay(unsigned int *buf, unsigned int pitch,
 	if (s_menu_page == 1 && g_core && g_core->version >= GBA_CORE_ABI_V3) {
 		/* Core Settings: title, the core's name, its options and Back, in the same panel */
 		int n = g_core->opt_count(), r;
-		ayaneo_text(buf, pitch, px + 28, py + 20, 3, 0xFFFFFFFFu, "Core Settings");
-		ayaneo_text(buf, pitch, px + 28, py + 46, 1, 0xFF8890A0u, g_core->name ? g_core->name : "");
+		/* The title sits higher than the Pico menu's: its "g" reaches glyph row 14 (44 px at 3x)
+		 * and the first row's selection bar starts 57 px down the panel. The core's name follows
+		 * it on the same baseline (row 11 of both sizes); under the title it ran into the glyphs. */
+		int tx = ayaneo_text(buf, pitch, px + 28, py + 11, 3, 0xFFFFFFFFu, "Core Settings");
+		ayaneo_text(buf, pitch, tx + 16, py + 33, 1, 0xFF8890A0u, g_core->name ? g_core->name : "");
 		for (r = s_core_top; r <= n && r < s_core_top + vis; r++, y += rowH) {
 			unsigned int fg = (r == s_core_sel) ? 0xFF101018u : 0xFFC8D0E0u;
 			const char *lab = "Back", *v = "";
@@ -2972,14 +2983,41 @@ static int emu_thread(void *arg)
 				unsigned int now = gpt4_get_current_tick();
 				unsigned int lt = g_last ? (now - g_last) : 0u;   /* period in 13 MHz ticks */
 				g_last = now;
+				/* only frames paced by the panel count: with the Pico menu open, fast forward or
+				 * the benchmark the loop is not vsync-locked and its period says nothing about
+				 * the panel (the menu's own row read 59.4 to 60.1 Hz while it was open). Drop the
+				 * partial window too, so it restarts clean once pacing resumes. */
+				if (s_menu_open || s_fast_forward || s_benchmark) {
+					g_last = 0; g_acc = 0; g_cnt = 0; lt = 0;
+				}
 				if (lt > 104000u && lt < 300000u) {   /* 8..23 ms; reject doubled frames */
+					unsigned int hz = 0;
+#if defined(KONKR_KPA)
+					/* The Konkr's pacer counts every refresh edge, frames handed over late
+					 * included, and stamps the last one it measured: refreshes over their
+					 * span is the exact rate. The loop period is not: a late frame splits into
+					 * a long period (rejected) and a short one (kept), which read up to 60.1 Hz
+					 * on a 59.727 Hz panel. A window with a timed out edge wait is dropped. */
+					extern volatile unsigned int g_dbg_pace_refreshes, g_dbg_pace_refresh_tick, g_dbg_pace_timeouts;
+					static unsigned int w_ref, w_tick, w_to;
+					if (g_cnt == 0) { w_ref = g_dbg_pace_refreshes; w_tick = g_dbg_pace_refresh_tick; w_to = g_dbg_pace_timeouts; }
+					if (++g_cnt >= 64) {   /* ~1.07 s */
+						unsigned int n = g_dbg_pace_refreshes - w_ref, dt = g_dbg_pace_refresh_tick - w_tick;
+						if (n && dt && g_dbg_pace_timeouts == w_to)
+							hz = (unsigned int)(13000000000ULL * n / dt);   /* 13 MHz ticks -> milli-Hz */
+						g_cnt = 0;
+					}
+#else
 					g_acc += lt;
 					if (++g_cnt >= 64) {   /* 64-frame window (~1.07s): averages out per-frame
 					                         emulation CPU jitter so the readout tracks the TRUE
 					                         fixed panel rate as steadily as the menu loop. */
-						unsigned int hz = (unsigned int)(832000000000LL / (long long)g_acc);
-						g_dbg_hz1000 = hz;
+						hz = (unsigned int)(832000000000LL / (long long)g_acc);
 						g_acc = 0; g_cnt = 0;
+					}
+#endif
+					if (hz) {
+						g_dbg_hz1000 = hz;
 						/* Recalibrate the audio resampler to the TRUE panel rate, but ONLY
 						 * from a STABLE reading: two consecutive 64-frame windows within
 						 * 0.05 Hz and in the realistic panel band. This rejects the boot /

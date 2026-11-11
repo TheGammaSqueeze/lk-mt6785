@@ -507,9 +507,14 @@ static void cmd_nav(const char *arg, void *data, unsigned sz)
 	 * with oem diag while it runs; the default 7 is one tap. */
 	arg++;
 	while (*arg == ' ' || *arg == ':') arg++;
-	{ unsigned hold = fb_dec(&arg); if (hold < 1u || hold > 6000u) hold = 7u; g_dbg_key_hold = (int)hold; }
-	g_dbg_peak_reset = 1;
-	g_dbg_key = code;
+	{
+		unsigned hold = fb_dec(&arg);
+		if (hold < 1u || hold > 6000u) hold = 7u;
+		/* the key before its hold count: a frame read between the two must not repeat the last key */
+		g_dbg_peak_reset = 1;
+		g_dbg_key = code;
+		g_dbg_key_hold = (int)hold;
+	}
 	thread_sleep(300);
 	fastboot_okay("");   /* read the resulting peak via `oem diag` */
 }
