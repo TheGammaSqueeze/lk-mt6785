@@ -150,6 +150,11 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		fastboot_info(lbuf);
 	}
 	{
+		extern volatile unsigned int g_dbg_boxart_ok, g_dbg_boxart_tot, g_dbg_boxart_ms;
+		snprintf(lbuf, sizeof lbuf, "boxart: %u of %u games, last load %u ms", g_dbg_boxart_ok, g_dbg_boxart_tot, g_dbg_boxart_ms);
+		fastboot_info(lbuf);
+	}
+	{
 		/* frame drops: menu loop periods over 20 ms since the last peak reset (oem nav), and
 		 * whether the overlay really showed the buffer presented one frame earlier. */
 #if defined(KONKR_KPA)

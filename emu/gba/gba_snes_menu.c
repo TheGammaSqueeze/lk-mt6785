@@ -23,6 +23,7 @@
 #include "menu/gba_name.h"          /* gba_clean_name (shared with host_render) */
 #include "sd_fat.h"                 /* gba_rom_entry */
 #include "gba_boxart_sd.h"          /* gba_boxart_load_sd */
+#include <arch/arm/mmu.h>           /* arch_mmu_map: the box art slots (SNES_BOXART_PA) */
 #include <string.h>                 /* memcpy for the launch snapshot */
 #include <stdint.h>                 /* uintptr_t, size_t */
 
@@ -313,7 +314,7 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
  * cards on exit. Repack into the disjoint gaps around the transition buffers:
  *   ctile   0x54A80000 .. 0x54FC6000  (cap 12, below the reveal buffer)
  *   reveal  0x55000000 .. 0x554B0000  (fixed)
- *   boxart  0x55500000 .. 0x557E4000  (cap 20, between reveal end and freeze)
+ *   (boxart: was 0x55500000 .. 0x557E4000, cap 20; now at SNES_BOXART_PA below)
  *   freeze  0x55800000                (fixed, tiny)
  *   full    0x55900000 .. 0x55DB0000  (fixed)
  *   fct     0x55E00000 .. 0x55E70800  (after game-full)
@@ -329,9 +330,15 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
 #define SNES_CTILE2_PA   0x54A80000u /* enlarged card-tile cache (12 * 320*360*4 = 5.4MB) */
 #define SNES_CTILE2_CAP  12
 #endif
-#define SNES_BOXART_PA   0x55500000u /* per-ROM boxart tiles (between reveal and freeze) */
+/* Per-ROM box art, one slot for every game the list holds (128). The gap between the transition
+ * buffers above held only 20, and the games past the 20th drew the plain cartridge. The slots live
+ * in DRAM the preloader leaves free and nothing in the LK uses (0x56000000..0x7D000000, oem
+ * meminfo), outside the window the LK maps at boot: mapped write-back on the menu's first entry.
+ * No core touches it, so the tiles survive a game and are not read again on the way back. */
+#define SNES_BOXART_PA   0x60000000u
 #define SNES_BOXART_SLOT 0x25000u    /* bytes per tile slot (>= 224*224*3) */
-#define SNES_BOXART_CAP  20          /* 20 * 0x25000 = 0x2E4000 -> ends 0x557E4000 < freeze */
+#define SNES_BOXART_CAP  128         /* 128 * 0x25000 = 0x1280000 */
+#define SNES_BOXART_MAP  0x01400000u /* the mapping: 20 MB, whole 2 MB sections */
 #if defined(KONKR_KPA)
 /* Konkr: the active (blue) card tiles, one per console type (8 x 320*360*4 = 0x384000), sit
  * above the 3:2 warped wallpaper cache (1800 x 640 x 4 at the 0.75 native scale ends at
@@ -373,6 +380,8 @@ static unsigned short s_vmap[128];
 static int            s_vn;                 /* games in the current view */
 static int            s_sysfilter = -1;     /* -1 = All, else a GBA_CONSOLE_* value */
 static snes_img_entry s_boxart_full[128];   /* full per-ROM boxart, indexed by roms[] */
+static unsigned int   s_boxart_key[128];    /* what slot i holds: the ROM's key, 0 = not tried */
+volatile unsigned int g_dbg_boxart_ms;      /* oem diag: the last box art load, ms */
 static snes_pack      s_boxart_full_pk;
 static int            s_have_boxart;
 static const snes_img_entry *s_cart_img;    /* placeholder cart tile, for the roster re-set */
@@ -714,22 +723,39 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * One-time at menu init (snes_menu is pure and cannot read the SD lazily); the raw
 	 * .ART is read through the deflate staging (free after load_pack). */
 	{
+		static int s_boxart_mapped;
 		unsigned char *region = (unsigned char *)SNES_BOXART_PA;
 		unsigned char *scratch = (unsigned char *)SNES_COMP_PA;
 		fat_vol *vol = gba_sd_menu_vol();
+		unsigned int t0 = gpt4_get_current_tick();
 		int i, any = 0, tot = 0;
+		if (!s_boxart_mapped)
+			s_boxart_mapped = arch_mmu_map(SNES_BOXART_PA, SNES_BOXART_PA,
+						       MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA,
+						       SNES_BOXART_MAP) == 0;
 		s_boxart_full_pk.base = region;
 		for (i = 0; i < nrom && i < 128; i++) {
-			s_boxart_full[i].w = 0;			/* default: no art */
-			if (vol && i < SNES_BOXART_CAP) {
+			/* the slot's key: the ROM's console and name. A slot that already holds this ROM's
+			 * tile (or knows it has none) is not read again: a menu after a game only loads the
+			 * art of games that changed place. */
+			unsigned int key = 2166136261u ^ roms[i].type;
+			const char *c;
+			for (c = roms[i].name; *c; c++) key = (key ^ (unsigned char)*c) * 16777619u;
+			key |= 1u;
+			if (!vol || !s_boxart_mapped || i >= SNES_BOXART_CAP) { s_boxart_full[i].w = 0; continue; }
+			tot++;
+			if (s_boxart_key[i] == key) { if (s_boxart_full[i].w) any++; continue; }
+			{
 				unsigned off = (unsigned)i * SNES_BOXART_SLOT;
-				tot++;
+				s_boxart_full[i].w = 0;		/* default: no art */
 				if (gba_boxart_load_sd(vol, (int)roms[i].type, roms[i].name, scratch, SNES_COMP_MAX,
 						       region + off, SNES_BOXART_SLOT, off,
 						       &s_boxart_full[i]) == 0)
 					any++;
+				s_boxart_key[i] = key;
 			}
 		}
+		g_dbg_boxart_ms = (gpt4_get_current_tick() - t0) / 13000u;
 		g_dbg_boxart_ok = (unsigned)any;	/* reported via oem diag bx=ok/tot */
 		g_dbg_boxart_tot = (unsigned)tot;
 		s_have_boxart = (any > 0);
