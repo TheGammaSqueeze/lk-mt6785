@@ -9,3 +9,6 @@ __pycache__/
 emu/gba/menu/host_render
 emu/gba/menu/host_render_arm
 gmon.out
+
+# the stock Konkr LK the release flash package restores (tools/konkr/stock/README.md)
+!tools/konkr/stock/lk.img
