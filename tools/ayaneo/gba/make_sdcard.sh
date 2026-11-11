@@ -2,10 +2,13 @@
 # Build the SD card template in out/sdcard: the menu pack, the cores and boot.cfg (build_sdcard.py).
 # Run from the LK tree root by build_konkr_kpa.sh and build_ayaneo_gba_sd.sh.
 #
-# The cores are built in their own repositories, next to the LK tree by default (CORE_REPOS, default
-# the directory two levels above the LK root): armGBA-pico, gpsp-pico, gambatte-pico, snes9x-pico,
-# genesis-plus-gx-pico. A core whose blob is missing is built with its build.sh; a core that cannot
-# be found is left off the template with a warning. SNES_ASSETS overrides the menu asset tree.
+# The cores are git submodules under cores/, each its own repository (upstream emulator as a
+# submodule + GammaOS patches + glue): armGBA-pico, gpsp-pico, gambatte-pico, snes9x-pico,
+# genesis-plus-gx-pico. A core that is not checked out yet is fetched (with its upstream); a core
+# whose checkout differs from the commit this tree pins is built as it is, with a note. Each core
+# is built with its build.sh whenever its blob is missing, its commit changed since the last build
+# or its tree has local changes, so the template never carries a stale blob. CORE_REPOS=<dir> takes
+# the cores from other checkouts (core development); SNES_ASSETS overrides the menu asset tree.
 # Returns 1 (and builds nothing) when the menu assets are missing.
 set -e
 ROOT="$(pwd)"
@@ -32,15 +35,41 @@ python3 tools/ayaneo/snes/pack_snes.py "$SNES_ASSETS" out/snes_pack.bin \
 	--logo-sg      tools/ayaneo/snes/logos/sg.png
 
 echo ">> Building the SD card template (out/sdcard)"
-CORE_REPOS="${CORE_REPOS:-$(cd "$ROOT/../.." && pwd)}"
 CORE_ARGS=()
 for spec in armgba-pico:armGBA-pico gpsp-pico:gpsp-pico gambatte-pico:gambatte-pico \
 	    snes9x-pico:snes9x-pico genesis-plus-gx-pico:genesis-plus-gx-pico; do
-	name="${spec%%:*}"; repo="$CORE_REPOS/${spec#*:}"
+	name="${spec%%:*}"; dir="${spec#*:}"
+	if [ -n "$CORE_REPOS" ]; then
+		repo="$CORE_REPOS/$dir"
+	else
+		repo="$ROOT/cores/$dir"
+		if [ ! -x "$repo/build.sh" ]; then
+			echo "   fetching cores/$dir"
+			git -C "$ROOT" submodule update --init --recursive -- "cores/$dir" ||
+				{ echo "!! cores/$dir could not be fetched" >&2; }
+		else
+			pinned=$(git -C "$ROOT" ls-tree HEAD "cores/$dir" | awk '{print $3}')
+			have=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+			[ -n "$pinned" ] && [ "$pinned" != "$have" ] &&
+				echo "   note: cores/$dir is at ${have:0:7}, this tree pins ${pinned:0:7} (git submodule update --recursive to follow)"
+			[ -e "$repo/upstream/.git" ] ||
+				git -C "$repo" submodule update --init --recursive >/dev/null 2>&1 || true
+		fi
+	fi
 	blob="$repo/out/$name.blob"
-	if [ ! -f "$blob" ] && [ -x "$repo/build.sh" ]; then
-		echo "   building $name in $repo"
-		(cd "$repo" && ./build.sh >/dev/null)
+	if [ -x "$repo/build.sh" ]; then
+		head=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+		dirty=$(git -C "$repo" status --porcelain --ignore-submodules=none 2>/dev/null | head -1)
+		stamp="$repo/out/.built-commit"
+		if [ ! -f "$blob" ] || [ -n "$dirty" ] || [ "$(cat "$stamp" 2>/dev/null)" != "$head" ]; then
+			echo "   building $name (${head:0:7}${dirty:+, local changes})"
+			if (cd "$repo" && ./build.sh >/dev/null 2>&1); then
+				[ -z "$dirty" ] && echo "$head" > "$stamp" || rm -f "$stamp"
+			else
+				echo "!! $name: build.sh failed (run it in $repo to see why)" >&2
+				rm -f "$blob" "$stamp"
+			fi
+		fi
 	fi
 	if [ -f "$blob" ]; then
 		CORE_ARGS+=(--core "$name=$blob")

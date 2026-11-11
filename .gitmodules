@@ -1,0 +1,15 @@
+[submodule "cores/armGBA-pico"]
+	path = cores/armGBA-pico
+	url = ../armGBA-pico.git
+[submodule "cores/gpsp-pico"]
+	path = cores/gpsp-pico
+	url = ../gpsp-pico.git
+[submodule "cores/gambatte-pico"]
+	path = cores/gambatte-pico
+	url = ../gambatte-pico.git
+[submodule "cores/snes9x-pico"]
+	path = cores/snes9x-pico
+	url = ../snes9x-pico.git
+[submodule "cores/genesis-plus-gx-pico"]
+	path = cores/genesis-plus-gx-pico
+	url = ../genesis-plus-gx-pico.git

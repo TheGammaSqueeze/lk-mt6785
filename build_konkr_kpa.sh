@@ -10,7 +10,8 @@
 #   out/sdcard/                the SD card template: gammaos/ (boot.cfg, menu.pack), cores/,
 #                              bios/, roms/; copy its contents to the root of the card
 #
-# The cores come from their own repositories (tools/ayaneo/gba/make_sdcard.sh, CORE_REPOS).
+# The cores are git submodules under cores/ (each its own -pico repository), fetched and built by
+# tools/ayaneo/gba/make_sdcard.sh as needed; CORE_REPOS=<dir> uses other checkouts instead.
 # Nothing here touches a device.
 set -e
 

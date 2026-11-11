@@ -8,7 +8,8 @@
 #   out/lk_a_gba_sd_signed.img -> flash to lk_a
 #   out/sdcard/                -> copy its contents to the root of the card
 #
-# The cores come from their own repositories (tools/ayaneo/gba/make_sdcard.sh, CORE_REPOS).
+# The cores are git submodules under cores/ (each its own -pico repository), fetched and built by
+# tools/ayaneo/gba/make_sdcard.sh as needed; CORE_REPOS=<dir> uses other checkouts instead.
 #
 # Usage:
 #   ./build_ayaneo_gba_sd.sh [clean]

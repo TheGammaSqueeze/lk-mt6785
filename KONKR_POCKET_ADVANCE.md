@@ -7,75 +7,107 @@ of volume keys, no analog sticks and I2S smart amps for the speaker. Stock firmw
 
 ## Build
 
-    ./build_konkr_kpa.sh            # add "clean" to rebuild the core blobs too
+    git submodule update --init --recursive   # once, or let the build fetch the cores
+    ./build_konkr_kpa.sh                       # add "clean" for a fresh LK build
 
 Output in `out/`:
 
-| File | Flash to | What it is |
+| Output | Where it goes | What it is |
 |---|---|---|
 | `lk_a_kpa_signed.img` | `lk_a` | the LK (2 MB), signed with the Konkr cert partitions + stock `lk_main_dtb` |
-| `kpa_menu_boot_b.img` | `boot_b` | menu asset pack, boot chime, the four core blobs, settings area (32 MB) |
+| `sdcard/` | the microSD card | the card template: `gammaos/` (boot.cfg, menu.pack), `cores/`, `bios/`, `roms/` |
 
-Nothing else is flashed. `logo`, `boot_a`, `dtbo`, `vendor`, `system` stay stock, so the device
-still boots Android normally when no microSD with emulator assets is present, or after
-"Boot to OS" in the menu. `lk_b` is left stock as a fallback.
+`lk_a` is the only partition GammaOS writes. `logo`, `boot_a/b`, `vendor_boot`, `dtbo`, `misc`,
+`vendor`, `system` stay stock, so Android boots as before whenever the LK does not start GammaOS.
+`lk_b` is left stock as a fallback.
 
-The same two images carry everything the pairmini port needed, with the same layout
-(`tools/ayaneo/gba/build_snes_boot_b.py`): the animation at offset 0 is unused in the SD build
-(the boot visual is the real GBA BIOS intro from the card), chime at 0x01000000, menu pack at
-0x01100000, core blobs from 0x01900000, persisted settings at 0x020FF000.
+The cores are the git submodules under `cores/` (`armGBA-pico`, `gpsp-pico`, `gambatte-pico`,
+`snes9x-pico`, `genesis-plus-gx-pico`), each with the emulator's upstream as its own submodule plus
+GammaOS patches and glue. `tools/ayaneo/gba/make_sdcard.sh` fetches a missing one, rebuilds a core
+whenever its commit changed or its tree has local changes (`out/.built-commit` in each core), and
+notes a core checked out at a different commit than this tree pins. `CORE_REPOS=<dir>` builds from
+other checkouts while working on a core. The core builds need `arm-none-eabi-gcc` and `g++`.
 
 ## Flashing
 
-First flash on a locked stock unit: SP Flash Tool V6 (the BW03 package is a V2.2.0 scatter;
-SP Flash Tool v5.1924 rejects it with S_DL_SCAT_VERSION_SUPPORTED 5079 even with the version tag
-edited, so use the V6 tool with the `.xml` scatter). Load `MT6785_Android_scatter.xml` with
-`lk_a` set to `lk_a_kpa_signed.img` and `boot_b` to `kpa_menu_boot_b.img`, Download Only, untick
-every other partition. Keep the stock `lk.img` next to it: a bad `lk_a` is recovered the same way
-by pointing `lk_a` at the stock image.
+`lk_a` only. A first flash on a locked stock unit goes through SP Flash Tool: the GammaOS package
+(`gammaos/` with a V2.1.0 text scatter that ticks `lk_a` only, Download Only, SP Flash Tool v5)
+or the stock BW03 package's own `.xml` scatter in SP Flash Tool V6 with only `lk_a` ticked (v5.1924
+rejects the BW03 V2.2.0 scatter with S_DL_SCAT_VERSION_SUPPORTED 5079). Keep the stock `lk.img`
+next to it: a bad `lk_a` is recovered the same way by pointing `lk_a` at the stock image.
 
-Once our LK runs, fastboot works from the menu side too (USB VID 0x0E8D PID 0x201C, serial
-`0123456789ABCDEF`):
+Once our LK runs, fastboot works from the bootloader and alongside the running menu (USB VID
+0x0E8D PID 0x201C). The serial is unique per unit (`oem serialinfo` shows its source):
 
-    fastboot flash lk_a   out/lk_a_kpa_signed.img
-    fastboot flash boot_b out/kpa_menu_boot_b.img
+    fastboot -s <serial> flash lk_a out/lk_a_kpa_signed.img
 
-Flashing over USB, learned on the first device session (2026-10-31):
-- Always address the device: `fastboot -s 0123456789ABCDEF ...`. Other devices share the host.
-- `fastboot reboot bootloader` from the emulator channel answers "FAILED (remote: 'unknown
-  command')" but the device DOES reboot into the bootloader; the USB link then usually needs a
-  cable replug before it answers. Confirm with `fastboot oem mode` (boot_mode=99 = bootloader).
-- Put the device in plain bootloader mode first (`fastboot reboot-bootloader` from the running LK,
-  or SELECT + START at power-on), then ONE `fastboot flash`, then ONE `fastboot reboot`. Flashing
-  from the emulator-side USB channel fails ("GetVar Variable Not found" / "no link").
-- Do not fire commands back to back: the LK USB gadget wedges when probed within a few seconds of
-  a reboot, and a USB cable left plugged across the reboot often needs a replug before the LK
-  answers again. Wait 30 s or more after a reboot before the first command.
-- From WSL, `/usr/bin/fastboot` is the Windows fastboot.exe. NEVER kill fastboot.exe (user rule);
-  if a command times out, stop and let the user replug the cable.
-- `oem` commands are registered in both the plain bootloader and the emulator menu channel, so
-  their presence does not tell the two apart.
-
-Entering fastboot on the Konkr: hold SELECT + START while powering on (the device has no volume
-keys, so the stock "Volume Up" bootloader menu does not exist). From Android: `adb reboot
-bootloader`. `tools/ayaneo/gba/flash_lk.sh` and `tools/ayaneo/fastboot_push.sh` work unchanged.
+Flashing over USB, learned on the device:
+- Always address the device: `fastboot -s <serial> ...`. Other devices share the host.
+- Flash from plain bootloader mode (`fastboot reboot-bootloader` from the running menu, then
+  `fastboot oem mode` until it reports boot=99), then ONE `fastboot flash`, then ONE `fastboot
+  reboot`. The menu side channel refuses flashing ("EMU(no flash)" in `oem mode`).
+- `oem sd-put:/path` (after `fastboot stage <file>`) writes a file to the card from the
+  bootloader, paths with spaces included when the argument is quoted.
+- Do not fire commands back to back right after a reboot, and never pipe fastboot output into
+  `head` or wrap it in `timeout`: an unread reply desyncs the LK link. From WSL,
+  `/usr/bin/fastboot` is the Windows fastboot.exe; NEVER kill it, a hang needs a cable replug.
+- `oem` commands are registered in both the plain bootloader and the menu channel, so their
+  presence does not tell the two apart; `oem mode` does.
 
 ## microSD card
 
-FAT32 (or FAT16), first partition. Case insensitive names.
+FAT16, FAT32 or exFAT, MBR or GPT, first partition. Case insensitive names. Copy `out/sdcard/` to
+the root and add games.
 
 ```
-/gba_bios.bin            real GBA BIOS, exactly 16384 bytes (the boot intro; required)
+/gammaos/boot.cfg        boot=sd (start GammaOS) or boot=android (one key per line, # comments)
+/gammaos/menu.pack       the menu assets (compressed)
+/gammaos/settings.bin    the settings (written by the LK; /gba/settings.bin is still read once)
+/gammaos/cart_header.bin the last game's header, so the intro starts at once (written by the LK)
+/gammaos/blackbox.bin    fault and event records moved here from DRAM (oem blackbox)
+/cores/armgba-pico.blob  /cores/gpsp-pico.blob  /cores/gambatte-pico.blob
+/cores/snes9x-pico.blob  /cores/genesis-plus-gx-pico.blob
+/bios/gba_bios.bin       optional GBA BIOS, exactly 16384 bytes (/gba_bios.bin is read too)
 /roms/gb/*.gb            /roms/gbc/*.gbc        /roms/gba/*.gba
 /roms/snes/*.sfc|.smc    /roms/genesis/*.md|.gen|.bin|.smd
-/roms/sms/*.sms          /roms/gg/*.gg          /roms/sg/*.sg
+/roms/sms/*.sms          /roms/gg/*.gg          /roms/sg/*.sg      (raw files, not zips)
 /roms/<system>/boxart/<romstem>.ART   optional box art (tools/ayaneo/gba/gen_boxart.py)
-/saves/<system>/         /states/<system>/      created by the LK, saves and save states
+/saves/<system>/         /states/<system>/      saves and save states (created by the LK)
+/gba/armgba-pico.cfg     the GBA core choice and armGBA's options; /gba/gbcprefs.bin GB palettes
 ```
 
-No card, no BIOS or no ROM folder: the LK falls through to the normal Android boot. ROMs can also
-be pushed over USB with `tools/ayaneo/push_roms.py <system> <files> --serial 0123456789ABCDEF`
-(device in fastboot, card not held by a running menu).
+ROMs can also be pushed over USB with `tools/ayaneo/push_roms.py <system> <files> --serial
+<serial>` (device in the bootloader; `--extract` unpacks zipped ROMs first).
+
+## Boot
+
+On a normal power on the panel comes up on the stock timing and the SD gate decides:
+
+- SELECT + START held: Android. SELECT + START + R held: fastboot.
+- SELECT held: GammaOS, rewriting `boot=sd` if the card was set to Android (the way back after
+  the menu's Boot to Android, which writes `boot=android` and restarts).
+- Two watchdog resets in a row inside the GammaOS path: Android (the never brick guard).
+- No card, a card that does not mount, no valid `boot.cfg`, `boot=android` or no `menu.pack`:
+  Android, with the stock logo and the stock panel timing.
+- Otherwise GammaOS starts. The GBA cores are optional:
+  - armGBA on the card: the intro is the card's GBA BIOS boot logo on armGBA, or armGBA's own Open
+    BIOS splash when there is no valid BIOS. GBA games default to armGBA (the in-game menu can pick
+    gpSP when the card has a BIOS).
+  - no armGBA, gpSP and a BIOS: the BIOS intro on gpSP, GBA games on gpSP.
+  - no usable GBA core: no intro, the menu runs without GBA games.
+  The volume wheel works during the intro (no OSD); hold B to cut the intro short.
+
+## Panel timing
+
+Every boot initialises the ST7123 exactly as the stock LK does: sync 4, back porch 40, front porch
+280, PLL_CLOCK 177 (354 Mbps, integer PCW), start line 0x2C in register 0xD7. Android, recovery,
+fastboot and the charging screen keep it. When the SD gate starts GammaOS it retimes the running
+panel (`st7123_gammaos_timing`, `ayaneo_dsi_retime`): start line 4 written to 0xD7 in video mode,
+the PHY timing words for PLL 239, sync 2 / back porch 2 / front porch 769, 477.6 Mbps. That is
+1739 lines at 59.7275 Hz with 9.24 ms of scan and 7.5 ms of blanking. The PLL spread spectrum
+depth is a fixed PCW step worked out from the boot rate, so the retime rewrites it for the new
+clock with the spread spectrum off for 1 ms (written while it runs, the refresh lands anywhere
+from 59.73 to 59.79 Hz). `oem dsitime` shows the live timing, `oem palate` measures the refresh.
 
 ## What is different from the pairmini (code map)
 
@@ -85,8 +117,8 @@ be pushed over USB with `tools/ayaneo/push_roms.py <system> <files> --serial 012
   Two glass vendors, chosen by the GPIO12/13 ID pins after reset; both init tables are kept.
   Name `st7123p_hd640_boe_lcm_drv` must match the kernel. Logo set `dev/logo/kpa` (960x640).
 - Rotation layer in `platform/mt6785/mt_disp_drv.c` (`AYANEO_ROT`): native emulator frames are
-  turned before the resizer and every GBA/GB/SNES/Genesis mode, the BIOS intro and the boot
-  animation present through `ayaneo_rsz_present`. The menu, dialogs and transitions draw on a
+  turned before the resizer and every GBA/GB/SNES/Genesis mode and the BIOS intro present
+  through `ayaneo_rsz_present`. The menu, dialogs and transitions draw on a
   canvas the size of the logical screen (960x640, `ayaneo_canvas_back`) that
   `ayaneo_canvas_present` turns into the frame buffer in 16 row bands (3.8 ms). The in-game
   overlay, the volume OSD and the FF/RW badge are turned too. `oem rot:0|1` flips the turn
@@ -104,14 +136,16 @@ be pushed over USB with `tools/ayaneo/push_roms.py <system> <files> --serial 012
   as a quadrature accumulator and sampled every 20 us inside the frame end wait. Button GPIOs
   are the same as the pairmini but the Konkr DTS labels match its shell, so under `KONKR_KPA`
   every core and the menu use A 82, B 83, X 84, Y 85, START 90, SELECT 91 (the pairmini tables
-  swap these). SELECT + START at power-on enters fastboot (`app/mt_boot/mt_boot.c`).
+  swap these). The power on combinations are in [Boot](#boot) (`app/mt_boot/mt_boot.c`,
+  `emu/gba/gba_driver.c` `ayaneo_gba_sd_boot`). `oem volstep:+N|-N` turns the wheel from USB.
 - Timer: the Konkr preloader hands GPT4 over with its divider at 2 (6.5 MHz, everything ran at
   half speed and the panel looked like 120 Hz); `platform/mt6785/timer.c` re-arms it at 13 MHz.
   `oem clk` compares GPT4 with the architected timer.
-- Refresh: `platform/mt6785/ddp_dsi.c` Konkr constants measured on the device: line rate
-  77507000 (with the data rate trimmed to 353935 kHz), 1004 fixed lines, resting vfp 294 =
-  59.7275 Hz exactly (`oem diag` panel/hz1000), vsync divider 1, VFP_MAX 340 (the ST7123 fades
-  past that, so PAL 50 Hz is time paced at the resting porch). SNES NTSC switches to vfp 286.
+- Refresh: `platform/mt6785/ddp_dsi.c` Konkr constants measured on the device: the line
+  constant 76972117 is given for 353935 kHz and scaled to the live rate, 970 fixed lines, the
+  shorter scan of 1739 lines at 477.6 Mbps for the GBA's 59.7275 Hz (see [Panel timing](#panel-timing));
+  other refresh rates (SNES NTSC 60.1 Hz, PAL 50 Hz, the 2x modes) move the MIPI rate live
+  (`ayaneo_dsi_set_dr_khz`) at the same line count.
 - Pico menu: the panels fit the 640 row screen (row pitch shrinks from 38), the backdrop is
   translucent (hardware ARGB layer, the game stays live underneath). Strobe = backlight black
   frame insertion: one DISP_PWM period per frame (div 424) restarted at every RDMA frame end
@@ -155,7 +189,6 @@ be pushed over USB with `tools/ayaneo/push_roms.py <system> <files> --serial 012
    the DTS button labels against the shell before trusting the pairmini swaps. For a smart PA,
    find its kernel driver source and the vendor firmware container: the ACF holds the register
    profile and the DSP image, and the bring-up is a fixed register sequence.
-7. Build both projects, run the host harness, sign, and flash `lk_a` only first with the stock
-   LK at hand. Drive the device from WSL with `fastboot -s <serial>`, one command at a time,
+7. Build both projects, run the host harness, sign, and flash `lk_a` with the stock LK at hand. Drive the device from WSL with `fastboot -s <serial>`, one command at a time,
    40 s after a reboot to bootloader and 80 s after a reboot into the LK; `oem mode` tells
    which mode the LK is in (boot=99 = flash allowed).

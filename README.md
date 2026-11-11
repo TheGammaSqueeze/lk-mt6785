@@ -1,23 +1,58 @@
-# LK (Little Kernel) for MT6785 - AYANEO Pocket Air Mini
+# LK (Little Kernel) for MT6785 - GammaOS handheld bootloader
 
-A from-source MediaTek MT6785 LK bootloader that boots the AYANEO Pocket Air
-Mini (project `k85v1_64`), based on the [svoboda18/lk](https://github.com/svoboda18/lk)
-fork. This branch adds the device's ST7703 HD720 panel, corrects the config to
-match the hardware, and provides a self-contained build + sign flow.
+A from-source MediaTek MT6785 LK bootloader, based on the
+[svoboda18/lk](https://github.com/svoboda18/lk) fork, for two handhelds of the `k85v1_64` board
+family:
 
-The device boots fully to the OS with the produced image. See
-[PORTING_NOTES.md](PORTING_NOTES.md) for the complete list of issues, root
-causes, fixes, and untested areas, and
-[BUILD_AYANEO_POCKET_AIR_MINI.md](BUILD_AYANEO_POCKET_AIR_MINI.md) for build and
-device details.
+- **Konkr Pocket Advance** (project `k85v1_64_kpa`, `./build_konkr_kpa.sh`): the main target of
+  this branch (`lk-gba-emu-sd-card-kpa`). Build, flashing, the card layout, the boot rules and a
+  porting checklist are in [KONKR_POCKET_ADVANCE.md](KONKR_POCKET_ADVANCE.md).
+- **AYANEO Pocket Air Mini** (project `k85v1_64`): the original port, a plain LK with the ST7703
+  panel (`./build_ayaneo_pocket_air_mini.sh`, sections below) and the SD build
+  (`./build_ayaneo_gba_sd.sh`).
 
-## Konkr Pocket Advance
+## GammaOS from the microSD card
 
-The same tree also builds for the Konkr Pocket Advance (`./build_konkr_kpa.sh`, project
-`k85v1_64_kpa`). Build, flash, microSD layout, the board differences and a porting checklist
-for further MT6785 handhelds are in `KONKR_POCKET_ADVANCE.md`.
+The LK is the only thing GammaOS writes on the eMMC (`lk_a`). With a GammaOS card in the slot it
+starts a console menu (a SNES Classic style carousel) and runs Game Boy, Game Boy Color, Game Boy
+Advance, SNES, Mega Drive / Genesis, Master System, Game Gear and SG-1000 games from the card,
+with saves, save states, run ahead, rewind, filters and per core options. Without the card, or
+with the card's `gammaos/boot.cfg` set to `boot=android`, the stock Android boot runs untouched,
+on the stock panel timing. Everything else lives on the card: the menu pack, the emulator cores,
+the settings, the saves and the boot mode.
 
-## Quick start
+The emulator cores are separate programs loaded from the card (`/cores/*.blob`), each built in its
+own repository, here as git submodules under `cores/`:
+
+| Submodule | Core | Systems |
+|---|---|---|
+| `cores/armGBA-pico` | armGBA | Game Boy Advance (default; plays the boot intro) |
+| `cores/gpsp-pico` | gpSP | Game Boy Advance (needs the card's BIOS) |
+| `cores/gambatte-pico` | gambatte | Game Boy, Game Boy Color |
+| `cores/snes9x-pico` | snes9x | SNES |
+| `cores/genesis-plus-gx-pico` | Genesis Plus GX | Mega Drive / Genesis, Master System, Game Gear, SG-1000 |
+
+Each one keeps the emulator's upstream as its own submodule, unmodified, with the GammaOS changes
+as patches and the LK glue alongside. The LK holds only the interface headers (`*_core_abi.h`),
+the loaders and the session code.
+
+Clone with the submodules, or let the build fetch them:
+
+```sh
+git clone --recursive -b lk-gba-emu-sd-card-kpa git@github.com:TheGammaSqueeze/lk-mt6785.git
+./build_konkr_kpa.sh       # out/lk_a_kpa_signed.img + out/sdcard/ (the card template)
+```
+
+`tools/ayaneo/gba/make_sdcard.sh` (run by both SD build scripts) fetches a core that is not checked
+out yet, builds each core whenever its commit changed or its tree has local changes, packs the
+menu and writes `out/sdcard/`. The core builds need `arm-none-eabi-gcc`/`g++` (the LK itself uses
+the bundled toolchain in `gcc/`).
+
+Known issue: the Pocket Air Mini SD build (`build_ayaneo_gba_sd.sh`) does not link at the moment;
+Konkr only code (pacing, rewind, the backlight strobe counter) is referenced outside its
+`KONKR_KPA` guards. The plain Pocket Air Mini LK below is unaffected.
+
+## Pocket Air Mini: quick start
 
 ```sh
 ./build_ayaneo_pocket_air_mini.sh
@@ -41,7 +76,7 @@ make k85v1_64 AYANEO_DEBUG_LOGGING=yes -j$(nproc)   # verbose LK + kernel UART
 See the debug-logging section of
 [BUILD_AYANEO_POCKET_AIR_MINI.md](BUILD_AYANEO_POCKET_AIR_MINI.md).
 
-## Flashing
+## Pocket Air Mini: flashing
 
 Flash the `lk_a` partition (fastboot or SP Flash Tool):
 
@@ -53,7 +88,7 @@ WARNING: a bad LK bricks to a state that needs SP Flash Tool recovery. Keep a
 stock `lk` image and SP Flash Tool ready. Recommended: flash `lk_a` only and
 leave `lk_b` stock as a fallback for your first attempt.
 
-## What is different on this device
+## Pocket Air Mini: what is different on this device
 
 The svoboda18/lk `k85v1_64` config is generic; several things had to change to
 match this hardware (full detail in PORTING_NOTES.md):
@@ -71,7 +106,7 @@ match this hardware (full detail in PORTING_NOTES.md):
 - The stock `lk_main_dtb` is substituted at sign time (the device's kernel dtbo
   requires its nodes/symbols, e.g. `mt6360_pmu`).
 - The panel is **over-driven by default** (tuned drive voltages above stock).
-  See [Panel voltage mods](#panel-voltage-mods-applied-by-default) below.
+  See [the panel voltage mods](#pocket-air-mini-panel-voltage-mods-applied-by-default) below.
 
 ## Signing
 
@@ -81,7 +116,7 @@ stock cert partitions, substitutes the stock `lk_main_dtb`, recomputes the
 salt 32). This device is fused with the MTK test keys, so the preloader accepts
 the resigned image. See `tools/ayaneo/README.md`.
 
-## Panel voltage mods (applied by default)
+## Pocket Air Mini: panel voltage mods (applied by default)
 
 IMPORTANT: this build ships with the ST7703 panel **over-driven** - the drive
 voltages are set above stock, ACTIVE by default in every image produced here.
@@ -105,13 +140,21 @@ largest visible effect.
 
 ## Layout
 
-- `dev/lcm/st7703_hd720_dsi_vdo/` - the panel driver + raw init-table dump
-- `tools/ayaneo/` - self-contained signer, keys, cert blobs, stock lk_main_dtb
-- `build_ayaneo_pocket_air_mini.sh` - build + sign in one step
-- `PORTING_NOTES.md` - full bringup log (issues, fixes, untested areas)
-- `BUILD_AYANEO_POCKET_AIR_MINI.md` - build and device notes
+- `dev/lcm/st7703_hd720_dsi_vdo/` - the Pocket Air Mini panel driver + raw init-table dump
+- `dev/lcm/st7123p_hd640_boe_dsi_vdo/` - the Konkr panel driver (both glass init tables)
+- `emu/` - the GammaOS side of the LK: the SD gate, card FAT/exFAT, menu, input, display and
+  audio drivers, and the loader + session for each core (`emu/gba`, `gbc`, `snes9x`, `genesis`)
+- `cores/` - the emulator core repositories (git submodules)
+- `tools/ayaneo/` - self-contained signer, keys, cert blobs, stock lk_main_dtb, the menu packer
+  and the card template builder (`tools/ayaneo/gba/`); `tools/konkr/` - the Konkr cert parts
+- `build_konkr_kpa.sh`, `build_ayaneo_gba_sd.sh` - LK + card template;
+  `build_ayaneo_pocket_air_mini.sh` - the plain Pocket Air Mini LK
+- `KONKR_POCKET_ADVANCE.md` - Konkr build, flashing, card, boot rules, code map
+- `PORTING_NOTES.md` - full Pocket Air Mini bringup log (issues, fixes, untested areas)
+- `BUILD_AYANEO_POCKET_AIR_MINI.md` - Pocket Air Mini build and device notes
 
 ## Credit
 
 Based on [svoboda18/lk](https://github.com/svoboda18/lk) (MediaTek LK, Android
-10/11). This branch targets the AYANEO Pocket Air Mini.
+10/11). The emulator cores are their authors' projects (armGBA, gpSP, gambatte, snes9x, Genesis
+Plus GX); see each submodule's README and licence.
