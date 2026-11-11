@@ -89,6 +89,12 @@ int ayaneo_volume_dir(void)
 	return 0;
 }
 
+/* oem volstep: queue detents as if the wheel had turned them (testing without hands on the wheel) */
+void ayaneo_volume_inject(int steps)
+{
+	s_steps += steps;
+}
+
 #else	/* AYANEO Pocket Air Mini: MTK keypad volume rocker */
 
 void ayaneo_volume_sample(void) { }
@@ -110,6 +116,8 @@ int ayaneo_volume_dir(void)
 	vd_prev = vd;
 	return dir;
 }
+
+void ayaneo_volume_inject(int steps) { (void)steps; }   /* the rocker has no queue to fill */
 
 #endif
 

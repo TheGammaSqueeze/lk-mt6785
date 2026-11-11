@@ -2604,20 +2604,23 @@ static int emu_thread(void *arg)
 #endif
 	g_dbg_boot_step = 4;
 
-	/* Load the GBA core from the card into its DRAM slot and bind the export table (the gate
-	 * has checked that one can load); everything below drives it through g_core. */
-	{
-		int got = 0;
-		if (!s_corecfg_loaded) corecfg_load();
-		{ fat_file f; s_sdcore_present = (fat_open(&s_sd_vol, SDCORE_PATH, &f) == 0) ? 1 : 0; }
-		g_core = gba_core_load_pref(gba_want_armgba(), &got);
-		s_core_is_sd = got;
-		g_dbg_core_is_sd = (unsigned)got;
-	}
+	/* The boot intro runs on armGBA whenever the card has it, whatever core the GBA games are set
+	 * to: the card's BIOS when there is a valid one, else armGBA's own Open BIOS splash. Without
+	 * armGBA it runs on gpSP when the card has gpSP and a BIOS (gpSP has none of its own). With
+	 * neither there is no intro and no GBA core is loaded here: the menu runs on its own. */
+	if (!s_corecfg_loaded) corecfg_load();
+	g_core = gba_core_load_file(&s_sd_vol, SDCORE_PATH);
+	s_sdcore_present = g_core ? 1 : 0;
 	if (!g_core) {
-		gba_dbg("Gerr blob");
-		return 0;
+		GBA_LOG("gba: %s not loaded (%s)\n", SDCORE_PATH, core_file_error(g_gba_core_err));
+		if (s_have_bios) {
+			g_core = gba_core_load_file(&s_sd_vol, CORE_PATH_GPSP);
+			if (!g_core)
+				GBA_LOG("gba: %s not loaded (%s): no intro\n", CORE_PATH_GPSP, core_file_error(g_gba_core_err));
+		}
 	}
+	s_core_is_sd = s_sdcore_present;
+	g_dbg_core_is_sd = (unsigned)s_core_is_sd;
 	g_dbg_bt_coreload = BT_MS();
 	g_dbg_boot_step = 5;
 	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(6); }   /* oem boottime: core loaded */
@@ -2629,16 +2632,15 @@ static int emu_thread(void *arg)
 	gba_dbg("GBA 1: emu thread start");
 #endif
 
-	if (gba_core_init((void *)GBA_ARENA_PA, GBA_ARENA_SZ - GBA_DRV_RESERVE) != 0) {
+	if (g_core && gba_core_init((void *)GBA_ARENA_PA, GBA_ARENA_SZ - GBA_DRV_RESERVE) != 0) {
 		gba_dbg("GBA ERR: arena too small");
-		return 0;
+		g_core = 0;   /* no intro; the first GBA game loads its core again */
 	}
 	g_dbg_bt_coreinit = BT_MS();
 	g_dbg_boot_step = 6;
 	sd_bg_launch();   /* fast boot path: the card work starts now, during the intro */
 #ifdef AYANEO_GBA_SD
 	if (s_sd_mode) {
-		unsigned char *rp = gba_core_rom_ptr();
 		input_init();                        /* need the D-pad/A for the ROM-select */
 		/* (the settings came from the card in the gate, before the intro) */
 		/* Boot the emulator with NO cartridge, using the SD card's own
@@ -2647,12 +2649,16 @@ static int emu_thread(void *arg)
 		 * display + CPU thread are up (see the s_sd_mode intro block just before
 		 * the main frame loop). No prebaked BIOS: if gba_bios.bin was missing,
 		 * ayaneo_gba_sd_boot already fell through to a normal boot. */
-		romsz = gba_sd_build_logo_cart(rp);	/* real logo header + safe self-loops */
-		if (gba_core_start(romsz, s_have_bios ? s_sd_bios : 0) != 0) {
-			gba_dbg("GBA ERR: SD core_start failed");
-			return 0;
+		romsz = 0;
+		if (g_core) {
+			romsz = gba_sd_build_logo_cart(gba_core_rom_ptr());	/* real logo header + safe self-loops */
+			if (gba_core_start(romsz, s_have_bios ? s_sd_bios : 0) != 0) {
+				gba_dbg("GBA ERR: SD core_start failed");
+				g_core = 0;   /* no intro; the first GBA game loads its core again */
+			} else {
+				gba_core_enter_bios();	/* start at the BIOS so its logo plays */
+			}
 		}
-		gba_core_enter_bios();			/* start at the BIOS so its logo plays */
 		g_dbg_bt_start = BT_MS();
 	} else
 #endif
@@ -2772,8 +2778,9 @@ static int emu_thread(void *arg)
 			extern int ayaneo_resume_pending(void);
 			extern volatile int g_dbg_resume[4];
 			int pend = ayaneo_resume_pending();
-			/* no BIOS on the card: no intro, straight to the menu or the resumed game */
-			int fi, intro_frames = (ayaneo_get_skip_gba_intro() || pend || !s_have_bios) ? 0 : GBA_SD_INTRO_FRAMES;
+			/* the intro plays on the core loaded above (armGBA with the card's BIOS or its own
+			 * splash, or gpSP with the card's BIOS); none: straight to the menu or the resumed game */
+			int fi, intro_frames = (ayaneo_get_skip_gba_intro() || pend || !g_core) ? 0 : GBA_SD_INTRO_FRAMES;
 			g_dbg_resume[0] = pend;
 			g_dbg_boot_step = 7;
 			/* Run the BIOS-logo intro on the pure INTERPRETER: the dynarec faults
@@ -2781,7 +2788,7 @@ static int emu_thread(void *arg)
 			 * up the reset PC after the intro->game gba_core_start (it re-reads PC
 			 * each step, no translated blocks to go stale). The dynarec is switched
 			 * back on for the actual game below. */
-			dynarec_enable = 0;
+			if (g_core) dynarec_enable = 0;
 			ayaneo_gbc_blank();			/* black edges outside the cropped logo */
 			/* "Mute BIOS Audio" also silences the GBA BIOS boot-logo jingle (the
 			 * emulated BIOS runs through the game audio path here). Pause across the
@@ -2803,8 +2810,17 @@ static int emu_thread(void *arg)
 			}
 #endif
 			{ extern void ayaneo_hud_hide(int on); ayaneo_hud_hide(1); }   /* no FPS badge over the BIOS logo */
+			int intro_vol = 0;
 			for (fi = 0; fi < intro_frames; fi++) {
 				update_buttons();
+				{	/* the volume wheel works during the intro too, in the game's steps, with no
+					 * OSD over the logo; saved once the intro ends */
+					int dir = ayaneo_volume_dir();
+					if (dir) {
+						ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5);
+						intro_vol = 1;
+					}
+				}
 				run_one_frame();
 				ayaneo_gba_show_intro_frame(gba_core_screen());	/* 6x fill-height */
 				if (!g_dbg_bt_frame1) g_dbg_bt_frame1 = BT_MS();  /* first BIOS frame on screen */
@@ -2813,6 +2829,8 @@ static int emu_thread(void *arg)
 				if (PRESSED(GPIO_B)) break;	/* hold B to skip the logo */
 			}
 			if (ayaneo_get_mute_bios()) ayaneo_gbc_audio_pause(0);
+			if (intro_vol)
+				ayaneo_menu_settings_persist();   /* the volume, written off this thread */
 			{ extern void ayaneo_hud_hide(int on); extern void ayaneo_fps_reset(void); ayaneo_hud_hide(0); ayaneo_fps_reset(); }
 			{	/* intro wall time (oem diag): 270 frames at 59.73 Hz = 4520 ms when paced right */
 				extern volatile unsigned int g_dbg_bt_intro_end, g_dbg_bt_intro_frames;
@@ -2825,7 +2843,7 @@ static int emu_thread(void *arg)
 			sd_bg_wait();
 			g_dbg_boot_step = 9;
 			if (s_nrom > 0) {
-				unsigned char *rp = gba_core_rom_ptr();
+				unsigned char *rp;
 				for (;;) {
 					int sel = gba_sd_rom_select();
 					s_sel_rom = sel;
@@ -2870,7 +2888,12 @@ static int emu_thread(void *arg)
 				dynarec_enable = 1;	/* full-speed dynarec for the actual game */
 				s_cpu_restart_req = 1;	/* CPU thread re-enters gba_core_cpu_loop cleanly */
 			}
-			/* no ROMs on the card: keep showing the BIOS (romsz stays 0). */
+			/* no ROMs on the card: keep showing the BIOS (romsz stays 0); with no GBA core either
+			 * there is nothing to run, so wait here with the watchdog fed */
+			if (s_nrom <= 0 && !g_core) {
+				GBA_LOG("gba-sd: no games and no GBA core on the card\n");
+				for (;;) { mtk_wdt_restart(); thread_sleep(500); }
+			}
 		}
 #endif
 
@@ -3553,10 +3576,12 @@ void ayaneo_boot_to_os(void)
  *  - two watchdog resets in a row inside this path: Android (the never-brick guard).
  *  - no card, a card that does not mount, no /gammaos/boot.cfg with a valid boot line, or
  *    boot=android: Android.
- *  - the menu needs /gammaos/menu.pack and a GBA core (/cores/armgba-pico.blob, or
- *    /cores/gpsp-pico.blob with a BIOS: gpSP has no BIOS of its own); missing: Android.
- * Then the settings, the BIOS (optional: /bios/gba_bios.bin or /gba_bios.bin; without it there
- * is no intro) and the cart header file are read, and the emulator thread starts.
+ *  - the menu needs /gammaos/menu.pack; missing: Android. The GBA cores are optional: armGBA
+ *    (/cores/armgba-pico.blob) plays the intro and is the default for GBA games, gpSP
+ *    (/cores/gpsp-pico.blob) plays the BIOS intro and runs them when armGBA is missing and the
+ *    card has a BIOS; with neither the menu runs without GBA games.
+ * Then the settings, the BIOS (optional: /bios/gba_bios.bin or /gba_bios.bin; without it the
+ * intro is armGBA's own splash) and the cart header file are read, and the emulator thread starts.
  */
 int ayaneo_gba_sd_boot(void)
 {
@@ -3615,10 +3640,9 @@ int ayaneo_gba_sd_boot(void)
 	s_have_bios = (gba_sd_load_bios(&s_sd_vol, s_sd_bios) == 0);
 	g_dbg_bt_bios = BT_MS();
 	if (!card_file_present(&s_sd_vol, CORE_PATH_ARMGBA) &&
-	    !(s_have_bios && card_file_present(&s_sd_vol, CORE_PATH_GPSP))) {
-		GBA_LOG("gba-sd: no usable GBA core (%s, or %s with a BIOS) - Android\n", CORE_PATH_ARMGBA, CORE_PATH_GPSP);
-		return -4;
-	}
+	    !(s_have_bios && card_file_present(&s_sd_vol, CORE_PATH_GPSP)))
+		GBA_LOG("gba-sd: no usable GBA core (%s, or %s with a BIOS): the menu runs without GBA games\n",
+			CORE_PATH_ARMGBA, CORE_PATH_GPSP);
 #if defined(KONKR_KPA)
 	/* GammaOS starts: the panel came up on the stock timing (what Android gets), now it moves to
 	 * GammaOS's (st7123 LCM driver). Done here, before the settings and the cart header are read,

@@ -8,7 +8,7 @@ Writes <out dir>/:
     gammaos/boot.cfg     boot=sd (the LK starts the GammaOS menu from this card)
     gammaos/menu.pack    "SNSZ" u32 rawlen u32 complen, then the raw-deflated menu pack
     cores/NAME.blob      each core given with --core (built in its own repository)
-    bios/README.txt      where the optional GBA BIOS goes (it is the boot intro)
+    bios/README.txt      where the optional GBA BIOS goes (its boot logo is the intro)
     roms/<system>/       one folder per system the menu lists
 Copy the folder's contents to the root of a FAT32 or exFAT card.
 """
@@ -33,8 +33,10 @@ BOOT_CFG = ("# GammaOS boot mode for this card.\n"
             "#   boot=sd       start the GammaOS menu from this card\n"
             "#   boot=android  boot Android (hold SELECT at power on to come back)\n"
             "boot=sd\n")
-BIOS_README = ("Put the Game Boy Advance BIOS here as gba_bios.bin (16384 bytes) to get the BIOS boot\n"
-               "intro. Without it there is no intro; GBA games then run on armGBA's built-in BIOS.\n")
+BIOS_README = ("Put the Game Boy Advance BIOS here as gba_bios.bin (16384 bytes) for the GBA BIOS boot\n"
+               "intro. Without it armGBA's own Open BIOS splash is the intro and GBA games run on\n"
+               "armGBA's built-in BIOS. gpSP (when armGBA is not in cores/, or chosen in the game menu)\n"
+               "needs this file.\n")
 
 
 def check_core(name, data):

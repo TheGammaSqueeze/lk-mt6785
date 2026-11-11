@@ -2252,6 +2252,24 @@ static void cmd_clk(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem volstep:+N|-N - turn the volume wheel N detents from USB (the steps go through the same queue
+ * the wheel decoder fills, so whatever is running takes them as wheel turns); reports the volume */
+static void cmd_volstep(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_volume_inject(int steps);
+	extern int ayaneo_gbc_audio_get_volume(void);
+	int neg = 0, n;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == '-') { neg = 1; arg++; } else if (*arg == '+') arg++;
+	n = (int)fb_dec(&arg);
+	if (n > 20) n = 20;
+	if (n) ayaneo_volume_inject(neg ? -n : n);
+	snprintf(lbuf, sizeof lbuf, "volstep: %s%d queued, volume now %d", neg ? "-" : "+", n, ayaneo_gbc_audio_get_volume());
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem dsitime - the live DSI timing: stock unless the SD gate started GammaOS */
 static void cmd_dsitime(const char *arg, void *data, unsigned sz)
 {
@@ -2357,6 +2375,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem bbram", cmd_bbram, 1, 0);
 	fastboot_register("oem dsiw", cmd_dsiw, 1, 0);
 	fastboot_register("oem dsitime", cmd_dsitime, 1, 0);
+	fastboot_register("oem volstep", cmd_volstep, 1, 0);
 	fastboot_register("oem gray", cmd_gray, 1, 0);
 	fastboot_register("oem awdump", cmd_awdump, 1, 0);
 	fastboot_register("oem rewindmap", cmd_rewindmap, 1, 0);
