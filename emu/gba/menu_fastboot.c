@@ -152,9 +152,14 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 	{
 		/* frame drops: menu loop periods over 20 ms since the last peak reset (oem nav), and
 		 * whether the overlay really showed the buffer presented one frame earlier. */
+#if defined(KONKR_KPA)
 		extern volatile unsigned int g_dbg_menu_frames, g_dbg_menu_long, g_dbg_latch_hit, g_dbg_latch_miss;
 		snprintf(lbuf, sizeof lbuf, "drops: frames=%u long=%u latch hit=%u miss=%u",
 			 g_dbg_menu_frames, g_dbg_menu_long, g_dbg_latch_hit, g_dbg_latch_miss);
+#else
+		extern volatile unsigned int g_dbg_menu_frames, g_dbg_menu_long;
+		snprintf(lbuf, sizeof lbuf, "drops: frames=%u long=%u", g_dbg_menu_frames, g_dbg_menu_long);
+#endif
 		fastboot_info(lbuf);
 	}
 	{
@@ -1349,6 +1354,7 @@ static void cmd_close(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+#if defined(KONKR_KPA)   /* the Konkr's panel pacer (mt_disp_drv.c AYANEO_ROT) */
 /* oem fdmargin[:base_us[:latch_us]] - the frame delay's slack floor on top of the measured work and
  * the part of the front porch the late hand over leaves unused; shows the live slack. Not saved. */
 static void cmd_fdmargin(const char *arg, void *data, unsigned sz)
@@ -1366,6 +1372,7 @@ static void cmd_fdmargin(const char *arg, void *data, unsigned sz)
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
+#endif
 
 /* oem fbwc[:0|1] - the frame buffers and the game layer's buffers write combined (1, the default)
  * or write back (0), live, for A/B checks; reports the frame buffer, its mapping and the state */
@@ -1435,6 +1442,7 @@ static void cmd_memstage(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+#if defined(KONKR_KPA)   /* the Konkr's panel pacer (mt_disp_drv.c AYANEO_ROT) */
 /* oem palate[:a|0|us] - the late hand over (mt_disp_drv.c rot_pace): a = the front porch less a
  * margin (default), 0 = off, else a fixed window in us. Reports the window, frames handed over
  * late and frames that measured the edge since the last call, and the refresh measured over the
@@ -1465,7 +1473,9 @@ static void cmd_palate(const char *arg, void *data, unsigned sz)
 	s_refreshes = refreshes; s_tick = tick; s_timeouts = timeouts;
 	fastboot_okay("");
 }
+#endif
 
+#if defined(KONKR_KPA)   /* the Konkr's panel pacer (mt_disp_drv.c AYANEO_ROT) */
 /* oem fdelay[:0|1] - the frame delay (mt_disp_drv.c ayaneo_frame_delay): the last frame's delay
  * before the button read, its measured work, delayed frames that still missed their refresh,
  * whether it is backed off; with :0 / :1 turns it off / on (not saved, for A/B checks). */
@@ -1491,6 +1501,7 @@ static void cmd_fdelay(const char *arg, void *data, unsigned sz)
 	}
 	fastboot_okay("");
 }
+#endif
 
 /* oem sd-ls:/dir - list a card directory (name and size per line). Read only. */
 static fat_vol s_fb_vol;
@@ -2353,13 +2364,19 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem resumeinfo", cmd_resumeinfo, 1, 0);
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
+#if defined(KONKR_KPA)
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);
+#endif
+#if defined(KONKR_KPA)
 	fastboot_register("oem palate", cmd_palate, 1, 0);
+#endif
 	fastboot_register("oem memstage", cmd_memstage, 1, 0);
 	fastboot_register("oem gbcpace", cmd_gbcpace, 1, 0);
 	fastboot_register("oem gencommit", cmd_gencommit, 1, 0);
 	fastboot_register("oem fbwc", cmd_fbwc, 1, 0);
+#if defined(KONKR_KPA)
 	fastboot_register("oem fdmargin", cmd_fdmargin, 1, 0);
+#endif
 	fastboot_register("oem close", cmd_close, 1, 0);
 	fastboot_register("oem latled", cmd_latled, 1, 0);
 	fastboot_register("oem boottime", cmd_boottime, 1, 0);

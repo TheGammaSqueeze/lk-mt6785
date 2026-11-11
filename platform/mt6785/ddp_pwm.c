@@ -84,6 +84,7 @@ static disp_pwm_id_t g_pwm_main_id = DISP_PWM0;
  * user's brightness rides on the duty (CON_1), so brightness and strobe cooperate. */
 static unsigned int g_strobe_div = 0;
 static volatile int g_strobe_locked;   /* 1 = re-align the pulse every frame (disp_pwm_strobe_tick) */
+volatile unsigned int g_dbg_strobe_ticks;   /* oem bfi: frame ticks seen (locked strobe only) */
 #if defined(KONKR_KPA)
 /* Konkr: "Strobe" is black frame insertion done with the backlight. One PWM period per panel
  * frame (26 MHz / (424 + 1) / 1024 = 59.74 Hz), the counter restarted at every RDMA frame end
@@ -97,7 +98,6 @@ static volatile int g_strobe_locked;   /* 1 = re-align the pulse every frame (di
 static unsigned int g_bfi_window = 512u;
 static int g_bfi;
 static unsigned int s_last_level_1024 = 1023u;
-volatile unsigned int g_dbg_strobe_ticks;   /* oem bfi: frame ticks seen (locked strobe only) */
 static int g_bfi_mode;                 /* 0 off, 1 one pulse per frame */
 void disp_pwm_bfi_window(unsigned int w)
 {

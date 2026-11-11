@@ -74,6 +74,12 @@
 #if defined(AYANEO_GBA_DR_KHZ) && !defined(AYANEO_DSI_REF_DR_KHZ)
 #define AYANEO_DSI_REF_DR_KHZ AYANEO_GBA_DR_KHZ
 #endif
+#if !defined(AYANEO_GBA_DR_KHZ)
+/* a build without the emulator never changes the MIPI rate live: these only keep the live rate
+ * helpers below compiling (the stock rate stays as the LCM driver set it) */
+#define AYANEO_GBA_DR_KHZ     0u
+#define AYANEO_DSI_REF_DR_KHZ 1u
+#endif
 
 /* AYANEO: panel line rate numerator (milliHz-per-line * total lines) used to map refresh<->vfp:
  * refresh_milliHz = AYANEO_DSI_LINE_CONST / vtotal, vtotal = 976 + vfp. The literal 59684000 was

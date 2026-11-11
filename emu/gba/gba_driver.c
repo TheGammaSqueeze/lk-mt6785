@@ -1254,6 +1254,10 @@ static int ocv_pct(int mv)
  * loop the whole read fits comfortably inside the AFE ring buffer (~341 ms) and is
  * absorbed with no audible artifact - so battery_read needs NO audio pause. */
 #define BATTERY_SAMPLES		4
+#include <platform/boot_mode.h>
+/* boot facts from the preloader's arguments, for every board (oem boottime, the black box) */
+unsigned ayaneo_pl_boot_ms(void) { extern BOOT_ARGUMENT *g_boot_arg; return g_boot_arg ? g_boot_arg->boot_time : 0u; }
+int ayaneo_boot_reason(void) { extern BOOT_ARGUMENT *g_boot_arg; return g_boot_arg ? (int)g_boot_arg->boot_reason : -1; }
 #ifdef KONKR_KPA
 /* The MT6360 charger's own state (PMU block, I2C5 slave 0x34, CHG_STAT 0x4A bits 7:6):
  * 0 ready, 1 charging, 2 done, 3 fault; -1 when the read fails. The voltage table cannot
@@ -1267,8 +1271,6 @@ void ayaneo_ramcon_info(char *out, int n)
 	snprintf(out, n, "ramcon: sram %08x+%x def %u", g_boot_arg->ram_console_sram_addr,
 		 g_boot_arg->ram_console_sram_size, g_boot_arg->ram_console_def_type);
 }
-unsigned ayaneo_pl_boot_ms(void) { extern BOOT_ARGUMENT *g_boot_arg; return g_boot_arg ? g_boot_arg->boot_time : 0u; }
-int ayaneo_boot_reason(void) { extern BOOT_ARGUMENT *g_boot_arg; return g_boot_arg ? (int)g_boot_arg->boot_reason : -1; }
 int ayaneo_mt6360_chg_reg(unsigned char reg)
 {
 	mt_i2c i2c; unsigned char b[2];
@@ -3742,7 +3744,7 @@ void ayaneo_gbc_start(void)
 #endif
 	/* emu_thread only orchestrates (menu + SD + display); both cores emulate on their
 	 * OWN threads (gpSP on gba_cpu, gambatte on gbc_emu, each with its own large stack),
-	 * so 64 KB is enough here. See emu/gbc/gbc_sd_run.c and CORE_PORTING_NOTES.md. */
+	 * so 64 KB is enough here. See emu/gbc/gbc_sd_run.c and documentation/development/core-porting-notes.md. */
 	thread_t *t = thread_create("ayaneo_gba", &emu_thread, NULL,
 				    DEFAULT_PRIORITY, 65536);
 	if (t)

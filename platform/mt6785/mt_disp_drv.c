@@ -4411,3 +4411,23 @@ int ayaneo_fb_wc(int on, unsigned int *va, unsigned int *pa, unsigned int *size)
 	for (i = 0; i < 50 && s_fb_wc_req; i++) thread_sleep(10);
 	return s_fb_wc_res;
 }
+
+#if !(defined(AYANEO_RAINBOW_BOOT) && (defined(AYANEO_GBC) || defined(AYANEO_GBA)))
+/* An LK without the emulator (the plain Pocket Air Mini build): the shared settings code
+ * (ayaneo_audio.c) still loads and stores the display settings, with nothing here to drive. */
+volatile int g_show_fps;
+volatile int g_gba_aspect;
+volatile int g_gbc_aspect;
+void ayaneo_set_overdrive(int on, int kup, int kdn, int thr, int cap)
+{
+	(void)on; (void)kup; (void)kdn; (void)thr; (void)cap;
+}
+void ayaneo_set_overdrive_caps(int up, int dn, int head)
+{
+	(void)up; (void)dn; (void)head;
+}
+void ayaneo_set_overdrive_curve(int kuphi, int kuplo, int gam)
+{
+	(void)kuphi; (void)kuplo; (void)gam;
+}
+#endif

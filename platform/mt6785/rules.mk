@@ -296,11 +296,11 @@ INCLUDES += -I$(DRVGEN_OUT)/inc
 ifeq ($(KONKR_KPA),yes)
 OBJS += $(LOCAL_DIR)/ayaneo_joypad_kpa.o
 OBJS += $(LOCAL_DIR)/ayaneo_aw88166.o
-OBJS += $(LOCAL_DIR)/ayaneo_rot_neon.o
-$(BUILDDIR)/$(LOCAL_DIR)/ayaneo_rot_neon.o: CFLAGS += -O2 -mfpu=neon -mfloat-abi=softfp
 else
 OBJS += $(LOCAL_DIR)/ayaneo_joypad.o
 endif
+# NEON helpers: the Konkr's frame rotation, the rewind ring's change scan, oem perf
+$(BUILDDIR)/$(LOCAL_DIR)/ayaneo_rot_neon.o: CFLAGS += -O2 -mfpu=neon -mfloat-abi=softfp
 
 OBJS += \
 	$(LOCAL_DIR)/bitops.o \
@@ -312,6 +312,7 @@ OBJS += \
 	$(LOCAL_DIR)/ayaneo_volume_input.o \
 	$(LOCAL_DIR)/ayaneo_meminfo.o \
 	$(LOCAL_DIR)/ayaneo_rewind.o \
+	$(LOCAL_DIR)/ayaneo_rot_neon.o \
 	$(LOCAL_DIR)/gpio_init.o \
 	$(LOCAL_DIR)/mt_i2c.o \
 	$(LOCAL_DIR)/mt_latch.o \
@@ -430,8 +431,6 @@ $(BUILDDIR)/emu/snes9x/snes_sd_run.o:      CFLAGS += -Os
 $(BUILDDIR)/emu/genesis/genesis_core_loader.o: CFLAGS += -Os
 $(BUILDDIR)/emu/genesis/genesis_sd_run.o:      CFLAGS += -Os
 endif
-else
-OBJS += emu/gbc/gbc_driver.o
 endif
 
 MTK_DFD_ENABLE_CACHE_DUMP := yes
