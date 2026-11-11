@@ -6,7 +6,7 @@
 #
 # Output:
 #   out/lk_a_kpa_signed.img    flash to lk_a (2 MB, signed with the MTK test key the board uses);
-#                              the only eMMC partition GammaOS writes
+#                              the only eMMC partition GammaOS Pico writes
 #   out/sdcard/                the SD card template: gammaos/ (boot.cfg, menu.pack), cores/,
 #                              bios/, roms/; copy its contents to the root of the card
 #

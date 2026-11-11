@@ -1,18 +1,18 @@
-GammaOS for the Konkr Pocket Advance: the LK, release @VERSION@ (lk-mt6785 @COMMIT@)
+GammaOS Pico for the Konkr Pocket Advance: the LK, release @VERSION@ (lk-mt6785 @COMMIT@)
 
-GammaOS writes one thing on the console: the bootloader (LK), in both of its slots, lk_a and lk_b.
-Android, its data and every other partition stay as they are. With a GammaOS microSD card in the
-slot the console starts GammaOS; without it (or with Boot to Android chosen in the menu) it starts
+GammaOS Pico writes one thing on the console: the bootloader (LK), in both of its slots, lk_a and lk_b.
+Android, its data and every other partition stay as they are. With a GammaOS Pico microSD card in the
+slot the console starts GammaOS Pico; without it (or with Boot to Android chosen in the menu) it starts
 Android as before. The card's contents are in the separate sdcard package.
 
-  spflash/gammaos/   SP Flash Tool (Windows): the GammaOS LK to lk_a and lk_b
+  spflash/gammaos/   SP Flash Tool (Windows): the GammaOS Pico LK to lk_a and lk_b
   spflash/stock/     SP Flash Tool (Windows): the stock LK (BW03) back to lk_a and lk_b
   mtkclient/         mtkclient (Linux): the same two, flash_gammaos.sh and flash_stock.sh
-  fastboot/          fastboot (Windows .bat, Linux .sh): for a console already running GammaOS
+  fastboot/          fastboot (Windows .bat, Linux .sh): for a console already running GammaOS Pico
   SHA256SUMS         checksums of every file here
 
 SP Flash Tool and mtkclient talk to the console's own preloader over USB, so they work on a
-stock console with a locked bootloader. fastboot needs the GammaOS LK already installed.
+stock console with a locked bootloader. fastboot needs the GammaOS Pico LK already installed.
 
 Tested on a console: SP Flash Tool V6 with the .xml scatter, and the fastboot scripts.
 Not yet tested on a console: SP Flash Tool v5 with the .txt scatter, and mtkclient. They write
@@ -44,7 +44,7 @@ the same two partitions with the same files; if you try one, please report how i
    ./flash_gammaos.sh. ModemManager can grab the console's USB port: stop it while flashing
    (sudo systemctl stop ModemManager) if mtkclient never connects.
 
-3. fastboot (updates, GammaOS already installed)
+3. fastboot (updates, GammaOS Pico already installed)
    Put the console in its bootloader: hold SELECT + START + R while powering on (or
    "adb reboot bootloader" from Android). Then run fastboot/flash_gammaos.bat (Windows) or
    fastboot/flash_gammaos.sh (Linux, with fastboot installed).
@@ -53,8 +53,8 @@ Going back to stock: the same ways with spflash/stock/, mtkclient/flash_stock.sh
 fastboot/flash_stock.*. The console then starts Android as it did from the factory, whatever is
 on the card.
 
-Power on buttons (GammaOS LK)
-  SELECT held                start GammaOS from the card (after a Boot to Android)
+Power on buttons (GammaOS Pico LK)
+  SELECT held                start GammaOS Pico from the card (after a Boot to Android)
   SELECT + START held        start Android
   SELECT + START + R held    the bootloader (fastboot)
 

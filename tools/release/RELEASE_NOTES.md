@@ -1,22 +1,22 @@
-GammaOS for the **Konkr Pocket Advance**, release @VERSION@ (lk-mt6785 `@COMMIT@`).
+GammaOS Pico for the **Konkr Pocket Advance**, release @VERSION@ (lk-mt6785 `@COMMIT@`).
 
-GammaOS replaces only the console's bootloader (LK). With the GammaOS microSD card in the slot the
+GammaOS Pico replaces only the console's bootloader (LK). With the GammaOS Pico microSD card in the slot the
 console starts a console menu and plays Game Boy, Game Boy Color, Game Boy Advance, SNES,
 Mega Drive / Genesis, Master System, Game Gear and SG-1000 games from the card. Without the card,
 or after Boot to Android in the menu, Android starts exactly as before.
 
 ## Downloads
 
-- **gammaos-kpa-@VERSION@-flash.zip**: the LK for `lk_a` and `lk_b`, to install GammaOS and to go
+- **gammaos-pico-kpa-@VERSION@-flash.zip**: the LK for `lk_a` and `lk_b`, to install GammaOS Pico and to go
   back to stock: SP Flash Tool v5 and V6 scatters (Windows) and mtkclient scripts (Linux), both of
   which work on a stock console with a locked bootloader, plus fastboot scripts for updates. Read
   its README.txt.
-- **gammaos-kpa-@VERSION@-sdcard.zip**: the card. Copy its contents to the root of a FAT32 or
+- **gammaos-pico-kpa-@VERSION@-sdcard.zip**: the card. Copy its contents to the root of a FAT32 or
   exFAT microSD card. It has the menu, the five emulator cores and the demo games below.
 
 ## Install
 
-1. Flash the GammaOS LK from the flash package: on Windows `spflash/gammaos/` with SP Flash Tool
+1. Flash the GammaOS Pico LK from the flash package: on Windows `spflash/gammaos/` with SP Flash Tool
    (V6 `.xml` or v5 `.txt` scatter, mode Download Only, only `lk_a` and `lk_b` ticked); on Linux
    `mtkclient/flash_gammaos.sh` with [mtkclient](https://github.com/bkerler/mtkclient).
 2. Copy the sdcard package's contents to a microSD card, put it in and power on.
@@ -30,7 +30,7 @@ To go back, flash `spflash/stock/` or run `mtkclient/flash_stock.sh` the same wa
 | Method | Status |
 |---|---|
 | SP Flash Tool V6 with the `.xml` scatter | tested: the route the first consoles were installed with |
-| fastboot scripts (updates) | tested: both slots written, the console starts GammaOS |
+| fastboot scripts (updates) | tested: both slots written, the console starts GammaOS Pico |
 | SP Flash Tool v5 with the `.txt` scatter | **untested** on a console (same partitions and files as V6) |
 | mtkclient on Linux | **untested** on a console (writes the same two partitions) |
 

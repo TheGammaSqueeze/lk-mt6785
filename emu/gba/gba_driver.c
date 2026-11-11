@@ -3532,7 +3532,7 @@ void ayaneo_gbc_start(void);   /* defined just below; spawns emu_thread */
 
 /*
  * The boot mode lives on the card, in /gammaos/boot.cfg: text, one key=value per line, '#'
- * comments, "boot=sd" to start the GammaOS menu from the card, "boot=android" to boot Android.
+ * comments, "boot=sd" to start the GammaOS Pico menu from the card, "boot=android" to boot Android.
  * A card without the file, or without a valid boot line, is not a GammaOS card and the console
  * boots Android. The LK writes nothing on the eMMC for this (the sticky marker that used to live
  * in misc is gone): "Boot to Android" in the menu writes boot=android, holding SELECT at power
@@ -3588,8 +3588,8 @@ static int bootcfg_read(fat_vol *v)
 static int bootcfg_write(fat_vol *v, int mode)
 {
 	static const char head[] =
-		"# GammaOS boot mode for this card.\n"
-		"#   boot=sd       start the GammaOS menu from this card\n"
+		"# GammaOS Pico boot mode for this card.\n"
+		"#   boot=sd       start the GammaOS Pico menu from this card\n"
 		"#   boot=android  boot Android (hold SELECT at power on to come back)\n";
 	static char txt[sizeof head + 32];
 	unsigned n = 0, k;

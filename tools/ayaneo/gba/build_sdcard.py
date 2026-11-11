@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Build the GammaOS SD card template for the LK (the LK owns only lk_a on the eMMC; everything
+"""Build the GammaOS Pico SD card template for the LK (the LK owns only lk_a on the eMMC; everything
 else lives on the card).
 
     build_sdcard.py <menu pack> <out dir> --core NAME=PATH ...
 
 Writes <out dir>/:
-    gammaos/boot.cfg     boot=sd (the LK starts the GammaOS menu from this card)
+    gammaos/boot.cfg     boot=sd (the LK starts the GammaOS Pico menu from this card)
     gammaos/menu.pack    "SNSZ" u32 rawlen u32 complen, then the raw-deflated menu pack
     cores/NAME.blob      each core given with --core (built in its own repository)
     bios/README.txt      where the optional GBA BIOS goes (its boot logo is the intro)
@@ -29,8 +29,8 @@ CORE_SLOT = {
 }
 ROM_DIRS = ["gb", "gbc", "gba", "snes", "genesis", "sms", "gg", "sg"]
 
-BOOT_CFG = ("# GammaOS boot mode for this card.\n"
-            "#   boot=sd       start the GammaOS menu from this card\n"
+BOOT_CFG = ("# GammaOS Pico boot mode for this card.\n"
+            "#   boot=sd       start the GammaOS Pico menu from this card\n"
             "#   boot=android  boot Android (hold SELECT at power on to come back)\n"
             "boot=sd\n")
 BIOS_README = ("Put the Game Boy Advance BIOS here as gba_bios.bin (16384 bytes) for the GBA BIOS boot\n"

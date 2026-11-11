@@ -1,4 +1,4 @@
-# LK (Little Kernel) for MT6785 - GammaOS handheld bootloader
+# LK (Little Kernel) for MT6785 - GammaOS Pico handheld bootloader
 
 A from-source MediaTek MT6785 LK bootloader, based on the
 [svoboda18/lk](https://github.com/svoboda18/lk) fork, for two handhelds of the `k85v1_64` board
@@ -11,9 +11,9 @@ family:
   panel (`./build_ayaneo_pocket_air_mini.sh`, sections below) and the SD build
   (`./build_ayaneo_gba_sd.sh`).
 
-## GammaOS from the microSD card
+## GammaOS Pico from the microSD card
 
-The LK is the only thing GammaOS writes on the eMMC (`lk_a`). With a GammaOS card in the slot it
+The LK is the only thing GammaOS Pico writes on the eMMC (`lk_a`). With a GammaOS Pico card in the slot it
 starts a console menu (a SNES Classic style carousel) and runs Game Boy, Game Boy Color, Game Boy
 Advance, SNES, Mega Drive / Genesis, Master System, Game Gear and SG-1000 games from the card,
 with saves, save states, run ahead, rewind, filters and per core options. Without the card, or
@@ -32,7 +32,7 @@ own repository, here as git submodules under `cores/`:
 | `cores/snes9x-pico` | snes9x | SNES |
 | `cores/genesis-plus-gx-pico` | Genesis Plus GX | Mega Drive / Genesis, Master System, Game Gear, SG-1000 |
 
-Each one keeps the emulator's upstream as its own submodule, unmodified, with the GammaOS changes
+Each one keeps the emulator's upstream as its own submodule, unmodified, with the GammaOS Pico changes
 as patches and the LK glue alongside. The LK holds only the interface headers (`*_core_abi.h`),
 the loaders and the session code.
 
@@ -142,7 +142,7 @@ largest visible effect.
 
 - `dev/lcm/st7703_hd720_dsi_vdo/` - the Pocket Air Mini panel driver + raw init-table dump
 - `dev/lcm/st7123p_hd640_boe_dsi_vdo/` - the Konkr panel driver (both glass init tables)
-- `emu/` - the GammaOS side of the LK: the SD gate, card FAT/exFAT, menu, input, display and
+- `emu/` - the GammaOS Pico side of the LK: the SD gate, card FAT/exFAT, menu, input, display and
   audio drivers, and the loader + session for each core (`emu/gba`, `gbc`, `snes9x`, `genesis`)
 - `cores/` - the emulator core repositories (git submodules)
 - `tools/ayaneo/` - self-contained signer, keys, cert blobs, stock lk_main_dtb, the menu packer
@@ -155,7 +155,7 @@ largest visible effect.
 
 ## Licence
 
-The Little Kernel code and the GammaOS additions are under the MIT licence ([LICENSE](LICENSE)).
+The Little Kernel code and the GammaOS Pico additions are under the MIT licence ([LICENSE](LICENSE)).
 The MediaTek BSP files, the stock firmware files, the SNES Classic menu assets and the emulator
 cores keep their own terms; [LICENSES.md](LICENSES.md) lists which part is under what.
 

@@ -1,12 +1,12 @@
 #!/bin/bash
-# Build the Konkr Pocket Advance GammaOS release from a clone of this repository.
+# Build the Konkr Pocket Advance GammaOS Pico release from a clone of this repository.
 #
 #   tools/release/make_release_kpa.sh [version]        (default version: today, YYYY.MM.DD)
 #
 # Output in out/release/:
-#   gammaos-kpa-<version>-flash.zip    the LK for lk_a and lk_b: SP Flash Tool packages (GammaOS and
+#   gammaos-pico-kpa-<version>-flash.zip    the LK for lk_a and lk_b: SP Flash Tool packages (GammaOS Pico and
 #                                      back to stock) and fastboot scripts for Windows and Linux
-#   gammaos-kpa-<version>-sdcard.zip   the microSD card: menu, the five emulator cores, freely
+#   gammaos-pico-kpa-<version>-sdcard.zip   the microSD card: menu, the five emulator cores, freely
 #                                      licensed demo games with box art, licences and credits
 #   SHA256SUMS, RELEASE_NOTES.md
 #
@@ -22,11 +22,11 @@ cd "$ROOT"
 VER="${1:-$(date +%Y.%m.%d)}"
 R=out/release
 FILES=$R/files
-FLASH=gammaos-kpa-$VER-flash
-CARD=gammaos-kpa-$VER-sdcard
+FLASH=gammaos-pico-kpa-$VER-flash
+CARD=gammaos-pico-kpa-$VER-sdcard
 STOCK=tools/konkr/stock
 
-echo ">> GammaOS for the Konkr Pocket Advance, release $VER"
+echo ">> GammaOS Pico for the Konkr Pocket Advance, release $VER"
 if [ -e .git ]; then
 	echo ">> Fetching the core submodules"
 	git submodule update --init --recursive cores
@@ -49,7 +49,7 @@ F="$FILES/$FLASH"
 mkdir -p "$F/spflash/gammaos" "$F/spflash/stock" "$F/mtkclient" "$F/fastboot"
 for which in gammaos stock; do
 	# SP Flash Tool: the text scatter for v5, the .xml scatter for V6, both ticking lk_a and lk_b
-	if [ $which = gammaos ]; then img=out/lk_a_kpa_signed.img; label=GammaOS; else img="$STOCK/lk.img"; label=stock; fi
+	if [ $which = gammaos ]; then img=out/lk_a_kpa_signed.img; label="GammaOS Pico"; else img="$STOCK/lk.img"; label=stock; fi
 	cp "$img" "$F/spflash/$which/lk_kpa_$which.img"
 	cp "$STOCK/preloader_k85v1_64.bin" "$F/spflash/$which/"
 	for ext in txt xml; do
@@ -63,7 +63,7 @@ for which in gammaos stock; do
 	chmod +x "$F/mtkclient/flash_$which.sh"
 done
 for which in gammaos stock; do
-	if [ $which = gammaos ]; then label=GammaOS; else label=stock; fi
+	if [ $which = gammaos ]; then label="GammaOS Pico"; else label=stock; fi
 	printf '@echo off\r\nrem Flash the %s LK to lk_a and lk_b. The console must be in its bootloader (fastboot).\r\nfastboot flash lk_a lk_kpa_%s.img || goto :fail\r\nfastboot flash lk_b lk_kpa_%s.img || goto :fail\r\nfastboot reboot\r\necho Done.\r\ngoto :eof\r\n:fail\r\necho Flashing failed. Do not restart the console; run this again.\r\n' \
 		"$label" "$which" "$which" > "$F/fastboot/flash_$which.bat"
 	printf '#!/bin/sh\n# Flash the %s LK to lk_a and lk_b. The console must be in its bootloader (fastboot).\ncd "$(dirname "$0")"\nfastboot flash lk_a lk_kpa_%s.img && fastboot flash lk_b lk_kpa_%s.img && fastboot reboot && echo Done. ||\n\techo "Flashing failed. Do not restart the console; run this again."\n' \
@@ -83,7 +83,7 @@ for dir in armGBA-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico;
 	mkdir -p "$d"
 	cp cores/$dir/LICENSE "$d/LICENSE"
 	[ -f cores/$dir/THIRD_PARTY_NOTICES.md ] && cp cores/$dir/THIRD_PARTY_NOTICES.md "$d/"
-	printf 'Built from https://github.com/TheGammaSqueeze/%s at commit %s\n(the emulator upstream is its submodule, the GammaOS changes are in patches/).\n' \
+	printf 'Built from https://github.com/TheGammaSqueeze/%s at commit %s\n(the emulator upstream is its submodule, the GammaOS Pico changes are in patches/).\n' \
 		"$dir" "$(git -C cores/$dir rev-parse HEAD)" > "$d/SOURCE.txt"
 done
 sed "s/@VERSION@/$VER/; s/@COMMIT@/$LK_COMMIT/" tools/release/README_sdcard.txt > "$S/README.txt"

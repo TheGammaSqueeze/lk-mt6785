@@ -17,20 +17,20 @@ Output in `out/`:
 | `lk_a_kpa_signed.img` | `lk_a` | the LK (2 MB), signed with the Konkr cert partitions + stock `lk_main_dtb` |
 | `sdcard/` | the microSD card | the card template: `gammaos/` (boot.cfg, menu.pack), `cores/`, `bios/`, `roms/` |
 
-`lk_a` is the only partition GammaOS writes. `logo`, `boot_a/b`, `vendor_boot`, `dtbo`, `misc`,
-`vendor`, `system` stay stock, so Android boots as before whenever the LK does not start GammaOS.
+`lk_a` is the only partition GammaOS Pico writes. `logo`, `boot_a/b`, `vendor_boot`, `dtbo`, `misc`,
+`vendor`, `system` stay stock, so Android boots as before whenever the LK does not start GammaOS Pico.
 `lk_b` is left stock as a fallback.
 
 The cores are the git submodules under `cores/` (`armGBA-pico`, `gpsp-pico`, `gambatte-pico`,
 `snes9x-pico`, `genesis-plus-gx-pico`), each with the emulator's upstream as its own submodule plus
-GammaOS patches and glue. `tools/ayaneo/gba/make_sdcard.sh` fetches a missing one, rebuilds a core
+GammaOS Pico patches and glue. `tools/ayaneo/gba/make_sdcard.sh` fetches a missing one, rebuilds a core
 whenever its commit changed or its tree has local changes (`out/.built-commit` in each core), and
 notes a core checked out at a different commit than this tree pins. `CORE_REPOS=<dir>` builds from
 other checkouts while working on a core. The core builds need `arm-none-eabi-gcc` and `g++`.
 
 ## Flashing
 
-`lk_a` only. A first flash on a locked stock unit goes through SP Flash Tool: the GammaOS package
+`lk_a` only. A first flash on a locked stock unit goes through SP Flash Tool: the GammaOS Pico package
 (`gammaos/` with a V2.1.0 text scatter that ticks `lk_a` only, Download Only, SP Flash Tool v5)
 or the stock BW03 package's own `.xml` scatter in SP Flash Tool V6 with only `lk_a` ticked (v5.1924
 rejects the BW03 V2.2.0 scatter with S_DL_SCAT_VERSION_SUPPORTED 5079). Keep the stock `lk.img`
@@ -60,7 +60,7 @@ FAT16, FAT32 or exFAT, MBR or GPT, first partition. Case insensitive names. Copy
 the root and add games.
 
 ```
-/gammaos/boot.cfg        boot=sd (start GammaOS) or boot=android (one key per line, # comments)
+/gammaos/boot.cfg        boot=sd (start GammaOS Pico) or boot=android (one key per line, # comments)
 /gammaos/menu.pack       the menu assets (compressed)
 /gammaos/settings.bin    the settings (written by the LK; /gba/settings.bin is still read once)
 /gammaos/cart_header.bin the last game's header, so the intro starts at once (written by the LK)
@@ -84,12 +84,12 @@ ROMs can also be pushed over USB with `tools/ayaneo/push_roms.py <system> <files
 On a normal power on the panel comes up on the stock timing and the SD gate decides:
 
 - SELECT + START held: Android. SELECT + START + R held: fastboot.
-- SELECT held: GammaOS, rewriting `boot=sd` if the card was set to Android (the way back after
+- SELECT held: GammaOS Pico, rewriting `boot=sd` if the card was set to Android (the way back after
   the menu's Boot to Android, which writes `boot=android` and restarts).
-- Two watchdog resets in a row inside the GammaOS path: Android (the never brick guard).
+- Two watchdog resets in a row inside the GammaOS Pico path: Android (the never brick guard).
 - No card, a card that does not mount, no valid `boot.cfg`, `boot=android` or no `menu.pack`:
   Android, with the stock logo and the stock panel timing.
-- Otherwise GammaOS starts. The GBA cores are optional:
+- Otherwise GammaOS Pico starts. The GBA cores are optional:
   - armGBA on the card: the intro is the card's GBA BIOS boot logo on armGBA, or armGBA's own Open
     BIOS splash when there is no valid BIOS. GBA games default to armGBA (the in-game menu can pick
     gpSP when the card has a BIOS).
@@ -104,7 +104,7 @@ On a normal power on the panel comes up on the stock timing and the SD gate deci
 
 Every boot initialises the ST7123 exactly as the stock LK does: sync 4, back porch 40, front porch
 280, PLL_CLOCK 177 (354 Mbps, integer PCW), start line 0x2C in register 0xD7. Android, recovery,
-fastboot and the charging screen keep it. When the SD gate starts GammaOS it retimes the running
+fastboot and the charging screen keep it. When the SD gate starts GammaOS Pico it retimes the running
 panel (`st7123_gammaos_timing`, `ayaneo_dsi_retime`): start line 4 written to 0xD7 in video mode,
 the PHY timing words for PLL 239, sync 2 / back porch 2 / front porch 769, 477.6 Mbps. That is
 1739 lines at 59.7275 Hz with 9.24 ms of scan and 7.5 ms of blanking. The PLL spread spectrum

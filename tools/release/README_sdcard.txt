@@ -1,9 +1,9 @@
-GammaOS for the Konkr Pocket Advance: the microSD card, release @VERSION@ (lk-mt6785 @COMMIT@)
+GammaOS Pico for the Konkr Pocket Advance: the microSD card, release @VERSION@ (lk-mt6785 @COMMIT@)
 
 Copy everything in this folder to the root of a microSD card formatted FAT32 or exFAT, put the
-card in the console and power it on. The console needs the GammaOS LK first (the flash package).
+card in the console and power it on. The console needs the GammaOS Pico LK first (the flash package).
 
-  gammaos/boot.cfg     boot=sd starts GammaOS; boot=android starts Android (the menu's Boot to
+  gammaos/boot.cfg     boot=sd starts GammaOS Pico; boot=android starts Android (the menu's Boot to
                        Android sets it; hold SELECT at power on to come back)
   gammaos/menu.pack    the menu
   cores/               the emulator cores: armGBA and gpSP (Game Boy Advance), gambatte (Game

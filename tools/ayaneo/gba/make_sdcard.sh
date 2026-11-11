@@ -3,7 +3,7 @@
 # Run from the LK tree root by build_konkr_kpa.sh and build_ayaneo_gba_sd.sh.
 #
 # The cores are git submodules under cores/, each its own repository (upstream emulator as a
-# submodule + GammaOS patches + glue): armGBA-pico, gpsp-pico, gambatte-pico, snes9x-pico,
+# submodule + GammaOS Pico patches + glue): armGBA-pico, gpsp-pico, gambatte-pico, snes9x-pico,
 # genesis-plus-gx-pico. A core that is not checked out yet is fetched (with its upstream); a core
 # whose checkout differs from the commit this tree pins is built as it is, with a note. Each core
 # is built with its build.sh whenever its blob is missing, its commit changed since the last build
