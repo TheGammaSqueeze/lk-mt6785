@@ -42,6 +42,7 @@ done
 rm -rf "$FILES" "$R"/*.zip "$R"/SHA256SUMS "$R"/RELEASE_NOTES.md
 mkdir -p "$FILES/$FLASH" "$FILES/$CARD"
 LK_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+LK_COMMIT_FULL=$(git rev-parse HEAD 2>/dev/null || echo lk-gba-emu-sd-card-kpa)   # the screenshots in the notes
 
 # ---- the flash package ----
 echo ">> Flash package"
@@ -93,7 +94,7 @@ echo ">> Zips"
 python3 tools/release/det_zip.py "$S" "$R/$CARD.zip"
 python3 tools/release/det_zip.py "$F" "$R/$FLASH.zip"
 (cd "$R" && sha256sum "$FLASH.zip" "$CARD.zip" > SHA256SUMS)
-sed "s/@VERSION@/$VER/g; s/@COMMIT@/$LK_COMMIT/g" tools/release/RELEASE_NOTES.md > "$R/RELEASE_NOTES.md"
+sed "s/@VERSION@/$VER/g; s/@COMMIT@/$LK_COMMIT/g; s/@COMMIT_FULL@/$LK_COMMIT_FULL/g" tools/release/RELEASE_NOTES.md > "$R/RELEASE_NOTES.md"
 python3 - "$R/RELEASE_NOTES.md" tools/release/demo_games.json <<'PY'
 import json, sys
 notes, games = sys.argv[1], json.load(open(sys.argv[2]))

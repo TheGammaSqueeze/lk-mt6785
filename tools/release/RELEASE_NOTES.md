@@ -5,6 +5,8 @@ console starts a console menu and plays Game Boy, Game Boy Color, Game Boy Advan
 Mega Drive / Genesis, Master System, Game Gear and SG-1000 games from the card. Without the card,
 or after Boot to Android in the menu, Android starts exactly as before.
 
+![The game list](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/game-list.png)
+
 ## What makes it different
 
 GammaOS Pico isn't an app on top of Android or a Linux distro. It runs inside the console's
@@ -22,6 +24,21 @@ bootloader, before any operating system, and owns the hardware outright.
   microSD card. Swap the card, swap the whole setup.
 - **The good stuff from the start.** Rewind, fast forward, save states, suspend points, scanline
   and LCD filters, colour correction and backlight black frame insertion, in a box art menu.
+
+## Screenshots
+
+Captured on a Konkr Pocket Advance.
+
+| | |
+|---|---|
+| ![Game list with the demo games](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/demo-games.png) | ![Suspend points](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/suspend-points.png) |
+| The game list, every system in one row, with the demo games from this release | Suspend points, made when you reset a game |
+| ![Display settings](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/display.png) | ![Options](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/options.png) |
+| Display: CRT filter, 4:3 or pixel perfect, and a frame around the game | Options: menu and BIOS sounds, burn-in reduction, Boot to Android |
+| ![In game](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/in-game.png) | ![The Pico menu](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu.png) |
+| In game, with the LCD filter | The Pico menu over the game (Menu button) |
+| ![More of the Pico menu](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu-more.png) | ![Core Settings](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/core-settings.png) |
+| Run-ahead, rewind, BFI, the live panel refresh and the core choice | Core Settings: each core's own options |
 
 ## Buttons
 
