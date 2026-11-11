@@ -19,7 +19,9 @@
 
 extern BOOT_ARGUMENT *g_boot_arg;
 
-#define REWIND_SCRATCH_END 0x56000000ULL /* end of the 128MB emulator scratch; look above this */
+#define REWIND_SCRATCH_END 0x57400000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
+					   * menu's box art slots (SNES_BOXART_PA, 20 MB, gba_snes_menu.c);
+					   * look above both */
 #define REWIND_VA_LIMIT    0x100000000ULL /* LK is 32-bit VA (identity) - can only map phys < 4GB */
 #define REWIND_CAP         0x40000000u    /* per-block ceiling (1GB); the largest real island (mblk10
 					   * ~1022MB) sits just under it, so no block is actually capped -
@@ -68,8 +70,12 @@ unsigned int ayaneo_rewind_map(void)
 		unsigned long long s = mi->mblock[i].start;
 		unsigned long long sz = mi->mblock[i].size;
 		unsigned long long abase, end, asz, avail;
-		if (s < REWIND_SCRATCH_END || s >= REWIND_VA_LIMIT)
-			continue;                                   /* must be above scratch + sub-4GB */
+		if (s + sz <= REWIND_SCRATCH_END || s >= REWIND_VA_LIMIT)
+			continue;                                   /* must reach above scratch + sub-4GB */
+		if (s < REWIND_SCRATCH_END) {                    /* the block above the scratch starts at */
+			sz -= REWIND_SCRATCH_END - s;               /* 0x56000000: skip the box art at its foot */
+			s = REWIND_SCRATCH_END;
+		}
 		abase = (s + (SECTION_SIZE - 1)) & ~((unsigned long long)SECTION_SIZE - 1);  /* 2MB up */
 		end = s + sz;
 		if (end > REWIND_VA_LIMIT)

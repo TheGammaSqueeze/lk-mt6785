@@ -331,11 +331,14 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
 #define SNES_CTILE2_CAP  12
 #endif
 /* Per-ROM box art, one slot for every game the list holds (128). The gap between the transition
- * buffers above held only 20, and the games past the 20th drew the plain cartridge. The slots live
- * in DRAM the preloader leaves free and nothing in the LK uses (0x56000000..0x7D000000, oem
+ * buffers above held only 20, and the games past the 20th drew the plain cartridge. The slots sit
+ * right above the emulator scratch, in DRAM the preloader leaves free (0x56000000..0x7D000000, oem
  * meminfo), outside the window the LK maps at boot: mapped write-back on the menu's first entry.
- * No core touches it, so the tiles survive a game and are not read again on the way back. */
-#define SNES_BOXART_PA   0x60000000u
+ * The rewind ring maps the free DRAM above REWIND_SCRATCH_END (ayaneo_rewind.c), which starts past
+ * these 20 MB: at 0x60000000 the slots were inside its arena, which reaches them after about 24
+ * minutes of one game and wrote over the tiles. No core touches it, so the tiles survive a game and
+ * are not read again on the way back. */
+#define SNES_BOXART_PA   0x56000000u
 #define SNES_BOXART_SLOT 0x25000u    /* bytes per tile slot (>= 224*224*3) */
 #define SNES_BOXART_CAP  128         /* 128 * 0x25000 = 0x1280000 */
 #define SNES_BOXART_MAP  0x01400000u /* the mapping: 20 MB, whole 2 MB sections */
