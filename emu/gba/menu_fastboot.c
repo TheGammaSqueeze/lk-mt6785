@@ -2263,6 +2263,31 @@ static void cmd_clk(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+#if defined(KONKR_KPA)
+/* oem ff[:1|:0|:r1|:r0] - fast forward (or with r, rewind) on or off as an R2 (L2) press would
+ * toggle it; reports the state, the R2 and L2 flips seen and the batch counters */
+static void cmd_ff(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_joypad_ff_force(int on), ayaneo_joypad_rw_force(int on);
+	extern int ayaneo_joypad_ff_level(void);
+	extern volatile unsigned int g_dbg_ff_flips, g_dbg_rw_flips, g_dbg_ff_frames, g_dbg_ff_misses, g_dbg_ff_margin_us;
+	extern volatile unsigned int g_dbg_ff_skip_us, g_dbg_ff_rend_us;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == '1' || *arg == '0') ayaneo_joypad_ff_force(*arg == '1');
+	else if (*arg == 'r' && (arg[1] == '1' || arg[1] == '0')) ayaneo_joypad_rw_force(arg[1] == '1');
+	snprintf(lbuf, sizeof lbuf, "ff: %s R2 flips=%u L2 flips=%u", ayaneo_joypad_ff_level() ? "on" : "off",
+		 g_dbg_ff_flips, g_dbg_rw_flips);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "ff: frames=%u misses=%u margin=%uus", g_dbg_ff_frames, g_dbg_ff_misses, g_dbg_ff_margin_us);
+	fastboot_info(lbuf);
+	{ extern volatile unsigned g_gen_dbg_frames;
+	  snprintf(lbuf, sizeof lbuf, "ff: GBA skip=%uus rend=%uus Genesis frames=%u", g_dbg_ff_skip_us, g_dbg_ff_rend_us, g_gen_dbg_frames); }
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+#endif
+
 /* oem volstep:+N|-N - turn the volume wheel N detents from USB (the steps go through the same queue
  * the wheel decoder fills, so whatever is running takes them as wheel turns); reports the volume */
 static void cmd_volstep(const char *arg, void *data, unsigned sz)
@@ -2411,6 +2436,9 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem dsiw", cmd_dsiw, 1, 0);
 	fastboot_register("oem dsitime", cmd_dsitime, 1, 0);
 	fastboot_register("oem volstep", cmd_volstep, 1, 0);
+#if defined(KONKR_KPA)
+	fastboot_register("oem ff", cmd_ff, 1, 0);
+#endif
 	fastboot_register("oem introbg", cmd_introbg, 1, 0);
 	fastboot_register("oem gray", cmd_gray, 1, 0);
 	fastboot_register("oem awdump", cmd_awdump, 1, 0);

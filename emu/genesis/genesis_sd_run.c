@@ -714,8 +714,12 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (c->set_av_skip) c->set_av_skip(last ? 0 : 2, 0);
 				c->run(&fr);
 				us = (gpt4_get_current_tick() - _t) / 13u;
-				if (last) s_gen_rend_us += ((int)us - (int)s_gen_rend_us) / 4;
-				else { s_gen_skip_us += ((int)us - (int)s_gen_skip_us) / 4; skipc = s_gen_skip_us; }
+				if (last) {
+					s_gen_rend_us += ((int)us - (int)s_gen_rend_us) / 4;
+					/* the skipped frame cost only moves when one runs: capped at the rendered
+					 * cost (measured every batch) so one slow frame cannot keep fast forward at 2x */
+					if (s_gen_skip_us > s_gen_rend_us) s_gen_skip_us = s_gen_rend_us;
+				} else { s_gen_skip_us += ((int)us - (int)s_gen_skip_us) / 4; skipc = s_gen_skip_us; }
 				g_gen_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 				if (last && rw_payload && ayaneo_rewind_ready()) {   /* one snapshot per shown frame */
 					void *p = ayaneo_rewind_capture_begin();

@@ -204,6 +204,7 @@ static volatile int s_fast_forward;
 static volatile int s_ff_level;			/* right-trigger fast-forward level 0..255 (0 = off) */
 static unsigned int s_ff_t0;			/* tick the committed frame started (fast forward budget) */
 static int s_ff_active;				/* this loop frame ran a fast forward batch */
+volatile unsigned int g_dbg_ff_skip_us, g_dbg_ff_rend_us;   /* oem ff: the batch's frame cost estimates */
 #define FF_MAX_MULT   10			/* full press = up to 10x (CPU-bound = fastest, audio kept) */
 
 /* Rewind (left trigger): a snapshot (core state + 128 KB sound ring) is pushed for EVERY committed
@@ -3159,6 +3160,13 @@ static int emu_thread(void *arg)
 						run_one_frame();
 						us = (gpt4_get_current_tick() - t) / 13u;
 						s_ff_rend_us += ((int)us - (int)s_ff_rend_us) / 4;
+						/* The skipped frame cost only moves when a skipped frame runs: one slow one (a
+						 * translation burst) left it above the budget for good, no skipped frame ran
+						 * again and fast forward sat at 2x until the game was closed. A frame that
+						 * skips its render costs no more than one that draws, and that one is measured
+						 * every batch: cap the estimate there. */
+						if (s_ff_skip_us > s_ff_rend_us) s_ff_skip_us = s_ff_rend_us;
+						g_dbg_ff_skip_us = s_ff_skip_us; g_dbg_ff_rend_us = s_ff_rend_us;
 						{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 						gba_rewind_snap();
 						n++;
