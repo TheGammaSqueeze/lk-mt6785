@@ -66,7 +66,7 @@ endif
 # Experimental: after the boot animation, run a GBA emulator (gpSP, ARM dynarec)
 # in LK instead of the kernel. Mutually exclusive with the GBC build - it takes
 # over the same hooks (ayaneo_gbc_start / _charging_screen / _select_held). The
-# core archive (emu/gba/libgpsp.a) must be prebuilt via emu/gba/build_core_gba.sh.
+# core is a loadable blob built in its own repository (gpsp-pico, armGBA-pico).
 # Enable with `AYANEO_GBA=yes`.
 # GBA-from-SD-card flow (branch lk-gba-emu-sd-card): load gba_bios.bin + ROMs from
 # the microSD (roms/gba, saves/gba, states/gba) instead of boot_b, with a ROM-select
@@ -89,10 +89,8 @@ endif
 AYANEO_GBA ?= no
 ifeq ($(AYANEO_GBA),yes)
 DEFINES += AYANEO_GBA
-# The gpSP core is NOT linked into lk_a anymore: it ships as a loadable blob in boot_b
-# (core_gba.blob) and gba_core_loader.c pulls it into DRAM at boot. This frees ~993 KiB
-# of the 2 MB partition. libgpsp.a is still built (build_core_gba.sh) to feed the blob
-# link (build_core_blob.sh), just not linked here. So GBA_LIB stays empty.
+# The GBA core is not linked into lk_a: it is a loadable blob (on the SD card in the SD build)
+# that gba_core_loader.c pulls into DRAM. So GBA_LIB stays empty.
 GBA_LIB :=
 AYANEO_GBC := no
 # Diagnostic: force the pure interpreter (no ARM dynarec) to isolate JIT issues.

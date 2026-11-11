@@ -1,17 +1,14 @@
 #!/bin/bash
 #
-# Build the GBA-from-SD-card LK for the AYANEO Pocket Air Mini (MT6785 /
-# k85v1_64) and package the flashable artifacts. This is the SD+menu variant of
-# the branch lk-gba-emu-sd-card: ROMs/BIOS/saves come from the microSD and the
-# ROM-select screen is the SNES-Classic-mini-style carousel (emu/gba/gba_menu.c).
-#
-# IMPORTANT: this passes AYANEO_GBA_SD=yes (which implies AYANEO_GBA and defines
-# AYANEO_GBA_SD). The plain build_ayaneo_gba.sh only sets AYANEO_GBA=yes and does
-# NOT link the SD flow or the carousel menu - use THIS script for this branch.
+# Build + sign the GBA/GB/GBC/SNES/Genesis-from-SD LK for the AYANEO Pocket Air Mini (MT6785 /
+# k85v1_64) and build the SD card template. The LK owns only lk_a on the eMMC; the menu pack, the
+# cores, the settings and the boot mode (gammaos/boot.cfg) live on the card.
 #
 # Produces:
-#   out/lk_a_gba_sd_signed.img -> flash to lk_a   (bootloader + emulator + menu)
-#   out/gba_menu_boot_b.img    -> flash to boot_b (anim + chime + menu asset pack)
+#   out/lk_a_gba_sd_signed.img -> flash to lk_a
+#   out/sdcard/                -> copy its contents to the root of the card
+#
+# The cores come from their own repositories (tools/ayaneo/gba/make_sdcard.sh, CORE_REPOS).
 #
 # Usage:
 #   ./build_ayaneo_gba_sd.sh [clean]
@@ -22,27 +19,9 @@ PROJECT=k85v1_64
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-[ "$1" = "clean" ] && rm -rf "build-$PROJECT" out emu/gba/obj emu/gba/libgpsp.a
+[ "$1" = "clean" ] && rm -rf "build-$PROJECT" out
 
 JOBS="$(nproc 2>/dev/null || echo 4)"
-
-echo ">> Building gpSP core objects (dynarec)"
-emu/gba/build_core_gba.sh >/dev/null
-
-echo ">> Linking gpSP core blob for boot_b (core is not in lk_a)"
-emu/gba/build_core_blob.sh >/dev/null
-
-echo ">> Building gambatte GB/GBC core objects + blob for boot_b"
-emu/gbc/build_core.sh >/dev/null
-emu/gbc/build_core_blob.sh >/dev/null 2>&1
-
-echo ">> Building snes9x SNES core objects + blob for boot_b"
-emu/snes9x/build_core.sh >/dev/null
-emu/snes9x/build_core_blob.sh >/dev/null 2>&1
-
-echo ">> Building Genesis-Plus-GX (MD/SMS/GG/SG) core objects + blob for boot_b"
-emu/genesis/build_core.sh >/dev/null 2>&1
-emu/genesis/build_core_blob.sh >/dev/null 2>&1
 
 echo ">> Building $PROJECT (AYANEO_GBA_SD=yes, jobs=$JOBS)"
 rm -f "build-$PROJECT/lk" "build-$PROJECT/lk.img"
@@ -61,47 +40,9 @@ mkdir -p out
 echo ">> Signing LK"
 python3 tools/ayaneo/sign_lk.py "$BUILT" out/lk_a_gba_sd_signed.img
 
-# The ROM-select screen is the REAL SNES-Classic-mini menu. Its asset pack is
-# built from the non-ROM SNES-mini firmware assets vendored into this tree
-# (tools/ayaneo/snes/assets) so a fresh GitHub checkout builds self-contained -
-# no external asset tree needed. The copyrighted .sfrom ROMs and box art are NOT
-# vendored (ROMs come from the SD card); only the menu UI assets are. Override
-# SNES_ASSETS to point at a full firmware tree if you want the SNES box art too.
-SNES_ASSETS="${SNES_ASSETS:-$ROOT/tools/ayaneo/snes/assets}"
-if [ -d "$SNES_ASSETS" ]; then
-	echo ">> Generating GBA cartridge placeholder"
-	python3 tools/ayaneo/gba/gen_gba_cart.py out/gba_cart.png
-
-	echo ">> Packing SNES menu assets (with GBA cart placeholder + console badges)"
-	python3 tools/ayaneo/snes/pack_snes.py "$SNES_ASSETS" out/snes_pack.bin \
-		--rgb565 --gba-cart out/gba_cart.png \
-		--logo-gb      tools/ayaneo/snes/logos/gb.png \
-		--logo-gbc     tools/ayaneo/snes/logos/gbc.png \
-		--logo-gba     tools/ayaneo/snes/logos/gba.png \
-		--logo-snes    tools/ayaneo/snes/logos/snes.png \
-		--logo-genesis tools/ayaneo/snes/logos/genesis.png \
-		--logo-sms     tools/ayaneo/snes/logos/sms.png \
-		--logo-gg      tools/ayaneo/snes/logos/gg.png \
-		--logo-sg      tools/ayaneo/snes/logos/sg.png
-
-	echo ">> Packaging boot_b (animation + chime + SNES pack)"
-	python3 tools/ayaneo/gba/build_snes_boot_b.py out/snes_pack.bin out/gba_menu_boot_b.img
-
-	# The pack (hence boot_b) is byte-deterministic: it only changes when the SNES
-	# assets or the cart art change. Report whether it differs from the last build so
-	# the user can skip re-flashing the ~22MB boot_b on code-only (lk_a) changes.
-	BOOT_B_CHANGED=1
-	PACK_SHA="$(sha256sum out/snes_pack.bin | cut -d' ' -f1)"
-	if [ -f out/.snes_pack.sha ] && [ "$(cat out/.snes_pack.sha)" = "$PACK_SHA" ]; then
-		BOOT_B_CHANGED=0
-	fi
-	echo "$PACK_SHA" > out/.snes_pack.sha
-
-	# Non-fatal but COMPREHENSIVE validation: run the full host suite against the freshly
-	# packed blob - all 21 menu states non-blank, audio assets resolve, launch returns the
-	# right ROM (incl after sort), and (when the ARM cross-gcc + qemu are present) the
-	# device NEON blitter + nav/sort/launch logic match the scalar reference. Catches far
-	# more than the old single-path smoke test, at build time rather than on device.
+if tools/ayaneo/gba/make_sdcard.sh; then
+	# Non-fatal host suite on the fresh pack: every menu state non-blank, audio assets resolve,
+	# launch returns the right ROM, and (with the ARM cross gcc + qemu) the NEON blitter matches.
 	if command -v gcc >/dev/null 2>&1; then
 		echo ">> Validating the pack (host suite: states + audio + launch + NEON)"
 		if bash tools/ayaneo/gba/validate_menu.sh out/snes_pack.bin 2>&1 | sed 's/^/   /'; then
@@ -111,16 +52,10 @@ if [ -d "$SNES_ASSETS" ]; then
 		fi
 	fi
 else
-	echo "!! SNES_ASSETS dir not found: $SNES_ASSETS" >&2
-	echo "   set SNES_ASSETS=<snes-mini asset tree> to build the menu boot_b." >&2
-	echo "   (LK still built; it falls back to the plain list without the pack.)" >&2
+	echo "!! LK built and signed; no card template" >&2
 fi
 
 echo
 echo ">> Done."
-echo "   Signed LK:  out/lk_a_gba_sd_signed.img -> fastboot flash lk_a    out/lk_a_gba_sd_signed.img"
-echo "   boot_b:     out/gba_menu_boot_b.img    -> fastboot flash boot_b  out/gba_menu_boot_b.img"
-if [ "${BOOT_B_CHANGED:-1}" = "0" ]; then
-	echo "   NOTE: boot_b assets are UNCHANGED since the last build - you can skip"
-	echo "         re-flashing boot_b and just flash lk_a (a code-only change)."
-fi
+echo "   Signed LK:     out/lk_a_gba_sd_signed.img -> fastboot flash lk_a out/lk_a_gba_sd_signed.img"
+echo "   Card template: out/sdcard/                -> copy to the root of the card"

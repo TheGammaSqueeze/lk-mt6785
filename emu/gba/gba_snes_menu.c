@@ -144,7 +144,7 @@ extern int  ayaneo_get_mute_bios(void);
 extern void ayaneo_set_mute_menu(int v);
 extern void ayaneo_set_mute_bios(int v);
 extern void ayaneo_settings_save(void);
-extern void ayaneo_menu_settings_persist(void);    /* persist to BOTH eMMC + SD (menu path) */
+extern void ayaneo_menu_settings_persist(void);    /* persist to the card, off this thread */
 extern int  ayaneo_present_skip_framedone;         /* 0 = present blocks on vsync */
 extern int  ayaneo_wait_frame_done(void);          /* block one vsync WITHOUT re-latching the OVL */
 extern unsigned int gpt4_get_current_tick(void);   /* 13 MHz free-running counter */
@@ -180,7 +180,7 @@ extern void mt_power_off(void);
 
 /* Volume / brightness control from the menu (same as the in-game poll): the two
  * hardware volume keys change volume; SELECT + a volume key changes brightness. A
- * small OSD bar is drawn over the menu, and the persist is deferred so the eMMC/SD
+ * small OSD bar is drawn over the menu, and the persist is deferred so the card
  * write does not stall the loop (mirror of gba_driver.c poll_volume). */
 extern int  ayaneo_gbc_audio_get_volume(void);
 extern void ayaneo_gbc_audio_set_volume(int v);
@@ -265,9 +265,7 @@ static void menu_av_poll(void)
 		s_av_tick = gpt4_get_current_tick();
 	}
 
-	/* flush the persist ~0.7s after the last change (off the key-repeat hot path).
-	 * Persist to BOTH eMMC AND the SD card: in SD mode the boot settings are loaded
-	 * from the SD card, so an eMMC-only write is lost on the next power-cycle. */
+	/* flush the persist ~0.7s after the last change (off the key-repeat hot path) */
 	if (s_av_dirty && (gpt4_get_current_tick() - s_av_tick) >= 9100000u) {
 		s_av_dirty = 0;
 		ayaneo_menu_settings_persist();
@@ -929,7 +927,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 				if (mute_last >= 0) {
 					ayaneo_set_mute_bios(mb & 1);
 					ayaneo_set_mute_menu((mb >> 1) & 1);
-					ayaneo_menu_settings_persist();	/* eMMC + SD (SD-mode boot reads SD) */
+					ayaneo_menu_settings_persist();	/* to the card, off this thread */
 				}
 				mute_last = mb;
 			}

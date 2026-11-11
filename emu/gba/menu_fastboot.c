@@ -273,7 +273,9 @@ static void cmd_cores(const char *arg, void *data, unsigned sz)
 /* oem gen-bench[:N] - headless Genesis core throughput benchmark: find the first ROM in /roms/genesis
  * (Sonic), load it, run N (default 300) frames UNCAPPED at a fixed-safe 1400 MHz on the genesis thread,
  * and report per-frame emu us / fps / state save+load us / an implied rewind speed. This is the stable
- * metric an autonomous optimization loop pushes (raw core speed, no display/vsync). Run it at the menu. */
+ * metric an autonomous optimization loop pushes (raw core speed, no display/vsync). Run it at the menu.
+ * It runs the core outside the menu thread, so the menu's unpacked assets in the shared arena are
+ * overwritten and the menu draws without its title and hints until the next boot or game launch. */
 static void cmd_gen_bench(const char *arg, void *data, unsigned sz)
 {
 	extern void *gba_sd_menu_vol(void);                 /* opaque fat_vol* (no sd_fat.h here) */
@@ -509,7 +511,7 @@ static void cmd_preempt(const char *arg, void *data, unsigned sz)
 {
 	extern void ayaneo_set_preempt_frames(int v);
 	extern int ayaneo_get_preempt_frames(void);
-	extern void ayaneo_menu_settings_persist(void);	/* eMMC + SD (SD-mode boot reads SD) */
+	extern void ayaneo_menu_settings_persist(void);	/* to the card, off this thread */
 	(void)data; (void)sz;
 	while (*arg == ' ' || *arg == ':') arg++;
 	if (*arg >= '0' && *arg <= '9') {
@@ -1061,8 +1063,8 @@ static void cmd_suspendtest(const char *arg, void *data, unsigned sz)
 	g_dbg_suspend_test = 1;
 	for (w = 0; w < 400u && g_dbg_suspend_test; w++) thread_sleep(50);
 	if (g_dbg_suspend_test) { g_dbg_suspend_test = 0; fastboot_fail("no game running"); return; }
-	snprintf(lbuf, sizeof lbuf, "suspend: state=%ums ok=%u sav=%ums emmc=%ums sd=%ums", g_dbg_suspend_ms[0],
-		 g_dbg_suspend_ms[4], g_dbg_suspend_ms[1], g_dbg_suspend_ms[2], g_dbg_suspend_ms[3]);
+	snprintf(lbuf, sizeof lbuf, "suspend: state=%ums ok=%u sav=%ums settings=%ums", g_dbg_suspend_ms[0],
+		 g_dbg_suspend_ms[4], g_dbg_suspend_ms[1], g_dbg_suspend_ms[2]);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -1943,15 +1945,26 @@ static void cmd_bbram(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem core - the GBA core in the slot: gpSP (boot_b) or the SD card's (armGBA-pico) */
+/* oem core[:gpsp|:armgba|:auto] - the GBA core in the slot (both load from the card's /cores);
+ * with an argument, a RAM-only override of the core for the next GBA game (the saved preference
+ * is untouched; gpSP still needs a BIOS) */
 static void cmd_core(const char *arg, void *data, unsigned sz)
 {
 	extern const struct gba_core_exports *gba_core_current(void);
 	extern volatile unsigned int g_dbg_core_switch_ms, g_dbg_core_is_sd;
+	extern volatile int g_dbg_core_force;
 	const struct gba_core_exports *c = gba_core_current();
-	(void)arg; (void)data; (void)sz;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == 'g') g_dbg_core_force = 2;
+	else if (*arg == 'a' && arg[1] == 'r') g_dbg_core_force = 1;
+	else if (*arg == 'a') g_dbg_core_force = 0;
+	if (*arg) {
+		snprintf(lbuf, sizeof lbuf, "core: next GBA game on %s", g_dbg_core_force == 2 ? "gpSP" : g_dbg_core_force ? "armGBA" : "the saved choice");
+		fastboot_info(lbuf);
+	}
 	if (!c) { fastboot_info("core: none loaded"); fastboot_okay(""); return; }
-	snprintf(lbuf, sizeof lbuf, "core: v%u %s sd=%u switch=%ums state=%u", c->version,
+	snprintf(lbuf, sizeof lbuf, "core: v%u %s armgba=%u switch=%ums state=%u", c->version,
 		 (c->version >= 3 && c->name) ? c->name : "gpSP", g_dbg_core_is_sd, g_dbg_core_switch_ms, c->state_size ? c->state_size() : 0);
 	fastboot_info(lbuf);
 	if (c->version >= 3) {
@@ -1968,7 +1981,7 @@ static void cmd_core(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem blackbox[:clear] - the event records kept on the eMMC (faults, charging screen hand overs) */
+/* oem blackbox[:clear] - the event records kept on the card (faults, charging screen hand overs) */
 static void cmd_blackbox(const char *arg, void *data, unsigned sz)
 {
 	extern void ayaneo_bb_dump(void (*emit)(const char *), char *line, int n);
@@ -2080,17 +2093,17 @@ static void cmd_ledset(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem persist - queue a settings write (eMMC + SD mirror) and report the last write's durations */
+/* oem persist - queue a settings write (to the card) and report the last write's durations */
 static void cmd_persist(const char *arg, void *data, unsigned sz)
 {
 	extern void ayaneo_menu_settings_persist(void);
-	extern volatile unsigned g_dbg_persist_emmc_us, g_dbg_persist_sd_us, g_dbg_persist_n;
+	extern volatile unsigned g_dbg_persist_us, g_dbg_persist_core_us, g_dbg_persist_n;
 	extern volatile int g_dbg_mlead_min;
 	(void)data; (void)sz;
 	while (*arg == ' ' || *arg == ':') arg++;
 	if (arg[0] == 'r') g_dbg_mlead_min = 99999;
 	else ayaneo_menu_settings_persist();
-	snprintf(lbuf, sizeof lbuf, "persist: n=%u emmc=%uus sd=%uus menu_lead_min=%d", g_dbg_persist_n, g_dbg_persist_emmc_us, g_dbg_persist_sd_us, g_dbg_mlead_min);
+	snprintf(lbuf, sizeof lbuf, "persist: n=%u settings=%uus core=%uus menu_lead_min=%d", g_dbg_persist_n, g_dbg_persist_us, g_dbg_persist_core_us, g_dbg_mlead_min);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }

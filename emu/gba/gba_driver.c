@@ -260,6 +260,9 @@ static volatile int s_menu_open;
 static int s_core_is_sd;              /* g_core is the SD card's core */
 static int s_core_pref;               /* 0 = the card's core when it is there, 1 = gpSP */
 static int s_sdcore_present = -1;     /* checked at the first GBA launch, once the card is mounted */
+/* oem core:gpsp|armgba|auto - a test override of the core choice for the next GBA game, in RAM only
+ * (the saved preference is untouched): 0 follows the setting, 1 armGBA, 2 gpSP (needs a BIOS) */
+volatile int g_dbg_core_force;
 static int s_menu_page;               /* 0 the Pico menu, 1 Core Settings */
 static int s_core_sel;                /* the selected row on the Core Settings page */
 static volatile int s_corecfg_dirty;
@@ -492,8 +495,8 @@ static void poll_volume(void)
 			ayaneo_gbc_audio_set_volume(v);
 			ayaneo_gbc_osd_show(1, ayaneo_gbc_audio_get_volume());
 		}
-		/* Defer the persist. ayaneo_settings_save() + sd_settings_mirror() do an
-		 * eMMC + SD/FAT write that stalls this loop for many ms; done inline on
+		/* Defer the persist. ayaneo_settings_save() does a card (FAT) write
+		 * that stalls this loop for many ms; done inline on
 		 * every key repeat, the audio ring is starved between steps and the AFE
 		 * DMA loops the last frames (the "audio looping between volume steps").
 		 * Mark dirty + timestamp instead; the game loop flushes ONCE, ~0.7s after
@@ -676,7 +679,7 @@ static void try_load_state(unsigned char *scratch)
 static const char *gba_sd_current_name(void);   /* the ROM running from the card, or NULL */
 #endif
 /* The suspend save of the power key, timed per step (oem suspendtest: [0] state, [1] battery save,
- * [2] eMMC settings, [3] SD settings, ms; [4] state write result) */
+ * [2] settings, ms; [4] state write result; [3] is left 0) */
 volatile unsigned int g_dbg_suspend_ms[5];
 volatile int g_dbg_suspend_test;
 static int s_game_live;   /* a game (not the bare BIOS) runs: only then is there anything to save */
@@ -704,12 +707,12 @@ static void save_for_suspend(unsigned char *scratch)
 	g_dbg_suspend_ms[0] = (t1 - t0) / 13000u;
 	g_dbg_suspend_ms[1] = (t2 - t1) / 13000u;
 	g_dbg_suspend_ms[2] = (t3 - t2) / 13000u;
-	g_dbg_suspend_ms[3] = (gpt4_get_current_tick() - t3) / 13000u;
+	g_dbg_suspend_ms[3] = 0;
 }
 
 static void save_and_poweroff(unsigned char *scratch)
 {
-	/* Mute the game audio FIRST so the ~1s eMMC/SD save does not replay the AFE ring
+	/* Mute the game audio FIRST so the ~1s card save does not replay the AFE ring
 	 * (the loop the user heard on power-off). pause(1) both wipes the ring and stops
 	 * the submit path refeeding it; the permanent mute is fine here - we are shutting
 	 * down anyway (audio_shutdown follows). */
@@ -1751,8 +1754,8 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	default: changed = 0; break;
 	}
 	if (changed) {
-		/* DEFER the persist. ayaneo_settings_save() + sd_settings_mirror() do an eMMC +
-		 * SD/FAT write that stalls this loop for ~1 s; done inline on every menu change
+		/* DEFER the persist. ayaneo_settings_save() does a card (FAT) write that
+		 * stalls this loop for ~1 s; done inline on every menu change
 		 * (brightness, LCD filter, ...) that stall stutters the game and skips audio
 		 * WHILE the menu is open. Mark dirty + timestamp instead and let the game loop
 		 * flush ONCE, ~0.7 s after the last change, with the audio ring silenced across
@@ -2109,6 +2112,13 @@ static const struct gba_core_exports *gba_core_load_pref(int want_armgba, int *g
 	return ex;
 }
 
+/* armGBA for the next GBA game: always without a BIOS (gpSP has none of its own) */
+static int gba_want_armgba(void)
+{
+	if (!s_have_bios) return 1;
+	if (g_dbg_core_force) return g_dbg_core_force == 1;
+	return s_sdcore_present > 0 && s_core_pref == 0;
+}
 /* The core for the next GBA game, initialised for it; 0 when no GBA core loads. */
 static unsigned char *gba_core_for_launch(void)
 {
@@ -2116,7 +2126,7 @@ static unsigned char *gba_core_for_launch(void)
 	int want_armgba;
 	if (!s_corecfg_loaded) corecfg_load();
 	if (s_sdcore_present < 0) { fat_file f; s_sdcore_present = (fat_open(&s_sd_vol, SDCORE_PATH, &f) == 0) ? 1 : 0; }
-	want_armgba = (s_sdcore_present > 0 && s_core_pref == 0) || !s_have_bios;
+	want_armgba = gba_want_armgba();
 	if (!g_core || want_armgba != s_core_is_sd) {
 		int got = 0;
 		g_core = gba_core_load_pref(want_armgba, &got);
@@ -2391,14 +2401,10 @@ int ayaneo_settings_store(const unsigned char *b, int n)
 	return gba_sd_settings_write(&s_sd_vol, b, n);
 }
 
-/* Persist GammaOS settings to BOTH stores: boot_b (eMMC) and, in SD mode, the SD card.
- * The SNES ROM-select menu MUST use this instead of ayaneo_settings_save() alone: in SD
- * mode the boot settings are LOADED from the SD card (gba_sd_settings_load), so a menu
- * change written only to eMMC is overwritten by the stale SD copy on the next power-cycle
- * (the "menu volume/brightness does not stick" bug). */
-/* Settings persist off the game thread. A volume tick or a Pico change used to write the eMMC
- * block and the SD mirror synchronously on the emulation thread (tens to hundreds of ms on a
- * slow card) and the audio ring ran dry: the stutter the user heard on every adjustment. Now
+/* Settings persist off the game thread (to /gammaos/settings.bin, and the GBA core choice to its
+ * own file). A volume tick or a Pico change used to write the settings synchronously on the
+ * emulation thread (tens to hundreds of ms on a slow card) and the audio ring ran dry: the stutter
+ * the user heard on every adjustment. Now
  * the change marks the settings dirty and a low priority writer thread does the storage work,
  * coalescing bursts (wheel spins) into one write; the block layer is serialised by the storage
  * mutex (sd_fat.c) and whole file writes by the fat_wr mutex, so the game may touch the card
@@ -2406,7 +2412,7 @@ int ayaneo_settings_store(const unsigned char *b, int n)
 static volatile int s_persist_dirty, s_persist_busy;
 static int s_persist_thread_up;
 static event_t s_persist_ev;
-volatile unsigned g_dbg_persist_emmc_us, g_dbg_persist_sd_us, g_dbg_persist_n;   /* oem led: the last settings write */
+volatile unsigned g_dbg_persist_us, g_dbg_persist_core_us, g_dbg_persist_n;   /* oem persist: the last settings write */
 static int persist_thread(void *arg)
 {
 	(void)arg;
@@ -2420,8 +2426,8 @@ static int persist_thread(void *arg)
 			ayaneo_settings_save();   /* to the card (ayaneo_settings_store) */
 			t1 = gpt4_get_current_tick();
 			if (s_corecfg_dirty) { s_corecfg_dirty = 0; corecfg_save(); }
-			g_dbg_persist_emmc_us = (t1 - t0) / 13u;
-			g_dbg_persist_sd_us = (gpt4_get_current_tick() - t1) / 13u;
+			g_dbg_persist_us = (t1 - t0) / 13u;   /* wall time: the low priority writer waits for idle CPU */
+			g_dbg_persist_core_us = (gpt4_get_current_tick() - t1) / 13u;
 			g_dbg_persist_n++;
 		}
 		s_persist_busy = 0;
@@ -2604,7 +2610,7 @@ static int emu_thread(void *arg)
 		int got = 0;
 		if (!s_corecfg_loaded) corecfg_load();
 		{ fat_file f; s_sdcore_present = (fat_open(&s_sd_vol, SDCORE_PATH, &f) == 0) ? 1 : 0; }
-		g_core = gba_core_load_pref((s_sdcore_present > 0 && s_core_pref == 0) || !s_have_bios, &got);
+		g_core = gba_core_load_pref(gba_want_armgba(), &got);
 		s_core_is_sd = got;
 		g_dbg_core_is_sd = (unsigned)got;
 	}
@@ -3170,7 +3176,7 @@ static int emu_thread(void *arg)
 					extern void gba_menu_arm_reverse(const unsigned short *game_frame);
 					unsigned char *rp = gba_core_rom_ptr();
 					long rsz;
-					/* Wipe the shared AFE ring FIRST, BEFORE the slow eMMC/SD saves:
+					/* Wipe the shared AFE ring FIRST, BEFORE the slow card saves:
 					 * the CPU thread is parked here so nothing refeeds the ring, and
 					 * state_write/sav_save stall the loop for ~1s during which the DMA
 					 * would otherwise replay the last game audio (the loop the user

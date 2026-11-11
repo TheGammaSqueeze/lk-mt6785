@@ -8,7 +8,7 @@ Dump your own 16 KB gba_bios.bin (or use an open-source replacement BIOS) and ru
     ./gen_bios_header.py /path/to/gba_bios.bin
 
 gba_driver.c #includes the generated header and hands the 16 KB to the core via
-load_bios_mem(). build_core_gba.sh will remind you if it is missing.
+load_bios_mem() (non-SD builds only; the SD build reads the BIOS from the card).
 """
 import sys, os
 

@@ -388,16 +388,12 @@ OBJS += emu/gba/gba_sd_save.o
 ifeq ($(AYANEO_GBA_SD),yes)
 OBJS += emu/gba/sd_fastboot.o
 OBJS += emu/gba/menu_fastboot.o
-# GB/GBC (gambatte) loadable core: only the tiny lk_a-side loader lives in the image;
-# the C++ core itself is a boot_b blob (emu/gbc/core_gbc.blob), like the gpSP GBA core.
+# The cores are loadable blobs on the SD card (/cores/*.blob, built in their own -pico repos);
+# lk_a carries only the loader and the session runner (video, input, audio) for each.
 OBJS += emu/gbc/gbc_core_loader.o
 OBJS += emu/gbc/gbc_sd_run.o
-# snes9x SNES core is a THIRD boot_b blob (emu/snes9x/core_snes.blob); lk_a carries only
-# the small loader + session runner (video/input/audio driver), like the gbc side.
 OBJS += emu/snes9x/snes_core_loader.o
 OBJS += emu/snes9x/snes_sd_run.o
-# Genesis-Plus-GX (Sega MD/SMS/GG/SG) core is a FOURTH boot_b blob (emu/genesis/core_genesis.blob);
-# lk_a carries only the small loader + session runner, like the other loadable cores.
 OBJS += emu/genesis/genesis_core_loader.o
 OBJS += emu/genesis/genesis_sd_run.o
 # SNES-Classic-mini-style carousel menu engine (imported from lk-snes-menu). The

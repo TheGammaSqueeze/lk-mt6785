@@ -193,8 +193,8 @@ static unsigned int s_audio_ms;
 /* Settings block offset in boot_b. MUST NOT be 0x01E00000 - that is where the snes9x core
  * blob lives (SNES_BLOB_OFF), and writing settings there corrupted the blob on every
  * brightness/volume/filter change (SNES then failed to load, magic read back as "ASET").
- * Moved to a dedicated 512 B slot in the boot_b tail, past all three core blobs; the packer
- * (build_snes_boot_b.py) guards the snes blob against overlapping it. Settings are also
+ * Moved to a dedicated 512 B slot in the boot_b tail, past all three core blobs (the old
+ * non-SD boot_b layout; the SD build keeps its settings on the card). Settings are also
  * mirrored to the SD card, which stays authoritative, so this relocation loses nothing. */
 #if defined(KONKR_KPA)
 /* The Konkr's boot_b is 32 MB (the pairmini's 33 MB): 0x020FF000 was past its end, inside
