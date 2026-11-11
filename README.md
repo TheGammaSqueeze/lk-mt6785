@@ -5,6 +5,8 @@ It replaces only the LK bootloader and runs Game Boy, Game Boy Color, Game Boy A
 Mega Drive / Genesis, Master System, Game Gear and SG-1000 games straight from a microSD card.
 Take the card out and the console boots its stock Android as before.
 
+![The game list](documentation/screenshots/game-list.png)
+
 Supported consoles:
 
 - **Konkr Pocket Advance**: the main target. Downloads are on the
@@ -30,6 +32,22 @@ bootloader, before any operating system, and owns the hardware outright.
   microSD card. Swap the card, swap the whole setup.
 - **The good stuff from the start.** Rewind, fast forward, save states, suspend points, scanline
   and LCD filters, colour correction and backlight black frame insertion, in a box art menu.
+
+## Screenshots
+
+Captured on a Konkr Pocket Advance from the display buffers; the Pico menu shots lay its overlay over
+the game the way the display hardware blends them.
+
+| | |
+|---|---|
+| ![Game list with the demo games](documentation/screenshots/demo-games.png) | ![Suspend points](documentation/screenshots/suspend-points.png) |
+| The game list, every system in one row, with the demo games from the release | Suspend points, made when you reset a game |
+| ![Display settings](documentation/screenshots/display.png) | ![Options](documentation/screenshots/options.png) |
+| Display: CRT filter, 4:3 or pixel perfect, and a frame around the game | Options: menu and BIOS sounds, burn-in reduction, Boot to Android |
+| ![In game](documentation/screenshots/in-game.png) | ![The Pico menu](documentation/screenshots/pico-menu.png) |
+| In game, with the LCD filter | The Pico menu over the game (Menu button) |
+| ![More of the Pico menu](documentation/screenshots/pico-menu-more.png) | ![Core Settings](documentation/screenshots/core-settings.png) |
+| Run-ahead, rewind, BFI, the live panel refresh and the core choice | Core Settings: each core's own options |
 
 ## Buttons
 
