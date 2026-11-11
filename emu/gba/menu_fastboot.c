@@ -180,8 +180,6 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		fastboot_info(lbuf);
 	}
 	{
-		extern volatile unsigned g_snes_dbg_loaderr, g_snes_dbg_hdr0;
-		extern volatile int g_snes_dbg_prc;
 		extern volatile unsigned g_snes_dbg_pitch, g_snes_dbg_nz, g_snes_dbg_changed;
 		extern volatile unsigned g_snes_dbg_audframes, g_snes_dbg_hz1000, g_snes_dbg_vfp;
 		extern unsigned int ayaneo_dsi_get_vfp(void);
@@ -248,50 +246,24 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem snes-probe - read the 20-byte blob header directly from boot_b at each core's
- * offset (gbc 0x01900000, gpSP 0x01C00000, snes 0x01E00000) and report partition_read's
- * return + the magic word. Runs on the fastboot thread (no game loop), so it safely tests
- * whether the SNES blob is readable at its offset without launching anything. snes magic
- * should be 0x31534e53 ("SNS1"). */
-static void cmd_snes_probe(const char *arg, void *data, unsigned sz)
+/* oem cardcores - the core files on the card: for each, whether it is there and its header (magic,
+ * version, image and total size). Reads 20 bytes per file; nothing is loaded or run. */
+static void cmd_cores(const char *arg, void *data, unsigned sz)
 {
-	extern long partition_read(const char *part, long long off, unsigned char *buf, unsigned long len);
-	unsigned char b[20]; long r; unsigned m;
+	extern void *gba_sd_menu_vol(void);   /* the mounted card (fat_vol *), 0 outside SD mode */
+	static const char *const paths[] = { "/cores/armgba-pico.blob", "/cores/gpsp-pico.blob",
+		"/cores/gambatte-pico.blob", "/cores/snes9x-pico.blob", "/cores/genesis-plus-gx-pico.blob" };
+	fat_vol *v = (fat_vol *)gba_sd_menu_vol();
+	unsigned i;
 	(void)arg; (void)data; (void)sz;
-	r = partition_read("boot_b", 0x01900000LL, b, 20); m = *(unsigned *)b;
-	snprintf(lbuf, sizeof lbuf, "probe gbc  @0x01900000 rc=%ld m=0x%08x", r, m); fastboot_info(lbuf);
-	r = partition_read("boot_b", 0x01C00000LL, b, 20); m = *(unsigned *)b;
-	snprintf(lbuf, sizeof lbuf, "probe gpsp @0x01C00000 rc=%ld m=0x%08x", r, m); fastboot_info(lbuf);
-	r = partition_read("boot_b", 0x01E00000LL, b, 20); m = *(unsigned *)b;
-	snprintf(lbuf, sizeof lbuf, "probe snes @0x01E00000 rc=%ld m=0x%08x (want 0x31534e53)", r, m); fastboot_info(lbuf);
-	/* actually load it (safe here: no game loop) and report which check passed/failed */
-	{
-		extern void *snes_core_load(void);   /* returns the exports table ptr, NULL on fail */
-		extern volatile unsigned g_snes_dbg_loaderr;
-		void *ex = snes_core_load();
-		snprintf(lbuf, sizeof lbuf, "probe load: ex=%s loaderr=%u", ex ? "OK" : "NULL", g_snes_dbg_loaderr);
-		fastboot_info(lbuf);
-	}
-	fastboot_okay("");
-}
-
-/* oem gen-probe - read the Genesis-Plus-GX blob header from boot_b @0x01A00000 (magic should be
- * 0x31474553 "SEG1"), then genesis_core_load() it (safe on the fastboot thread: the loader only
- * copies the image + calls the blob entry, no emulation) and report the exports magic + loaderr.
- * Validates the blob-in-boot_b + loader path WITHOUT needing a Genesis ROM on the card. */
-static void cmd_gen_probe(const char *arg, void *data, unsigned sz)
-{
-	extern long partition_read(const char *part, long long off, unsigned char *buf, unsigned long len);
-	unsigned char b[20]; long r; unsigned m;
-	(void)arg; (void)data; (void)sz;
-	r = partition_read("boot_b", 0x01A00000LL, b, 20); m = *(unsigned *)b;
-	snprintf(lbuf, sizeof lbuf, "probe genesis @0x01A00000 rc=%ld m=0x%08x (want 0x31474553)", r, m);
-	fastboot_info(lbuf);
-	{
-		extern const void *genesis_core_load(void);   /* returns exports ptr, NULL on fail */
-		extern volatile unsigned g_gen_dbg_loaderr;
-		const void *ex = genesis_core_load();
-		snprintf(lbuf, sizeof lbuf, "probe load: ex=%s loaderr=%u", ex ? "OK" : "NULL", g_gen_dbg_loaderr);
+	if (!v) { fastboot_fail("cardcores: no card mounted (not in SD mode)"); return; }
+	for (i = 0; i < sizeof paths / sizeof paths[0]; i++) {
+		fat_file f; unsigned h[5] = { 0, 0, 0, 0, 0 };
+		if (fat_open(v, paths[i], &f) != 0) snprintf(lbuf, sizeof lbuf, "%s: missing", paths[i] + 7);
+		else {
+			fat_read(&f, 0, h, sizeof h);
+			snprintf(lbuf, sizeof lbuf, "%s: %08x v%u %u/%u", paths[i] + 7, h[0], h[1], h[3], h[4]);
+		}
 		fastboot_info(lbuf);
 	}
 	fastboot_okay("");
@@ -2293,8 +2265,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem stickscan", cmd_stickscan, 1, 0);
 	fastboot_register("oem trigscan", cmd_trigscan, 1, 0);
 	fastboot_register("oem joytest", cmd_joytest, 1, 0);
-	fastboot_register("oem snes-probe", cmd_snes_probe, 1, 0);
-	fastboot_register("oem gen-probe", cmd_gen_probe, 1, 0);
+	fastboot_register("oem cardcores", cmd_cores, 1, 0);
 	fastboot_register("oem gen-rw", cmd_gen_rw, 1, 0);
 	fastboot_register("oem gen-bench", cmd_gen_bench, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);

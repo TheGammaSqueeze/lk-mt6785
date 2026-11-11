@@ -21,7 +21,7 @@
 #include <kernel/event.h>
 extern const char *ayaneo_strobe_name(int b);
 
-extern const struct snes_core_exports *snes_core_load(void);   /* snes_core_loader.c */
+extern const struct snes_core_exports *snes_core_load(fat_vol *v);   /* snes_core_loader.c: from the card */
 extern void     ayaneo_snes_show_frame(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px);
 extern unsigned int ayaneo_get_cpu_mhz(void);
 extern void         ayaneo_set_cpu_mhz(unsigned int mhz);   /* ARM-PLL OPP (see gba_driver s_cpu_opp) */
@@ -570,7 +570,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	g_snes_dbg_heapused = 0;
 	g_snes_dbg_w = g_snes_dbg_h = 0; g_snes_dbg_loadrc = 0xFF;
 
-	c = snes_core_load();
+	c = snes_core_load(vol);
 	if (!c) { g_snes_dbg_exit = 2; return; }   /* blob load failed */
 	g_snes_dbg_stage = 2;
 

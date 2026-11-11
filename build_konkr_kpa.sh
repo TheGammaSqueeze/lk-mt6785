@@ -5,11 +5,15 @@
 #   ./build_konkr_kpa.sh [clean]
 #
 # Output:
-#   out/lk_a_kpa_signed.img    flash to lk_a (2 MB, signed with the MTK test key the board uses)
-#   out/kpa_menu_boot_b.img    flash to boot_b (animation + chime + menu pack + core blobs)
+#   out/lk_a_kpa_signed.img    flash to lk_a (2 MB, signed with the MTK test key the board uses);
+#                              the only eMMC partition GammaOS writes
+#   out/sdcard/                the SD card template: gammaos/ (boot.cfg, menu.pack), cores/,
+#                              bios/, roms/; copy its contents to the root of the card
 #
-# The core blobs are shared with the pairmini build (same SoC, same ABI); only the LK itself is
-# board specific (project/k85v1_64_kpa.mk). Nothing here touches a device.
+# The cores are built in their own repositories, next to this tree by default (CORE_REPOS, default
+# the directory that holds the kpa folder): armGBA-pico, gpsp-pico, gambatte-pico, snes9x-pico,
+# genesis-plus-gx-pico. A core whose blob is missing is built with its build.sh. Nothing here
+# touches a device.
 set -e
 
 PROJECT=k85v1_64_kpa
@@ -19,20 +23,6 @@ cd "$ROOT"
 [ "$1" = "clean" ] && rm -rf "build-$PROJECT" out emu/gba/obj emu/gba/libgpsp.a
 
 JOBS="$(nproc 2>/dev/null || echo 4)"
-
-echo ">> Building gpSP core objects (dynarec)"
-emu/gba/build_core_gba.sh >/dev/null
-echo ">> Linking gpSP core blob for boot_b"
-emu/gba/build_core_blob.sh >/dev/null
-echo ">> Building gambatte GB/GBC core + blob"
-emu/gbc/build_core.sh >/dev/null
-emu/gbc/build_core_blob.sh >/dev/null 2>&1
-echo ">> Building snes9x core + blob"
-emu/snes9x/build_core.sh >/dev/null
-emu/snes9x/build_core_blob.sh >/dev/null 2>&1
-echo ">> Building Genesis-Plus-GX core + blob"
-emu/genesis/build_core.sh >/dev/null 2>&1
-emu/genesis/build_core_blob.sh >/dev/null 2>&1
 
 echo ">> Building $PROJECT (jobs=$JOBS)"
 rm -f "build-$PROJECT/lk" "build-$PROJECT/lk.img"
@@ -70,11 +60,27 @@ if [ -d "$SNES_ASSETS" ]; then
 		--logo-gg      tools/ayaneo/snes/logos/gg.png \
 		--logo-sg      tools/ayaneo/snes/logos/sg.png
 
-	echo ">> Packaging boot_b (animation + chime + menu pack + cores)"
-	python3 tools/ayaneo/gba/build_snes_boot_b.py --konkr out/snes_pack.bin out/kpa_menu_boot_b.img
+	echo ">> Building the SD card template (out/sdcard)"
+	CORE_REPOS="${CORE_REPOS:-$(cd "$ROOT/../.." && pwd)}"
+	CORE_ARGS=()
+	for spec in armgba-pico:armGBA-pico gpsp-pico:gpsp-pico gambatte-pico:gambatte-pico \
+		    snes9x-pico:snes9x-pico genesis-plus-gx-pico:genesis-plus-gx-pico; do
+		name="${spec%%:*}"; repo="$CORE_REPOS/${spec#*:}"
+		blob="$repo/out/$name.blob"
+		if [ ! -f "$blob" ] && [ -x "$repo/build.sh" ]; then
+			echo "   building $name in $repo"
+			(cd "$repo" && ./build.sh >/dev/null)
+		fi
+		if [ -f "$blob" ]; then
+			CORE_ARGS+=(--core "$name=$blob")
+		else
+			echo "!! $name: no $blob (core left off the card template)" >&2
+		fi
+	done
+	python3 tools/ayaneo/gba/build_sdcard.py out/snes_pack.bin out/sdcard "${CORE_ARGS[@]}"
 else
-	echo "!! SNES_ASSETS dir not found: $SNES_ASSETS (LK built and signed; no boot_b)" >&2
+	echo "!! SNES_ASSETS dir not found: $SNES_ASSETS (LK built and signed; no card template)" >&2
 fi
 
 echo
-echo ">> Done: out/lk_a_kpa_signed.img"
+echo ">> Done: out/lk_a_kpa_signed.img and out/sdcard/"

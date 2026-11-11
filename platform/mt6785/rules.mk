@@ -376,6 +376,7 @@ OBJS += \
 ifeq ($(AYANEO_GBA),yes)
 OBJS += emu/gba/gba_driver.o
 OBJS += emu/gba/gba_core_loader.o
+OBJS += emu/gba/core_file.o		# cores load from the SD card (core_file.h)
 OBJS += emu/gba/gba_cc_lut444.o		# color-correction LUT (LK display-side, not core)
 OBJS += emu/gba/gba_boxart.o
 OBJS += emu/gba/gba_boxart_sd.o

@@ -17,7 +17,7 @@
 #include <kernel/event.h>
 
 /* ---- LK / driver primitives (externs; no LK headers here) ---- */
-extern const struct genesis_core_exports *genesis_core_load(void);   /* genesis_core_loader.c */
+extern const struct genesis_core_exports *genesis_core_load(fat_vol *v);   /* genesis_core_loader.c: from the card */
 extern void     ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px);
 extern void     ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz);
 extern void     ayaneo_menu_audio_silence(void);
@@ -461,7 +461,7 @@ static void genesis_power_check(void)
 
 static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 {
-	const struct genesis_core_exports *c = genesis_core_load();
+	const struct genesis_core_exports *c = genesis_core_load(vol);
 	unsigned romsz, sr = 44100, ssz, rw_payload, saved_mhz;
 	int aya_prev = 0, aya_hold = 0, rw_acc = 0, reset_hold = 0;
 	int up_h = 0, dn_h = 0, lt_h = 0, rt_h = 0;             /* menu nav auto-repeat hold counters */
@@ -851,7 +851,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
  * autonomous optimization loop has one stable number to push. No display/audio - pure core throughput. */
 static void genesis_bench_body(fat_vol *vol, const gba_rom_entry *rom, int frames)
 {
-	const struct genesis_core_exports *c = genesis_core_load();
+	const struct genesis_core_exports *c = genesis_core_load(vol);
 	unsigned romsz, ssz, rwp, saved_mhz; int i;
 	unsigned int t0, t1;
 	struct genesis_frame fr;

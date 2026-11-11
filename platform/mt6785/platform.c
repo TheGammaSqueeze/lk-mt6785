@@ -681,10 +681,16 @@ static void lk_vb_vfy_logo(void)
  * factory boots are never deferred. */
 #include <kernel/thread.h>
 static int s_bat_late, s_audio_early;
+/* a normal boot with a card in may go to the GammaOS menu (the card's boot.cfg decides) */
 static int emu_boot_expected(void)
 {
-	extern int ayaneo_boot_to_os_pending(void);
-	return (g_boot_mode == NORMAL_BOOT || g_boot_mode == SW_REBOOT) && !ayaneo_boot_to_os_pending();
+	extern int gba_sd_card_present(void);
+	return (g_boot_mode == NORMAL_BOOT || g_boot_mode == SW_REBOOT) && gba_sd_card_present();
+}
+/* mt_logo.c: hold the boot logo back until the SD gate knows where the boot goes */
+int ayaneo_logo_defer(void)
+{
+	return emu_boot_expected();
 }
 static int bat_late_thread(void *arg)
 {
@@ -706,6 +712,7 @@ void ayaneo_emu_boot_started(void)
 /* the boot goes to Android after all: the stock steps now, and the early audio off */
 void ayaneo_emu_boot_abandoned(void)
 {
+	{ extern void ayaneo_show_deferred_logo(void); ayaneo_show_deferred_logo(); }   /* mt_logo.c */
 	if (s_audio_early) {
 		extern void ayaneo_gbc_audio_shutdown(void);
 		ayaneo_gbc_audio_shutdown();
@@ -720,6 +727,9 @@ void ayaneo_emu_boot_abandoned(void)
 #else
 void ayaneo_emu_boot_started(void) { }
 void ayaneo_emu_boot_abandoned(void) { }
+#endif
+#if defined(AYANEO_GBA_SD) && !defined(KONKR_KPA)
+int ayaneo_logo_defer(void) { return 0; }
 #endif
 
 void platform_init(void)

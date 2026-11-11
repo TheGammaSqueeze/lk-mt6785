@@ -9,6 +9,10 @@
 # AYANEO_GBA, and AYANEO_GBC := no) are evaluated at include time, so a value set afterwards
 # would leave the C code built as the GBC variant with the GBA SD flow bolted on.
 AYANEO_GBA_SD := yes
+# The GBA BIOS boot from the card is the intro: no boot chime (it lived in boot_b, which the LK
+# no longer reads or writes; the LK owns only lk_a on the eMMC). AYANEO_RAINBOW_BOOT stays on: it
+# also carries the emulator display code; the animation itself is compiled out of the SD build.
+AYANEO_BOOT_AUDIO := no
 
 include project/k85v1_64.mk
 

@@ -1,20 +1,26 @@
 /*
- * Black box: a few event records kept on the eMMC (boot_b, inside the partition) so that an
- * event nobody watched - a fault in the night, the charging screen starting the system on its
- * own - can be read back after the next boot with `oem blackbox`. Four 512 B slots used as a
- * ring by sequence number. Written from the fault handler (before the halt) and from the
- * offline charging screen when it hands over to the system. Read only on demand.
+ * Black box: a few event records kept on the SD card (/gammaos/blackbox.bin) so that an event
+ * nobody watched - a fault in the night, the charging screen starting the system on its own - can
+ * be read back after the next boot with `oem blackbox`. Four 512 B slots used as a ring by
+ * sequence number. Nothing is written on the eMMC. A record made while no card is mounted (the
+ * fault handler, the charging screen) waits in a watchdog proof DRAM page until a boot with the
+ * card moves it (ayaneo_bb_boot_check).
  */
 #include <string.h>
 #include <printf.h>
 #include <kernel/thread.h>
-#include <part_interface.h>
 #include <arch/arm/mmu.h>
 extern unsigned int gpt4_get_current_tick(void);
 
-#define BB_PART   "boot_b"
-#define BB_OFF    0x01FFC000u          /* 4 x 512 B, between the BIOS cache and the settings block */
+#define BB_DIR    "/gammaos"
+#define BB_NAME   "blackbox.bin"       /* 4 x 512 B */
 #define BB_SLOTS  4u
+/* the card, through the SD driver (gba_driver.c); < 0 when no card is mounted. A build without
+ * the SD driver has no card: these weak stubs keep the records in DRAM. */
+int __attribute__((weak)) ayaneo_card_read(const char *dir, const char *name, void *buf, unsigned int len)
+{ (void)dir; (void)name; (void)buf; (void)len; return -1; }
+int __attribute__((weak)) ayaneo_card_write(const char *dir, const char *name, const void *buf, unsigned int len)
+{ (void)dir; (void)name; (void)buf; (void)len; return -1; }
 #define BB_MAGIC  0x58424241u          /* "ABBX" */
 
 struct bb_rec {
@@ -36,11 +42,13 @@ unsigned int ayaneo_bb_uptime_ms(void)
 	return s_bb_up_ms;
 }
 
-static void bb_write(struct bb_rec *r)
+/* into the card's ring; < 0 when there is no card to write */
+static int bb_write(struct bb_rec *r)
 {
 	static unsigned char buf[512 * BB_SLOTS] __attribute__((aligned(64)));
 	unsigned int i, max = 0, slot;
-	if (partition_read(BB_PART, BB_OFF, buf, sizeof buf) == (ssize_t)sizeof buf)
+	memset(buf, 0, sizeof buf);
+	if (ayaneo_card_read(BB_DIR, BB_NAME, buf, sizeof buf) >= 0)
 		for (i = 0; i < BB_SLOTS; i++) {
 			struct bb_rec *o = (struct bb_rec *)(buf + i * 512u);
 			if (o->magic != BB_MAGIC) continue;
@@ -48,14 +56,14 @@ static void bb_write(struct bb_rec *r)
 			/* the same event already in the ring (a DRAM record moved twice): keep one copy */
 			if (o->type == r->type && o->up_ms == r->up_ms && o->pc == r->pc && o->dfar == r->dfar &&
 			    !memcmp(o->msg, r->msg, sizeof o->msg))
-				return;
+				return 0;
 		}
 	r->magic = BB_MAGIC;
 	r->seq = max + 1u;
 	slot = r->seq % BB_SLOTS;
-	memset(buf, 0, 512);
-	memcpy(buf, r, sizeof *r);
-	partition_write(BB_PART, BB_OFF + slot * 512u, buf, 512);
+	memset(buf + slot * 512u, 0, 512);
+	memcpy(buf + slot * 512u, r, sizeof *r);
+	return ayaneo_card_write(BB_DIR, BB_NAME, buf, sizeof buf);
 }
 
 static int bb_boot_reason(void) { extern int ayaneo_boot_reason(void); return ayaneo_boot_reason(); }
@@ -69,7 +77,8 @@ static int bb_boot_reason(void) { extern int ayaneo_boot_reason(void); return ay
  * device: a marker there survives the watchdog reset, while the free DRAM below the rewind islands
  * (0x55FFF000, tried first) comes back as all ones. */
 #define BB_RAM      ((volatile struct bb_rec *)0x4D0EF000u)
-#define BB_RAM_MAGIC 0x52424241u          /* "ABBR": a fault record waiting for the eMMC */
+#define BB_RAM_NOTE ((volatile struct bb_rec *)0x4D0EF200u)   /* a note made with no card mounted */
+#define BB_RAM_MAGIC 0x52424241u          /* "ABBR": a record waiting for the card */
 extern void arch_clean_cache_range(addr_t start, size_t len);
 
 /* The page is outside the LK's own RAM mapping (0x4C400000 + 9 MB): it was usable only when
@@ -120,19 +129,25 @@ void ayaneo_bb_fault(const char *msg, unsigned pc, unsigned dfar, unsigned spsr,
 	arch_clean_cache_range((addr_t)rp, sizeof r);
 }
 
-/* every boot: a fault record left in DRAM by the last run goes to the eMMC ring */
-void ayaneo_bb_boot_check(void)
+/* a record waiting in DRAM goes to the card's ring; the DRAM copy is cleared only once it is there */
+static void bb_move(volatile struct bb_rec *slot)
 {
-	struct bb_rec *rp = (struct bb_rec *)BB_RAM;
+	struct bb_rec *rp = (struct bb_rec *)slot;
 	struct bb_rec r;
-	bb_map();
-	if (!s_bb_mapped) return;
 	memcpy(&r, rp, sizeof r);
 	if (r.magic != BB_RAM_MAGIC || r.seq != bb_sum(&r)) return;
+	if (bb_write(&r) < 0) return;      /* no card: try again at the next boot */
 	memset(rp, 0, sizeof r);
 	arch_clean_cache_range((addr_t)rp, sizeof r);
 	__asm__ volatile("dsb sy" : : : "memory");
-	bb_write(&r);
+}
+/* every boot with the card: the records the last runs left in DRAM go to the card */
+void ayaneo_bb_boot_check(void)
+{
+	bb_map();
+	if (!s_bb_mapped) return;
+	bb_move(BB_RAM);
+	bb_move(BB_RAM_NOTE);
 }
 
 /* any other event: a short text and up to eight values */
@@ -146,7 +161,14 @@ void ayaneo_bb_note(unsigned type, const char *msg, const unsigned *a, unsigned 
 	if (t) strlcpy(r.thread, t->name, sizeof r.thread);
 	strlcpy(r.msg, msg ? msg : "", sizeof r.msg);
 	for (i = 0; i < n && i < 8; i++) r.a[i] = a[i];
-	bb_write(&r);
+	if (bb_write(&r) >= 0) return;
+	/* no card mounted (the charging screen): keep it in DRAM until a boot with the card */
+	bb_map();
+	if (!s_bb_mapped) return;
+	r.magic = BB_RAM_MAGIC;
+	r.seq = bb_sum(&r);
+	memcpy((void *)BB_RAM_NOTE, &r, sizeof r);
+	arch_clean_cache_range((addr_t)BB_RAM_NOTE, sizeof r);
 }
 
 /* oem blackbox: the records, oldest first, two or three lines each through emit() */
@@ -154,7 +176,8 @@ void ayaneo_bb_dump(void (*emit)(const char *), char *line, int n)
 {
 	static unsigned char buf[512 * BB_SLOTS] __attribute__((aligned(64)));
 	unsigned int i, j, order[BB_SLOTS], cnt = 0;
-	if (partition_read(BB_PART, BB_OFF, buf, sizeof buf) != (ssize_t)sizeof buf) { emit("blackbox: read failed"); return; }
+	memset(buf, 0, sizeof buf);
+	if (ayaneo_card_read(BB_DIR, BB_NAME, buf, sizeof buf) < 0) { emit("blackbox: no card, or no " BB_DIR "/" BB_NAME); return; }
 	for (i = 0; i < BB_SLOTS; i++) if (((struct bb_rec *)(buf + i * 512u))->magic == BB_MAGIC) order[cnt++] = i;
 	for (i = 1; i < cnt; i++) for (j = i; j > 0 && ((struct bb_rec *)(buf + order[j - 1] * 512u))->seq > ((struct bb_rec *)(buf + order[j] * 512u))->seq; j--) { unsigned t = order[j]; order[j] = order[j - 1]; order[j - 1] = t; }
 	if (!cnt) { emit("blackbox: empty"); return; }
@@ -182,7 +205,7 @@ void ayaneo_bb_clear(void)
 {
 	static unsigned char z[512 * BB_SLOTS] __attribute__((aligned(64)));
 	memset(z, 0, sizeof z);
-	partition_write(BB_PART, BB_OFF, z, sizeof z);
+	ayaneo_card_write(BB_DIR, BB_NAME, z, sizeof z);
 }
 
 /* Boot loop guard for the SD card emulator. The guard used to skip the card after ANY watchdog

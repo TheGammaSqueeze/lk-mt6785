@@ -131,7 +131,6 @@ extern void mtk_wdt_restart(void);
 extern void ayaneo_snes_punch_prerender(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px);
 extern void thread_sleep(unsigned);
 extern int  zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstlen, int offset);
-extern int  partition_read(const char *name, unsigned long long off, void *buf, unsigned long len);
 extern void ayaneo_set_cpu_mhz(unsigned int mhz);
 extern unsigned int ayaneo_get_cpu_mhz(void);
 extern void ayaneo_display_prepare(void);
@@ -289,11 +288,10 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
 	ayaneo_fill(fb, pitch, bx, by, fillw, bh, s_av_kind == 2 ? 0xFFF0A050u : 0xFF50A0F0u);
 }
 
-/* ---- boot_b SNES pack (SNSZ) location in the GBA-SD flow ----
- * In the SD flow the old ROM region at 0x01100000 is free (ROM comes from SD), so
- * the SNES menu pack lives there: ["SNSZ"][u32 rawlen][u32 complen][raw-deflate]. */
-#define SNES_PART     "boot_b"
-#define SNES_OFF      0x01100000ull
+/* ---- the menu pack, on the SD card ----
+ * /gammaos/menu.pack: ["SNSZ"][u32 rawlen][u32 complen][raw-deflate], built by
+ * tools/ayaneo/gba/build_menu_pack.py. */
+#define SNES_PACK_PATH "/gammaos/menu.pack"
 #define SNES_MAGIC    0x5A534E53u          /* "SNSZ" */
 
 /* DRAM map (WB window [0x50000000,0x56000000) is all free during ROM-select). */
@@ -383,18 +381,22 @@ static int            s_filter_label_hold;  /* frames left to show the "System: 
 static uint32_t rd32(const unsigned char *p)
 { return (uint32_t)p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
 
-/* Read + inflate the SNES pack from boot_b into SNES_BLOB_PA, open it. 0 = ok. */
+/* Read + inflate the menu pack from the card into SNES_BLOB_PA, open it. 0 = ok. */
 static int load_pack(void)
 {
+	extern fat_vol *gba_sd_menu_vol(void);   /* gba_driver.c: the mounted card */
+	fat_vol *v = gba_sd_menu_vol();
+	fat_file f;
 	unsigned char hdr[12];
 	uint32_t magic, rawlen, complen;
 	unsigned char *comp = (unsigned char *)SNES_COMP_PA;
 	unsigned long zlen;
-	if (partition_read(SNES_PART, SNES_OFF, hdr, 12) != 12) return -1;
+	if (!v || fat_open(v, SNES_PACK_PATH, &f) != 0) return -1;
+	if (fat_read(&f, 0, hdr, 12) != 12) return -1;
 	magic = rd32(hdr); rawlen = rd32(hdr + 4); complen = rd32(hdr + 8);
 	if (magic != SNES_MAGIC || rawlen == 0 || rawlen > SNES_RAW_MAX ||
-	    complen == 0 || complen > SNES_COMP_MAX) return -2;
-	if (partition_read(SNES_PART, SNES_OFF + 12, comp, complen) != (long)complen) return -3;
+	    complen == 0 || complen > SNES_COMP_MAX || 12u + complen > f.size) return -2;
+	if (fat_read(&f, 12, comp, complen) != complen) return -3;
 	zlen = complen;
 	if (zunzip(comp, &zlen, (void *)SNES_BLOB_PA, (int)rawlen, 0) != 0) return -4;
 	if (snes_pack_open(&s_pk, (void *)SNES_BLOB_PA, rawlen) != 0) return -5;

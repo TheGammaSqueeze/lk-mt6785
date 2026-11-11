@@ -21,7 +21,7 @@
 #include <kernel/event.h>
 
 /* ---- LK / driver primitives (externs; no LK headers here) ---- */
-extern const struct gbc_core_exports *gbc_core_load(void);   /* gbc_core_loader.c */
+extern const struct gbc_core_exports *gbc_core_load(fat_vol *v);   /* gbc_core_loader.c: from the card */
 extern void     ayaneo_gb_show_frame(const unsigned short *pix);   /* dedicated 160x144x6 GB/GBC path */
 extern void     ayaneo_gbc_audio_init(void);
 extern void     ayaneo_idle_until(unsigned target_tick);
@@ -510,7 +510,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	unsigned pace_base;
 	unsigned long long pace_n = 0;
 
-	c = gbc_core_load();
+	c = gbc_core_load(vol);
 	if (!c) return;
 
 	romsz = gba_sd_load_rom(vol, rom, rombuf, GBC_ROM_CAP);

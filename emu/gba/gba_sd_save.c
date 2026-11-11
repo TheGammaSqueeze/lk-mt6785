@@ -88,9 +88,10 @@ int gba_sd_write_state(fat_vol *v, const char *rom, int slot, const void *buf, u
 	return gba_sd_write_named(v, g_gba_state_dir, rom, ext, buf, len);
 }
 
-/* GammaOS Pico menu settings, persisted ON THE SD CARD so they travel with the
- * card and survive a reflash. Stored as /gba/settings.bin (the raw 64-byte
- * ayaneo settings block). Read at LK start to honour skip-boot-logo etc. */
+/* GammaOS menu settings, kept ON THE SD CARD only (the LK writes nothing on the eMMC): stored as
+ * /gammaos/settings.bin, the serialized settings block (ayaneo_settings_serialize). A card from an
+ * older build has them in /gba/settings.bin, read when the new file is not there yet; the next
+ * save writes the new place. Read by the SD gate before the intro (skip intro, brightness...). */
 extern int  ayaneo_settings_serialize(unsigned char *b, int cap);
 extern void ayaneo_settings_deserialize(const unsigned char *b, int len);
 
@@ -98,17 +99,22 @@ int gba_sd_settings_load(fat_vol *v)
 {
 	unsigned char b[192];
 	fat_file f;
-	if (fat_open(v, "/gba/settings.bin", &f) != 0) return -1;
+	if (fat_open(v, "/gammaos/settings.bin", &f) != 0 && fat_open(v, "/gba/settings.bin", &f) != 0)
+		return -1;
 	if (fat_read(&f, 0, b, (uint32_t)sizeof b) != (uint32_t)sizeof b) return -1;
 	ayaneo_settings_deserialize(b, (int)sizeof b);
 	return 0;
 }
 
+int gba_sd_settings_write(fat_vol *v, const unsigned char *b, int n)
+{
+	if (n <= 0) return -1;
+	fat_wr_mkpath(v, "/gammaos");
+	return fat_wr_put(v, "/gammaos", "settings.bin", b, (uint32_t)n);
+}
+
 int gba_sd_settings_save(fat_vol *v)
 {
 	unsigned char b[192];
-	int n = ayaneo_settings_serialize(b, (int)sizeof b);
-	if (n <= 0) return -1;
-	fat_wr_mkpath(v, "/gba");
-	return fat_wr_put(v, "/gba", "settings.bin", b, (uint32_t)n);
+	return gba_sd_settings_write(v, b, ayaneo_settings_serialize(b, (int)sizeof b));
 }

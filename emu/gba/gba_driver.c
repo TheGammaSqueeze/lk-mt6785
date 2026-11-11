@@ -41,7 +41,7 @@ extern int _dprintf(const char *fmt, ...);
  * become g_core->state_save(x), and the three shared flags become pointer derefs. */
 #include "gba_core_abi.h"
 #include "../ayaneo_rewind.h"
-extern const struct gba_core_exports *gba_core_load(void);	/* gba_core_loader.c */
+
 static const struct gba_core_exports *g_core;
 
 #define gba_core_init(...)          g_core->core_init(__VA_ARGS__)
@@ -110,7 +110,6 @@ extern int  ayaneo_present_skip_framedone;	/* mt_disp_drv.c: 1 = non-blocking pr
 extern void ayaneo_settings_load(void);
 extern void ayaneo_settings_save(void);
 #ifdef AYANEO_GBA_SD
-static void sd_settings_mirror(void);	/* mirror settings to the SD card (early fwd decl) */
 #endif
 extern int  ayaneo_brightness_step(int dir);
 extern int  ayaneo_brightness_pct(void);
@@ -525,7 +524,6 @@ static int  sd_state_read(unsigned char *scratch);
 static int  sd_manual_write(unsigned char *scratch);
 static int  sd_manual_read(unsigned char *scratch);
 static void sd_sav_write(void);
-static void sd_settings_mirror(void);    /* persist GammaOS settings to the SD card */
 #endif
 static int  manual_state_write(unsigned char *scratch);  /* menu Save State -> selected slot */
 static int  manual_state_read(unsigned char *scratch);   /* menu Load State -> selected slot */
@@ -543,7 +541,7 @@ static int state_write(unsigned char *scratch)
 	g_dbg_legacy_refused++;
 	(void)sz; (void)total;
 	return 0;
-#endif
+#else
 	if (!sz || (unsigned long long)sz + 8 > GBA_STATE_MAX)
 		return 0;
 	total = 8 + sz;
@@ -561,6 +559,7 @@ static int state_write(unsigned char *scratch)
 	arch_clean_cache_range((unsigned long)scratch, total);
 	partition_write(GBA_PART, GBA_STATE_OFF, scratch, total);
 	return 1;
+#endif
 }
 
 static int state_read(unsigned char *scratch)
@@ -569,8 +568,10 @@ static int state_read(unsigned char *scratch)
 	unsigned magic, sz;
 
 #ifdef AYANEO_GBA_SD
-	if (sd_mode_on()) return sd_state_read(scratch);
-#endif
+	/* states live on the card only: the SD build reads and writes nothing on the eMMC */
+	(void)hdr; (void)magic; (void)sz;
+	return sd_mode_on() ? sd_state_read(scratch) : 0;
+#else
 	if (partition_read(GBA_PART, GBA_STATE_OFF, hdr, 8) != 8)
 		return 0;
 	magic = rd32le(hdr);
@@ -582,6 +583,7 @@ static int state_read(unsigned char *scratch)
 		return 0;
 	gba_core_state_load(scratch);
 	return 1;
+#endif
 }
 
 /* Manual Save/Load wrappers (menu): SD uses the selected slot st0..2; the legacy partition path
@@ -609,15 +611,14 @@ static int manual_state_read(unsigned char *scratch)
 static void sav_save(unsigned char *scratch)
 {
 #ifdef AYANEO_GBA_SD
-	/* the SD build keeps battery saves on the card (sd_sav_write); boot_b holds core blobs */
-	if (!sd_mode_on()) { g_dbg_legacy_refused++; (void)scratch; return; }
-#endif
+	/* the SD build keeps battery saves on the card only */
+	(void)scratch;
+	if (sd_mode_on()) sd_sav_write();
+	else g_dbg_legacy_refused++;
+#else
 	unsigned sz = gba_core_backup_size();		/* fixed 128 KB */
 	unsigned total = 8 + sz;
 
-#ifdef AYANEO_GBA_SD
-	if (sd_mode_on()) { sd_sav_write(); return; }
-#endif
 	if (!sz || total > GBA_SAV_MAX)
 		return;
 	wr32le(scratch + 0, GBA_SAV_MAGIC);
@@ -633,6 +634,7 @@ static void sav_save(unsigned char *scratch)
 	}
 	arch_clean_cache_range((unsigned long)scratch, total);
 	partition_write(GBA_PART, GBA_SAV_OFF, scratch, total);
+#endif
 }
 
 static void sav_load(unsigned char *scratch)
@@ -640,6 +642,9 @@ static void sav_load(unsigned char *scratch)
 	unsigned char hdr[8];
 	unsigned sz, live = gba_core_backup_size();
 
+#ifdef AYANEO_GBA_SD
+	(void)hdr; (void)sz; (void)live; (void)scratch;   /* battery saves live on the card (gba_sd_load_sav) */
+#else
 	if (partition_read(GBA_PART, GBA_SAV_OFF, hdr, 8) != 8)
 		return;
 	if (rd32le(hdr) != GBA_SAV_MAGIC)
@@ -650,6 +655,7 @@ static void sav_load(unsigned char *scratch)
 	if (partition_read(GBA_PART, GBA_SAV_OFF + 8, scratch, sz) != (ssize_t)sz)
 		return;
 	memcpy(gba_core_backup_ptr(), scratch, sz);
+#endif
 }
 
 static void try_load_state(unsigned char *scratch)
@@ -693,11 +699,8 @@ static void save_for_suspend(unsigned char *scratch)
 		g_dbg_suspend_ms[4] = 2u;
 		t1 = t2 = gpt4_get_current_tick();
 	}
-	ayaneo_settings_save();
+	ayaneo_settings_save();   /* to the card in the SD build */
 	t3 = gpt4_get_current_tick();
-#ifdef AYANEO_GBA_SD
-	sd_settings_mirror();
-#endif
 	g_dbg_suspend_ms[0] = (t1 - t0) / 13000u;
 	g_dbg_suspend_ms[1] = (t2 - t1) / 13000u;
 	g_dbg_suspend_ms[2] = (t3 - t2) / 13000u;
@@ -739,6 +742,10 @@ static unsigned load_rom(void)
 	unsigned char *comp;
 	unsigned long zlen;
 
+#ifdef AYANEO_GBA_SD
+	(void)hdr; (void)magic; (void)rawlen; (void)complen; (void)rom; (void)comp; (void)zlen;
+	return 0;   /* games come from the card: no ROM on the eMMC */
+#else
 	if (partition_read(GBA_PART, GBA_ROM_OFF, hdr, 12) != 12)
 		return 0;
 	magic   = rd32le(hdr);
@@ -761,6 +768,7 @@ static unsigned load_rom(void)
 	if (zunzip(comp, &zlen, rom, (int)rawlen, 0) != 0)
 		return 0;
 	return rawlen;
+#endif
 }
 
 /* ===================== CPU/frontend thread hand-off ===================== */
@@ -1369,7 +1377,7 @@ static int led_thread(void *arg)
 	thread_sleep(2500);
 #ifdef KONKR_KPA
 	{ extern int ayaneo_mt6360_chrind_off(void); ayaneo_mt6360_chrind_off(); }
-	{ extern void ayaneo_bb_boot_check(void); ayaneo_bb_boot_check(); }   /* a fault from the last run -> eMMC */
+	{ extern void ayaneo_bb_boot_check(void); ayaneo_bb_boot_check(); }   /* records the last runs left in DRAM -> the card */
 #endif
 	for (;;) {
 		if ((tick & 1) == 0) chr = pmic_upmu_get_rgs_chrdet() ? 1 : 0;   /* every second, cheap */
@@ -1981,12 +1989,17 @@ void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsign
 
 #ifdef AYANEO_GBA_SD
 #include "sd_fat.h"
+#include "fat_wr.h"
 #include "gba_sd_save.h"
+#include "core_file.h"
+extern const struct gba_core_exports *gba_core_load_file(fat_vol *v, const char *path);	/* gba_core_loader.c: from the card */
+extern volatile int g_gba_core_err;	/* gba_core_loader.c: why the last load failed (core_file.h) */
 /* SD flow state, shared between the boot gate and emu_thread. s_sd_mode=1 makes
  * emu_thread run the SD flow (ROM-select then game) instead of the boot_b ROM. */
 static int s_sd_mode;
 static void sd_bg_wait(void);   /* fast boot path: wait for the card listing (defined below) */
 static unsigned char s_sd_bios[16384];
+static int s_have_bios;   /* the card has a GBA BIOS: the intro plays, and gpSP can run */
 static fat_vol s_sd_vol;
 static gba_rom_entry s_roms[128];   /* enumerated /roms/gba, sorted (task d/e) */
 static int s_nrom;
@@ -2011,7 +2024,6 @@ static int s_gpsp_dirty;
 #define CORECFG_MAX 24
 static struct { char key[32]; int val; } s_corecfg[CORECFG_MAX];
 static int s_corecfg_n, s_corecfg_loaded;
-extern const struct gba_core_exports *gba_core_load_file(fat_vol *v, const char *path);
 
 static void core_opt_store(const char *key, int val)
 {
@@ -2079,25 +2091,37 @@ static void core_apply_opts(void)
 }
 volatile unsigned int g_dbg_core_switch_ms, g_dbg_core_is_sd;   /* oem core */
 const struct gba_core_exports *gba_core_current(void) { return g_core; }
+/* Load a GBA core from the card: the preferred one, else the other. Both use the same slot, so a
+ * failed load may have overwritten what was there; the caller drops g_core then. gpSP needs the
+ * card's BIOS (it has none of its own), armGBA uses its built-in BIOS when there is none. */
+static const struct gba_core_exports *gba_core_load_pref(int want_armgba, int *got_armgba)
+{
+	const struct gba_core_exports *ex = 0;
+	int i;
+	for (i = 0; i < 2 && !ex; i++) {
+		int armgba = (i == 0) ? want_armgba : !want_armgba;
+		if (!armgba && !s_have_bios) continue;
+		ex = gba_core_load_file(&s_sd_vol, armgba ? CORE_PATH_ARMGBA : CORE_PATH_GPSP);
+		if (ex) *got_armgba = armgba;
+		else GBA_LOG("gba: %s not loaded (%s)\n", armgba ? CORE_PATH_ARMGBA : CORE_PATH_GPSP,
+			     core_file_error(g_gba_core_err));
+	}
+	return ex;
+}
+
+/* The core for the next GBA game, initialised for it; 0 when no GBA core loads. */
 static unsigned char *gba_core_for_launch(void)
 {
 	unsigned t0 = gpt4_get_current_tick();
-	int want_sd;
+	int want_armgba;
 	if (!s_corecfg_loaded) corecfg_load();
 	if (s_sdcore_present < 0) { fat_file f; s_sdcore_present = (fat_open(&s_sd_vol, SDCORE_PATH, &f) == 0) ? 1 : 0; }
-	want_sd = s_sdcore_present > 0 && s_core_pref == 0;
-	if (want_sd && !s_core_is_sd) {
-		const struct gba_core_exports *ex = gba_core_load_file(&s_sd_vol, SDCORE_PATH);
-		if (ex) { g_core = ex; s_core_is_sd = 1; }
-		else {
-			GBA_LOG("gba: %s rejected, staying on gpSP\n", SDCORE_PATH);
-			s_sdcore_present = 0;
-			want_sd = 0;
-			if (s_core_is_sd == 0) { /* gpSP still in the slot: the load wrote over it */ g_core = gba_core_load(); s_gpsp_dirty = 1; }
-		}
-	} else if (!want_sd && s_core_is_sd) {
-		g_core = gba_core_load();       /* back to gpSP from boot_b */
-		s_core_is_sd = 0;
+	want_armgba = (s_sdcore_present > 0 && s_core_pref == 0) || !s_have_bios;
+	if (!g_core || want_armgba != s_core_is_sd) {
+		int got = 0;
+		g_core = gba_core_load_pref(want_armgba, &got);
+		if (!g_core) return 0;
+		s_core_is_sd = got;
 		s_gpsp_dirty = 1;
 	}
 	if (s_core_is_sd || s_gpsp_dirty) {
@@ -2332,10 +2356,38 @@ static void sd_sav_write(void)
 /* Mirror the GammaOS Pico settings to the SD card whenever they change, so they
  * travel with the card and are read back at the next LK start. No-op if not in
  * the SD flow. */
-static void sd_settings_mirror(void)
+/* Small whole-file reads and writes on the mounted card for the platform code (the black box,
+ * ayaneo_blackbox.c); < 0 when no card is mounted or the file is not there. */
+int ayaneo_card_read(const char *dir, const char *name, void *buf, unsigned int len)
 {
-	if (s_sd_mode)
-		gba_sd_settings_save(&s_sd_vol);
+	char path[128];
+	unsigned int n = 0, k;
+	fat_file f;
+	if (!s_sd_mode)
+		return -1;
+	for (k = 0; dir[k] && n < sizeof path - 2; k++) path[n++] = dir[k];
+	path[n++] = '/';
+	for (k = 0; name[k] && n < sizeof path - 1; k++) path[n++] = name[k];
+	path[n] = 0;
+	if (fat_open(&s_sd_vol, path, &f) != 0)
+		return -1;
+	return (int)fat_read(&f, 0, buf, len < f.size ? len : f.size);
+}
+int ayaneo_card_write(const char *dir, const char *name, const void *buf, unsigned int len)
+{
+	if (!s_sd_mode)
+		return -1;
+	fat_wr_mkpath(&s_sd_vol, dir);
+	return fat_wr_put(&s_sd_vol, dir, name, buf, len) == 0 ? 0 : -1;
+}
+
+/* ayaneo_settings_save (ayaneo_audio.c) hands the serialized settings here: the card is their only
+ * store (/gammaos/settings.bin) */
+int ayaneo_settings_store(const unsigned char *b, int n)
+{
+	if (!s_sd_mode)
+		return -1;
+	return gba_sd_settings_write(&s_sd_vol, b, n);
 }
 
 /* Persist GammaOS settings to BOTH stores: boot_b (eMMC) and, in SD mode, the SD card.
@@ -2364,9 +2416,8 @@ static int persist_thread(void *arg)
 		while (s_persist_dirty) {
 			unsigned t0 = gpt4_get_current_tick(), t1;
 			s_persist_dirty = 0;
-			ayaneo_settings_save();
+			ayaneo_settings_save();   /* to the card (ayaneo_settings_store) */
 			t1 = gpt4_get_current_tick();
-			sd_settings_mirror();
 			if (s_corecfg_dirty) { s_corecfg_dirty = 0; corecfg_save(); }
 			g_dbg_persist_emmc_us = (t1 - t0) / 13u;
 			g_dbg_persist_sd_us = (gpt4_get_current_tick() - t1) / 13u;
@@ -2383,7 +2434,7 @@ void ayaneo_menu_settings_persist(void)
 		thread_t *t;
 		event_init(&s_persist_ev, false, EVENT_FLAG_AUTOUNSIGNAL);
 		t = thread_create("ayaneo_settings", &persist_thread, NULL, LOW_PRIORITY, 16384);
-		if (!t) { s_persist_dirty = 0; ayaneo_settings_save(); sd_settings_mirror(); return; }
+		if (!t) { s_persist_dirty = 0; ayaneo_settings_save(); return; }
 		thread_resume(t);
 		s_persist_thread_up = 1;
 	}
@@ -2404,26 +2455,18 @@ void ayaneo_settings_persist_flush(void)
  * cart space loops harmlessly, then overlay a REAL header (Nintendo logo + valid
  * checksum + entry, which branches to 0xC0 = a loop) copied from the first ROM on
  * the card so the authentic logo shows. No prebaked data. Returns the cart size. */
-static int gba_sd_assets_ok(fat_vol *v);   /* defined with the gate below */
-/* BIOS + boot-logo header cache in boot_b, so the intro starts from eMMC the moment the LK
- * reaches the gate instead of after the card mount and the ROM listing (~0.7 s of black).
- * 0x02000000: [512 B header][16384 B BIOS][512 B: the first GBA ROM's 0xC0 cart header]. The
- * card is still the source of truth: the background thread compares and refreshes the cache. */
-#if defined(KONKR_KPA)
-#define GBA_BIOS_CACHE_OFF   0x01FF0000u   /* inside the 32 MB boot_b (0x02000000 was vendor_boot_b); rebuilt from the card when empty */
-#else
-#define GBA_BIOS_CACHE_OFF   0x02000000u
-#endif
-#define GBA_BIOS_CACHE_MAGIC 0x4F494247u   /* "GBIO" */
+/* The first GBA ROM's cart header (its first 0xC0 bytes: the Nintendo logo the BIOS draws), kept
+ * on the card in /gammaos/cart_header.bin so the intro can start right after the card mount
+ * instead of after the ROM listing; the listing, on its own thread during the intro, writes it
+ * again when the games on the card change. */
+#define CART_HDR_DIR  "/gammaos"
+#define CART_HDR_NAME "cart_header.bin"
 static unsigned char s_cart_hdr_cache[512] __attribute__((aligned(64)));
 static int s_cart_hdr_valid;
-static volatile int s_sd_bg_state;   /* fast path: 0 card work running, 1 done, <0 failed */
-static int s_sd_fast;
-static volatile int s_sd_bg_pending; /* fast path: start the card thread once the core blob is loaded */
+static volatile int s_sd_bg_state;   /* the listing thread: 0 running, 1 done */
+static int s_sd_fast;                /* the listing runs on its own thread during the intro */
+static volatile int s_sd_bg_pending; /* start the listing thread once the core is loaded */
 static int sd_bg_thread(void *arg);
-/* The eMMC read of the core blob is serialised behind SD transfers in the mmc layer (measured:
- * the core load always completed right after the listing, whatever the thread priorities), so
- * the card thread starts only after the core is in memory. */
 static void sd_bg_launch(void)
 {
 	thread_t *t;
@@ -2432,49 +2475,12 @@ static void sd_bg_launch(void)
 	t = thread_create("gba_sdbg", &sd_bg_thread, NULL, LOW_PRIORITY, 32768);
 	if (t) thread_resume(t); else sd_bg_thread(NULL);
 }
-static unsigned cache_sum(const unsigned char *p, unsigned n)
+static int cart_header_read(fat_vol *v)
 {
-	unsigned s = 0x9E3779B9u, i;
-	for (i = 0; i < n; i++) s = (s ^ p[i]) * 16777619u;
-	return s;
-}
-static int bios_cache_read(unsigned char *bios)
-{
-	static unsigned char hdr[512] __attribute__((aligned(64)));
-	extern void ayaneo_storage_lock(void), ayaneo_storage_unlock(void);
-	int ok = 0;
-	ayaneo_storage_lock();
-	if (partition_read(GBA_PART, GBA_BIOS_CACHE_OFF, hdr, 512) == 512 &&
-	    rd32le(hdr) == GBA_BIOS_CACHE_MAGIC && rd32le(hdr + 4) == 16384u &&
-	    partition_read(GBA_PART, GBA_BIOS_CACHE_OFF + 512u, bios, 16384) == 16384 &&
-	    rd32le(hdr + 8) == cache_sum(bios, 16384u)) {
-		ok = 1;
-		if (rd32le(hdr + 12) == 0xC0u &&
-		    partition_read(GBA_PART, GBA_BIOS_CACHE_OFF + 512u + 16384u, s_cart_hdr_cache, 512) == 512 &&
-		    rd32le(hdr + 16) == cache_sum(s_cart_hdr_cache, 0xC0u))
-			s_cart_hdr_valid = 1;
-	}
-	ayaneo_storage_unlock();
-	return ok ? 0 : -1;
-}
-static void bios_cache_write(const unsigned char *bios, const unsigned char *cart_hdr)
-{
-	static unsigned char blk[512 + 16384 + 512] __attribute__((aligned(64)));
-	extern void ayaneo_storage_lock(void), ayaneo_storage_unlock(void);
-	memset(blk, 0, sizeof blk);
-	wr32le(blk, GBA_BIOS_CACHE_MAGIC);
-	wr32le(blk + 4, 16384u);
-	wr32le(blk + 8, cache_sum(bios, 16384u));
-	memcpy(blk + 512, bios, 16384);
-	if (cart_hdr) {
-		wr32le(blk + 12, 0xC0u);
-		wr32le(blk + 16, cache_sum(cart_hdr, 0xC0u));
-		memcpy(blk + 512 + 16384, cart_hdr, 0xC0u);
-	}
-	arch_clean_cache_range((addr_t)blk, sizeof blk);
-	ayaneo_storage_lock();
-	partition_write(GBA_PART, GBA_BIOS_CACHE_OFF, blk, sizeof blk);
-	ayaneo_storage_unlock();
+	fat_file f;
+	s_cart_hdr_valid = fat_open(v, CART_HDR_DIR "/" CART_HDR_NAME, &f) == 0 && f.size == 0xC0u &&
+			   fat_read(&f, 0, s_cart_hdr_cache, 0xC0u) == 0xC0u;
+	return s_cart_hdr_valid;
 }
 /* the first GBA ROM's cart header from the card (0xC0 bytes), 0 if there is none */
 static int logo_header_from_card(unsigned char *dst)
@@ -2493,26 +2499,27 @@ static int logo_header_from_card(unsigned char *dst)
 		return fat_read(&f, 0, dst, 0xC0u) == 0xC0u;
 	}
 }
-/* fast path: the card work runs here while the intro already plays from the cached BIOS */
+/* after a listing: write the header file when it is missing or the first GBA game changed */
+static void cart_header_refresh(void)
+{
+	static unsigned char hdr[0xC0] __attribute__((aligned(64)));
+	if (!logo_header_from_card(hdr)) return;
+	if (s_cart_hdr_valid && memcmp(hdr, s_cart_hdr_cache, 0xC0u) == 0) return;
+	fat_wr_mkpath(&s_sd_vol, CART_HDR_DIR);
+	if (fat_wr_put(&s_sd_vol, CART_HDR_DIR, CART_HDR_NAME, hdr, 0xC0u) == 0) {
+		memcpy(s_cart_hdr_cache, hdr, 0xC0u);
+		s_cart_hdr_valid = 1;
+	}
+}
+/* the ROM listing, on its own thread while the intro plays (the gate has mounted the card) */
 static int sd_bg_thread(void *arg)
 {
-	static unsigned char tmp[16384] __attribute__((aligned(64)));
-	static unsigned char hdr[512] __attribute__((aligned(64)));
-	int rc, refresh = 0, total = 0;
+	int total = 0;
 	(void)arg;
-	rc = gba_sd_mount(&s_sd_vol);
-	if (rc != 0) { GBA_LOG("gba-sd: fast path mount failed rc=%d\n", rc); s_sd_bg_state = -1; return 0; }
-	g_dbg_bt_mount = BT_MS();
-	if (!gba_sd_assets_ok(&s_sd_vol)) { GBA_LOG("gba-sd: fast path: assets missing\n"); s_sd_bg_state = -2; return 0; }
-	if (gba_sd_load_bios(&s_sd_vol, tmp) == 0 && memcmp(tmp, s_sd_bios, 16384) != 0) refresh = 1;
-	g_dbg_bt_bios = BT_MS();
 	gba_sd_make_rom_dirs(&s_sd_vol);
 	s_nrom = gba_sd_list_roms(&s_sd_vol, s_roms, 128, &total);
 	g_dbg_bt_list = BT_MS();
-	memset(hdr, 0, sizeof hdr);
-	if (logo_header_from_card(hdr) && (refresh || !s_cart_hdr_valid || memcmp(hdr, s_cart_hdr_cache, 0xC0u) != 0))
-		refresh = 1;
-	if (refresh) bios_cache_write(refresh && memcmp(tmp, s_sd_bios, 16384) ? tmp : s_sd_bios, hdr);
+	cart_header_refresh();
 	s_sd_bg_state = 1;
 	return 0;
 }
@@ -2540,8 +2547,8 @@ static unsigned gba_sd_build_logo_cart(unsigned char *rp)
 			if (s_roms[i].type == GBA_CONSOLE_GBA) { hdr_rom = i; break; }
 		if (hdr_rom < 0 && s_nrom > 0) hdr_rom = 0;
 	}
-	if (s_sd_fast && s_cart_hdr_valid) {
-		memcpy(rp, s_cart_hdr_cache, 0xC0u);   /* the card is still being listed: use the cached header */
+	if (s_cart_hdr_valid) {
+		memcpy(rp, s_cart_hdr_cache, 0xC0u);   /* the card's header file (the listing may still be running) */
 		return 0x8000u;
 	}
 	if (hdr_rom >= 0) {
@@ -2590,9 +2597,16 @@ static int emu_thread(void *arg)
 #endif
 	g_dbg_boot_step = 4;
 
-	/* Load the GBA core blob from boot_b into its DRAM slot and bind the export table.
-	 * The core is no longer part of lk_a; everything below drives it through g_core. */
-	g_core = gba_core_load();
+	/* Load the GBA core from the card into its DRAM slot and bind the export table (the gate
+	 * has checked that one can load); everything below drives it through g_core. */
+	{
+		int got = 0;
+		if (!s_corecfg_loaded) corecfg_load();
+		{ fat_file f; s_sdcore_present = (fat_open(&s_sd_vol, SDCORE_PATH, &f) == 0) ? 1 : 0; }
+		g_core = gba_core_load_pref((s_sdcore_present > 0 && s_core_pref == 0) || !s_have_bios, &got);
+		s_core_is_sd = got;
+		g_dbg_core_is_sd = (unsigned)got;
+	}
 	if (!g_core) {
 		gba_dbg("Gerr blob");
 		return 0;
@@ -2619,14 +2633,7 @@ static int emu_thread(void *arg)
 	if (s_sd_mode) {
 		unsigned char *rp = gba_core_rom_ptr();
 		input_init();                        /* need the D-pad/A for the ROM-select */
-		/* Load GammaOS Pico settings from the SD card (portable with the card);
-		 * marks settings loaded so the later boot_b load keeps the SD values, and
-		 * lets us honour skip-boot-logo before the intro/menu. Not on the fast path:
-		 * there the card is still being mounted by the card thread (reading it here
-		 * failed, and raced the mount), and the eMMC block, written together with the
-		 * card's copy at every save, already holds the same settings. */
-		if (!s_sd_fast)
-			gba_sd_settings_load(&s_sd_vol);
+		/* (the settings came from the card in the gate, before the intro) */
 		/* Boot the emulator with NO cartridge, using the SD card's own
 		 * gba_bios.bin (s_sd_bios), so the real GBA BIOS plays its boot logo as
 		 * the intro. The ROM-select menu and the chosen game are driven after the
@@ -2634,7 +2641,7 @@ static int emu_thread(void *arg)
 		 * the main frame loop). No prebaked BIOS: if gba_bios.bin was missing,
 		 * ayaneo_gba_sd_boot already fell through to a normal boot. */
 		romsz = gba_sd_build_logo_cart(rp);	/* real logo header + safe self-loops */
-		if (gba_core_start(romsz, s_sd_bios) != 0) {
+		if (gba_core_start(romsz, s_have_bios ? s_sd_bios : 0) != 0) {
 			gba_dbg("GBA ERR: SD core_start failed");
 			return 0;
 		}
@@ -2758,7 +2765,8 @@ static int emu_thread(void *arg)
 			extern int ayaneo_resume_pending(void);
 			extern volatile int g_dbg_resume[4];
 			int pend = ayaneo_resume_pending();
-			int fi, intro_frames = (ayaneo_get_skip_gba_intro() || pend) ? 0 : GBA_SD_INTRO_FRAMES;
+			/* no BIOS on the card: no intro, straight to the menu or the resumed game */
+			int fi, intro_frames = (ayaneo_get_skip_gba_intro() || pend || !s_have_bios) ? 0 : GBA_SD_INTRO_FRAMES;
 			g_dbg_resume[0] = pend;
 			g_dbg_boot_step = 7;
 			/* Run the BIOS-logo intro on the pure INTERPRETER: the dynarec faults
@@ -2829,7 +2837,8 @@ static int emu_thread(void *arg)
 						s_gpsp_dirty = 1;                          /* arena clobbered */
 						continue;                                  /* back to the selector */
 					}
-					rp = gba_core_for_launch();   /* armGBA from the card or gpSP; rebuilds the arena */
+					rp = gba_core_for_launch();   /* armGBA or gpSP from the card; rebuilds the arena */
+					if (!rp) { gba_dbg("GBA ERR: no GBA core loads from the card"); continue; }
 					romsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp, gba_core_rom_capacity());
 					if (romsz) break;
 					gba_dbg("GBA ERR: SD ROM load failed, back to selector");
@@ -2838,7 +2847,7 @@ static int emu_thread(void *arg)
 				 * reset_gba flushes the dynarec, so we must NOT let execute_arm
 				 * resume in place; request a clean restart (see gba_yield_to_main)
 				 * which the first main-loop frame below triggers. */
-				if (gba_core_start(romsz, s_sd_bios) != 0) {
+				if (gba_core_start(romsz, s_have_bios ? s_sd_bios : 0) != 0) {
 					gba_dbg("GBA ERR: SD game core_start failed");
 					return 0;
 				}
@@ -3191,11 +3200,12 @@ static int emu_thread(void *arg)
 							continue;
 						}
 						rp = gba_core_for_launch();
+						if (!rp) continue;   /* no GBA core loads from the card */
 						rsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp,
 								      gba_core_rom_capacity());
 						if (rsz) break;
 					}
-					if (gba_core_start(rsz, s_sd_bios) != 0)
+					if (gba_core_start(rsz, s_have_bios ? s_sd_bios : 0) != 0)
 						return 0;
 					s_game_live = 1;
 					gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
@@ -3439,123 +3449,125 @@ void ayaneo_gbc_charging_screen(void)
 
 #ifdef AYANEO_GBA_SD
 void ayaneo_gbc_start(void);   /* defined just below; spawns emu_thread */
-/* Assets present on the microSD? Requires /gba_bios.bin (the intro) plus >=1 file
- * in /roms/gba (something to select). Mirrors the host-validated probe in
- * fat_ro_test.c. */
-static int gba_sd_assets_ok(fat_vol *v)
-{
-	fat_file bios; fat_dir d; fat_dirent e;
-	if (fat_open(v, "/gba_bios.bin", &bios) != 0) return 0;
-	if (fat_opendir(v, "/roms/gba", &d) != 0) return 0;
-	while (fat_readdir(&d, &e)) if (!e.is_dir) return 1;
-	return 0;
-}
 
 /*
- * Boot-to-OS marker (STICKY). The SNES menu's "Boot to OS" cannot simply fall
- * through to boot_linux in the same boot: the emulator has already taken over the
- * CPU clock, audio/display DMA, caches and the watchdog, so jumping into the kernel
- * from that state hangs and the watchdog resets. Instead we drop a marker in the
- * misc partition (raw eMMC, the standard bootloader-control block, kept out of the
- * asset-only boot_b) and hard-reset. From then on every boot sees the marker and
- * boots Android from a pristine state - the same path as if no SD card were present,
- * which is already proven safe. The marker is NOT cleared on an OS boot: it persists
- * so the OS target is remembered. Holding SELECT at boot clears it and returns to
- * the emulator (see ayaneo_gba_sd_boot()).
+ * The boot mode lives on the card, in /gammaos/boot.cfg: text, one key=value per line, '#'
+ * comments, "boot=sd" to start the GammaOS menu from the card, "boot=android" to boot Android.
+ * A card without the file, or without a valid boot line, is not a GammaOS card and the console
+ * boots Android. The LK writes nothing on the eMMC for this (the sticky marker that used to live
+ * in misc is gone): "Boot to Android" in the menu writes boot=android, holding SELECT at power
+ * on writes boot=sd.
  */
-#define BOOTOS_PART	"misc"
-#define BOOTOS_OFF	0x10000u		/* 64 KB into misc: OEM vendor space, clear of the AOSP BCB */
-#define BOOTOS_MAGIC	0x424F544Fu		/* "OTOB" - boot-to-OS one-shot */
+#define GAMMAOS_DIR    "/gammaos"
+#define BOOTCFG_NAME   "boot.cfg"
+#define MENU_PACK_PATH "/gammaos/menu.pack"
+enum { BOOTCFG_NONE = 0, BOOTCFG_SD, BOOTCFG_ANDROID };
 
-/* Peek the sticky boot-to-OS marker WITHOUT clearing it. Called from the logo path
- * so an OS boot shows the stock eMMC logo instead of the emulator's rainbow boot
- * animation. Only SELECT-held in ayaneo_gba_sd_boot() clears the marker. */
-int ayaneo_boot_to_os_pending(void)
+static int cfg_space(char c) { return c == ' ' || c == '\t' || c == '\r'; }
+static int cfg_word(const char *p, const char *e, const char *w)
 {
-	unsigned char b[64];
-	if (partition_read(BOOTOS_PART, BOOTOS_OFF, b, sizeof b) != (ssize_t)sizeof b)
-		return 0;
-	return (unsigned)b[0] == (BOOTOS_MAGIC & 0xFF) &&
-	       (unsigned)b[1] == ((BOOTOS_MAGIC >> 8) & 0xFF) &&
-	       (unsigned)b[2] == ((BOOTOS_MAGIC >> 16) & 0xFF) &&
-	       (unsigned)b[3] == ((BOOTOS_MAGIC >> 24) & 0xFF);
+	while (*w) {
+		char c = (p < e) ? *p : 0;
+		if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+		if (c != *w) return 0;
+		p++; w++;
+	}
+	return p == e;
+}
+static int bootcfg_read(fat_vol *v)
+{
+	static char b[1024];
+	fat_file f;
+	uint32_t n, i = 0;
+	int mode = BOOTCFG_NONE;
+	if (fat_open(v, GAMMAOS_DIR "/" BOOTCFG_NAME, &f) != 0)
+		return BOOTCFG_NONE;
+	n = fat_read(&f, 0, b, sizeof b);
+	while (i < n) {
+		uint32_t s0 = i, e;
+		const char *k, *ke, *val, *ve;
+		while (i < n && b[i] != '\n') i++;
+		e = i++;
+		while (s0 < e && cfg_space(b[s0])) s0++;
+		while (e > s0 && cfg_space(b[e - 1])) e--;
+		if (s0 == e || b[s0] == '#') continue;
+		k = b + s0; ke = k;
+		while (ke < b + e && *ke != '=' && !cfg_space(*ke)) ke++;
+		val = ke;
+		while (val < b + e && cfg_space(*val)) val++;
+		if (val >= b + e || *val != '=') continue;
+		val++;
+		while (val < b + e && cfg_space(*val)) val++;
+		ve = b + e;
+		if (!cfg_word(k, ke, "boot")) continue;
+		if (cfg_word(val, ve, "sd")) mode = BOOTCFG_SD;
+		else if (cfg_word(val, ve, "android")) mode = BOOTCFG_ANDROID;
+	}
+	return mode;
+}
+static int bootcfg_write(fat_vol *v, int mode)
+{
+	static const char head[] =
+		"# GammaOS boot mode for this card.\n"
+		"#   boot=sd       start the GammaOS menu from this card\n"
+		"#   boot=android  boot Android (hold SELECT at power on to come back)\n";
+	static char txt[sizeof head + 32];
+	unsigned n = 0, k;
+	const char *line = (mode == BOOTCFG_ANDROID) ? "boot=android\n" : "boot=sd\n";
+	for (k = 0; head[k]; k++) txt[n++] = head[k];
+	for (k = 0; line[k]; k++) txt[n++] = line[k];
+	fat_wr_mkpath(v, GAMMAOS_DIR);
+	return fat_wr_put(v, GAMMAOS_DIR, BOOTCFG_NAME, txt, n);
+}
+static int card_file_present(fat_vol *v, const char *path)
+{
+	fat_file f;
+	return fat_open(v, path, &f) == 0 && f.size > 0;
 }
 
+/* The menu's "Boot to Android": boot=android on the card, then a reset, which the gate turns into
+ * a normal Android boot. The emulator owns the clocks, DMA and caches by now, so jumping into the
+ * kernel from here is not an option. */
 void ayaneo_boot_to_os(void)
 {
 	extern void mtk_arch_reset(char mode);
-	unsigned char b[64];
-	unsigned i;
-	for (i = 0; i < sizeof b; i++) b[i] = 0;
-	b[0] = (unsigned char)BOOTOS_MAGIC;
-	b[1] = (unsigned char)(BOOTOS_MAGIC >> 8);
-	b[2] = (unsigned char)(BOOTOS_MAGIC >> 16);
-	b[3] = (unsigned char)(BOOTOS_MAGIC >> 24);
-	arch_clean_cache_range((unsigned long)b, sizeof b);
-	partition_write(BOOTOS_PART, BOOTOS_OFF, b, sizeof b);
-	mtk_wdt_restart();			/* keep alive across the flush + reset */
+	if (s_sd_mode)
+		bootcfg_write(&s_sd_vol, BOOTCFG_ANDROID);
+	mtk_wdt_restart();			/* keep alive across the write + reset */
 	mtk_arch_reset(1);
 	for (;;) ;				/* not reached */
 }
 
 /*
- * SD boot gate. Returns < 0 to tell the boot hook to FALL THROUGH to the normal
- * kernel boot (no card / not FAT / assets missing / BIOS unreadable) - the always
- * safe default. On success (card + assets) it loads the SD BIOS, spawns the emu in
- * SD mode (BIOS intro; ROM select + game are tasks d-e), and returns 0 so the boot
- * hook loops forever. The intro runs the BIOS boot logo from /gba_bios.bin.
+ * SD boot gate, at the top of the normal boot. Returns < 0 for the normal Android boot (the
+ * caller shows the logo held back for it), 0 when the GammaOS menu has been started from the
+ * card. In order:
+ *  - SELECT held at power on: go to the menu if the card can (writes boot=sd).
+ *  - two watchdog resets in a row inside this path: Android (the never-brick guard).
+ *  - no card, a card that does not mount, no /gammaos/boot.cfg with a valid boot line, or
+ *    boot=android: Android.
+ *  - the menu needs /gammaos/menu.pack and a GBA core (/cores/armgba-pico.blob, or
+ *    /cores/gpsp-pico.blob with a BIOS: gpSP has no BIOS of its own); missing: Android.
+ * Then the settings, the BIOS (optional: /bios/gba_bios.bin or /gba_bios.bin; without it there
+ * is no intro) and the cart header file are read, and the emulator thread starts.
  */
 int ayaneo_gba_sd_boot(void)
 {
-	int rc;
+	int rc, mode;
 	{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(4); }   /* oem boottime: SD boot begins */
-	/* Hold SELECT at boot to FORCE the emulator/menu - the deterministic "way back"
-	 * from Android. It overrides both the boot-to-OS one-shot and the watchdog guard
-	 * so the user can always reach the emulator regardless of any skip state. */
+	/* Hold SELECT at power on for the menu: the way back from boot=android. It also overrides the
+	 * watchdog guard, since the user is asking for the menu. */
 	int force_emu = ayaneo_gbc_select_held();
 
-	/* Boot-to-OS is STICKY: once "Boot to OS" writes the marker, every boot goes to
-	 * Android until the user explicitly comes back by holding SELECT. So we do NOT
-	 * clear the marker on an OS boot - only SELECT clears it. This makes the boot
-	 * target a deliberate, remembered choice rather than a one-shot. */
-	{
-		unsigned char b[64];
-		int flag_set = (partition_read(BOOTOS_PART, BOOTOS_OFF, b, sizeof b) == (ssize_t)sizeof b &&
-				(unsigned)b[0] == (BOOTOS_MAGIC & 0xFF) &&
-				(unsigned)b[1] == ((BOOTOS_MAGIC >> 8) & 0xFF) &&
-				(unsigned)b[2] == ((BOOTOS_MAGIC >> 16) & 0xFF) &&
-				(unsigned)b[3] == ((BOOTOS_MAGIC >> 24) & 0xFF));
-		if (force_emu) {
-			/* Way back: clear the sticky flag so the device defaults to the emulator
-			 * again from now on, then fall through to start it. */
-			if (flag_set) {
-				unsigned i;
-				for (i = 0; i < sizeof b; i++) b[i] = 0;
-				arch_clean_cache_range((unsigned long)b, sizeof b);
-				partition_write(BOOTOS_PART, BOOTOS_OFF, b, sizeof b);
-				GBA_LOG("gba-sd: SELECT held -> cleared sticky boot-to-OS flag, forcing emulator\n");
-			} else {
-				GBA_LOG("gba-sd: SELECT held -> forcing emulator\n");
-			}
-		} else if (flag_set) {
-			GBA_LOG("gba-sd: sticky boot-to-OS flag set -> normal Android boot (hold SELECT to return)\n");
-			return -10;
-		}
-	}
-
-	/* NEVER-BRICK GUARD: a crash in the SD path ends in a watchdog reset. Skip the SD
-	 * emulator path and fall through to normal Android boot only when that keeps
-	 * happening: the last reset was the watchdog and two SD attempts in a row died
-	 * before 30 s of stable running (ayaneo_sd_guard_enter, black box DRAM). A single
-	 * crash no longer disables the card for good (the RGU keeps its watchdog status
-	 * across later reboots, which left every boot after one crash on a blank screen).
-	 * SELECT held overrides this (the user is explicitly asking for the emulator). */
+	/* NEVER-BRICK GUARD: a crash in the SD path ends in a watchdog reset. Two SD attempts in a
+	 * row that died before 30 s of stable running (ayaneo_sd_guard_enter, black box DRAM) send
+	 * the boot to Android; one crash does not. */
 	{
 		extern unsigned int mtk_wdt_check_status(void);
 		extern int ayaneo_sd_guard_enter(unsigned int wdt_status);
 		unsigned int wsta = mtk_wdt_check_status();
 		if (ayaneo_sd_guard_enter(wsta) && !force_emu) {
-			GBA_LOG("gba-sd: two watchdog resets in the SD path in a row (0x%x) - skipping SD -> normal boot\n", wsta);
+			GBA_LOG("gba-sd: two watchdog resets in the SD path in a row (0x%x) - Android\n", wsta);
 			return -9;
 		}
 	}
@@ -3564,65 +3576,63 @@ int ayaneo_gba_sd_boot(void)
 	{
 		extern int gba_sd_card_present(void);
 		if (!gba_sd_card_present()) {
-			GBA_LOG("gba-sd: no card in the slot (GPIO8) -> normal boot\n");
+			GBA_LOG("gba-sd: no card in the slot (GPIO8) - Android\n");
 			return -1;
 		}
 	}
-	if (bios_cache_read(s_sd_bios) == 0) {
-		/* Fast path: the BIOS (and the logo header) come from eMMC, so the intro starts now;
-		 * the card mount, asset check, listing and cache refresh run on their own thread
-		 * and the menu waits for them (sd_bg_wait) after the intro. */
-		s_sd_fast = 1;
-		s_sd_bg_state = 0;
-		s_sd_bg_pending = 1;   /* emu_thread launches the card thread after the core blob is loaded */
-		s_sd_mode = 1;
-		ayaneo_gbc_start();
-		{
-			extern void ayaneo_fastboot_usb_start(void);
-			ayaneo_fastboot_usb_start();
-		}
-		return 0;
-	}
 	rc = gba_sd_mount(&s_sd_vol);
 	if (rc != 0) {
-		if (rc == -4)
-			GBA_LOG("gba-sd: microSD is exFAT (unsupported) - reformat FAT32 -> normal boot\n");
-		else
-			GBA_LOG("gba-sd: no FAT microSD (rc=%d) -> normal boot\n", rc);
+		GBA_LOG("gba-sd: the card does not mount (rc=%d) - Android\n", rc);
 		return -1;
 	}
 	g_dbg_bt_mount = BT_MS();
-	if (!gba_sd_assets_ok(&s_sd_vol)) {
-		GBA_LOG("gba-sd: microSD present but /gba_bios.bin + /roms/gba missing -> normal boot\n");
+
+	mode = bootcfg_read(&s_sd_vol);
+	if (force_emu) {
+		if (mode != BOOTCFG_SD && card_file_present(&s_sd_vol, MENU_PACK_PATH)) {
+			bootcfg_write(&s_sd_vol, BOOTCFG_SD);
+			GBA_LOG("gba-sd: SELECT held - boot=sd written\n");
+		}
+	} else if (mode == BOOTCFG_NONE) {
+		GBA_LOG("gba-sd: no valid " GAMMAOS_DIR "/" BOOTCFG_NAME " - Android\n");
 		return -2;
+	} else if (mode == BOOTCFG_ANDROID) {
+		GBA_LOG("gba-sd: boot=android - Android (hold SELECT at power on for the menu)\n");
+		return -10;
 	}
-	if (gba_sd_load_bios(&s_sd_vol, s_sd_bios) != 0) {
-		GBA_LOG("gba-sd: /gba_bios.bin present but not a 16KB readable BIOS -> normal boot\n");
+
+	if (!card_file_present(&s_sd_vol, MENU_PACK_PATH)) {
+		GBA_LOG("gba-sd: " MENU_PACK_PATH " missing - Android\n");
 		return -3;
 	}
+	s_have_bios = (gba_sd_load_bios(&s_sd_vol, s_sd_bios) == 0);
 	g_dbg_bt_bios = BT_MS();
-	/* Ensure /roms/gb, /roms/gbc, /roms/gba exist so the user has a place to drop
-	 * each console's ROMs (idempotent; harmless if already present or read-only). */
-	gba_sd_make_rom_dirs(&s_sd_vol);
-	{
+	if (!card_file_present(&s_sd_vol, CORE_PATH_ARMGBA) &&
+	    !(s_have_bios && card_file_present(&s_sd_vol, CORE_PATH_GPSP))) {
+		GBA_LOG("gba-sd: no usable GBA core (%s, or %s with a BIOS) - Android\n", CORE_PATH_ARMGBA, CORE_PATH_GPSP);
+		return -4;
+	}
+
+	gba_sd_settings_load(&s_sd_vol);		/* /gammaos/settings.bin; defaults when missing */
+	if (cart_header_read(&s_sd_vol)) {
+		/* the intro starts now; the ROM listing runs on its own thread meanwhile */
+		s_sd_fast = 1;
+		s_sd_bg_state = 0;
+		s_sd_bg_pending = 1;	/* emu_thread starts the listing once the core is loaded */
+	} else {
+		/* first boot of this card (no header file yet): list first, so the intro has the logo */
 		int total = 0;
+		gba_sd_make_rom_dirs(&s_sd_vol);
 		s_nrom = gba_sd_list_roms(&s_sd_vol, s_roms, 128, &total);
 		g_dbg_bt_list = BT_MS();
 		if (total > s_nrom)
 			GBA_LOG("gba-sd: WARNING %d roms present, showing first %d (cap)\n", total, s_nrom);
-		GBA_LOG("gba-sd: microSD + assets OK (fat32=%d, %d roms in /roms/gba) - running BIOS intro from SD\n",
-			s_sd_vol.is_fat32, s_nrom);
+		cart_header_refresh();
 	}
-	{	/* first boot (or a stale cache): remember the BIOS and the logo header for next time */
-		static unsigned char hdr[512] __attribute__((aligned(64)));
-		memset(hdr, 0, sizeof hdr);
-		bios_cache_write(s_sd_bios, logo_header_from_card(hdr) ? hdr : (const unsigned char *)0);
-	}
+	GBA_LOG("gba-sd: GammaOS card (bios=%d, header=%d) - starting the menu\n", s_have_bios, s_cart_hdr_valid);
 	s_sd_mode = 1;
-	ayaneo_gbc_start();   /* spawns emu_thread, which runs the SD intro (s_sd_mode) */
-	/* Bring up the USB fastboot debug channel alongside the running emulator so
-	 * `fastboot oem screenshot` / `oem diag` work live over USB (no reboot to
-	 * fastboot mode). Spawns its own thread + IRQ-driven udc, returns immediately. */
+	ayaneo_gbc_start();   /* spawns emu_thread */
+	/* the USB fastboot debug channel alongside the running emulator (oem diag, screenshots) */
 	{
 		extern void ayaneo_fastboot_usb_start(void);
 		ayaneo_fastboot_usb_start();

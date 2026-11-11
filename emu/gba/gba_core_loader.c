@@ -1,51 +1,24 @@
 /*
- * gba_core_loader.c - LK side of the loadable core (see gba_core_abi.h).
+ * gba_core_loader.c - LK side of the loadable GBA cores (see gba_core_abi.h).
  *
- * Compiled INTO lk_a (not the blob). gba_core_load() reads the core blob from boot_b into
- * its fixed DRAM slot, zeroes its BSS, does the same D-clean + I-invalidate the dynarec
- * uses for RWX code, then calls the blob's entry with the imports table and returns the
- * export table the driver drives the core through. Replaces linking libgpsp.a into lk_a,
- * freeing ~993 KiB of the 2 MB partition and making room for a second core (GB/GBC).
+ * Compiled INTO lk_a (not the blob). gba_core_load_file() copies a GBA core from the SD card
+ * (/cores/armgba-pico.blob or /cores/gpsp-pico.blob, core_file.h) into the GBA core slot, calls
+ * its entry with the imports table and returns the export table the driver drives the core
+ * through. Both cores use the same slot, so loading one replaces the other.
  */
 #include "gba_core_abi.h"
-
-typedef long ssize_t;
-typedef long long off_t;	/* MUST match include/sys/types.h: 64-bit, or the ABI mismatch
-				 * mis-passes the offset register pair and the read fails silently. */
-extern ssize_t partition_read(const char *part, off_t off, unsigned char *buf, unsigned long len);
-extern void *memset(void *d, int c, unsigned long n);
+#include "core_file.h"
 
 /* imports the blob calls back into LK for */
 extern void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames);
 extern long gba_host_time(void);
 extern void gba_yield_to_main(void);
 
-/* Where the blob lives. VMA must match core_blob.ld; the boot_b offset is chosen by the
- * boot_b builder (boot_b is being repurposed to LK/menu assets + core blobs now that SD
- * is the source of truth for ROMs/saves/config). */
-#define GBA_CORE_BLOB_PART "boot_b"
-#define GBA_CORE_BLOB_OFF  0x01C00000u   /* 28 MB: the old save/state region, dead in SD
-                                          * mode (saves go to the SD card); clear of the
-                                          * SNES asset pack (17-~22 MB) and settings (30 MB) */
+/* The GBA core slot: the VMA both cores are linked to, up to the GB/GBC core slot. It sits
+ * within ARM BL's +-32 MB reach of the JIT caches at 0x4E000000 (gpSP's dynarec calls into the
+ * blob's helpers directly). */
 #define GBA_CORE_BLOB_VMA  0x4E400000u
-
-/* clean D-line to PoU, DSB, invalidate I-line to PoU, BPIALL, DSB, ISB - over the loaded
- * code so the CPU fetches it correctly (same as gba_shim.c __clear_cache, but that lives
- * in the blob and is not available until after this runs). Single-core PL1: local ops. */
-#define CORE_CACHE_LINE 32u
-static void core_sync_code(unsigned long start, unsigned long len)
-{
-	unsigned long s = start & ~(CORE_CACHE_LINE - 1);
-	unsigned long e = start + len;
-	unsigned long a;
-	for (a = s; a < e; a += CORE_CACHE_LINE)
-		__asm__ __volatile__("mcr p15, 0, %0, c7, c11, 1" :: "r"(a) : "memory"); /* DCCMVAU */
-	__asm__ __volatile__("dsb" ::: "memory");
-	for (a = s; a < e; a += CORE_CACHE_LINE)
-		__asm__ __volatile__("mcr p15, 0, %0, c7, c5, 1" :: "r"(a) : "memory");  /* ICIMVAU */
-	__asm__ __volatile__("mcr p15, 0, %0, c7, c5, 6" :: "r"(0) : "memory");          /* BPIALL */
-	__asm__ __volatile__("dsb\n\tisb" ::: "memory");
-}
+#define GBA_CORE_SLOT_END  0x4E800000u
 
 /* a monotonic millisecond count for the core (the black box keeps it wrap safe) */
 extern unsigned int ayaneo_bb_uptime_ms(void);
@@ -60,71 +33,25 @@ static const struct gba_core_imports s_imports = {
 
 static int core_version_ok(unsigned v) { return v >= GBA_CORE_ABI_VERSION && v <= GBA_CORE_ABI_MAX; }
 
-/* Load the GBA core blob and return its export table, or 0 on any failure (bad header,
- * short read, entry rejected). Called once during emu init before gba_core_init(). */
-const struct gba_core_exports *gba_core_load(void)
-{
-	unsigned char *dst = (unsigned char *)GBA_CORE_BLOB_VMA;
-	unsigned hdr[5];
-	unsigned entry, load_size, total_span;
-	gba_core_blob_init_fn init;
-	const struct gba_core_exports *ex;
+/* the reason the last load failed (core_file.h CORE_FILE_*), for the menu and oem diag */
+volatile int g_gba_core_err;
 
-	if (partition_read(GBA_CORE_BLOB_PART, GBA_CORE_BLOB_OFF, (unsigned char *)hdr, sizeof hdr) != (ssize_t)sizeof hdr)
-		return 0;
-	if (hdr[0] != GBA_CORE_ABI_MAGIC || !core_version_ok(hdr[1]))
-		return 0;
-	entry = hdr[2]; load_size = hdr[3]; total_span = hdr[4];
-	if (load_size < sizeof hdr || total_span < load_size)
-		return 0;
-
-	/* pull the whole loadable image (header..data) into the fixed DRAM slot */
-	if (partition_read(GBA_CORE_BLOB_PART, GBA_CORE_BLOB_OFF, dst, load_size) != (ssize_t)load_size)
-		return 0;
-	/* zero BSS [load_size, total_span) */
-	memset(dst + load_size, 0, total_span - load_size);
-	/* make the freshly written code fetchable */
-	core_sync_code(GBA_CORE_BLOB_VMA, load_size);
-
-	init = (gba_core_blob_init_fn)(void *)(dst + entry);
-	ex = init(&s_imports);
-	if (!ex || ex->magic != GBA_CORE_ABI_MAGIC || !core_version_ok(ex->version))
-		return 0;
-	return ex;
-}
-
-#ifdef AYANEO_GBA_SD
-#include "fat_ro.h"
-/* The same, from a file on the SD card (armGBA-pico: /cores/armgba-pico.blob). The file is the flat
- * image with the same header; it loads into the same slot, so it replaces whatever GBA core was
- * there. Returns 0 if the file is missing, short, too big for the slot or its entry rejects it; the
- * caller then reloads the boot_b core. */
-#define GBA_CORE_SLOT_END 0x4E800000u   /* the GB/GBC core slot starts here */
 const struct gba_core_exports *gba_core_load_file(fat_vol *v, const char *path)
 {
-	unsigned char *dst = (unsigned char *)GBA_CORE_BLOB_VMA;
-	unsigned hdr[5];
-	fat_file f;
 	gba_core_blob_init_fn init;
 	const struct gba_core_exports *ex;
+	int err;
 
-	if (!v || fat_open(v, path, &f) != 0 || f.size < sizeof hdr)
+	init = (gba_core_blob_init_fn)core_file_load(v, path, GBA_CORE_BLOB_VMA,
+						      GBA_CORE_SLOT_END - GBA_CORE_BLOB_VMA,
+						      GBA_CORE_ABI_MAGIC, GBA_CORE_ABI_VERSION, GBA_CORE_ABI_MAX, &err);
+	g_gba_core_err = err;
+	if (!init)
 		return 0;
-	if (fat_read(&f, 0, hdr, sizeof hdr) != sizeof hdr)
-		return 0;
-	if (hdr[0] != GBA_CORE_ABI_MAGIC || !core_version_ok(hdr[1]))
-		return 0;
-	if (hdr[3] < sizeof hdr || hdr[3] > f.size || hdr[4] < hdr[3] || hdr[2] >= hdr[3] ||
-	    GBA_CORE_BLOB_VMA + hdr[4] > GBA_CORE_SLOT_END)
-		return 0;
-	if (fat_read(&f, 0, dst, hdr[3]) != hdr[3])
-		return 0;
-	memset(dst + hdr[3], 0, hdr[4] - hdr[3]);
-	core_sync_code(GBA_CORE_BLOB_VMA, hdr[3]);
-	init = (gba_core_blob_init_fn)(void *)(dst + hdr[2]);
 	ex = init(&s_imports);
-	if (!ex || ex->magic != GBA_CORE_ABI_MAGIC || !core_version_ok(ex->version))
+	if (!ex || ex->magic != GBA_CORE_ABI_MAGIC || !core_version_ok(ex->version)) {
+		g_gba_core_err = CORE_FILE_REJECTED;
 		return 0;
+	}
 	return ex;
 }
-#endif

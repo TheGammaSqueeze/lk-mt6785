@@ -510,6 +510,14 @@ void ayaneo_settings_load(void)
 
 	if (s_settings_loaded)
 		return;
+#if defined(AYANEO_GBA_SD)
+	/* The SD build keeps the settings on the card only (/gammaos/settings.bin, read by the SD
+	 * gate through ayaneo_settings_deserialize). Before that, and on an Android boot, the
+	 * defaults stand; nothing is read from the eMMC. */
+	(void)b; (void)ver; (void)g_dbg_set_step;
+	s_settings_loaded = 1;
+	return;
+#endif
 	g_dbg_set_step = 1;
 	/* If storage is not up yet (early boot), leave s_settings_loaded clear so a
 	 * later call retries; only commit once we have actually read the block. */
@@ -699,10 +707,21 @@ int ayaneo_settings_aspect_selftest(void)
 	return fail;
 }
 
-/* write all current settings back to boot_b (block-aligned) */
+/* write all current settings back to boot_b (block-aligned); the SD build writes them to the
+ * card instead (ayaneo_settings_store, gba_driver.c: /gammaos/settings.bin) */
 void ayaneo_settings_save(void)
 {
 	static unsigned char b[512] __attribute__((aligned(64)));
+#if defined(AYANEO_GBA_SD)
+	{
+		extern int ayaneo_settings_store(const unsigned char *blk, int len);
+		int n = ayaneo_settings_serialize(b, (int)sizeof b);
+		s_settings_loaded = 1;			/* our value is now authoritative */
+		if (n > 0)
+			ayaneo_settings_store(b, n);
+		return;
+	}
+#endif
 
 	memset(b, 0, sizeof(b));
 	wr32(b + 0, AYANEO_SET_MAGIC);
@@ -1101,6 +1120,9 @@ static void audio_shutdown(void)
 #endif
 }
 
+/* The boot chime (a clip in boot_b, played with the old boot animation) is retired: the GBA BIOS
+ * boot from the card is the intro, and the SD build reads nothing from boot_b. */
+#if !defined(AYANEO_GBA_SD)
 /*
  * The whole audio life-cycle on its own thread so it never stalls the boot
  * animation: load + decode the clip, wait the start delay, bring up the codec,
@@ -1243,12 +1265,17 @@ done:
 	return 0;
 }
 
+#endif /* !AYANEO_GBA_SD */
+
 /*
  * Public entry: spawn the audio thread. Returns immediately so the boot
  * animation is never blocked. Safe to call once, after the display is up.
  */
 void ayaneo_boot_audio_start(void)
 {
+#if defined(AYANEO_GBA_SD)
+	return;				/* no boot chime (see ayaneo_audio_thread) */
+#else
 	thread_t *t;
 
 	if (s_mute_bios)		/* user muted the boot chime (persisted setting) */
@@ -1277,6 +1304,7 @@ void ayaneo_boot_audio_start(void)
 		s_audio_active = 0;
 	ATRACE("AYANEO_AUD: boot chime start spawned=%d t=%u\n",
 		!!t, (unsigned)current_time());
+#endif
 }
 
 void ayaneo_boot_audio_stop(void)

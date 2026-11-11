@@ -3869,6 +3869,9 @@ void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius)
 }
 #endif /* AYANEO_GBC */
 
+/* The boot animation (a clip in boot_b) is retired in the SD build: the GBA BIOS boot from the
+ * card is the intro, and the LK reads nothing from boot_b. */
+#if !defined(AYANEO_GBA_SD)
 /*
  * Boot animation player. Reads a compressed frame blob from the "logo"
  * partition (header: 'GBA1', ver, w, h, nframes, fps; then per-frame
@@ -4188,10 +4191,16 @@ skip_boot_anim:
 #endif
 }
 
+#endif /* !AYANEO_GBA_SD */
+
 void video_rainbow_boot_stop(void)
 {
 	int guard = 0;
 
+#if defined(AYANEO_GBA_SD)
+	(void)guard;
+	return;   /* no boot animation in the SD build */
+#endif
 	if (s_rainbow_exited)
 		return;
 

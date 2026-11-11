@@ -139,32 +139,48 @@ void mt_logo_get_custom_if(void)
 extern void video_rainbow_boot_start(void);
 #endif /* AYANEO_RAINBOW_BOOT */
 
+static void show_stock_boot_logo(void);
+#if defined(AYANEO_GBA_SD)
+static int s_logo_deferred;
+/* The boot logo held back by mt_disp_show_boot_logo because a card was in: shown now that the SD
+ * gate sent the boot to Android after all (no GammaOS card, boot=android, a failed gate). */
+void ayaneo_show_deferred_logo(void)
+{
+	if (!s_logo_deferred)
+		return;
+	s_logo_deferred = 0;
+	show_stock_boot_logo();
+}
+#endif
+
 void mt_disp_show_boot_logo(void)
 {
 	dprintf(INFO, "[lk logo: %s %d]\n",__FUNCTION__,__LINE__);
-#ifdef AYANEO_RAINBOW_BOOT
 #if defined(AYANEO_GBA_SD)
 	/*
-	 * Two paths:
-	 *  - Emulator boot: do NOT play the AYANEO logo animation. The GBA-from-SD gate
-	 *    runs early (top of boot_linux_from_storage) and the emulator's GBA BIOS
-	 *    intro is the first thing painted after backlight, so any logo animation here
-	 *    would just be a delay competing with it for the panel. Return immediately.
-	 *  - "Boot to OS" (sticky marker set): fall through to the real eMMC boot logo so
-	 *    it looks like a normal Android boot. The marker is only peeked here; it is
-	 *    cleared only when the user holds SELECT to return.
+	 * With a card in, a normal boot may go to the GammaOS menu from the card, whose GBA BIOS
+	 * intro (or menu) is the first thing painted, so the logo would only delay it. Whether it
+	 * does is known only once the SD gate has read the card's boot.cfg, so the logo waits: the
+	 * gate's fall back to Android shows it (ayaneo_show_deferred_logo). No card: the logo now,
+	 * as the stock bootloader does.
 	 */
 	{
-		extern int ayaneo_boot_to_os_pending(void);
-		if (!ayaneo_boot_to_os_pending())
+		extern int ayaneo_logo_defer(void);   /* platform.c */
+		if (ayaneo_logo_defer()) {
+			s_logo_deferred = 1;
 			return;
+		}
 	}
-#else
+#elif defined(AYANEO_RAINBOW_BOOT)
 	/* non-blocking: spawn the animation thread and let boot continue */
 	video_rainbow_boot_start();
 	return;
-#endif /* AYANEO_GBA_SD */
 #endif
+	show_stock_boot_logo();
+}
+
+static void show_stock_boot_logo(void)
+{
 	mt_logo_get_custom_if();
 
 	if (logo_cust_if->show_boot_logo) {
