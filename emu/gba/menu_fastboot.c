@@ -1481,6 +1481,12 @@ static void cmd_palate(const char *arg, void *data, unsigned sz)
 		fastboot_info(lbuf);
 	}
 	s_refreshes = refreshes; s_tick = tick; s_timeouts = timeouts;
+	{
+		extern volatile unsigned int g_dbg_pace_P, g_dbg_pace_nom, g_dbg_pace_meas, g_dbg_pace_rejects;
+		snprintf(lbuf, sizeof lbuf, "period learned=%u nominal=%u last=%u rejected=%u (ticks)",
+			 g_dbg_pace_P, g_dbg_pace_nom, g_dbg_pace_meas, g_dbg_pace_rejects);
+		fastboot_info(lbuf);
+	}
 	fastboot_okay("");
 }
 #endif

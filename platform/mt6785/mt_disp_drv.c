@@ -933,6 +933,9 @@ volatile unsigned int g_dbg_latch_hit, g_dbg_latch_miss;
 int ayaneo_rdma_wait_frame_end(unsigned int timeout_us);   /* ddp_rdma.c */
 static unsigned int s_pace_next;   /* time paced mode: deadline of the frame being presented */
 static unsigned int s_pace_period;  /* the refresh as measured between real frame ends, ticks */
+/* oem palate: the learned period, the nominal one, the last measurement and the measurements
+ * thrown out for being more than 1% off, all in 13 MHz ticks */
+volatile unsigned int g_dbg_pace_P, g_dbg_pace_nom, g_dbg_pace_meas, g_dbg_pace_rejects;
 static unsigned int s_pace_measured, s_pace_since_measured;   /* the last measured edge, frames handed over since */
 extern void ayaneo_idle_until(unsigned target_tick);   /* ayaneo_volume_input.c */
 /* Frame delay. A core reads its buttons at the top of its loop, emulates, presents, and the
@@ -1150,11 +1153,21 @@ static void rot_pace(void)
 		ayaneo_rdma_int_clear(4u);
 		if (s_fd_whole && s_pace_measured && k && k <= 256u) {
 			unsigned int meas = (now - s_pace_measured) / k, nom = period * div;
+			g_dbg_pace_meas = meas; g_dbg_pace_nom = nom;
 			if (meas > nom - nom / 100u && meas < nom + nom / 100u)
 				s_pace_period = s_pace_period ? s_pace_period + ((int)(meas - s_pace_period)) / 4 : meas;
+			else
+				g_dbg_pace_rejects++;
+			g_dbg_pace_P = s_pace_period;
 		}
 		if (s_pace_measured && k) {
-			g_dbg_pace_refreshes += k;
+			/* A frame later than the late window sleeps through the edge it missed, and nobody
+			 * waited for that one: the count from the edges alone comes up short (one lost edge in
+			 * 64 read 58.8 Hz). The time since the last measured edge over the learned period is
+			 * the true count. */
+			unsigned int pp = s_pace_period ? s_pace_period : period * div;
+			unsigned int kt = (now - s_pace_measured + pp / 2u) / pp;
+			g_dbg_pace_refreshes += kt ? kt : k;
 			g_dbg_pace_refresh_tick = now;
 		}
 		s_pace_measured = now;

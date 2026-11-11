@@ -2993,11 +2993,11 @@ static int emu_thread(void *arg)
 				if (lt > 104000u && lt < 300000u) {   /* 8..23 ms; reject doubled frames */
 					unsigned int hz = 0;
 #if defined(KONKR_KPA)
-					/* The Konkr's pacer counts every refresh edge, frames handed over late
-					 * included, and stamps the last one it measured: refreshes over their
-					 * span is the exact rate. The loop period is not: a late frame splits into
-					 * a long period (rejected) and a short one (kept), which read up to 60.1 Hz
-					 * on a 59.727 Hz panel. A window with a timed out edge wait is dropped. */
+					/* The Konkr's pacer counts the refreshes between the frame ends it measures
+					 * and stamps the last one: refreshes over their span is the exact rate. The
+					 * loop period is not: a late frame splits into a long period (rejected) and a
+					 * short one (kept), which read up to 60.1 Hz on a 59.727 Hz panel. A window
+					 * with a timed out edge wait is dropped. */
 					extern volatile unsigned int g_dbg_pace_refreshes, g_dbg_pace_refresh_tick, g_dbg_pace_timeouts;
 					static unsigned int w_ref, w_tick, w_to;
 					if (g_cnt == 0) { w_ref = g_dbg_pace_refreshes; w_tick = g_dbg_pace_refresh_tick; w_to = g_dbg_pace_timeouts; }
