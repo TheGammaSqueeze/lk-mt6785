@@ -2142,6 +2142,7 @@ static unsigned char *gba_core_for_launch(void)
 static unsigned int s_bt_t0;
 volatile unsigned g_dbg_emu_abs_ms; volatile int g_dbg_emu_chime;   /* oem led: emu_thread start on the gpt4 clock, chime still playing */
 volatile unsigned int g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list;
+volatile int g_dbg_bt_retime = -2;   /* GammaOS panel timing: -2 not applied (stock), else the panel write timeouts */
 volatile unsigned int g_dbg_bt_coreload, g_dbg_bt_coreinit, g_dbg_bt_start, g_dbg_bt_frame1;
 #define BT_MS() ((gpt4_get_current_tick() - s_bt_t0) / 13000u)
 
@@ -3612,6 +3613,15 @@ int ayaneo_gba_sd_boot(void)
 		GBA_LOG("gba-sd: no usable GBA core (%s, or %s with a BIOS) - Android\n", CORE_PATH_ARMGBA, CORE_PATH_GPSP);
 		return -4;
 	}
+#if defined(KONKR_KPA)
+	/* GammaOS starts: the panel came up on the stock timing (what Android gets), now it moves to
+	 * GammaOS's (st7123 LCM driver). Done here, before the settings and the cart header are read,
+	 * so the panel has settled on the new timing well before the first frame. */
+	{
+		extern int st7123_gammaos_timing(void);
+		g_dbg_bt_retime = st7123_gammaos_timing();
+	}
+#endif
 
 	gba_sd_settings_load(&s_sd_vol);		/* /gammaos/settings.bin; defaults when missing */
 	if (cart_header_read(&s_sd_vol)) {

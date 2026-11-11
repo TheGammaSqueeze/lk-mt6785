@@ -64,7 +64,9 @@
  * device at 59.7275 Hz: clean from 5 to 8.5 ms of blanking, fading at 9.5 ms, so 7.5 ms leaves a
  * margin for other units and the second glass. 478 MHz also stays in the lower PLL band (ratio 8),
  * the band the line constant was measured in: the 500 MHz band ran 0.165 to 0.33% slow. The LCM
- * boots at this rate (PLL_CLOCK 239), 1739 lines at 59.7275 Hz from the line constant. */
+ * boots at the stock integer 354 Mbps (PLL_CLOCK 177) so Android gets the stock timing; the SD gate
+ * moves it to this rate when GammaOS starts (ayaneo_dsi_retime), 1739 lines at 59.7275 Hz from the
+ * line constant. */
 #define AYANEO_GBA_DR_KHZ 477600u
 #elif defined(AYANEO_GBA)
 #define AYANEO_GBA_DR_KHZ 526512u
@@ -1194,7 +1196,11 @@ void ayaneo_dsi_set_vfp(unsigned int vfp)
  * 250-500 MHz band, ratio 8) and pulse SDM_PCW_CHG so the SDM takes the new word. Every line
  * then takes 1/rate longer, which lowers the refresh with the porches untouched. Experiment
  * knob (oem dr:KHZ) for a 50 Hz PAL mode on the Konkr; 0 reads back nothing and returns 0. */
+#if defined(KONKR_KPA)
+volatile unsigned int g_dsi_dr_khz = 354000u;   /* the live MIPI rate: the stock 354 Mbps until ayaneo_dsi_retime */
+#else
 volatile unsigned int g_dsi_dr_khz = AYANEO_GBA_DR_KHZ;   /* the live MIPI rate (refresh scales with it) */
+#endif
 unsigned int ayaneo_dsi_set_dr_khz(unsigned int khz)
 {
 	unsigned int num, r0, r1, r2, pcw, tmp, ratio, posdiv;
@@ -1212,6 +1218,69 @@ unsigned int ayaneo_dsi_set_dr_khz(unsigned int khz)
 	MIPITX_OUTREGBIT(DSI_PHY_REG[0] + MIPITX_PLL_CON1, FLD_RG_DSI_PLL_SDM_PCW_CHG, 0);
 	g_dsi_dr_khz = khz;
 	return tmp;
+}
+#if defined(KONKR_KPA)
+/* GammaOS takes over the running panel (st7123_gammaos_timing, from the SD gate): the PHY timings
+ * and the spread spectrum depth worked out for the new PLL clock, the vertical sync, back porch and
+ * front porch, then the MIPI rate. All of them take effect live (measured: the PHY timing words
+ * change the line length at once), so no DSI restart is needed. The DSI context keeps the new values,
+ * so anything that reads them later sees the timing in use.
+ *
+ * The spread spectrum matters for the refresh: its depth is a fixed PCW step worked out from the boot
+ * rate (DSI_DPHY_clk_setting, delta1 = 2), so the 354 Mbps step left in place at 478 Mbps spreads
+ * 1.48% instead of 2% and the average clock ran 0.26% fast (59.884 Hz where the boot at PLL 239 gave
+ * 59.7275). Rewritten for the new clock it is the register state the line constant was measured on.
+ * The new depth is only taken cleanly while the spread spectrum is off: written while it ran, the
+ * refresh landed anywhere from 59.732 to 59.785 Hz from one boot to the next, and a 10 us off pulse
+ * did not reset it. Off for the whole retime plus 1 ms (about 30 modulation periods of 0x1B1 reference
+ * clocks), then on: 59.7276 Hz, the boot at PLL 239's 59.7276. Later live rate changes
+ * (ayaneo_dsi_set_dr_khz) keep the depth, as they always did. */
+void DSI_PHY_TIMCONFIG(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAMS *dsi_params);
+void ayaneo_dsi_retime(unsigned int vsa, unsigned int vbp, unsigned int vfp, unsigned int pll_clock)
+{
+	LCM_DSI_PARAMS *p = &_dsi_context[0].dsi_params;
+	p->PLL_CLOCK = pll_clock;
+	p->vertical_sync_active = vsa;
+	p->vertical_backporch = vbp;
+	p->vertical_frontporch = vfp;
+	if (p->ssc_disable != 1)
+		MIPITX_OUTREGBIT(DSI_PHY_REG[0] + MIPITX_PLL_CON2, FLD_RG_DSI_PLL_SDM_SSC_EN, 0);
+	DSI_PHY_TIMCONFIG(DISP_MODULE_DSI0, NULL, p);
+	if (p->ssc_disable != 1) {   /* the boot's formula (DSI_DPHY_clk_setting) for the new clock */
+		unsigned int dr = pll_clock * 2u;
+		unsigned int ratio = dr >= 1000u ? 2u : dr >= 500u ? 4u : 8u;
+		unsigned int delta1 = p->ssc_range ? p->ssc_range : 2u;
+		unsigned int pdelta1 = (delta1 * (dr / 2u) * ratio * 262144u + 281664u) / 563329u;
+		MIPITX_OUTREGBIT(DSI_PHY_REG[0] + MIPITX_PLL_CON3, FLD_RG_DSI_PLL_SDM_SSC_DELTA, pdelta1);
+		MIPITX_OUTREGBIT(DSI_PHY_REG[0] + MIPITX_PLL_CON3, FLD_RG_DSI_PLL_SDM_SSC_DELTA1, pdelta1);
+	}
+	DSI_OUTREG32(NULL, DSI_REG_BASE[0] + DISP_REG_DSI_VSA_NL, vsa);
+	DSI_OUTREG32(NULL, DSI_REG_BASE[0] + DISP_REG_DSI_VBP_NL, vbp);
+	DSI_OUTREG32(NULL, DSI_REG_BASE[0] + DISP_REG_DSI_VFP_NL, vfp);
+	ayaneo_dsi_set_dr_khz(AYANEO_GBA_DR_KHZ);
+	if (p->ssc_disable != 1) {
+		udelay(1000);
+		MIPITX_OUTREGBIT(DSI_PHY_REG[0] + MIPITX_PLL_CON2, FLD_RG_DSI_PLL_SDM_SSC_EN, 1);
+	}
+}
+#endif
+/* oem dsitime: the timing the DSI is running now (stock on an Android boot, GammaOS's once the SD
+ * gate retimed it), in lines short enough for a fastboot INFO packet: 0 the vertical line counts,
+ * the PLL clock and the rate, 1 the PHY timing words, 2 the PLL word and the spread spectrum depth. */
+int ayaneo_dsi_timing_report(int line, char *out, int n)
+{
+	unsigned int b = DSI_REG_BASE[0];
+	if (line == 0)
+		return snprintf(out, n, "dsi: vsa=%u vbp=%u vfp=%u pll=%u rate=%u kHz",
+				AS_UINT32(b + DISP_REG_DSI_VSA_NL), AS_UINT32(b + DISP_REG_DSI_VBP_NL),
+				AS_UINT32(b + DISP_REG_DSI_VFP_NL), _dsi_context[0].dsi_params.PLL_CLOCK, g_dsi_dr_khz);
+	if (line == 1)
+		return snprintf(out, n, "timcon %08x %08x %08x %08x",
+				AS_UINT32(b + DISP_REG_DSI_PHY_TIMCON0), AS_UINT32(b + DISP_REG_DSI_PHY_TIMCON1),
+				AS_UINT32(b + DISP_REG_DSI_PHY_TIMCON2), AS_UINT32(b + DISP_REG_DSI_PHY_TIMCON3));
+	return snprintf(out, n, "pll %08x %08x ssc %08x %08x", AS_UINT32(DSI_PHY_REG[0] + MIPITX_PLL_CON0),
+			AS_UINT32(DSI_PHY_REG[0] + MIPITX_PLL_CON1), AS_UINT32(DSI_PHY_REG[0] + MIPITX_PLL_CON2),
+			AS_UINT32(DSI_PHY_REG[0] + MIPITX_PLL_CON3));
 }
 /* the line constant for the live rate: lines per second scale with the MIPI rate */
 static unsigned int dsi_line_const(void)
@@ -1863,7 +1932,7 @@ void DSI_CPHY_clk_setting(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAMS *d
 			tmp = ((pcw & 0xFF) << 24) | (((256 * (data_Rate * pcw_ratio % 26) / 26) & 0xFF) << 16) |
 				(((256 * (256 * (data_Rate * pcw_ratio % 26) % 26) / 26) & 0xFF) << 8) |
 				((256 * (256 * (256 * (data_Rate * pcw_ratio % 26) % 26) % 26) / 26) & 0xFF);
-#if defined(AYANEO_GBA) && AYANEO_GBA_DR_KHZ
+#if defined(AYANEO_GBA) && AYANEO_GBA_DR_KHZ && !defined(KONKR_KPA)   /* Konkr: stock at boot, see AYANEO_GBA_DR_KHZ */
 			{	/* fractional data rate: same Q7.24 PCW with /26000 (kHz) instead of /26 (MHz) */
 				unsigned int num = (unsigned int)AYANEO_GBA_DR_KHZ * pcw_ratio;
 				unsigned int r0 = num % 26000u;
@@ -2130,7 +2199,7 @@ void DSI_DPHY_clk_setting(DISP_MODULE_ENUM module, void* cmdq, LCM_DSI_PARAMS *d
 			tmp = ((pcw & 0xFF) << 24) | (((256 * (data_Rate * pcw_ratio % 26) / 26) & 0xFF) << 16) |
 				(((256 * (256 * (data_Rate * pcw_ratio % 26) % 26) / 26) & 0xFF) << 8) |
 				((256 * (256 * (256 * (data_Rate * pcw_ratio % 26) % 26) % 26) / 26) & 0xFF);
-#if defined(AYANEO_GBA) && AYANEO_GBA_DR_KHZ
+#if defined(AYANEO_GBA) && AYANEO_GBA_DR_KHZ && !defined(KONKR_KPA)   /* Konkr: stock at boot, see AYANEO_GBA_DR_KHZ */
 			{	/* fractional data rate: same Q7.24 PCW with /26000 (kHz) instead of /26 (MHz) */
 				unsigned int num = (unsigned int)AYANEO_GBA_DR_KHZ * pcw_ratio;
 				unsigned int r0 = num % 26000u;

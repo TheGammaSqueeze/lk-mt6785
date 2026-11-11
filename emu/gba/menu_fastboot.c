@@ -166,7 +166,8 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			 "bt: mount=%u bios=%u list=%u core=%u/%u",
 			 g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list, g_dbg_bt_coreload, g_dbg_bt_coreinit);
 		fastboot_info(lbuf);
-		snprintf(lbuf, sizeof lbuf, "bt: start=%u frame1=%u ms", g_dbg_bt_start, g_dbg_bt_frame1);
+		extern volatile int g_dbg_bt_retime;
+		snprintf(lbuf, sizeof lbuf, "bt: start=%u frame1=%u ms retime=%d", g_dbg_bt_start, g_dbg_bt_frame1, g_dbg_bt_retime);
 		fastboot_info(lbuf);
 	}
 	{
@@ -2238,6 +2239,22 @@ static void cmd_clk(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem dsitime - the live DSI timing: stock unless the SD gate started GammaOS */
+static void cmd_dsitime(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_dsi_timing_report(int line, char *out, int n);
+	extern volatile int g_dbg_bt_retime;
+	int i;
+	(void)arg; (void)data; (void)sz;
+	for (i = 0; i < 3; i++) {
+		ayaneo_dsi_timing_report(i, lbuf, sizeof lbuf);
+		fastboot_info(lbuf);
+	}
+	snprintf(lbuf, sizeof lbuf, "timing: %s (retime=%d)", g_dbg_bt_retime == -2 ? "stock" : "GammaOS", g_dbg_bt_retime);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 static void cmd_vfp(const char *arg, void *data, unsigned sz)
 {
 	extern void ayaneo_dsi_set_vfp(unsigned int vfp);
@@ -2326,6 +2343,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);
 	fastboot_register("oem bbram", cmd_bbram, 1, 0);
 	fastboot_register("oem dsiw", cmd_dsiw, 1, 0);
+	fastboot_register("oem dsitime", cmd_dsitime, 1, 0);
 	fastboot_register("oem gray", cmd_gray, 1, 0);
 	fastboot_register("oem awdump", cmd_awdump, 1, 0);
 	fastboot_register("oem rewindmap", cmd_rewindmap, 1, 0);

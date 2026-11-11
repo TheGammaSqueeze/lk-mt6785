@@ -66,17 +66,26 @@ struct LCM_setting_table {
 /* The second byte of 0xD7 is the line after vertical sync where the panel starts the picture:
  * stock 0x2C = 44 = sync 4 + back porch 40 (another ST7123 board runs 0x0A with sync 2 + back
  * porch 8). It has to equal the DSI's sync + back porch, or the picture is shifted (the first lines
- * cut off at the scan's start, the last ones repeated). The Konkr runs sync 2 + back porch 2 (each
- * checked clean down to 1 line on the device, 2026-11-06), so the next frame's settings are taken
- * 40 lines later for the same refresh: more time for the frame delay before the picture starts. */
+ * cut off at the scan's start, the last ones repeated).
+ *
+ * Every boot brings the panel up on the stock timing below, so Android, recovery, fastboot and the
+ * charging screen get exactly what the stock LK gives them. The Konkr's GammaOS timing is applied
+ * to the running panel only when the SD gate starts the menu (st7123_gammaos_timing): sync 2 + back
+ * porch 2 (each checked clean down to 1 line on the device, 2026-11-06), so the next frame's
+ * settings are taken 40 lines later for the same refresh, and the shorter scan (ddp_dsi.c
+ * AYANEO_GBA_DR_KHZ): 478 Mbps, 1739 lines with 970 fixed (vsync, back porch, 960 active and 6 the
+ * line count measured), so a 769 line front porch, still 59.7275 Hz, 9.24 ms of scan and 7.5 ms of
+ * blanking. */
+#define ST7123_STOCK_VSYNC 4
+#define ST7123_STOCK_VBP   40
+#define ST7123_STOCK_VFP   280
+#define ST7123_STOCK_PLL   177   /* 354 Mbps per lane */
 #if defined(KONKR_KPA)
-#define ST7123_VSYNC_LINES 2
-#define ST7123_VBP_LINES   2
-#else
-#define ST7123_VSYNC_LINES 4
-#define ST7123_VBP_LINES   40
+#define ST7123_GOS_VSYNC   2
+#define ST7123_GOS_VBP     2
+#define ST7123_GOS_VFP     769
+#define ST7123_GOS_PLL     239   /* the PHY timings are worked out for 478 Mbps */
 #endif
-#define ST7123_START_LINE  (ST7123_VSYNC_LINES + ST7123_VBP_LINES)
 
 /* GPIO12 = 0, GPIO13 = 1 ("USE WEIHUI BOE"). LK 0x4c4b2ae4, kernel identical. */
 static struct LCM_setting_table lcm_init_weihui[] = {
@@ -86,7 +95,7 @@ static struct LCM_setting_table lcm_init_weihui[] = {
 	{0xB7, 4, {0x00, 0x00, 0x64, 0x64}},
 	{0xB0, 7, {0x22, 0x61, 0x11, 0x7F, 0x25, 0x39, 0x39}},
 	{0xBF, 2, {0x90, 0x90}},
-	{0xD7, 10, {0x00, ST7123_START_LINE, 0xD2, 0x19, 0xE0, 0xE0, 0xE0, 0x80, 0x00, 0x50}},
+	{0xD7, 10, {0x00, 0x2C, 0xD2, 0x19, 0xE0, 0xE0, 0xE0, 0x80, 0x00, 0x50}},
 	{0x90, 7, {0x71, 0x23, 0x5A, 0x20, 0x24, 0x10, 0x24}},
 	{0xA3, 39, {0x80, 0x01, 0x80, 0x7F, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46, 0x00,
 		    0x00, 0x1E, 0x5C, 0x1E, 0x80, 0x10, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00,
@@ -149,7 +158,7 @@ static struct LCM_setting_table lcm_init_hongzhan[] = {
 	{0xB7, 4, {0x00, 0x00, 0x64, 0x64}},
 	{0xB0, 7, {0x22, 0x61, 0x11, 0x7F, 0x25, 0x39, 0x39}},
 	{0xBF, 2, {0x50, 0x50}},
-	{0xD7, 10, {0x00, ST7123_START_LINE, 0xD2, 0x19, 0xE0, 0xE0, 0xE0, 0x80, 0x00, 0x50}},
+	{0xD7, 10, {0x00, 0x2C, 0xD2, 0x19, 0xE0, 0xE0, 0xE0, 0x80, 0x00, 0x50}},
 	{0x90, 7, {0x71, 0x23, 0x5A, 0x20, 0x24, 0x10, 0x24}},
 	{0xA3, 39, {0x80, 0x01, 0x80, 0x7F, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46, 0x00,
 		    0x00, 0x1E, 0x5C, 0x1E, 0x80, 0x10, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00,
@@ -305,20 +314,9 @@ static void lcm_get_params(LCM_PARAMS *params)
 	/* Stock timing. vtotal 1284 lines, htotal 724 pixels at PLL 177 MHz
 	 * (354 Mbps per lane, 4 lanes, 24 bpp) gives about 63 Hz. The 280 line
 	 * front porch is the refresh knob the dynamic refresh code adjusts. */
-	params->dsi.vertical_sync_active = ST7123_VSYNC_LINES;
-	params->dsi.vertical_backporch = ST7123_VBP_LINES;
-	/* the lines sync and back porch give up go to the front porch: same total, same refresh */
-#if defined(AYANEO_GBA)
-	/* Measured line rate 77.526 kHz (ddp_dsi.c AYANEO_DSI_LINE_CONST, with the 354021 kHz data
-	 * rate): rest the panel at the GBA's 59.7275 Hz for the vsync locked emulators:
-	 * 77526000 / 59727.5 = 1298 lines -> vfp 294 at sync 4 + back porch 40. Stock is 280. */
-	/* The shorter scan (ddp_dsi.c AYANEO_GBA_DR_KHZ): 478 Mbps, 1739 lines with 970 fixed (vsync,
-	 * back porch, 960 active and 6 the line count measured), so a 769 line front porch, still
-	 * 59.7275 Hz, 9.24 ms of scan and 7.5 ms of blanking. */
-	params->dsi.vertical_frontporch = 769;
-#else
-	params->dsi.vertical_frontporch = 280 + 44 - ST7123_START_LINE;
-#endif
+	params->dsi.vertical_sync_active = ST7123_STOCK_VSYNC;
+	params->dsi.vertical_backporch = ST7123_STOCK_VBP;
+	params->dsi.vertical_frontporch = ST7123_STOCK_VFP;
 	params->dsi.vertical_active_line = FRAME_HEIGHT;
 
 	params->dsi.horizontal_sync_active = 4;
@@ -326,11 +324,7 @@ static void lcm_get_params(LCM_PARAMS *params)
 	params->dsi.horizontal_frontporch = 40;
 	params->dsi.horizontal_active_pixel = FRAME_WIDTH;
 
-#if defined(AYANEO_GBA)
-	params->dsi.PLL_CLOCK = 239;   /* the shorter scan's 478 Mbps, so the PHY timings are worked out for it */
-#else
-	params->dsi.PLL_CLOCK = 177;
-#endif
+	params->dsi.PLL_CLOCK = ST7123_STOCK_PLL;
 
 	/* Zero in the stock LK: ssc_disable, cont_clock, noncont_clock,
 	 * clk_lp_per_line_enable, esd_check_enable. The stock kernel copy adds
@@ -400,6 +394,34 @@ void st7123_force_init(int which)
 	(void)which;
 #endif
 }
+
+#if defined(KONKR_KPA)
+/* The SD gate is starting GammaOS: move the running panel from the stock timing to the GammaOS one
+ * (see the top of this file). The picture is black while this runs (the logo is held back on a
+ * boot with a card in), so the frame or two where the panel's start line and the DSI's porches
+ * disagree are not seen. Returns 0, or the number of panel writes that timed out. */
+int st7123_gammaos_timing(void)
+{
+	extern int ayaneo_dsi_vm_cmd(unsigned char cmd, unsigned int n, const unsigned char *p);
+	extern void ayaneo_dsi_retime(unsigned int vsa, unsigned int vbp, unsigned int vfp, unsigned int pll_clock);
+	unsigned char d7[10], u[3] = { 0x71, 0x23, 0xA2 };
+	int fail = 0;
+	if (st7123_stock_reg(0xD7, d7, sizeof d7) != sizeof d7)
+		return -1;
+	d7[1] = ST7123_GOS_VSYNC + ST7123_GOS_VBP;
+	/* the vendor pages unlocked and locked again around the write, as the init table does */
+	fail += ayaneo_dsi_vm_cmd(0x60, 3, u) != 0; u[2] = 0xA3;
+	fail += ayaneo_dsi_vm_cmd(0x60, 3, u) != 0; u[2] = 0xA4;
+	fail += ayaneo_dsi_vm_cmd(0x60, 3, u) != 0;
+	fail += ayaneo_dsi_vm_cmd(0xD7, sizeof d7, d7) != 0;
+	u[2] = 0x00;
+	fail += ayaneo_dsi_vm_cmd(0x60, 3, u) != 0;
+	ayaneo_dsi_retime(ST7123_GOS_VSYNC, ST7123_GOS_VBP, ST7123_GOS_VFP, ST7123_GOS_PLL);
+	dprintf(CRITICAL, "[LK/LCM] st7123 GammaOS timing: sync %d + back porch %d, front porch %d, PLL %d (%d timeouts)\n",
+		ST7123_GOS_VSYNC, ST7123_GOS_VBP, ST7123_GOS_VFP, ST7123_GOS_PLL, fail);
+	return fail;
+}
+#endif
 
 static void lcm_suspend(void)
 {
