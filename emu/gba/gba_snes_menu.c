@@ -703,7 +703,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	snes_menu_set_fct(&s_menu, (uint32_t *)SNES_FCT_PA, SNES_FCT_CAP);
 	snes_menu_set_wp43(&s_menu, (uint32_t *)SNES_WP43_PA);
 
-	/* Load each ROM's box art from the SD card (/roms/gba/boxart/<romstem>.ART) into
+	/* Load each ROM's box art from the SD card (/roms/<system>/boxart/<romstem>.ART) into
 	 * the boxart DRAM region and hand the menu the per-game image table. A missing or
 	 * oversized tile leaves w=0 -> that card falls back to the placeholder cartridge.
 	 * One-time at menu init (snes_menu is pure and cannot read the SD lazily); the raw
@@ -719,7 +719,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			if (vol && i < SNES_BOXART_CAP) {
 				unsigned off = (unsigned)i * SNES_BOXART_SLOT;
 				tot++;
-				if (gba_boxart_load_sd(vol, roms[i].name, scratch, SNES_COMP_MAX,
+				if (gba_boxart_load_sd(vol, (int)roms[i].type, roms[i].name, scratch, SNES_COMP_MAX,
 						       region + off, SNES_BOXART_SLOT, off,
 						       &s_boxart_full[i]) == 0)
 					any++;
