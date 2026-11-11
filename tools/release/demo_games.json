@@ -1,1 +1,271 @@
-[]
+[
+ {
+  "system": "gba",
+  "title": "The Hat Chooses the Wizard",
+  "file": "The Hat Chooses the Wizard.gba",
+  "url": "https://github.com/agbrs/agb/releases/download/v0.25.0/examples.zip",
+  "sha256": "5afdb763660c07370211b20770aeed57a8108aa96b7adb3aa8902ddcdd67d67e",
+  "member": "examples/the-hat-chooses-the-wizard.gba",
+  "rom_sha256": "c417f2a110026b3553a9f0f26090b4bbbceeeac1e0c2ebb0f9d786fe2221021b",
+  "licence": "MPL-2.0; music \"Sylvan Waltz\" by Otto Halmén, CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/)",
+  "credit": "by Corwin Kuiper and Gwilym Inzani (agb examples)",
+  "home": "https://github.com/agbrs/agb/tree/v0.25.0/examples/the-hat-chooses-the-wizard",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/agbrs/agb/v0.25.0/LICENSE",
+    "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+   }
+  ],
+  "art": {
+   "url": "https://raw.githubusercontent.com/agbrs/agb/v0.25.0/examples/the-hat-chooses-the-wizard/gfx/splash.png",
+   "sha256": "d145cb56a1ebb8bf72ba16d0a72911e1f308c18e206107736060cec89e9a7711"
+  }
+ },
+ {
+  "system": "gba",
+  "title": "Collie Defense",
+  "file": "Collie Defense.gba",
+  "url": "https://github.com/vayan/collie-defense/releases/download/v1.0.0/collie-defence-v1.0.0.gba",
+  "sha256": "ef3eb807ff0c083f64668157dd3f616ac4ec6396a79c3479af7702ddc43c6be4",
+  "rom_sha256": "ef3eb807ff0c083f64668157dd3f616ac4ec6396a79c3479af7702ddc43c6be4",
+  "licence": "code GPL-3.0, art CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/), music public domain (CC0)",
+  "credit": "by Yann Vaillant; art by Yulianto Hiu and Lea Espanet; music by Drozerix and JAM",
+  "home": "https://github.com/vayan/collie-defense/tree/v1.0.0",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/vayan/collie-defense/v1.0.0/LICENSE-code.md",
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+   },
+   {
+    "url": "https://raw.githubusercontent.com/vayan/collie-defense/v1.0.0/LICENSE-art.md",
+    "sha256": "7abe19ec9bb73b36141b999b861d24ad855e808bafe0f81e84cce28556f6c297"
+   },
+   {
+    "url": "https://raw.githubusercontent.com/vayan/collie-defense/v1.0.0/LICENSE-music.md",
+    "sha256": "f32e6d4ab31a2294baca121e17731598b8fb8100f3c39bcde21e31f84abcb155"
+   }
+  ],
+  "art": {
+   "url": "https://raw.githubusercontent.com/vayan/collie-defense/v1.0.0/graphics_raw/extra/logo.png",
+   "sha256": "68dcf6fff9b58e6af7eed4083a08743e89d193111bfadd8de896bf070c0873aa"
+  }
+ },
+ {
+  "system": "gb",
+  "title": "Libbet and the Magic Floor",
+  "file": "Libbet and the Magic Floor.gb",
+  "url": "https://github.com/pinobatch/libbet/releases/download/v0.08/libbet.gb",
+  "sha256": "3607412031c8287cf878299ce96e581e85b852dde703806343b95576fa3ff1a9",
+  "rom_sha256": "3607412031c8287cf878299ce96e581e85b852dde703806343b95576fa3ff1a9",
+  "licence": "zlib",
+  "credit": "by Damian Yerrick (with code by Martin Korth)",
+  "home": "https://github.com/pinobatch/libbet/tree/v0.08",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/pinobatch/libbet/v0.08/LICENSE",
+    "sha256": "7bd353e765c8d32a7a048929d008e9bb17fa28d7ee4b619f80b67538e9bb82ff"
+   }
+  ],
+  "art": {
+   "url": "https://raw.githubusercontent.com/pinobatch/libbet/v0.08/07-biggar/title_mockup.png",
+   "sha256": "8ee43e9b7ef1f606533137f737204cb8c02a70bd91489bc20f32a8a3f6e381a8"
+  }
+ },
+ {
+  "system": "gb",
+  "title": "Tobu Tobu Girl",
+  "file": "Tobu Tobu Girl.gb",
+  "url": "https://raw.githubusercontent.com/gbdev/database/94368e51470f14fe5c495e6e65c994f2c3b6c661/entries/tobutobugirl/tobu.gb",
+  "sha256": "5d3871cae77db2287807e8914fd21f76203e73aa3fec20955489d45cb4571d8f",
+  "rom_sha256": "5d3871cae77db2287807e8914fd21f76203e73aa3fec20955489d45cb4571d8f",
+  "licence": "code MIT, assets (images, text, sound, music) CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)",
+  "credit": "(c) 2017 Tangram Games",
+  "home": "https://github.com/SimonLarsen/tobutobugirl",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/SimonLarsen/tobutobugirl/048a22c2d7ebbe25811322e8692803fa86bb643a/LICENSE",
+    "sha256": "f5529c9982c7a8f966679d5772037c5ef0b25b00ba4daaff5a2ee35e891d8dda"
+   }
+  ],
+  "art": {
+   "url": "https://raw.githubusercontent.com/SimonLarsen/tobutobugirl/048a22c2d7ebbe25811322e8692803fa86bb643a/data/bg/titlescreen.png",
+   "sha256": "ebee78b19ef27a632514b50e40d26b8e6425872e45adb0ca5eb4ac14e0716033"
+  }
+ },
+ {
+  "system": "gbc",
+  "title": "Tobu Tobu Girl Deluxe",
+  "file": "Tobu Tobu Girl Deluxe.gbc",
+  "url": "https://raw.githubusercontent.com/gbdev/database/94368e51470f14fe5c495e6e65c994f2c3b6c661/entries/tobutobugirldeluxe/tobudx.gb",
+  "sha256": "0a0e8018dbbc8d7f8cd99f05e7cdc7b4cc9e358ecfe9377ebfb2291a84c6e310",
+  "rom_sha256": "0a0e8018dbbc8d7f8cd99f05e7cdc7b4cc9e358ecfe9377ebfb2291a84c6e310",
+  "licence": "code MIT, assets (images, text, sound, music) CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)",
+  "credit": "(c) 2017 Tangram Games",
+  "home": "https://github.com/SimonLarsen/tobutobugirl-dx",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/SimonLarsen/tobutobugirl-dx/4985d4d282aa43229f250ffa3b0d86998ebd55d3/LICENSE",
+    "sha256": "f5529c9982c7a8f966679d5772037c5ef0b25b00ba4daaff5a2ee35e891d8dda"
+   }
+  ],
+  "art": {
+   "url": "https://raw.githubusercontent.com/SimonLarsen/tobutobugirl-dx/4985d4d282aa43229f250ffa3b0d86998ebd55d3/data/bg/titlescreen_dx.png",
+   "sha256": "f63a78d843f0a2e3d97b408fc1af75bcd1896753d3d1b3ea63609578c00a4c80"
+  }
+ },
+ {
+  "system": "gbc",
+  "title": "uCity",
+  "file": "uCity.gbc",
+  "url": "https://github.com/AntonioND/ucity/releases/download/v1.3/ucity.gbc",
+  "sha256": "9422ee2ca7b7ea1d46b58b2a429fff3f354dfd3e732dee1e7ae6220f148ce6e0",
+  "rom_sha256": "9422ee2ca7b7ea1d46b58b2a429fff3f354dfd3e732dee1e7ae6220f148ce6e0",
+  "licence": "GPL-3.0-or-later; graphics and music CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/); GBT Player BSD-2-Clause",
+  "credit": "by Antonio Niño Díaz",
+  "home": "https://github.com/AntonioND/ucity/tree/v1.3",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/AntonioND/ucity/v1.3/readme.rst",
+    "sha256": "b715f12604e95f59cbfa9e0900ed296aba3cc334edeed50e92b6be520d84994f"
+   },
+   {
+    "url": "https://raw.githubusercontent.com/AntonioND/ucity/v1.3/gpl-3.0.txt",
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+   }
+  ],
+  "art": {
+   "url": "https://raw.githubusercontent.com/AntonioND/ucity/v1.3/screenshot.png",
+   "sha256": "f17e624f6534be0c2a883fce3bc9c58f81dac467fd4dac65fb9707557d71d380"
+  }
+ },
+ {
+  "system": "snes",
+  "title": "Super Sudoku",
+  "file": "Super Sudoku.sfc",
+  "url": "https://raw.githubusercontent.com/raphnet/super_sudoku/227c9ff570c80f5cf58d0d7b62fe1a99e6f3844b/releases/super_sudoku_v1.1.sfc",
+  "sha256": "2810aa0c4d95ed225c3ac0e669575d20285272b69ec0359a52bfb79628fb0939",
+  "rom_sha256": "2810aa0c4d95ed225c3ac0e669575d20285272b69ec0359a52bfb79628fb0939",
+  "licence": "MIT",
+  "credit": "(c) 2019-2022 Raphaël Assenat",
+  "home": "https://github.com/raphnet/super_sudoku",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/raphnet/super_sudoku/227c9ff570c80f5cf58d0d7b62fe1a99e6f3844b/LICENSE",
+    "sha256": "8a2c0d1cf1f41feae9b0d218b50af5291f2e999b8cfce9664ffe4d5f4b927296"
+   }
+  ],
+  "art": {
+   "file": "tools/release/art/Super Sudoku.png",
+   "sha256": "4ad9fc251f79f27aae2a29282b0df4455decb483d3bd3f4e32dbddc862b90f38"
+  }
+ },
+ {
+  "system": "snes",
+  "title": "Castle Platformer",
+  "file": "Castle Platformer.sfc",
+  "url": "https://github.com/undisbeliever/castle_platformer/releases/download/v1.04/Castle.Platformer.v1.04.zip",
+  "sha256": "e75da7af6f3a1bd10c21cf4324d0c4321271ce3b9ef3408b2dc2db9cb05f9159",
+  "member": "Castle Platformer (v1.04)/Castle Platformer (v1.04).sfc",
+  "rom_sha256": "8b325cbc3b5eee257b906f11b0a0bced2925c503293e9f242ca0492f23804df8",
+  "licence": "MIT; graphics CC0 (Jetrel, qubodup, Jason-Em on OpenGameArt)",
+  "credit": "(c) 2015 The UnDisbeliever",
+  "home": "https://github.com/undisbeliever/castle_platformer/tree/v1.04",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/undisbeliever/castle_platformer/v1.04/LICENSE",
+    "sha256": "b30f671b26adb2f5dd3b272296a39465c72eab7d5a42b72a4592adc5d118daeb"
+   }
+  ],
+  "art": {
+   "url": "https://raw.githubusercontent.com/undisbeliever/castle_platformer/v1.04/screenshot.png",
+   "sha256": "b0225060d3beda085e82e35458805bc1ed7d9f54d358674ca5d78465d9c20458"
+  }
+ },
+ {
+  "system": "genesis",
+  "title": "KleleAtoms MD",
+  "file": "KleleAtoms MD.md",
+  "url": "https://github.com/Nightwolf-47/KleleAtoms-MD/releases/download/v1.2.1/kleleatoms-md-121.bin",
+  "sha256": "d0660df5af9d39696272b0c6774f25f296ee38e86eacf8b52645eab3ea8b003a",
+  "rom_sha256": "d0660df5af9d39696272b0c6774f25f296ee38e86eacf8b52645eab3ea8b003a",
+  "licence": "MIT (built with SGDK, MIT)",
+  "credit": "(c) 2022 Nightwolf-47, graphics by GreffMASTER",
+  "home": "https://github.com/Nightwolf-47/KleleAtoms-MD/tree/v1.2.1",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/Nightwolf-47/KleleAtoms-MD/v1.2.1/LICENSE",
+    "sha256": "e869ac72871290e97285213ef2aab9ffb933b87afceda5578621038010fa5fbf"
+   }
+  ],
+  "art": {
+   "url": "https://raw.githubusercontent.com/Nightwolf-47/KleleAtoms-MD/v1.2.1/res/graphics/title/titlescreen.png",
+   "sha256": "2202fc74679145f1ce5e591f5947190c0bddb0a2194dd81a8b09ee426c6d6dd3"
+  }
+ },
+ {
+  "system": "genesis",
+  "title": "Alex vs Bus: The Race",
+  "file": "Alex vs Bus.md",
+  "url": "https://github.com/M374LX/alexvsbus-md/releases/download/pre3/alexvsbus-md-pre3.zip",
+  "sha256": "eea48b73298b7d38e69557cba291eaf05cf20f637d8faeaa032a53de2c562710",
+  "member": "alexvsbus-md-pre3/alexvsbus-pre3.md",
+  "rom_sha256": "1b05f681125445cfedf4cdc0819a79c9d372d5dc198cc36afbd61d6876161be1",
+  "licence": "code GPL-3.0-or-later, assets CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/)",
+  "credit": "by Alexandre Almeida (M374LX)",
+  "home": "https://github.com/M374LX/alexvsbus-md/tree/pre3",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/M374LX/alexvsbus-md/pre3/LICENSE.txt",
+    "sha256": "77770c468d7d6370b8d8aa3cfb213675a06a6b8375fadbb4e54027c81295fc30"
+   }
+  ],
+  "art": {
+   "url": "https://raw.githubusercontent.com/M374LX/alexvsbus-md/pre3/docs/img/screenshot1.png",
+   "sha256": "53b66ebc9a2de127780a6522a4cc954afdc6a26ad2bbc416a1a5845de7202b9b"
+  }
+ },
+ {
+  "system": "sms",
+  "title": "Raposa do Sol",
+  "file": "Raposa do Sol.sms",
+  "url": "https://github.com/jflores82/raposadosol/releases/download/v0.20/raposadosol_v20.zip",
+  "sha256": "56510fc02d944ae0cacbb06957857cbf59423450d5b432ff2faa1d59d7ebfb1c",
+  "member": "raposadosol_v20.sms",
+  "rom_sha256": "7d544cc395c8018b722fa7d9a1a250ceebaa7224949616ef8dd185f69319d389",
+  "licence": "MIT (with sms-fxsample, MIT, (c) 2020 Jordi Montornés Solé)",
+  "credit": "(c) 2024 tibonev",
+  "home": "https://github.com/jflores82/raposadosol/tree/v0.20",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/jflores82/raposadosol/v0.20/LICENSE",
+    "sha256": "50bd6e85cf41e45117edca7ee49a4cf0bff147a4d04fa8109fe11ee9e4f36773"
+   }
+  ],
+  "art": {
+   "file": "tools/release/art/Raposa do Sol.png",
+   "sha256": "25f2d775153787241a38ea876ca95111c37c3819cb8766cf5e1ae1a1e1aa0121"
+  }
+ },
+ {
+  "system": "gg",
+  "title": "Waternet",
+  "file": "Waternet.gg",
+  "url": "https://github.com/joyrider3774/waternet/releases/download/v1.0/Waternet.Sega.Game.Gear.zip",
+  "sha256": "16a06f51168717c252b08687abe6dd5980a4090d5cbe228f5e01d4ed28579fee",
+  "member": "waternet.gg",
+  "rom_sha256": "ab9f288e2b556263cddd7856deb67269cfe08ac1e6729ca9e44c5e2c19bb1d8c",
+  "licence": "MIT",
+  "credit": "(c) 2022 Willems Davy",
+  "home": "https://github.com/joyrider3774/waternet/tree/v1.0",
+  "licences": [
+   {
+    "url": "https://raw.githubusercontent.com/joyrider3774/waternet/v1.0/LICENSE",
+    "sha256": "5d13e2b26721c60793cb9c686bccfdb55f6737a24ed7bcf1e315ee8274ec9168"
+   }
+  ],
+  "art": {
+   "url": "https://raw.githubusercontent.com/joyrider3774/waternet/v1.0/source/res/images/titlescreen.png",
+   "sha256": "a9e35d6c3cc0d25effc4d2e6ea6edcc4998a484ceeaf114cf0b0baf37e223b25"
+  }
+ }
+]

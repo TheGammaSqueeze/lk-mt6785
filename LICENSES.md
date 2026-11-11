@@ -13,6 +13,6 @@ licence in [LICENSE](LICENSE) applies only where it says so below.
 | MediaTek test signing keys (`tools/ayaneo/keys/`) | MediaTek's published default test keys, included for signing images the consoles accept |
 | SNES Classic menu assets (`tools/ayaneo/snes/assets/`) | Nintendo's. Not covered by the MIT licence; included only as the menu's look, no games. |
 | Emulator cores (`cores/`, git submodules) | each core's own licence in its repository: armGBA (MPL 2.0), gpSP (GPL 2.0), gambatte (GPL 2.0), snes9x (non-commercial snes9x licence), Genesis Plus GX (non-commercial licence). The cores run as separate programs loaded from the SD card. |
-| Demo games in the release's SD card package | each game's own licence, shipped beside it on the card (`licences/games/`) |
+| Demo games in the release's SD card package, and their box covers (made by `tools/release/demo_games.py` from each game's own art; `tools/release/art/` holds title screens captured from two of the games) | each game's own licence, shipped beside it on the card (`licences/games/`) |
 
 If you are a rights holder and want something removed, open an issue.
