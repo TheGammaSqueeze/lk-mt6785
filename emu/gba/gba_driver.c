@@ -119,6 +119,8 @@ extern void ayaneo_set_load_on_boot(int v);
 extern int  ayaneo_get_skip_boot(void);
 extern void ayaneo_set_skip_boot(int v);
 extern int  ayaneo_get_skip_gba_intro(void);
+extern int  ayaneo_get_intro_black(void);
+extern void ayaneo_set_intro_black(int v);
 extern void ayaneo_set_skip_gba_intro(int v);
 extern int  ayaneo_get_lcd_filter_core(int c);
 extern void ayaneo_set_lcd_filter_core(int c, int v);
@@ -1569,8 +1571,14 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 	return edge;
 }
 
+/* the SD build has no boot animation or chime: its row is the BIOS intro background instead */
+#if defined(AYANEO_GBA_SD)
+#define MI_BOOTROW MI_INTROBG
+#else
+#define MI_BOOTROW MI_SKIPBOOT
+#endif
 enum {
-	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_RESUME, MI_SKIPBOOT, MI_SKIPINTRO,
+	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_RESUME, MI_BOOTROW, MI_SKIPINTRO,
 	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_REWIND, MI_BENCH, MI_SHOWFPS, MI_LATLED, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_COUNT
 };
 #define GBA_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
@@ -1614,7 +1622,11 @@ static const char *menu_value(int item, char *buf)
 		break; }
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
 	case MI_RESUME:   { extern int ayaneo_get_resume_on_boot(void); p = mi_puts(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
+#if defined(AYANEO_GBA_SD)
+	case MI_INTROBG: p = mi_puts(p, ayaneo_get_intro_black() ? "Black" : "White"); break;
+#else
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
+#endif
 	case MI_SKIPINTRO: p = mi_puts(p, ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
 	case MI_ASPECT:    p = mi_puts(p, g_gba_aspect == 2 ? "Stretch" : g_gba_aspect == 1 ? "Fit" : "Pixel Perfect"); break;
 	case MI_SLOT:      p = mi_putu(p, (unsigned)s_gba_slot); break;
@@ -1677,7 +1689,11 @@ static const char *menu_label(int item)
 	case MI_COLORCORRECT: return "Color Correction";
 	case MI_LOADBOOT:  return "Load State on Boot";
 	case MI_RESUME:    return "Resume Game on Boot";
+#if defined(AYANEO_GBA_SD)
+	case MI_INTROBG:   return "BIOS Intro Background";
+#else
 	case MI_SKIPBOOT:  return "Skip Boot Anim/Chime";
+#endif
 	case MI_SKIPINTRO: return "Skip BIOS Intro";
 	case MI_ASPECT:    return "Aspect Ratio";
 	case MI_SLOT:      return "Save Slot";
@@ -1723,7 +1739,11 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;
 	case MI_RESUME:   { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
 			    if (dir || act) ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); else changed = 0; } break;
+#if defined(AYANEO_GBA_SD)
+	case MI_INTROBG:  if (dir || act) ayaneo_set_intro_black(!ayaneo_get_intro_black()); else changed = 0; break;
+#else
 	case MI_SKIPBOOT: if (dir || act) ayaneo_set_skip_boot(!ayaneo_get_skip_boot()); else changed = 0; break;
+#endif
 	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;
 	case MI_CPU:      if (dir) cpu_step(dir); changed = 0; break;
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
@@ -2572,6 +2592,34 @@ static unsigned gba_sd_build_logo_cart(unsigned char *rp)
 }
 #endif
 
+/* The BIOS intro on black ("BIOS Intro Background: Black"). The BIOS draws its logo over a white
+ * screen and fades by blending toward white, so each pixel is a colour mixed with white, plus dark
+ * ink (armGBA's "Open BIOS" lettering). Per pixel, on a 0..63 scale: the smallest channel is the
+ * white in it and comes off, the room above the largest channel is the dark ink and is added back
+ * as light, and the colour left over is raised by 99/64 (1.55) so the logo's blue and magenta,
+ * themselves 64% colour over white, come out as bright as on the white screen. White becomes black,
+ * black ink white, a fade from white a fade from black. Written to its own buffer: the core's
+ * screen stays the core's. */
+static unsigned short s_intro_black_px[240 * 160];
+static const unsigned short *intro_on_black(const unsigned short *src)
+{
+	unsigned i;
+	for (i = 0; i < 240u * 160u; i++) {
+		unsigned p = src[i];
+		int r = (int)(((p >> 11) & 31u) << 1 | ((p >> 15) & 1u));   /* 5 bit channels widened to 6 */
+		int g = (int)((p >> 5) & 63u);
+		int b = (int)((p & 31u) << 1 | ((p >> 4) & 1u));
+		int m = r < g ? (r < b ? r : b) : (g < b ? g : b);
+		int M = r > g ? (r > b ? r : b) : (g > b ? g : b);
+		int ink = 63 - M;
+		r = ((r - m) * 99 >> 6) + ink; if (r > 63) r = 63;
+		g = ((g - m) * 99 >> 6) + ink; if (g > 63) g = 63;
+		b = ((b - m) * 99 >> 6) + ink; if (b > 63) b = 63;
+		s_intro_black_px[i] = (unsigned short)((r >> 1) << 11 | g << 5 | (b >> 1));
+	}
+	return s_intro_black_px;
+}
+
 /* ===================== emulator thread ===================== */
 volatile int g_dbg_boot_step;   /* oem mode: how far the emulator thread got */
 volatile unsigned int g_dbg_intro_aw_wait_ms;   /* oem diag intro: how long the intro waited for the speaker amps */
@@ -2811,6 +2859,7 @@ static int emu_thread(void *arg)
 #endif
 			{ extern void ayaneo_hud_hide(int on); ayaneo_hud_hide(1); }   /* no FPS badge over the BIOS logo */
 			int intro_vol = 0;
+			int intro_black = ayaneo_get_intro_black();
 			for (fi = 0; fi < intro_frames; fi++) {
 				update_buttons();
 				{	/* the volume wheel works during the intro too, in the game's steps, with no
@@ -2822,7 +2871,8 @@ static int emu_thread(void *arg)
 					}
 				}
 				run_one_frame();
-				ayaneo_gba_show_intro_frame(gba_core_screen());	/* 6x fill-height */
+				ayaneo_gba_show_intro_frame(intro_black ? intro_on_black(gba_core_screen())
+								      : gba_core_screen());	/* 6x fill-height */
 				if (!g_dbg_bt_frame1) g_dbg_bt_frame1 = BT_MS();  /* first BIOS frame on screen */
 				{ extern void ayaneo_boot_stamp(int i); ayaneo_boot_stamp(7); }
 				mtk_wdt_restart();		/* keep the armed watchdog fed during the intro */

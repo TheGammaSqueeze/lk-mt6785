@@ -95,7 +95,10 @@ On a normal power on the panel comes up on the stock timing and the SD gate deci
     gpSP when the card has a BIOS).
   - no armGBA, gpSP and a BIOS: the BIOS intro on gpSP, GBA games on gpSP.
   - no usable GBA core: no intro, the menu runs without GBA games.
-  The volume wheel works during the intro (no OSD); hold B to cut the intro short.
+  The volume wheel works during the intro (no OSD); hold B to cut the intro short. The intro
+  plays on black by default: each frame's white is turned to black and its dark ink to light
+  (`intro_on_black` in `emu/gba/gba_driver.c`), and the menu then fades in from black. The
+  in-game menu's "BIOS Intro Background" row (`oem introbg:white|black`) brings back white.
 
 ## Panel timing
 

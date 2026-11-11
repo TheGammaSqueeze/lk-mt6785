@@ -135,6 +135,8 @@ extern void ayaneo_set_cpu_mhz(unsigned int mhz);
 extern unsigned int ayaneo_get_cpu_mhz(void);
 extern void ayaneo_display_prepare(void);
 extern void ayaneo_display_prepare_white(void);   /* whiteout handover (no black flash) */
+extern void ayaneo_display_prepare(void);         /* the same, black (BIOS intro on black) */
+extern int  ayaneo_get_intro_black(void);
 extern void ayaneo_gbc_audio_init(void);
 extern int  ayaneo_menu_audio_room(void);
 extern void ayaneo_menu_audio_submit(const short *stereo, unsigned frames);
@@ -630,6 +632,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			     * panel black. The first frame is fully black, which also hides the
 			     * one-time wallpaper/chrome cache build hitch. */
 	if (do_reverse) fade_in = 0;   /* the reverse punch IS the transition - no white wash */
+	/* "BIOS Intro Background: Black": the intro ends on black, so the handover paints black and the
+	 * menu fades in from black instead */
+	unsigned int handover = ayaneo_get_intro_black() ? 0xFF000000u : 0xFFFFFFFFu;
 
 	if (nrom <= 0) return -1;
 
@@ -655,9 +660,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		 * (plain ayaneo_display_prepare blacks the live buffer = the reported black
 		 * frame). Then present a white back buffer too and hold it through the slow
 		 * pack load; the menu fades in from white = seamless. */
-		ayaneo_display_prepare_white();
+		if (handover == 0xFFFFFFFFu) ayaneo_display_prepare_white(); else ayaneo_display_prepare();
 		wfb = ayaneo_canvas_back(&wp, &ww, &wh);
-		ayaneo_fill(wfb, wp, 0, 0, (int)ww, (int)wh, 0xFFFFFFFFu);
+		ayaneo_fill(wfb, wp, 0, 0, (int)ww, (int)wh, handover);
 		ayaneo_canvas_present();
 	}
 
@@ -970,8 +975,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			g_dbg_render_us = rus; g_dbg_peak_us = peak_us; g_dbg_fps = fps;
 			(void)s_show_hud;
 		}
-		if (fade_in > 0) {   /* fade in from WHITE (255 -> 0) over 18 frames = 0.3s */
-			ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H, 0xFFFFFFFFu,
+		if (fade_in > 0) {   /* fade in from white (or black) (255 -> 0) over 18 frames = 0.3s */
+			ayaneo_fill_blend(fb, pitch, 0, 0, (int)W, (int)H, handover,
 					  (fade_in * 255) / 18);
 			fade_in--;
 		}

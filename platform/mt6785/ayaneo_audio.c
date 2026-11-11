@@ -237,6 +237,7 @@ static volatile int s_skip_gba_intro = 0;	/* skip the GBA BIOS boot-logo intro (
 static volatile int s_mute_bios = 0;		/* mute the LK boot chime (boot_audio_lk) */
 static volatile int s_mute_menu = 0;		/* mute the SNES menu music + SFX */
 static volatile int s_show_fps = 0;		/* in-game frame rate badge (every core) */
+static volatile int s_intro_black = 1;		/* the GBA BIOS intro on black (default) or white; b+44 bit 2 set = white */
 static volatile int s_preempt_frames = 0;	/* run-ahead / preemptive frames (0=off, 1-3) */
 static volatile unsigned s_snes_opts = 0;	/* packed snes9x menu picks: aspect | overscan<<8 |
 						 * audio_interp<<16 | hires_blend<<24 (each a small index) */
@@ -383,6 +384,8 @@ void ayaneo_set_dark_filter(int v)  { s_dark_filter = (v < 0) ? 0 : (v > 5 ? 5 :
 int ayaneo_get_mute_bios(void)      { return s_mute_bios; }
 void ayaneo_set_mute_bios(int v)    { s_mute_bios = v ? 1 : 0; }
 int ayaneo_get_mute_menu(void)      { return s_mute_menu; }
+int ayaneo_get_intro_black(void)    { return s_intro_black; }
+void ayaneo_set_intro_black(int v)  { s_intro_black = v ? 1 : 0; }
 int ayaneo_get_show_fps(void)       { return s_show_fps; }
 void ayaneo_set_show_fps(int v)     { extern volatile int g_show_fps; s_show_fps = v ? 1 : 0; g_show_fps = s_show_fps; }
 void ayaneo_set_mute_menu(int v)    { s_mute_menu = v ? 1 : 0; }
@@ -567,6 +570,7 @@ void ayaneo_settings_load(void)
 		s_mute_bios = rd32(b + 40) ? 1 : 0;
 		s_mute_menu = rd32(b + 44) & 1u ? 1 : 0;
 		ayaneo_set_show_fps((int)((rd32(b + 44) >> 1) & 1u));
+		s_intro_black = !((rd32(b + 44) >> 2) & 1u);   /* 0 in older saves: black, the default */
 	}
 	if (ver >= 5)
 		ayaneo_set_preempt_frames((int)rd32(b + 48));
@@ -613,7 +617,7 @@ int ayaneo_settings_serialize(unsigned char *b, int cap)
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
 	wr32(b + 40, (unsigned int)s_mute_bios);
-	wr32(b + 44, (unsigned int)((s_mute_menu ? 1u : 0u) | (s_show_fps ? 2u : 0u)));
+	wr32(b + 44, (unsigned int)((s_mute_menu ? 1u : 0u) | (s_show_fps ? 2u : 0u) | (s_intro_black ? 0u : 4u)));
 	wr32(b + 48, (unsigned int)s_preempt_frames);
 	wr32(b + 52, s_snes_opts);
 	wr32(b + 56, (unsigned int)s_snes_slot);
@@ -660,6 +664,7 @@ void ayaneo_settings_deserialize(const unsigned char *b, int len)
 		s_mute_bios = rd32(b + 40) ? 1 : 0;
 		s_mute_menu = rd32(b + 44) & 1u ? 1 : 0;
 		ayaneo_set_show_fps((int)((rd32(b + 44) >> 1) & 1u));
+		s_intro_black = !((rd32(b + 44) >> 2) & 1u);   /* 0 in older saves: black, the default */
 	}
 	if (ver >= 5)
 		ayaneo_set_preempt_frames((int)rd32(b + 48));
@@ -742,7 +747,7 @@ void ayaneo_settings_save(void)
 	wr32(b + 32, (unsigned int)s_dark_filter);
 	wr32(b + 36, (unsigned int)s_skip_gba_intro);
 	wr32(b + 40, (unsigned int)s_mute_bios);
-	wr32(b + 44, (unsigned int)((s_mute_menu ? 1u : 0u) | (s_show_fps ? 2u : 0u)));
+	wr32(b + 44, (unsigned int)((s_mute_menu ? 1u : 0u) | (s_show_fps ? 2u : 0u) | (s_intro_black ? 0u : 4u)));
 	wr32(b + 48, (unsigned int)s_preempt_frames);
 	wr32(b + 52, s_snes_opts);
 	wr32(b + 56, (unsigned int)s_snes_slot);

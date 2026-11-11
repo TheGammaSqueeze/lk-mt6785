@@ -2270,6 +2270,24 @@ static void cmd_volstep(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem introbg[:black|:white] - the BIOS intro background, set and saved as the menu's "BIOS Intro
+ * Background" row does (applies from the next boot) */
+static void cmd_introbg(const char *arg, void *data, unsigned sz)
+{
+	extern int ayaneo_get_intro_black(void);
+	extern void ayaneo_set_intro_black(int v);
+	extern void ayaneo_menu_settings_persist(void);
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == 'b' || *arg == 'w') {
+		ayaneo_set_intro_black(*arg == 'b');
+		ayaneo_menu_settings_persist();
+	}
+	snprintf(lbuf, sizeof lbuf, "introbg: %s", ayaneo_get_intro_black() ? "black" : "white");
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem dsitime - the live DSI timing: stock unless the SD gate started GammaOS */
 static void cmd_dsitime(const char *arg, void *data, unsigned sz)
 {
@@ -2376,6 +2394,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem dsiw", cmd_dsiw, 1, 0);
 	fastboot_register("oem dsitime", cmd_dsitime, 1, 0);
 	fastboot_register("oem volstep", cmd_volstep, 1, 0);
+	fastboot_register("oem introbg", cmd_introbg, 1, 0);
 	fastboot_register("oem gray", cmd_gray, 1, 0);
 	fastboot_register("oem awdump", cmd_awdump, 1, 0);
 	fastboot_register("oem rewindmap", cmd_rewindmap, 1, 0);
