@@ -153,6 +153,12 @@ largest visible effect.
 - `PORTING_NOTES.md` - full Pocket Air Mini bringup log (issues, fixes, untested areas)
 - `BUILD_AYANEO_POCKET_AIR_MINI.md` - Pocket Air Mini build and device notes
 
+## Licence
+
+The Little Kernel code and the GammaOS additions are under the MIT licence ([LICENSE](LICENSE)).
+The MediaTek BSP files, the stock firmware files, the SNES Classic menu assets and the emulator
+cores keep their own terms; [LICENSES.md](LICENSES.md) lists which part is under what.
+
 ## Credit
 
 Based on [svoboda18/lk](https://github.com/svoboda18/lk) (MediaTek LK, Android
