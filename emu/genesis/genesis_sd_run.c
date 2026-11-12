@@ -11,6 +11,7 @@
 #include "genesis_core_abi.h"
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
+#include "../gba/pico_igm.h"
 #include "../gba/gba_sd_save.h"
 #include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
@@ -384,6 +385,28 @@ static int gm_change(int i, int dir, int act)
 
 int genesis_menu_open(void) { return g_genesis_menu_open; }
 
+/* the Current theme's in-game menu (pico_igm.h): the rows in its pages, the handlers above */
+static const struct igm_row k_gen_igm_rows[] = {
+	{ GM_SAVE, IGM_TOP, IGM_ACTION }, { GM_LOAD, IGM_TOP, IGM_ACTION },
+	{ IGM_DISPLAY, IGM_TOP, IGM_LINK }, { IGM_SOUND, IGM_TOP, IGM_LINK },
+	{ IGM_PLAY, IGM_TOP, IGM_LINK }, { IGM_SYSTEM, IGM_TOP, IGM_LINK },
+	{ GM_RESET, IGM_TOP, IGM_ACTION }, { GM_EXIT, IGM_TOP, IGM_ACTION },
+	{ GM_BRIGHT, IGM_DISPLAY, IGM_VALUE }, { GM_ASPECT, IGM_DISPLAY, IGM_VALUE },
+	{ GM_FILTER, IGM_DISPLAY, IGM_VALUE }, { GM_STROBE, IGM_DISPLAY, IGM_VALUE },
+	{ GM_SHOWFPS, IGM_DISPLAY, IGM_VALUE },
+	{ GM_VOLUME, IGM_SOUND, IGM_VALUE },
+	{ GM_CPU, IGM_PLAY, IGM_VALUE }, { GM_RUNAHEAD, IGM_PLAY, IGM_VALUE }, { GM_REWIND, IGM_PLAY, IGM_VALUE },
+	{ GM_REGION, IGM_PLAY, IGM_VALUE }, { GM_REFRESH, IGM_PLAY, IGM_INFO },
+	{ GM_RESUME, IGM_SYSTEM, IGM_VALUE }, { GM_BATTERY, IGM_SYSTEM, IGM_INFO },
+};
+static struct igm_core s_gen_igm = {
+	k_gen_igm_rows, (int)(sizeof k_gen_igm_rows / sizeof k_gen_igm_rows[0]),
+	GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT,
+	gm_label, gm_value, gm_change, s_mstat,
+	0, 0, 0, 0, GBA_CONSOLE_GENESIS, 0,
+};
+static int s_gen_igm_on;   /* this game's menu is the Current theme's */
+
 extern int ayaneo_pico_layout(int count, int H, int sel, int *top, int *rowH, int *panelH);
 extern void ayaneo_pico_bar(unsigned int *buf, unsigned int pitch, int x, int w, int y, int rowH);
 extern void ayaneo_pico_more(unsigned int *buf, unsigned int pitch, int px, int py, int panelW, int panelH, int up, int down);
@@ -516,7 +539,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	/* menu context (actions reference the session core + save target) */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom; s_menu_rw_payload = rw_payload;
-	g_genesis_menu_open = 0; g_genesis_menu_exit = 0; s_msel = 0; s_mstat[0] = 0; s_cpu_idx = -1;
+	g_genesis_menu_open = 0; g_genesis_menu_exit = 0; s_msel = 0; s_mstat[0] = 0; s_cpu_idx = -1; s_gen_igm_on = 0;
 
 	/* Restore persisted per-core settings (aspect/filter/region/slot) so a launch honours the player's
 	 * last picks instead of defaults. Run-ahead uses the shared preempt-frames; volume/brightness the
@@ -590,7 +613,8 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 		/* Refresh the Pico menu as a hardware overlay (OVL0 L0) over the running game, or disable it
 		 * when closed - the game keeps running underneath so settings preview live (mirrors snes). */
-		ayaneo_menu_overlay(genesis_menu_paint, g_genesis_menu_open);
+		if (s_gen_igm_on) pico_igm_overlay(g_genesis_menu_open);
+		else ayaneo_menu_overlay(genesis_menu_paint, g_genesis_menu_open);
 
 		/* Rewind (left trigger): walk the delta ring backward and re-render instead of advancing.
 		 * Press depth sets a smooth 1x..6x speed via a fractional accumulator; each stepped-back
@@ -783,15 +807,36 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* AYA taps toggle the Pico menu; holding AYA ~1.5 s force-exits to the selector. */
 		{
 			int aya = PRESSED(GPIO_AYA);
-			if (aya && !aya_prev) { g_genesis_menu_open = !g_genesis_menu_open; s_mstat[0] = 0;
-				ayaneo_menu_overlay_mark_dirty(); }
+			{ extern volatile int g_dbg_igm_toggle;   /* oem igm: a tap of the menu key */
+			  if (g_dbg_igm_toggle) { g_dbg_igm_toggle = 0; aya_prev = 0; aya = 1; } }
+			if (aya && !aya_prev) {
+				if (g_genesis_menu_open && s_gen_igm_on) pico_igm_dismiss();   /* closes animated */
+				else if (!g_genesis_menu_open && pico_igm_on()) {
+					s_gen_igm_on = 1; s_mstat[0] = 0; g_genesis_menu_open = 1;
+					s_gen_igm.game = s_menu_rom->name; s_gen_igm.system = s_menu_rom->type;
+					pico_igm_open(&s_gen_igm);
+				} else { g_genesis_menu_open = !g_genesis_menu_open; s_mstat[0] = 0;
+					ayaneo_menu_overlay_mark_dirty(); }
+			}
 			aya_prev = aya;
 			if (aya) { if (++aya_hold >= 90) break; } else aya_hold = 0;
 		}
 
 		/* menu navigation (Up/Down move, Left/Right change, A select, B/AYA close), with press-edge
 		 * + auto-repeat. The game keeps running underneath (pad mask returns 0 while open). */
-		if (g_genesis_menu_open) {
+		if (g_genesis_menu_open && s_gen_igm_on) {
+			unsigned int k = 0, jd = ayaneo_joypad_dpad();
+			int r;
+			if (PRESSED(GPIO_UP) || (jd & 0x01u)) k |= IGM_K_UP;
+			if (PRESSED(GPIO_DOWN) || (jd & 0x02u)) k |= IGM_K_DOWN;
+			if (PRESSED(GPIO_LEFT) || (jd & 0x04u)) k |= IGM_K_LEFT;
+			if (PRESSED(GPIO_RIGHT) || (jd & 0x08u)) k |= IGM_K_RIGHT;
+			if (PRESSED(GPIO_A)) k |= IGM_K_A;
+			if (PRESSED(GPIO_B)) k |= IGM_K_B;
+			r = pico_igm_frame(k);
+			if (r >= 0) { g_genesis_menu_open = 0; genesis_settings_flush(); }
+			reset_hold = 0;
+		} else if (g_genesis_menu_open) {
 			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
 			int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
 			int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);

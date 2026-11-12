@@ -1054,6 +1054,22 @@ int primary_display_trigger(int blocking)
 	return ret;
 }
 
+/* AYANEO: the count of configurations written (primary_display_config_input), so a change kept with
+ * primary_display_config_pending is known to have gone out once it moves */
+volatile unsigned int g_disp_commit_seq;
+
+/* AYANEO: change one layer in the kept configuration without writing it. Every
+ * primary_display_config_input copies the kept configuration and writes all its layers, so the
+ * change goes out with the next one: the running game's own present at its frame end, the one safe
+ * point of the scan, with no wait of its own (the live in-game menu flips its buffers this way). */
+void primary_display_config_pending(disp_input_config *input)
+{
+	if (pgc->mode != DIRECT_LINK_MODE && pgc->mode != DECOUPLE_MODE) return;
+	_primary_path_lock();
+	_convert_disp_input_to_ovl(&(dpmgr_path_get_last_config(pgc->dpmgr_handle)->ovl_config[input->layer]), input);
+	_primary_path_unlock();
+}
+
 int primary_display_config_input(disp_input_config* input)
 {
 	int ret = 0;
@@ -1087,6 +1103,7 @@ int primary_display_config_input(disp_input_config* input)
 		ret = _convert_disp_input_to_ovl(&(data_config.ovl_config[input->layer]), input);
 		data_config.ovl_dirty = 1;
 		ret = dpmgr_path_config(pgc->dpmgr_handle, &data_config, primary_display_use_cmdq);
+		g_disp_commit_seq++;
 
 		// this is used for decouple mode, to indicate whether we need to trigger ovl
 		pgc->need_trigger_overlay = 1;

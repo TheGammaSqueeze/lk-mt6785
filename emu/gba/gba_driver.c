@@ -40,6 +40,7 @@ extern int _dprintf(const char *fmt, ...);
  * call site unchanged by routing it through the table, so gba_core_state_save(x) etc.
  * become g_core->state_save(x), and the three shared flags become pointer derefs. */
 #include "gba_core_abi.h"
+#include "pico_igm.h"
 #include "../ayaneo_rewind.h"
 
 static const struct gba_core_exports *g_core;
@@ -1872,6 +1873,105 @@ static void menu_tick(unsigned char *state)
 	if (k & MK_B)     { s_menu_open = 0; s_ab_latch |= GB_B; }
 }
 
+/* ---- the Current theme's in-game menu (pico_igm.h): the rows in its pages, the handlers above ---- */
+#if defined(AYANEO_GBA_SD)   /* the card build: the only one with the Current theme */
+#include "sd_fat.h"          /* GBA_CONSOLE_GBA */
+static const char *gba_sd_current_name(void);
+static const struct igm_row k_gba_igm_rows[] = {
+	{ MI_SAVESTATE, IGM_TOP, IGM_ACTION }, { MI_LOADSTATE, IGM_TOP, IGM_ACTION },
+	{ IGM_DISPLAY, IGM_TOP, IGM_LINK }, { IGM_SOUND, IGM_TOP, IGM_LINK },
+	{ IGM_PLAY, IGM_TOP, IGM_LINK }, { IGM_SYSTEM, IGM_TOP, IGM_LINK },
+	{ MI_RESET, IGM_TOP, IGM_ACTION }, { MI_CLOSE, IGM_TOP, IGM_ACTION },
+	{ MI_BRIGHT, IGM_DISPLAY, IGM_VALUE }, { MI_FILTER, IGM_DISPLAY, IGM_VALUE },
+	{ MI_ASPECT, IGM_DISPLAY, IGM_VALUE }, { MI_COLORCORRECT, IGM_DISPLAY, IGM_VALUE },
+	{ MI_STROBE, IGM_DISPLAY, IGM_VALUE }, { MI_SHOWFPS, IGM_DISPLAY, IGM_VALUE },
+	{ MI_VOLUME, IGM_SOUND, IGM_VALUE },
+	{ MI_CPU, IGM_PLAY, IGM_VALUE }, { MI_PREEMPT, IGM_PLAY, IGM_VALUE }, { MI_REWIND, IGM_PLAY, IGM_VALUE },
+	{ MI_BENCH, IGM_PLAY, IGM_VALUE }, { MI_CORE, IGM_PLAY, IGM_VALUE }, { IGM_CORE, IGM_PLAY, IGM_LINK },
+	{ MI_LATLED, IGM_PLAY, IGM_VALUE }, { MI_PANEL, IGM_PLAY, IGM_INFO },
+	{ MI_RESUME, IGM_SYSTEM, IGM_VALUE }, { MI_LOADBOOT, IGM_SYSTEM, IGM_VALUE },
+	{ MI_BOOTROW, IGM_SYSTEM, IGM_VALUE }, { MI_SKIPINTRO, IGM_SYSTEM, IGM_VALUE },
+	{ MI_BATTERY, IGM_SYSTEM, IGM_INFO },
+};
+static unsigned char *s_igm_state;   /* the game loop's scratch, for the save and load rows */
+static int gba_igm_change(int item, int dir, int act) { return menu_change(item, dir, act, s_igm_state, s_menu_status); }
+/* the running core's own options (Core options) */
+static int gba_igm_opt_n(void)
+{
+	return (g_core && g_core->version >= GBA_CORE_ABI_V3 && g_core->opt_count) ? g_core->opt_count() : 0;
+}
+static const char *gba_igm_opt_label(int i) { const struct gba_core_option *o = g_core->opt_info(i); return o ? o->label : ""; }
+static const char *gba_igm_opt_value(int i, char *buf)
+{
+	const struct gba_core_option *o = g_core->opt_info(i);
+	int v = g_core->opt_get(i);
+	buf[0] = 0;
+	if (o && v >= 0 && v < o->nvalues) mi_puts(buf, o->values[v])[0] = 0;
+	return buf;
+}
+static void gba_igm_opt_change(int i, int dir)
+{
+	const struct gba_core_option *o = g_core->opt_info(i);
+	if (o && o->nvalues > 0) {
+		int v = (g_core->opt_get(i) + dir + o->nvalues) % o->nvalues;
+		g_core->opt_set(i, v);
+		core_opt_store(o->key, v);
+		s_menu_status[0] = 0;
+		if (o->flags & GBA_CORE_OPT_RESTART) mi_puts(s_menu_status, "Takes effect at the next game start");
+		s_settings_dirty = 1;
+		s_settings_tick = gpt4_get_current_tick();
+	}
+}
+static struct igm_core s_gba_igm = {
+	k_gba_igm_rows, (int)(sizeof k_gba_igm_rows / sizeof k_gba_igm_rows[0]),
+	MI_SLOT, MI_SAVESTATE, MI_LOADSTATE, MI_RESET, MI_CLOSE,
+	menu_label, menu_value, gba_igm_change, s_menu_status,
+	gba_igm_opt_n, gba_igm_opt_label, gba_igm_opt_value, gba_igm_opt_change,
+	GBA_CONSOLE_GBA, 0,
+};
+static int s_gba_igm_on;   /* the menu open now is the Current theme's */
+static void gba_igm_toggle(void)
+{
+	if (s_menu_open && s_gba_igm_on) { pico_igm_dismiss(); return; }
+	if (!s_menu_open) {
+		s_gba_igm_on = pico_igm_on();
+		if (s_gba_igm_on) {
+			s_menu_open = 1; s_menu_status[0] = 0; s_menu_page = 0;
+			s_gba_igm.game = gba_sd_current_name();
+			battery_poll(BATTERY_MENU_FRAMES);
+			pico_igm_open(&s_gba_igm);
+			return;
+		}
+	}
+	menu_toggle();
+}
+static void gba_igm_tick(unsigned char *state)
+{
+	unsigned int k = 0;
+	int r;
+	if (PRESSED(GPIO_UP))    k |= IGM_K_UP;
+	if (PRESSED(GPIO_DOWN))  k |= IGM_K_DOWN;
+	if (PRESSED(GPIO_LEFT))  k |= IGM_K_LEFT;
+	if (PRESSED(GPIO_RIGHT)) k |= IGM_K_RIGHT;
+	if (PRESSED(GPIO_A))     k |= IGM_K_A;
+	if (PRESSED(GPIO_B))     k |= IGM_K_B;
+	{ extern unsigned int ayaneo_joypad_dpad(void); k |= ayaneo_joypad_dpad() & (IGM_K_UP | IGM_K_DOWN | IGM_K_LEFT | IGM_K_RIGHT); }
+	s_igm_state = state;
+	battery_poll(BATTERY_MENU_FRAMES);
+	r = pico_igm_frame(k);
+	if (r >= 0) {
+		s_menu_open = 0;
+		if (r & 1) s_ab_latch |= GB_A;
+		if (r & 2) s_ab_latch |= GB_B;
+	}
+}
+#else
+static const int s_gba_igm_on = 0;
+static void gba_igm_toggle(void) { menu_toggle(); }
+static void gba_igm_tick(unsigned char *state) { (void)state; }
+#define pico_igm_overlay(open) ((void)(open))   /* no in-game menu of the theme's without the card */
+#endif
+
 extern int ayaneo_pico_layout(int count, int H, int sel, int *top, int *rowH, int *panelH);
 extern void ayaneo_pico_bar(unsigned int *buf, unsigned int pitch, int x, int w, int y, int rowH);
 extern void ayaneo_pico_more(unsigned int *buf, unsigned int pitch, int px, int py, int panelW, int panelH, int up, int down);
@@ -3271,7 +3371,7 @@ static int emu_thread(void *arg)
 			{ extern void ayaneo_fps_tick(void); extern void ayaneo_hud_bench(int on); ayaneo_fps_tick(); ayaneo_hud_bench(s_benchmark); }
 
 			if (aya_edge())
-				menu_toggle();
+				gba_igm_toggle();
 			/* Hold AYA ~1.5 s to exit straight back to the ROM selector (matches SNES/GBC).
 			 * A tap still just toggles the menu above; only a sustained hold requests Close. */
 			{
@@ -3279,7 +3379,9 @@ static int emu_thread(void *arg)
 				if (PRESSED(GPIO_AYA)) { if (++aya_hold >= 90) { s_close_req = 1; aya_hold = 0; } }
 				else aya_hold = 0;
 			}
-			if (s_menu_open)
+			if (s_menu_open && s_gba_igm_on)
+				gba_igm_tick(scratch);
+			else if (s_menu_open)
 				menu_tick(scratch);
 
 			/* soft reset (menu "Reset Game" or the Select+Start+L+R hotkey): restart
@@ -3376,7 +3478,8 @@ static int emu_thread(void *arg)
 			 * visible underneath and no pause. Done each frame before the present dispatch. */
 			{
 				extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
-				ayaneo_menu_overlay(gbc_menu_draw_overlay, s_menu_open);
+				if (s_gba_igm_on) pico_igm_overlay(s_menu_open);
+				else ayaneo_menu_overlay(gbc_menu_draw_overlay, s_menu_open);
 			}
 
 			/* fast-forward: present sparsely so the vsync block does not cap the

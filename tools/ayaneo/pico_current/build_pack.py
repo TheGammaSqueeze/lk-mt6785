@@ -180,6 +180,7 @@ def main():
     ap.add_argument("size")
     ap.add_argument("out")
     ap.add_argument("--theme", dest="themes", action="append", default=[])
+    ap.add_argument("--igm", help="also write the in-game menu's pack here")
     a = ap.parse_args()
     W, H = (int(v) for v in a.size.lower().split("x"))
     s = H / 720.0                       # px per design unit
@@ -229,6 +230,33 @@ def main():
 
     raw, z = pack.write(a.out, (W, H))
     print("current pack %dx%d: %d entries, %d bytes (%d raw)" % (W, H, len(pack.entries), z, raw))
+    if a.igm:
+        igm_pack(a.igm, W, H, u)
+
+
+# the in-game menu's own small pack: it is loaded while a game runs, when the menu's pack is gone
+IGM_FONTS = ["brand", "sub", "realm", "tag11", "tag13", "srow", "srowf", "sval", "dname", "info", "hint", "hintc"]
+IGM_ICONS = ["play", "save", "load", "display", "sound", "speed", "system", "reset", "exit"]
+
+
+def igm_pack(out, W, H, u):
+    pack = Pack()
+    for name in IGM_ICONS:
+        im = Image.open(os.path.join(ART, "icons", name + ".png"))
+        pack.mask("ig_" + name, im.resize((u(22), u(22)), Image.LANCZOS))
+    for name in ("chev", "back"):
+        im = Image.open(os.path.join(ART, "icons", name + ".png"))
+        pack.mask("ig_" + name, im.resize((u(16), u(16)), Image.LANCZOS))
+    pack.mask("gamma", Image.open(os.path.join(ART, "icons", "gamma.png")).resize((u(26), u(26)), Image.LANCZOS))
+    pack.mask("hint_ring", ring(u(16.6), 1.2 * H / 720.0))
+    pack.mask("hint_pill", pill(u(27), u(16), 4 * H / 720.0, 1.1 * H / 720.0))
+    fdir = os.path.join(ART, "fonts")
+    roles = {name: (size, weight) for name, size, weight in FONTS}
+    for name in IGM_FONTS:
+        size, weight = roles[name]
+        write_font(pack, "f_" + name, os.path.join(fdir, "Inter-%s.ttf" % weight), u(size))
+    raw, z = pack.write(out, (W, H))
+    print("in-game pack %dx%d: %d entries, %d bytes (%d raw)" % (W, H, len(pack.entries), z, raw))
 
 
 if __name__ == "__main__":

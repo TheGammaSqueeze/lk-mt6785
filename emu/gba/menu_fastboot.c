@@ -151,7 +151,25 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		{
 			extern volatile unsigned int g_dbg_trans_us[3], g_dbg_trans_list[16];
 			int k;
-			extern volatile unsigned int g_dbg_launch_us[4], g_dbg_launch_pre_us[6];
+			extern volatile unsigned int g_dbg_launch_us[4], g_dbg_launch_pre_us[6], g_dbg_live_us[4];
+			snprintf(lbuf, sizeof lbuf, "live_us: paint=%u copy=%u worst %u %u", g_dbg_live_us[0], g_dbg_live_us[1],
+				 g_dbg_live_us[2], g_dbg_live_us[3]);
+			fastboot_info(lbuf);
+			g_dbg_live_us[2] = g_dbg_live_us[3] = 0;
+			{ extern volatile unsigned int g_dbg_live_trace[32], g_dbg_live_n;
+			  int k, j;
+			  for (k = 0; k < 4; k++) {	/* the last 32 drawn frames, oldest first: paint/copy in 0.1 ms */
+				char *q = lbuf; q += snprintf(q, 16, "lt%d:", k);
+				for (j = 0; j < 8; j++) {
+					unsigned int v = g_dbg_live_trace[(g_dbg_live_n + (unsigned)(k * 8 + j)) & 31u];
+					q += snprintf(q, 16, " %u/%u", v >> 16, v & 0xFFFFu);
+				}
+				fastboot_info(lbuf);
+			  } }
+			{ extern volatile unsigned int g_dbg_game_presents, g_dbg_game_long;
+			  snprintf(lbuf, sizeof lbuf, "game: presents=%u gaps=%u", g_dbg_game_presents, g_dbg_game_long);
+			  fastboot_info(lbuf);
+			  g_dbg_game_presents = g_dbg_game_long = 0; }
 			snprintf(lbuf, sizeof lbuf, "trans_us: last=%u worst=%u frames=%u",
 				 g_dbg_trans_us[0], g_dbg_trans_us[1], g_dbg_trans_us[2]);
 			fastboot_info(lbuf);
@@ -1317,20 +1335,21 @@ static void cmd_shotstage(const char *arg, void *data, unsigned sz)
 	int kind;
 	(void)data; (void)sz;
 	while (*arg == ' ' || *arg == ':') arg++;
-	if (*arg == 'o' && ayaneo_shot_overlay(&pa, &w, &h, &pitch)) kind = 2;
+	if (*arg == 'o' && ayaneo_shot_overlay(&pa, &w, &h, &pitch)) kind = arg[1] == 'a' ? 3 : 2;   /* :oa its alpha */
 	else kind = ayaneo_shot_source(&pa, &w, &h, &pitch);
 	if (16u + w * h * 2u > SHOT_STAGE_MAX) { fastboot_fail("frame too large"); return; }
 	src = (const unsigned int *)pa;
 	for (y = 0; y < h; y++)
 		for (x = 0; x < w; x++) {
 			unsigned int p = src[y * pitch + x];
+			if (kind == 3) p = (p >> 24) * 0x010101u;   /* the alpha as a grey */
 			dst[y * w + x] = (unsigned short)((((p >> 19) & 0x1fu) << 11) | (((p >> 10) & 0x3fu) << 5) | ((p >> 3) & 0x1fu));
 		}
 	hdr[0] = 0x544F4853u;   /* "SHOT" */
 	hdr[1] = w; hdr[2] = h; hdr[3] = (unsigned)kind;   /* 0 fb, 1 game plane, 2 overlay; all RGB565 */
 	s_stage_len = 16u + w * h * 2u;
 	snprintf(lbuf, sizeof lbuf, "stage: %s %ux%u rgb565 %u bytes (fastboot get_staged <file>)",
-		 kind == 2 ? "overlay" : kind ? "game" : "fb", w, h, s_stage_len);
+		 kind == 3 ? "overlay alpha" : kind == 2 ? "overlay" : kind ? "game" : "fb", w, h, s_stage_len);
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }

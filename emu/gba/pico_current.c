@@ -170,31 +170,38 @@ static cfont font(const char *name)
 	return f;
 }
 
-/* load /gammaos/current-<W>x<H>.pack; 0 ok */
-static int pack_load(unsigned W, unsigned H)
+/* read a card pack (/gammaos/<name>-<W>x<H>.pack) and unpack it at raw, the compressed bytes staged
+ * at comp; the pack becomes the one looked up; 0 ok */
+static int pack_read(const char *name, unsigned W, unsigned H, uint8_t *comp, uint32_t comp_max,
+		     uint8_t *raw, uint32_t raw_max)
 {
 	char path[64];
 	fat_vol *v = gba_sd_menu_vol();
 	fat_file f;
 	unsigned char hdr[12];
-	uint32_t raw, comp;
+	uint32_t rawn, compn;
 	unsigned long zlen;
 	const uint32_t *ph;
-	snprintf(path, sizeof path, "/gammaos/current-%ux%u.pack", W, H);
+	snprintf(path, sizeof path, "/gammaos/%s-%ux%u.pack", name, W, H);
 	if (!v || fat_open(v, path, &f) != 0) return -1;
 	if (fat_read(&f, 0, hdr, 12) != 12) return -1;
-	memcpy(&raw, hdr + 4, 4); memcpy(&comp, hdr + 8, 4);
-	if (*(const uint32_t *)hdr != CUR_MAGIC_Z || !raw || raw > CUR_RAW_MAX || !comp || comp > CUR_COMP_MAX ||
-	    12u + comp > f.size) return -2;
-	if (fat_read(&f, 12, (void *)CUR_COMP_PA, comp) != comp) return -3;
-	zlen = comp;
-	if (zunzip((unsigned char *)CUR_COMP_PA, &zlen, (void *)CUR_RAW_PA, (int)raw, 0) != 0) return -4;
-	ph = (const uint32_t *)CUR_RAW_PA;
+	memcpy(&rawn, hdr + 4, 4); memcpy(&compn, hdr + 8, 4);
+	if (*(const uint32_t *)hdr != CUR_MAGIC_Z || !rawn || rawn > raw_max || !compn || compn > comp_max ||
+	    12u + compn > f.size) return -2;
+	if (fat_read(&f, 12, comp, compn) != compn) return -3;
+	zlen = compn;
+	if (zunzip(comp, &zlen, raw, (int)rawn, 0) != 0) return -4;
+	ph = (const uint32_t *)raw;
 	if (ph[0] != 0x52554350u || ph[1] != 1u || (ph[3] & 0xFFFFu) != W || (ph[3] >> 16) != H) return -5;
-	s_raw = (const uint8_t *)CUR_RAW_PA;
+	s_raw = raw;
 	s_nent = (int)ph[2];
 	s_ent = (const cur_entry *)(s_raw + 16);
 	return 0;
+}
+/* the menu's pack, /gammaos/current-<W>x<H>.pack; 0 ok */
+static int pack_load(unsigned W, unsigned H)
+{
+	return pack_read("current", W, H, (uint8_t *)CUR_COMP_PA, CUR_COMP_MAX, (uint8_t *)CUR_RAW_PA, CUR_RAW_MAX);
 }
 
 /* ---- the frame and drawing ------------------------------------------------------------------ */
@@ -1230,6 +1237,7 @@ static int reverse_rmax(void)
 	while (r * r < d2) r++;
 	return (int)r;
 }
+static void igm_forget(void);   /* the in-game menu (the end of this file) */
 /* a game was picked: arm the opening (the frame on screen stays until it starts) */
 static void launch_arm(void)
 {
@@ -1253,6 +1261,7 @@ static void launch_arm(void)
 		if (CUR_LFULL_PA + (unsigned)g_W * g_H * 4u <= CUR_LFULL_END) { g_punch_game_full = CUR_LFULL_PA; g_punch_cached = 1; }
 	}
 	ayaneo_gbc_audio_pause(1);   /* silent until the game is all on screen */
+	igm_forget();                /* the opening takes the in-game menu's memory: each game reads its pack */
 	gba_punch_ready = 1;
 }
 
@@ -1489,4 +1498,546 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 		}
 		gba_menu_present();
 	}
+}
+
+/* ==== the in-game menu (pico_igm.h) ===============================================================
+ * Over the running game, on the live overlay layer (ayaneo_overlay_live): a panel down the left
+ * edge in the menu's own look, with the game, the actions, and the settings grouped in pages. It
+ * slides and fades in and out, the focus glides from row to row, a page slides in from the side
+ * and back, a changed value nudges in from the way it went, and a saved or loaded state shows a
+ * note that fades. It has a small pack of its own (current-igm-<W>x<H>.pack, read on the first
+ * opening of a game): the menu's pack is gone once a game loads. Its memory is free while a game
+ * runs and is the opening transition's while one starts, so each game reads the pack again. */
+#include "pico_igm.h"
+#define IGM_PACK_PA  0x54000000u
+#if defined(KONKR_KPA)
+#define IGM_PACK_MAX 0x00100000u      /* 0.6 MB at 960 x 640 */
+#define IGM_BG_PA    0x54100000u      /* the panel's background, drawn at each opening */
+#define IGM_BG_MAX   0x00140000u      /* up to the live layer's first buffer (0x54240000) */
+#else
+#define IGM_PACK_MAX 0x00180000u      /* 1 MB at 1280 x 960 */
+#define IGM_BG_PA    0x54180000u
+#define IGM_BG_MAX   0x00280000u      /* up to the live layer's second buffer (0x54400000) */
+#endif
+#define IGM_ROWS 40                   /* rows in a page, at most */
+#define IGM_Y0   180.f                /* the first row, units */
+#define IGM_RP   44.f                 /* the row pitch, units */
+
+extern void ayaneo_overlay_live(int (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int, int *), int open);
+extern volatile int g_dbg_key, g_dbg_key_hold;
+typedef struct { int kind, item, icon; const char *label; } igm_line;
+enum { IC_PLAY, IC_SAVE, IC_LOAD, IC_DISPLAY, IC_SOUND, IC_SPEED, IC_SYSTEM, IC_RESET, IC_EXIT, IC_N, IC_NONE = -1 };
+static const char *const k_igm_page[IGM_NPAGES] = { "", "Display", "Sound", "Gameplay", "System", "Core options" };
+static const signed char k_igm_page_ic[IGM_NPAGES] = { IC_NONE, IC_DISPLAY, IC_SOUND, IC_SPEED, IC_SYSTEM, IC_SYSTEM };
+
+static struct {
+	int loaded, failed;          /* the pack is in memory for this game / could not be read */
+	const struct igm_core *c;
+	cfont brand, sub, realm, tag11, tag13, srow, srowf, sval, dname, info, hint, hintc;
+	cimg ic[IC_N], chev, back, gamma, ring, pillm;
+	char title[128];
+	int pw, sh;                  /* the panel's width and its shadow, px */
+	float pwu;                   /* the panel's width, units */
+	/* the state */
+	int up;                      /* the core has it open */
+	int closing, latch;          /* playing the close; the buttons to hold back after it */
+	float show, show_time;       /* 0..1 in; the seconds since it began opening */
+	int page, from, dir;         /* the page, the one before it, +1 deeper -1 back */
+	float page_t;                /* 0..1 the page change */
+	int sel[IGM_NPAGES];
+	float top[IGM_NPAGES];       /* the first row shown, eased */
+	float hy;                    /* the focus wash, units from the first row */
+	int nudge_row; float nudge_t; int nudge_dir;
+	char toast[64]; float toast_t;
+	unsigned int tick, last_paint;
+	int dirty, prev_keys;
+	float rep[4];
+	int ext_prev;                /* the width the last picture covered, px */
+	int batt, chg;               /* read at the opening and every 20 s (the gauge is slow to ask) */
+	unsigned int batt_tick;
+	char fig[IGM_ROWS][48];      /* the figures rows (battery, refresh): read once a second */
+	unsigned int fig_tick;
+	int fig_page;
+} G;
+
+/* a hash of each row of the last picture: only the rows that came out different are handed on */
+static uint32_t s_igm_rowh[1024];
+static int s_igm_rowh_ok;
+static float igm_ease(float t) { return t <= 0 ? 0 : t >= 1 ? 1 : 1 - (1 - t) * (1 - t) * (1 - t); }
+static float igm_smooth(float t) { return t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t); }
+
+static int igm_load(void)
+{
+	static const char *const ic[IC_N] = { "ig_play", "ig_save", "ig_load", "ig_display", "ig_sound", "ig_speed",
+					      "ig_system", "ig_reset", "ig_exit" };
+	unsigned int W, H;
+	int i;
+	ayaneo_canvas_dims(&W, &H);
+	if (pack_read("current-igm", W, H, (uint8_t *)IGM_BG_PA, IGM_BG_MAX, (uint8_t *)IGM_PACK_PA, IGM_PACK_MAX) != 0)
+		return -1;
+	G.brand = font("f_brand"); G.sub = font("f_sub"); G.realm = font("f_realm");
+	G.tag11 = font("f_tag11"); G.tag13 = font("f_tag13"); G.srow = font("f_srow"); G.srowf = font("f_srowf");
+	G.sval = font("f_sval"); G.dname = font("f_dname"); G.info = font("f_info");
+	G.hint = font("f_hint"); G.hintc = font("f_hintc");
+	for (i = 0; i < IC_N; i++) G.ic[i] = img(ic[i]);
+	G.chev = img("ig_chev"); G.back = img("ig_back"); G.gamma = img("gamma");
+	G.ring = img("hint_ring"); G.pillm = img("hint_pill");
+	if (!G.srow.g || !G.dname.g) return -1;
+	g_W = (int)W; g_H = (int)H; g_s = (float)H / 720.0f;
+	s_uw = (float)W / g_s;
+	s_p = s_uw * .048f > 38 ? s_uw * .048f : 38;
+	return 0;
+}
+/* the menu's next run reads its own pack again; a game starting takes the in-game pack's memory */
+static void igm_forget(void)
+{
+	extern void ayaneo_overlay_live_forget(void);
+	G.loaded = 0; G.failed = 0;
+	ayaneo_overlay_live_forget();
+}
+
+int pico_igm_on(void)
+{
+	if (ayaneo_get_menu_theme() != snes_hash("current")) return 0;
+	if (!G.loaded && !G.failed) {
+		if (igm_load() == 0) G.loaded = 1; else G.failed = 1;
+	}
+	return G.loaded;
+}
+
+/* the rows of a page: on the top one Resume first */
+static int igm_lines(int page, igm_line *out)
+{
+	const struct igm_core *c = G.c;
+	int i, n = 0;
+	if (page == IGM_CORE) {
+		int k = c->opt_n ? c->opt_n() : 0;
+		for (i = 0; i < k && n < IGM_ROWS; i++) {
+			out[n].kind = IGM_VALUE; out[n].item = i; out[n].icon = IC_NONE; out[n].label = c->opt_label(i);
+			n++;
+		}
+		return n;
+	}
+	if (page == IGM_TOP) { out[0].kind = IGM_ACTION; out[0].item = -1; out[0].icon = IC_PLAY; out[0].label = "Resume"; n = 1; }
+	for (i = 0; i < c->nrows && n < IGM_ROWS; i++) {
+		const struct igm_row *r = &c->rows[i];
+		igm_line *l = &out[n];
+		if (r->page != page) continue;
+		l->kind = r->kind; l->item = r->item; l->icon = IC_NONE; l->label = 0;
+		if (r->kind == IGM_LINK) {
+			if (r->item == IGM_CORE && (!c->opt_n || !c->opt_n())) continue;
+			l->label = k_igm_page[r->item]; l->icon = k_igm_page_ic[r->item];
+		} else if (r->item == c->save_item) { l->label = "Save state"; l->icon = IC_SAVE; }
+		else if (r->item == c->load_item) { l->label = "Load state"; l->icon = IC_LOAD; }
+		else if (r->item == c->reset_item) { l->label = "Reset game"; l->icon = IC_RESET; }
+		else if (r->item == c->exit_item) { l->label = "Exit game"; l->icon = IC_EXIT; }
+		else l->label = c->label(r->item);
+		if (page != IGM_TOP) l->icon = IC_NONE;
+		n++;
+	}
+	return n;
+}
+static igm_line s_igm_ln[IGM_ROWS];   /* the page being drawn (igm_rows), for the figure cache */
+/* what a row shows on its right, or 0 */
+static const char *igm_value(int page, const igm_line *l, char *buf)
+{
+	const struct igm_core *c = G.c;
+	buf[0] = 0;
+	if (page == IGM_CORE) return c->opt_value(l->item, buf);
+	if (l->kind == IGM_LINK || l->item < 0) return 0;
+	if ((l->item == c->save_item || l->item == c->load_item) && c->slot_item >= 0) {
+		char v[48], *sp;
+		c->value(c->slot_item, v);
+		sp = strchr(v, ' ');
+		if (sp) { *sp = 0; snprintf(buf, 48, "Slot %s \xC2\xB7 %c%s", v, sp[1] >= 'a' && sp[1] <= 'z' ? sp[1] - 32 : sp[1], sp + 2); }
+		else snprintf(buf, 48, "Slot %s", v);
+		return buf;
+	}
+	if (l->kind == IGM_ACTION) return 0;
+	if (l->kind == IGM_INFO && l->label) {	/* a figure: at most once a second (it may ask the gauge) */
+		int r = (int)(l - s_igm_ln);
+		if (r >= 0 && r < IGM_ROWS) {
+			if (!G.fig[r][0] || G.fig_page != page) c->value(l->item, G.fig[r]);
+			return G.fig[r];
+		}
+	}
+	return c->value(l->item, buf);
+}
+
+void pico_igm_open(const struct igm_core *c)
+{
+	unsigned int W, H;
+	int i, ext;
+	uint32_t *bg = (uint32_t *)IGM_BG_PA;
+	if (!G.loaded) return;
+	G.c = c;
+	G.up = 1; G.closing = 0; G.latch = 0;
+	G.show = 0; G.show_time = 0;
+	G.page = G.from = IGM_TOP; G.dir = 1; G.page_t = 1;
+	memset(G.sel, 0, sizeof G.sel);
+	memset(G.top, 0, sizeof G.top);
+	G.hy = 0; G.nudge_t = 1; G.toast_t = 99; G.toast[0] = 0;
+	G.tick = gpt4_get_current_tick(); G.last_paint = 0;
+	G.dirty = 1; G.prev_keys = 0x3F;   /* what is held now (the menu key, a face button) is not a press */
+	G.ext_prev = 0; s_igm_rowh_ok = 0;
+	G.batt = gba_battery_pct(&G.chg); G.batt_tick = G.tick;
+	G.fig_tick = 0; G.fig_page = -1;
+	gba_clean_name(c->game ? c->game : "", G.title);
+	colour_set(ayaneo_get_menu_colour());
+	/* the panel's background: a deep wash of the theme's colour, nearly opaque, its edge lit faintly,
+	 * and a soft shadow off it over the game */
+	ayaneo_canvas_dims(&W, &H);
+	G.pwu = s_uw * .42f < 470 ? s_uw * .42f : 470;
+	G.pw = U(G.pwu); G.sh = U(34);
+	ext = G.pw + G.sh;
+	if ((uint32_t)ext * H * 4u > IGM_BG_MAX) { G.sh = 0; ext = G.pw; }
+	{	/* the backdrop's deep air with a glow of its mist in the top corner, opaque (the layer then
+		 * needs no conversion from premultiplied colour: only the shadow has an alpha, and it is black) */
+		static const gstop air[3] = { { 0, 0x0A1C40, 1 }, { .45f, 0x0A2552, 1 }, { 1, 0x050F24, 1 } };
+		float R2 = (G.pw * 1.1f) * (G.pw * 1.1f);
+		uint32_t mist = recolour(0x2664CCu), edge = C_ACCENT;
+		const int a = 255;
+		for (i = 0; i < (int)H; i++) {
+			uint32_t *row = bg + i * ext;
+			float r, g, b, al, dy2 = (float)i * i;
+			int x;
+			grad(air, 3, (i + .5f) / H, &r, &g, &b, &al);
+			{
+				uint32_t base = recolour((uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b);
+				for (x = 0; x < G.pw; x++) {
+					float d2 = (float)x * x + dy2;
+					uint32_t c = base, p;
+					if (d2 < R2) {	/* the mist, falling off with the square of the distance */
+						float f = 1 - d2 / R2;
+						c = mix(0xFF000000u | base, mist, (int)(f * f * 70)) & 0xFFFFFFu;
+					}
+					if (x == G.pw - 1) c = mix(0xFF000000u | c, edge, 70) & 0xFFFFFFu;
+					p = ((uint32_t)a << 24) | ((((c & 0xFF00FFu) * (uint32_t)a) >> 8) & 0xFF00FFu) | ((((c & 0xFF00u) * (uint32_t)a) >> 8) & 0xFF00u);
+					row[x] = p;
+				}
+			}
+			for (x = 0; x < G.sh; x++) {	/* the shadow: dark, falling off with the square of the distance */
+				int f = 256 - x * 256 / G.sh, sa = (90 * f * f) >> 16;
+				row[G.pw + x] = (uint32_t)sa << 24;
+			}
+		}
+	}
+}
+void pico_igm_dismiss(void)
+{
+	if (G.up && !G.closing) { G.closing = 1; G.latch = 0; G.dirty = 1; }
+}
+static void igm_toast(const char *t)
+{
+	snprintf(G.toast, sizeof G.toast, "%s", t);
+	G.toast_t = 0; G.dirty = 1;
+}
+/* a page in, deeper (+1) or back (-1) */
+static void igm_go(int page, int dir)
+{
+	G.from = G.page; G.page = page; G.dir = dir; G.page_t = 0;
+	if (dir > 0) { G.sel[page] = 0; G.top[page] = 0; }
+	G.hy = (G.sel[page] - G.top[page]) * IGM_RP;
+	G.nudge_t = 1; G.dirty = 1;
+}
+static int igm_fire(int i, int level, float dt)
+{
+	int f = 0;
+	if (level && !(G.prev_keys & (1 << i))) { f = 1; G.rep[i] = .32f; }
+	else if (level) { G.rep[i] -= dt; if (G.rep[i] <= 0) { f = 1; G.rep[i] = .07f; } }
+	return f;
+}
+int pico_igm_frame(unsigned int keys)
+{
+	igm_line ln[IGM_ROWS];
+	unsigned int now = gpt4_get_current_tick();
+	float dt = (float)(now - G.tick) / 13000000.0f;
+	int n, sel, up, dn, lt, rt, a, b, nv;
+	G.tick = now;
+	if (dt > .05f) dt = .05f;
+	if (!G.up) return 0;
+	if (g_dbg_key_hold > 0 && g_dbg_key >= 0 && g_dbg_key < 6) {   /* oem nav: an injected key */
+		static const unsigned int map[6] = { IGM_K_LEFT, IGM_K_RIGHT, IGM_K_UP, IGM_K_DOWN, IGM_K_A, IGM_K_B };
+		keys |= map[g_dbg_key];
+		g_dbg_key_hold--;
+	}
+	/* the animations */
+	G.show_time += dt;
+	if (G.closing) {
+		G.show -= dt / .16f;
+		if (G.show <= 0) { G.show = 0; G.up = 0; G.prev_keys = (int)keys; return G.latch; }
+	} else if (G.show < 1) { G.show += dt / .22f; if (G.show > 1) G.show = 1; }
+	if (G.page_t < 1) { G.page_t += dt / .24f; if (G.page_t > 1) G.page_t = 1; }
+	if (G.nudge_t < 1) { G.nudge_t += dt / .16f; if (G.nudge_t > 1) G.nudge_t = 1; }
+	if (G.toast_t < 9) G.toast_t += dt;
+	if (G.c->status && G.c->status[0]) { igm_toast(G.c->status); G.c->status[0] = 0; }
+	n = igm_lines(G.page, ln);
+	nv = (int)((720 - 64 - IGM_Y0) / IGM_RP);
+	if (G.sel[G.page] >= n) G.sel[G.page] = n ? n - 1 : 0;
+	sel = G.sel[G.page];
+	{	/* the list follows the focus; the wash glides to it (both settle in about a tenth of a second) */
+		float k = dt * 18, f = k / (1 + k + k * k * .5f) * (1 + k * .5f), want = G.top[G.page];
+		if (sel < (int)(want + .5f)) want = (float)sel;
+		if (sel > (int)(want + .5f) + nv - 1) want = (float)(sel - nv + 1);
+		if (want < 0) want = 0;
+		G.top[G.page] += (want - G.top[G.page]) * f;
+		if (G.top[G.page] - want < .01f && want - G.top[G.page] < .01f) G.top[G.page] = want;
+		{
+			float hy = (sel - G.top[G.page]) * IGM_RP;
+			G.hy += (hy - G.hy) * f;
+			if (G.hy - hy < .05f && hy - G.hy < .05f) G.hy = hy;
+		}
+	}
+	if (G.closing || G.show < .6f) { G.prev_keys = (int)keys; return -1; }
+	/* the keys */
+	up = igm_fire(0, !!(keys & IGM_K_UP), dt);
+	dn = igm_fire(1, !!(keys & IGM_K_DOWN), dt);
+	lt = igm_fire(2, !!(keys & IGM_K_LEFT), dt);
+	rt = igm_fire(3, !!(keys & IGM_K_RIGHT), dt);
+	a = (keys & IGM_K_A) && !(G.prev_keys & IGM_K_A);
+	b = (keys & IGM_K_B) && !(G.prev_keys & IGM_K_B);
+	G.prev_keys = (int)keys;
+	if (!n) { if (b) igm_go(IGM_TOP, -1); return -1; }
+	if (up) { G.sel[G.page] = (sel + n - 1) % n; G.dirty = 1; }
+	if (dn) { G.sel[G.page] = (sel + 1) % n; G.dirty = 1; }
+	if (up || dn) return -1;
+	{
+		igm_line *l = &ln[sel];
+		const struct igm_core *c = G.c;
+		int dir = lt ? -1 : rt ? 1 : 0;
+		if (dir) {
+			if (G.page == IGM_CORE) c->opt_change(l->item, dir);
+			else if (l->kind == IGM_VALUE) { if (c->change(l->item, dir, 0)) { G.closing = 1; G.latch = 0; } }
+			else if ((l->item == c->save_item || l->item == c->load_item) && c->slot_item >= 0 && l->item >= 0)
+				c->change(c->slot_item, dir, 0);
+			else if (l->kind == IGM_LINK && dir > 0) { igm_go(l->item, 1); return -1; }
+			else return -1;
+			G.nudge_row = sel; G.nudge_dir = dir; G.nudge_t = 0; G.dirty = 1;
+		}
+		if (a) {
+			if (l->kind == IGM_LINK) igm_go(l->item, 1);
+			else if (l->item < 0 && G.page == IGM_TOP) { G.closing = 1; G.latch = 1; }   /* Resume */
+			else if (G.page != IGM_CORE && (l->kind == IGM_ACTION || l->kind == IGM_VALUE)) {
+				if (c->change(l->item, 0, 1)) {
+					if (l->item == c->exit_item) { G.up = 0; G.show = 0; return 1; }   /* the game is ending */
+					G.closing = 1; G.latch = 1;
+				}
+				G.nudge_row = sel; G.nudge_dir = 1; G.nudge_t = l->kind == IGM_VALUE ? 0 : 1;
+			}
+			G.dirty = 1;
+		}
+		if (b) {
+			if (G.page != IGM_TOP) igm_go(G.page == IGM_CORE ? IGM_PLAY : IGM_TOP, -1);
+			else { G.closing = 1; G.latch = 2; }
+			G.dirty = 1;
+		}
+	}
+	return -1;
+}
+
+/* ---- the picture ---- */
+static int s_igm_ox;   /* the panel's slide, px */
+#define IX(u) (U(u) + s_igm_ox)
+/* the rows of a page, moved dx units and faded to op; the wash on the focus if wash */
+static void igm_rows(int page, float dx, int op, int wash)
+{
+	igm_line own[IGM_ROWS], *ln = page == G.page ? s_igm_ln : own;
+	char vb[64];
+	int n = igm_lines(page, ln), i, nv = (int)((720 - 64 - IGM_Y0) / IGM_RP), sel = G.sel[page];
+	float rx = 18 + dx, rw = G.pwu - 36, top = G.top[page];
+	int first = (int)top, xi = IX(rx), wi = U(rw), ph = U(IGM_RP);
+	if (op <= 0) return;
+	if (wash) {	/* the focus: the accent wash fading out to the right, and its bar */
+		int yy = U(IGM_Y0 + G.hy), k;
+		for (k = 0; k < wi; k++) {
+			int t = k * 1000 / wi, al = t < 860 ? 41 - (35 * t) / 860 : 6 - (6 * (t - 860)) / 140;
+			fill(xi + k, yy, 1, ph - U(2), C_ACCENT, (al * op) >> 8);
+		}
+		fill(xi, yy + U(9), U(2.5f) > 2 ? U(2.5f) : 2, ph - U(20), C_ACCENT, op);
+	}
+	for (i = first; i < n && i <= first + nv; i++) {
+		float ry = IGM_Y0 + (i - top) * IGM_RP, rdx = 0;
+		int yy, f = i == sel, rop = op, lx, vx;
+		const char *v;
+		if (ry < IGM_Y0 - IGM_RP * .5f || ry > IGM_Y0 + (nv - .5f) * IGM_RP) continue;
+		if (!G.closing && G.show_time < .6f && page == G.page) {	/* the opening: the rows arrive one after another */
+			float e = igm_ease((G.show_time - .035f * (i - first)) / .2f);
+			rdx = (1 - e) * 26; rop = (int)(op * e);
+			if (rop <= 0) continue;
+		}
+		yy = U(ry);
+		lx = IX(rx + rdx) + U(14);
+		if (ln[i].icon >= 0) {
+			const cimg *m = &G.ic[ln[i].icon];
+			draw_mask(m, lx, yy + (ph - m->h) / 2, f ? C_ACCENT : C_MUTED, rop);
+			lx += m->w + U(14);
+		}
+		text_fit(f ? &G.srowf : &G.srow, lx, yy + (int)(ph * .63f), ln[i].label, f ? C_INK : C_MUTED, rop,
+			 IX(rx + rw) - lx - U(110));
+		vx = IX(rx + rw + rdx) - U(14);
+		if (ln[i].kind == IGM_LINK) {
+			draw_mask(&G.chev, vx - G.chev.w, yy + (ph - G.chev.h) / 2, f ? C_INK : C_MUTED, rop);
+		} else if ((v = igm_value(page, &ln[i], vb)) && v[0]) {
+			int nudge = 0, vop = rop, w, pct = -1, len = (int)strlen(v);
+			if (i == G.nudge_row && page == G.page && G.nudge_t < 1) {
+				float e = igm_ease(G.nudge_t);
+				nudge = (int)((1 - e) * U(12)) * G.nudge_dir; vop = (int)(rop * (.35f + .65f * e));
+			}
+			if (f && (ln[i].kind == IGM_VALUE || ((ln[i].item == G.c->save_item || ln[i].item == G.c->load_item)
+								&& G.c->slot_item >= 0))) {	/* Left / Right change it */
+				draw_mask(&G.chev, vx - G.chev.w, yy + (ph - G.chev.h) / 2, C_INK, rop);
+				vx -= G.chev.w + U(6);
+			}
+			w = text_w(&G.sval, v, 0, 0);
+			text(&G.sval, vx + nudge, yy + (int)(ph * .61f), v, f ? C_INK : C_MUTED, vop, 2, 0, 0);
+			if (f && (ln[i].kind == IGM_VALUE || ((ln[i].item == G.c->save_item || ln[i].item == G.c->load_item)
+								&& G.c->slot_item >= 0)))
+				draw_mask(&G.back, vx - w - U(6) - G.back.w, yy + (ph - G.back.h) / 2, C_INK, rop);
+			if (len >= 2 && v[len - 1] == '%' && v[0] >= '0' && v[0] <= '9') {	/* a level: its bar */
+				int k = 0, bw = U(64), bx;
+				const char *q = v;
+				while (*q >= '0' && *q <= '9') k = k * 10 + (*q++ - '0');
+				pct = k > 100 ? 100 : k;
+				bx = vx - w - U(f ? 32 : 14) - bw;
+				fill(bx, yy + ph / 2, bw, U(2.5f) > 2 ? U(2.5f) : 2, C_MUTED, (rop * 70) >> 8);
+				fill(bx, yy + ph / 2, bw * pct / 100, U(2.5f) > 2 ? U(2.5f) : 2, f ? C_ACCENT : C_MUTED, rop);
+			}
+		}
+		if (i + 1 < n) fill(IX(rx + rdx) + U(14), yy + ph - 1, wi - U(14), 1, C_MUTED, (rop * 36) >> 8);
+	}
+	if (first > 0) disc(IX(rx + rw) - U(6) + .0f, U(IGM_Y0 - 9) + .0f, U(2.3f) + .0f, C_MUTED, op * 3 / 4);
+	if (first + nv < n) disc(IX(rx + rw) - U(6) + .0f, U(IGM_Y0 + nv * IGM_RP + 6) + .0f, U(2.3f) + .0f, C_MUTED, op * 3 / 4);
+}
+static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box);
+static int igm_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box)
+{
+	int y, y0 = -1, y1 = -1, x, w;
+	if (!igm_paint_all(buf, pitch, W, H, box)) return 0;
+	w = box[2];
+	for (y = 0; y < (int)H && y < 1024; y++) {
+		const uint32_t *r = buf + y * W;
+		uint32_t h = 2166136261u;
+		for (x = 0; x < w; x++) h = (h ^ r[x]) * 16777619u;
+		if (!s_igm_rowh_ok || h != s_igm_rowh[y]) { s_igm_rowh[y] = h; if (y0 < 0) y0 = y; y1 = y + 1; }
+	}
+	s_igm_rowh_ok = 1;
+	if (y0 < 0) return 0;
+	box[1] = y0; box[3] = y1;
+	return 1;
+}
+static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box)
+{
+	unsigned int now = gpt4_get_current_tick();
+	float e = igm_ease(G.show);
+	int op = e > 0 ? 256 : 0, ext = G.pw + G.sh, y, still;
+	still = G.show >= 1 && !G.closing && G.page_t >= 1 && G.nudge_t >= 1 && G.toast_t > 2.2f &&
+		G.show_time > .7f;
+	{	/* the focus and the list settled */
+		float hy = (G.sel[G.page] - G.top[G.page]) * IGM_RP;
+		if (G.hy != hy) still = 0;
+		if (G.top[G.page] != (float)(int)G.top[G.page]) still = 0;
+	}
+	if (still && !G.dirty && now - G.last_paint < 6500000u) return 0;   /* live figures: twice a second */
+	G.dirty = 0; G.last_paint = now;
+	if (now - G.fig_tick > 13000000u || G.fig_page != G.page) {	/* the figures: once a second */
+		int i;
+		for (i = 0; i < IGM_ROWS; i++) G.fig[i][0] = 0;
+		G.fig_tick = now; G.fig_page = G.page;
+	}
+	if (now - G.batt_tick > 13000000u * 20) { G.batt = gba_battery_pct(&G.chg); G.batt_tick = now; }
+	g_fb = buf; g_W = (int)W; g_H = (int)H; g_track = 0;
+	(void)pitch;
+	{
+		int clr = ext > G.ext_prev ? ext : G.ext_prev;
+		for (y = 0; y < (int)H; y++) memset(buf + y * W, 0, (size_t)clr * 4);
+		box[0] = 0; box[1] = 0; box[2] = clr; box[3] = (int)H;
+	}
+	G.ext_prev = ext;
+	if (op <= 0) return 1;
+	s_igm_ox = -(int)((1 - e) * ext + .5f);   /* the drawer slides in from beyond the edge, its shadow with it */
+	if (s_igm_ox <= -ext) return 1;
+	{	/* the background */
+		const uint32_t *bg = (const uint32_t *)IGM_BG_PA;
+		int x0 = -s_igm_ox, n = ext - x0;
+		for (y = 0; y < (int)H; y++) memcpy(buf + y * W, bg + y * ext + x0, (size_t)n * 4);
+	}
+	{	/* the header: the brand, the battery */
+		float px = 30;
+		int x = IX(px), w, pct, chg = 0;
+		draw_mask(&G.gamma, x, U(28), C_INK, op);
+		w = text(&G.brand, x + U(31), U(47), "GammaOS", C_INK, op, 0, 0, 0);
+		text(&G.sub, x + U(31) + w + U(7), U(47), "Pico", C_MUTED, op, 0, 0, 0);
+		pct = G.batt; chg = G.chg;
+		if (pct >= 0) {
+			char t[8];
+			int tx = IX(G.pwu - 30), bx, r = U(1.25f) > 0 ? U(1.25f) : 1;
+			snprintf(t, sizeof t, "%d%%", pct);
+			w = text(&G.realm, tx, U(46), t, C_INK, op, 2, 0, 0);
+			bx = tx - w - U(37);
+			fill(bx, U(34), U(25), r, C_MUTED, op); fill(bx, U(45) - r, U(25), r, C_MUTED, op);
+			fill(bx, U(34), r, U(11), C_MUTED, op); fill(bx + U(25) - r, U(34), r, U(11), C_MUTED, op);
+			fill(bx + U(3), U(37), (U(19) * pct) / 100, U(5), chg ? C_ACCENT : C_MUTED, op);
+			fill(bx + U(26), U(37), U(2), U(5), C_MUTED, op);
+		}
+	}
+	{	/* the system, and the game or the page */
+		const struct igm_core *c = G.c;
+		float k = igm_smooth(G.page_t);
+		int sys = c->system >= 0 && c->system < NSYS ? c->system : 0, w;
+		const char *now_t = G.page == IGM_TOP ? G.title : k_igm_page[G.page];
+		const char *was_t = G.from == IGM_TOP ? G.title : k_igm_page[G.from];
+		text(&G.tag13, IX(30), U(106), s_sysname[sys], C_MUTED, op, 0, U(2), 1);
+		w = U(G.pwu - 60);
+		if (k < 1 && G.from != G.page) {
+			int o = (int)(op * (1 - k));
+			if (o > 0) {
+				int bx = IX(30 - G.dir * 40 * k) + (G.from != IGM_TOP ? G.back.w + U(8) : 0);
+				if (G.from != IGM_TOP) draw_mask(&G.back, IX(30 - G.dir * 40 * k) - U(3), U(143 - 10.5f) - G.back.h / 2, C_MUTED, o);
+				text_fit(&G.dname, bx, U(143), was_t, C_INK, o, w);
+			}
+		}
+		{
+			int o = (int)(op * (G.from != G.page ? k : 1)), bx = IX(30 + G.dir * 40 * (1 - k));
+			if (G.from == G.page) bx = IX(30);
+			if (G.page != IGM_TOP) {
+				draw_mask(&G.back, bx - U(3), U(143 - 10.5f) - G.back.h / 2, C_MUTED, o);
+				bx += G.back.w + U(8);
+			}
+			text_fit(&G.dname, bx, U(143), now_t, C_INK, o, w);
+		}
+		fill(IX(30), U(162), U(G.pwu - 60), 1, C_MUTED, (op * 50) >> 8);
+	}
+	{	/* the rows: the page, and while it changes the one it came from */
+		float k = igm_smooth(G.page_t);
+		if (k < 1 && G.from != G.page) {
+			igm_rows(G.from, -G.dir * 56 * k, (int)(op * (1 - k)), 0);
+			igm_rows(G.page, G.dir * 56 * (1 - k), (int)(op * k), 1);
+		} else igm_rows(G.page, 0, op, 1);
+	}
+	{	/* the hints */
+		const char *codes[2] = { "A", "B" };
+		const char *labels[2] = { "Select", G.page == IGM_TOP ? "Resume" : "Back" };
+		int i, xx = IX(30), cy = U(720 - 27);
+		for (i = 0; i < 2; i++) {
+			int rad = U(8.3f);
+			draw_mask(&G.ring, xx, cy - G.ring.h / 2, C_MUTED, op);
+			text(&G.hintc, xx + rad, U(720 - 22.9f), codes[i], C_INK, op, 1, 0, 0);
+			xx += 2 * rad + U(8);
+			xx += text(&G.hint, xx, U(720 - 22), labels[i], C_MUTED, op, 0, 0, 0) + U(16);
+		}
+	}
+	if (G.toast[0] && G.toast_t < 2.2f) {	/* a note: up and in, then out */
+		float t = G.toast_t, in = igm_ease(t / .18f), out = t > 1.9f ? 1 - (t - 1.9f) / .3f : 1;
+		int o = (int)(op * in * (out < 0 ? 0 : out)), tw = text_w(&G.info, G.toast, 0, 0), ty = U(720 - 82) + (int)((1 - in) * U(10));
+		if (o > 0) {
+			pill_fill(IX(30), ty, tw + U(36), U(34), C_ACCENT, (o * 46) >> 8);
+			disc(IX(30) + U(17) + .0f, ty + U(17) + .0f, U(3) + .0f, C_ACCENT, o);
+			text(&G.info, IX(30) + U(28), ty + U(22), G.toast, C_INK, o, 0, 0, 0);
+		}
+	}
+	return 1;
+}
+void pico_igm_overlay(int open)
+{
+	ayaneo_overlay_live(igm_paint, open && G.loaded);
 }

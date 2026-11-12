@@ -6,6 +6,7 @@ Run by hand when the art changes; build_pack.py turns the committed result into 
 packs and needs only Pillow. This step also needs NumPy and CairoSVG.
 
     make_art.py <design dir> <photos dir>
+    make_art.py --icons
 
 <design dir> is the Current design package (fonts, platform logos, the GBA and GBC photos);
 <photos dir> holds the other hardware photos, with transparent backgrounds, as
@@ -15,7 +16,7 @@ as sg1000.svg (see CREDITS.md for where each comes from).
 Writes:
   art/hardware/<system>.png   the console photo, cropped to its pixels, at most 720 px wide
   art/logos/<system>.png      the platform mark in white, cropped, 1100 px wide
-  art/icons/<name>.png        the rail, settings and button icons, white strokes, 96 px
+  art/icons/<name>.png        the rail, settings, in-game menu and button icons, white strokes, 96 px
   art/fonts/                  Inter and its licence
 """
 import io, os, shutil, sys
@@ -105,6 +106,16 @@ ICONS = {
     "bfi": "M4 5 H20 V19 H4 Z M4 9.7 H20 M4 14.3 H20 M7 7.3 h.1 M7 16.7 h.1",
     "colour": "M12 3 A9 9 0 1 0 12 21 C13.6 21 14.1 19.9 13.4 18.8 C12.7 17.6 13.5 16 15.1 16 H17 "
               "A4 4 0 0 0 21 12 C21 6.9 17 3 12 3 Z M7.6 11.2 h.1 M9.9 7.4 h.1 M14.4 7.3 h.1 M17.1 10.4 h.1",
+    # the in-game menu
+    "save": "M12 3.5 V14.5 M7.5 10 L12 14.5 L16.5 10 M4 15.5 V18.8 Q4 20.5 5.7 20.5 H18.3 Q20 20.5 20 18.8 V15.5",
+    "load": "M12 14.5 V3.5 M7.5 8 L12 3.5 L16.5 8 M4 15.5 V18.8 Q4 20.5 5.7 20.5 H18.3 Q20 20.5 20 18.8 V15.5",
+    "speed": "M4.3 17.6 A8.6 8.6 0 1 1 19.7 17.6 M12 14 L15.9 9.3 M12 14 h.1",
+    "system": "M7 7 H17 V17 H7 Z M10 10 H14 V14 H10 Z M9.6 3.6 V7 M14.4 3.6 V7 M9.6 17 V20.4 M14.4 17 V20.4 "
+              "M3.6 9.6 H7 M3.6 14.4 H7 M17 9.6 H20.4 M17 14.4 H20.4",
+    "reset": "M19.4 12.6 A7.5 7.5 0 1 1 17 6.4 M18.4 3.2 V7.2 H14.4",
+    "exit": "M13.5 4 H18.4 Q20 4 20 5.6 V18.4 Q20 20 18.4 20 H13.5 M9.5 8 L5.5 12 L9.5 16 M5.5 12 H15",
+    "chev": "M9.5 6 L15.5 12 L9.5 18",
+    "back": "M14.5 6 L8.5 12 L14.5 18",
 }
 GAMMA = ('<g fill="none" stroke="#fff" stroke-linejoin="round" stroke-width="11">'
          '<path d="M4 70 L119 4 L136 14 L136 32 L39 88 L39 178 L113 220 L185 179 L185 121 L122 157 '
@@ -135,6 +146,9 @@ def fonts(design):
 
 
 def main():
+    if sys.argv[1:] == ["--icons"]:   # the icons alone need neither source directory
+        icons()
+        return
     if len(sys.argv) != 3:
         raise SystemExit(__doc__)
     design, photos = sys.argv[1], sys.argv[2]

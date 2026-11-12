@@ -15,6 +15,7 @@
 #include "snes_core_abi.h"
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
+#include "../gba/pico_igm.h"
 #include "../gba/gba_sd_save.h"
 #include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
@@ -558,6 +559,30 @@ static int sm_change(int i, int dir, int act)
 	return 0;
 }
 
+/* the Current theme's in-game menu (pico_igm.h): the rows in its pages, the handlers above */
+static const struct igm_row k_snes_igm_rows[] = {
+	{ SM_SAVE, IGM_TOP, IGM_ACTION }, { SM_LOAD, IGM_TOP, IGM_ACTION },
+	{ IGM_DISPLAY, IGM_TOP, IGM_LINK }, { IGM_SOUND, IGM_TOP, IGM_LINK },
+	{ IGM_PLAY, IGM_TOP, IGM_LINK }, { IGM_SYSTEM, IGM_TOP, IGM_LINK },
+	{ SM_RESET, IGM_TOP, IGM_ACTION }, { SM_CLOSE, IGM_TOP, IGM_ACTION },
+	{ SM_BRIGHT, IGM_DISPLAY, IGM_VALUE }, { SM_FILTER, IGM_DISPLAY, IGM_VALUE },
+	{ SM_ASPECT, IGM_DISPLAY, IGM_VALUE }, { SM_OVERSCAN, IGM_DISPLAY, IGM_VALUE },
+	{ SM_HIRES, IGM_DISPLAY, IGM_VALUE }, { SM_STROBE, IGM_DISPLAY, IGM_VALUE },
+	{ SM_SHOWFPS, IGM_DISPLAY, IGM_VALUE },
+	{ SM_VOLUME, IGM_SOUND, IGM_VALUE }, { SM_AUDIO, IGM_SOUND, IGM_VALUE },
+	{ SM_CPU, IGM_PLAY, IGM_VALUE }, { SM_RUNAHEAD, IGM_PLAY, IGM_VALUE },
+	{ SM_REWIND, IGM_PLAY, IGM_VALUE }, { SM_TURBO, IGM_PLAY, IGM_VALUE },
+	{ SM_BENCH, IGM_PLAY, IGM_VALUE }, { SM_PANEL, IGM_PLAY, IGM_INFO },
+	{ SM_RESUME, IGM_SYSTEM, IGM_VALUE }, { SM_BATTERY, IGM_SYSTEM, IGM_INFO },
+};
+static struct igm_core s_snes_igm = {
+	k_snes_igm_rows, (int)(sizeof k_snes_igm_rows / sizeof k_snes_igm_rows[0]),
+	SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE,
+	sm_label, sm_value, sm_change, s_mstat,
+	0, 0, 0, 0, GBA_CONSOLE_SNES, 0,
+};
+static int s_snes_igm_on;   /* this game's menu is the Current theme's */
+
 /* oem diag launch_us: time from the launch press to each load (pre) and from the end of the
  * opening to each mark after it (the first frame is the 4th) */
 #define SNES_PRE_MARK(k) do { \
@@ -665,7 +690,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	/* hand the in-game menu this session's context */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
-	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0; g_snes_menu_exit = 0;
+	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0; g_snes_menu_exit = 0; s_snes_igm_on = 0;
 	s_save_slot = ayaneo_get_snes_slot();   /* restore the last-used manual save slot */
 	if (s_save_slot < 0 || s_save_slot >= SNES_SLOT_COUNT) s_save_slot = 0;   /* clamp stale 0..9 values */
 	g_snes_turbo = ayaneo_get_snes_turbo(); /* restore the persisted auto-fire setting */
@@ -789,7 +814,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * on the frame it toggles. Reflects the previous frame's selection (1-frame lag, imperceptible). */
 		{
 			extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
-			ayaneo_menu_overlay(snes_menu_paint, g_snes_menu_open);
+			if (s_snes_igm_on) pico_igm_overlay(g_snes_menu_open);
+			else ayaneo_menu_overlay(snes_menu_paint, g_snes_menu_open);
 		}
 
 		/* Rewind (left trigger): walk the ring of periodic raw snapshots backward and re-render
@@ -1049,9 +1075,20 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 		/* AYA taps toggle the menu; holding AYA ~1.5 s force-exits to the selector. */
 		aya = PRESSED(GPIO_AYA);
-		if (aya && !aya_prev) { g_snes_menu_open = !g_snes_menu_open; s_mstat[0] = 0;
-			ayaneo_menu_overlay_mark_dirty();                    /* repaint the overlay on open/close */
-			if (!g_snes_menu_open) snes_settings_flush(); }      /* flush pending on menu close; game keeps running + audio keeps playing */
+		{ extern volatile int g_dbg_igm_toggle;   /* oem igm: a tap of the menu key */
+		  if (g_dbg_igm_toggle) { g_dbg_igm_toggle = 0; aya_prev = 0; aya = 1; } }
+		if (aya && !aya_prev) {
+			if (g_snes_menu_open && s_snes_igm_on) pico_igm_dismiss();   /* closes animated */
+			else if (!g_snes_menu_open && pico_igm_on()) {
+				s_snes_igm_on = 1; s_mstat[0] = 0; g_snes_menu_open = 1;
+				s_snes_igm.game = s_menu_rom->name;
+				pico_igm_open(&s_snes_igm);
+			} else {
+				g_snes_menu_open = !g_snes_menu_open; s_mstat[0] = 0;
+				ayaneo_menu_overlay_mark_dirty();                    /* repaint the overlay on open/close */
+				if (!g_snes_menu_open) snes_settings_flush();        /* flush pending on menu close; game keeps running + audio keeps playing */
+			}
+		}
 		aya_prev = aya;
 		if (aya) { if (++aya_hold >= 90) {
 			/* Arm the reverse punch: the menu re-entry shrinks this frozen frame back into
@@ -1062,7 +1099,21 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			g_snes_dbg_exit = 1; break;
 		} } else aya_hold = 0;
 
-		if (g_snes_menu_open) {
+		if (g_snes_menu_open && s_snes_igm_on) {
+			unsigned int k = 0, jd;
+			extern unsigned int ayaneo_joypad_dpad(void);
+			int r;
+			jd = ayaneo_joypad_dpad();
+			if (PRESSED(GPIO_UP) || (jd & 0x01u)) k |= IGM_K_UP;
+			if (PRESSED(GPIO_DOWN) || (jd & 0x02u)) k |= IGM_K_DOWN;
+			if (PRESSED(GPIO_LEFT) || (jd & 0x04u)) k |= IGM_K_LEFT;
+			if (PRESSED(GPIO_RIGHT) || (jd & 0x08u)) k |= IGM_K_RIGHT;
+			if (PRESSED(GPIO_A)) k |= IGM_K_A;
+			if (PRESSED(GPIO_B)) k |= IGM_K_B;
+			r = pico_igm_frame(k);
+			if (r >= 0) { g_snes_menu_open = 0; g_snes_ab_latch |= r; snes_settings_flush(); }
+			reset_hold = 0;
+		} else if (g_snes_menu_open) {
 			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
 			int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
 			int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);

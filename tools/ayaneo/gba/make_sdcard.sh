@@ -94,6 +94,7 @@ if [ -f "$THEMES_DIR/current/layout" ]; then
 	echo ">> Building the Current theme's packs"
 	for size in 960x640 1280x960; do
 		python3 tools/ayaneo/pico_current/build_pack.py "$size" "out/sdcard/gammaos/current-$size.pack" \
+			--igm "out/sdcard/gammaos/current-igm-$size.pack" \
 			"${THEME_ARGS[@]}" || exit 1
 	done
 fi
