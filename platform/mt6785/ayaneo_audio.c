@@ -1612,64 +1612,25 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 	aud_lead_note();
 
 	/*
-	 * The resample rate is FIXED (calibrated once to the panel refresh by
-	 * ayaneo_gba_audio_set_rate) -> constant pitch, no dynamic wobble. Since the
-	 * panel is tuned to within ~0.03% of the GBA rate the residual drift is
-	 * negligible (many minutes to move). This wide-band safety only snaps the write
-	 * cursor if it ever strays near underrun/overrun (a real emergency - bad
-	 * calibration or a very long session); it does not fire in normal play, so it
-	 * never disturbs the pitch.
+	 * The resample rate is calibrated once to the panel refresh (ayaneo_gba_audio_set_rate), and
+	 * leans from there towards a quarter ring of lead as the other cores' do (aud_lean): by at most
+	 * half a percent, in proportion to how far off the lead is, a pitch change too small to hear. A
+	 * frame that came late (a code flush, a card write) used to cost a frame of lead for good: the
+	 * old trim moved a few units a frame within a quarter percent, too slow to win it back, so a few
+	 * of them took the cursor to the emergency jump, heard as the music skipping ahead. The jump
+	 * stays, for a real emergency only.
 	 */
 	{
 		unsigned cur  = afe_r(AFE_DL1_CUR);
 		unsigned base = (unsigned)(addr_t)s_gbc_ring;
 		unsigned rd   = (cur >= base) ? (cur - base) / 4u : 0u;
-		int lead = (int)((s_gbc_widx - rd) & (GBC_RING_FRAMES - 1));
-
+		int lead = (int)((s_gbc_widx - rd) & (GBC_RING_FRAMES - 1)), snaps = g_dbg_asnap_n, err;
 		if (lead >= (int)(GBC_RING_FRAMES / 2))
 			lead -= (int)GBC_RING_FRAMES;
 		if (g_dbg_asub_done < 2u || lead < g_dbg_alead_min) g_dbg_alead_min = lead;
-		if (lead < (int)(GBC_RING_FRAMES / 16) ||	/* ~<21 ms: near underrun */
-		    lead > (int)((GBC_RING_FRAMES * 7) / 16)) {	/* ~>150 ms: near overrun */
-			s_gbc_widx = (rd + GBC_RING_FRAMES / 4) & (GBC_RING_FRAMES - 1);
-			g_dbg_asnap_n++; g_dbg_asnap_lead = lead; g_dbg_asnap_ms = gpt4_get_current_tick() / 13000u;
-		} else {
-			/*
-			 * Closed-loop clock recovery. The fixed resampler rate cannot be
-			 * EXACTLY the true AFE 48 kHz consumption (panel-Hz measurement + AFE
-			 * crystal both have small error), so `lead` slowly drifts until it hits
-			 * the emergency snap above - an ~85 ms jump = the periodic audible blip
-			 * (measured ~1 snap/90s at idle). Instead, nudge the resampler rate by
-			 * +-1 (of ~48000 = ~0.002%, far below audible) to hold lead near the
-			 * centre target, so the snap never triggers. inc floats within +-64 of
-			 * the calibrated base = a hard bound on any pitch excursion. This is
-			 * standard audio clock recovery; the tiny bounded trim is inaudible
-			 * where the periodic snap was not.
-			 */
-			/* Bound must exceed the worst-case base-calibration error, or the trim
-			 * SATURATES at the limit and any residual drift still hits the emergency
-			 * snap = the periodic sample repeat - which returns whenever the panel is
-			 * not exactly the GBA rate (e.g. 59.751 vs 59.7275 = 0.04%, or the noisy
-			 * 2-sample boot measure off by ~0.13% = ~64 inc units, exactly the old
-			 * limit). Widen to +-512 (~1% pitch ceiling, never reached in practice -
-			 * the trim settles at the real error, a few dozen units): now the loop
-			 * fully absorbs any realistic panel-vs-GBA mismatch, no snap. */
-			int tgt = (int)(GBC_RING_FRAMES / 4);          /* ~85 ms centre */
-			int db  = (int)(GBC_RING_FRAMES / 32);         /* ~10 ms deadband */
-			/* Fine trim in 1/256 units: +-8 = ~0.03 output-Hz per submit, bounded
-			 * to +-0.25% of the base. With the accurate fractional feed-forward the
-			 * loop sits essentially still (the base already matches the true rate),
-			 * so this only mops up the tiny AFE-crystal-vs-panel drift; the
-			 * steady-state dither is far below audible = constant rate, no wow. */
-			/* ~0.25% ceiling. The base already matches the true rate, so this only
-			 * mops up tiny AFE-crystal-vs-panel drift. (Run-ahead no longer needs a
-			 * wider bound: its committed frame now advances an EXACT 280896 cycles -
-			 * gba_frame_boundary_finish removed the ~960-cycle re-entry stub - so
-			 * there is no run-ahead speed skew for the recovery to absorb.) */
-			int lim = s_ga_inc_base / 400;
-			if (lead > tgt + db) { if (s_ga_inc > s_ga_inc_base - lim) s_ga_inc -= 8; }
-			else if (lead < tgt - db) { if (s_ga_inc < s_ga_inc_base + lim) s_ga_inc += 8; }
-		}
+		err = aud_lean();
+		if (g_dbg_asnap_n != snaps) { g_dbg_asnap_lead = lead; g_dbg_asnap_ms = gpt4_get_current_tick() / 13000u; }
+		s_ga_inc = s_ga_inc_base + (int)((long long)s_ga_inc_base * err / ((long long)AUD_LEAN_SPAN * 200));
 	}
 
 	for (i = 0; i < frames; i++) {

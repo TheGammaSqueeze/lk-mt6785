@@ -4,6 +4,8 @@
 #include <platform/ayaneo_volume_input.h>
 #include <platform/mt_gpio.h>
 #include <platform/mtk_key.h>
+#include <kernel/timer.h>
+#include <kernel/thread.h>
 
 #ifdef KONKR_KPA
 
@@ -43,6 +45,22 @@ static unsigned enc_state(void)
 	return ret & 3;
 }
 
+static void enc_sample(void);
+/* The wheel is read every millisecond by a timer, whatever the emulator is doing: read from the
+ * game loop (once a frame and in its frame end wait) a brisk turn went by during a frame's
+ * emulation with whole states unseen, and a jump of three states reads as one step back (the
+ * jumpy wheel, now and then turning the wrong way, worse the busier the game). A click takes tens of
+ * milliseconds, so a millisecond sees every state. */
+static timer_t s_enc_timer;
+static int s_enc_timed;
+volatile unsigned int g_dbg_enc_ticks, g_dbg_enc_moves;   /* oem volstep: the timer's reads, and the state changes seen */
+static enum handler_return enc_tick(struct timer *t, time_t now, void *arg)
+{
+	(void)t; (void)now; (void)arg;
+	g_dbg_enc_ticks++;
+	enc_sample();
+	return INT_NO_RESCHEDULE;
+}
 void ayaneo_volume_input_init(void)
 {
 	if (s_inited)
@@ -52,6 +70,9 @@ void ayaneo_volume_input_init(void)
 	s_prev = enc_state();
 	s_qacc = 0; s_lastdir = 0; s_steps = 0;
 	s_inited = 1;
+	timer_initialize(&s_enc_timer);
+	timer_set_periodic(&s_enc_timer, 1, enc_tick, 0);
+	s_enc_timed = 1;
 }
 
 /* Quadrature accumulator. The kernel's half-period handler decides the direction at the
@@ -60,17 +81,15 @@ void ayaneo_volume_input_init(void)
  * out with a STALE direction, which is the jitter and the reversals the user saw. Here every
  * observed transition carries its own direction (+1 / -1 quarter step; the kernel's sign:
  * 0 -> 1 is negative), only a jump of two states is ambiguous and takes the last direction,
- * contact bounce cancels in the accumulator, and a detent is two quarter steps. This is
- * cheap (two GPIO reads) and is also called from the frame end wait loop, so the effective
- * sample rate is tens of microseconds for most of every frame. */
-void ayaneo_volume_sample(void)
+ * contact bounce cancels in the accumulator, and a detent is two quarter steps. Two GPIO reads,
+ * from the millisecond timer above. */
+static void enc_sample(void)
 {
 	unsigned st, d;
-	if (!s_inited)
-		ayaneo_volume_input_init();
 	st = enc_state();
 	d = (st - s_prev) & 3u;
 	if (d == 0) return;
+	g_dbg_enc_moves++;
 	if (d == 1u)      { s_qacc -= 1; s_lastdir = -1; }
 	else if (d == 3u) { s_qacc += 1; s_lastdir = 1; }
 	else              { s_qacc += 2 * s_lastdir; }   /* skipped a state: same direction as before */
@@ -78,21 +97,35 @@ void ayaneo_volume_sample(void)
 	while (s_qacc >= 2)  { s_qacc -= 2; s_steps++; }
 	while (s_qacc <= -2) { s_qacc += 2; s_steps--; }
 }
+/* the game loop's calls: the timer does the reading once it runs */
+void ayaneo_volume_sample(void)
+{
+	if (!s_inited)
+		ayaneo_volume_input_init();
+	if (s_enc_timed)
+		return;
+	enc_sample();
+}
 
 /* One detent per call (the callers step the volume once per frame); further detents drain on
  * the following frames. */
 int ayaneo_volume_dir(void)
 {
+	int dir = 0;
 	ayaneo_volume_sample();
-	if (s_steps > 0) { s_steps--; return 1; }
-	if (s_steps < 0) { s_steps++; return -1; }
-	return 0;
+	enter_critical_section();   /* the timer adds detents from its interrupt */
+	if (s_steps > 0) { s_steps--; dir = 1; }
+	else if (s_steps < 0) { s_steps++; dir = -1; }
+	exit_critical_section();
+	return dir;
 }
 
 /* oem volstep: queue detents as if the wheel had turned them (testing without hands on the wheel) */
 void ayaneo_volume_inject(int steps)
 {
+	enter_critical_section();
 	s_steps += steps;
+	exit_critical_section();
 }
 
 #else	/* AYANEO Pocket Air Mini: MTK keypad volume rocker */

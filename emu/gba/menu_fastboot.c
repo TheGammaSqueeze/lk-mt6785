@@ -2398,6 +2398,11 @@ static void cmd_volstep(const char *arg, void *data, unsigned sz)
 	if (n) ayaneo_volume_inject(neg ? -n : n);
 	snprintf(lbuf, sizeof lbuf, "volstep: %s%d queued, volume now %d", neg ? "-" : "+", n, ayaneo_gbc_audio_get_volume());
 	fastboot_info(lbuf);
+#if defined(KONKR_KPA)
+	{ extern volatile unsigned int g_dbg_enc_ticks, g_dbg_enc_moves;
+	  snprintf(lbuf, sizeof lbuf, "volstep: wheel read %u times, %u state changes", g_dbg_enc_ticks, g_dbg_enc_moves);
+	  fastboot_info(lbuf); }
+#endif
 	fastboot_okay("");
 }
 
