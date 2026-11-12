@@ -89,6 +89,7 @@ extern void ayaneo_gbc_blank(void);		/* clear both game fbs to black */
 extern void ayaneo_gba_punch_frame(const unsigned short *pix, const unsigned int *snap,
 				   int cx, int cy, int radius);
 extern int  gba_punch_ready;			/* set by the SNES selector on launch */
+extern int  ayaneo_punch_steps(void);		/* its frames (mt_disp_drv.c) */
 #define GBA_PUNCH_SNAP_PA  0x54000000u		/* menu snapshot (matches gba_snes_menu.c) */
 #define GBA_PUNCH_MAX_R    820			/* > 1280x960 half-diagonal (800) = full cover */
 /* Time-paced, NOT frame-count paced: the compositing cost per frame is unknown on the
@@ -1338,6 +1339,8 @@ static int battery_read(int *charging)
 	}
 	return pct;
 }
+/* the battery for a menu's status line: percent, and whether it charges */
+int gba_battery_pct(int *charging) { return battery_read(charging); }
 
 /* charging screen: same colours as the running system (led_thread): charging = red + green,
  * full (97 %+ or the charger done) = green only, unplugged = off */
@@ -3409,7 +3412,7 @@ static int emu_thread(void *arg)
 				extern void ayaneo_gba_punch_prerender(const unsigned short *pix);
 				extern void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius);
 				extern void ayaneo_gbc_clear_letterbox(void);
-				int i, N = 20, w;
+				int i, N = ayaneo_punch_steps(), w;
 				gba_punch_ready = 0;
 				(void)punch_start;
 				/* On a FRESH launch the game has only rendered the GBA BIOS white

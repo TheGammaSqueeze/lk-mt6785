@@ -36,6 +36,7 @@ extern fat_vol *gba_sd_menu_vol(void);   /* the mounted SD volume (gba_driver.c)
  * scratch window - so it survives the ROM load into the transition. */
 #define GBA_PUNCH_SNAP_PA  0x54000000u
 int gba_punch_ready = 0;            /* set on launch; consumed by the driver loop */
+extern int ayaneo_punch_steps(void);   /* the transition's frames (mt_disp_drv.c) */
 
 /* Reverse punch-hole transition (in-game "Close" -> back to the SNES selector): the
  * driver freezes the last game frame here and arms it; on re-entry the menu renders
@@ -425,6 +426,7 @@ static int s_theme_n, s_theme_cur;
 static uint32_t s_theme_hash[SNES_THEME_MAX];
 static const snes_img_entry *s_theme_thumb[SNES_THEME_MAX], *s_theme_atlas[SNES_THEME_MAX];
 static const snes_img_entry *s_theme_wall[SNES_THEME_MAX];
+static int s_theme_layout[SNES_THEME_MAX];   /* a theme with a menu of its own (pico_current.c) */
 static int s_keep_focus = -1;   /* the game focused when a theme was picked: kept over the reload */
 static int theme_id(const char *id, const char *pfx, int *nn, const char **name)
 {
@@ -440,7 +442,9 @@ static void theme_apply(void)
 	extern unsigned int ayaneo_get_menu_theme(void);
 	uint32_t want = ayaneo_get_menu_theme(), i;
 	int k;
-	for (k = 0; k < SNES_THEME_MAX; k++) { s_theme_hash[k] = 0; s_theme_thumb[k] = 0; s_theme_atlas[k] = 0; s_theme_wall[k] = 0; }
+	for (k = 0; k < SNES_THEME_MAX; k++) {
+		s_theme_hash[k] = 0; s_theme_thumb[k] = 0; s_theme_atlas[k] = 0; s_theme_wall[k] = 0; s_theme_layout[k] = 0;
+	}
 	s_theme_n = 0; s_theme_cur = 0;
 	for (i = 0; i < s_pk.hdr->res_count; i++) {
 		const snes_res_entry *e = &s_pk.res[i];
@@ -454,11 +458,15 @@ static void theme_apply(void)
 			s_theme_atlas[nn] = &s_pk.img[e->index];
 		else if (theme_id(snes_str(&s_pk, e->id_str), "theme_wall_", &nn, &name) && nn < SNES_THEME_MAX)
 			s_theme_wall[nn] = &s_pk.img[e->index];
+		else if (theme_id(snes_str(&s_pk, e->id_str), "theme_layout_", &nn, &name) && nn < SNES_THEME_MAX)
+			s_theme_layout[nn] = 1;
 	}
-	while (s_theme_n < SNES_THEME_MAX && s_theme_thumb[s_theme_n] && s_theme_atlas[s_theme_n]) s_theme_n++;
+	while (s_theme_n < SNES_THEME_MAX && s_theme_thumb[s_theme_n] &&
+	       (s_theme_atlas[s_theme_n] || s_theme_layout[s_theme_n])) s_theme_n++;
 	if (want)
 		for (k = 1; k < s_theme_n; k++)
 			if (s_theme_hash[k] == want) { s_theme_cur = k; break; }
+	if (s_theme_cur > 0 && s_theme_layout[s_theme_cur]) return;   /* drawn by its own menu */
 	if (s_theme_cur > 0) {
 		snes_img_entry *base = (snes_img_entry *)s_theme_atlas[0];   /* the pack is ours, in DRAM */
 		const snes_img_entry *t = s_theme_atlas[s_theme_cur];
@@ -537,9 +545,177 @@ static void menu_sync_target(const snes_target *t)
 		s_menu.aspect = want; s_menu.base = base; s_menu.chrome_ready = 0;
 	}
 }
-static void play_reverse_punch(unsigned int ms)
+/* One frame of menu input, shared by every menu theme: the buttons and the left stick,
+ * debounced, Start+Select as the perf HUD toggle, and the key injected over USB (oem nav). */
+void gba_menu_read_input(snes_input *in)
 {
-	unsigned int cp, cw, ch, pstart, ticks = ms * 13000u;
+	extern unsigned ayaneo_menu_debounce(unsigned raw, unsigned *hist);
+	extern unsigned int ayaneo_joypad_dpad(void);
+	extern void ayaneo_joypad_poll(void);
+	enum { DL=1, DR=2, DU=4, DD=8, DA=16, DB=32, DST=64, DSE=128, DLB=256, DRB=512 };
+	static unsigned mhist[3];	/* >= MENU_DEBOUNCE-1 words */
+	unsigned raw = 0, deb, jd;
+	int cs, csel;
+	/* Maximum debounce (the same agreement as the Pico menu): reject contact bounce and line
+	 * glitches so no stray move or launch fires. Build a raw mask, debounce, then unpack. */
+	ayaneo_joypad_poll();   /* refresh the stick cache once a frame */
+	if (PRESSED(K_LEFT))  raw |= DL;
+	if (PRESSED(K_RIGHT)) raw |= DR;
+	if (PRESSED(K_UP))    raw |= DU;
+	if (PRESSED(K_DOWN))  raw |= DD;
+	if (PRESSED(K_A))     raw |= DA;
+	if (PRESSED(K_B))     raw |= DB;
+	if (PRESSED(K_START)) raw |= DST;
+	if (PRESSED(K_SELECT))raw |= DSE;
+	if (PRESSED(K_LB))    raw |= DLB;
+	if (PRESSED(K_RB))    raw |= DRB;
+	/* The left stick moves too: the joypad D-pad bits (JOY_UP=1, DOWN=2, LEFT=4, RIGHT=8) onto
+	 * this layout (DL=1, DR=2, DU=4, DD=8); deadzoned, so a centred stick adds nothing. */
+	jd = ayaneo_joypad_dpad();
+	if (jd & 0x04u) raw |= DL;
+	if (jd & 0x08u) raw |= DR;
+	if (jd & 0x01u) raw |= DU;
+	if (jd & 0x02u) raw |= DD;
+	deb = ayaneo_menu_debounce(raw, mhist);
+	in->left = !!(deb & DL); in->right = !!(deb & DR);
+	in->up = !!(deb & DU); in->down = !!(deb & DD);
+	in->a = !!(deb & DA); in->b = !!(deb & DB);
+	in->lb = !!(deb & DLB); in->rb = !!(deb & DRB);
+	/* Start+Select held together toggles the perf HUD and is consumed so it does not also
+	 * launch or sort; pressed alone they behave normally. Once the combo engages, keep
+	 * swallowing whichever button lingers until both release, or lifting Select while still
+	 * holding Start would fire a launch. */
+	cs = !!(deb & DST); csel = !!(deb & DSE);
+	if (cs && csel) {
+		if (!s_hud_combo) s_show_hud = !s_show_hud;
+		s_hud_combo = 1;
+		in->start = 0; in->select = 0;
+	} else if (s_hud_combo && (cs || csel)) {
+		in->start = 0; in->select = 0;   /* combo still releasing */
+	} else {
+		s_hud_combo = 0;
+		in->start = cs; in->select = csel;
+	}
+	/* fastboot-injected key: OR one button on for g_dbg_key_hold frames. */
+	if (g_dbg_key_hold > 0) {
+		int *b[10] = { &in->left, &in->right, &in->up, &in->down, &in->a,
+			       &in->b, &in->select, &in->start, &in->lb, &in->rb };
+		if (g_dbg_key >= 0 && g_dbg_key < 10) *b[g_dbg_key] = 1;
+		g_dbg_key_hold--;
+	}
+}
+
+static void reverse_punch_shrink(void);
+/* The closing transition's snapshot and, when set, where its frames are composed (the canvas
+ * otherwise): a theme moves them to buffers of its own (gba_menu_reverse_buffers). */
+static const uint32_t *s_rev_snap = (const uint32_t *)GBA_REVERSE_SNAP_PA;
+static unsigned int *s_rev_dst;
+void gba_menu_reverse_buffers(uint32_t *snap, unsigned int *dst)
+{
+	s_rev_snap = snap ? snap : (const uint32_t *)GBA_REVERSE_SNAP_PA;
+	s_rev_dst = dst;
+}
+/* Load each ROM's box art from the SD card (/roms/<system>/boxart/<romstem>.ART) into the box
+ * art slots and fill the per-game image table (s_boxart_full). A missing or oversized tile leaves
+ * w=0, the game then shows the placeholder. A slot that already holds a ROM's tile (or knows it has
+ * none) is not read again, so a menu after a game only loads the art of games that changed place.
+ * The raw .ART is read through the deflate staging, free once the menu's pack is loaded.
+ * Returns the games that have art. Shared by every menu theme. */
+int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom)
+{
+	static int s_boxart_mapped;
+	unsigned char *region = (unsigned char *)SNES_BOXART_PA;
+	unsigned char *scratch = (unsigned char *)SNES_COMP_PA;
+	fat_vol *vol = gba_sd_menu_vol();
+	unsigned int t0 = gpt4_get_current_tick();
+	int i, any = 0, tot = 0;
+	if (!s_boxart_mapped)
+		s_boxart_mapped = arch_mmu_map(SNES_BOXART_PA, SNES_BOXART_PA,
+					       MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA,
+					       SNES_BOXART_MAP) == 0;
+	s_boxart_full_pk.base = region;
+	for (i = 0; i < nrom && i < 128; i++) {
+		/* the slot's key: the ROM's console and name. A slot that already holds this ROM's
+		 * tile (or knows it has none) is not read again: a menu after a game only loads the
+		 * art of games that changed place. */
+		unsigned int key = 2166136261u ^ roms[i].type;
+		const char *c;
+		for (c = roms[i].name; *c; c++) key = (key ^ (unsigned char)*c) * 16777619u;
+		key |= 1u;
+		if (!vol || !s_boxart_mapped || i >= SNES_BOXART_CAP) { s_boxart_full[i].w = 0; continue; }
+		tot++;
+		if (s_boxart_key[i] == key) { if (s_boxart_full[i].w) any++; continue; }
+		{
+			unsigned off = (unsigned)i * SNES_BOXART_SLOT;
+			s_boxart_full[i].w = 0;		/* default: no art */
+			if (gba_boxart_load_sd(vol, (int)roms[i].type, roms[i].name, scratch, SNES_COMP_MAX,
+					       region + off, SNES_BOXART_SLOT, off,
+					       &s_boxart_full[i]) == 0)
+				any++;
+			s_boxart_key[i] = key;
+		}
+	}
+	g_dbg_boxart_ms = (gpt4_get_current_tick() - t0) / 13000u;
+	g_dbg_boxart_ok = (unsigned)any;	/* reported via oem diag bx=ok/tot */
+	g_dbg_boxart_tot = (unsigned)tot;
+	s_have_boxart = (any > 0);
+	return any;
+}
+
+/* Game i's box art (gba_menu_boxart_load): the RGB565 + A8 interleaved pixels and their size,
+ * or NULL without art. */
+const unsigned char *gba_menu_boxart(int i, unsigned int *w, unsigned int *h)
+{
+	if (i < 0 || i >= 128 || !s_boxart_full[i].w) return 0;
+	if (w) *w = s_boxart_full[i].w;
+	if (h) *h = s_boxart_full[i].h;
+	return (const unsigned char *)SNES_BOXART_PA + s_boxart_full[i].pixels;
+}
+
+/* Present the frame the menu drew into the canvas: the power-hold bar on top, then the present
+ * (every frame, at a steady cadence: a skipped present shifts the phase of the next one against
+ * the scan and rolls a band through the picture), then power off when the key was held long
+ * enough. Shared by every menu theme. */
+void gba_menu_present(void)
+{
+	extern void ayaneo_power_bar_draw(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H);
+	extern int ayaneo_power_hold(int menu_open, int use_overlay);
+	unsigned int bp, bw, bh;
+	unsigned int *bb = ayaneo_canvas_back(&bp, &bw, &bh);
+	ayaneo_power_bar_draw(bb, bp, bw, bh);   /* power hold: the bar goes into this frame */
+	ayaneo_canvas_present();
+	g_dbg_present_cnt++;
+	mtk_wdt_restart();
+	if (ayaneo_power_hold(0, 0)) {
+		/* Powering off from the menu: the next boot lands on the menu, whatever record a game
+		 * left, and a volume or brightness change still waiting for its deferred write is
+		 * saved too; the write is waited for (the writer thread only runs while we sleep). */
+		extern void ayaneo_resume_clear(void), ayaneo_settings_persist_flush(void), ayaneo_leds_off_for_poweroff(void);
+		ayaneo_resume_clear();
+		s_av_dirty = 0;
+		ayaneo_menu_settings_persist();
+		ayaneo_settings_persist_flush();
+		ayaneo_leds_off_for_poweroff();
+		mt_power_off();
+	}
+}
+/* Launch: the frame in the canvas becomes the frozen menu the game opens out of (the driver's
+ * punch-hole), and stays on screen while the ROM loads. */
+void gba_menu_launch_snapshot(void)
+{
+	unsigned int cp, cw, ch;
+	unsigned int *cfb = ayaneo_canvas_back(&cp, &cw, &ch);
+	memcpy((void *)(uintptr_t)GBA_PUNCH_SNAP_PA, cfb, (size_t)cp * ch * 4);
+	gba_punch_ready = 1;
+	ayaneo_canvas_present();
+}
+void gba_menu_av_poll(void) { menu_av_poll(); }
+void gba_menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H) { menu_av_draw(fb, pitch, W, H); }
+
+/* The classic menu's frame as the reveal of the reverse punch-hole. */
+static void classic_reveal_frame(void)
+{
+	unsigned int cp, cw, ch;
 	unsigned int *cfb = ayaneo_canvas_back(&cp, &cw, &ch);
 	snes_target lt;
 	snes_target_fit(&lt, cfb, (int)cp, (int)cw, (int)ch);
@@ -549,8 +725,33 @@ static void play_reverse_punch(unsigned int ms)
 		ayaneo_fill(cfb, cp, 0, lt.offy + snes_target_vh(&lt), (int)cw, lt.offy, 0xFF000000u);
 	}
 	snes_menu_render(&s_menu, &lt);
+}
+/* Returning from a closed game: render one menu frame into the canvas (render), keep it as the
+ * reveal, then shrink the frozen last game frame into a hole so the menu appears around it, the
+ * mirror of the launch transition. Every menu theme passes its own render. */
+void gba_menu_reverse_punch(void (*render)(void))
+{
+	unsigned int cp, cw, ch;
+	unsigned int *cfb;
+	render();
+	cfb = ayaneo_canvas_back(&cp, &cw, &ch);
 	memcpy((void *)(uintptr_t)GBA_REVERSE_SNAP_PA, cfb, (size_t)cp * ch * 4);
-	(void)pstart; (void)ticks;
+	reverse_punch_shrink();
+}
+/* The same with the reveal drawn straight into the transition's snapshot (pitch as the canvas):
+ * on the Konkr the frozen game on screen is shown from memory the canvas shares, so drawing the
+ * reveal into the canvas showed it for a moment, turned and in halves. */
+void gba_menu_reverse_into(void (*render)(uint32_t *snap, unsigned int pitch))
+{
+	unsigned int cp, cw, ch;
+	(void)ayaneo_canvas_back(&cp, &cw, &ch);
+	render((uint32_t *)s_rev_snap, s_rev_dst ? cw : cp);
+	reverse_punch_shrink();
+}
+/* the frozen game, prerendered full screen for the closing transition (where g_punch_game_full says) */
+static int s_rev_prerendered;
+static void reverse_prerender(void)
+{
 	/* Pre-convert the FROZEN game to a full-screen BGRA buffer ONCE, so each shrink
 	 * frame is just memcpy (gba_punch_composite_pre) = ~5ms not ~50ms. FRAME-paced
 	 * over a fixed count so the shrink is a smooth, visible 60fps sequence. */
@@ -579,21 +780,41 @@ static void play_reverse_punch(unsigned int ms)
 		extern void ayaneo_gba_punch_prerender(const unsigned short *pix);
 		ayaneo_gba_punch_prerender((const unsigned short *)GBA_GAME_FREEZE_PA);
 	}
+}
+/* Put the frozen game on the menu's own plane before anything loads: until then the game is shown
+ * from its own buffers, which the menu's pack then lands on. Prerenders it, presents it; the
+ * closing transition uses that prerender. */
+void gba_menu_reverse_hold(void)
+{
+	extern unsigned int g_punch_game_full;
+	extern void ayaneo_canvas_present_from(const unsigned int *src);
+	reverse_prerender();
+	s_rev_prerendered = 1;
+	ayaneo_canvas_present_from((const unsigned int *)(uintptr_t)g_punch_game_full);
+}
+static void reverse_punch_shrink(void)
+{
+	if (!s_rev_prerendered) reverse_prerender();
+	s_rev_prerendered = 0;
 	{
-		int i, N = 20;
+		int i, N = ayaneo_punch_steps();
 		/* Start radius = the canvas half diagonal (820 on 1280x960, 577 on 960x640) so the
 		 * circle covers the corners on the first frame whatever the panel. */
 		int rmax = 0;
 		{ unsigned int p0, w0, h0; (void)ayaneo_canvas_back(&p0, &w0, &h0);
 		  { unsigned int d2 = (w0 * w0 + h0 * h0) / 4u, r = 1; while (r * r < d2) r++; rmax = (int)r; } }
 		for (i = 1; i <= N; i++) {
+			extern unsigned int g_punch_game_full;
+			extern void ayaneo_canvas_present_from(const unsigned int *src);
 			unsigned int p2, w2, h2;
 			unsigned int *db = ayaneo_canvas_back(&p2, &w2, &h2);
 			int r = rmax * (N - i) / N;                  /* MAX -> 0: game shrinks */
-			gba_punch_composite_pre(db, (const uint32_t *)GBA_REVERSE_SNAP_PA,
-						(const uint32_t *)GBA_GAME_FULL_PA, (int)p2,
-						(int)w2, (int)h2, -1, -1, r);
-			ayaneo_canvas_present();
+			if (s_rev_dst) { db = s_rev_dst; p2 = w2; }
+			extern void ayaneo_punch_compose(uint32_t *dst, const uint32_t *snap, const uint32_t *game_full,
+							 int pitch, int W, int H, int radius);
+			ayaneo_punch_compose(db, s_rev_snap, (const uint32_t *)(uintptr_t)g_punch_game_full, (int)p2,
+					     (int)w2, (int)h2, r);
+			if (s_rev_dst) ayaneo_canvas_present_from(s_rev_dst); else ayaneo_canvas_present();
 			mtk_wdt_restart();
 		}
 	}
@@ -666,7 +887,6 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 {
 	const snes_img_entry *cart;
 	unsigned int saved_mhz;
-	int pwr_armed = 0;
 #if defined(KONKR_KPA)
 	{ extern void ayaneo_joypad_kpa_reset_toggles(void); ayaneo_joypad_kpa_reset_toggles(); }   /* L2/R2 toggles never carry across sessions */
 #endif
@@ -692,6 +912,21 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			ayaneo_menu_settings_persist();   /* the cleared record */
 			for (k = 0; k < nrom; k++)
 				if (strcmp(roms[k].name, rn) == 0) { g_dbg_resume[2] = k + 1; return k; }
+		}
+	}
+	/* the Current theme is a menu of its own: it runs instead of this one, and hands back here
+	 * only when its pack is missing or does not fit the screen */
+	{
+		extern int g_punch_fade;
+		extern unsigned int g_punch_game_full;
+		g_punch_fade = 0;   /* this menu opens games through the punch-hole; Current asks for its fade */
+		g_punch_game_full = 0x55900000u;   /* and in the default buffers */
+		{ extern int g_punch_cached; g_punch_cached = 0; }
+		extern int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_reverse);
+		extern unsigned int ayaneo_get_menu_theme(void);
+		if (ayaneo_get_menu_theme() == snes_hash("current")) {
+			int r = pico_current_run(roms, nrom, start_sel, do_reverse);
+			if (r != -2) return r;
 		}
 	}
 	int fade_in = 18;   /* fade the menu in from WHITE on entry over 0.3s (the boot-logo
@@ -779,49 +1014,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	snes_menu_set_fct(&s_menu, (uint32_t *)SNES_FCT_PA, SNES_FCT_CAP);
 	snes_menu_set_wp43(&s_menu, (uint32_t *)SNES_WP43_PA);
 
-	/* Load each ROM's box art from the SD card (/roms/<system>/boxart/<romstem>.ART) into
-	 * the boxart DRAM region and hand the menu the per-game image table. A missing or
-	 * oversized tile leaves w=0 -> that card falls back to the placeholder cartridge.
-	 * One-time at menu init (snes_menu is pure and cannot read the SD lazily); the raw
-	 * .ART is read through the deflate staging (free after load_pack). */
-	{
-		static int s_boxart_mapped;
-		unsigned char *region = (unsigned char *)SNES_BOXART_PA;
-		unsigned char *scratch = (unsigned char *)SNES_COMP_PA;
-		fat_vol *vol = gba_sd_menu_vol();
-		unsigned int t0 = gpt4_get_current_tick();
-		int i, any = 0, tot = 0;
-		if (!s_boxart_mapped)
-			s_boxart_mapped = arch_mmu_map(SNES_BOXART_PA, SNES_BOXART_PA,
-						       MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA,
-						       SNES_BOXART_MAP) == 0;
-		s_boxart_full_pk.base = region;
-		for (i = 0; i < nrom && i < 128; i++) {
-			/* the slot's key: the ROM's console and name. A slot that already holds this ROM's
-			 * tile (or knows it has none) is not read again: a menu after a game only loads the
-			 * art of games that changed place. */
-			unsigned int key = 2166136261u ^ roms[i].type;
-			const char *c;
-			for (c = roms[i].name; *c; c++) key = (key ^ (unsigned char)*c) * 16777619u;
-			key |= 1u;
-			if (!vol || !s_boxart_mapped || i >= SNES_BOXART_CAP) { s_boxart_full[i].w = 0; continue; }
-			tot++;
-			if (s_boxart_key[i] == key) { if (s_boxart_full[i].w) any++; continue; }
-			{
-				unsigned off = (unsigned)i * SNES_BOXART_SLOT;
-				s_boxart_full[i].w = 0;		/* default: no art */
-				if (gba_boxart_load_sd(vol, (int)roms[i].type, roms[i].name, scratch, SNES_COMP_MAX,
-						       region + off, SNES_BOXART_SLOT, off,
-						       &s_boxart_full[i]) == 0)
-					any++;
-				s_boxart_key[i] = key;
-			}
-		}
-		g_dbg_boxart_ms = (gpt4_get_current_tick() - t0) / 13000u;
-		g_dbg_boxart_ok = (unsigned)any;	/* reported via oem diag bx=ok/tot */
-		g_dbg_boxart_tot = (unsigned)tot;
-		s_have_boxart = (any > 0);
-	}
+	gba_menu_boxart_load(roms, nrom);
 
 	/* Build the initial (All systems) view and hand it to the menu. Every X press re-runs
 	 * apply_filter() to swap in a single-system view (see cycle_filter). */
@@ -877,7 +1070,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	/* Reverse punch-hole (returning from a closed game): render one menu frame as the
 	 * reveal, then shrink the frozen last game frame into a hole so the menu appears
 	 * around it - the mirror of the launch transition. Time-paced to GBA_REVERSE_MS. */
-	if (do_reverse) { g_dbg_reverse_ran++; play_reverse_punch(GBA_REVERSE_MS); }
+	if (do_reverse) { g_dbg_reverse_ran++; gba_menu_reverse_punch(classic_reveal_frame); }
 
 	{
 	unsigned int prev_frame = 0;
@@ -913,63 +1106,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			if (dt < 0.004f) dt = 0.004f; else if (dt > 0.1f) dt = 0.1f;
 		}
 
-		/* Maximum debounce for the carousel (same 4-frame agreement as the Pico
-		 * menu): reject contact bounce / line glitches so no stray nav or launch
-		 * fires. Build a raw mask, debounce, then unpack. */
-		{
-			extern unsigned ayaneo_menu_debounce(unsigned raw, unsigned *hist);
-			enum { DL=1, DR=2, DU=4, DD=8, DA=16, DB=32, DST=64, DSE=128, DLB=256, DRB=512 };
-			static unsigned mhist[3];	/* >= MENU_DEBOUNCE-1 words */
-			unsigned raw = 0, deb;
-			{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }   /* refresh the stick cache once/frame */
-			if (PRESSED(K_LEFT))  raw |= DL;
-			if (PRESSED(K_RIGHT)) raw |= DR;
-			if (PRESSED(K_UP))    raw |= DU;
-			if (PRESSED(K_DOWN))  raw |= DD;
-			if (PRESSED(K_A))     raw |= DA;
-			if (PRESSED(K_B))     raw |= DB;
-			if (PRESSED(K_START)) raw |= DST;
-			if (PRESSED(K_SELECT))raw |= DSE;
-			if (PRESSED(K_LB))    raw |= DLB;
-			if (PRESSED(K_RB))    raw |= DRB;
-			/* Left analog stick also scrolls the carousel. Map the joypad D-pad bits (JOY_UP=1,
-			 * DOWN=2, LEFT=4, RIGHT=8) onto this menu's layout (DL=1,DR=2,DU=4,DD=8); deadzoned, so a
-			 * centred stick adds nothing and the carousel behaves exactly as before at rest. */
-			{ extern unsigned int ayaneo_joypad_dpad(void); unsigned int jd = ayaneo_joypad_dpad();
-			  if (jd & 0x04u) raw |= DL; if (jd & 0x08u) raw |= DR;
-			  if (jd & 0x01u) raw |= DU; if (jd & 0x02u) raw |= DD; }
-			deb = ayaneo_menu_debounce(raw, mhist);
-		in.left = !!(deb & DL); in.right = !!(deb & DR);
-		in.up = !!(deb & DU); in.down = !!(deb & DD);
-		in.a = !!(deb & DA); in.b = !!(deb & DB);
-		in.lb = !!(deb & DLB); in.rb = !!(deb & DRB);
-		/* Start+Select held together toggles the perf HUD (below) and is consumed
-		 * so it does not also launch/sort; pressed individually they behave normally.
-		 * Once the combo engages, keep swallowing whichever button lingers until BOTH
-		 * release - otherwise lifting Select while still holding Start would fire a
-		 * launch (the menu edge-detects start with pstart=0 from the consumed frame). */
-		{
-			int cs = !!(deb & DST), csel = !!(deb & DSE);
-			if (cs && csel) {
-				if (!s_hud_combo) { s_show_hud = !s_show_hud; }
-				s_hud_combo = 1;
-				in.start = 0; in.select = 0;
-			} else if (s_hud_combo && (cs || csel)) {
-				in.start = 0; in.select = 0;   /* combo still releasing */
-			} else {
-				s_hud_combo = 0;
-				in.start = cs; in.select = csel;
-			}
-		}
-		}	/* end debounce block */
-
-		/* fastboot-injected key: OR one button on for g_dbg_key_hold frames. */
-		if (g_dbg_key_hold > 0) {
-			int *b[10] = { &in.left, &in.right, &in.up, &in.down, &in.a,
-				       &in.b, &in.select, &in.start, &in.lb, &in.rb };
-			if (g_dbg_key >= 0 && g_dbg_key < 10) *b[g_dbg_key] = 1;
-			g_dbg_key_hold--;
-		}
+		gba_menu_read_input(&in);
 
 		/* entry gate: while a launch button (A / Start) is still held from the close, the
 		 * launch or a theme reload, force it off so no launch edge fires; clear once both
@@ -1141,9 +1278,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 				ayaneo_fill(cfb, cp, 0, lt.offy + snes_target_vh(&lt), (int)cw, lt.offy, 0xFF000000u);
 			}
 			snes_menu_render(&s_menu, &lt);
-			memcpy((void *)(uintptr_t)GBA_PUNCH_SNAP_PA, cfb, (size_t)cp * ch * 4);
-			gba_punch_ready = 1;
-			ayaneo_canvas_present();   /* show the frozen menu during the ROM load */
+			gba_menu_launch_snapshot();   /* the frozen menu, on screen during the ROM load */
 			/* Stop the BGM and zero the WHOLE audio ring before handing off: no one
 			 * feeds the AFE ring while the game ROM loads/decompresses, and the DMA
 			 * loops the entire 341ms ring, so a submit-at-write-cursor silence tail
@@ -1163,34 +1298,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		 * a DIFFERENT scanline each time = the rolling band the user sees. A constant
 		 * every-frame cadence latches at the same phase every frame, so there is no
 		 * roll. Do NOT reintroduce a frame-skipping present gate. */
-		{	/* power hold: the bar is drawn into the frame about to be presented */
-			extern void ayaneo_power_bar_draw(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H);
-			unsigned int bp, bw, bh; unsigned int *bb = ayaneo_canvas_back(&bp, &bw, &bh);
-			ayaneo_power_bar_draw(bb, bp, bw, bh);
-		}
-		ayaneo_canvas_present();
-		g_dbg_present_cnt++;
-		mtk_wdt_restart();
-		{
-			extern int ayaneo_power_hold(int menu_open, int use_overlay);
-			(void)pwr_armed;
-			if (ayaneo_power_hold(0, 0)) {
-				/* Flush a pending volume/brightness change BEFORE powering off, so a
-				 * change made within the ~0.7s deferred-flush window is not lost. The
-				 * settings write is synchronous, so it completes before mt_power_off. */
-				/* Powering off from the menu: the next boot lands on the menu, whatever record a
-				 * game left; the write is waited for (the writer thread only runs while we sleep). */
-				{
-					extern void ayaneo_resume_clear(void), ayaneo_settings_persist_flush(void), ayaneo_leds_off_for_poweroff(void);
-					ayaneo_resume_clear();
-					s_av_dirty = 0;
-					ayaneo_menu_settings_persist();
-					ayaneo_settings_persist_flush();
-					ayaneo_leds_off_for_poweroff();
-				}
-				mt_power_off();
-			}
-		}
+		gba_menu_present();
 	}
 	}
 }

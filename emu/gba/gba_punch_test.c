@@ -6,6 +6,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "gba_punch.h"
+int g_punch_fade;   /* the hole, as on the device by default */
+int g_punch_cached;
+const uint32_t *g_punch_ov;
+const int16_t *g_punch_ov_x0, *g_punch_ov_x1;
+volatile unsigned int g_dbg_trans_us[3], g_dbg_trans_list[16];
+unsigned int gpt4_get_current_tick(void) { return 0; }
 
 #define W     1280
 #define H     960

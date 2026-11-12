@@ -148,6 +148,19 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		snprintf(lbuf, sizeof lbuf, "perf_us: filmstrip=%u rest=%u tiles dark=%u active=%u",
 			 g_perf[3] / 13u, g_perf[4] / 13u, g_perf_xf[0], g_perf_xf[1]);
 		fastboot_info(lbuf);
+		{
+			extern volatile unsigned int g_dbg_trans_us[3], g_dbg_trans_list[16];
+			int k;
+			snprintf(lbuf, sizeof lbuf, "trans_us: last=%u worst=%u frames=%u",
+				 g_dbg_trans_us[0], g_dbg_trans_us[1], g_dbg_trans_us[2]);
+			fastboot_info(lbuf);
+			for (k = 0; k < 2; k++) {
+				const volatile unsigned int *t = g_dbg_trans_list + 8 * k;
+				snprintf(lbuf, sizeof lbuf, "trans_us %d: %u %u %u %u %u %u %u %u", k, t[0], t[1], t[2], t[3],
+					 t[4], t[5], t[6], t[7]);
+				fastboot_info(lbuf);
+			}
+		}
 	}
 	{
 		extern volatile unsigned int g_dbg_boxart_ok, g_dbg_boxart_tot, g_dbg_boxart_ms;

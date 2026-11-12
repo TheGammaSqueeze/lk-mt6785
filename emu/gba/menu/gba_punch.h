@@ -97,12 +97,113 @@ static inline void gba_punch_prerender(uint32_t *game_full, int pitch, int W, in
 }
 
 /* memcpy-only circle composite: game_full inside the hole, snap outside. */
+/* A menu theme can ask for a fade instead of the hole (the Current theme): g_punch_fade then holds
+ * the transition's largest radius, and a radius is how far the fade has gone, the game blended
+ * over the snapshot by radius / g_punch_fade. 0 = the hole. With g_punch_ov the menu's own layer
+ * (premultiplied ARGB, W wide, g_punch_ov_x0/x1 the part of each row it covers) goes over the
+ * fade, zooming out of view as it fades, in step with it (in, on the way back). Both are defined
+ * by the display driver. */
+extern int g_punch_fade;
+extern int g_punch_cached;   /* the snapshot and the game are in cached memory: no row bursts */
+extern const uint32_t *g_punch_ov;
+extern const int16_t *g_punch_ov_x0, *g_punch_ov_x1;
+
+static inline void gba_punch_menu_over(uint32_t *d, int y, int W, int H, int k)
+{
+	const uint32_t *ov = g_punch_ov;
+	int x;
+	if (!k) {	/* the menu as it is */
+		const uint32_t *r = ov + (unsigned)y * W;
+		for (x = g_punch_ov_x0[y]; x < g_punch_ov_x1[y]; x++) {
+			uint32_t u = r[x], a = u >> 24, dd = d[x], kk;
+			if (!a) continue;
+			if (a == 255) { d[x] = u; continue; }
+			kk = 256 - a - (a >> 7);
+			d[x] = 0xFF000000u | ((((dd & 0xFF00FFu) * kk >> 8) & 0xFF00FFu) + (u & 0xFF00FFu)) |
+			       ((((dd & 0x00FF00u) * kk >> 8) & 0x00FF00u) + (u & 0x00FF00u));
+		}
+	} else {	/* growing by up to a quarter about the centre, fading as it goes */
+		static int16_t sxmap[2048];
+		static int map_k = -1, map_w;
+		int e = (k * k * (768 - 2 * k)) >> 16, op = 256 - e, z = 256 + e / 4, inv = (int)(65536L * 256 / z);
+		int cx = W / 2, cy = H / 2, sy = cy + (int)(((long)(y - cy) * inv) >> 16), x0, x1, xa, xb;
+		const uint32_t *r;
+		if (W > 2048) W = 2048;
+		if (map_k != k || map_w != W) {	/* the source column of each screen column, once a frame */
+			for (x = 0; x < W; x++) sxmap[x] = (int16_t)(cx + (int)(((long)(x - cx) * inv) >> 16));
+			map_k = k; map_w = W;
+		}
+		if (sy < 0 || sy >= H || g_punch_ov_x1[sy] <= g_punch_ov_x0[sy] || op <= 0) return;
+		r = ov + (unsigned)sy * W; x0 = g_punch_ov_x0[sy]; x1 = g_punch_ov_x1[sy];
+		/* only the screen span that lands on the drawn part of the row */
+		xa = cx + (int)(((long)(x0 - cx) * z) >> 8) - 1; xb = cx + (int)(((long)(x1 - cx) * z) >> 8) + 1;
+		if (xa < 0) xa = 0;
+		if (xb > W) xb = W;
+		for (x = xa; x < xb; x++) {
+			int sx = sxmap[x];
+			uint32_t u, a, dd, kk;
+			if (sx < x0 || sx >= x1) continue;
+			u = r[sx]; a = ((u >> 24) * (uint32_t)op) >> 8;
+			if (!a) continue;
+			dd = d[x]; kk = 256 - a - (a >> 7);
+			d[x] = 0xFF000000u |
+			       ((((dd & 0xFF00FFu) * kk >> 8) + ((u & 0xFF00FFu) * (uint32_t)op >> 8)) & 0xFF00FFu) |
+			       ((((dd & 0x00FF00u) * kk >> 8) + ((u & 0x00FF00u) * (uint32_t)op >> 8)) & 0x00FF00u);
+		}
+	}
+}
+
+static inline void gba_punch_fade_rows(uint32_t *dst, const uint32_t *snap, const uint32_t *game_full,
+				       int pitch, int W, int H, int radius)
+{
+	/* the snapshot and the game sit in display memory that is not cached (write combined on the
+	 * Konkr): a pixel at a time from there is ~100 ns, so each row comes over in one burst first */
+	static uint32_t rs[2048], rg[2048];
+	int y, x, a = (int)(((long)radius * 256) / g_punch_fade), k;
+	if (a < 0) a = 0;
+	if (a > 256) a = 256;
+	if (W > 2048) W = 2048;
+	k = a;   /* the menu leaves (or comes back) in step with the fade */
+	for (y = 0; y < H; y++) {
+		uint32_t *d = dst + (unsigned)y * pitch;
+		const uint32_t *s = snap + (unsigned)y * pitch, *g = game_full + (unsigned)y * pitch;
+		if (a >= 256) memcpy(d, g, (size_t)W * 4);
+		else if (a == 0) memcpy(d, s, (size_t)W * 4);
+		else {
+			if (!g_punch_cached) {
+				memcpy(rs, s, (size_t)W * 4); s = rs;
+				memcpy(rg, g, (size_t)W * 4); g = rg;
+			}
+			for (x = 0; x < W; x++) {
+				uint32_t rb = s[x] & 0xFF00FFu, gg = s[x] & 0x00FF00u;
+				rb += (((g[x] & 0xFF00FFu) - rb) * (uint32_t)a) >> 8;
+				gg += (((g[x] & 0x00FF00u) - gg) * (uint32_t)a) >> 8;
+				d[x] = 0xFF000000u | (rb & 0xFF00FFu) | (gg & 0x00FF00u);
+			}
+		}
+		if (g_punch_ov && k < 256) gba_punch_menu_over(d, y, W, H, k);
+	}
+}
+
+/* oem diag trans_us: the last transition frame's composite, the worst, the frames (display driver) */
+extern volatile unsigned int g_dbg_trans_us[3], g_dbg_trans_list[16];
 static inline void gba_punch_composite_pre(uint32_t *dst, const uint32_t *snap,
 					   const uint32_t *game_full, int pitch,
 					   int W, int H, int cx, int cy, int radius)
 {
 	long r2 = (long)radius * radius;
 	int y;
+	if (g_punch_fade > 0) {
+		extern unsigned int gpt4_get_current_tick(void);
+		unsigned int t0 = gpt4_get_current_tick(), us;
+		gba_punch_fade_rows(dst, snap, game_full, pitch, W, H, radius);
+		us = (gpt4_get_current_tick() - t0) / 13u;
+		g_dbg_trans_us[0] = us;
+		if (us > g_dbg_trans_us[1]) g_dbg_trans_us[1] = us;
+		g_dbg_trans_list[g_dbg_trans_us[2] & 15] = us;
+		g_dbg_trans_us[2]++;
+		return;
+	}
 	if (cx < 0) cx = W / 2;
 	if (cy < 0) cy = H / 2;
 	for (y = 0; y < H; y++) {

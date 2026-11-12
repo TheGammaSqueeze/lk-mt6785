@@ -20,4 +20,10 @@ resets the choice to Classic.
 | Theme | Notes |
 |---|---|
 | `classic` | the original look |
+| `current` | Current: a menu of its own (see below) |
 | `gba-indigo` | GBA Indigo: an indigo Game Boy Advance shell, cartridge cards, silver icons, and the Mario Graphite wallpaper (grey character outlines on charcoal) |
+
+A folder with a `layout` file is a theme with a menu of its own rather than new pixels for this
+one: the packer takes only its thumbnail, and the theme brings its own card packs. `current` is the
+GammaOS Current design (`emu/gba/pico_current.c`), its packs built by
+`tools/ayaneo/pico_current/build_pack.py` into `gammaos/current-<W>x<H>.pack`.

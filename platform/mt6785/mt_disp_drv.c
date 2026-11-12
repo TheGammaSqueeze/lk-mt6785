@@ -45,6 +45,21 @@
 #include <platform/boot_mode.h>
 #include <pal_log.h>
 #include "../../emu/gba/menu/gba_punch.h"	/* gba_punch_composite (shared w/ host test) */
+int g_punch_fade;   /* 0 the punch-hole, else a fade (gba_punch.h) */
+int g_punch_cached;   /* gba_punch.h: its buffers are cached (a theme's own) */
+const uint32_t *g_punch_ov;                     /* the menu over the fade, or none */
+const int16_t *g_punch_ov_x0, *g_punch_ov_x1;
+/* frames of the opening and closing transitions: the hole takes 20, a theme's fade 8 (quick) */
+int ayaneo_punch_steps(void) { return g_punch_fade > 0 ? 8 : 20; }
+/* one transition frame (gba_punch_composite_pre), built here at this file's optimisation: the
+ * menu's own file is built for size and composed the same frame at half the speed */
+__attribute__((optimize("O3")))
+void ayaneo_punch_compose(uint32_t *dst, const uint32_t *snap, const uint32_t *game_full, int pitch,
+			  int W, int H, int radius)
+{
+	gba_punch_composite_pre(dst, snap, game_full, pitch, W, H, -1, -1, radius);
+}
+volatile unsigned int g_dbg_trans_us[3], g_dbg_trans_list[16];   /* gba_punch.h: the fade's frame cost */
 
 //#define DFO_DISP
 #define FB_LAYER            0
@@ -1678,6 +1693,12 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 static int s_rsz_setup;               /* 1 while the RSZ path is configured (tentative def; also below) */
 extern volatile unsigned g_rsz_show_us;
 
+/* Present a canvas-sized frame from src instead of the canvas (the Konkr turns it into the panel's
+ * buffer the same way). On the Konkr the canvas is also where the running game's turned frame
+ * lives, so a transition out of a game composes elsewhere and is shown from there. Other boards
+ * copy src into the canvas first. */
+void ayaneo_canvas_present_from(const unsigned int *src);
+static const unsigned int *s_present_src;   /* ayaneo_canvas_present_from: a frame other than the canvas */
 void ayaneo_canvas_present(void)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
@@ -1699,10 +1720,10 @@ void ayaneo_canvas_present(void)
 		/* a canvas the size of the logical screen is just turned; a larger (4:3 wider) one goes
 		 * through the fused box downscale + quarter turn */
 		if (ROT_CANVAS_W == ayaneo_screen_w() && ROT_CANVAS_H == ayaneo_screen_h())
-			ayaneo_rot_turn_band_neon((const unsigned int *)ROT_CANVAS_PA, ROT_CANVAS_W, ROT_CANVAS_H, ROT_CANVAS_W,
+			ayaneo_rot_turn_band_neon(s_present_src ? s_present_src : (const unsigned int *)ROT_CANVAS_PA, ROT_CANVAS_W, ROT_CANVAS_H, ROT_CANVAS_W,
 						  (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0)), pitch_w, g_rot_ccw);
 		else
-			ayaneo_canvas_present_neon((const unsigned int *)ROT_CANVAS_PA, ROT_CANVAS_W, ROT_CANVAS_H, ROT_CANVAS_W,
+			ayaneo_canvas_present_neon(s_present_src ? s_present_src : (const unsigned int *)ROT_CANVAS_PA, ROT_CANVAS_W, ROT_CANVAS_H, ROT_CANVAS_W,
 						   (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0)), pitch_w,
 						   ayaneo_screen_w(), ayaneo_screen_h(), g_rot_ccw);
 		g_dbg_present_us[0] = (gpt4_get_current_tick() - t0) / 13u;
@@ -1740,6 +1761,20 @@ void ayaneo_canvas_present(void)
 		for (k = 1u; k < g_vsync_div; k++) priamry_display_wait_for_vsync();
 	}
 	s_fb_flip ^= 1;
+}
+void ayaneo_canvas_present_from(const unsigned int *src)
+{
+#if AYANEO_ROT
+	s_present_src = src;
+	ayaneo_canvas_present();
+	s_present_src = 0;
+#else
+	unsigned int pitch, W, H, y;
+	unsigned int *fb = ayaneo_canvas_back(&pitch, &W, &H);
+	if (src != fb)
+		for (y = 0; y < H; y++) memcpy(fb + y * pitch, src + y * W, W * 4u);
+	ayaneo_canvas_present();
+#endif
 }
 
 /*
@@ -3559,7 +3594,9 @@ void ayaneo_gbc_clear_letterbox(void)
 	/* The game is presented by the resizer path with its own black bars; the CPU buffers only
 	 * ever hold turned menu canvases here, so there is no live game centre to protect. */
 	(void)pitch; (void)dw; (void)dh; (void)xoff; (void)yoff; (void)b; (void)y;
-	ayaneo_gbc_blank();
+	/* after a theme's full-screen fade there is nothing to clear, and blanking the buffer on
+	 * screen showed a black frame before the game's first one */
+	if (g_punch_fade <= 0) ayaneo_gbc_blank();
 	return;
 #endif
 	for (b = 0; b < 2; b++) {
@@ -3627,7 +3664,10 @@ void ayaneo_gba_punch_frame(const unsigned short *pix, const unsigned int *snap,
  * into a full-screen BGRA buffer ONCE, then each growing-circle frame is memcpy-only
  * (gba_punch_composite_pre) = ~5ms not ~50ms, so the driver can frame-pace a smooth
  * 60fps opening. The game is paused for the ~0.3s punch (imperceptible at launch). */
-#define GBA_PUNCH_GAME_FULL_PA 0x55900000u
+/* where the transitions' game frame is prerendered: the game-full buffer by default, a theme's own
+ * cached buffer when it sets one (reading the default, write combined on the Konkr, is slow) */
+unsigned int g_punch_game_full = 0x55900000u;
+#define GBA_PUNCH_GAME_FULL_PA g_punch_game_full
 
 /* Fill the full-screen BGRA punch buffer with the game frame nearest-scaled into the rect (dw x dh)
  * centred on the panel, opaque-black bars elsewhere. This is the fractional (both-axes) form of the
@@ -3859,22 +3899,27 @@ void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius)
 	unsigned int *dst;
 	unsigned int dpa;
 	if (!fb_addr || !snap) return;
+	if (g_punch_fade > 0) {	/* a fade: the game is silent until it is all on screen (a paused game's
+				 * ring would loop meanwhile) */
+		extern void ayaneo_gbc_audio_pause(int on);
+		ayaneo_gbc_audio_pause(radius < g_punch_fade);
+	}
 #if AYANEO_ROT
 	{
 		unsigned CW, CH;
 		ayaneo_canvas_dims(&CW, &CH);
 		(void)dpa;
 		dst = (unsigned int *)ROT_CANVAS_PA;
-		gba_punch_composite_pre(dst, snap, (const uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA,
-					(int)CW, (int)CW, (int)CH, -1, -1, radius);
+		ayaneo_punch_compose(dst, snap, (const uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA,
+				     (int)CW, (int)CW, (int)CH, radius);
 		ayaneo_canvas_present();
 		return;
 	}
 #endif
 	dst = (unsigned int *)((unsigned char *)fb_addr + (s_fb_flip ? fb_size : 0));
 	dpa = (unsigned int)fb_addr_pa + (s_fb_flip ? fb_size : 0);
-	gba_punch_composite_pre(dst, snap, (const uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA,
-				(int)pitch, (int)W, (int)H, -1, -1, radius);
+	ayaneo_punch_compose(dst, snap, (const uint32_t *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA,
+			     (int)pitch, (int)W, (int)H, radius);
 	arch_clean_cache_range((unsigned int)dst, H * pitch * 4);
 	ayaneo_present(dpa, W, H, pitch);
 	priamry_display_wait_for_vsync();

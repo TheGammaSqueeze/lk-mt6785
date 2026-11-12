@@ -587,6 +587,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * over do we fall back to the black-fill prepare. */
 	{
 		extern int  gba_punch_ready;
+		extern int  ayaneo_punch_steps(void);
 		extern void ayaneo_gb_punch_prerender(const unsigned short *pix);
 		extern void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius);
 		extern void ayaneo_gbc_clear_letterbox(void);
@@ -600,8 +601,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2) >= 0 && w >= 3) break;
 			}
 			ayaneo_gb_punch_prerender(vbuf);
-			for (i = 1; i <= 20; i++) {
-				int r = (int)((long long)820 * i / 20);   /* 820 = GBA_PUNCH_MAX_R */
+			int steps = ayaneo_punch_steps();
+			for (i = 1; i <= steps; i++) {
+				int r = (int)((long long)820 * i / steps);   /* 820 = GBA_PUNCH_MAX_R */
 				if (r < 1) r = 1;
 				ayaneo_gba_punch_frame_pre((const unsigned int *)0x54000000u, r);
 				mtk_wdt_restart();

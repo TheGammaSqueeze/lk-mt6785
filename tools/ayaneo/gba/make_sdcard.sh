@@ -87,3 +87,13 @@ for spec in armgba-pico:armGBA-pico gpsp-pico:gpsp-pico gambatte-pico:gambatte-p
 	fi
 done
 python3 tools/ayaneo/gba/build_sdcard.py out/snes_pack.bin out/sdcard "${CORE_ARGS[@]}"
+
+# A theme with a menu of its own (a 'layout' file in its folder) brings its card packs, one per
+# screen it was drawn for: the Current theme's are built from tools/ayaneo/pico_current.
+if [ -f "$THEMES_DIR/current/layout" ]; then
+	echo ">> Building the Current theme's packs"
+	for size in 960x640 1280x960; do
+		python3 tools/ayaneo/pico_current/build_pack.py "$size" "out/sdcard/gammaos/current-$size.pack" \
+			"${THEME_ARGS[@]}" || exit 1
+	done
+fi

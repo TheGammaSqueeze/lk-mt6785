@@ -302,6 +302,10 @@ int ayaneo_resume_take(char *out, int cap)
 static unsigned int s_menu_theme;
 unsigned int ayaneo_get_menu_theme(void)       { return s_menu_theme; }
 void ayaneo_set_menu_theme(unsigned int hash)  { s_menu_theme = hash; }
+/* the colour of a theme that offers colours (the Current theme), 0 = its own */
+static unsigned char s_menu_colour;
+int  ayaneo_get_menu_colour(void)    { return s_menu_colour; }
+void ayaneo_set_menu_colour(int c)   { s_menu_colour = (unsigned char)(c < 0 ? 0 : c > 15 ? 15 : c); }
 static void resume_fields_write(unsigned char *b)
 {
 	unsigned i;
@@ -309,6 +313,7 @@ static void resume_fields_write(unsigned char *b)
 	wr32(b + 68, s_resume_set ? AYANEO_RESUME_MAGIC : 0u);
 	for (i = 0; i < sizeof s_resume_name; i++) b[72 + i] = s_resume_set ? (unsigned char)s_resume_name[i] : 0;
 	b[176] = (unsigned char)(s_rewind_on ? 2u : 1u);
+	b[177] = (unsigned char)(s_menu_colour + 1u);   /* 0 = never written */
 	wr32(b + 180, s_menu_theme);
 }
 static unsigned char s_cpu_manual[4];   /* manual CPU clock per core, grid index + 1, 0 = automatic */
@@ -316,7 +321,7 @@ static void resume_fields_read(const unsigned char *b, int len)
 {
 	unsigned i;
 	if (len >= 177) { if (b[176] == 2u) s_rewind_on = 1; else if (b[176] == 1u) s_rewind_on = 0; }
-	if (len >= 184) s_menu_theme = rd32(b + 180);
+	if (len >= 184) { s_menu_theme = rd32(b + 180); if (b[177]) s_menu_colour = (unsigned char)((b[177] - 1u) & 15u); }
 	if (len >= 176) { s_cpu_manual[0] = b[172] & 15; s_cpu_manual[1] = b[173] & 15; s_cpu_manual[2] = b[174] & 15; s_cpu_manual[3] = b[175] & 15; }
 	if (len < 172) return;
 	{ unsigned int r = rd32(b + 64); if (r == 1u || r == 2u) s_resume_on_boot = (r == 2u); }

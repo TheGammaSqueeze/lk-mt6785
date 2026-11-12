@@ -490,7 +490,9 @@ def main():
                          "DIR/packed.png (the UI atlas, the same size as sprites/packed.png), and "
                          "optionally DIR/wall.png (the home wallpaper, the size of the tree's wall.png). "
                          "Registered as 'theme_thumb_NN_NAME', 'theme_atlas_NN_NAME' and "
-                         "'theme_wall_NN_NAME'; the first theme's atlas and wallpaper are the tree's own")
+                         "'theme_wall_NN_NAME'; the first theme's atlas and wallpaper are the tree's own. "
+                         "A DIR with a 'layout' file is a theme with a menu of its own: only its "
+                         "thumbnail, and 'theme_layout_NN_NAME'")
     args = ap.parse_args()
 
     asset_dir = args.asset_dir
@@ -881,6 +883,12 @@ def main():
         tix = add_image(thumb, False)
         res_map["theme_thumb_" + key] = (RES_TEXTURE, tix)
         atlas = os.path.join(tdir, "packed.png")
+        if os.path.exists(os.path.join(tdir, "layout")):
+            # a theme with a menu of its own (its own card pack): only its thumbnail here, and a
+            # marker the LK finds it by
+            res_map["theme_layout_" + key] = (RES_TEXTURE, tix)
+            print("added theme %s (thumbnail %d, its own layout)" % (key, tix))
+            continue
         if n == 0:
             if base_atlas is None:
                 raise SystemExit("the asset tree has no sprites/packed.png for the first theme")

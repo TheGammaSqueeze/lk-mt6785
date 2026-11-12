@@ -550,6 +550,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * visibly eaten by the expanding gameplay instead of a hard cut. Skipped for the oem gen-launch. */
 	{
 		extern int  gba_punch_ready;
+		extern int  ayaneo_punch_steps(void);
 		extern void ayaneo_genesis_punch_prerender(const unsigned short *, unsigned, unsigned, unsigned);
 		extern void ayaneo_gba_punch_frame_pre(const unsigned int *, int);
 		if (gba_punch_ready) {
@@ -561,8 +562,9 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (pf.video && pf.width && pf.height) {
 				ayaneo_genesis_punch_prerender((const unsigned short *)pf.video, pf.width, pf.height,
 							       pf.pitch / 2u);
-				for (i = 1; i <= 20; i++) {
-					int r = 820 * i / 20; if (r < 1) r = 1;
+				int steps = ayaneo_punch_steps();
+				for (i = 1; i <= steps; i++) {
+					int r = 820 * i / steps; if (r < 1) r = 1;
 					ayaneo_gba_punch_frame_pre((const unsigned int *)0x54000000u, r);
 					mtk_wdt_restart();
 				}
