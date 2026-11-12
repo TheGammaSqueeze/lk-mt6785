@@ -1375,6 +1375,8 @@ static unsigned s_rs_n, s_rs_phase;		/* samples accumulated, phase */
  * was old audio), and the submits that found it under ~21 ms */
 volatile int g_dbg_aud_low = 99999;
 volatile unsigned int g_dbg_aud_short;
+volatile unsigned int g_dbg_aud_in;   /* oem diag: frames a game handed the GBA resampler, since boot */
+unsigned int ayaneo_aud_written(void) { return s_gbc_widx; }   /* frames written to the ring (wraps at 2^32) */
 static void aud_lead_note(void)
 {
 	unsigned cur = afe_r(AFE_DL1_CUR), base = (unsigned)(addr_t)s_gbc_ring;
@@ -1606,6 +1608,7 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 		return;
 	g_dbg_asub_done++;
 	g_dbg_asub_frames += frames;
+	g_dbg_aud_in += frames;
 	aud_lead_note();
 
 	/*

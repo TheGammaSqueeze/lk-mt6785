@@ -122,6 +122,9 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 					 g_dbg_present_fps, g_dbg_emu_fps, g_dbg_emu_frame_us);
 				fastboot_info(lbuf);
 				/* two reads a few seconds apart: d(total) / d(ms) * 1000 = true emulated fps */
+				{ extern volatile unsigned int g_dbg_aud_in; extern unsigned int ayaneo_aud_written(void);
+				  snprintf(lbuf, sizeof lbuf, "audio: in=%u out=%u", g_dbg_aud_in, ayaneo_aud_written());
+				  fastboot_info(lbuf); }
 				snprintf(lbuf, sizeof lbuf, "clock: total_frames=%u now_ms=%u",
 					 g_dbg_emu_total, gpt4_get_current_tick() / 13000u);
 				fastboot_info(lbuf);
@@ -1403,6 +1406,32 @@ static void cmd_latled(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem racheck - the GBA run-ahead's undo: the state after a look-ahead and its undo against the
+ * state before it (a difference means the look-ahead frames stay: the game runs faster) */
+static void cmd_racheck(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_ra_check;
+	extern volatile unsigned int g_dbg_ra_check_res[4];
+	int i;
+	(void)arg; (void)data; (void)sz;
+	g_dbg_ra_check_res[0] = 0;
+	g_dbg_ra_check = 1;
+	for (i = 0; i < 100 && g_dbg_ra_check; i++) thread_sleep(10);
+	snprintf(lbuf, sizeof lbuf, "racheck: %s size=%u differ=%u first=%u depth=%u", g_dbg_ra_check ? "not run" : "ran",
+		 g_dbg_ra_check_res[0], g_dbg_ra_check_res[1], g_dbg_ra_check_res[2], g_dbg_ra_check_res[3]);
+	g_dbg_ra_check = 0;
+	fastboot_info(lbuf);
+	{ extern volatile unsigned int g_dbg_ra_check_runs[8][2], g_dbg_ra_check_nruns;
+	  unsigned int k;
+	  for (k = 0; k < g_dbg_ra_check_nruns && k < 8; k++) {
+		snprintf(lbuf, sizeof lbuf, "racheck run: at %u (0x%x) len %u", g_dbg_ra_check_runs[k][0],
+			 g_dbg_ra_check_runs[k][0], g_dbg_ra_check_runs[k][1]);
+		fastboot_info(lbuf);
+	  }
+	  snprintf(lbuf, sizeof lbuf, "racheck runs: %u", g_dbg_ra_check_nruns);
+	  fastboot_info(lbuf); }
+	fastboot_okay("");
+}
 /* oem close - close the running game (any system) as the Pico menu's Close does (saves, back to
  * the carousel), to test the exit path over USB */
 static void cmd_close(const char *arg, void *data, unsigned sz)
@@ -2044,7 +2073,9 @@ static void cmd_core(const char *arg, void *data, unsigned sz)
 	fastboot_info(lbuf);
 	if (c->version >= 3) {
 		int i, n = c->opt_count ? c->opt_count() : 0;
-		snprintf(lbuf, sizeof lbuf, "core: rate=%u heap=%u KiB states=%s", c->audio_rate, c->heap_used ? c->heap_used() / 1024u : 0, c->state_dir ? c->state_dir : "");
+		{ extern volatile unsigned int g_dbg_heap_relieve;
+		snprintf(lbuf, sizeof lbuf, "core: rate=%u heap=%u KiB relieve=%u", c->audio_rate, c->heap_used ? c->heap_used() / 1024u : 0,
+			 g_dbg_heap_relieve); }
 		fastboot_info(lbuf);
 		for (i = 0; i < n; i++) {
 			const struct gba_core_option *o = c->opt_info(i);
@@ -2435,6 +2466,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem gen-rw", cmd_gen_rw, 1, 0);
 	fastboot_register("oem gen-bench", cmd_gen_bench, 1, 0);
 	fastboot_register("oem snes-launch", cmd_snes_launch, 1, 0);
+	fastboot_register("oem racheck", cmd_racheck, 1, 0);
 	fastboot_register("oem snes-bench", cmd_snes_bench, 1, 0);
 	fastboot_register("oem snes-stretch", cmd_snes_stretch, 1, 0);
 	fastboot_register("oem snes-rsz", cmd_snes_rsz, 1, 0);

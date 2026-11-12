@@ -1027,6 +1027,10 @@ static void preempt_adapt(int menu_open)
 	}
 }
 
+volatile unsigned int g_dbg_heap_relieve;      /* oem core: loads made to let the core flush its code */
+volatile int g_dbg_ra_check;                    /* oem racheck: compare the state across one look-ahead */
+volatile unsigned int g_dbg_ra_check_res[4];    /* size, bytes that differ, the first, depth */
+volatile unsigned int g_dbg_ra_check_runs[8][2], g_dbg_ra_check_nruns;   /* where they differ: start, length */
 static void preempt_present(void)
 {
 	int pf;
@@ -1075,6 +1079,30 @@ static void preempt_present(void)
 		gba_core_state_load(s_ahead_state);
 		gba_sound_ring_load(s_ahead_snd);	/* restore ring so committed audio is intact */
 		g_gba_load_light = 0;
+		if (g_dbg_ra_check) {	/* oem racheck: is the state after the look-ahead's undo the one before it? */
+			static unsigned char s_check[1024 * 1024] __attribute__((aligned(8)));
+			unsigned int n = gba_core_state_size(), k, diff = 0, first = 0xFFFFFFFFu;
+			if (n > sizeof s_check) n = sizeof s_check;
+			gba_core_state_save(s_check);
+			{
+				int run = -1, nr = 0;
+				for (k = 0; k < n; k++) {
+					if (s_check[k] != s_ahead_state[k]) {
+						if (!diff) first = k;
+						diff++;
+						if (run < 0) { run = (int)k; }
+					} else if (run >= 0) {   /* a run of differing bytes ended: note where it was */
+						if (nr < 8) { g_dbg_ra_check_runs[nr][0] = (unsigned)run; g_dbg_ra_check_runs[nr][1] = k - (unsigned)run; }
+						nr++; run = -1;
+					}
+				}
+				if (run >= 0 && nr < 8) { g_dbg_ra_check_runs[nr][0] = (unsigned)run; g_dbg_ra_check_runs[nr][1] = n - (unsigned)run; nr++; }
+				g_dbg_ra_check_nruns = (unsigned)nr;
+			}
+			g_dbg_ra_check_res[0] = n; g_dbg_ra_check_res[1] = diff; g_dbg_ra_check_res[2] = first;
+			g_dbg_ra_check_res[3] = (unsigned)pf;
+			g_dbg_ra_check = 0;
+		}
 		s_cpu_clean_boundary = 1;	/* next committed frame re-enters as a full frame */
 		s_cpu_restart_req = 1;
 		t3 = gpt4_get_current_tick();
@@ -2294,6 +2322,19 @@ static int gba_want_armgba(void)
 	if (g_dbg_core_force) return g_dbg_core_force == 1;
 	return s_sdcore_present > 0 && s_core_pref == 0;
 }
+/* The core's heap: the armGBA core gets a window of its own in high DRAM (ayaneo_gba_high_arena,
+ * 128 MB) when it maps, else, like gpSP, the scratch arena below the LK's state scratch. */
+static unsigned int s_core_heap_size;   /* what the core was given, for the heap relief in the game loop */
+static int gba_core_init_arena(void)
+{
+	extern void *ayaneo_gba_high_arena(unsigned int *size);
+	unsigned int sz = 0;
+	void *hi = s_core_is_sd ? ayaneo_gba_high_arena(&sz) : 0;
+	if (hi) { s_core_heap_size = sz; return gba_core_init(hi, sz); }
+	s_core_heap_size = GBA_ARENA_SZ - GBA_DRV_RESERVE;
+	return gba_core_init((void *)GBA_ARENA_PA, GBA_ARENA_SZ - GBA_DRV_RESERVE);
+}
+
 /* The core for the next GBA game, initialised for it; 0 when no GBA core loads. */
 static unsigned char *gba_core_for_launch(void)
 {
@@ -2310,7 +2351,7 @@ static unsigned char *gba_core_for_launch(void)
 		s_gpsp_dirty = 1;
 	}
 	if (s_core_is_sd || s_gpsp_dirty) {
-		gba_core_init((void *)GBA_ARENA_PA, GBA_ARENA_SZ - GBA_DRV_RESERVE);
+		gba_core_init_arena();
 		s_gpsp_dirty = 0;
 	}
 	if (s_core_is_sd) core_apply_opts();
@@ -2837,7 +2878,7 @@ static int emu_thread(void *arg)
 	gba_dbg("GBA 1: emu thread start");
 #endif
 
-	if (g_core && gba_core_init((void *)GBA_ARENA_PA, GBA_ARENA_SZ - GBA_DRV_RESERVE) != 0) {
+	if (g_core && gba_core_init_arena() != 0) {
 		gba_dbg("GBA ERR: arena too small");
 		g_core = 0;   /* no intro; the first GBA game loads its core again */
 	}
@@ -3387,6 +3428,30 @@ static int emu_thread(void *arg)
 #ifdef AYANEO_GBA_SD
 			if (g_dbg_corebench_req && !s_menu_open) { int nb = g_dbg_corebench_req; g_dbg_corebench_req = 0; gba_corebench(nb); }
 #endif
+			{	/* The armGBA core flushes its compiled code after a state load once its heap runs low
+				 * (heap_guard in its pico_core.c), since the recompiler's notes on its blocks outgrow
+				 * the heap before its code buffer fills. Run ahead and rewind load states all the
+				 * time; without them (or in fast forward) the heap is looked at once a second here and,
+				 * when nearly full, one load of the state the game is in gives the core its chance,
+				 * with the fresh start every load needs. */
+				static unsigned hk;
+				if (g_core && g_core->heap_used && ++hk >= 60u) {
+					hk = 0;
+					if (g_core->heap_used() + (2u << 20) > s_core_heap_size &&
+					    gba_core_state_size() + (128u << 10) <= GBA_DRV_RESERVE) {
+						unsigned char *snd = scratch + GBA_DRV_RESERVE - (128u << 10);
+						gba_core_state_save(scratch);
+						gba_sound_ring_save(snd);
+						g_gba_load_light = 1;
+						gba_core_state_load(scratch);
+						gba_sound_ring_load(snd);
+						g_gba_load_light = 0;
+						s_cpu_clean_boundary = 1;
+						s_cpu_restart_req = 1;
+						g_dbg_heap_relieve++;
+					}
+				}
+			}
 			if (g_dbg_selftest_req) {	/* `oem selftest[:N]`: validate the rewind path */
 				int nf = g_dbg_selftest_req;	/* N frames (1 = single-rewind) */
 				g_dbg_selftest_req = 0;

@@ -19,9 +19,15 @@
 
 extern BOOT_ARGUMENT *g_boot_arg;
 
-#define REWIND_SCRATCH_END 0x57400000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
-					   * menu's box art slots (SNES_BOXART_PA, 20 MB, gba_snes_menu.c);
-					   * look above both */
+#define REWIND_SCRATCH_END 0x5F400000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
+					   * menu's box art slots (SNES_BOXART_PA, 20 MB, gba_snes_menu.c),
+					   * then the armGBA core's own window (below); look above them all */
+/* The armGBA core's heap: 128 MB of the island above the box art. The scratch's 62 MB held its ROM
+ * buffer (32 MB), its recompiler's code buffer and what the recompiler notes on each block it
+ * compiles, with a few MB to spare: a game that compiles a lot ran the heap out (the double speed,
+ * the hang). Mapped once, executable like the scratch (the recompiler runs code from it). */
+#define GBA_HIGH_PA   0x57400000u
+#define GBA_HIGH_SIZE 0x08000000u
 #define REWIND_VA_LIMIT    0x100000000ULL /* LK is 32-bit VA (identity) - can only map phys < 4GB */
 #define REWIND_CAP         0x40000000u    /* per-block ceiling (1GB); the largest real island (mblk10
 					   * ~1022MB) sits just under it, so no block is actually capped -
@@ -135,6 +141,30 @@ unsigned int ayaneo_rewind_map(void)
 	s_mapped = 1;
 	{ extern void ayaneo_rewind_tables_arm(void); ayaneo_rewind_tables_arm(); }
 	return total;
+}
+
+/* The armGBA core's window (GBA_HIGH_PA), mapped once; NULL when the DRAM there is not a usable
+ * unreserved block (another SKU's memory map), and the core keeps the scratch arena. */
+void *ayaneo_gba_high_arena(unsigned int *size)
+{
+	static int s_state;   /* 0 not tried, 1 mapped, -1 not there */
+	if (!s_state) {
+		mblock_info_t *mi = g_boot_arg ? &g_boot_arg->mblock_info : 0;
+		unsigned int i;
+		s_state = -1;
+		for (i = 0; mi && i < mi->mblock_num && i < 128u; i++) {
+			unsigned long long st = mi->mblock[i].start, en = st + mi->mblock[i].size;
+			if (st <= GBA_HIGH_PA && en >= (unsigned long long)GBA_HIGH_PA + GBA_HIGH_SIZE) {
+				if (arch_mmu_map((uint64_t)GBA_HIGH_PA, (vaddr_t)GBA_HIGH_PA,
+						 MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA, GBA_HIGH_SIZE) == 0)
+					s_state = 1;
+				break;
+			}
+		}
+	}
+	if (s_state != 1) return 0;
+	if (size) *size = GBA_HIGH_SIZE;
+	return (void *)(addr_t)GBA_HIGH_PA;
 }
 
 /* Walk every 2 MB section of every mapped island through the page tables. A section that is no
