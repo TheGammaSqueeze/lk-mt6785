@@ -46,15 +46,23 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
 #define GPIO_RB        81      /* DMG palette next */
 #define GPIO_SELECT    90      /* + START + L + R held = soft reset */
 #define GPIO_START     91
-#define GPIO_B         82      /* held at launch = start fresh (skip resume); menu back */
 #define GPIO_UP        89
 #define GPIO_DOWN      79
 #define GPIO_LEFT      78
 #define GPIO_RIGHT     80
+#if defined(KONKR_KPA)
+/* Konkr: the device tree labels match the shell (A 82, B 83, X 84), as in the other cores; the
+ * pairmini's below put this session's menu A and B (and hold B at launch) on the other button */
+#define GPIO_B         83      /* held at launch = start fresh (skip resume); menu back */
+#define GPIO_A         82      /* menu select */
+#define GPIO_X         84      /* menu: reset an option */
+#else
+#define GPIO_B         82      /* held at launch = start fresh (skip resume); menu back */
 #define GPIO_A         83      /* menu select */
 #define GPIO_X         85      /* PHYSICAL X button (GBA driver labels 84/85 X/Y for
                                 * autofire, which reads swapped vs the printed caps; the
                                 * menu uses the physically-labelled X to reset an option) */
+#endif
 #define RESET_HOLD_FRAMES 30    /* ~0.5 s at 59.7 Hz */
 
 /* Run-ahead and suspend/resume are layered on basic emulation. The baseline (display,
