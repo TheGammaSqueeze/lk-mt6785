@@ -70,6 +70,18 @@ void ayaneo_punch_compose(uint32_t *dst, const uint32_t *snap, const uint32_t *g
 }
 volatile unsigned int g_dbg_trans_us[3], g_dbg_trans_list[16];   /* gba_punch.h: the fade's frame cost */
 volatile unsigned int g_dbg_game_presents, g_dbg_game_long;   /* resizer presents, and gaps over 25 ms */
+/* The last game frame the resizer showed (RGB565, as the core made it) and its rectangle on the
+ * logical screen: what lies behind the in-game menu, which draws it blurred as its glass. */
+static struct { const unsigned short *pix; unsigned int sw, sh, pitch; int r[4]; } s_pic;
+int ayaneo_game_picture(const unsigned short **pix, unsigned int *sw, unsigned int *sh, unsigned int *pitch, int *rect)
+{
+	if (!s_pic.pix || !s_pic.sw || !s_pic.sh) return 0;
+	*pix = s_pic.pix; *sw = s_pic.sw; *sh = s_pic.sh; *pitch = s_pic.pitch;
+	rect[0] = s_pic.r[0]; rect[1] = s_pic.r[1]; rect[2] = s_pic.r[2]; rect[3] = s_pic.r[3];
+	return 1;
+}
+/* a game ends: its frame memory is not its own any more */
+void ayaneo_game_picture_forget(void) { s_pic.pix = 0; }
 volatile unsigned int g_dbg_launch_t0, g_dbg_launch_us[4];   /* the opening's end, then the game's own marks */
 volatile unsigned int g_dbg_launch_a, g_dbg_launch_pre_us[6];   /* from the launch press: the core's loads, then the opening */
 
@@ -2632,6 +2644,7 @@ static void live_drop(void)
 void ayaneo_snes_rsz_restore(void)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
+	ayaneo_game_picture_forget();   /* the game is over: its frame memory goes to others */
 	ayaneo_menu_overlay(0, 0);   /* also drop the menu overlay layer, so the carousel/reverse-punch
 				      * transition is clean (catch-all: exit, oem toggle, canvas self-heal) */
 	/* Reset the resizer to a clean 1:1 PANEL passthrough, not just "enable off": leaving the
@@ -3147,6 +3160,9 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 		g_dbg_game_presents++;
 		last = t0;
 	}
+	/* the game's picture and where it goes, for the in-game menu's glass (ayaneo_game_picture) */
+	s_pic.pix = pix; s_pic.sw = sw; s_pic.sh = sh; s_pic.pitch = spitch_px;
+	s_pic.r[0] = (int)xoff; s_pic.r[1] = (int)yoff; s_pic.r[2] = (int)dw; s_pic.r[3] = (int)dh;
 	if (g_dbg_launch_t0) {   /* the first game frame after the opening */
 		g_dbg_launch_us[3] = (t0 - g_dbg_launch_t0) / 13u;
 		g_dbg_launch_t0 = 0;

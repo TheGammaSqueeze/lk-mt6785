@@ -168,7 +168,9 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			  } }
 			{ extern volatile unsigned int g_dbg_game_presents, g_dbg_game_long;
 			  extern volatile int g_dbg_aud_low; extern volatile unsigned int g_dbg_aud_short, g_dbg_igm_open_us, g_dbg_igm_open_part[2];
-			  snprintf(lbuf, sizeof lbuf, "igm: open=%uus at %u %u", g_dbg_igm_open_us, g_dbg_igm_open_part[0], g_dbg_igm_open_part[1]);
+			  extern volatile unsigned int g_dbg_igm_glass_us;
+			  snprintf(lbuf, sizeof lbuf, "igm: open=%uus at %u %u glass=%uus", g_dbg_igm_open_us, g_dbg_igm_open_part[0],
+				   g_dbg_igm_open_part[1], g_dbg_igm_glass_us);
 			  fastboot_info(lbuf);
 			  snprintf(lbuf, sizeof lbuf, "game: presents=%u gaps=%u aud low=%d short=%u", g_dbg_game_presents,
 				   g_dbg_game_long, g_dbg_aud_low, g_dbg_aud_short);

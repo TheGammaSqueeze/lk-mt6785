@@ -1754,7 +1754,7 @@ static const char *igm_value(int page, const igm_line *l, char *buf)
 	return c->value(l->item, buf);
 }
 
-extern volatile unsigned int g_dbg_igm_open_us, g_dbg_igm_open_part[2];
+extern volatile unsigned int g_dbg_igm_open_us, g_dbg_igm_open_part[2], g_dbg_igm_glass_us;
 void pico_igm_open(const struct igm_core *c)
 {
 	unsigned int W, H;
@@ -1784,7 +1784,7 @@ void pico_igm_open(const struct igm_core *c)
 	if ((uint32_t)(G.pw + G.sh) * H * 4u > IGM_BG_MAX) G.sh = 0;
 	g_dbg_igm_open_us = (gpt4_get_current_tick() - t_open) / 13u;
 }
-volatile unsigned int g_dbg_igm_open_us, g_dbg_igm_open_part[2];   /* oem diag: the last opening's setup */
+volatile unsigned int g_dbg_igm_open_us, g_dbg_igm_open_part[2], g_dbg_igm_glass_us;   /* oem diag: the last opening's setup, the glass */
 void pico_igm_dismiss(void)
 {
 	if (G.up && !G.closing) { G.closing = 1; G.latch = 0; G.dirty = 1; }
@@ -1970,49 +1970,143 @@ static void igm_rows(int page, float dx, int op, int wash)
 	if (first > 0) disc(IX(rx + rw) - U(6) + .0f, U(IGM_Y0 - 9) + .0f, U(2.3f) + .0f, C_MUTED, op * 3 / 4);
 	if (first + nv < n) disc(IX(rx + rw) - U(6) + .0f, U(IGM_Y0 + nv * IGM_RP + 6) + .0f, U(2.3f) + .0f, C_MUTED, op * 3 / 4);
 }
-/* the panel's background, once a game (its memory is the opening's): a deep wash of the theme's
- * colour, its edge lit faintly, and a soft shadow off it over the game. Drawn at the first picture
- * of an opening, the frame after the menu key, when the game's frame delay has stepped aside. */
-static void igm_bg_build(void)
+/* ---- the glass ----
+ * The drawer is frosted glass: the game behind it, blurred, under the theme's deep tint, its corner
+ * lit by the mist and its edge by the accent. Still opaque, so the layer copy stays a plain turn.
+ * The game's last frame (ayaneo_game_picture: the core's own small picture and where it goes on
+ * the screen) is sampled into a coarse grid over the drawer, the grid is smoothed twice, and it is
+ * spread back out at a quarter of the resolution: a wide blur for a fraction of a millisecond. It
+ * follows the game up to 30 times a second, and only when the picture behind has changed. */
+#define GLASS_C   16                  /* a cell of the grid, px */
+#define GLASS_MAX 72                  /* cells across or down, at most */
+#define GLASS_QW  160                 /* the quarter resolution picture, at most */
+#define GLASS_QH  256
+#define GLASS_TINT 180                /* how much of the tint over the game, of 256 */
+static struct {
+	int gw, gh, ok;
+	uint8_t c[GLASS_MAX][GLASS_MAX][3];   /* the blurred game, a cell each */
+	unsigned int tick;
+} s_gl;
+static uint32_t s_tint[GLASS_QH][GLASS_QW];   /* the tint and the mist, at a quarter of the resolution */
+extern int ayaneo_game_picture(const unsigned short **pix, unsigned int *sw, unsigned int *sh, unsigned int *pitch, int *rect);
+
+/* sample the game behind the drawer into the grid and smooth it; 1 when it came out different */
+static int igm_glass_sample(void)
+{
+	static int16_t a[GLASS_MAX][GLASS_MAX][3], t[GLASS_MAX][GLASS_MAX][3];
+	const unsigned short *pix = 0;
+	unsigned int sw = 0, sh = 0, pitch = 0;
+	int r[4], gw = (G.pw + GLASS_C - 1) / GLASS_C, gh = (g_H + GLASS_C - 1) / GLASS_C, i, j, k, p, changed = 0;
+	int have = ayaneo_game_picture(&pix, &sw, &sh, &pitch, r) && r[2] > 0 && r[3] > 0;
+	if (gw > GLASS_MAX) gw = GLASS_MAX;
+	if (gh > GLASS_MAX) gh = GLASS_MAX;
+	for (j = 0; j < gh; j++)
+		for (i = 0; i < gw; i++) {	/* nine points of the cell, averaged; outside the picture black */
+			int sr = 0, sg = 0, sb = 0, dx, dy;
+			for (dy = 0; dy < 3; dy++)
+				for (dx = 0; dx < 3; dx++) {
+					int x = i * GLASS_C + (2 * dx + 1) * GLASS_C / 6, y = j * GLASS_C + (2 * dy + 1) * GLASS_C / 6;
+					if (have && x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]) {
+						unsigned int u = (unsigned)(x - r[0]) * sw / (unsigned)r[2], v = (unsigned)(y - r[1]) * sh / (unsigned)r[3];
+						unsigned int c = pix[v * pitch + u];
+						sr += (int)((c >> 11) & 31) << 3; sg += (int)((c >> 5) & 63) << 2; sb += (int)(c & 31) << 3;
+					}
+				}
+			a[j][i][0] = (int16_t)(sr / 9); a[j][i][1] = (int16_t)(sg / 9); a[j][i][2] = (int16_t)(sb / 9);
+		}
+	for (p = 0; p < 2; p++) {	/* 1 2 1 across, then down, twice */
+		for (j = 0; j < gh; j++)
+			for (i = 0; i < gw; i++)
+				for (k = 0; k < 3; k++)
+					t[j][i][k] = (int16_t)((a[j][i > 0 ? i - 1 : 0][k] + 2 * a[j][i][k] + a[j][i + 1 < gw ? i + 1 : i][k]) >> 2);
+		for (j = 0; j < gh; j++)
+			for (i = 0; i < gw; i++)
+				for (k = 0; k < 3; k++)
+					a[j][i][k] = (int16_t)((t[j > 0 ? j - 1 : 0][i][k] + 2 * t[j][i][k] + t[j + 1 < gh ? j + 1 : j][i][k]) >> 2);
+	}
+	for (j = 0; j < gh; j++)
+		for (i = 0; i < gw; i++)
+			for (k = 0; k < 3; k++) {
+				int d = a[j][i][k] - s_gl.c[j][i][k];
+				if (d > 2 || d < -2) changed = 1;
+				s_gl.c[j][i][k] = (uint8_t)a[j][i][k];
+			}
+	if (!s_gl.ok || gw != s_gl.gw || gh != s_gl.gh) changed = 1;
+	s_gl.gw = gw; s_gl.gh = gh; s_gl.ok = 1;
+	return changed;
+}
+/* the drawer's background from the grid and the tint: each quarter resolution point fills 4 x 4 */
+static void igm_glass_paint(void)
 {
 	uint32_t *bg = (uint32_t *)IGM_BG_PA;
-	unsigned int W, H;
-	int i, ext = G.pw + G.sh;
-	unsigned int t0 = gpt4_get_current_tick();
-	ayaneo_canvas_dims(&W, &H);
-	(void)W;
-	{	/* the backdrop's deep air with a glow of its mist in the top corner, opaque (the layer then
-		 * needs no conversion from premultiplied colour: only the shadow has an alpha, and it is black) */
-		static const gstop air[3] = { { 0, 0x0A1C40, 1 }, { .45f, 0x0A2552, 1 }, { 1, 0x050F24, 1 } };
-		int R = (int)(G.pw * 1.1f), R2 = R * R, inv = (int)((256u << 16) / (unsigned)R2);   /* 256 / R2, in 1/65536 */
-		uint32_t mist = recolour(0x2664CCu), edge = C_ACCENT;
-		for (i = 0; i < (int)H; i++) {
-			uint32_t *row = bg + i * ext;
-			float r, g, b, al;
-			int x, dy2 = i * i, xg = 0;
-			uint32_t base;
-			grad(air, 3, (i + .5f) / H, &r, &g, &b, &al);
-			base = recolour((uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b);
-			if (dy2 < R2) xg = (int)sq((float)(R2 - dy2)) + 1;   /* the glow reaches this far on the row */
-			if (xg > G.pw) xg = G.pw;
-			for (x = 0; x < xg; x++) {	/* the mist, falling off with the square of the distance */
-				int d2 = x * x + dy2, f, w;
-				uint32_t c = base;
-				if (d2 < R2) {
-					f = ((R2 - d2) * inv) >> 16;   /* 256 at the corner, 0 at the reach (no division a pixel) */
-					w = (f * f * 70) >> 16;
-					if (w > 0) c = mix(0xFF000000u | base, mist, w) & 0xFFFFFFu;
-				}
-				row[x] = 0xFF000000u | c;
+	int ext = G.pw + G.sh, qw = (G.pw + 3) / 4, qh = (g_H + 3) / 4, qx, qy, y;
+	uint32_t edge = C_ACCENT;
+	if (qw > GLASS_QW) qw = GLASS_QW;
+	if (qh > GLASS_QH) qh = GLASS_QH;
+	for (qy = 0; qy < qh; qy++) {
+		int py = qy * 4 + 2, gy = ((py - GLASS_C / 2) << 8) / GLASS_C, j0, j1, fy;
+		if (gy < 0) gy = 0;
+		j0 = gy >> 8; fy = gy & 255; j1 = j0 + 1;
+		if (j0 >= s_gl.gh - 1) { j0 = j1 = s_gl.gh - 1; fy = 0; }
+		for (qx = 0; qx < qw; qx++) {
+			int px = qx * 4 + 2, gx = ((px - GLASS_C / 2) << 8) / GLASS_C, i0, i1, fx, k, c[3], yy, xx;
+			uint32_t tint = s_tint[qy][qx], out;
+			if (gx < 0) gx = 0;
+			i0 = gx >> 8; fx = gx & 255; i1 = i0 + 1;
+			if (i0 >= s_gl.gw - 1) { i0 = i1 = s_gl.gw - 1; fx = 0; }
+			for (k = 0; k < 3; k++) {
+				int top = s_gl.c[j0][i0][k] * (256 - fx) + s_gl.c[j0][i1][k] * fx;
+				int bot = s_gl.c[j1][i0][k] * (256 - fx) + s_gl.c[j1][i1][k] * fx;
+				int g = (top * (256 - fy) + bot * fy) >> 16;
+				int tc = (int)(tint >> (16 - 8 * k)) & 255;
+				c[k] = (g * (256 - GLASS_TINT) + tc * GLASS_TINT) >> 8;
 			}
-			for (; x < G.pw; x++) row[x] = 0xFF000000u | base;
-			row[G.pw - 1] = mix(row[G.pw - 1], edge, 70);
-			for (x = 0; x < G.sh; x++) {	/* the shadow: dark, falling off with the square of the distance */
-				int f = 256 - x * 256 / G.sh, sa = (90 * f * f) >> 16;
-				row[G.pw + x] = (uint32_t)sa << 24;
+			out = 0xFF000000u | (uint32_t)c[0] << 16 | (uint32_t)c[1] << 8 | (uint32_t)c[2];
+			for (yy = qy * 4; yy < qy * 4 + 4 && yy < g_H; yy++) {
+				uint32_t *row = bg + yy * ext + qx * 4;
+				for (xx = 0; xx < 4 && qx * 4 + xx < G.pw; xx++) row[xx] = out;
 			}
 		}
 	}
+	for (y = 0; y < g_H; y++) bg[y * ext + G.pw - 1] = mix(bg[y * ext + G.pw - 1], edge, 70);   /* the lit edge */
+}
+/* once a game (its memory is the opening's): the tint (the backdrop's deep air, the glow of its
+ * mist in the top corner) and the soft shadow off the drawer, then the glass. Drawn at the first
+ * picture of an opening, the frame after the menu key, when the game's frame delay has stepped aside. */
+static void igm_bg_build(void)
+{
+	static const gstop air[3] = { { 0, 0x0A1C40, 1 }, { .45f, 0x0A2552, 1 }, { 1, 0x050F24, 1 } };
+	uint32_t *bg = (uint32_t *)IGM_BG_PA, mist = recolour(0x2664CCu);
+	int ext = G.pw + G.sh, qw = (G.pw + 3) / 4, qh = (g_H + 3) / 4, qx, qy, y, x;
+	int R = (int)(G.pw * 1.1f), R2 = R * R;
+	unsigned int t0 = gpt4_get_current_tick();
+	if (qw > GLASS_QW) qw = GLASS_QW;
+	if (qh > GLASS_QH) qh = GLASS_QH;
+	for (qy = 0; qy < qh; qy++) {
+		float r, g, b, al;
+		int py = qy * 4 + 2;
+		uint32_t base;
+		grad(air, 3, (py + .5f) / g_H, &r, &g, &b, &al);
+		base = recolour((uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b);
+		for (qx = 0; qx < qw; qx++) {	/* the mist, falling off with the square of the distance */
+			int px = qx * 4 + 2, d2 = px * px + py * py;
+			uint32_t c = base;
+			if (d2 < R2) {
+				int f = (int)(((unsigned)(R2 - d2) << 8) / (unsigned)R2), w = (f * f * 70) >> 16;
+				if (w > 0) c = mix(0xFF000000u | base, mist, w) & 0xFFFFFFu;
+			}
+			s_tint[qy][qx] = c;
+		}
+	}
+	for (y = 0; y < g_H; y++)
+		for (x = 0; x < G.sh; x++) {	/* the shadow: dark, falling off with the square of the distance */
+			int f = 256 - x * 256 / G.sh, sa = (90 * f * f) >> 16;
+			bg[y * ext + G.pw + x] = (uint32_t)sa << 24;
+		}
+	s_gl.ok = 0;
+	igm_glass_sample();
+	igm_glass_paint();
+	s_gl.tick = gpt4_get_current_tick();
 	G.bg_ok = 1;
 	g_dbg_igm_open_part[1] = (gpt4_get_current_tick() - t0) / 13u;
 }
@@ -2044,6 +2138,12 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 		float hy = (G.sel[G.page] - G.top[G.page]) * IGM_RP;
 		if (G.hy != hy) still = 0;
 		if (G.top[G.page] != (float)(int)G.top[G.page]) still = 0;
+	}
+	if (G.bg_ok && now - s_gl.tick >= 13000000u / 30u) {	/* the glass follows the game */
+		unsigned int tg = gpt4_get_current_tick();
+		s_gl.tick = now;
+		if (igm_glass_sample()) { igm_glass_paint(); G.dirty = 1; }
+		g_dbg_igm_glass_us = (gpt4_get_current_tick() - tg) / 13u;
 	}
 	if (still && !G.dirty && now - G.last_paint < 6500000u) return 0;   /* live figures: twice a second */
 	if (!G.bg_ok) { igm_bg_build(); return 0; }   /* its own frame: the first picture comes next */
