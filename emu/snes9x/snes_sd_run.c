@@ -29,6 +29,7 @@ extern void     ayaneo_gbc_audio_init(void);       /* 48 kHz AFE ring (shared wi
 extern void     ayaneo_snes_audio_reset(void);
 extern void     ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz);
 extern void     ayaneo_menu_audio_silence(void);
+extern void     ayaneo_gbc_audio_pause(int on);
 extern void     ayaneo_menu_overlay_mark_dirty(void);   /* repaint the hardware menu overlay (mt_disp_drv.c) */
 extern void     ayaneo_display_prepare(void);
 extern void     ayaneo_dsi_set_vfp(unsigned int vfp);   /* per-core panel refresh (ddp_dsi.c) */
@@ -557,6 +558,19 @@ static int sm_change(int i, int dir, int act)
 	return 0;
 }
 
+/* oem diag launch_us: time from the launch press to each load (pre) and from the end of the
+ * opening to each mark after it (the first frame is the 4th) */
+#define SNES_PRE_MARK(k) do { \
+	extern volatile unsigned int g_dbg_launch_a, g_dbg_launch_pre_us[6]; \
+	extern unsigned int gpt4_get_current_tick(void); \
+	if (g_dbg_launch_a) g_dbg_launch_pre_us[k] = (gpt4_get_current_tick() - g_dbg_launch_a) / 13u; \
+} while (0)
+#define SNES_LAUNCH_MARK(k) do { \
+	extern volatile unsigned int g_dbg_launch_t0, g_dbg_launch_us[4]; \
+	extern unsigned int gpt4_get_current_tick(void); \
+	if (g_dbg_launch_t0) g_dbg_launch_us[k] = (gpt4_get_current_tick() - g_dbg_launch_t0) / 13u; \
+} while (0)
+
 static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 {
 	const struct snes_core_exports *c;
@@ -570,7 +584,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	g_snes_dbg_heapused = 0;
 	g_snes_dbg_w = g_snes_dbg_h = 0; g_snes_dbg_loadrc = 0xFF;
 
+	SNES_PRE_MARK(0);
 	c = snes_core_load(vol);
+	SNES_PRE_MARK(1);
 	if (!c) { g_snes_dbg_exit = 2; return; }   /* blob load failed */
 	g_snes_dbg_stage = 2;
 
@@ -582,7 +598,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	c->heap_init((void *)SNES_HEAP_BASE, SNES_HEAP_SZ);
 	c->init();
 	g_snes_dbg_stage = 4;
+	SNES_PRE_MARK(2);
 	g_snes_dbg_loadrc = (unsigned)c->load(rombuf, romsz);
+	SNES_PRE_MARK(3);
 	if (g_snes_dbg_loadrc != 0) { g_snes_dbg_exit = 4; return; }   /* core load failed */
 	g_snes_dbg_stage = 5;
 	c->av_info(&bw, &bh, &mw, &mh, &sr);
@@ -684,6 +702,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		if (gba_punch_ready) {
 			struct snes_frame pf; int i, w; pf.video = 0;
 			gba_punch_ready = 0;
+			SNES_PRE_MARK(4);
 			for (w = 0; w < 15; w++) { c->run(&pf); if (pf.video && pf.width && w >= 3) break; }
 			if (c->aspect_x1000) g_snes_aspect_x1000 = c->aspect_x1000();
 			if (pf.video && pf.width && pf.height) {
@@ -694,10 +713,11 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					ayaneo_gba_punch_frame_pre((const unsigned int *)0x54000000u, r);
 					mtk_wdt_restart();
 				}
-			}
+			} else ayaneo_gbc_audio_pause(0);   /* no opening: the menu's hold on the sound ends here */
 		}
 	}
 
+	SNES_LAUNCH_MARK(0);
 	/* Run-ahead enable gate: the state must fit in the 2 MB SNES_AHEAD_BUF slot. ra_ssz != 0
 	 * enables run-ahead; the save/load themselves pass the full buffer CAPACITY (not this
 	 * one-shot size) so a game whose state grows later never truncates - unfreeze stops at
@@ -717,12 +737,14 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		s_snes_rw_payload = (rw_rawsz && rw_rawsz <= SNES_AHEAD_CAP) ? (rw_rawsz + 0x10000u) : 0;
 		ayaneo_rewind_reset(s_snes_rw_payload);
 	}
+	SNES_LAUNCH_MARK(1);
 
 	if (!g_snes_dbg_bench) {   /* bench pins 1400 itself; do not disturb it */
 		int pf0 = ayaneo_get_preempt_frames();   /* persisted run-ahead tier: pin its escalated clock */
 		snes_apply_clock();   /* 1400/1600/1800/2000 by tier, manual choice, filter bump */
 	}
 
+	SNES_LAUNCH_MARK(2);
 	int reset_hold = 0, aya_prev = 0, ff_prev = 0;
 	int rw_acc = 0;                  /* rewind fractional-speed accumulator (256ths), reset on entry */
 	unsigned int snes_emu_us = 0;    /* committed-frame emu cost (us), feeds the FF budget */
@@ -748,7 +770,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (ayaneo_power_hold(g_snes_menu_open, 1)) {
 				unsigned char *st = (unsigned char *)SNES_STATE_BUF;
 				unsigned ssz = c->state_size(), sz; void *p;
-				ayaneo_menu_audio_silence();
+				ayaneo_gbc_audio_pause(1);   /* silent through the card writes and the power off */
 				{ extern void ayaneo_resume_mark(const char *name); ayaneo_resume_mark(rom->name); s_settings_dirty = 1; }
 				snes_settings_flush();
 				{ extern void ayaneo_settings_persist_flush(void); ayaneo_settings_persist_flush(); }
@@ -757,8 +779,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				sz = c->sram_size(); p = c->sram_ptr();
 				if (p && sz && sz <= 0x20000u)
 					gba_sd_write_named(vol, "/saves/snes", rom->name, "srm", p, sz);
-				{ extern void ayaneo_leds_off_for_poweroff(void); ayaneo_leds_off_for_poweroff(); }
-				mt_power_off();   /* no return */
+				{ extern void ayaneo_power_off_now(void); ayaneo_power_off_now(); }   /* no return */
 			}
 		}
 
@@ -1080,6 +1101,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 		/* Pico-menu "Exit Game" selected: leave the session like the AYA-hold exit, arming the
 		 * reverse-punch so the frozen frame shrinks back into the carousel (matches GBA/GBC). */
+		{ extern volatile int g_dbg_force_close;   /* oem close: the menu's Exit Game, over USB */
+		  if (g_dbg_force_close) { g_dbg_force_close = 0; g_snes_menu_exit = 1; } }
 		if (g_snes_menu_exit) {
 			extern void snes_menu_arm_reverse(const unsigned short *, unsigned, unsigned, unsigned);
 			if (!g_snes_test_limit && f.video && f.width && f.height)
@@ -1088,6 +1111,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 		if (g_snes_test_limit && g_snes_dbg_frames >= g_snes_test_limit) break;   /* oem snes-launch */
 	}
+	ayaneo_menu_audio_silence();   /* the ring would loop the last sound through the card writes below */
 
 	/* Headless save-state regression check - only in frame-limited (oem snes-launch) mode,
 	 * so it never touches normal play. Exercises the full chain: core freeze -> SD write ->

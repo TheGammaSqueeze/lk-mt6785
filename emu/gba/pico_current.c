@@ -1236,6 +1236,10 @@ static void launch_arm(void)
 	extern int gba_punch_ready;
 	extern void ayaneo_gbc_audio_pause(int on);
 	unsigned int pitch, W, H;
+	{ extern volatile unsigned int g_dbg_launch_a, g_dbg_launch_pre_us[6];   /* oem diag launch_us */
+	  unsigned int t = gpt4_get_current_tick(), k;
+	  g_dbg_launch_a = t ? t : 1u;
+	  for (k = 0; k < 6; k++) g_dbg_launch_pre_us[k] = 0; }
 	(void)ayaneo_canvas_back(&pitch, &W, &H);
 	backdrop_into((uint32_t *)CUR_SNAP_PA, pitch);
 	memcpy((void *)CUR_OV_PA, (const void *)CUR_UI_PA, (size_t)g_W * g_H * 4);

@@ -105,6 +105,7 @@ extern void ayaneo_gbc_audio_set_volume(int v);
 extern int  ayaneo_gbc_audio_get_volume(void);
 extern void ayaneo_gbc_audio_pause(int on);
 extern void ayaneo_gbc_audio_shutdown(void);
+void ayaneo_power_off_now(void);
 extern void ayaneo_menu_audio_silence(void);	/* zero the shared AFE ring (stop looping) */
 extern void ayaneo_gba_audio_pace(void);	/* audio-clock frame pacing */
 extern int  ayaneo_present_skip_framedone;	/* mt_disp_drv.c: 1 = non-blocking present */
@@ -722,9 +723,7 @@ static void save_and_poweroff(unsigned char *scratch)
 	 * down anyway (audio_shutdown follows). */
 	ayaneo_gbc_audio_pause(1);
 	save_for_suspend(scratch);
-	ayaneo_gbc_audio_shutdown();
-	ayaneo_leds_off_for_poweroff();
-	mt_power_off();
+	ayaneo_power_off_now();
 }
 
 static void check_power(unsigned char *scratch)
@@ -1457,6 +1456,21 @@ void ayaneo_leds_off_for_poweroff(void)
 {
 	extern void ayaneo_charge_led_standby(void);
 	ayaneo_charge_led_standby();
+}
+/* The end of a power off from a game or the menu: the codec shut down quietly, the LEDs dark, then
+ * the power off, tried again until it takes. The PMIC keeps the power on while the key is still
+ * held, so mt_power_off comes back then, and returning would run the game (and its sound) again.
+ * Callers mute with ayaneo_gbc_audio_pause(1) before their card writes. */
+void ayaneo_power_off_now(void)
+{
+	ayaneo_gbc_audio_pause(1);
+	ayaneo_gbc_audio_shutdown();
+	ayaneo_leds_off_for_poweroff();
+	for (;;) {
+		mt_power_off();
+		mtk_wdt_restart();
+		thread_sleep(50);
+	}
 }
 static void led_thread_start(void)
 {

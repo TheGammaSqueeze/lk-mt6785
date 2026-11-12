@@ -57,6 +57,8 @@ static int g_reverse_snes_w, g_reverse_snes_h, g_reverse_snes_scale;
 static int g_reverse_gen_w, g_reverse_gen_h;   /* frozen Genesis frame dims (aspect-aware prerender) */
 volatile int g_dbg_arm_cnt;   /* incremented each time the driver arms the reverse */
 
+static void reverse_show_now(void);
+
 /* Called by the driver on "Close" with the last game frame; armed here, consumed by
  * the reverse-punch block at the top of gba_snes_menu_run. */
 void gba_menu_arm_reverse(const unsigned short *game_frame)
@@ -67,6 +69,7 @@ void gba_menu_arm_reverse(const unsigned short *game_frame)
 		arch_clean_cache_range(GBA_GAME_FREEZE_PA, 240u * 160u * 2u);
 		g_reverse_punch = 1;
 		g_reverse_is_gbc = 0;
+		reverse_show_now();
 	}
 }
 
@@ -79,6 +82,7 @@ void gbc_menu_arm_reverse(const unsigned short *game_frame)
 		arch_clean_cache_range(GBA_GAME_FREEZE_PA, 160u * 144u * 2u);
 		g_reverse_punch = 1;
 		g_reverse_is_gbc = 1;
+		reverse_show_now();
 	}
 }
 
@@ -100,6 +104,7 @@ void snes_menu_arm_reverse(const unsigned short *game_frame, unsigned sw, unsign
 		g_reverse_snes_scale = (sw <= 256) ? 4 : 2;
 		g_reverse_punch = 1;
 		g_reverse_is_gbc = 2;
+		reverse_show_now();
 	}
 }
 
@@ -116,6 +121,7 @@ void genesis_menu_arm_reverse(const unsigned short *game_frame, unsigned sw, uns
 		g_reverse_gen_w = (int)sw; g_reverse_gen_h = (int)sh;
 		g_reverse_punch = 1;
 		g_reverse_is_gbc = 3;
+		reverse_show_now();
 	}
 }
 
@@ -690,13 +696,12 @@ void gba_menu_present(void)
 		/* Powering off from the menu: the next boot lands on the menu, whatever record a game
 		 * left, and a volume or brightness change still waiting for its deferred write is
 		 * saved too; the write is waited for (the writer thread only runs while we sleep). */
-		extern void ayaneo_resume_clear(void), ayaneo_settings_persist_flush(void), ayaneo_leds_off_for_poweroff(void);
+		extern void ayaneo_resume_clear(void), ayaneo_settings_persist_flush(void), ayaneo_power_off_now(void);
 		ayaneo_resume_clear();
 		s_av_dirty = 0;
 		ayaneo_menu_settings_persist();
 		ayaneo_settings_persist_flush();
-		ayaneo_leds_off_for_poweroff();
-		mt_power_off();
+		ayaneo_power_off_now();
 	}
 }
 /* Launch: the frame in the canvas becomes the frozen menu the game opens out of (the driver's
@@ -780,6 +785,28 @@ static void reverse_prerender(void)
 		extern void ayaneo_gba_punch_prerender(const unsigned short *pix);
 		ayaneo_gba_punch_prerender((const unsigned short *)GBA_GAME_FREEZE_PA);
 	}
+}
+/* Show the frozen game full screen as soon as a game ends, from the menu's own plane. The game's
+ * last frames were shown through the resizer; once it is let go the panel shows the frame buffers
+ * again, which still held the opening transition's last frame (a stale picture of the launch).
+ * Both buffers get the frozen frame, so whichever one the panel lands on is right. */
+static void reverse_show_now(void)
+{
+	extern unsigned int g_punch_game_full;
+	unsigned int keep = g_punch_game_full, *prev = 0;
+	int k;
+	ayaneo_menu_audio_silence();   /* the game has stopped: its ring must not loop meanwhile */
+	for (k = 0; k < 2; k++) {
+		unsigned int cp, cw, ch;
+		unsigned int *cv = ayaneo_canvas_back(&cp, &cw, &ch);
+		if (cv != prev) {   /* the Konkr's canvas is one buffer, turned into either frame buffer */
+			g_punch_game_full = (unsigned int)(uintptr_t)cv;
+			reverse_prerender();
+			prev = cv;
+		}
+		ayaneo_canvas_present();
+	}
+	g_punch_game_full = keep;
 }
 /* Put the frozen game on the menu's own plane before anything loads: until then the game is shown
  * from its own buffers, which the menu's pack then lands on. Prerenders it, presents it; the

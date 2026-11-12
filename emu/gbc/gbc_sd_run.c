@@ -27,6 +27,7 @@ extern void     ayaneo_gbc_audio_init(void);
 extern void     ayaneo_idle_until(unsigned target_tick);
 extern void     ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count);
 extern void     ayaneo_menu_audio_silence(void);
+extern void     ayaneo_gbc_audio_pause(int on);
 extern void     ayaneo_display_prepare(void);
 extern unsigned gpt4_get_current_tick(void);
 extern void     mtk_wdt_restart(void);
@@ -643,7 +644,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			extern int ayaneo_power_hold(int menu_open, int use_overlay);
 			if (ayaneo_power_hold(g_gbc_menu_open, 1)) {
 				unsigned savsz;
-				ayaneo_menu_audio_silence();
+				ayaneo_gbc_audio_pause(1);   /* silent through the card writes and the power off */
 				savsz = c->savedata_size(); if (savsz > 128u * 1024u) savsz = 0;
 				if (c->savedata_ptr() && savsz)
 					gba_sd_write_sav(vol, rom->name, (const unsigned char *)c->savedata_ptr(), savsz);
@@ -655,8 +656,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (is_dmg) gbc_pal_save(vol, rom->name, pal_idx);
 				{ extern void ayaneo_resume_mark(const char *name); ayaneo_resume_mark(rom->name); ayaneo_menu_settings_persist(); }
 				{ extern void ayaneo_settings_persist_flush(void); ayaneo_settings_persist_flush(); }
-				{ extern void ayaneo_leds_off_for_poweroff(void); ayaneo_leds_off_for_poweroff(); }
-				mt_power_off();   /* no return */
+				{ extern void ayaneo_power_off_now(void); ayaneo_power_off_now(); }   /* no return */
 			}
 		}
 
@@ -774,6 +774,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			aya = PRESSED(GPIO_AYA);
 			if (aya && !aya_prev) { g_gbc_menu_open = !g_gbc_menu_open; s_mstat[0] = 0; if (!g_gbc_menu_open) s_pal_pick = 0; ayaneo_menu_overlay_mark_dirty(); }
 			aya_prev = aya;
+			{ extern volatile int g_dbg_force_close;   /* oem close: the menu's Close, over USB */
+			  if (g_dbg_force_close) { extern void gbc_menu_arm_reverse(const unsigned short *frame);
+				g_dbg_force_close = 0; gbc_menu_arm_reverse(vbuf); break; } }
 			if (aya) { if (++aya_hold >= 90) {
 				/* Arm the reverse punch so the AYA-hold exit shrinks the live frame back
 				 * into the carousel, same as the menu "Close" path. */
@@ -905,6 +908,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 	}
 	}
+	ayaneo_menu_audio_silence();   /* the ring would loop the last sound through the card writes below */
 	g_gbc_menu_open = 0;
 	/* Tear down the hardware menu overlay (OVL0 L0) before returning to the carousel: an
 	 * AYA-hold or "Close" exit can leave it enabled, which would composite the stale Pico

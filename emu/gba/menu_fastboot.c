@@ -151,8 +151,17 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		{
 			extern volatile unsigned int g_dbg_trans_us[3], g_dbg_trans_list[16];
 			int k;
+			extern volatile unsigned int g_dbg_launch_us[4], g_dbg_launch_pre_us[6];
 			snprintf(lbuf, sizeof lbuf, "trans_us: last=%u worst=%u frames=%u",
 				 g_dbg_trans_us[0], g_dbg_trans_us[1], g_dbg_trans_us[2]);
+			fastboot_info(lbuf);
+			/* from the launch press, in ms: core start, core read, ROM read, core load, warmup, opening */
+			snprintf(lbuf, sizeof lbuf, "launch_ms: %u %u %u %u %u open=%u", g_dbg_launch_pre_us[0] / 1000u,
+				 g_dbg_launch_pre_us[1] / 1000u, g_dbg_launch_pre_us[2] / 1000u, g_dbg_launch_pre_us[3] / 1000u,
+				 g_dbg_launch_pre_us[4] / 1000u, g_dbg_launch_pre_us[5] / 1000u);
+			fastboot_info(lbuf);
+			snprintf(lbuf, sizeof lbuf, "launch_us: %u %u %u first=%u",
+				 g_dbg_launch_us[0], g_dbg_launch_us[1], g_dbg_launch_us[2], g_dbg_launch_us[3]);
 			fastboot_info(lbuf);
 			for (k = 0; k < 2; k++) {
 				const volatile unsigned int *t = g_dbg_trans_list + 8 * k;
@@ -1368,8 +1377,8 @@ static void cmd_latled(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem close - close the running GBA game as the Pico menu's Close does (saves, back to the
- * carousel), to test the exit path over USB */
+/* oem close - close the running game (any system) as the Pico menu's Close does (saves, back to
+ * the carousel), to test the exit path over USB */
 static void cmd_close(const char *arg, void *data, unsigned sz)
 {
 	(void)arg; (void)data; (void)sz;

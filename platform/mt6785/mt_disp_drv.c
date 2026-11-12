@@ -60,6 +60,8 @@ void ayaneo_punch_compose(uint32_t *dst, const uint32_t *snap, const uint32_t *g
 	gba_punch_composite_pre(dst, snap, game_full, pitch, W, H, -1, -1, radius);
 }
 volatile unsigned int g_dbg_trans_us[3], g_dbg_trans_list[16];   /* gba_punch.h: the fade's frame cost */
+volatile unsigned int g_dbg_launch_t0, g_dbg_launch_us[4];   /* the opening's end, then the game's own marks */
+volatile unsigned int g_dbg_launch_a, g_dbg_launch_pre_us[6];   /* from the launch press: the core's loads, then the opening */
 
 //#define DFO_DISP
 #define FB_LAYER            0
@@ -2948,6 +2950,10 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	unsigned int t0 = gpt4_get_current_tick();
 
 	if (!pix || !fb_addr || !sw || !sh) return;
+	if (g_dbg_launch_t0) {   /* the first game frame after the opening */
+		g_dbg_launch_us[3] = (t0 - g_dbg_launch_t0) / 13u;
+		g_dbg_launch_t0 = 0;
+	}
 	if (g_dbg_filt_ovr >= 0 && g_dbg_filt_ovr <= 5) filt = g_dbg_filt_ovr;
 	if (g_test_fill_argb && sw <= 512u && sh <= 512u) {
 		/* oem gray: replace the game picture, at its native size and before the overdrive, with a
@@ -3804,7 +3810,11 @@ void ayaneo_snes_punch_prerender(const unsigned short *pix, unsigned int sw, uns
 		(void)pitch; (void)gf; (void)xoff; (void)yoff; (void)xstep; (void)y; (void)x;
 		ayaneo_canvas_dims(&CW, &CH);
 		if (g_snes_stretch) { dwr = LW; dhr = LH; }
-		else { dhr = dh; dwr = dw; }
+		else {   /* fill the height, width from the core's aspect (as the live view does) */
+			unsigned a = asp ? asp : (sw * 1000u) / (sh ? sh : 1u);
+			dhr = LH; dwr = (LH * a) / 1000u;
+			if (dwr > LW) { dwr = LW; dhr = (LW * 1000u) / a; }
+		}
 		if (dwr > LW) dwr = LW; if (dhr > LH) dhr = LH;
 		if (dwr < 1u) dwr = 1u; if (dhr < 1u) dhr = 1u;
 		punch_fill_scaled((unsigned int *)(uintptr_t)GBA_PUNCH_GAME_FULL_PA, CW, CW, CH,
@@ -3903,6 +3913,17 @@ void ayaneo_gba_punch_frame_pre(const unsigned int *snap, int radius)
 				 * ring would loop meanwhile) */
 		extern void ayaneo_gbc_audio_pause(int on);
 		ayaneo_gbc_audio_pause(radius < g_punch_fade);
+	}
+	if (g_dbg_launch_a) {   /* the opening's first frame */
+		extern unsigned int gpt4_get_current_tick(void);
+		g_dbg_launch_pre_us[5] = (gpt4_get_current_tick() - g_dbg_launch_a) / 13u;
+		g_dbg_launch_a = 0;
+	}
+	if (radius >= (g_punch_fade > 0 ? g_punch_fade : 820)) {
+		extern unsigned int gpt4_get_current_tick(void);
+		unsigned int t = gpt4_get_current_tick();
+		g_dbg_launch_t0 = t ? t : 1u;
+		g_dbg_launch_us[0] = g_dbg_launch_us[1] = g_dbg_launch_us[2] = g_dbg_launch_us[3] = 0;
 	}
 #if AYANEO_ROT
 	{

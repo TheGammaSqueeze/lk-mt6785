@@ -21,6 +21,7 @@ extern const struct genesis_core_exports *genesis_core_load(fat_vol *v);   /* ge
 extern void     ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px);
 extern void     ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz);
 extern void     ayaneo_menu_audio_silence(void);
+extern void     ayaneo_gbc_audio_pause(int on);
 extern void     ayaneo_display_prepare(void);
 extern unsigned gpt4_get_current_tick(void);
 extern void     mtk_wdt_restart(void);
@@ -441,7 +442,7 @@ static void genesis_power_check(void)
 {
 	extern int ayaneo_power_hold(int menu_open, int use_overlay);
 	if (!ayaneo_power_hold(g_genesis_menu_open, 1)) return;
-	ayaneo_menu_audio_silence();
+	ayaneo_gbc_audio_pause(1);   /* silent through the card writes and the power off */
 	if (s_menu_c && s_menu_vol && s_menu_rom) {
 		const struct genesis_core_exports *c = s_menu_c;
 		unsigned ssz;
@@ -455,8 +456,7 @@ static void genesis_power_check(void)
 	{ extern void ayaneo_resume_mark(const char *name); ayaneo_resume_mark(s_menu_rom->name); s_gen_settings_dirty = 1; }
 	genesis_settings_flush();
 	{ extern void ayaneo_settings_persist_flush(void); ayaneo_settings_persist_flush(); }
-	{ extern void ayaneo_leds_off_for_poweroff(void); ayaneo_leds_off_for_poweroff(); }
-	mt_power_off();   /* no return */
+	{ extern void ayaneo_power_off_now(void); ayaneo_power_off_now(); }   /* no return */
 }
 
 static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
@@ -568,7 +568,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					ayaneo_gba_punch_frame_pre((const unsigned int *)0x54000000u, r);
 					mtk_wdt_restart();
 				}
-			}
+			} else ayaneo_gbc_audio_pause(0);   /* no opening: the menu's hold on the sound ends here */
 		}
 	}
 
@@ -822,8 +822,11 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (++reset_hold >= 30) { c->reset(); if (rw_payload) ayaneo_rewind_reset(rw_payload); reset_hold = 0; }
 			} else reset_hold = 0;
 		}
+		{ extern volatile int g_dbg_force_close;   /* oem close: the menu's Exit Game, over USB */
+		  if (g_dbg_force_close) { g_dbg_force_close = 0; g_genesis_menu_exit = 1; } }
 		if (g_genesis_menu_exit) break;   /* Pico "Exit Game" selected */
 	}
+	ayaneo_menu_audio_silence();   /* the ring would loop the last sound through the card writes below */
 	/* Arm the exit reverse-punch: the carousel re-entry shrinks this last game frame back into the
 	 * selector (matches snes/gba/gbc) instead of a hard cut to black. fr still holds the last rendered
 	 * frame (the core framebuffer is untouched until c->unload below). */
