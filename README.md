@@ -31,7 +31,8 @@ bootloader, before any operating system, and owns the hardware outright.
 - **Everything on the card.** Emulators, settings, saves, states and box art all live on the
   microSD card. Swap the card, swap the whole setup.
 - **The good stuff from the start.** Rewind, fast forward, save states, suspend points, scanline
-  and LCD filters, colour correction and backlight black frame insertion, in a box art menu.
+  and LCD filters, colour correction and backlight black frame insertion, in a box art menu with
+  themes (Classic and GBA Indigo, picked on the Display page).
 
 ## Screenshots
 
@@ -43,11 +44,13 @@ the game the way the display hardware blends them.
 | ![Game list with the demo games](documentation/screenshots/demo-games.png) | ![Suspend points](documentation/screenshots/suspend-points.png) |
 | The game list, every system in one row, with the demo games from the release | Suspend points, made when you reset a game |
 | ![Display settings](documentation/screenshots/display.png) | ![Options](documentation/screenshots/options.png) |
-| Display: CRT filter, 4:3 or pixel perfect, and a frame around the game | Options: menu and BIOS sounds, burn-in reduction, Boot to Android |
+| Display: CRT filter, 4:3 or pixel perfect, and the menu theme | Options: menu and BIOS sounds, burn-in reduction, Boot to Android |
 | ![In game](documentation/screenshots/in-game.png) | ![The Pico menu](documentation/screenshots/pico-menu.png) |
 | In game, with the LCD filter | The Pico menu over the game (Menu button) |
 | ![More of the Pico menu](documentation/screenshots/pico-menu-more.png) | ![Core Settings](documentation/screenshots/core-settings.png) |
 | Run-ahead, rewind, BFI, the live panel refresh and the core choice | Core Settings: each core's own options |
+| ![The GBA Indigo theme](documentation/screenshots/theme-gba-indigo.png) | ![Display in GBA Indigo](documentation/screenshots/theme-gba-indigo-display.png) |
+| The GBA Indigo theme | The Display page in GBA Indigo, with the Theme row |
 
 ## Buttons
 
@@ -122,6 +125,7 @@ glue. They are submodules here under `cores/`:
 | `project/` | build configurations: `k85v1_64_kpa.mk` (Konkr), `k85v1_64.mk` (Pocket Air Mini) |
 | `tools/release/` | the release build: packages, scatter files, demo games and box covers |
 | `tools/ayaneo/`, `tools/konkr/` | signing, the menu packer, the card builder, the stock firmware files |
+| `tools/ayaneo/snes/themes/` | the menu themes (see its README) |
 | `documentation/` | device docs, and `development/` for the engineering notes kept from the ports |
 | `build_*.sh` | build entry points: `build_konkr_kpa.sh`, `build_ayaneo_gba_sd.sh`, `build_ayaneo_pocket_air_mini.sh` |
 

@@ -9,6 +9,8 @@
 
 #include "snes_render.h"
 
+#define SNES_THEME_MAX 8   /* menu themes the Display page's Theme row lists */
+
 typedef struct {
 	int left, right, up, down, a, b, start, select;   /* level: 1 = pressed */
 	int lb, rb;                                       /* L/R shoulder: page jump */
@@ -39,12 +41,16 @@ typedef struct {
 	 * (navFire, DISP_HOLD_DELAY/RATE). */
 	int disp_cur;                 /* mode-line cursor index 0..2 (visual order) */
 	int disp_sel;                 /* committed screen mode 0..2 (default 1 = 4:3) */
-	/* Display frame carousel: 12 items (0 = none, 1..11 = frame themes), a 4-wide
-	 * scroll window. disp_zone 0 = mode line, 1 = frame carousel. */
-	int disp_zone;                /* 0 mode-line focus, 1 frame-carousel focus */
-	int frame_sel;                /* frame cursor 0..11 */
-	int frame_scroll;             /* scroll-window start 0..8 */
-	int frame_applied;            /* applied frame 0..11 (default 0 = none) */
+	/* Display line 2, the Theme row (the authored decorative Frame carousel, which GammaOS Pico never
+	 * drew in a game): one item per menu theme in the pack, a 4-wide scroll window. disp_zone 0 =
+	 * mode line, 1 = theme row. */
+	int disp_zone;                /* 0 mode-line focus, 1 theme-row focus */
+	int theme_sel;                /* theme cursor */
+	int theme_scroll;             /* scroll-window start */
+	int theme_applied;            /* the theme in use (set by the LK layer) */
+	int theme_n;                  /* themes in the pack, 0..SNES_THEME_MAX */
+	int theme_req;                /* the theme A picked, for the LK layer to switch to; -1 none */
+	const snes_img_entry *theme_thumb[SNES_THEME_MAX];
 	float sub_rep_t;              /* submenu D-pad auto-repeat countdown (navFire) */
 	int sub_rep_ctrl;             /* held D-pad for repeat: 1 up, 2 down, 3 left, 4 right, 0 none */
 
@@ -227,6 +233,10 @@ void snes_menu_set_console_badges(snes_menu *m, const unsigned char *types,
 /* If A/Start launched a ROM, returns its index and clears the flag; else -1. */
 int snes_menu_take_launch(snes_menu *m);
 int snes_menu_take_sysreset(snes_menu *m);
+/* The Theme row: n thumbnails (172x98, any may be 0) and the theme in use. */
+void snes_menu_set_themes(snes_menu *m, int n, const snes_img_entry *const *thumbs, int applied);
+/* If A picked another theme on the Display page, returns its index and clears it; else -1. */
+int snes_menu_take_theme(snes_menu *m);
 
 /* Overwrite the label of Options toggle row idx (0..2) in place; lets the LK layer
  * repurpose the cosmetic toggles as real settings. 0 ok, <0 if it does not fit. */

@@ -23,7 +23,8 @@ bootloader, before any operating system, and owns the hardware outright.
 - **Everything on the card.** Emulators, settings, saves, states and box art all live on the
   microSD card. Swap the card, swap the whole setup.
 - **The good stuff from the start.** Rewind, fast forward, save states, suspend points, scanline
-  and LCD filters, colour correction and backlight black frame insertion, in a box art menu.
+  and LCD filters, colour correction and backlight black frame insertion, in a box art menu with
+  themes (Classic and GBA Indigo, picked on the Display page).
 
 ## Screenshots
 
@@ -34,11 +35,13 @@ Captured on a Konkr Pocket Advance.
 | ![Game list with the demo games](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/demo-games.png) | ![Suspend points](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/suspend-points.png) |
 | The game list, every system in one row, with the demo games from this release | Suspend points, made when you reset a game |
 | ![Display settings](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/display.png) | ![Options](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/options.png) |
-| Display: CRT filter, 4:3 or pixel perfect, and a frame around the game | Options: menu and BIOS sounds, burn-in reduction, Boot to Android |
+| Display: CRT filter, 4:3 or pixel perfect, and the menu theme | Options: menu and BIOS sounds, burn-in reduction, Boot to Android |
 | ![In game](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/in-game.png) | ![The Pico menu](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu.png) |
 | In game, with the LCD filter | The Pico menu over the game (Menu button) |
 | ![More of the Pico menu](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu-more.png) | ![Core Settings](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/core-settings.png) |
 | Run-ahead, rewind, BFI, the live panel refresh and the core choice | Core Settings: each core's own options |
+| ![The GBA Indigo theme](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/theme-gba-indigo.png) | ![Display in GBA Indigo](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/theme-gba-indigo-display.png) |
+| The GBA Indigo theme | The Display page in GBA Indigo, with the Theme row |
 
 ## Buttons
 

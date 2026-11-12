@@ -415,6 +415,63 @@ static int load_pack(void)
 	return 0;
 }
 
+/* Menu themes (pack_snes.py --theme): per theme a thumbnail "theme_thumb_NN_<name>", a UI atlas
+ * "theme_atlas_NN_<name>" and optionally a home wallpaper "theme_wall_NN_<name>", NN its place in
+ * the list. The first theme's atlas and wallpaper are the images every sprite and the wallpaper
+ * draw from; the saved theme (the hash of its name, 0 = the first) is applied by pointing those
+ * image entries at the theme's pixels, once per pack load and before the menu builds its caches. A
+ * theme missing from the pack, or an image of another size, leaves the first theme's. */
+static int s_theme_n, s_theme_cur;
+static uint32_t s_theme_hash[SNES_THEME_MAX];
+static const snes_img_entry *s_theme_thumb[SNES_THEME_MAX], *s_theme_atlas[SNES_THEME_MAX];
+static const snes_img_entry *s_theme_wall[SNES_THEME_MAX];
+static int s_keep_focus = -1;   /* the game focused when a theme was picked: kept over the reload */
+static int theme_id(const char *id, const char *pfx, int *nn, const char **name)
+{
+	while (*pfx)
+		if (*id++ != *pfx++) return 0;
+	if (id[0] < '0' || id[0] > '9' || id[1] < '0' || id[1] > '9' || id[2] != '_' || !id[3]) return 0;
+	*nn = (id[0] - '0') * 10 + (id[1] - '0');
+	*name = id + 3;
+	return 1;
+}
+static void theme_apply(void)
+{
+	extern unsigned int ayaneo_get_menu_theme(void);
+	uint32_t want = ayaneo_get_menu_theme(), i;
+	int k;
+	for (k = 0; k < SNES_THEME_MAX; k++) { s_theme_hash[k] = 0; s_theme_thumb[k] = 0; s_theme_atlas[k] = 0; s_theme_wall[k] = 0; }
+	s_theme_n = 0; s_theme_cur = 0;
+	for (i = 0; i < s_pk.hdr->res_count; i++) {
+		const snes_res_entry *e = &s_pk.res[i];
+		const char *name;
+		int nn;
+		if (!e->id_hash || e->type != RES_TEXTURE || e->index >= s_pk.hdr->img_count) continue;
+		if (theme_id(snes_str(&s_pk, e->id_str), "theme_thumb_", &nn, &name) && nn < SNES_THEME_MAX) {
+			s_theme_thumb[nn] = &s_pk.img[e->index];
+			s_theme_hash[nn] = snes_hash(name);
+		} else if (theme_id(snes_str(&s_pk, e->id_str), "theme_atlas_", &nn, &name) && nn < SNES_THEME_MAX)
+			s_theme_atlas[nn] = &s_pk.img[e->index];
+		else if (theme_id(snes_str(&s_pk, e->id_str), "theme_wall_", &nn, &name) && nn < SNES_THEME_MAX)
+			s_theme_wall[nn] = &s_pk.img[e->index];
+	}
+	while (s_theme_n < SNES_THEME_MAX && s_theme_thumb[s_theme_n] && s_theme_atlas[s_theme_n]) s_theme_n++;
+	if (want)
+		for (k = 1; k < s_theme_n; k++)
+			if (s_theme_hash[k] == want) { s_theme_cur = k; break; }
+	if (s_theme_cur > 0) {
+		snes_img_entry *base = (snes_img_entry *)s_theme_atlas[0];   /* the pack is ours, in DRAM */
+		const snes_img_entry *t = s_theme_atlas[s_theme_cur];
+		if (t->w == base->w && t->h == base->h && t->flags == base->flags) base->pixels = t->pixels;
+		else s_theme_cur = 0;
+	}
+	if (s_theme_cur > 0 && s_theme_wall[0] && s_theme_wall[s_theme_cur]) {
+		snes_img_entry *base = (snes_img_entry *)s_theme_wall[0];
+		const snes_img_entry *t = s_theme_wall[s_theme_cur];
+		if (t->w == base->w && t->h == base->h && t->flags == base->flags) base->pixels = t->pixels;
+	}
+}
+
 /* Clean a ROM file name for the title: drop the ".gba" extension and the trailing
  * No-Intro region/dump tag groups " (USA)", " (Rev 1)", " [!]" ... (the SNES title
  * font also lacks '(' ')' ',' glyphs, so these would render as gaps). Trailing
@@ -679,6 +736,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	}
 
 	if (load_pack() != 0) { ayaneo_set_cpu_mhz(saved_mhz); return -2; }
+	theme_apply();   /* the saved theme's atlas, before the menu builds its caches from it */
 
 	if (snes_menu_init(&s_menu, &s_pk, (snes_rnode *)SNES_HOME_PA, HOME_CAP,
 			   (snes_rnode *)SNES_BG_PA, BG_CAP, (uint32_t *)SNES_WP_PA,
@@ -707,6 +765,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 				     snes_res_img(&s_pk, snes_hash("logo_sms")),
 				     snes_res_img(&s_pk, snes_hash("logo_gg")),
 				     snes_res_img(&s_pk, snes_hash("logo_sg")));
+	snes_menu_set_themes(&s_menu, s_theme_n, s_theme_thumb, s_theme_cur);   /* Display: the Theme row */
 	/* initial focus (start_sel) is applied after apply_filter() below, which resets focus */
 
 	/* Card-tile cache: cap SNES_CTILE2_CAP slots. Without boxart every GBA card body
@@ -768,6 +827,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * apply_filter() to swap in a single-system view (see cycle_filter). */
 	s_sysfilter = -1;
 	apply_filter(nrom);
+	if (s_keep_focus >= 0) { start_sel = s_keep_focus; s_keep_focus = -1; }   /* back from a theme change */
 	if (start_sel >= 0 && start_sel < s_vn) s_menu.focus = start_sel;
 
 	/* Repurpose the top two cosmetic Options toggles as functional, persisted
@@ -903,19 +963,20 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		}
 		}	/* end debounce block */
 
-		/* entry gate: while a launch button (A / Start) is still held from the close
-		 * or launch, force it off so no launch edge fires; clear once both release. */
-		if (launch_gate) {
-			if (in.a || in.start) { in.a = 0; in.start = 0; }
-			else launch_gate = 0;
-		}
-
 		/* fastboot-injected key: OR one button on for g_dbg_key_hold frames. */
 		if (g_dbg_key_hold > 0) {
 			int *b[10] = { &in.left, &in.right, &in.up, &in.down, &in.a,
 				       &in.b, &in.select, &in.start, &in.lb, &in.rb };
 			if (g_dbg_key >= 0 && g_dbg_key < 10) *b[g_dbg_key] = 1;
 			g_dbg_key_hold--;
+		}
+
+		/* entry gate: while a launch button (A / Start) is still held from the close, the
+		 * launch or a theme reload, force it off so no launch edge fires; clear once both
+		 * release. After the injected key, which it covers like a real one. */
+		if (launch_gate) {
+			if (in.a || in.start) { in.a = 0; in.start = 0; }
+			else launch_gate = 0;
 		}
 
 		g_menu_live = 1;
@@ -1040,6 +1101,25 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			g_dbg_snes_launch = 0;
 			for (i = 0; i < s_vn && i < 128; i++)   /* search the current view (index space the menu uses) */
 				if (s_vtypes[i] == GBA_CONSOLE_SNES && dbg_name_match(s_vnameptr[i], g_dbg_snes_name)) { s_menu.launch = i; g_dbg_snes_chosen = s_vnameptr[i]; break; }
+		}
+		/* Display > Theme picked another theme: save it (written before the card is read again)
+		 * and hand back -3, the caller runs the menu again, which loads the pack in the new theme */
+		{
+			int tr = snes_menu_take_theme(&s_menu);
+			if (tr > 0 || (tr == 0 && s_theme_cur != 0)) {
+				extern void ayaneo_set_menu_theme(unsigned int hash);
+				extern void ayaneo_settings_persist_flush(void);
+				if (tr < s_theme_n) {
+					ayaneo_set_menu_theme(tr == 0 ? 0u : s_theme_hash[tr]);
+					ayaneo_menu_settings_persist();
+					ayaneo_settings_persist_flush();
+					s_keep_focus = s_menu.focus;   /* a view index, like start_sel below */
+					snes_audio_init(&s_mix);
+					ayaneo_menu_audio_silence();
+					ayaneo_set_cpu_mhz(saved_mhz);
+					return -3;
+				}
+			}
 		}
 		launch = snes_menu_take_launch(&s_menu);
 		/* the menu returns a VIEW index (current filter); map it back to the full roms[] index */

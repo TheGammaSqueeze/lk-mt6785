@@ -2226,6 +2226,8 @@ static int gba_sd_rom_select(void)
 		int r;
 		sd_bg_wait();   /* fast path: the card listing may still be running */
 		r = gba_snes_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
+		while (r == -3)   /* a theme was picked on the Display page: the menu again, in that theme */
+			r = gba_snes_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
 		if (r >= 0) return r;
 	}
 	for (;;) {

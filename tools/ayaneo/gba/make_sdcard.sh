@@ -22,9 +22,18 @@ mkdir -p out
 echo ">> Generating GBA cartridge placeholder"
 python3 tools/ayaneo/gba/gen_gba_cart.py out/gba_cart.png
 
+# Menu themes (tools/ayaneo/snes/themes/<name>/): classic first, its atlas is the asset tree's own,
+# then every other theme folder in name order, each with its own UI atlas. Picked on the Display page.
+THEMES_DIR="$ROOT/tools/ayaneo/snes/themes"
+THEME_ARGS=(--theme "classic=$THEMES_DIR/classic")
+for t in "$THEMES_DIR"/*/; do
+	t="${t%/}"; n="$(basename "$t")"
+	[ "$n" = classic ] || THEME_ARGS+=(--theme "$n=$t")
+done
+
 echo ">> Packing menu assets"
 python3 tools/ayaneo/snes/pack_snes.py "$SNES_ASSETS" out/snes_pack.bin \
-	--rgb565 --gba-cart out/gba_cart.png \
+	--rgb565 --gba-cart out/gba_cart.png "${THEME_ARGS[@]}" \
 	--logo-gb      tools/ayaneo/snes/logos/gb.png \
 	--logo-gbc     tools/ayaneo/snes/logos/gbc.png \
 	--logo-gba     tools/ayaneo/snes/logos/gba.png \

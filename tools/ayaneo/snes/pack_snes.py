@@ -484,6 +484,13 @@ def main():
                     help="PNG registered as resource 'logo_gg' (Game Gear card badge)")
     ap.add_argument("--logo-sg", dest="logo_sg", default=None,
                     help="PNG registered as resource 'logo_sg' (SG-1000 card badge)")
+    ap.add_argument("--theme", dest="themes", action="append", default=[], metavar="NAME=DIR",
+                    help="a menu theme, in list order: DIR/thumbnail.png (172x98, the Display page's "
+                         "Theme row) and, except for the theme drawn by the asset tree itself, "
+                         "DIR/packed.png (the UI atlas, the same size as sprites/packed.png), and "
+                         "optionally DIR/wall.png (the home wallpaper, the size of the tree's wall.png). "
+                         "Registered as 'theme_thumb_NN_NAME', 'theme_atlas_NN_NAME' and "
+                         "'theme_wall_NN_NAME'; the first theme's atlas and wallpaper are the tree's own")
     args = ap.parse_args()
 
     asset_dir = args.asset_dir
@@ -499,6 +506,8 @@ def main():
     res_map = {}          # id -> (RES_*, per-type index)
     img_entries = []      # (w,h,flags,pixels_off)
 
+    img_by_path = {}      # normalised png path -> image index (the themes find the UI atlas)
+
     def add_image(path, tile=False):
         dec = decode_image(path, rgb565, tile)
         if dec is None:
@@ -508,6 +517,7 @@ def main():
         px_off = blob.write(pixels)
         idx = len(img_entries)
         img_entries.append((w, h, flags, px_off))
+        img_by_path[os.path.normpath(path)] = idx
         return idx
 
     def is_tile(path):
@@ -850,27 +860,58 @@ def main():
         blob.write(rec)
         game_recs.append(rec_off)
 
-    # ---- decorative frame thumbnails (option_display line2 Frame strip) ----
-    # The DecorativeFrames Lua populates the horizontal frame strip at runtime
-    # from frames/<theme>/<theme>_thumbnail.png. Pack each theme's thumbnail keyed
-    # by "frame_thumb_<theme>" so the native render can look it up by name.
-    frames_dir = os.path.join(asset_dir, "frames")
-    if os.path.isdir(frames_dir):
-        for folder in sorted(os.listdir(frames_dir)):
-            tp = os.path.join(frames_dir, folder, folder + "_thumbnail.png")
-            if os.path.exists(tp):
-                fidx = add_image(tp, False)
-                if fidx is not None:
-                    res_map["frame_thumb_" + folder] = (RES_TEXTURE, fidx)
-            # the two mode previews (Display line1 reskins on Apply): the 4:3/CRT
-            # modes use <folder>_4_3_preview, DotByDot uses _pixel_perfect_preview.
-            for suf, key in (("_4_3_preview", "frame_preview_43_"),
-                             ("_pixel_perfect_preview", "frame_preview_pp_")):
-                pp = os.path.join(frames_dir, folder, folder + suf + ".png")
-                if os.path.exists(pp):
-                    pidx = add_image(pp, False)
-                    if pidx is not None:
-                        res_map[key + folder] = (RES_TEXTURE, pidx)
+    # ---- menu themes (option_display line2, the Theme row) ----
+    # GammaOS Pico turns the Display page's Frame row into a theme picker, so the decorative frame
+    # thumbnails and previews are not packed. Each theme is a thumbnail and, past the first, a full UI
+    # atlas the LK points the tree's atlas entry at when the theme is chosen. The first theme's atlas
+    # is the tree's own sprites/packed.png, registered under its theme name as well.
+    base_atlas = img_by_path.get(os.path.normpath(os.path.join(asset_dir, "sprites", "packed.png")))
+    base_wall = img_by_path.get(os.path.normpath(os.path.join(
+        asset_dir, "layout", "asset", "sprite", "wallpaper", "wall.png")))
+    for n, spec in enumerate(args.themes):
+        if "=" not in spec:
+            raise SystemExit("--theme wants NAME=DIR, got %r" % spec)
+        name, tdir = spec.split("=", 1)
+        if not name or any(c in name for c in "/\\ "):
+            raise SystemExit("bad theme name %r" % name)
+        key = "%02d_%s" % (n, name)
+        thumb = os.path.join(tdir, "thumbnail.png")
+        if not os.path.exists(thumb):
+            raise SystemExit("theme %s: no %s" % (name, thumb))
+        tix = add_image(thumb, False)
+        res_map["theme_thumb_" + key] = (RES_TEXTURE, tix)
+        atlas = os.path.join(tdir, "packed.png")
+        if n == 0:
+            if base_atlas is None:
+                raise SystemExit("the asset tree has no sprites/packed.png for the first theme")
+            aix = base_atlas
+        else:
+            if not os.path.exists(atlas):
+                raise SystemExit("theme %s: no %s" % (name, atlas))
+            aix = add_image(atlas, False)
+            bw, bh, bf, _ = img_entries[base_atlas]
+            w, h, f, _ = img_entries[aix]
+            if (w, h, f) != (bw, bh, bf):
+                raise SystemExit("theme %s: atlas %dx%d flags %d, the tree's is %dx%d flags %d"
+                                 % (name, w, h, f, bw, bh, bf))
+        res_map["theme_atlas_" + key] = (RES_TEXTURE, aix)
+        # the home wallpaper: a theme without one keeps the tree's
+        wix = None
+        wall = os.path.join(tdir, "wall.png")
+        if n == 0:
+            wix = base_wall
+        elif os.path.exists(wall):
+            if base_wall is None:
+                raise SystemExit("theme %s: the asset tree has no wallpaper to replace" % name)
+            wix = add_image(wall, tile=True)
+            bw, bh, bf, _ = img_entries[base_wall]
+            w, h, f, _ = img_entries[wix]
+            if (w, h, f) != (bw, bh, bf):
+                raise SystemExit("theme %s: wallpaper %dx%d flags %d, the tree's is %dx%d flags %d"
+                                 % (name, w, h, f, bw, bh, bf))
+        if wix is not None:
+            res_map["theme_wall_" + key] = (RES_TEXTURE, wix)
+        print("added theme %s (thumbnail %d, atlas %d, wallpaper %s)" % (key, tix, aix, wix))
 
     # ---- extra image: GBA cartridge placeholder (drawn as every card's boxart) ----
     if args.gba_cart:
