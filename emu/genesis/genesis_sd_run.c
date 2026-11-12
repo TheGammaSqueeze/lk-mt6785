@@ -23,6 +23,7 @@ extern void     ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw
 extern void     ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz);
 extern void     ayaneo_menu_audio_silence(void);
 extern void     ayaneo_gbc_audio_pause(int on);
+extern int      gba_launch_continues(void);   /* the game opening carries on from its suspend point (gba_snes_menu.c) */
 extern void     ayaneo_display_prepare(void);
 extern unsigned gpt4_get_current_tick(void);
 extern void     mtk_wdt_restart(void);
@@ -298,7 +299,7 @@ static const char *gm_label(int i) { switch (i) {
 	case GM_ASPECT: return "Aspect Ratio"; case GM_FILTER: return "LCD Filter";
 	case GM_REGION: return "Region"; case GM_REFRESH: return "Refresh Rate";
 	case GM_RUNAHEAD: return "Run-Ahead"; case GM_REWIND: return "Rewind"; case GM_CPU: return "CPU Clock";
-	case GM_STROBE: return "BFI"; case GM_RESUME: return "Resume Game on Boot";
+	case GM_STROBE: return "BFI"; case GM_RESUME: return "Resume on Power On";
 	case GM_SHOWFPS: return "Show FPS"; case GM_BATTERY: return "Battery";
 	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
 	case GM_RESET: return "Reset Game"; case GM_EXIT: return "Exit Game"; } return ""; }
@@ -508,8 +509,9 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	if (c->sram_ptr() && c->sram_size())
 		gba_sd_load_sav(vol, rom->name, (unsigned char *)c->sram_ptr(), c->sram_size());
 
-	/* suspend-resume: reload the auto-saved state unless B is held at launch (fresh start) */
-	if (!PRESSED(GPIO_B)) {
+	/* suspend-resume: reload the auto-saved state unless B is held at launch (fresh start) or
+	 * Resume on Game Open is off */
+	if (!PRESSED(GPIO_B) && gba_launch_continues()) {
 		ssz = c->state_size();
 		if (ssz && ssz <= GEN_STATE_CAP) {
 			unsigned n = gba_sd_read_named(vol, "/states/genesis", rom->name, "sus",

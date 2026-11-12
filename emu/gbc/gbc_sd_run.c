@@ -29,6 +29,7 @@ extern void     ayaneo_idle_until(unsigned target_tick);
 extern void     ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count);
 extern void     ayaneo_menu_audio_silence(void);
 extern void     ayaneo_gbc_audio_pause(int on);
+extern int      gba_launch_continues(void);   /* the game opening carries on from its suspend point (gba_snes_menu.c) */
 extern void     ayaneo_display_prepare(void);
 extern unsigned gpt4_get_current_tick(void);
 extern void     mtk_wdt_restart(void);
@@ -322,7 +323,7 @@ static const char *gm_label(int i)
 	case GM_BFI:     return "BFI";
 	case GM_SHOWFPS: return "Show FPS";
 	case GM_BATTERY: return "Battery";
-	case GM_RESUME:  return "Resume Game on Boot";
+	case GM_RESUME:  return "Resume on Power On";
 	case GM_SLOT:    return "Save Slot";
 	case GM_SAVE:    return "Save State";
 	case GM_LOAD:    return "Load State";
@@ -394,9 +395,11 @@ static int gm_change(int i, int dir, int act)
 					 gbc_pal_save(s_menu_vol, s_menu_rom->name, *s_menu_pal);
 				 } else if (dir) { int n = dmg_pal_count(s_menu_c); *s_menu_pal = (*s_menu_pal + dir + n) % n; apply_dmg_palette(s_menu_c, *s_menu_pal); }
 			 } changed = 0; break;
-	case GM_COLORCC: if (dir) { s_cc_on = !s_cc_on; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
-	case GM_CCMODE:  if (dir) { s_cc_mode = !s_cc_mode; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
-	case GM_DARK:    if (dir) { s_dark += dir * 10; if (s_dark < 0) s_dark = 0; if (s_dark > 100) s_dark = 100; apply_color_knobs(s_menu_c); gbc_prefs_save(s_menu_vol); } changed = 0; break;
+	/* (the colour preferences go to the card when the game ends or the power goes off: a card write
+	 * here held the running game for several frames, and its sound stuttered) */
+	case GM_COLORCC: if (dir) { s_cc_on = !s_cc_on; apply_color_knobs(s_menu_c); } changed = 0; break;
+	case GM_CCMODE:  if (dir) { s_cc_mode = !s_cc_mode; apply_color_knobs(s_menu_c); } changed = 0; break;
+	case GM_DARK:    if (dir) { s_dark += dir * 10; if (s_dark < 0) s_dark = 0; if (s_dark > 100) s_dark = 100; apply_color_knobs(s_menu_c); } changed = 0; break;
 	case GM_PREEMPT: if (dir) ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + dir + 4) % 4); else changed = 0; break;
 	case GM_REWIND:  { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
 			   if (dir || act) ayaneo_set_rewind(!ayaneo_get_rewind()); else changed = 0; } break;
@@ -590,7 +593,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * resumes where it was left, unless B is held (start fresh). Mirrors the GBA
 	 * flow. The state file is keyed by the ROM name; gambatte validates it against
 	 * the loaded ROM and no-ops on a mismatch. */
-	if (GBC_SUSPEND && !PRESSED(GPIO_B)) {
+	if (GBC_SUSPEND && !PRESSED(GPIO_B) && gba_launch_continues()) {
 		unsigned n = gba_sd_read_named(vol, "/states/gba", rom->name, "sus", ahead, 0x00A00000u);
 		if (n)
 			c->state_load(ahead, n);

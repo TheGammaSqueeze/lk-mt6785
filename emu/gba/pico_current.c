@@ -41,7 +41,17 @@ extern void ayaneo_set_cpu_mhz(unsigned int mhz);
 extern void ayaneo_menu_audio_silence(void);
 extern void ayaneo_menu_settings_persist(void);
 extern void ayaneo_settings_persist_flush(void);
-extern unsigned int ayaneo_get_menu_theme(void);
+extern int  ayaneo_get_skip_gba_intro(void);
+extern void ayaneo_set_skip_gba_intro(int v);
+extern int  ayaneo_get_intro_black(void);
+extern void ayaneo_set_intro_black(int v);
+extern int  ayaneo_get_resume_on_boot(void);
+extern void ayaneo_set_resume_on_boot(int v);
+extern int  ayaneo_get_intro_on_resume(void);
+extern void ayaneo_set_intro_on_resume(int v);
+extern int  ayaneo_get_resume_on_open(void);
+extern void ayaneo_set_resume_on_open(int v);
+extern unsigned int gba_menu_theme(void);   /* the theme in use (gba_snes_menu.c): Current unless another was picked */
 extern int  ayaneo_get_menu_colour(void);
 extern void ayaneo_set_menu_colour(int c);
 extern void ayaneo_set_menu_theme(unsigned int hash);
@@ -53,6 +63,7 @@ extern int  ayaneo_get_mute_bios(void);
 extern void ayaneo_set_mute_bios(int v);
 extern void ayaneo_boot_to_os(void);
 extern int  gba_battery_pct(int *charging);
+extern int  gba_battery_last(int *charging);
 extern volatile int g_menu_live;
 /* shared with the classic menu (gba_snes_menu.c) */
 extern void gba_menu_read_input(snes_input *in);
@@ -460,10 +471,19 @@ static void text_fit(const cfont *f, int x, int y, const char *s, uint32_t rgb, 
 }
 
 /* ---- the theme's art and type, looked up once per pack load -------------------------------- */
-enum { SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_MUTE_BIOS, SET_BOOT_OS, SET_N };   /* the settings rows */
+/* the settings rows: the main list, then the two subsections it opens */
+enum { SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_BIOS, SET_RESUME, SET_BOOT_OS,
+       SET_SKIP_INTRO, SET_INTRO_BG, SET_MUTE_BIOS, SET_INTRO_RESUME, SET_RESUME_BOOT, SET_RESUME_OPEN, SET_N };
+enum { SPAGE_MAIN, SPAGE_BIOS, SPAGE_RESUME, SPAGE_N };
+static const signed char k_set_page[SPAGE_N][9] = {
+	{ SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_BIOS, SET_RESUME, SET_BOOT_OS, -1 },
+	{ SET_SKIP_INTRO, SET_INTRO_BG, SET_MUTE_BIOS, SET_INTRO_RESUME, -1 },
+	{ SET_RESUME_BOOT, SET_RESUME_OPEN, -1 },
+};
+static const char *const k_set_page_name[SPAGE_N] = { "", "BIOS boot", "Game resume" };
 static struct {
 	cimg hw[NSYS], logo[NSYS], slogo[NSYS], llogo[NSYS], alogo[NSYS];
-	cimg rail[3], railf[3], ic_library, ic_play, ic_set[SET_N], gamma, shadow, glow, ring, pillm;
+	cimg rail[3], railf[3], ic_library, ic_play, ic_set[SET_N], ic_chev, gamma, shadow, glow, ring, pillm;
 	cfont brand, sub, realm, rail_t, railf_t, tag13, tag11, count, lib, button, row, rowf, info,
 	      srow, srowf, sval, dname, dnum, dunit, hintc, hint, empty;
 	int nthemes;
@@ -474,7 +494,8 @@ static void art_load(void)
 {
 	static const char *sys[NSYS] = { "gb", "gbc", "gba", "snes", "genesis", "sms", "gg", "sg" };
 	static const char *rail[3] = { "games", "resume", "settings" };
-	static const char *setic[SET_N] = { "sun", "sound", "bfi", "display", "colour", "mute", "power" };
+	static const char *setic[SET_N] = { "sun", "sound", "bfi", "display", "colour", "bios", "rsm", "power",
+					    "bios", "display", "mute", "rsm", "rsm", "rsm" };
 	char n[32];
 	int i;
 	for (i = 0; i < NSYS; i++) {
@@ -489,6 +510,7 @@ static void art_load(void)
 		snprintf(n, sizeof n, "ic_%s_f", rail[i]); A.railf[i] = img(n);
 	}
 	for (i = 0; i < SET_N; i++) { snprintf(n, sizeof n, "ic_%s", setic[i]); A.ic_set[i] = img(n); }
+	A.ic_chev = img("ic_chev");
 	A.ic_library = img("ic_library"); A.ic_play = img("ic_play"); A.gamma = img("gamma");
 	A.shadow = img("shadow"); A.glow = img("glow"); A.ring = img("hint_ring"); A.pillm = img("hint_pill");
 	A.brand = font("f_brand"); A.sub = font("f_sub"); A.realm = font("f_realm");
@@ -530,6 +552,7 @@ static struct {
 	float dip;                        /* 1..0, the short dip of a screen change */
 	int lib_sel[NSYS], lib_top[NSYS];
 	int res_sel, set_sel, theme_pick;
+	int set_page;                     /* the settings list shown: the main one or a subsection */
 	int nrec, rec[NRECENT];           /* recently played, rom indices, newest first */
 	int batt, chg;
 	unsigned int batt_tick;
@@ -1064,7 +1087,17 @@ static void home_resume(void)
 		  (int)(720 * .36f - 22), "Recently played");
 }
 /* the saved form of theme i: 0 for the first, the hash of its name for the others */
-static unsigned int theme_hash(int i) { return i <= 0 ? 0u : snes_hash(A.theme_id[i]); }
+static unsigned int theme_hash(int i) { return snes_hash(A.theme_id[i < 0 ? 0 : i]); }
+static const char *const k_set_name[SET_N] = { "Brightness", "Volume", "Black Frame Insertion", "Theme", "Colour",
+	"BIOS Boot", "Game Resume", "Boot to Android",
+	"Skip BIOS Intro", "BIOS Intro Background", "Mute BIOS Audio", "BIOS Intro on Resume",
+	"Resume on Power On", "Resume on Game Open" };
+/* the line under a setting on the left, where it says more than its value */
+static const char *const k_set_about[SET_N] = { 0, 0, 0, 0, 0,
+	"The Game Boy Advance start-up screen", "Where games carry on from", "Restart into Android",
+	"Start games without the logo screen", "Behind the logo at start-up", "The start-up chime",
+	"The logo first, then the resumed game fades in",
+	"Power on straight back into the game you left", "Games carry on where you left them (B: fresh)" };
 static void set_value(int i, char *buf, int n, int *num)
 {
 	*num = -1;
@@ -1074,25 +1107,44 @@ static void set_value(int i, char *buf, int n, int *num)
 	case SET_BFI:    snprintf(buf, n, "%s", ayaneo_strobe_name(ayaneo_get_strobe())); break;
 	case SET_THEME:  snprintf(buf, n, "%s", S.theme_pick < A.nthemes ? A.theme_label[S.theme_pick] : ""); break;
 	case SET_COLOUR: snprintf(buf, n, "%s", k_colour[g_colour].name); break;
-	case SET_MUTE_BIOS: snprintf(buf, n, "%s", ayaneo_get_mute_bios() ? "On" : "Off"); break;
+	case SET_BIOS: case SET_RESUME: buf[0] = 0; break;   /* a subsection: its chevron */
+	case SET_SKIP_INTRO:  snprintf(buf, n, "%s", ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
+	case SET_INTRO_BG:    snprintf(buf, n, "%s", ayaneo_get_intro_black() ? "Black" : "White"); break;
+	case SET_MUTE_BIOS:   snprintf(buf, n, "%s", ayaneo_get_mute_bios() ? "On" : "Off"); break;
+	case SET_INTRO_RESUME: snprintf(buf, n, "%s", ayaneo_get_intro_on_resume() ? "On" : "Off"); break;
+	case SET_RESUME_BOOT: snprintf(buf, n, "%s", ayaneo_get_resume_on_boot() ? "On" : "Off"); break;
+	case SET_RESUME_OPEN:   snprintf(buf, n, "%s", ayaneo_get_resume_on_open() ? "On" : "Off"); break;
 	default: snprintf(buf, n, "Open"); break;
 	}
 }
+static int set_count(int page) { int n = 0; while (n < 9 && k_set_page[page][n] >= 0) n++; return n; }
+static int set_item(void) { return k_set_page[S.set_page][S.set_sel]; }
 static void home_settings(void)
 {
-	static const char *names[SET_N] = { "Brightness", "Volume", "Black Frame Insertion", "Theme", "Colour",
-					    "Mute BIOS Audio", "Boot to Android" };
-	static char vals[SET_N][24];
-	const char *vp[SET_N];
-	float top = 720 * .315f, xx = s_uw * .46f, lw = s_uw - s_p - xx, mid = top + 35, sw = s_uw * .255f;
-	int i, num;
-	for (i = 0; i < SET_N; i++) { set_value(i, vals[i], sizeof vals[i], &num); vp[i] = vals[i]; }
-	rows(xx, top, lw, 720 * .08f < 58 ? 720 * .08f : 58, names, vp, SET_N, S.set_sel, &A.srow, &A.srowf, &A.sval);
+	static char vals[9][24];
+	const char *names[9], *vp[9];
+	float top = 720 * .315f, xx = s_uw * .46f, lw = s_uw - s_p - xx, mid = top + 35, sw = s_uw * .255f, pitch;
+	int i, num, n = set_count(S.set_page), it = set_item();
+	pitch = (720 - 62 - top) / n;
+	if (pitch > 57.6f) pitch = 57.6f;
+	for (i = 0; i < n; i++) {
+		int k = k_set_page[S.set_page][i];
+		names[i] = k_set_name[k];
+		set_value(k, vals[i], sizeof vals[i], &num); vp[i] = vals[i];
+	}
+	if (S.set_page) text(&A.tag13, U(xx + 16), U(top - 22), k_set_page_name[S.set_page], C_MUTED, 256, 0, U(2), 1);
+	rows(xx, top, lw, pitch, names, vp, n, S.set_sel, &A.srow, &A.srowf, &A.sval);
+	for (i = 0; i < n; i++) {	/* the rows that open a subsection: a chevron where the value goes */
+		int k = k_set_page[S.set_page][i];
+		if (k == SET_BIOS || k == SET_RESUME)
+			draw_mask(&A.ic_chev, U(xx + lw - 12) - A.ic_chev.w, U(top + i * pitch) + (U(pitch) - A.ic_chev.h) / 2,
+				  i == S.set_sel ? C_INK : C_MUTED, 256);
+	}
 	/* the focused setting, large on the left */
 	if (sw > 270) sw = 270;
-	draw_mask(&A.ic_set[S.set_sel], U(s_p), U(mid), C_ACCENT, 256);
-	text(&A.dname, U(s_p), U(mid + 93), names[S.set_sel], C_INK, 256, 0, 0, 0);
-	set_value(S.set_sel, vals[0], sizeof vals[0], &num);
+	draw_mask(&A.ic_set[it], U(s_p), U(mid), C_ACCENT, 256);
+	text(&A.dname, U(s_p), U(mid + 93), k_set_name[it], C_INK, 256, 0, 0, 0);
+	set_value(it, vals[0], sizeof vals[0], &num);
 	if (num >= 0) {
 		char t[8];
 		int w;
@@ -1102,12 +1154,14 @@ static void home_settings(void)
 		fill(U(s_p), U(mid + 176), U(sw), U(3), C_MUTED, 77);
 		fill(U(s_p), U(mid + 176), U(sw) * num / 100, U(3), C_ACCENT, 256);
 		disc(U(s_p) + U(sw) * num / 100 + .0f, U(mid + 177.5f) + .0f, U(5.3f) + .0f, C_INK, 256);
-	} else if (S.set_sel == SET_BOOT_OS) {
-		text(&A.lib, U(s_p), U(mid + 141), "Restart into Android", C_MUTED, 256, 0, 0, 0);
+	} else if (it == SET_BOOT_OS || it == SET_BIOS || it == SET_RESUME) {
+		text(&A.lib, U(s_p), U(mid + 141), k_set_about[it], C_MUTED, 256, 0, 0, 0);
 	} else {
 		text(&A.dname, U(s_p), U(mid + 141), vals[0], C_INK, 256, 0, 0, 0);
-		if (S.set_sel == SET_THEME && A.nthemes && theme_hash(S.theme_pick) != ayaneo_get_menu_theme())
+		if (it == SET_THEME && A.nthemes && theme_hash(S.theme_pick) != gba_menu_theme())
 			text(&A.lib, U(s_p), U(mid + 178), "Press A to apply", C_MUTED, 256, 0, 0, 0);
+		else if (k_set_about[it])
+			text(&A.lib, U(s_p), U(mid + 178), k_set_about[it], C_MUTED, 256, 0, 0, 0);
 	}
 }
 static void library(void)
@@ -1141,6 +1195,7 @@ static void ui_compose(void)
 	static const char *hc_res[2] = { "A", "LR" }, *hl_res[2] = { "Resume", "Section" };
 	static const char *hc_set[2] = { "A", "LR" }, *hl_set[2] = { "Select", "Section" };
 	static const char *hc_lib[2] = { "A", "B" }, *hl_lib[2] = { "Launch", "Back" };
+	static const char *hc_sub[2] = { "A", "B" }, *hl_sub[2] = { "Select", "Back" };
 	g_fb = (uint32_t *)CUR_UI_PA;
 	ui_clear();
 	g_track = 1;
@@ -1154,6 +1209,7 @@ static void ui_compose(void)
 		header(S.tab == TAB_SETTINGS ? "Settings" : "Home");
 		if (S.tab == TAB_GAMES) hints(hc_games, hl_games, 2);
 		else if (S.tab == TAB_RESUME) { if (S.nrec) hints(hc_res, hl_res, 2); else hints(hc_res + 1, hl_res + 1, 1); }
+		else if (S.set_page) hints(hc_sub, hl_sub, 2);
 		else hints(hc_set, hl_set, 2);
 	}
 	g_track = 0;
@@ -1238,6 +1294,7 @@ static int reverse_rmax(void)
 	return (int)r;
 }
 static void igm_forget(void);   /* the in-game menu (the end of this file) */
+static void igm_preload(void);
 /* a game was picked: arm the opening (the frame on screen stays until it starts) */
 static void launch_arm(void)
 {
@@ -1315,6 +1372,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 		for (i = 0; i < (int)H; i++) memset(fb + i * pitch, 0, (size_t)W * 4);
 		ayaneo_canvas_present();
 	}
+	igm_preload();   /* the in-game menu's pack, where it is kept */
 	if (pack_load(W, H) != 0) { ayaneo_set_cpu_mhz(saved_mhz); return -2; }
 	g_W = (int)W; g_H = (int)H; g_s = (float)H / 720.0f;
 	s_uw = (float)W / g_s;
@@ -1329,7 +1387,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 	sin_init();
 	if (!S.ready) {	/* the first menu of this power on: Game Boy Advance, when the card has its games */
 		memset(S.lib_sel, 0, sizeof S.lib_sel); memset(S.lib_top, 0, sizeof S.lib_top);
-		S.tab = TAB_GAMES; S.lib = 0; S.set_sel = 0; S.res_sel = 0;
+		S.tab = TAB_GAMES; S.lib = 0; S.set_sel = 0; S.set_page = 0; S.res_sel = 0;
 		S.sys = sys_of(GBA_CONSOLE_GBA) >= 0 ? sys_of(GBA_CONSOLE_GBA) : 0;
 		S.ready = 1;
 	}
@@ -1340,7 +1398,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 		if (S.lib_sel[i] >= S.syscount[i]) { S.lib_sel[i] = 0; S.lib_top[i] = 0; }
 	S.theme_pick = 0;
 	for (i = 0; i < A.nthemes; i++)
-		if (theme_hash(i) == ayaneo_get_menu_theme()) S.theme_pick = i;
+		if (theme_hash(i) == gba_menu_theme()) S.theme_pick = i;
 	recent_load();
 	if (S.res_sel >= S.nrec) S.res_sel = 0;
 	S.batt = gba_battery_pct(&S.chg);
@@ -1424,29 +1482,41 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 					if (dn && S.res_sel < S.nrec - 1) S.res_sel++;
 					if ((ea || est) && S.nrec) rom = S.rec[S.res_sel];
 				} else {
-					int dir = rt ? 1 : lf ? -1 : 0;
+					int dir = rt ? 1 : lf ? -1 : 0, it, flip = dir || ea;
 					if (up && S.set_sel > 0) S.set_sel--;
-					if (dn && S.set_sel < SET_N - 1) S.set_sel++;
-					if (S.set_sel == SET_BRIGHT && dir) { ayaneo_brightness_step(dir); ayaneo_menu_settings_persist(); }
-					if (S.set_sel == SET_VOLUME && dir) {
+					if (dn && S.set_sel < set_count(S.set_page) - 1) S.set_sel++;
+					it = set_item();
+					if (eb && S.set_page) {	/* back to the main list, on the row that opened it */
+						S.set_sel = S.set_page == SPAGE_BIOS ? 5 : 6;
+						S.set_page = SPAGE_MAIN; S.dip = .45f;
+					} else if ((it == SET_BIOS || it == SET_RESUME) && (ea || rt)) {
+						S.set_page = it == SET_BIOS ? SPAGE_BIOS : SPAGE_RESUME; S.set_sel = 0; S.dip = .45f;
+					}
+					if (it == SET_BRIGHT && dir) { ayaneo_brightness_step(dir); ayaneo_menu_settings_persist(); }
+					if (it == SET_VOLUME && dir) {
 						int v = ayaneo_gbc_audio_get_volume() + dir * 5;
 						ayaneo_gbc_audio_set_volume(v < 0 ? 0 : v > 100 ? 100 : v);
 						ayaneo_menu_settings_persist();
 					}
-					if (S.set_sel == SET_MUTE_BIOS && (dir || ea)) { ayaneo_set_mute_bios(!ayaneo_get_mute_bios()); ayaneo_menu_settings_persist(); }
-					if (S.set_sel == SET_BFI && (dir || ea)) {
+					if (it == SET_MUTE_BIOS && flip) { ayaneo_set_mute_bios(!ayaneo_get_mute_bios()); ayaneo_menu_settings_persist(); }
+					if (it == SET_SKIP_INTRO && flip) { ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); ayaneo_menu_settings_persist(); }
+					if (it == SET_INTRO_BG && flip) { ayaneo_set_intro_black(!ayaneo_get_intro_black()); ayaneo_menu_settings_persist(); }
+					if (it == SET_INTRO_RESUME && flip) { ayaneo_set_intro_on_resume(!ayaneo_get_intro_on_resume()); ayaneo_menu_settings_persist(); }
+					if (it == SET_RESUME_BOOT && flip) { ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); ayaneo_menu_settings_persist(); }
+					if (it == SET_RESUME_OPEN && flip) { ayaneo_set_resume_on_open(!ayaneo_get_resume_on_open()); ayaneo_menu_settings_persist(); }
+					if (it == SET_BFI && flip) {
 						ayaneo_set_strobe((ayaneo_get_strobe() + (dir ? dir : 1) + 4) % 4);
 						ayaneo_menu_settings_persist();
 					}
-					if (S.set_sel == SET_THEME && dir && A.nthemes) S.theme_pick = (S.theme_pick + dir + A.nthemes) % A.nthemes;
-					if (S.set_sel == SET_COLOUR && (dir || ea)) {	/* live: the backdrop is made again */
+					if (it == SET_THEME && dir && A.nthemes) S.theme_pick = (S.theme_pick + dir + A.nthemes) % A.nthemes;
+					if (it == SET_COLOUR && flip) {	/* live: the backdrop is made again */
 						colour_set((g_colour + (dir ? dir : 1) + NCOLOURS) % NCOLOURS);
 						ayaneo_set_menu_colour(g_colour);
 						ayaneo_menu_settings_persist();
 					}
-					if (S.set_sel == SET_THEME && ea && A.nthemes) {
+					if (it == SET_THEME && ea && A.nthemes) {
 						unsigned int h = theme_hash(S.theme_pick);
-						if (h != ayaneo_get_menu_theme()) {
+						if (h != gba_menu_theme()) {
 							ayaneo_set_menu_theme(h);
 							ayaneo_menu_settings_persist();
 							ayaneo_settings_persist_flush();   /* written before the card is read again */
@@ -1454,7 +1524,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 							return -3;
 						}
 					}
-					if (S.set_sel == SET_BOOT_OS && ea) ayaneo_boot_to_os();   /* never returns */
+					if (it == SET_BOOT_OS && ea) ayaneo_boot_to_os();   /* never returns */
 				}
 			}
 		}
@@ -1503,21 +1573,26 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 /* ==== the in-game menu (pico_igm.h) ===============================================================
  * Over the running game, on the live overlay layer (ayaneo_overlay_live): a panel down the left
  * edge in the menu's own look, with the game, the actions, and the settings grouped in pages. It
- * slides and fades in and out, the focus glides from row to row, a page slides in from the side
- * and back, a changed value nudges in from the way it went, and a saved or loaded state shows a
- * note that fades. It has a small pack of its own (current-igm-<W>x<H>.pack, read on the first
- * opening of a game): the menu's pack is gone once a game loads. Its memory is free while a game
- * runs and is the opening transition's while one starts, so each game reads the pack again. */
+ * slides in and out, the focus glides from row to row, a page slides in from the side and back, a
+ * changed value nudges in from the way it went, and a saved or loaded state shows a note that
+ * fades. It has a small pack of its own (current-igm-<W>x<H>.pack): the menu's pack is gone once a
+ * game loads. On the Konkr the pack lies where neither a game nor the opening transition writes,
+ * so the menu reads it once and an opening in a game costs no card read (which held the game long
+ * enough for its sound to stutter); on the pairmini that memory is the opening's, so each game
+ * reads it at its first opening. */
 #include "pico_igm.h"
-#define IGM_PACK_PA  0x54000000u
 #if defined(KONKR_KPA)
-#define IGM_PACK_MAX 0x00100000u      /* 0.6 MB at 960 x 640 */
-#define IGM_BG_PA    0x54100000u      /* the panel's background, drawn at each opening */
-#define IGM_BG_MAX   0x00140000u      /* up to the live layer's first buffer (0x54240000) */
+#define IGM_PACK_PA  0x54258000u      /* between the opening's snapshot and its menu layer copy */
+#define IGM_PACK_MAX 0x000A8000u      /* 0.6 MB at 960 x 640 */
+#define IGM_BG_PA    0x54300000u      /* the panel's background, drawn at each opening */
+#define IGM_BG_MAX   0x00140000u      /* up to the live layer's second buffer (0x54440000) */
+#define IGM_KEEP     1
 #else
+#define IGM_PACK_PA  0x54000000u
 #define IGM_PACK_MAX 0x00180000u      /* 1 MB at 1280 x 960 */
 #define IGM_BG_PA    0x54180000u
 #define IGM_BG_MAX   0x00280000u      /* up to the live layer's second buffer (0x54400000) */
+#define IGM_KEEP     0
 #endif
 #define IGM_ROWS 40                   /* rows in a page, at most */
 #define IGM_Y0   180.f                /* the first row, units */
@@ -1531,7 +1606,9 @@ static const char *const k_igm_page[IGM_NPAGES] = { "", "Display", "Sound", "Gam
 static const signed char k_igm_page_ic[IGM_NPAGES] = { IC_NONE, IC_DISPLAY, IC_SOUND, IC_SPEED, IC_SYSTEM, IC_SYSTEM };
 
 static struct {
-	int loaded, failed;          /* the pack is in memory for this game / could not be read */
+	int loaded, failed;          /* the pack is in memory / could not be read */
+	int bg_ok;                   /* the panel's background is drawn for this game */
+	uint32_t sum;                /* a hash of its header and table, to know it is still there */
 	const struct igm_core *c;
 	cfont brand, sub, realm, tag11, tag13, srow, srowf, sval, dname, info, hint, hintc;
 	cimg ic[IC_N], chev, back, gamma, ring, pillm;
@@ -1583,26 +1660,39 @@ static int igm_load(void)
 	G.chev = img("ig_chev"); G.back = img("ig_back"); G.gamma = img("gamma");
 	G.ring = img("hint_ring"); G.pillm = img("hint_pill");
 	if (!G.srow.g || !G.dname.g) return -1;
-	g_W = (int)W; g_H = (int)H; g_s = (float)H / 720.0f;
-	s_uw = (float)W / g_s;
-	s_p = s_uw * .048f > 38 ? s_uw * .048f : 38;
 	return 0;
 }
-/* the menu's next run reads its own pack again; a game starting takes the in-game pack's memory */
+static uint32_t igm_sum(void)
+{
+	const uint32_t *p = (const uint32_t *)IGM_PACK_PA;
+	uint32_t h = 2166136261u, n = 4 + (p[2] < 256 ? p[2] : 256) * 12, i;
+	for (i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u;
+	return h;
+}
+/* the pack is in memory as it was read */
+static int igm_valid(void) { return G.loaded && igm_sum() == G.sum; }
+/* read the pack (the lookups then point at it: the menu reads its own pack after this) */
+static int igm_read(void)
+{
+	G.loaded = 0;
+	if (igm_load() != 0) { G.failed = 1; return -1; }
+	G.sum = igm_sum(); G.loaded = 1; G.failed = 0;
+	return 0;
+}
+/* the menu runs: where the pack is kept, read it now unless it is still there */
+static void igm_preload(void) { if (IGM_KEEP && !igm_valid()) igm_read(); }
+/* a game starts: where the opening takes the pack's memory, the next opening reads it again */
 static void igm_forget(void)
 {
-	extern void ayaneo_overlay_live_forget(void);
-	G.loaded = 0; G.failed = 0;
-	ayaneo_overlay_live_forget();
+	G.failed = 0; G.bg_ok = 0;
+	if (!IGM_KEEP) G.loaded = 0;
 }
 
 int pico_igm_on(void)
 {
-	if (ayaneo_get_menu_theme() != snes_hash("current")) return 0;
-	if (!G.loaded && !G.failed) {
-		if (igm_load() == 0) G.loaded = 1; else G.failed = 1;
-	}
-	return G.loaded;
+	if (gba_menu_theme() != snes_hash("current")) return 0;
+	if (!igm_valid() && (G.failed || igm_read() != 0)) return 0;
+	return 1;
 }
 
 /* the rows of a page: on the top one Resume first */
@@ -1664,12 +1754,16 @@ static const char *igm_value(int page, const igm_line *l, char *buf)
 	return c->value(l->item, buf);
 }
 
+extern volatile unsigned int g_dbg_igm_open_us, g_dbg_igm_open_part[2];
 void pico_igm_open(const struct igm_core *c)
 {
 	unsigned int W, H;
-	int i, ext;
-	uint32_t *bg = (uint32_t *)IGM_BG_PA;
+	unsigned int t_open = gpt4_get_current_tick();
 	if (!G.loaded) return;
+	ayaneo_canvas_dims(&W, &H);
+	g_W = (int)W; g_H = (int)H; g_s = (float)H / 720.0f;
+	s_uw = (float)W / g_s;
+	s_p = s_uw * .048f > 38 ? s_uw * .048f : 38;
 	G.c = c;
 	G.up = 1; G.closing = 0; G.latch = 0;
 	G.show = 0; G.show_time = 0;
@@ -1679,50 +1773,18 @@ void pico_igm_open(const struct igm_core *c)
 	G.hy = 0; G.nudge_t = 1; G.toast_t = 99; G.toast[0] = 0;
 	G.tick = gpt4_get_current_tick(); G.last_paint = 0;
 	G.dirty = 1; G.prev_keys = 0x3F;   /* what is held now (the menu key, a face button) is not a press */
+	g_dbg_igm_open_part[0] = (gpt4_get_current_tick() - t_open) / 13u;
 	G.ext_prev = 0; s_igm_rowh_ok = 0;
-	G.batt = gba_battery_pct(&G.chg); G.batt_tick = G.tick;
+	G.batt = gba_battery_last(&G.chg); G.batt_tick = G.tick;
 	G.fig_tick = 0; G.fig_page = -1;
 	gba_clean_name(c->game ? c->game : "", G.title);
 	colour_set(ayaneo_get_menu_colour());
-	/* the panel's background: a deep wash of the theme's colour, nearly opaque, its edge lit faintly,
-	 * and a soft shadow off it over the game */
-	ayaneo_canvas_dims(&W, &H);
 	G.pwu = s_uw * .42f < 470 ? s_uw * .42f : 470;
 	G.pw = U(G.pwu); G.sh = U(34);
-	ext = G.pw + G.sh;
-	if ((uint32_t)ext * H * 4u > IGM_BG_MAX) { G.sh = 0; ext = G.pw; }
-	{	/* the backdrop's deep air with a glow of its mist in the top corner, opaque (the layer then
-		 * needs no conversion from premultiplied colour: only the shadow has an alpha, and it is black) */
-		static const gstop air[3] = { { 0, 0x0A1C40, 1 }, { .45f, 0x0A2552, 1 }, { 1, 0x050F24, 1 } };
-		float R2 = (G.pw * 1.1f) * (G.pw * 1.1f);
-		uint32_t mist = recolour(0x2664CCu), edge = C_ACCENT;
-		const int a = 255;
-		for (i = 0; i < (int)H; i++) {
-			uint32_t *row = bg + i * ext;
-			float r, g, b, al, dy2 = (float)i * i;
-			int x;
-			grad(air, 3, (i + .5f) / H, &r, &g, &b, &al);
-			{
-				uint32_t base = recolour((uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b);
-				for (x = 0; x < G.pw; x++) {
-					float d2 = (float)x * x + dy2;
-					uint32_t c = base, p;
-					if (d2 < R2) {	/* the mist, falling off with the square of the distance */
-						float f = 1 - d2 / R2;
-						c = mix(0xFF000000u | base, mist, (int)(f * f * 70)) & 0xFFFFFFu;
-					}
-					if (x == G.pw - 1) c = mix(0xFF000000u | c, edge, 70) & 0xFFFFFFu;
-					p = ((uint32_t)a << 24) | ((((c & 0xFF00FFu) * (uint32_t)a) >> 8) & 0xFF00FFu) | ((((c & 0xFF00u) * (uint32_t)a) >> 8) & 0xFF00u);
-					row[x] = p;
-				}
-			}
-			for (x = 0; x < G.sh; x++) {	/* the shadow: dark, falling off with the square of the distance */
-				int f = 256 - x * 256 / G.sh, sa = (90 * f * f) >> 16;
-				row[G.pw + x] = (uint32_t)sa << 24;
-			}
-		}
-	}
+	if ((uint32_t)(G.pw + G.sh) * H * 4u > IGM_BG_MAX) G.sh = 0;
+	g_dbg_igm_open_us = (gpt4_get_current_tick() - t_open) / 13u;
 }
+volatile unsigned int g_dbg_igm_open_us, g_dbg_igm_open_part[2];   /* oem diag: the last opening's setup */
 void pico_igm_dismiss(void)
 {
 	if (G.up && !G.closing) { G.closing = 1; G.latch = 0; G.dirty = 1; }
@@ -1908,6 +1970,52 @@ static void igm_rows(int page, float dx, int op, int wash)
 	if (first > 0) disc(IX(rx + rw) - U(6) + .0f, U(IGM_Y0 - 9) + .0f, U(2.3f) + .0f, C_MUTED, op * 3 / 4);
 	if (first + nv < n) disc(IX(rx + rw) - U(6) + .0f, U(IGM_Y0 + nv * IGM_RP + 6) + .0f, U(2.3f) + .0f, C_MUTED, op * 3 / 4);
 }
+/* the panel's background, once a game (its memory is the opening's): a deep wash of the theme's
+ * colour, its edge lit faintly, and a soft shadow off it over the game. Drawn at the first picture
+ * of an opening, the frame after the menu key, when the game's frame delay has stepped aside. */
+static void igm_bg_build(void)
+{
+	uint32_t *bg = (uint32_t *)IGM_BG_PA;
+	unsigned int W, H;
+	int i, ext = G.pw + G.sh;
+	unsigned int t0 = gpt4_get_current_tick();
+	ayaneo_canvas_dims(&W, &H);
+	(void)W;
+	{	/* the backdrop's deep air with a glow of its mist in the top corner, opaque (the layer then
+		 * needs no conversion from premultiplied colour: only the shadow has an alpha, and it is black) */
+		static const gstop air[3] = { { 0, 0x0A1C40, 1 }, { .45f, 0x0A2552, 1 }, { 1, 0x050F24, 1 } };
+		int R = (int)(G.pw * 1.1f), R2 = R * R, inv = (int)((256u << 16) / (unsigned)R2);   /* 256 / R2, in 1/65536 */
+		uint32_t mist = recolour(0x2664CCu), edge = C_ACCENT;
+		for (i = 0; i < (int)H; i++) {
+			uint32_t *row = bg + i * ext;
+			float r, g, b, al;
+			int x, dy2 = i * i, xg = 0;
+			uint32_t base;
+			grad(air, 3, (i + .5f) / H, &r, &g, &b, &al);
+			base = recolour((uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b);
+			if (dy2 < R2) xg = (int)sq((float)(R2 - dy2)) + 1;   /* the glow reaches this far on the row */
+			if (xg > G.pw) xg = G.pw;
+			for (x = 0; x < xg; x++) {	/* the mist, falling off with the square of the distance */
+				int d2 = x * x + dy2, f, w;
+				uint32_t c = base;
+				if (d2 < R2) {
+					f = ((R2 - d2) * inv) >> 16;   /* 256 at the corner, 0 at the reach (no division a pixel) */
+					w = (f * f * 70) >> 16;
+					if (w > 0) c = mix(0xFF000000u | base, mist, w) & 0xFFFFFFu;
+				}
+				row[x] = 0xFF000000u | c;
+			}
+			for (; x < G.pw; x++) row[x] = 0xFF000000u | base;
+			row[G.pw - 1] = mix(row[G.pw - 1], edge, 70);
+			for (x = 0; x < G.sh; x++) {	/* the shadow: dark, falling off with the square of the distance */
+				int f = 256 - x * 256 / G.sh, sa = (90 * f * f) >> 16;
+				row[G.pw + x] = (uint32_t)sa << 24;
+			}
+		}
+	}
+	G.bg_ok = 1;
+	g_dbg_igm_open_part[1] = (gpt4_get_current_tick() - t0) / 13u;
+}
 static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box);
 static int igm_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box)
 {
@@ -1938,13 +2046,14 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 		if (G.top[G.page] != (float)(int)G.top[G.page]) still = 0;
 	}
 	if (still && !G.dirty && now - G.last_paint < 6500000u) return 0;   /* live figures: twice a second */
+	if (!G.bg_ok) { igm_bg_build(); return 0; }   /* its own frame: the first picture comes next */
 	G.dirty = 0; G.last_paint = now;
 	if (now - G.fig_tick > 13000000u || G.fig_page != G.page) {	/* the figures: once a second */
 		int i;
 		for (i = 0; i < IGM_ROWS; i++) G.fig[i][0] = 0;
 		G.fig_tick = now; G.fig_page = G.page;
 	}
-	if (now - G.batt_tick > 13000000u * 20) { G.batt = gba_battery_pct(&G.chg); G.batt_tick = now; }
+	if (now - G.batt_tick > 13000000u * 20) { G.batt = gba_battery_last(&G.chg); G.batt_tick = now; }
 	g_fb = buf; g_W = (int)W; g_H = (int)H; g_track = 0;
 	(void)pitch;
 	{

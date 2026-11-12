@@ -2,7 +2,8 @@
 
 Each folder here is a theme for the game list menu, picked on the Display page (Theme row) and saved
 with the other settings. `tools/ayaneo/gba/make_sdcard.sh` packs every folder into the one
-`gammaos/menu.pack`: `classic` first, then the others in name order.
+`gammaos/menu.pack`: `classic` first, then the others in name order. Until one is picked the menu
+is `current` (it falls back to `classic` when the card has no Current packs).
 
 A theme folder holds:
 

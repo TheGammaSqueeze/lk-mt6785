@@ -50,7 +50,16 @@ int g_punch_cached;   /* gba_punch.h: its buffers are cached (a theme's own) */
 const uint32_t *g_punch_ov;                     /* the menu over the fade, or none */
 const int16_t *g_punch_ov_x0, *g_punch_ov_x1;
 /* frames of the opening and closing transitions: the hole takes 20, a theme's fade 8 (quick) */
-int ayaneo_punch_steps(void) { return g_punch_fade > 0 ? 8 : 20; }
+/* the steps of the next opening or closing; a caller may set the next one's once
+ * (ayaneo_punch_steps_once: the slow fade of a game resumed after the BIOS intro) */
+static int s_punch_steps_once;
+void ayaneo_punch_steps_once(int n) { s_punch_steps_once = n; }
+int ayaneo_punch_steps(void)
+{
+	int n = s_punch_steps_once;
+	if (n > 0) { s_punch_steps_once = 0; return n; }
+	return g_punch_fade > 0 ? 8 : 20;
+}
 /* one transition frame (gba_punch_composite_pre), built here at this file's optimisation: the
  * menu's own file is built for size and composed the same frame at half the speed */
 __attribute__((optimize("O3")))
@@ -1031,9 +1040,18 @@ unsigned int ayaneo_pace_ticks_left(void)
 	return dl - now;
 }
 
+/* the live in-game menu is up (ayaneo_overlay_live): its drawing needs the time the delay would
+ * sleep through, and latency does not matter in a menu, so the delay steps aside and does not learn
+ * from those frames */
+volatile int g_live_up;
 void ayaneo_frame_delay(void)
 {
 	static unsigned int s_fd_last_call;
+	if (g_live_up) {
+		s_fd_delayed = 0; s_fd_start = 0; g_dbg_fd_us = 0;
+		s_fd_last_call = gpt4_get_current_tick();
+		return;
+	}
 	unsigned int now = gpt4_get_current_tick(), left, est = 0, need, i;
 	s_fd_delayed = 0;
 	/* a new game, or the loop stood still (a menu, a load): learn again from scratch, so one
@@ -2449,12 +2467,14 @@ void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned in
  * kept layer change that goes out with the game's next present (primary_display_config_pending), at
  * the one safe point of the scan and with no wait of its own. Each buffer keeps the box of what
  * changed since it was last brought up to date, so a frame the game did not present loses nothing.
+ * The layer spans only the columns the painter has drawn in (its drawer), so nothing outside them
+ * is ever shown and the buffers need no clearing: the first copy into each brings all of that.
  * On the Konkr both buffers are free memory below the canvas while a game runs, so the game keeps
  * its two buffers; the pairmini has room for one, and borrows the game's second buffer as the static
  * overlay does (used only once the game has left it). */
 #if AYANEO_ROT
-#define LIVE_A_PA   0x54240000u
-#define LIVE_B_PA   0x544A0000u
+#define LIVE_A_PA   0x54000000u   /* the in-game menu's pack lies above it (pico_current.c) */
+#define LIVE_B_PA   0x54440000u
 #define LIVE_L_PA   ROT_OVERLAY_PA
 #define LIVE_A_GAME 0
 #else
@@ -2471,16 +2491,12 @@ static struct {
 	int pending;         /* a layer change is kept and has not gone out yet */
 	unsigned int seq;    /* g_disp_commit_seq when it was kept */
 	int going;           /* the layer is coming down: the game gets its buffer back once that is out */
-	int a_ready;         /* A is clear and safe to draw into */
 	int box[2][4];       /* per buffer: what changed since it was brought up to date (x0 y0 x1 y1) */
 	int ext[4];          /* all the painter has drawn since the layer went up */
 	unsigned int on_seq; /* g_disp_commit_seq when the layer went up */
 } s_live;
 volatile unsigned int g_dbg_live_us[4];   /* oem diag: the last frame's paint and copy, the worst of each, us */
 int ayaneo_overlay_live_up(void) { return s_live.on || s_live.going; }
-/* the layer's buffers as a game start left them (its opening uses their memory): clear before use */
-static int s_live_fresh = 1;
-void ayaneo_overlay_live_forget(void) { s_live_fresh = 1; }
 volatile unsigned int g_dbg_live_trace[32], g_dbg_live_n;
 static void box_add(int *b, const int *r)
 {
@@ -2512,7 +2528,8 @@ static void live_copy(const unsigned int *L, unsigned int LW, unsigned int *dst,
 	arch_clean_cache_range((addr_t)(dst + y0 * W), h * W * 4u);
 #endif
 }
-static void live_layer(unsigned int pa, int enable)
+/* the layer on buffer pa, over the columns x0..x1 of the logical screen */
+static void live_layer(unsigned int pa, int enable, int x0, int x1)
 {
 	unsigned int W = CFG_DISPLAY_WIDTH, H = CFG_DISPLAY_HEIGHT;
 	disp_input_config in;
@@ -2522,8 +2539,17 @@ static void live_layer(unsigned int pa, int enable)
 	if (enable) {
 		in.fmt = eBGRA8888;
 		in.addr = pa;
-		in.src_w = W; in.src_h = H; in.src_pitch = W * 4u;
-		in.dst_w = W; in.dst_h = H;
+		in.src_pitch = W * 4u;
+#if AYANEO_ROT
+		{	/* logical columns are physical rows */
+			unsigned int LW = ayaneo_screen_w(), r0 = g_rot_ccw ? LW - (unsigned)x1 : (unsigned)x0;
+			in.src_y = in.dst_y = r0; in.src_h = in.dst_h = (unsigned)(x1 - x0);
+			in.src_w = in.dst_w = W;
+		}
+#else
+		in.src_x = in.dst_x = (unsigned)x0; in.src_w = in.dst_w = (unsigned)(x1 - x0);
+		in.src_h = in.dst_h = H;
+#endif
 		in.aen = 1; in.alpha = 0xff;
 	}
 	primary_display_config_pending(&in);
@@ -2547,9 +2573,10 @@ void ayaneo_overlay_live(int (*paint)(unsigned int *buf, unsigned int pitch, uns
 		if (s_live.on) s_live.shown ^= 1;
 		else if (s_live.going) { s_live.going = 0; if (LIVE_A_GAME) g_overlay_active = 0; }
 	}
+	g_live_up = s_live.on || s_live.going || (open && paint);
 	if (!open || !paint) {
 		if (s_live.on) {
-			live_layer(0, 0);
+			live_layer(0, 0, 0, 0);
 			s_live.on = 0;
 			s_live.going = 1;
 		}
@@ -2557,38 +2584,29 @@ void ayaneo_overlay_live(int (*paint)(unsigned int *buf, unsigned int pitch, uns
 	}
 	if (!s_live.on) {	/* up: the picture starts empty, B first (A may be the game's buffer on screen) */
 		if (s_live.going || g_overlay_active) return;   /* the static overlay, or the last one, still has the layer */
-		int fresh = s_live_fresh;
-		/* (the logical buffer needs no clearing: only what the painter clears and redraws is copied) */
-		if (fresh) {	/* B as the game left it: clear; A is cleared on its first turn */
-			memset(buf[1], 0, W * H * 4u);
-			arch_clean_cache_range((addr_t)buf[1], W * H * 4u);
-			s_live_fresh = 0;
-		}
+		/* (nothing is cleared: only what the painter clears and redraws is copied, and the layer
+		 * shows only that) */
 		memset(&s_live, 0, sizeof s_live);
 		s_live.on = 1; s_live.shown = 0; s_live.on_seq = g_disp_commit_seq;
-		s_live.a_ready = !fresh && !LIVE_A_GAME;
 		if (LIVE_A_GAME) g_overlay_active = 1;   /* the game keeps to its first buffer from its next present */
-		back = 1;
-	} else back = s_live.shown ^ 1;   /* while a flip is kept, the same buffer again */
+		/* the first picture next frame: this one's frame delay has gone by already, the next one's
+		 * steps aside (g_live_up), so the opening's work does not make the game miss a refresh */
+		return;
+	}
+	back = s_live.shown ^ 1;   /* while a flip is kept, the same buffer again */
 	ayaneo_draw_clip(LW, LH);
 	k = paint(L, LW, LW, LH, r);
 	ayaneo_draw_clip(0, 0);
 	t1 = gpt4_get_current_tick();
 	if (k) { box_add(s_live.box[0], r); box_add(s_live.box[1], r); box_add(s_live.ext, r); }
-	if (back == 0 && !s_live.a_ready) {
-		/* A first: on the pairmini it was the game's second buffer, so only once a present has gone
-		 * out since the layer went up (the game has moved off it); then all of it */
-		if (LIVE_A_GAME && g_disp_commit_seq == s_live.on_seq) { g_dbg_live_us[0] = (t1 - t0) / 13u; return; }
-		memset(buf[0], 0, W * H * 4u);
-		arch_clean_cache_range((addr_t)buf[0], W * H * 4u);
-		s_live.a_ready = 1;
-		box_add(s_live.box[0], s_live.ext);   /* all the painter has drawn since the layer went up */
-	}
+	/* A on the pairmini was the game's second buffer: only once a present has gone out since the
+	 * layer went up (the game has moved off it) */
+	if (back == 0 && LIVE_A_GAME && g_disp_commit_seq == s_live.on_seq) { g_dbg_live_us[0] = (t1 - t0) / 13u; return; }
 	b = s_live.box[back];
 	if (b[2] > b[0] && b[3] > b[1]) {
 		live_copy(L, LW, buf[back], b);
 		b[0] = b[1] = b[2] = b[3] = 0;
-		live_layer((unsigned int)(uintptr_t)buf[back], 1);
+		live_layer((unsigned int)(uintptr_t)buf[back], 1, s_live.ext[0], s_live.ext[2]);
 	}
 	g_dbg_live_us[0] = (t1 - t0) / 13u;
 	g_dbg_live_us[1] = (gpt4_get_current_tick() - t1) / 13u;

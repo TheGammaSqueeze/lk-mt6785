@@ -683,6 +683,7 @@ static void try_load_state(unsigned char *scratch)
 
 #ifdef AYANEO_GBA_SD
 static const char *gba_sd_current_name(void);   /* the ROM running from the card, or NULL */
+extern int gba_launch_continues(void);           /* the game opening carries on from its suspend point (gba_snes_menu.c) */
 #endif
 /* The suspend save of the power key, timed per step (oem suspendtest: [0] state, [1] battery save,
  * [2] settings, ms; [4] state write result; [3] is left 0) */
@@ -1341,6 +1342,16 @@ static int battery_read(int *charging)
 }
 /* the battery for a menu's status line: percent, and whether it charges */
 int gba_battery_pct(int *charging) { return battery_read(charging); }
+/* the same as the LED thread last read it (the charger each second, the gauge each 10 s), for a
+ * caller that must not wait on the gauge (the in-game menu opens over a running game); a fresh read
+ * until the thread has made its first */
+volatile int g_dbg_led_chr, g_dbg_led_pct = -1;
+int gba_battery_last(int *charging)
+{
+	if (g_dbg_led_pct < 0) return battery_read(charging);
+	if (charging) *charging = g_dbg_led_chr;
+	return g_dbg_led_pct;
+}
 
 /* charging screen: same colours as the running system (led_thread): charging = red + green,
  * full (97 %+ or the charger done) = green only, unplugged = off */
@@ -1378,7 +1389,7 @@ static int s_panel_hz100;	/* measured panel refresh * 100 (e.g. 5973 = 59.73 Hz)
  * 60 s battery read (an auxadc spin) nor the I2C writes touch a frame: charger connected =
  * red (green once full), on battery = green, at 5 % or less = red flashing at 1 Hz. The first
  * write waits for the speaker amps' bring-up, which shares i2c6. */
-volatile int g_dbg_led_chr, g_dbg_led_pct, g_dbg_led_state, g_dbg_led_ticks;   /* oem led */
+volatile int g_dbg_led_state, g_dbg_led_ticks;   /* oem led (with g_dbg_led_chr, g_dbg_led_pct above) */
 extern volatile int g_latency_led;   /* the latency light (below) owns the LED while it is on */
 static int led_thread(void *arg)
 {
@@ -1649,7 +1660,11 @@ static const char *menu_value(int item, char *buf)
 			p = mi_puts(p, ")");
 		}
 		break; }
+#if defined(AYANEO_GBA_SD)   /* with the card: Resume on Game Open (the flag below is the built-in game's) */
+	case MI_LOADBOOT: { extern int ayaneo_get_resume_on_open(void); p = mi_puts(p, ayaneo_get_resume_on_open() ? "On" : "Off"); } break;
+#else
 	case MI_LOADBOOT: p = mi_puts(p, ayaneo_get_load_on_boot() ? "On" : "Off"); break;
+#endif
 	case MI_RESUME:   { extern int ayaneo_get_resume_on_boot(void); p = mi_puts(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 #if defined(AYANEO_GBA_SD)
 	case MI_INTROBG: p = mi_puts(p, ayaneo_get_intro_black() ? "Black" : "White"); break;
@@ -1716,8 +1731,12 @@ static const char *menu_label(int item)
 	case MI_VOLUME:    return "Volume";
 	case MI_FILTER:    return "LCD Filter";
 	case MI_COLORCORRECT: return "Color Correction";
+#if defined(AYANEO_GBA_SD)
+	case MI_LOADBOOT:  return "Resume on Game Open";
+#else
 	case MI_LOADBOOT:  return "Load State on Boot";
-	case MI_RESUME:    return "Resume Game on Boot";
+#endif
+	case MI_RESUME:    return "Resume on Power On";
 #if defined(AYANEO_GBA_SD)
 	case MI_INTROBG:   return "BIOS Intro Background";
 #else
@@ -1765,7 +1784,12 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	} else changed = 0; break;
 	case MI_REWIND:   { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
 			    if (dir || act) ayaneo_set_rewind(!ayaneo_get_rewind()); else changed = 0; } break;
+#if defined(AYANEO_GBA_SD)
+	case MI_LOADBOOT: { extern int ayaneo_get_resume_on_open(void); extern void ayaneo_set_resume_on_open(int v);
+			    if (dir || act) ayaneo_set_resume_on_open(!ayaneo_get_resume_on_open()); else changed = 0; } break;
+#else
 	case MI_LOADBOOT: if (dir || act) ayaneo_set_load_on_boot(!ayaneo_get_load_on_boot()); else changed = 0; break;
+#endif
 	case MI_RESUME:   { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
 			    if (dir || act) ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); else changed = 0; } break;
 #if defined(AYANEO_GBA_SD)
@@ -2961,7 +2985,10 @@ static int emu_thread(void *arg)
 			int pend = ayaneo_resume_pending();
 			/* the intro plays on the core loaded above (armGBA with the card's BIOS or its own
 			 * splash, or gpSP with the card's BIOS); none: straight to the menu or the resumed game */
-			int fi, intro_frames = (ayaneo_get_skip_gba_intro() || pend || !g_core) ? 0 : GBA_SD_INTRO_FRAMES;
+			/* a resumed game comes after the intro too, unless BIOS Intro on Resume is off */
+			extern int ayaneo_get_intro_on_resume(void);
+			int fi, intro_frames = (ayaneo_get_skip_gba_intro() || (pend && !ayaneo_get_intro_on_resume()) || !g_core)
+					       ? 0 : GBA_SD_INTRO_FRAMES;
 			g_dbg_resume[0] = pend;
 			g_dbg_boot_step = 7;
 			/* Run the BIOS-logo intro on the pure INTERPRETER: the dynarec faults
@@ -3019,6 +3046,28 @@ static int emu_thread(void *arg)
 				extern volatile unsigned int g_dbg_bt_intro_end, g_dbg_bt_intro_frames;
 				g_dbg_bt_intro_end = BT_MS(); g_dbg_bt_intro_frames = (unsigned int)fi;
 			}
+			if (pend && fi > 0) {
+				/* The game Resume on Power On brings back fades in from the colour the intro
+				 * ended on (white, or black with BIOS Intro Background: Black), through the
+				 * opening the cores already run when one is armed: a fade, from a sheet of that
+				 * colour, with no menu over it, slower than a launch to follow the BIOS's own
+				 * fade, and silent until the game is all there. */
+				extern int gba_punch_ready, g_punch_fade, g_punch_cached;
+				extern const uint32_t *g_punch_ov;
+				extern unsigned int g_punch_game_full;
+				extern void ayaneo_punch_steps_once(int n);
+				unsigned int cp, cw, ch, y, x;
+				uint32_t c = intro_black ? 0xFF000000u : 0xFFFFFFFFu, *snap = (uint32_t *)GBA_PUNCH_SNAP_PA;
+				(void)ayaneo_canvas_back(&cp, &cw, &ch);
+				for (y = 0; y < ch; y++) for (x = 0; x < cw; x++) snap[y * cp + x] = c;
+				g_punch_fade = 820; g_punch_ov = 0;
+				if (0x54560000u + cw * ch * 4u <= 0x54800000u) {   /* the game in cached memory, read fast */
+					g_punch_game_full = 0x54560000u; g_punch_cached = 1;
+				}
+				ayaneo_punch_steps_once(24);   /* 0.4 s */
+				ayaneo_gbc_audio_pause(1);
+				gba_punch_ready = 1;
+			}
 			/* The card thread may still be listing the games: the intro used to cover it, but
 			 * a resumed game skips the intro, and with the list still empty this went to the
 			 * no ROMs branch and ran the bare BIOS for ever (the resume bug). */
@@ -3062,7 +3111,7 @@ static int emu_thread(void *arg)
 				s_game_live = 1;
 				gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
 						(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
-				if (!PRESSED(GPIO_B))
+				if (!PRESSED(GPIO_B) && gba_launch_continues())
 					state_read(scratch);
 				/* Do NOT blank here: it blacks the live frozen-menu snapshot = a black
 				 * flash before the opening punch. The punch composites the full frame
@@ -3460,7 +3509,7 @@ static int emu_thread(void *arg)
 					gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
 							(unsigned char *)gba_core_backup_ptr(),
 							gba_core_backup_size());
-					if (!PRESSED(GPIO_B))
+					if (!PRESSED(GPIO_B) && gba_launch_continues())
 						state_read(scratch);
 					gba_rewind_arm();	/* fresh game -> fresh rewind timeline */
 					/* no blank: keep the frozen menu on screen for the seamless

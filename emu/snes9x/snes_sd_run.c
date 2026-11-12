@@ -31,6 +31,7 @@ extern void     ayaneo_snes_audio_reset(void);
 extern void     ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz);
 extern void     ayaneo_menu_audio_silence(void);
 extern void     ayaneo_gbc_audio_pause(int on);
+extern int      gba_launch_continues(void);   /* the game opening carries on from its suspend point (gba_snes_menu.c) */
 extern void     ayaneo_menu_overlay_mark_dirty(void);   /* repaint the hardware menu overlay (mt_disp_drv.c) */
 extern void     ayaneo_display_prepare(void);
 extern void     ayaneo_dsi_set_vfp(unsigned int vfp);   /* per-core panel refresh (ddp_dsi.c) */
@@ -357,12 +358,17 @@ static void snes_poll_volume(void)
 static void snes_slot_ext(char *e) { e[0] = 's'; e[1] = 't'; e[2] = (char)('0' + s_save_slot); e[3] = 0; }
 
 /* refresh s_slot_used by probing the current slot's file (16-byte read; cheap, menu-time only). */
+/* whether each slot has a state on the card, as last looked up this game (-1: not yet): a look-up
+ * holds the game for a few frames, so going through the slots asks the card once for each */
+static signed char s_slot_known[SNES_SLOT_COUNT];
 static void snes_slot_check(void)
 {
 	unsigned char tmp[16]; char ext[4];
 	if (!s_menu_vol || !s_menu_rom) { s_slot_used = 0; return; }
+	if (s_slot_known[s_save_slot] >= 0) { s_slot_used = s_slot_known[s_save_slot]; return; }
 	snes_slot_ext(ext);
 	s_slot_used = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, tmp, sizeof tmp) > 0;
+	s_slot_known[s_save_slot] = (signed char)s_slot_used;
 }
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
        SM_CPU, SM_RUNAHEAD, SM_REWIND, SM_TURBO, SM_BENCH, SM_SHOWFPS, SM_BATTERY, SM_PANEL, SM_STROBE, SM_RESUME,
@@ -419,7 +425,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_TURBO:  return "Turbo (auto-fire)";
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
 	case SM_SHOWFPS: return "Show FPS"; case SM_BATTERY: return "Battery";
-	case SM_STROBE: return "BFI"; case SM_RESUME: return "Resume Game on Boot";
+	case SM_STROBE: return "BFI"; case SM_RESUME: return "Resume on Power On";
 	case SM_SLOT:   return "Save Slot";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
 	case SM_RESET:  return "Reset Game"; case SM_CLOSE:  return "Exit Game"; } return ""; }
@@ -543,7 +549,7 @@ static int sm_change(int i, int dir, int act)
 			ok = (ssz && ssz <= SNES_STATE_CAP && s_menu_c->state_save(st, ssz) == 0 &&
 			      gba_sd_write_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, st, ssz) == 0);
 			smput(s_mstat, ok ? "State saved" : "Save failed");
-			if (ok) s_slot_used = 1;
+			if (ok) { s_slot_used = 1; s_slot_known[s_save_slot] = 1; }
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
 	case SM_LOAD: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF;
 			char ext[4]; unsigned n; int ok; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;
@@ -645,7 +651,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * Save/Load use - otherwise every exit would clobber the player's manual save (that was
 	 * the "save states are broken" bug). The host round-trip proved snes9x
 	 * serialize/unserialize is deterministic. */
-	if (!PRESSED(GPIO_B)) {
+	if (!PRESSED(GPIO_B) && gba_launch_continues()) {
 		unsigned char *st = (unsigned char *)SNES_STATE_BUF;
 		unsigned n = gba_sd_read_named(vol, "/states/snes", rom->name, "sus", st, SNES_STATE_CAP);
 		if (n) c->state_load(st, n);
@@ -695,6 +701,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	if (s_save_slot < 0 || s_save_slot >= SNES_SLOT_COUNT) s_save_slot = 0;   /* clamp stale 0..9 values */
 	g_snes_turbo = ayaneo_get_snes_turbo(); /* restore the persisted auto-fire setting */
 	s_settings_dirty = 0;
+	{ int k; for (k = 0; k < SNES_SLOT_COUNT; k++) s_slot_known[k] = -1; }   /* a new game: none looked up */
 	snes_slot_check();                      /* seed the used/empty indicator for it */
 	/* Restore the persisted snes9x option picks (aspect/overscan/audio/hires) and push them
 	 * to the core so a game launches with the player's last choices, not defaults. */

@@ -167,8 +167,13 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 				fastboot_info(lbuf);
 			  } }
 			{ extern volatile unsigned int g_dbg_game_presents, g_dbg_game_long;
-			  snprintf(lbuf, sizeof lbuf, "game: presents=%u gaps=%u", g_dbg_game_presents, g_dbg_game_long);
+			  extern volatile int g_dbg_aud_low; extern volatile unsigned int g_dbg_aud_short, g_dbg_igm_open_us, g_dbg_igm_open_part[2];
+			  snprintf(lbuf, sizeof lbuf, "igm: open=%uus at %u %u", g_dbg_igm_open_us, g_dbg_igm_open_part[0], g_dbg_igm_open_part[1]);
 			  fastboot_info(lbuf);
+			  snprintf(lbuf, sizeof lbuf, "game: presents=%u gaps=%u aud low=%d short=%u", g_dbg_game_presents,
+				   g_dbg_game_long, g_dbg_aud_low, g_dbg_aud_short);
+			  fastboot_info(lbuf);
+			  g_dbg_aud_low = 99999; g_dbg_aud_short = 0;
 			  g_dbg_game_presents = g_dbg_game_long = 0; }
 			snprintf(lbuf, sizeof lbuf, "trans_us: last=%u worst=%u frames=%u",
 				 g_dbg_trans_us[0], g_dbg_trans_us[1], g_dbg_trans_us[2]);
@@ -1124,7 +1129,7 @@ static void cmd_suspendtest(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem resumeinfo - the Resume Game on Boot record and what this boot did with it */
+/* oem resumeinfo - the Resume on Power On record and what this boot did with it */
 static void cmd_resumeinfo(const char *arg, void *data, unsigned sz)
 {
 	extern volatile int g_dbg_resume[4];

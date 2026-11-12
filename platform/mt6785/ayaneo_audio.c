@@ -265,6 +265,18 @@ static char s_resume_name[100];
 static int  s_resume_set;
 #define AYANEO_RESUME_MAGIC 0x52455355u   /* "RESU" */
 int  ayaneo_get_resume_on_boot(void)   { return s_resume_on_boot; }
+/* Resume on Game Open: a game opened from the menu carries on from its suspend point (the state
+ * saved when it was left); off, it starts from its own save. Separate from Resume on Power On
+ * (s_resume_on_boot: power on straight into the game the power went off in, which always carries
+ * on). The old load-on-boot flag is the built-in single game's and plays no part with the card. */
+static int  s_resume_on_open = 1;
+int  ayaneo_get_resume_on_open(void)   { return s_resume_on_open; }
+void ayaneo_set_resume_on_open(int v)  { s_resume_on_open = v ? 1 : 0; }
+/* BIOS Intro on Resume: the game Resume on Power On brings back comes after the BIOS intro, fading
+ * in from the colour the intro ends on (unless Skip BIOS Intro) */
+static int  s_intro_on_resume = 1;
+int  ayaneo_get_intro_on_resume(void)  { return s_intro_on_resume; }
+void ayaneo_set_intro_on_resume(int v) { s_intro_on_resume = v ? 1 : 0; }
 void ayaneo_set_resume_on_boot(int v)  { s_resume_on_boot = v ? 1 : 0; }
 int  ayaneo_resume_pending(void)       { extern void ayaneo_settings_load(void); ayaneo_settings_load(); return s_resume_on_boot && s_resume_set; }
 void ayaneo_resume_mark(const char *name)
@@ -314,6 +326,8 @@ static void resume_fields_write(unsigned char *b)
 	for (i = 0; i < sizeof s_resume_name; i++) b[72 + i] = s_resume_set ? (unsigned char)s_resume_name[i] : 0;
 	b[176] = (unsigned char)(s_rewind_on ? 2u : 1u);
 	b[177] = (unsigned char)(s_menu_colour + 1u);   /* 0 = never written */
+	b[178] = (unsigned char)(s_resume_on_open ? 2u : 1u);   /* 0 = never written -> on */
+	b[179] = (unsigned char)(s_intro_on_resume ? 2u : 1u);  /* 0 = never written -> on */
 	wr32(b + 180, s_menu_theme);
 }
 static unsigned char s_cpu_manual[4];   /* manual CPU clock per core, grid index + 1, 0 = automatic */
@@ -322,6 +336,8 @@ static void resume_fields_read(const unsigned char *b, int len)
 	unsigned i;
 	if (len >= 177) { if (b[176] == 2u) s_rewind_on = 1; else if (b[176] == 1u) s_rewind_on = 0; }
 	if (len >= 184) { s_menu_theme = rd32(b + 180); if (b[177]) s_menu_colour = (unsigned char)((b[177] - 1u) & 15u); }
+	if (len >= 184 && (b[178] == 1u || b[178] == 2u)) s_resume_on_open = (b[178] == 2u);
+	if (len >= 184 && (b[179] == 1u || b[179] == 2u)) s_intro_on_resume = (b[179] == 2u);
 	if (len >= 176) { s_cpu_manual[0] = b[172] & 15; s_cpu_manual[1] = b[173] & 15; s_cpu_manual[2] = b[174] & 15; s_cpu_manual[3] = b[175] & 15; }
 	if (len < 172) return;
 	{ unsigned int r = rd32(b + 64); if (r == 1u || r == 2u) s_resume_on_boot = (r == 2u); }
@@ -1354,6 +1370,47 @@ static unsigned s_gbc_widx;			/* ring write cursor, in frames */
 static long long s_rs_accl, s_rs_accr;		/* box-filter accumulators */
 static unsigned s_rs_n, s_rs_phase;		/* samples accumulated, phase */
 
+/* oem diag aud: the lowest lead of the write cursor over the ring's read pointer seen at a submit
+ * since the last read (frames of 48 kHz, negative = the read pointer had overtaken it: what played
+ * was old audio), and the submits that found it under ~21 ms */
+volatile int g_dbg_aud_low = 99999;
+volatile unsigned int g_dbg_aud_short;
+static void aud_lead_note(void)
+{
+	unsigned cur = afe_r(AFE_DL1_CUR), base = (unsigned)(addr_t)s_gbc_ring;
+	unsigned rd = (cur >= base) ? (cur - base) / 4u : 0u;
+	int lead = (int)((s_gbc_widx - rd) & (GBC_RING_FRAMES - 1));
+	if (lead >= (int)(GBC_RING_FRAMES / 2)) lead -= (int)GBC_RING_FRAMES;
+	if (lead < g_dbg_aud_low) g_dbg_aud_low = lead;
+	if (lead < (int)(GBC_RING_FRAMES / 16)) g_dbg_aud_short++;
+}
+
+/* Hold the write cursor about a quarter of the ring ahead of the read pointer. A frame a game did
+ * not make in time (a card write, a slow menu frame) leaves the lead one frame of sound shorter,
+ * and with a fixed rate nothing gave it back: a few of them and the cursor reached the read
+ * pointer, which played old sound and then jumped (the stutter). So the rate leans, by at most half
+ * a percent (a pitch change too small to hear), towards that lead, filling a lost frame back in a
+ * few seconds; the jump stays for a real emergency only. Returns how far short of the lead the
+ * cursor is (frames, at most a sixteenth of the ring either way); 0 after a jump. */
+#define AUD_LEAN_SPAN ((int)(GBC_RING_FRAMES / 16))   /* this far off or more: the full half percent */
+extern volatile int g_dbg_asnap_n;
+static int aud_lean(void)
+{
+	unsigned cur = afe_r(AFE_DL1_CUR), base = (unsigned)(addr_t)s_gbc_ring;
+	unsigned rd = (cur >= base) ? (cur - base) / 4u : 0u;
+	int lead = (int)((s_gbc_widx - rd) & (GBC_RING_FRAMES - 1)), err;
+	if (lead >= (int)(GBC_RING_FRAMES / 2)) lead -= (int)GBC_RING_FRAMES;
+	if (lead < (int)(GBC_RING_FRAMES / 32) || lead > (int)((GBC_RING_FRAMES * 7) / 16)) {
+		s_gbc_widx = (rd + GBC_RING_FRAMES / 4) & (GBC_RING_FRAMES - 1);
+		g_dbg_asnap_n++;
+		return 0;
+	}
+	err = (int)(GBC_RING_FRAMES / 4) - lead;   /* > 0: short of the lead */
+	if (err > AUD_LEAN_SPAN) err = AUD_LEAN_SPAN;
+	if (err < -AUD_LEAN_SPAN) err = -AUD_LEAN_SPAN;
+	return err;
+}
+
 /* is the boot chime still playing? (emulator waits for it before taking over) */
 int ayaneo_boot_audio_active(void) { return s_audio_active; }
 
@@ -1424,8 +1481,15 @@ void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
 	unsigned q = (vol >= 100) ? 256u : ((unsigned)vol * 256u / 100u);
 	unsigned i;
 
+	unsigned thr;
+
 	if (!s_gbc_audio_on || s_gbc_paused)
 		return;
+	aud_lead_note();
+	{	/* a sample out each time the phase passes thr: a little lower when short of the lead */
+		int err = aud_lean();
+		thr = (unsigned)((long long)GBC_SRC_HZ * (AUD_LEAN_SPAN * 200 - err) / (AUD_LEAN_SPAN * 200));
+	}
 
 	for (i = 0; i < count; i++) {
 		int l = (short)(samples[i] & 0xffff);
@@ -1435,11 +1499,11 @@ void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
 		s_rs_accr += r;
 		s_rs_n++;
 		s_rs_phase += GBC_DST_HZ;
-		if (s_rs_phase >= GBC_SRC_HZ) {
+		if (s_rs_phase >= thr) {
 			int ol, or_;
 			unsigned idx;
 
-			s_rs_phase -= GBC_SRC_HZ;
+			s_rs_phase -= thr;
 			ol  = (int)(s_rs_accl / (long long)s_rs_n);
 			or_ = (int)(s_rs_accr / (long long)s_rs_n);
 			s_rs_accl = s_rs_accr = 0;
@@ -1542,6 +1606,7 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 		return;
 	g_dbg_asub_done++;
 	g_dbg_asub_frames += frames;
+	aud_lead_note();
 
 	/*
 	 * The resample rate is FIXED (calibrated once to the panel refresh by
@@ -1761,17 +1826,12 @@ void ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigne
 	if (!s_gbc_audio_on || s_gbc_paused || !frames)
 		return;
 	if (src_hz < 8000u || src_hz > 96000u) src_hz = 32040u;   /* sanity */
+	aud_lead_note();
 	step = (src_hz << 16) / GBC_DST_HZ;                        /* input samples per output (<1.0 => upsample) */
 
-	/* keep the write cursor sane vs the AFE read cursor (emergency snap only) */
-	{
-		unsigned cur  = afe_r(AFE_DL1_CUR);
-		unsigned base = (unsigned)(addr_t)s_gbc_ring;
-		unsigned rd   = (cur >= base) ? (cur - base) / 4u : 0u;
-		int lead = (int)((s_gbc_widx - rd) & (GBC_RING_FRAMES - 1));
-		if (lead >= (int)(GBC_RING_FRAMES / 2)) lead -= (int)GBC_RING_FRAMES;
-		if (lead < (int)(GBC_RING_FRAMES / 16) || lead > (int)((GBC_RING_FRAMES * 7) / 16))
-			s_gbc_widx = (rd + GBC_RING_FRAMES / 4) & (GBC_RING_FRAMES - 1);
+	{	/* the rate leans towards a quarter ring of lead (aud_lean) */
+		int err = aud_lean();
+		step = (unsigned)((long long)step - (long long)step * err / ((long long)AUD_LEAN_SPAN * 200));
 	}
 
 	if (!s_sn_prime) { s_sn_pl = interleaved[0]; s_sn_pr = interleaved[1]; s_sn_prime = 1; }

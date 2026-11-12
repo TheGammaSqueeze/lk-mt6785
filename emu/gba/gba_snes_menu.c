@@ -443,10 +443,28 @@ static int theme_id(const char *id, const char *pfx, int *nn, const char **name)
 	*name = id + 3;
 	return 1;
 }
-static void theme_apply(void)
+/* Whether the game being opened carries on from its suspend point (each core asks once as it loads
+ * it): always when Resume on Power On brought it back, else as Resume on Game Open says. Holding B
+ * at the launch still starts it fresh (the cores check that themselves). */
+static int s_launch_resumes;
+int gba_launch_continues(void)
+{
+	extern int ayaneo_get_resume_on_open(void);
+	int r = s_launch_resumes || ayaneo_get_resume_on_open();
+	s_launch_resumes = 0;
+	return r;
+}
+/* The menu theme in use: the hash of its name, as saved. Nothing saved yet (0) is the Current
+ * theme, the default; Classic is saved by its own name once picked. */
+unsigned int gba_menu_theme(void)
 {
 	extern unsigned int ayaneo_get_menu_theme(void);
-	uint32_t want = ayaneo_get_menu_theme(), i;
+	unsigned int t = ayaneo_get_menu_theme();
+	return t ? t : snes_hash("current");
+}
+static void theme_apply(void)
+{
+	uint32_t want = gba_menu_theme(), i;
 	int k;
 	for (k = 0; k < SNES_THEME_MAX; k++) {
 		s_theme_hash[k] = 0; s_theme_thumb[k] = 0; s_theme_atlas[k] = 0; s_theme_wall[k] = 0; s_theme_layout[k] = 0;
@@ -923,7 +941,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	/* Calibrate the analog joypad once here at the carousel (sticks centred / triggers released,
 	 * before any game): powers the rail, inits the SGM58031, and samples the rest baseline. */
 	{ extern void ayaneo_joypad_calibrate(int force); ayaneo_joypad_calibrate(0); }
-	/* Resume Game on Boot: a ROM suspended with the power key starts straight away, before the
+	/* Resume on Power On: a ROM suspended with the power key starts straight away, before the
 	 * menu paints anything, loads its pack or reads the box art (the core reloads its suspend
 	 * state and runs from its first frame; no launch transition). The record is consumed here so
 	 * a later power off from the menu boots to the menu. */
@@ -938,7 +956,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			g_dbg_resume[1] = 1;
 			ayaneo_menu_settings_persist();   /* the cleared record */
 			for (k = 0; k < nrom; k++)
-				if (strcmp(roms[k].name, rn) == 0) { g_dbg_resume[2] = k + 1; return k; }
+				if (strcmp(roms[k].name, rn) == 0) { g_dbg_resume[2] = k + 1; s_launch_resumes = 1; return k; }
 		}
 	}
 	/* the Current theme is a menu of its own: it runs instead of this one, and hands back here
@@ -951,7 +969,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		{ extern int g_punch_cached; g_punch_cached = 0; }
 		extern int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_reverse);
 		extern unsigned int ayaneo_get_menu_theme(void);
-		if (ayaneo_get_menu_theme() == snes_hash("current")) {
+		if (gba_menu_theme() == snes_hash("current")) {
 			int r = pico_current_run(roms, nrom, start_sel, do_reverse);
 			if (r != -2) return r;
 		}
@@ -1274,7 +1292,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 				extern void ayaneo_set_menu_theme(unsigned int hash);
 				extern void ayaneo_settings_persist_flush(void);
 				if (tr < s_theme_n) {
-					ayaneo_set_menu_theme(tr == 0 ? 0u : s_theme_hash[tr]);
+					ayaneo_set_menu_theme(s_theme_hash[tr]);   /* Classic too, by its name: 0 is the default */
 					ayaneo_menu_settings_persist();
 					ayaneo_settings_persist_flush();
 					s_keep_focus = s_menu.focus;   /* a view index, like start_sel below */
