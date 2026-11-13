@@ -5,8 +5,8 @@ Android, its data and every other partition stay as they are. With a GammaOS Pic
 slot the console starts GammaOS Pico; without it (or with Boot to Android chosen in the menu) it starts
 Android as before. The card's contents are in the separate sdcard package.
 
-  spflash/gammaos/   SP Flash Tool (Windows): the GammaOS Pico LK to lk_a and lk_b
-  spflash/stock/     SP Flash Tool (Windows): the stock LK (BW03) back to lk_a and lk_b
+  spflash/gammaos/   SP Flash Tool v5 (Windows): the GammaOS Pico LK to lk_a and lk_b
+  spflash/stock/     SP Flash Tool v5 (Windows): the stock LK (BW03) back to lk_a and lk_b
   mtkclient/         mtkclient (Linux): the same two, flash_gammaos.sh and flash_stock.sh
   fastboot/          fastboot (Windows .bat, Linux .sh): for a console already running GammaOS Pico
   SHA256SUMS         checksums of every file here
@@ -14,16 +14,16 @@ Android as before. The card's contents are in the separate sdcard package.
 SP Flash Tool and mtkclient talk to the console's own preloader over USB, so they work on a
 stock console with a locked bootloader. fastboot needs the GammaOS Pico LK already installed.
 
-Tested on a console: SP Flash Tool V6 with the .xml scatter, and the fastboot scripts.
-Not yet tested on a console: SP Flash Tool v5 with the .txt scatter, and mtkclient. They write
-the same two partitions with the same files.
+Tested on a console: SP Flash Tool v5.1924 and the fastboot scripts. Not yet tested on a console:
+mtkclient, which writes the same two partitions with the same files. SP Flash Tool V6 does not
+work with these packages: use v5.
 
-1. Windows: SP Flash Tool
-   Install the MediaTek USB VCOM driver. Two scatter files are given; use the one for your tool:
-     MT6785_Android_scatter.xml   SP Flash Tool V6 (the route the first consoles were installed with)
-     MT6785_Android_scatter.txt   SP Flash Tool v5 (for example v5.1924)
-   a. Download tab, Scatter-loading File: Browse to the scatter in spflash/gammaos/ (Browse, not
-      the history list).
+1. Windows: SP Flash Tool v5
+   The release's gammaos-pico-kpa-windows-tools.zip has both things this needs: SP Flash Tool
+   v5.1924 and the MediaTek USB driver installer. Run the driver installer once, then open
+   flash_tool.exe from SP Flash Tool's folder.
+   a. Download tab, Scatter-loading File: Browse to MT6785_Android_scatter.txt in spflash/gammaos/
+      (Browse, not the history list).
    b. Mode "Download Only". Only lk_a and lk_b are ticked. Never use "Format All + Download" or
       "Firmware Upgrade": they rewrite the whole flash.
    c. Power the console off, click Download, then connect it over USB. Wait for the green tick.

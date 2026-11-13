@@ -181,17 +181,21 @@ X shows one system at a time; in a long carousel L / R jump from letter to lette
 ## Downloads
 
 - **gammaos-pico-kpa-@VERSION@-flash.zip**: the LK for `lk_a` and `lk_b`, to install GammaOS Pico and to go
-  back to stock: SP Flash Tool v5 and V6 scatters (Windows) and mtkclient scripts (Linux), both of
-  which work on a stock console with a locked bootloader, plus fastboot scripts for updates. Read
-  its README.txt.
+  back to stock: SP Flash Tool v5 packages (Windows) and mtkclient scripts (Linux), both of which
+  work on a stock console with a locked bootloader, plus fastboot scripts for updates. Read its
+  README.txt.
+- **gammaos-pico-kpa-windows-tools.zip**: what the Windows install needs: SP Flash Tool v5.1924
+  and MediaTek's USB driver installer (MediaTek SP Driver 5.23.07.02), as MediaTek ships them.
+  SP Flash Tool V6 does not work with these packages.
 - **gammaos-pico-kpa-@VERSION@-sdcard.zip**: the card. Copy its contents to the root of a FAT32 or
   exFAT microSD card. It has the menu, the five emulator cores and the demo games below.
 
 ## Install
 
 1. Flash the GammaOS Pico LK from the flash package: on Windows `spflash/gammaos/` with SP Flash Tool
-   (V6 `.xml` or v5 `.txt` scatter, mode Download Only, only `lk_a` and `lk_b` ticked); on Linux
-   `mtkclient/flash_gammaos.sh` with [mtkclient](https://github.com/bkerler/mtkclient).
+   v5 from the windows-tools package (install its USB driver first; the `.txt` scatter, mode
+   Download Only, only `lk_a` and `lk_b` ticked); on Linux `mtkclient/flash_gammaos.sh` with
+   [mtkclient](https://github.com/bkerler/mtkclient).
 2. Copy the sdcard package's contents to a microSD card, put it in and power on.
 3. Put your own Game Boy Advance BIOS on the card as `bios/gba_bios.bin` (16 KB). GBA games then
    run on Nintendo's own BIOS, with the original boot logo; without it armGBA falls back to its
@@ -203,10 +207,10 @@ To go back, flash `spflash/stock/` or run `mtkclient/flash_stock.sh` the same wa
 
 | Method | Status |
 |---|---|
-| SP Flash Tool V6 with the `.xml` scatter | tested: the route the first consoles were installed with |
+| SP Flash Tool v5.1924 with the `.txt` scatter | tested |
 | fastboot scripts (updates) | tested: both slots written, the console starts GammaOS Pico |
-| SP Flash Tool v5 with the `.txt` scatter | **untested** on a console (same partitions and files as V6) |
 | mtkclient on Linux | **untested** on a console (writes the same two partitions) |
+| SP Flash Tool V6 | does not work with these packages |
 
 
 ## Demo games

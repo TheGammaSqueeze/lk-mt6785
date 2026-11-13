@@ -8,6 +8,8 @@
 #                                      back to stock) and fastboot scripts for Windows and Linux
 #   gammaos-pico-kpa-<version>-sdcard.zip   the microSD card: menu, the five emulator cores, freely
 #                                      licensed demo games with box art, licences and credits
+#   gammaos-pico-kpa-windows-tools.zip      with MTK_DRIVER set: SP Flash Tool v5.1924 and MediaTek's
+#                                      USB driver for the Windows install (make_windows_tools_kpa.sh)
 #   SHA256SUMS, RELEASE_NOTES.md
 #
 # Needs: the LK build's needs (Linux, Python 3 with Pillow and numpy, openssl), arm-none-eabi
@@ -47,6 +49,7 @@ for c in armgba-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico; d
 done
 
 rm -rf "$FILES" "$R"/*.zip "$R"/SHA256SUMS "$R"/RELEASE_NOTES.md
+WINTOOLS=gammaos-pico-kpa-windows-tools.zip
 mkdir -p "$FILES/$FLASH" "$FILES/$CARD"
 LK_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LK_COMMIT_FULL=$(git rev-parse HEAD 2>/dev/null || echo lk-gba-emu-sd-card-kpa)   # the screenshots in the notes
@@ -56,14 +59,12 @@ echo ">> Flash package"
 F="$FILES/$FLASH"
 mkdir -p "$F/spflash/gammaos" "$F/spflash/stock" "$F/mtkclient" "$F/fastboot"
 for which in gammaos stock; do
-	# SP Flash Tool: the text scatter for v5, the .xml scatter for V6, both ticking lk_a and lk_b
+	# SP Flash Tool v5: the text scatter, ticking lk_a and lk_b (V6 does not take these packages)
 	if [ $which = gammaos ]; then img=out/lk_a_kpa_signed.img; label="GammaOS Pico"; else img="$STOCK/lk.img"; label=stock; fi
 	cp "$img" "$F/spflash/$which/lk_kpa_$which.img"
 	cp "$STOCK/preloader_k85v1_64.bin" "$F/spflash/$which/"
-	for ext in txt xml; do
-		python3 tools/release/kpa_scatter.py "$STOCK/MT6785_Android_scatter.$ext" \
-			"$F/spflash/$which/MT6785_Android_scatter.$ext" lk_kpa_$which.img lk_a lk_b
-	done
+	python3 tools/release/kpa_scatter.py "$STOCK/MT6785_Android_scatter.txt" \
+		"$F/spflash/$which/MT6785_Android_scatter.txt" lk_kpa_$which.img lk_a lk_b
 	cp "$img" "$F/mtkclient/lk_kpa_$which.img"
 	cp "$img" "$F/fastboot/lk_kpa_$which.img"
 	printf '#!/bin/sh\n# Write the %s LK to lk_a and lk_b with mtkclient (Linux), no unlocked bootloader needed.\n# Power the console off and unplug it, run this, then plug the console in when mtkclient\n# waits for it. See README.txt for installing mtkclient.\ncd "$(dirname "$0")"\nMTK="${MTK:-mtk}"   # or MTK="python3 /path/to/mtkclient/mtk.py"\ncommand -v ${MTK%%%% *} >/dev/null 2>&1 || { echo "mtkclient (mtk) not found: see README.txt"; exit 1; }\nif $MTK w lk_a,lk_b lk_kpa_%s.img,lk_kpa_%s.img; then\n\techo "Done. Unplug the console and hold POWER to start it."\nelse\n\techo "Writing failed. Do not unplug yet if a write was in progress; run this again."\nfi\n' \
@@ -100,7 +101,12 @@ sed "s/@VERSION@/$VER/; s/@COMMIT@/$LK_COMMIT/" tools/release/README_sdcard.txt 
 echo ">> Zips"
 python3 tools/release/det_zip.py "$S" "$R/$CARD.zip"
 python3 tools/release/det_zip.py "$F" "$R/$FLASH.zip"
-(cd "$R" && sha256sum "$FLASH.zip" "$CARD.zip" > SHA256SUMS)
+if [ -n "${MTK_DRIVER:-}" ]; then
+	tools/release/make_windows_tools_kpa.sh "$R/$WINTOOLS"
+else
+	echo "!! MTK_DRIVER is not set: no $WINTOOLS (the Windows install needs it in the release)" >&2
+fi
+(cd "$R" && sha256sum "$FLASH.zip" "$CARD.zip" $([ -f "$WINTOOLS" ] && echo "$WINTOOLS") > SHA256SUMS)
 sed "s/@VERSION@/$VER/g; s/@COMMIT@/$LK_COMMIT/g; s/@COMMIT_FULL@/$LK_COMMIT_FULL/g" tools/release/RELEASE_NOTES.md > "$R/RELEASE_NOTES.md"
 python3 - "$R/RELEASE_NOTES.md" tools/release/demo_games.json <<'PY'
 import json, sys

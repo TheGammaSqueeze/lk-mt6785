@@ -191,8 +191,9 @@ X shows one system at a time; in a long carousel L / R jump from letter to lette
 
 Grab the latest [release](https://github.com/TheGammaSqueeze/GammaOSPico/releases) from GammaOSPico,
 where GammaOS Pico is published (the releases here are older betas). The GammaOS Pico
-LK goes to `lk_a` and `lk_b`. **The way to install it is SP Flash Tool (Windows) or mtkclient
-(Linux):** both write to a stock console with a locked bootloader, and neither needs an unlock or
+LK goes to `lk_a` and `lk_b`. **The way to install it is SP Flash Tool v5 (Windows; the release's
+windows-tools package has it with MediaTek's USB driver, and V6 does not take the packages) or
+mtkclient (Linux):** both write to a stock console with a locked bootloader, and neither needs an unlock or
 wipes anything. fastboot is only for updates once GammaOS Pico is already installed, never for the
 first install (the stock bootloader will not flash over fastboot without an unlock, which erases
 your data). The SD card package goes on a FAT32 or exFAT card as it is: menu,
