@@ -19,5 +19,7 @@ int  card_writer_put(fat_vol *v, const char *dir, const char *name, const void *
 /* Returns once every queued file is on the card (or after 5 s): before a file is read back, a game
  * ends or the console powers off. */
 void card_writer_flush(void);
+/* files still to write (or being written) */
+int  card_writer_pending(void);
 
 #endif

@@ -29,6 +29,8 @@
 #include "fat_ro.h"
 #include "fat_wr.h"
 #include "pico_i18n.h"          /* tr(): the menus' languages */
+#include "pico_clock.h"         /* the date and time */
+#include "pico_stats.h"         /* play time and last played */
 
 extern unsigned int gpt4_get_current_tick(void);
 extern unsigned int *ayaneo_canvas_back(unsigned int *pitch, unsigned int *W, unsigned int *H);
@@ -548,15 +550,26 @@ static int text_wrap2(const cfont *f, int x, int y, int line_h, const char *s, u
 /* the settings rows: the main list, then the two subsections it opens */
 enum { SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_BIOS, SET_RESUME, SET_BOOT_OS,
        SET_SKIP_INTRO, SET_INTRO_BG, SET_MUTE_BIOS, SET_INTRO_RESUME, SET_RESUME_BOOT, SET_RESUME_OPEN,
-       SET_LANGUAGE, SET_N };
-enum { SPAGE_MAIN, SPAGE_BIOS, SPAGE_RESUME, SPAGE_N };
-#define SET_ROWS 10                   /* rows in a settings list, at most, with its end */
+       SET_LANGUAGE, SET_CLOCK, SET_YEAR, SET_MONTH, SET_DAY, SET_HOUR, SET_MINUTE, SET_ZONE, SET_CLOCK12,
+       SET_N };
+enum { SPAGE_MAIN, SPAGE_BIOS, SPAGE_RESUME, SPAGE_CLOCK, SPAGE_N };
+#define SET_ROWS 12                   /* rows in a settings list, at most, with its end */
 static const signed char k_set_page[SPAGE_N][SET_ROWS] = {
-	{ SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_LANGUAGE, SET_BIOS, SET_RESUME, SET_BOOT_OS, -1 },
+	{ SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_LANGUAGE, SET_CLOCK, SET_BIOS, SET_RESUME,
+	  SET_BOOT_OS, -1 },
 	{ SET_SKIP_INTRO, SET_INTRO_BG, SET_MUTE_BIOS, SET_INTRO_RESUME, -1 },
 	{ SET_RESUME_BOOT, SET_RESUME_OPEN, -1 },
+	{ SET_YEAR, SET_MONTH, SET_DAY, SET_HOUR, SET_MINUTE, SET_ZONE, SET_CLOCK12, -1 },
 };
-static const char *const k_set_page_name[SPAGE_N] = { "", "BIOS boot", "Game resume" };
+static const char *const k_set_page_name[SPAGE_N] = { "", "BIOS boot", "Game resume", "Date & Time" };
+/* the row of the main list that opens a page, and the page a row opens (or -1) */
+static const signed char k_page_row[SPAGE_N] = { -1, SET_BIOS, SET_RESUME, SET_CLOCK };
+static int page_of_row(int item)
+{
+	int p;
+	for (p = 1; p < SPAGE_N; p++) if (k_page_row[p] == item) return p;
+	return -1;
+}
 static struct {
 	cimg hw[NSYS], logo[NSYS], slogo[NSYS], llogo[NSYS], alogo[NSYS];
 	cimg rail[3], railf[3], ic_library, ic_play, ic_set[SET_N], ic_chev, gamma, shadow, glow, ring, pillm;
@@ -572,7 +585,8 @@ static void art_load(void)
 	static const char *sys[NSYS] = { "gb", "gbc", "gba", "snes", "genesis", "sms", "gg", "sg" };
 	static const char *rail[3] = { "games", "resume", "settings" };
 	static const char *setic[SET_N] = { "sun", "sound", "bfi", "display", "colour", "bios", "rsm", "power",
-					    "bios", "display", "mute", "rsm", "rsm", "rsm", "language" };
+					    "bios", "display", "mute", "rsm", "rsm", "rsm", "language", "clock",
+					    "clock", "clock", "clock", "clock", "clock", "clock", "clock" };
 	char n[32];
 	int i;
 	for (i = 0; i < NSYS; i++) {
@@ -991,7 +1005,7 @@ static void hline(int x0, int x1, int y, uint32_t rgb, int op) { fill(x0, y, x1 
 
 static void header(const char *realm)
 {
-	int x = U(s_p), w, r, chg = S.chg, pct = S.batt;
+	int x = U(s_p), w, r, chg = S.chg, pct = S.batt, clock_x = U(s_uw - s_p);
 	draw_mask(&A.gamma, x, U(28), C_INK, 256);
 	w = text(&A.brand, x + U(31), U(47), "GammaOS", C_INK, 256, 0, 0, 0);
 	w = x + U(31) + w + U(8);
@@ -1009,6 +1023,16 @@ static void header(const char *realm)
 		fill(bx, U(34), r, U(11), C_MUTED, 256); fill(bx + U(25) - r, U(34), r, U(11), C_MUTED, 256);
 		fill(bx + U(3), U(37), (U(19) * pct) / 100, U(5), chg ? C_ACCENT : C_MUTED, 256);
 		fill(bx + U(26), U(37), U(2), U(5), C_MUTED, 256);
+		clock_x = bx - U(22);
+	}
+	{	/* the day and the time, left of the battery */
+		char d[48];
+		long long now = pico_clock_local();
+		pico_clock_time_text(now, d, sizeof d);
+		w = text(&A.realm, clock_x, U(46), d, C_INK, 256, 2, 0, 0);
+		fill(clock_x - w - U(14), U(31), 1, U(17), C_MUTED, 115);
+		pico_clock_date_text(now, d, sizeof d);
+		text(&A.realm, clock_x - w - U(28), U(46), d, C_MUTED, 256, 2, 0, 0);
 	}
 }
 /* the button hints along the bottom: codes ("A", "B", "LR") and labels */
@@ -1141,6 +1165,27 @@ static void home_games(void)
 		if (i == S.sys) fill(xx, U(base + 26), l->w, U(1.8f) > 1 ? U(1.8f) : 2, C_ACCENT, 256);
 	}
 }
+/* under a game's box art: how long it has been played and when it was last */
+static void play_lines(int rom, float cx, float y)
+{
+	unsigned int secs;
+	long long last;
+	char d[64], t[96];
+	if (!pico_stats_get(s_roms[rom].type, s_roms[rom].name, &secs, &last) || !last) return;
+	if (secs >= 3600) snprintf(d, sizeof d, tr("%d h %02d min"), (int)(secs / 3600), (int)(secs / 60 % 60));
+	else snprintf(d, sizeof d, tr("%d min"), (int)((secs + 59) / 60));   /* a short go counts as a minute */
+	snprintf(t, sizeof t, tr("Played %s"), d);
+	text(&A.info, U(cx), U(y), t, C_MUTED, 256, 1, 0, 0);
+	{	/* today, yesterday or the day, in the time zone set */
+		long long now = pico_clock_local(), then = last + (long long)pico_clock_zone() * 900;
+		long long days = now / 86400 - then / 86400;
+		if (days == 0) snprintf(d, sizeof d, "%s", tr("today"));
+		else if (days == 1) snprintf(d, sizeof d, "%s", tr("yesterday"));
+		else pico_clock_date_text(then, d, sizeof d);
+	}
+	snprintf(t, sizeof t, tr("Last played %s"), d);
+	text(&A.info, U(cx), U(y + 24), t, C_MUTED, 256, 1, 0, 0);
+}
 static const char *s_rowtxt[128];
 static void game_list(const short *idx, int n, int sel, int top, int title_y, const char *title)
 {
@@ -1156,6 +1201,7 @@ static void game_list(const short *idx, int n, int sel, int top, int title_y, co
 		int rom = idx[sel];
 		art(rom, rx, ry, rw, rh);
 		text(&A.info, U(rx + rw / 2), U(ry + rh + 29), tr(s_sysname[s_roms[rom].type]), C_MUTED, 256, 1, 0, 0);
+		play_lines(rom, rx + rw / 2, ry + rh + 60);
 	}
 }
 static void home_resume(void)
@@ -1176,14 +1222,16 @@ static unsigned int theme_hash(int i) { return snes_hash(A.theme_id[i < 0 ? 0 : 
 static const char *const k_set_name[SET_N] = { "Brightness", "Volume", "Black Frame Insertion", "Theme", "Colour",
 	"BIOS Boot", "Game Resume", "Boot to Android",
 	"Skip BIOS Intro", "BIOS Intro Background", "Mute BIOS Audio", "BIOS Intro on Resume",
-	"Resume on Power On", "Resume on Game Open", "Language" };
+	"Resume on Power On", "Resume on Game Open", "Language", "Date & Time", "Year", "Month", "Day",
+	"Hour", "Minute", "Time zone", "24-hour clock" };
 /* the line under a setting on the left, where it says more than its value */
 static const char *const k_set_about[SET_N] = { 0, 0, 0, 0, 0,
 	"The Game Boy Advance start-up screen", "Where games carry on from", "Restart into Android",
 	"Start games without the logo screen", "Behind the logo at start-up", "The start-up chime",
 	"The logo first, then the resumed game fades in",
 	"Power on straight back into the game you left", "Games carry on where you left them (B: fresh)",
-	"The language of the menus" };
+	"The language of the menus", "The clock the games and the menus keep", 0, 0, 0, 0, 0,
+	"Hours from UTC, as the Android clock is kept", 0 };
 static void set_value(int i, char *buf, int n, int *num)
 {
 	*num = -1;
@@ -1205,6 +1253,18 @@ static void set_value(int i, char *buf, int n, int *num)
 	case SET_RESUME_BOOT: snprintf(buf, n, "%s", tr(ayaneo_get_resume_on_boot() ? "On" : "Off")); break;
 	case SET_RESUME_OPEN:   snprintf(buf, n, "%s", tr(ayaneo_get_resume_on_open() ? "On" : "Off")); break;
 	case SET_LANGUAGE:    snprintf(buf, n, "%s", pico_lang_name(S.lang_pick)); break;
+	case SET_CLOCK:       buf[0] = 0; break;   /* a subsection: its chevron */
+	case SET_YEAR: case SET_MONTH: case SET_DAY: case SET_HOUR: case SET_MINUTE: {
+		pico_tm tm;
+		pico_clock_split(pico_clock_local(), &tm);
+		if (i == SET_YEAR) snprintf(buf, n, "%d", tm.year);
+		else if (i == SET_MONTH) snprintf(buf, n, "%s", pico_clock_month_name(tm.mon));
+		else if (i == SET_DAY) snprintf(buf, n, "%d", tm.mday);
+		else if (i == SET_HOUR) snprintf(buf, n, "%02d", tm.hour);
+		else snprintf(buf, n, "%02d", tm.min);
+		break; }
+	case SET_ZONE:        pico_clock_zone_text(pico_clock_zone(), buf, n); break;
+	case SET_CLOCK12:     snprintf(buf, n, "%s", tr(pico_clock_12h() ? "Off" : "On")); break;
 	default: snprintf(buf, n, "%s", tr("Open")); break;
 	}
 }
@@ -1229,7 +1289,7 @@ static void home_settings(void)
 	rows(xx, top, lw, pitch, names, vp, n, S.set_sel, &A.srow, &A.srowf, &A.sval);
 	for (i = 0; i < n; i++) {	/* the rows that open a subsection: a chevron where the value goes */
 		int k = k_set_page[S.set_page][i];
-		if (k == SET_BIOS || k == SET_RESUME)
+		if (page_of_row(k) > 0)
 			draw_mask(&A.ic_chev, U(xx + lw - 12) - A.ic_chev.w, U(top + i * pitch) + (U(pitch) - A.ic_chev.h) / 2,
 				  i == S.set_sel ? C_INK : C_MUTED, 256);
 	}
@@ -1247,6 +1307,13 @@ static void home_settings(void)
 		fill(U(s_p), U(mid + 176), U(sw), U(3), C_MUTED, 77);
 		fill(U(s_p), U(mid + 176), U(sw) * num / 100, U(3), C_ACCENT, 256);
 		disc(U(s_p) + U(sw) * num / 100 + .0f, U(mid + 177.5f) + .0f, U(5.3f) + .0f, C_INK, 256);
+	} else if (it == SET_CLOCK) {	/* the time, large, and the day under it */
+		char t[48];
+		long long now = pico_clock_local();
+		pico_clock_time_text(now, t, sizeof t);
+		text_fit(&A.dname, U(s_p), U(mid + 141), t, C_INK, 256, U(xx - s_p - 20));
+		pico_clock_date_text(now, t, sizeof t);
+		text_fit(&A.lib, U(s_p), U(mid + 178), t, C_MUTED, 256, U(xx - s_p - 20));
 	} else if (it == SET_BOOT_OS || it == SET_BIOS || it == SET_RESUME) {
 		text_wrap2(&A.lib, U(s_p), U(mid + 141), U(27), tr(k_set_about[it]), C_MUTED, 256, U(xx - s_p - 20));
 	} else {
@@ -1550,6 +1617,11 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 		prev = now;
 		if (dt < .004f) dt = .004f; else if (dt > .1f) dt = .1f;
 		if (now - S.batt_tick > 13000000u * 20) { S.batt = gba_battery_pct(&S.chg); S.batt_tick = now; dirty = 1; }
+		{	/* the clock in the header turns over: the menu is drawn again */
+			static long long shown_min = -1;
+			long long m = pico_clock_local() / 60;
+			if (m != shown_min) { shown_min = m; dirty = 1; }
+		}
 
 		memset(&in, 0, sizeof in);
 		gba_menu_read_input(&in);
@@ -1599,10 +1671,10 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 					if (dn && S.set_sel < set_count(S.set_page) - 1) S.set_sel++;
 					it = set_item();
 					if (eb && S.set_page) {	/* back to the main list, on the row that opened it */
-						S.set_sel = set_row_of(S.set_page == SPAGE_BIOS ? SET_BIOS : SET_RESUME);
+						S.set_sel = set_row_of(k_page_row[S.set_page]);
 						S.set_page = SPAGE_MAIN; S.dip = .45f;
-					} else if ((it == SET_BIOS || it == SET_RESUME) && (ea || rt)) {
-						S.set_page = it == SET_BIOS ? SPAGE_BIOS : SPAGE_RESUME; S.set_sel = 0; S.dip = .45f;
+					} else if (page_of_row(it) > 0 && (ea || rt)) {
+						S.set_page = page_of_row(it); S.set_sel = 0; S.dip = .45f;
 					}
 					if (it == SET_BRIGHT && dir) { ayaneo_brightness_step(dir); ayaneo_menu_settings_persist(); }
 					if (it == SET_VOLUME && dir) {
@@ -1636,6 +1708,26 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 							return -3;
 						}
 					}
+					if (it >= SET_YEAR && it <= SET_MINUTE && dir) {	/* the clock: the RTC takes it at once */
+						pico_tm tm;
+						int days;
+						pico_clock_split(pico_clock_local(), &tm);
+						if (it == SET_YEAR) tm.year = tm.year + dir < 2024 ? 2099 : tm.year + dir > 2099 ? 2024 : tm.year + dir;
+						if (it == SET_MONTH) tm.mon = (tm.mon - 1 + dir + 12) % 12 + 1;
+						days = pico_clock_days_in(tm.year, tm.mon);
+						if (it == SET_DAY) tm.mday = (tm.mday - 1 + dir + days) % days + 1;
+						if (tm.mday > days) tm.mday = days;
+						if (it == SET_HOUR) tm.hour = (tm.hour + dir + 24) % 24;
+						if (it == SET_MINUTE) tm.min = (tm.min + dir + 60) % 60;
+						tm.sec = 0;
+						pico_clock_set_local(&tm);
+					}
+					if (it == SET_ZONE && dir) {	/* quarter hours, as the world's zones go */
+						int q = pico_clock_zone() + dir;
+						pico_clock_set_zone(q < -48 ? 56 : q > 56 ? -48 : q);
+						ayaneo_menu_settings_persist();
+					}
+					if (it == SET_CLOCK12 && flip) { pico_clock_set_12h(!pico_clock_12h()); ayaneo_menu_settings_persist(); }
 					if (it == SET_LANGUAGE && dir) S.lang_pick = (S.lang_pick + dir + LANG_N) % LANG_N;
 					if (it == SET_LANGUAGE && ea && S.lang_pick != pico_lang()) {
 						/* the words and glyphs of the new language, then the fonts take them up */
@@ -1973,6 +2065,11 @@ int pico_igm_frame(unsigned int keys)
 	if (G.nudge_t < 1) { G.nudge_t += dt / .16f; if (G.nudge_t > 1) G.nudge_t = 1; }
 	if (G.toast_t < 9) G.toast_t += dt;
 	if (G.c->status && G.c->status[0]) { igm_toast(G.c->status); G.c->status[0] = 0; }
+	{	/* the clock in the header turns over */
+		static long long shown_min = -1;
+		long long m = pico_clock_local() / 60;
+		if (m != shown_min) { shown_min = m; G.dirty = 1; }
+	}
 	n = igm_lines(G.page, ln);
 	nv = (int)((720 - 64 - IGM_Y0) / IGM_RP);
 	if (G.sel[G.page] >= n) G.sel[G.page] = n ? n - 1 : 0;
@@ -2340,6 +2437,11 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 			fill(bx, U(34), r, U(11), C_MUTED, op); fill(bx + U(25) - r, U(34), r, U(11), C_MUTED, op);
 			fill(bx + U(3), U(37), (U(19) * pct) / 100, U(5), chg ? C_ACCENT : C_MUTED, op);
 			fill(bx + U(26), U(37), U(2), U(5), C_MUTED, op);
+			{	/* the time, left of the battery */
+				char tm[32];
+				pico_clock_time_text(pico_clock_local(), tm, sizeof tm);
+				text(&G.realm, bx - U(14), U(46), tm, C_MUTED, op, 2, 0, 0);
+			}
 		}
 	}
 	{	/* the system, and the game or the page */

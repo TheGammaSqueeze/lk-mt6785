@@ -66,6 +66,7 @@ extern bool Check_RTC_PDN1_bit13(void);
 extern bool Check_RTC_Recovery_Mode(void);
 extern void Set_RTC_Recovery_Mode(bool flag);
 extern void rtc_get_time(struct rtc_time *tm);
+extern void rtc_set_time(const struct rtc_time *tm);
 #ifndef NO_POWER_OFF
 extern void mt6575_power_off(void);
 #else

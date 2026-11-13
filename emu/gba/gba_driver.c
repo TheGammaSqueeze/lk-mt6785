@@ -289,9 +289,14 @@ int gbc_benchmark_on(void) { return s_benchmark; }
 int gbc_get_fps(void) { return s_fps; }
 int gbc_menu_is_open(void) { return s_menu_open; }
 
-/* wall-clock for the GBA RTC (Pokemon Emerald etc.); base ~2024-08-01 UTC. */
+/* The cartridges' real time clocks (Pokemon Ruby, Sapphire and Emerald, Gold, Silver and Crystal,
+ * Boktai, SNES SRTC) read this through the cores' time(): the console's own clock, in the time zone
+ * set (pico_clock.c), seconds since 1970 as if it were UTC, which is how the cores turn it into a
+ * date. Without the card's clock module, a fixed 2024-08-01 plus the time since the LK started. */
 long gba_host_time(void)
 {
+	extern long long pico_clock_local(void) __attribute__((weak));
+	if (pico_clock_local) return (long)pico_clock_local();
 	return 1722470400L + (long)(current_time() / 1000);
 }
 
@@ -1446,6 +1451,7 @@ static int led_thread(void *arg)
 		{ extern unsigned int ayaneo_bb_uptime_ms(void); ayaneo_bb_uptime_ms(); }
 		if (tick == 60) { extern void ayaneo_sd_guard_stable(void); ayaneo_sd_guard_stable(); }   /* 30 s up: a stable run */
 		{ extern unsigned int ayaneo_rewind_verify_tables(int heal); ayaneo_rewind_verify_tables(1); }   /* page tables of the rewind islands, healed if hit */
+		{ extern void pico_stats_tick(void) __attribute__((weak)); if (pico_stats_tick) pico_stats_tick(); }   /* a long session's play time saved now and then */
 		if (g_latency_led) {
 			last = -1;                   /* the latency light owns the LED; restore once it is off */
 		} else if (state != last) {
@@ -1511,6 +1517,8 @@ void ayaneo_leds_off_for_poweroff(void)
 void ayaneo_power_off_now(void)
 {
 	extern void card_writer_flush(void) __attribute__((weak));
+	extern void pico_stats_end(void) __attribute__((weak));
+	if (pico_stats_end) pico_stats_end();         /* the game's play time, before the writer is waited for */
 	if (card_writer_flush) card_writer_flush();   /* a save state still going to the card */
 	ayaneo_gbc_audio_pause(1);
 	ayaneo_gbc_audio_shutdown();
@@ -2400,6 +2408,7 @@ static unsigned int s_bt_t0;
 volatile unsigned g_dbg_emu_abs_ms; volatile int g_dbg_emu_chime;   /* oem led: emu_thread start on the gpt4 clock, chime still playing */
 volatile unsigned int g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list;
 volatile unsigned int g_dbg_bt_boxart;   /* ms the box art took on the listing's thread */
+volatile int g_dbg_showcase;             /* oem showcase: 1 asked, 2 the list holds only the demo games */
 volatile int g_dbg_bt_retime = -2;   /* GammaOS panel timing: -2 not applied (stock), else the panel write timeouts */
 volatile unsigned int g_dbg_bt_coreload, g_dbg_bt_coreinit, g_dbg_bt_start, g_dbg_bt_frame1;
 #define BT_MS() ((gpt4_get_current_tick() - s_bt_t0) / 13000u)
@@ -2438,11 +2447,30 @@ static int gba_sd_rom_select(void)
 	 * boot_b without the pack still lets the user pick a game (never-brick). */
 	{
 		int r;
+		extern void pico_stats_begin(int type, const char *name), pico_stats_end(void);
 		sd_bg_wait();   /* fast path: the card listing may still be running */
+		pico_stats_end();   /* the game played before this menu, its time added */
+		{	/* oem showcase:1 (until the next power on): the menus list only the release's demo
+			 * games, for the README's screenshots; nothing on the card changes */
+			extern volatile int g_dbg_showcase;
+			static const char *const demo[] = { "The Hat Chooses the Wizard", "Collie Defense",
+				"Libbet and the Magic Floor", "Tobu Tobu Girl", "Tobu Tobu Girl Deluxe", "uCity",
+				"Super Sudoku", "Castle Platformer", "KleleAtoms MD", "Alex vs Bus", "Raposa do Sol",
+				"Waternet", 0 };
+			if (g_dbg_showcase == 1) {
+				int i, k, n = 0;
+				for (i = 0; i < s_nrom; i++) {
+					for (k = 0; demo[k] && strcmp(demo[k], s_roms[i].name); k++) ;
+					if (demo[k]) s_roms[n++] = s_roms[i];
+				}
+				s_nrom = n; s_sel_rom = 0;
+				g_dbg_showcase = 2;
+			}
+		}
 		r = gba_snes_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
 		while (r == -3)   /* a theme was picked on the Display page: the menu again, in that theme */
 			r = gba_snes_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
-		if (r >= 0) return r;
+		if (r >= 0) { pico_stats_begin(s_roms[r].type, s_roms[r].name); return r; }
 	}
 	for (;;) {
 		mtk_wdt_restart();   /* kick the 10s watchdog: idling on the menu must not reset the device */
@@ -2712,6 +2740,7 @@ void ayaneo_menu_settings_persist(void)
 	}
 	event_signal(&s_persist_ev, false);
 }
+int ayaneo_settings_persist_pending(void) { return s_persist_dirty || s_persist_busy; }
 void ayaneo_settings_persist_flush(void)
 {
 	int i;

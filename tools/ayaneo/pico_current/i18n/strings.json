@@ -811,6 +811,201 @@
    "en": "Sort Z to A",
    "kind": "status",
    "note": "classic theme note: sorted reverse alphabetically"
+  },
+  {
+   "en": "Date & Time",
+   "kind": "label",
+   "note": "settings row and page heading: the clock (date, time, time zone)"
+  },
+  {
+   "en": "Year",
+   "kind": "label",
+   "note": "settings row on the Date & Time page: calendar year"
+  },
+  {
+   "en": "Month",
+   "kind": "label",
+   "note": "settings row on the Date & Time page: calendar month"
+  },
+  {
+   "en": "Day",
+   "kind": "label",
+   "note": "settings row on the Date & Time page: day of the month"
+  },
+  {
+   "en": "Hour",
+   "kind": "label",
+   "note": "settings row on the Date & Time page: hour of the day"
+  },
+  {
+   "en": "Minute",
+   "kind": "label",
+   "note": "settings row on the Date & Time page: minute of the hour"
+  },
+  {
+   "en": "Time zone",
+   "kind": "label",
+   "note": "settings row on the Date & Time page: offset from UTC"
+  },
+  {
+   "en": "24-hour clock",
+   "kind": "label",
+   "note": "settings row on the Date & Time page: show the time as 14:30 rather than 2:30 PM"
+  },
+  {
+   "en": "The clock the games and the menus keep",
+   "kind": "about",
+   "note": "explanation under the Date & Time row"
+  },
+  {
+   "en": "Hours from UTC, as the Android clock is kept",
+   "kind": "about",
+   "note": "explanation under the Time zone row"
+  },
+  {
+   "en": "%a %d %b",
+   "kind": "value",
+   "note": "date format: the language's own form of a short date. Tokens: %a weekday short name, %d day number, %b month short name, %m month number, %Y year; reorder, add or drop tokens and punctuation as the language writes dates (e.g. Thu 13 Nov)"
+  },
+  {
+   "en": "%h:%M %p",
+   "kind": "value",
+   "note": "12-hour time format. Tokens: %h hour 1..12, %M minutes, %p the AM/PM word; reorder as the language writes it (e.g. 2:30 PM)"
+  },
+  {
+   "en": "AM",
+   "kind": "word",
+   "note": "before noon, in a 12-hour time"
+  },
+  {
+   "en": "PM",
+   "kind": "word",
+   "note": "after noon, in a 12-hour time"
+  },
+  {
+   "en": "Sun",
+   "kind": "word",
+   "note": "weekday short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Mon",
+   "kind": "word",
+   "note": "weekday short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Tue",
+   "kind": "word",
+   "note": "weekday short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Wed",
+   "kind": "word",
+   "note": "weekday short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Thu",
+   "kind": "word",
+   "note": "weekday short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Fri",
+   "kind": "word",
+   "note": "weekday short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Sat",
+   "kind": "word",
+   "note": "weekday short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Jan",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Feb",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Mar",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Apr",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "May",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Jun",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Jul",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Aug",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Sep",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Oct",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Nov",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "Dec",
+   "kind": "word",
+   "note": "month short name (abbreviation, as on a calendar)"
+  },
+  {
+   "en": "%d h %02d min",
+   "kind": "value",
+   "note": "a play time: %d hours and %02d minutes"
+  },
+  {
+   "en": "%d min",
+   "kind": "value",
+   "note": "a play time in minutes"
+  },
+  {
+   "en": "Played %s",
+   "kind": "about",
+   "note": "under a game's box art: how long it has been played, %s the time (e.g. 3 h 05 min)"
+  },
+  {
+   "en": "Last played %s",
+   "kind": "about",
+   "note": "under a game's box art: when it was last played, %s is today, yesterday or a date"
+  },
+  {
+   "en": "today",
+   "kind": "word",
+   "note": "last played today (inside 'Last played %s')"
+  },
+  {
+   "en": "yesterday",
+   "kind": "word",
+   "note": "last played yesterday (inside 'Last played %s')"
   }
  ]
 }

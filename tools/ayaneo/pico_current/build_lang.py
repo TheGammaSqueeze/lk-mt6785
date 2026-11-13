@@ -28,6 +28,7 @@ import fontsrc
 T_STRINGS = 5
 FORMS = ("zero", "one", "two", "few", "many", "other")
 PLACEHOLDER = re.compile(r"%0?\d*[ds]")
+DATE_FORMATS = ("%a %d %b", "%h:%M %p")   # the clock's own formats (pico_clock.c): their tokens may be reordered or dropped
 DASHES = "".join(map(chr, (0x2012, 0x2013, 0x2014, 0x2015)))   # figure, en, em and quotation dashes
 ROLE = {name: (size, weight) for name, size, weight in bp.FONTS}
 # where a kind of text is drawn: (font role, the most units it may take on the Konkr's 960 x 640,
@@ -74,7 +75,7 @@ def texts_of(code, keys, warn):
         for form, t in forms.items():
             if not isinstance(t, str) or not t.strip():
                 raise SystemExit("%s: %r (%s) is empty" % (code, en, form))
-            if PLACEHOLDER.findall(t) != want:
+            if en not in DATE_FORMATS and PLACEHOLDER.findall(t) != want:
                 raise SystemExit("%s: %r (%s) has placeholders %s, the English %s"
                                  % (code, en, form, PLACEHOLDER.findall(t), want))
             if any(c in t for c in DASHES):

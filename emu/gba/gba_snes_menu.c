@@ -747,6 +747,17 @@ void gba_menu_present(void)
 	ayaneo_canvas_present();
 	g_dbg_present_cnt++;
 	mtk_wdt_restart();
+	{	/* LK runs the highest priority thread that is ready, and the menus draw every refresh
+		 * with no time to spare before it: the low priority threads (the settings writer, the
+		 * card writer, the power LED) ran only once a game left the CPU idle, so a setting
+		 * changed in the menu was not on the card until then. A moment each frame while one has
+		 * work, and a millisecond now and then for the rest. */
+		extern int ayaneo_settings_persist_pending(void);
+		extern int card_writer_pending(void) __attribute__((weak));
+		static unsigned int n;
+		if (ayaneo_settings_persist_pending() || (card_writer_pending && card_writer_pending())) thread_sleep(2);
+		else if (++n % 30u == 0) thread_sleep(1);
+	}
 	if (ayaneo_power_hold(0, 0)) {
 		/* Powering off from the menu: the next boot lands on the menu, whatever record a game
 		 * left, and a volume or brightness change still waiting for its deferred write is

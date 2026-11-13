@@ -390,6 +390,7 @@ ifeq ($(AYANEO_GBA_SD),yes)
 OBJS += emu/gba/sd_fastboot.o
 OBJS += emu/gba/menu_fastboot.o
 OBJS += emu/gba/card_writer.o		# in-game saves written to the card off the game's thread
+OBJS += emu/gba/pico_clock.o emu/gba/pico_stats.o	# the date and time, play time
 # The cores are loadable blobs on the SD card (/cores/*.blob, built in their own -pico repos);
 # lk_a carries only the loader and the session runner (video, input, audio) for each.
 OBJS += emu/gbc/gbc_core_loader.o

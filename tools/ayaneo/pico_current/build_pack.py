@@ -220,7 +220,7 @@ def main():
         pack.mask("ic_%s" % name, im.resize((u(29), u(29)), Image.LANCZOS))
     for name in ("library", "play"):
         pack.mask("ic_" + name, Image.open(os.path.join(ART, "icons", name + ".png")).resize((u(18), u(18)), Image.LANCZOS))
-    for name in ("sun", "sound", "bfi", "display", "colour", "power", "mute", "language"):
+    for name in ("sun", "sound", "bfi", "display", "colour", "power", "mute", "language", "clock"):
         pack.mask("ic_" + name, Image.open(os.path.join(ART, "icons", name + ".png")).resize((u(39), u(39)), Image.LANCZOS))
     # the Settings subsections (BIOS boot, game resume) and the chevron of a row that opens one
     for name, src in (("bios", "system"), ("rsm", "resume")):

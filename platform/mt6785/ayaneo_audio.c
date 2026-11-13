@@ -323,6 +323,13 @@ void ayaneo_set_menu_colour(int c)   { s_menu_colour = (unsigned char)(c < 0 ? 0
 static unsigned char s_menu_lang;
 int  ayaneo_get_language(void)       { return s_menu_lang; }
 void ayaneo_set_language(int l)      { s_menu_lang = (unsigned char)(l < 0 || l > 63 ? 0 : l); }
+/* the clock (pico_clock.c): the time zone as quarter hours from UTC, and the 12 hour clock */
+static signed char s_tz_q;
+static unsigned char s_clock12;
+int  ayaneo_get_tz_quarters(void)    { return s_tz_q; }
+void ayaneo_set_tz_quarters(int q)   { s_tz_q = (signed char)(q < -48 ? -48 : q > 56 ? 56 : q); }
+int  ayaneo_get_clock12(void)        { return s_clock12; }
+void ayaneo_set_clock12(int on)      { s_clock12 = on ? 1 : 0; }
 static void resume_fields_write(unsigned char *b)
 {
 	unsigned i;
@@ -335,6 +342,8 @@ static void resume_fields_write(unsigned char *b)
 	b[179] = (unsigned char)(s_intro_on_resume ? 2u : 1u);  /* 0 = never written -> on */
 	wr32(b + 180, s_menu_theme);
 	b[184] = (unsigned char)(s_menu_lang + 1u);   /* 0 = never written -> English */
+	b[185] = (unsigned char)(s_tz_q + 64);         /* 0 = never written -> UTC */
+	b[186] = (unsigned char)(s_clock12 + 1u);      /* 0 = never written -> 24 hour */
 }
 static unsigned char s_cpu_manual[4];   /* manual CPU clock per core, grid index + 1, 0 = automatic */
 static void resume_fields_read(const unsigned char *b, int len)
@@ -345,6 +354,8 @@ static void resume_fields_read(const unsigned char *b, int len)
 	if (len >= 184 && (b[178] == 1u || b[178] == 2u)) s_resume_on_open = (b[178] == 2u);
 	if (len >= 184 && (b[179] == 1u || b[179] == 2u)) s_intro_on_resume = (b[179] == 2u);
 	if (len >= 185 && b[184] && b[184] <= 64u) s_menu_lang = (unsigned char)(b[184] - 1u);
+	if (len >= 186 && b[185] >= 16u && b[185] <= 120u) s_tz_q = (signed char)((int)b[185] - 64);
+	if (len >= 187 && (b[186] == 1u || b[186] == 2u)) s_clock12 = (unsigned char)(b[186] - 1u);
 	if (len >= 176) { s_cpu_manual[0] = b[172] & 15; s_cpu_manual[1] = b[173] & 15; s_cpu_manual[2] = b[174] & 15; s_cpu_manual[3] = b[175] & 15; }
 	if (len < 172) return;
 	{ unsigned int r = rd32(b + 64); if (r == 1u || r == 2u) s_resume_on_boot = (r == 2u); }

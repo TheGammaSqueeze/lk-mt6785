@@ -9,6 +9,7 @@
 #include <string.h>
 #include <kernel/thread.h>
 #include <kernel/event.h>
+#include <kernel/mutex.h>
 #include "card_writer.h"
 #include "fat_wr.h"
 
@@ -33,6 +34,8 @@ static uint8_t *s_arena;
 static unsigned int s_arena_size;
 static event_t s_ev;
 static int s_thread_up;
+static mutex_t s_put_mtx;                     /* one caller at a time queues (the game, the play time) */
+static volatile int s_put_mtx_up;
 volatile unsigned int g_dbg_cw_n, g_dbg_cw_ms, g_dbg_cw_fail;   /* oem persist: files written, the last's ms, failures */
 
 static void copy_str(char *d, int cap, const char *s)
@@ -73,6 +76,7 @@ static int writer_thread(void *arg)
 	return 0;
 }
 
+int card_writer_pending(void) { return s_head != s_tail || s_busy; }
 void card_writer_flush(void)
 {
 	int i;
@@ -80,8 +84,22 @@ void card_writer_flush(void)
 		thread_sleep(10);
 }
 
+static int put_locked(fat_vol *v, const char *dir, const char *name, const void *buf, uint32_t len,
+		      char *status, int status_cap, const char *ok, const char *fail);
 int card_writer_put(fat_vol *v, const char *dir, const char *name, const void *buf, uint32_t len,
 		    char *status, int status_cap, const char *ok, const char *fail)
+{
+	int rc;
+	enter_critical_section();
+	if (!s_put_mtx_up) { mutex_init(&s_put_mtx); s_put_mtx_up = 1; }
+	exit_critical_section();
+	mutex_acquire(&s_put_mtx);
+	rc = put_locked(v, dir, name, buf, len, status, status_cap, ok, fail);
+	mutex_release(&s_put_mtx);
+	return rc;
+}
+static int put_locked(fat_vol *v, const char *dir, const char *name, const void *buf, uint32_t len,
+		      char *status, int status_cap, const char *ok, const char *fail)
 {
 	struct cw_job *j;
 	if (!s_arena) s_arena = (uint8_t *)ayaneo_cardw_arena(&s_arena_size);

@@ -1133,6 +1133,42 @@ static void cmd_corebench(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+#include "pico_clock.h"
+/* oem clock - the RTC (UTC), the time zone and local time; oem clock:<UTC seconds> sets it */
+static void cmd_clock(const char *arg, void *data, unsigned sz)
+{
+	char d[48], t[32];
+	long long now;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg >= '0' && *arg <= '9') {	/* set: UTC seconds, the RTC takes them */
+		long long v = 0;
+		pico_tm tm;
+		while (*arg >= '0' && *arg <= '9') v = v * 10 + (*arg++ - '0');
+		pico_clock_split(v + (long long)pico_clock_zone() * 900, &tm);
+		pico_clock_set_local(&tm);
+	}
+	now = pico_clock_local();
+	pico_clock_date_text(now, d, sizeof d);
+	pico_clock_time_text(now, t, sizeof t);
+	snprintf(lbuf, sizeof lbuf, "clock: utc=%lld zone=%d q, %s %s", pico_clock_utc(), pico_clock_zone(), d, t);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem showcase:1 - from the next menu until the power goes off, only the release's demo games are
+ * listed (for the README's screenshots) */
+static void cmd_showcase(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_showcase;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == '1' && !g_dbg_showcase) g_dbg_showcase = 1;
+	snprintf(lbuf, sizeof lbuf, "showcase: %d (2: only the demo games listed)", g_dbg_showcase);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem suspendtest - the power key's suspend save (state, battery save, resume record, settings)
  * without the power off, timed; a reboot afterwards then boots the way a power on would */
 static void cmd_suspendtest(const char *arg, void *data, unsigned sz)
@@ -2232,6 +2268,10 @@ static void cmd_persist(const char *arg, void *data, unsigned sz)
 	  fastboot_info(lbuf);
 	  snprintf(lbuf, sizeof lbuf, "card writer: %u files, last %ums, %u failed", g_dbg_cw_n, g_dbg_cw_ms, g_dbg_cw_fail);
 	  fastboot_info(lbuf); }
+	{ extern int pico_stats_debug(int i, char *buf, int cap);
+	  int i, n = pico_stats_debug(-1, lbuf, sizeof lbuf);
+	  fastboot_info(lbuf);
+	  for (i = 0; i < n && i < 8; i++) { pico_stats_debug(i, lbuf, sizeof lbuf); fastboot_info(lbuf); } }
 	{ extern volatile unsigned int g_dbg_swept;
 	  snprintf(lbuf, sizeof lbuf, "audio: %u frames cleared after playing", g_dbg_swept);
 	  fastboot_info(lbuf); }
@@ -2511,6 +2551,8 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem odup:", cmd_odup, 1, 0);
 	fastboot_register("oem perf", cmd_perf, 1, 0);
 	fastboot_register("oem suspendtest", cmd_suspendtest, 1, 0);
+	fastboot_register("oem clock", cmd_clock, 1, 0);
+	fastboot_register("oem showcase", cmd_showcase, 1, 0);
 	fastboot_register("oem resumeinfo", cmd_resumeinfo, 1, 0);
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
