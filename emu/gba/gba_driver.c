@@ -2413,6 +2413,11 @@ static unsigned char *gba_core_for_launch(void)
 		s_gpsp_dirty = 0;
 	}
 	if (s_core_is_sd) core_apply_opts();
+	{	/* the loaded core's own audio rate: armGBA (V3) reports 32768, gpSP (V2) makes 65536 */
+		extern void ayaneo_gba_audio_set_src_hz(unsigned hz);
+		ayaneo_gba_audio_set_src_hz((g_core->version >= GBA_CORE_ABI_V3 && g_core->audio_rate)
+					    ? g_core->audio_rate : 65536u);
+	}
 	g_gba_state_dir = (g_core->version >= GBA_CORE_ABI_V3 && g_core->state_dir) ? g_core->state_dir : "/states/gba";
 	g_dbg_core_is_sd = (unsigned)s_core_is_sd;
 	g_dbg_core_switch_ms = (gpt4_get_current_tick() - t0) / 13000u;

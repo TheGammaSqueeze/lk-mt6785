@@ -2035,10 +2035,11 @@ void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
  * default); box-resample it to the same 48 kHz ring the GBC path uses. Reuses
  * the ring, the codec/AFE bring-up (ayaneo_gbc_audio_init), pause and shutdown -
  * only the input format + source rate differ, so only this submit is new. */
-#define GBA_SRC_HZ	65536u
+#define GBA_SRC_HZ	32768u   /* armGBA's own rate; the glue no longer doubles it */
 
-static long long s_ga_accl, s_ga_accr;
-static unsigned s_ga_n, s_ga_phase;	/* phase accumulator, 1/GA_FRAC sample units */
+static int s_ga_pl, s_ga_pr, s_ga_prime;   /* the last input sample, for the linear interpolation */
+static unsigned s_ga_src_hz = GBA_SRC_HZ;  /* the running core's rate: armGBA 32768, gpSP 65536 */
+static unsigned s_ga_phase;                /* 16.16 position within the current input step */
 /*
  * The resampler output increment is carried in 1/GA_FRAC-sample units (a
  * fractional DDS). An INTEGER increment (nom 48000) can only step the output
@@ -2064,6 +2065,12 @@ int ayaneo_gba_audio_drc_rate(void) { return s_ga_inc / GA_FRAC; }
  * the coarse boot-time seed. inc256 = 48000*5972.75*256*10 / hz1000
  *   = 733931520000 / hz1000. (65536/1097.25 = 59.7275 exactly.)
  */
+/* the loaded core's own audio rate (armGBA 32768, gpSP 65536), so the one resampler fits both */
+void ayaneo_gba_audio_set_src_hz(unsigned hz)
+{
+	if (hz >= 8000u && hz <= 96000u) s_ga_src_hz = hz;
+}
+
 void ayaneo_gba_audio_set_rate_milli(int hz1000)
 {
 	long long inc;
@@ -2086,7 +2093,7 @@ void ayaneo_gba_audio_set_rate(int panel_hz100)
 
 /* `frames` stereo frames, s16 interleaved [L,R,L,R,...] at GBA_SRC_HZ. */
 /* Rewind reverse-audio capture (GBA). While active, ayaneo_gba_audio_submit diverts the core's
- * per-frame audio (s16 stereo @ 65536 Hz) into s_gba_rw_cap[] instead of the AFE ring; the GBA
+ * per-frame audio (s16 stereo at the core's rate) into s_gba_rw_cap[] instead of the AFE ring; the GBA
  * rewind path then reverses + decimates + resubmits it. gpSP drains its ring in <=256-frame chunks
  * per rendered frame, so the callback fires a few times - accumulate until capture_end reads it. */
 #define GBA_RW_CAP_MAX 4096u
@@ -2144,28 +2151,24 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 		s_ga_inc = s_ga_inc_base + (int)((long long)s_ga_inc_base * err / ((long long)AUD_LEAN_SPAN * 200));
 	}
 
-	for (i = 0; i < frames; i++) {
-		int l = interleaved[i * 2 + 0];
-		int r = interleaved[i * 2 + 1];
-
-		s_ga_accl += l;
-		s_ga_accr += r;
-		s_ga_n++;
-		s_ga_phase += (unsigned)s_ga_inc;
-		if (s_ga_phase >= GBA_SRC_HZ * GA_FRAC) {
-			int ol, or_;
-			unsigned idx;
-
-			s_ga_phase -= GBA_SRC_HZ * GA_FRAC;
-			ol  = (int)(s_ga_accl / (long long)s_ga_n);
-			or_ = (int)(s_ga_accr / (long long)s_ga_n);
-			s_ga_accl = s_ga_accr = 0;
-			s_ga_n = 0;
-			if (q < 256) { ol = (ol * (int)q) >> 8; or_ = (or_ * (int)q) >> 8; }
-			idx = s_gbc_widx & (GBC_RING_FRAMES - 1);
-			s_gbc_ring[idx * 2 + 0] = (short)ol;
-			s_gbc_ring[idx * 2 + 1] = (short)or_;
-			s_gbc_widx++;
+	{	/* one clean linear-interpolation resample from the core's rate to the ring's 48 kHz;
+		 * step (input samples per output, 16.16) comes from the panel-calibrated output rate */
+		unsigned step = (unsigned)(((unsigned long long)s_ga_src_hz << 24) / (unsigned)s_ga_inc);
+		if (!s_ga_prime) { s_ga_pl = interleaved[0]; s_ga_pr = interleaved[1]; s_ga_prime = 1; }
+		for (i = 0; i < frames; i++) {
+			int cl = interleaved[i * 2 + 0], cr = interleaved[i * 2 + 1];
+			while (s_ga_phase < 0x10000u) {
+				int fl = s_ga_pl + (((cl - s_ga_pl) * (int)s_ga_phase) >> 16);
+				int fr = s_ga_pr + (((cr - s_ga_pr) * (int)s_ga_phase) >> 16);
+				unsigned idx = s_gbc_widx & (GBC_RING_FRAMES - 1);
+				if (q < 256) { fl = (fl * (int)q) >> 8; fr = (fr * (int)q) >> 8; }
+				s_gbc_ring[idx * 2 + 0] = (short)fl;
+				s_gbc_ring[idx * 2 + 1] = (short)fr;
+				s_gbc_widx++;
+				s_ga_phase += step;
+			}
+			s_ga_phase -= 0x10000u;
+			s_ga_pl = cl; s_ga_pr = cr;
 		}
 	}
 	arch_clean_cache_range((addr_t)s_gbc_ring, sizeof(s_gbc_ring));
@@ -2283,7 +2286,7 @@ void ayaneo_audio_reverse_flip(void)
 	if (!s_gbc_audio_on)
 		return;
 	s_rs_accl = s_rs_accr = 0; s_rs_n = 0; s_rs_phase = 0;          /* GBC box decimator */
-	s_ga_accl = s_ga_accr = 0; s_ga_n = 0; s_ga_phase = 0;          /* GBA box decimator */
+	s_ga_phase = 0; s_ga_prime = 0;                                 /* GBA resampler */
 	ayaneo_snes_audio_reset();                                      /* SNES linear interpolator */
 	{
 		unsigned cur = afe_r(AFE_DL1_CUR), base = (unsigned)(addr_t)s_gbc_ring;
