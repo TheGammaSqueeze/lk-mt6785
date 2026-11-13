@@ -296,6 +296,8 @@ INCLUDES += -I$(DRVGEN_OUT)/inc
 ifeq ($(KONKR_KPA),yes)
 OBJS += $(LOCAL_DIR)/ayaneo_joypad_kpa.o
 OBJS += $(LOCAL_DIR)/ayaneo_aw88166.o
+OBJS += $(LOCAL_DIR)/ayaneo_accel.o
+OBJS += $(LOCAL_DIR)/ayaneo_rumble.o
 else
 OBJS += $(LOCAL_DIR)/ayaneo_joypad.o
 endif

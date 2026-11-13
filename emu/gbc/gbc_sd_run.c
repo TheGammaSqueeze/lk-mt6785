@@ -31,6 +31,28 @@ extern void     ayaneo_gbc_audio_init(void);
 extern void     ayaneo_idle_until(unsigned target_tick);
 extern void     ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count);
 extern void     ayaneo_menu_audio_silence(void);
+extern int      ayaneo_accel_start(void), ayaneo_accel_read(int v[3]);
+extern void     ayaneo_accel_stop(void);
+extern void     ayaneo_rumble_set(int on), ayaneo_rumble_stop(void);
+
+/* Motion for the tilt cartridges (MBC7): the console's accelerometer, read once a frame while
+ * the core says the cartridge has a sensor, smoothed so handling the console is not taken for a
+ * flick (ayaneo_accel_filter). */
+extern void ayaneo_accel_filter(int v[3]);
+volatile unsigned int g_dbg_gbc_motion_n;
+volatile int g_dbg_gbc_motion_v[3];
+static int s_gbc_accel_gone;   /* the sensor did not answer: not asked again until power off */
+static void gbc_motion_frame(const struct gbc_core_exports *c)
+{
+	int v[3];
+	if (c->version < GBC_CORE_ABI_V2 || !c->motion_wanted || !c->motion_wanted()) return;
+	if (!s_gbc_accel_gone && ayaneo_accel_start() != 0) s_gbc_accel_gone = 1;
+	if (s_gbc_accel_gone || ayaneo_accel_read(v) != 0) return;
+	ayaneo_accel_filter(v);
+	c->set_motion(v[0], v[1], v[2]);
+	g_dbg_gbc_motion_n++;
+	g_dbg_gbc_motion_v[0] = v[0]; g_dbg_gbc_motion_v[1] = v[1]; g_dbg_gbc_motion_v[2] = v[2];
+}
 extern void     ayaneo_gbc_audio_pause(int on);
 extern int      gba_launch_continues(void);   /* the game opening carries on from its suspend point (gba_snes_menu.c) */
 extern void     ayaneo_display_prepare(void);
@@ -703,6 +725,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 		{ extern void ayaneo_frame_delay(void); ayaneo_frame_delay(); }   /* read the buttons as late as the frame can still make its refresh */
 		{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers */
+		gbc_motion_frame(c);
+		/* a rumble cartridge's motor after the last frame, off while the menu is open */
+		ayaneo_rumble_set(!g_gbc_menu_open && c->version >= GBC_CORE_ABI_V2 && c->rumble ? c->rumble() : 0);
 		gbc_sd_poll_volume();   /* hardware volume rocker + SELECT-brightness (parity with all cores) */
 		{  /* power key: arm on release, fire on press -> save cartridge + suspend, then power off (parity) */
 			extern int ayaneo_power_hold(int menu_open, int use_overlay);
@@ -1004,6 +1029,8 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	}
 	}
 	ayaneo_menu_audio_silence();   /* the ring would loop the last sound through the card writes below */
+	ayaneo_accel_stop();           /* the accelerometer to standby */
+	ayaneo_rumble_stop();          /* the motor off */
 	g_gbc_menu_open = 0;
 	/* Tear down the hardware menu overlay (OVL0 L0) before returning to the carousel: an
 	 * AYA-hold or "Close" exit can leave it enabled, which would composite the stale Pico

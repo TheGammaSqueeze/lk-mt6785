@@ -31,12 +31,12 @@ const struct gbc_core_exports *gbc_core_load(fat_vol *v)
 
 	init = (gbc_core_blob_init_fn)core_file_load(v, CORE_PATH_GAMBATTE, CORE_SLOT_VMA,
 						      CORE_SLOT_END - CORE_SLOT_VMA,
-						      GBC_CORE_ABI_MAGIC, GBC_CORE_ABI_VERSION, GBC_CORE_ABI_VERSION, &err);
+						      GBC_CORE_ABI_MAGIC, GBC_CORE_ABI_VERSION, GBC_CORE_ABI_MAX, &err);
 	g_gbc_dbg_loaderr = (unsigned)err;
 	if (!init)
 		return 0;
 	ex = init(&s_imports);
-	if (!ex || ex->magic != GBC_CORE_ABI_MAGIC || ex->version != GBC_CORE_ABI_VERSION) {
+	if (!ex || ex->magic != GBC_CORE_ABI_MAGIC || ex->version < GBC_CORE_ABI_VERSION || ex->version > GBC_CORE_ABI_MAX) {
 		g_gbc_dbg_loaderr = CORE_FILE_REJECTED;
 		return 0;
 	}

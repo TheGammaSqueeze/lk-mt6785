@@ -378,6 +378,11 @@ unsigned ayaneo_gbc_pad_mask(void)
 	if (PRESSED(GPIO_LEFT))   m |= 0x20u;
 	if (PRESSED(GPIO_UP))     m |= 0x40u;
 	if (PRESSED(GPIO_DOWN))   m |= 0x80u;
+	/* X and Y are autofire B and A, at the GBA cores' rate */
+	if (((unsigned)current_time() * AUTOFIRE_HZ / 500u) & 1) {
+		if (PRESSED(GPIO_X)) m |= 0x02u;
+		if (PRESSED(GPIO_Y)) m |= 0x01u;
+	}
 	{	/* left analog stick -> D-pad (JOY_UP=1 DOWN=2 LEFT=4 RIGHT=8) */
 		extern unsigned int ayaneo_joypad_dpad(void);
 		unsigned d = ayaneo_joypad_dpad();
@@ -1522,6 +1527,8 @@ void ayaneo_power_off_now(void)
 	if (card_writer_flush) card_writer_flush();   /* a save state still going to the card */
 	ayaneo_gbc_audio_pause(1);
 	ayaneo_gbc_audio_shutdown();
+	{ extern void ayaneo_accel_stop(void); ayaneo_accel_stop(); }   /* the accelerometer to standby */
+	{ extern void ayaneo_rumble_stop(void); ayaneo_rumble_stop(); }   /* the motor off */
 	ayaneo_leds_off_for_poweroff();
 	for (;;) {
 		mt_power_off();
@@ -2931,6 +2938,22 @@ static const unsigned short *intro_on_black(const unsigned short *src)
 /* ===================== emulator thread ===================== */
 volatile int g_dbg_boot_step;   /* oem mode: how far the emulator thread got */
 volatile unsigned int g_dbg_intro_aw_wait_ms;   /* oem diag intro: how long the intro waited for the speaker amps */
+/* oem motion: the frames a reading went to the core, the last reading, and the core's view */
+volatile unsigned int g_dbg_motion_n;
+volatile int g_dbg_motion_v[3];
+int gba_peek16(unsigned addr, unsigned *v)
+{
+	if (!g_core || g_core->version < GBA_CORE_ABI_V4 || !g_core->peek16) return -1;
+	*v = g_core->peek16(addr);
+	return 0;
+}
+int gba_motion_info(int out[6])
+{
+	if (!g_core || g_core->version < GBA_CORE_ABI_V4 || !g_core->motion_info) return -1;
+	g_core->motion_info(out);
+	return g_core->motion_wanted ? g_core->motion_wanted() : 0;
+}
+
 static int emu_thread(void *arg)
 {
 	unsigned char *scratch = (unsigned char *)(GBA_ARENA_PA + GBA_ARENA_SZ - GBA_DRV_RESERVE);
@@ -3355,6 +3378,29 @@ static int emu_thread(void *arg)
 				}
 			}
 
+			{	/* a cartridge with a tilt sensor or a gyro: the accelerometer, before the frame delay so
+				 * its hand-driven read is taken out of time the loop would sleep anyway, not added to
+				 * the button latency. A console without the chip is tried once and then left alone. */
+				extern int ayaneo_accel_start(void), ayaneo_accel_read(int v[3]);
+				extern void ayaneo_accel_stop(void);
+				static int s_accel_gone;
+				if (g_core->version >= GBA_CORE_ABI_V4 && g_core->motion_wanted && g_core->motion_wanted()) {
+					int v[3];
+					if (!s_accel_gone && ayaneo_accel_start() != 0) s_accel_gone = 1;
+					if (!s_accel_gone && ayaneo_accel_read(v) == 0) {
+						g_core->set_motion(v[0], v[1], v[2]);
+						g_dbg_motion_n++; g_dbg_motion_v[0] = v[0]; g_dbg_motion_v[1] = v[1]; g_dbg_motion_v[2] = v[2];
+					}
+				} else {
+					ayaneo_accel_stop();
+				}
+			}
+			{	/* a rumble cartridge: its motor bit after the last frame drives the console's motor,
+				 * off while the menu is open */
+				extern void ayaneo_rumble_set(int on);
+				ayaneo_rumble_set(!s_menu_open && g_core->version >= GBA_CORE_ABI_V4 && g_core->rumble
+						  ? g_core->rumble() : 0);
+			}
 			{ extern void ayaneo_frame_delay(void); ayaneo_frame_delay(); }   /* read the buttons as late as the frame can still make its refresh */
 			{ extern void ayaneo_joypad_poll(void); ayaneo_joypad_poll(); }  /* once/frame: cache stick+triggers (non-blocking) */
 			update_buttons();
@@ -3652,6 +3698,8 @@ static int emu_thread(void *arg)
 					 * permanently mutes the menu BGM + future games); the wipe alone
 					 * stops the loop and the menu re-inits the codec like first boot. */
 					ayaneo_menu_audio_silence();
+					{ extern void ayaneo_accel_stop(void); ayaneo_accel_stop(); }   /* the accelerometer to standby */
+					{ extern void ayaneo_rumble_stop(void); ayaneo_rumble_stop(); }   /* the motor off */
 					state_write(scratch);		/* persist the current game */
 					sav_save(scratch);
 					gba_menu_arm_reverse(gba_core_screen());  /* freeze frame for reverse */

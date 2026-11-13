@@ -15,7 +15,9 @@
 #define GBC_CORE_ABI_H
 
 #define GBC_CORE_ABI_MAGIC   0x31434247u   /* "GBC1" */
-#define GBC_CORE_ABI_VERSION 1u
+#define GBC_CORE_ABI_VERSION 1u   /* the oldest export table the LK accepts */
+#define GBC_CORE_ABI_V2      2u   /* + motion_wanted, set_motion, rumble */
+#define GBC_CORE_ABI_MAX     GBC_CORE_ABI_V2
 
 /* Services LK provides to the core (core -> LK calls). */
 struct gbc_core_imports {
@@ -72,6 +74,17 @@ struct gbc_core_exports {
 	 * The frontend passes the title (it holds the ROM buffer); returns the applied dir
 	 * index for display, or -1 if it fell back. This is the DEFAULT palette mode. */
 	int         (*dmg_palette_apply_auto)(const char *title);
+
+	/* ---- V2 (the LK reads these only when version >= GBC_CORE_ABI_V2) ----
+	 * Motion: whether the loaded cartridge has a motion sensor (MBC7, the tilt carts), and the
+	 * console's accelerometer for it, read once a frame: x across the screen to the right, y
+	 * along it to the far edge, z out of the screen, 2048 to a g, gravity and the console's own
+	 * movement both in it (a flick of the console is part of the reading, as on a cartridge). */
+	int  (*motion_wanted)(void);
+	void (*set_motion)(int x, int y, int z);
+	/* Rumble: the cartridge's motor now (MBC5 rumble carts), 0 off, else on; the LK asks once a
+	 * frame and drives the console's vibration motor with it. */
+	int  (*rumble)(void);
 };
 
 typedef const struct gbc_core_exports *(*gbc_core_blob_init_fn)(const struct gbc_core_imports *imp);

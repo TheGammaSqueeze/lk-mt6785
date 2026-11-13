@@ -2761,6 +2761,104 @@ static void cmd_vfp(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem accel - read the console's accelerometer (ayaneo_accel.c): chip id and current axes, to
+ * identify the part and work out its mounting for the motion games. */
+static void cmd_accel(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_accel_probe_report(void (*line)(const char *));
+	extern int ayaneo_accel_reg(unsigned reg, int val);
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg) {   /* oem accel:RR[:VV], hex: one register, read or written */
+		unsigned reg = fb_hex(&arg);
+		int val = -1;
+		while (*arg == ' ' || *arg == ':') arg++;
+		if (*arg) val = (int)(fb_hex(&arg) & 0xff);
+		snprintf(lbuf, sizeof lbuf, "accel reg %02x = %d (0x%02x)", reg, ayaneo_accel_reg(reg, val),
+			 (unsigned)ayaneo_accel_reg(reg, -1) & 0xff);
+		fastboot_info(lbuf);
+	}
+	ayaneo_accel_probe_report(fastboot_info);
+	fastboot_okay("");
+}
+
+/* oem motion: what the motion feed and the core see (gyro and tilt cartridges) */
+static void cmd_motion(const char *arg, void *data, unsigned sz)
+{
+	extern volatile unsigned int g_dbg_motion_n;
+	extern volatile int g_dbg_motion_v[3];
+	extern int gba_motion_info(int out[6]);
+	int o[6] = {0, 0, 0, 0, 0, 0}, wanted;
+	(void)arg; (void)data; (void)sz;
+	wanted = gba_motion_info(o);
+	snprintf(lbuf, sizeof lbuf, "motion wanted=%d fed=%u last=%d,%d,%d", wanted, g_dbg_motion_n,
+		 g_dbg_motion_v[0], g_dbg_motion_v[1], g_dbg_motion_v[2]);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "core dev=%x save=%d st=%d tilt=%03x,%03x gyro=%x", o[0], o[1], o[2], o[3], o[4], o[5]);
+	fastboot_info(lbuf);
+	{
+		extern volatile unsigned int g_dbg_gbc_motion_n;
+		extern volatile int g_dbg_gbc_motion_v[3];
+		snprintf(lbuf, sizeof lbuf, "gbc fed=%u last=%d,%d,%d (smoothed)", g_dbg_gbc_motion_n,
+			 g_dbg_gbc_motion_v[0], g_dbg_gbc_motion_v[1], g_dbg_gbc_motion_v[2]);
+		fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
+
+/* oem rumble[:MS] - the vibration motor's chip and state; with MS, runs it that long (up to 3 s) */
+static void cmd_rumble(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_rumble_report(void (*line)(const char *));
+	extern void ayaneo_rumble_pulse(unsigned ms);
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg >= '0' && *arg <= '9') ayaneo_rumble_pulse(fb_dec(&arg));
+	ayaneo_rumble_report(fastboot_info);
+	fastboot_okay("");
+}
+
+/* oem accelf:SMOOTH:DEADZONE - the motion smoothing (ayaneo_accel_filter), decimal: the weight of
+ * a new reading in 256ths and the flick dead zone in counts (2048 to a g); alone, shows them */
+static void cmd_accelf(const char *arg, void *data, unsigned sz)
+{
+	extern volatile unsigned int g_accel_smooth, g_accel_flick;
+	unsigned a, z;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg) {
+		a = fb_dec(&arg);
+		while (*arg == ' ' || *arg == ':') arg++;
+		z = fb_dec(&arg);
+		if (a >= 1 && a <= 256) g_accel_smooth = a;
+		if (z <= 32768) g_accel_flick = z;
+	}
+	snprintf(lbuf, sizeof lbuf, "accel smooth=%u/256 flick deadzone=%u (2048 per g)", g_accel_smooth, g_accel_flick);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* oem gbapeek:ADDR[:N] - N (1..8) halfwords of the running GBA game's work RAM, hex */
+static void cmd_gbapeek(const char *arg, void *data, unsigned sz)
+{
+	extern int gba_peek16(unsigned addr, unsigned *v);
+	unsigned addr, n, i, v;
+	int off;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	addr = fb_hex(&arg);
+	while (*arg == ' ' || *arg == ':') arg++;
+	n = fb_hex(&arg);
+	if (n < 1 || n > 8) n = 1;
+	off = snprintf(lbuf, sizeof lbuf, "%08x:", addr);
+	for (i = 0; i < n; i++) {
+		if (gba_peek16(addr + i * 2, &v) != 0) { fastboot_fail("gbapeek: no V4 core running"); return; }
+		off += snprintf(lbuf + off, sizeof lbuf - off, " %04x", v);
+	}
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 void gba_menu_fastboot_register(void)
 {
 	fastboot_register("oem diag", cmd_diag, 1, 0);
@@ -2805,6 +2903,11 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem animslow", cmd_animslow, 1, 0);
 	fastboot_register("oem sd-get:", cmd_sd_get, 1, 0);
 	fastboot_register("oem part-read:", cmd_part_read, 1, 0);
+	fastboot_register("oem accel", cmd_accel, 1, 0);
+	fastboot_register("oem motion", cmd_motion, 1, 0);
+	fastboot_register("oem gbapeek", cmd_gbapeek, 1, 0);
+	fastboot_register("oem accelf", cmd_accelf, 1, 0);
+	fastboot_register("oem rumble", cmd_rumble, 1, 0);
 	fastboot_register("oem sd-rm:", cmd_sd_rm, 1, 0);
 #if defined(KONKR_KPA)
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);
