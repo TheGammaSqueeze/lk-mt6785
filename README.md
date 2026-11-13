@@ -10,7 +10,8 @@ Take the card out and the console boots its stock Android as before.
 Supported consoles:
 
 - **Konkr Pocket Advance**: the main target. Downloads are on the
-  [releases page](https://github.com/TheGammaSqueeze/lk-mt6785/releases); details in
+  [GammaOSPico releases page](https://github.com/TheGammaSqueeze/GammaOSPico/releases), with the
+  [guides](https://github.com/TheGammaSqueeze/GammaOSPico/wiki); details in
   [documentation/konkr-pocket-advance.md](documentation/konkr-pocket-advance.md).
 - **AYANEO Pocket Air Mini**: the original port of this LK, see
   [documentation/pocket-air-mini](documentation/pocket-air-mini/README.md).
@@ -184,7 +185,8 @@ X shows one system at a time; in a long carousel L / R jump from letter to lette
 
 ## Install
 
-Grab the latest [release](https://github.com/TheGammaSqueeze/lk-mt6785/releases). The GammaOS Pico
+Grab the latest [release](https://github.com/TheGammaSqueeze/GammaOSPico/releases) from GammaOSPico,
+where GammaOS Pico is published (the releases here are older betas). The GammaOS Pico
 LK goes to `lk_a` and `lk_b`. **The way to install it is SP Flash Tool (Windows) or mtkclient
 (Linux):** both write to a stock console with a locked bootloader, and neither needs an unlock or
 wipes anything. fastboot is only for updates once GammaOS Pico is already installed, never for the
