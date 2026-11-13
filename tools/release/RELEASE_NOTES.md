@@ -34,11 +34,15 @@ bootloader, before any operating system, and owns the hardware outright.
   speed through a library, jump letter by letter with L / R, or press Y to search by name, in one
   system or all of them, with an on-screen keyboard. Box art loads as you reach it.
 - **The good stuff from the start.** Rewind, fast forward, save states (written to the card while
-  the game plays on), scanline and LCD filters, colour correction and backlight black frame
-  insertion, in a box art menu: the Current theme, with the Classic and GBA Indigo themes in beta.
+  the game plays on), scanline and LCD filters and colour correction, in a box art menu: the
+  Current theme, with the Classic and GBA Indigo themes in beta.
 - **The real time.** The console's own clock runs the games that keep time (Pokemon Ruby,
   Sapphire, Emerald, Gold, Silver and Crystal, Boktai), shows in the menus, and is set with its
   time zone in Settings > Date & Time. Each game shows how long it has been played and when last.
+- **Sharper motion with black frame insertion.** The backlight goes dark for part of every frame,
+  in step with the screen's refresh, so moving pictures stay crisp the way they did on a CRT
+  instead of smearing. 25 %, 50 % or 75 % dark (Settings > Black Frame Insertion, or per game in
+  the in-game menu's Display page); the screen looks dimmer the higher it is set.
 - **Tilt, gyro and rumble.** The console's own motion sensor and vibration motor stand in for the
   cartridges': Yoshi Topsy-Turvy and Kirby Tilt 'n' Tumble tilt (a flick of the console makes
   Kirby jump), WarioWare: Twisted! turns and rumbles, as do Drill Dozer and the Game Boy Color's
