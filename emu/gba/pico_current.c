@@ -2428,10 +2428,23 @@ void pico_igm_open(const struct igm_core *c)
 	G.c = c;
 	G.up = 1; G.closing = 0; G.latch = 0;
 	G.show = 0; G.show_time = 0;
-	G.page = G.from = IGM_TOP; G.dir = 1; G.page_t = 1;
-	memset(G.sel, 0, sizeof G.sel);
-	memset(G.top, 0, sizeof G.top);
-	G.hy = 0; G.nudge_t = 1; G.toast_t = 99; G.toast[0] = 0;
+	G.dir = 1; G.page_t = 1;
+	{	/* come back to the page and row we left, but start fresh for a different game */
+		static uint32_t s_igm_game;
+		const char *g = c->game ? c->game : "";
+		uint32_t h = 2166136261u;
+		int i;
+		for (i = 0; g[i] && i < 256; i++) h = (h ^ (uint8_t)g[i]) * 16777619u;
+		if (h != s_igm_game) {
+			s_igm_game = h;
+			G.page = G.from = IGM_TOP;
+			memset(G.sel, 0, sizeof G.sel);
+			memset(G.top, 0, sizeof G.top);
+		} else {
+			G.from = G.page;   /* no page slide: we are already there */
+		}
+	}
+	G.hy = (G.sel[G.page] - G.top[G.page]) * IGM_RP; G.nudge_t = 1; G.toast_t = 99; G.toast[0] = 0;
 	G.tick = gpt4_get_current_tick(); G.last_paint = 0;
 	G.dirty = 1; G.prev_keys = 0x3F;   /* what is held now (the menu key, a face button) is not a press */
 	g_dbg_igm_open_part[0] = (gpt4_get_current_tick() - t_open) / 13u;
