@@ -168,6 +168,28 @@ static inline void pmic_rmw(unsigned int reg, unsigned int mask, unsigned int va
 #define MT6359_AUDDEC_ANA_CON14		0x25a4
 #define MT6359_ZCD_CON2			0x260c
 
+/* MT6359 registers used by the 3.5mm headphone-jack detection + routing (addresses
+ * from platform/include/platform/upmu_hw.h, PMIC base 0x0; this file keeps its own
+ * local copies instead of pulling the whole header, as the block above already does). */
+#define MT6359_AUD_TOP_RST_CON0		0x2320
+#define MT6359_AUD_TOP_INT_STATUS0	0x2334
+#define MT6359_AFE_NCP_CFG2		0x24e2
+#define MT6359_AUDENC_ANA_CON16		0x2528	/* MICBIAS1 */
+#define MT6359_AUDENC_ANA_CON18		0x252c	/* accdet comparator (mic mode / pole bits) */
+#define MT6359_AUDENC_ANA_CON19		0x252e
+#define MT6359_AUDENC_ANA_CON20		0x2530
+#define MT6359_AUDENC_ANA_CON21		0x2532
+#define MT6359_ACCDET_CON1		0x268a
+#define MT6359_ACCDET_CON2		0x268c
+#define MT6359_ACCDET_CON6		0x2694
+#define MT6359_ACCDET_CON14		0x26a4
+#define MT6359_ACCDET_CON15		0x26a6
+#define MT6359_ACCDET_CON18		0x26ac
+#define MT6359_ACCDET_CON19		0x26ae
+#define MT6359_ACCDET_CON20		0x26b0
+#define MT6359_ACCDET_CON25		0x26ba	/* [7:6] plug type: 0 = 3 pole, 1 = 4 pole (mic), 3 = none */
+#define MT6359_ACCDET_CON26		0x26bc	/* [7:6] EINT0_MEM_IN: 0 = plugged, 3 = unplugged */
+
 /* delay from boot-audio start to the first sample leaving the speaker */
 #define AYANEO_AUDIO_DELAY_MS	250
 
@@ -1170,6 +1192,12 @@ static void audio_shutdown(void)
 #endif
 }
 
+/* 3.5mm headphone jack: detection + speaker/headphone routing (defined further down,
+ * next to the streaming-audio state it shares). Declared here so the bring-up sites
+ * above (the boot chime, in non-SD builds) can call the init. */
+void jack_detect_init(void);
+void jack_poll(void);
+
 /* The boot chime (a clip in boot_b, played with the old boot animation) is retired: the GBA BIOS
  * boot from the card is the intro, and the SD build reads nothing from boot_b. */
 #if !defined(AYANEO_GBA_SD)
@@ -1257,6 +1285,7 @@ static int ayaneo_audio_thread(void *arg)
 	afe_dl1_setup((unsigned int)(addr_t)s_pcm, pcm_bytes);
 	mdelay(2);			/* let the HP output settle before the amp */
 	spk_amp_enable(1);
+	jack_detect_init();		/* bring the accdet comparator up once the path is live */
 	ATRACE("AYANEO_AUD: playing rate=%u pcm=%u ms=%u aud_on=%d VAUD18=0x%x CON14=0x%x CON0(rb)=0x%x DAC_CON0=0x%x CON9=0x%x amp_out=%d\n",
 		rate, pcm_bytes, s_audio_ms,
 		!!(DRV_Reg32(PWR_STATUS) & AUDIO_PWR_STA_MASK),
@@ -1460,6 +1489,433 @@ static enum handler_return ring_sweep(struct timer *t, time_t now, void *arg)
 	return INT_NO_RESCHEDULE;
 }
 
+/* ================= 3.5mm headphone jack: detection + routing =================
+ *
+ * The Konkr plays game audio out two AW88166 smart amps on I2S3 (see afe_dl1_setup).
+ * When a headset is plugged into the 3.5mm jack the stock path instead feeds the
+ * MT6359 internal headphone driver from the DL1 -> ADDA downlink. There is no GPIO
+ * or analog switch: the amps are simply muted/stopped and the codec HP path is
+ * brought up (and the reverse on unplug). We detect the plug with the MT6359 ACCDET
+ * EINT0 comparator, polled (no interrupts) on ACCDET_CON26 EINT0_MEM_IN, and switch
+ * the route without ever stopping the DL1 memif the game ring depends on - only the
+ * interconnect and the codec move, so the DMA read pointer never glitches.
+ *
+ * Everything here runs behind one small state machine and changes nothing until a
+ * headset is actually detected. The register sequences are written from the
+ * project's own clean-room note (notes/hpjack_findings.md); the note's section is
+ * cited at each write.
+ */
+
+extern unsigned gpt4_get_current_tick(void);
+extern S32 mt_set_gpio_pull_enable(u32 pin, u32 en);
+extern S32 mt_set_gpio_pull_select(u32 pin, u32 sel);
+
+/* HP analog volume (ZCD_CON2 index): idx0 = +8dB, 1dB/step, idx9 = -1dB (stock 100%
+ * ceiling), idx30 = -22dB, idx31 = mute. We never go above idx9 and keep a quiet
+ * floor for earbuds; the user's 0..100 software volume maps onto this range (note 3). */
+#define JACK_HP_IDX_CEIL	9	/* loudest we allow: stock 100% = -1 dB */
+#define JACK_HP_IDX_FLOOR	30	/* quietest active step: -22 dB */
+#define JACK_HP_IDX_MUTE	0x1f	/* -40 dB, mute */
+#define JACK_ZCD_MASK		0x0f9f	/* HPR [11:7] | HPL [4:0] */
+
+/* throttle: poll the comparator no more than ~every 100 ms (13 MHz tick counter). */
+#define JACK_POLL_TICKS		1300000u
+
+static volatile int s_jack_inited;		/* accdet comparator has been set up */
+static volatile int s_jack_route_picked;	/* the boot-time route has been chosen */
+static volatile int s_jack_last = -1;		/* debounced plug: -1 unknown, 0 out, 1 in */
+static volatile int s_jack_route;		/* active route: 0 speaker, 1 headphone */
+static volatile int s_jack_hp_cur_idx = JACK_HP_IDX_FLOOR;	/* live HP analog index */
+static unsigned s_jack_poll_tick;
+
+/* diag externs the oem jack command reads (menu_fastboot.c) */
+volatile int g_jack_route;			/* 0 speaker, 1 headphone */
+volatile int g_jack_plugged = -1;		/* debounced: -1 unknown, 0 out, 1 in */
+
+/* raw reads for the diag command (pmic_r is file-static) */
+unsigned ayaneo_jack_con26(void)   { return pmic_r(MT6359_ACCDET_CON26); }
+int ayaneo_jack_mem_in(void)       { return (int)((pmic_r(MT6359_ACCDET_CON26) >> 6) & 0x3); }
+int ayaneo_jack_plugged_state(void){ return s_jack_last; }
+int ayaneo_jack_route_state(void)  { return s_jack_route; }
+int ayaneo_jack_pole(void)         { return (int)((pmic_r(MT6359_ACCDET_CON25) >> 6) & 0x3); }
+
+/* one EINT0_MEM_IN read: 0 = plugged, 3 = unplugged, 1/2 = no-change code. */
+static int jack_mem_in(void)
+{
+	return (int)((pmic_r(MT6359_ACCDET_CON26) >> 6) & 0x3);
+}
+
+/*
+ * Debounced plug state. Requires two equal reads; keeps the last known state in a
+ * static and returns it on a transitional (1/2) or unsettled read. -1 until the
+ * first definite reading. 1 = headset in, 0 = out.
+ */
+int jack_plugged(void)
+{
+	int a = jack_mem_in(), b;
+	udelay(50);
+	b = jack_mem_in();
+	if (a != b)
+		return s_jack_last;		/* not two equal reads: keep last known */
+	if (a == 0)
+		s_jack_last = 1;
+	else if (a == 3)
+		s_jack_last = 0;
+	/* a == 1 or 2: no-change code, keep last */
+	return s_jack_last;
+}
+
+/* map the 0..100 software volume onto the HP analog index, idx9 as the ceiling. */
+static int jack_hp_idx_for_vol(int vol)
+{
+	int idx;
+	if (vol < 0) vol = 0;
+	if (vol > 100) vol = 100;
+	idx = JACK_HP_IDX_CEIL + (100 - vol) * (JACK_HP_IDX_FLOOR - JACK_HP_IDX_CEIL) / 100;
+	if (idx < JACK_HP_IDX_CEIL) idx = JACK_HP_IDX_CEIL;
+	if (idx > JACK_HP_IDX_FLOOR) idx = JACK_HP_IDX_FLOOR;
+	return idx;
+}
+
+/* HP output pull-down to VCM: on clamps (0 -> 7), off releases (7 -> 0). Konkr's
+ * copy; the file's hp_pull_down_* early-return on Konkr so the jack path has its own. */
+static void jack_hp_pull_down(int on)
+{
+	int i;
+	if (on)
+		for (i = 0; i <= 7; i++) {
+			pmic_rmw(MT6359_AUDDEC_ANA_CON2, (0x7 << 12), ((unsigned)i << 12));
+			udelay(120);
+		}
+	else
+		for (i = 7; i >= 0; i--) {
+			pmic_rmw(MT6359_AUDDEC_ANA_CON2, (0x7 << 12), ((unsigned)i << 12));
+			udelay(120);
+		}
+}
+
+/* ramp the HP volume from the current index towards a target, one step / 600us. */
+static void jack_hp_vol_ramp_to(int target)
+{
+	if (target < 0) target = 0;
+	if (target > JACK_HP_IDX_MUTE) target = JACK_HP_IDX_MUTE;
+	while (s_jack_hp_cur_idx != target) {
+		s_jack_hp_cur_idx += (target > s_jack_hp_cur_idx) ? 1 : -1;
+		pmic_rmw(MT6359_ZCD_CON2, JACK_ZCD_MASK,
+			 ((unsigned)s_jack_hp_cur_idx << 7) | (unsigned)s_jack_hp_cur_idx);
+		udelay(600);
+	}
+}
+
+/*
+ * Bring the MT6359 headphone driver up from the main DAC, ramped so there is no
+ * click (note: "MT6359 HP power up"). Adapted from the file's non-Konkr mt6359_hp_on
+ * body: same codec front-end + driver writes, but it starts with the volume preset
+ * at -22 dB (idx30) and ramps up to the level mapped from the software volume.
+ */
+static void jack_hp_codec_up(void)
+{
+	int target = jack_hp_idx_for_vol(s_gbc_vol);
+
+	mt6359_dl_common_on();			/* supplies, clocks, NCP, AFE DL, DL LDO rails */
+
+	/* preset the HP volume at the quiet floor before the driver comes up (note 3). */
+	s_jack_hp_cur_idx = JACK_HP_IDX_FLOOR;
+	pmic_w(MT6359_ZCD_CON2,
+	       ((unsigned)JACK_HP_IDX_FLOOR << 7) | (unsigned)JACK_HP_IDX_FLOOR);
+
+	/* bias (non-hifi): DRBIAS_HP = 5uA, IBIAS_ZCD = 3uA, IBIAS_HP = 4uA */
+	pmic_rmw(MT6359_AUDDEC_ANA_CON11, (0x7 << 7), (0x1 << 7));
+	pmic_rmw(MT6359_AUDDEC_ANA_CON12, (0x3 << 6), 0);
+	pmic_rmw(MT6359_AUDDEC_ANA_CON12, (0x3 << 0), 0);
+
+	pmic_w(MT6359_AUDDEC_ANA_CON10, 0x0087);	/* HP damp / HPRN-HPLN 4K */
+	pmic_w(MT6359_AUDDEC_ANA_CON4, 0x0000);		/* fb cap 15pF (<96k) */
+	pmic_w(MT6359_AUDDEC_ANA_CON2, 0xf133);		/* HPP/N STB enhance, pull-down armed */
+	pmic_w(MT6359_AUDDEC_ANA_CON1, 0x000c);		/* HP aux output stage */
+	pmic_w(MT6359_AUDDEC_ANA_CON1, 0x003c);		/* HP aux feedback loop */
+	pmic_w(MT6359_AUDDEC_ANA_CON9, 0x0c00);		/* HP aux CMFB loop */
+	pmic_w(MT6359_AUDDEC_ANA_CON0, 0x30c0);		/* HP driver bias */
+	pmic_w(MT6359_AUDDEC_ANA_CON0, 0x30f0);		/* HP driver core */
+	pmic_w(MT6359_AUDDEC_ANA_CON1, 0x00fc);		/* short main -> aux */
+	pmic_w(MT6359_AUDDEC_ANA_CON9, 0x0e00);		/* HP main CMFB loop */
+	pmic_w(MT6359_AUDDEC_ANA_CON9, 0x0200);		/* disable aux CMFB */
+	pmic_w(MT6359_AUDDEC_ANA_CON1, 0x00ff);		/* HP main output stage */
+	hp_main_output_ramp_up();
+	hp_aux_fb_gain_ramp_up();
+	pmic_w(MT6359_AUDDEC_ANA_CON1, 0x77cf);		/* disable aux fb loop */
+	jack_hp_vol_ramp_to(target);			/* -22 dB -> mapped level (click-safe) */
+	pmic_w(MT6359_AUDDEC_ANA_CON1, 0x77c3);		/* disable aux output stage */
+	pmic_w(MT6359_AUDDEC_ANA_CON1, 0x7703);		/* unshort main -> aux */
+	mdelay(1);
+	pmic_rmw(MT6359_AUDDEC_ANA_CON13, (0x1 << 0), (0x1 << 0));	/* AUD_CLK / RSTB */
+	pmic_w(MT6359_AUDDEC_ANA_CON0, 0x30ff);		/* enable audio DAC */
+	pmic_w(MT6359_AUDDEC_ANA_CON9, 0xf200);		/* DAC low-noise off */
+	mdelay(1);
+	pmic_w(MT6359_AUDDEC_ANA_CON0, 0x32ff);		/* HPL MUX -> audio DAC */
+	pmic_w(MT6359_AUDDEC_ANA_CON0, 0x3aff);		/* HPR MUX -> audio DAC */
+	jack_hp_pull_down(0);				/* release the output pull-down */
+}
+
+/*
+ * Tear the HP driver down in the note's power-down order: gain ramp to mute while
+ * the driver is still live, clamp to VCM, then open the mux, cut the DAC/driver,
+ * drop the ADDA front-end and the supplies. Leaves the codec cold so it cannot
+ * idle-hiss and so the speaker path comes back clean.
+ */
+static void jack_hp_codec_down(void)
+{
+	jack_hp_vol_ramp_to(JACK_HP_IDX_MUTE);	/* mute first, no click */
+	mdelay(10);				/* let the output settle to VCM */
+	jack_hp_pull_down(1);			/* clamp HP outputs to VCM */
+
+	pmic_w(MT6359_AUDDEC_ANA_CON0, 0x30ff);	/* HPL/HPR MUX -> open (off the DAC) */
+	pmic_w(MT6359_AUDDEC_ANA_CON1, 0x0000);	/* HP output/aux stages off */
+	pmic_w(MT6359_AUDDEC_ANA_CON0, 0x0000);	/* HP driver + audio DAC off */
+	pmic_w(MT6359_AUDDEC_ANA_CON9, 0x0000);	/* CMFB loops off */
+
+	/* ADDA downlink + codec DL off (reverse of mt6359_dl_common_on's DL enables) */
+	afe_rmw(AFE_ADDA_DL_SRC2_CON0, (1u << 0), 0);
+	afe_rmw(AFE_ADDA_UL_DL_CON0, (1u << 0), 0);
+	pmic_w(MT6359_AFE_DL_SRC2_CON0_L, 0x0000);
+	pmic_rmw(MT6359_AFE_UL_DL_CON0, 0x0001, 0);
+
+	/* supplies down */
+	pmic_rmw(MT6359_AUDDEC_ANA_CON2, (0x1 << 8), 0);			/* AUDREFN_DERES off */
+	pmic_rmw(MT6359_AUDDEC_ANA_CON14, (0x1 << 4) | (0x1 << 2) | (0x1 << 0), 0); /* NVREG/LCLDO off */
+	pmic_rmw(MT6359_AUDDEC_ANA_CON12, (0x1 << 8), (0x1 << 8));	/* IBIST power down */
+	pmic_rmw(MT6359_AUDDEC_ANA_CON13, (0x1 << 4), (0x1 << 4));	/* RG_AUDGLB_PWRDN */
+	pmic_rmw(MT6359_DCXO_CW12, (0x1 << 13), 0);			/* XO_AUDIO off */
+	pmic_rmw(MT6359_LDO_VAUD18_CON0, (0x1 << 0), 0);		/* VAUD18 off */
+}
+
+/*
+ * Switch the live route. The DL1 memif (AFE_DAC_CON0 bit4) is never touched, so the
+ * DMA read pointer the game ring tracks never jumps - only the interconnect, the I2S3
+ * engine and the codec move. Amps are muted/off before, and the HP driver comes up
+ * ramped, so the switch is click-safe.
+ */
+void jack_route(int to_headphones)
+{
+	if (to_headphones == s_jack_route)
+		return;
+
+	if (to_headphones) {
+		/* speaker -> headphone */
+		{ extern void ayaneo_aw88166_stop(void); ayaneo_aw88166_stop(); }	/* mute + stop the amps */
+		afe_rmw(AFE_CONN0, (1u << 5), 0);	/* drop DL1ch1 -> O0 (I2S3) */
+		afe_rmw(AFE_CONN1, (1u << 6), 0);	/* drop DL1ch2 -> O1 (I2S3) */
+		afe_rmw(AFE_I2S_CON3, 1u, 0);		/* I2S3 engine off */
+
+		/* AP serial-audio data pins to the codec (note 2): mode1 on. 189/190 are
+		 * the clk/ws of the same link and should already be mode1 from boot. */
+		mt_set_gpio_mode(GP(189), 1);
+		mt_set_gpio_mode(GP(190), 1);
+		mt_set_gpio_mode(GP(191), 1);
+		mt_set_gpio_mode(GP(192), 1);
+
+		/* interconnect DL1 -> ADDA downlink (note 2) */
+		afe_rmw(AFE_CONN3, (1u << 5), (1u << 5));	/* DL1ch1 -> O3 (ADDA_DL_CH1) */
+		afe_rmw(AFE_CONN4, (1u << 6), (1u << 6));	/* DL1ch2 -> O4 (ADDA_DL_CH2) */
+
+		/* ADDA downlink SRC @48k. DL_SRC2 enable (bit0) comes last, after ADDA
+		 * master, per the note; and the SDM attenuation-gain is [5:0] here, not the
+		 * [6:1] the file's non-Konkr branch writes (note: that is a bug). */
+		afe_w(AFE_ADDA_PREDIS_CON0, 0);
+		afe_w(AFE_ADDA_PREDIS_CON1, 0);
+		afe_w(AFE_ADDA_DL_SRC2_CON0, 0x83001802);	/* configured, DL_2_SRC_ON still 0 */
+		afe_w(AFE_ADDA_DL_SRC2_CON1, 0xf74f0000);
+		afe_rmw(AFE_ADDA_DL_SDM_DCCOMP_CON, 0x3fu, 0x1du);	/* ATTGAIN [5:0] = 0x1d */
+		afe_w(AFE_ADDA_DL_SDM_AUTO_RESET_CON, 0x00000400);
+		afe_rmw(AFE_ADDA_DL_SDM_AUTO_RESET_CON, (1u << 31), (1u << 31));
+		afe_w(AFE_ADDA_MTKAIF_CFG0, 0x00010000);
+		afe_w(AFE_AUD_PAD_TOP, 0x00000038);
+		afe_rmw(AFE_ADDA_UL_DL_CON0, (1u << 0), (1u << 0));	/* ADDA master on */
+		afe_rmw(AFE_ADDA_DL_SRC2_CON0, (1u << 0), (1u << 0));	/* DL_2_SRC_ON -> 0x83001803 */
+
+		jack_hp_codec_up();			/* MT6359 HP driver, ramped */
+	} else {
+		/* headphone -> speaker */
+		jack_hp_codec_down();			/* tear the HP codec down cleanly */
+
+		/* idle the AP data pins: mode0 + pulldown (note 2) */
+		mt_set_gpio_mode(GP(191), 0);
+		mt_set_gpio_mode(GP(192), 0);
+		mt_set_gpio_pull_enable(GP(191), 1); mt_set_gpio_pull_select(GP(191), 0);
+		mt_set_gpio_pull_enable(GP(192), 1); mt_set_gpio_pull_select(GP(192), 0);
+
+		afe_rmw(AFE_CONN3, (1u << 5), 0);	/* drop DL1ch1 -> O3 (ADDA) */
+		afe_rmw(AFE_CONN4, (1u << 6), 0);	/* drop DL1ch2 -> O4 (ADDA) */
+
+		/* restore the I2S3 speaker route exactly as afe_dl1_setup does today */
+		mt_set_gpio_mode(GP(67), 1);
+		mt_set_gpio_mode(GP(68), 1);
+		mt_set_gpio_mode(GP(71), 1);
+		afe_rmw(AFE_CONN0, (1u << 5), (1u << 5));	/* DL1ch1 -> O0 */
+		afe_rmw(AFE_CONN1, (1u << 6), (1u << 6));	/* DL1ch2 -> O1 */
+		afe_rmw(AFE_I2S_CON3, 0xffffeffeu, (10u << 8) | (1u << 3) | (1u << 1));
+		afe_rmw(AFE_I2S_CON3, 1u, 1u);			/* I2S3 engine on */
+		{ extern void ayaneo_aw88166_start(void); ayaneo_aw88166_start(); }	/* amps lock to the BCK */
+	}
+
+	s_jack_route = to_headphones;
+	g_jack_route = to_headphones;
+}
+
+/* accdet comparator-state housekeeping on a confirmed plug change (note lines 19-21).
+ * Keeps Android's accdet in step and clears the EINT latch. */
+static void jack_eint_after_change(int plugged)
+{
+	if (plugged) {
+		/* plug-in */
+		pmic_rmw(MT6359_ACCDET_CON1, (1u << 6), 0);
+		pmic_rmw(MT6359_ACCDET_CON19, (1u << 5), 0);
+		pmic_rmw(MT6359_AUDENC_ANA_CON18, (1u << 11), (1u << 11));
+	} else {
+		/* plug-out */
+		pmic_rmw(MT6359_ACCDET_CON14, 0xfu, 5u);
+		pmic_rmw(MT6359_AUDENC_ANA_CON18, (1u << 11) | (1u << 12), 0);
+		pmic_rmw(MT6359_ACCDET_CON1, (1u << 10), 0);
+		pmic_rmw(MT6359_ACCDET_CON19, (1u << 5), (1u << 5));
+		pmic_rmw(MT6359_ACCDET_CON1, (1u << 6), (1u << 6));
+	}
+	/* clear the EINT latch: pulse CON18 bit10, wait for bit2 to fall, write-1-clear int0 */
+	pmic_rmw(MT6359_ACCDET_CON18, (1u << 10), (1u << 10));
+	{ int g = 0; while (((pmic_r(MT6359_ACCDET_CON18) >> 2) & 1) && g++ < 100) udelay(4); }
+	pmic_rmw(MT6359_ACCDET_CON18, (1u << 10), 0);
+	pmic_w(MT6359_AUD_TOP_INT_STATUS0, (1u << 6));
+}
+
+/* ACCDET EINT0 comparator bring-up for plug detection (note section 1, steps
+ * 1,3,4,5,7,8,9). Detection only; it does not disturb the running speaker path. */
+static void jack_accdet_init(void)
+{
+	/* 1: sequence init - toggle CON1 bit1 */
+	pmic_rmw(MT6359_ACCDET_CON1, (1u << 1), (1u << 1));
+	mdelay(2);
+	pmic_rmw(MT6359_ACCDET_CON1, (1u << 1), 0);
+	mdelay(1);
+
+	/* 3: EINT debounce times */
+	pmic_rmw(MT6359_ACCDET_CON14, (0xfu << 4), (3u << 4));
+	pmic_rmw(MT6359_ACCDET_CON14, (0xfu << 0) | (0xfu << 12), (5u << 0) | (5u << 12));
+	pmic_w(MT6359_ACCDET_CON15, 0x000e);
+
+	/* 4: pulse the accdet digital reset (must keep CON14) */
+	pmic_rmw(MT6359_AUD_TOP_RST_CON0, (1u << 1), (1u << 1));
+	pmic_rmw(MT6359_AUD_TOP_RST_CON0, (1u << 1), 0);
+
+	/* 5: MICBIAS1 ~2.8 V so Android's accdet mic state matches */
+	pmic_rmw(MT6359_AUDENC_ANA_CON16, (0x3u << 12) | (0x7u << 4), 0);
+	pmic_rmw(MT6359_AUDENC_ANA_CON16,
+		 (1u << 12) | (1u << 13) | (1u << 2), (1u << 12) | (1u << 13) | (1u << 2));
+
+	/* 7: comparator mic mode 1 */
+	pmic_rmw(MT6359_AUDENC_ANA_CON18, 0x000f, 0x000f);
+	pmic_rmw(MT6359_AUDENC_ANA_CON19, (1u << 12), (1u << 12));
+	pmic_rmw(MT6359_AUDENC_ANA_CON21, (0x3u << 11), (0x3u << 11));
+
+	/* 8: EINT analog comparator path */
+	pmic_rmw(MT6359_AUDENC_ANA_CON20, (1u << 2) | (1u << 8), (1u << 2) | (1u << 8));
+	pmic_rmw(MT6359_AFE_NCP_CFG2, 0x3u, 0x3u);
+
+	/* 9: EINT digital config, mode 4 (EINT 2.1), moisture off */
+	pmic_w(MT6359_ACCDET_CON6, 0x0041);
+	pmic_w(MT6359_ACCDET_CON19, 0x0027);
+	pmic_rmw(MT6359_ACCDET_CON18, (1u << 12), (1u << 12));
+	pmic_rmw(MT6359_ACCDET_CON1, (1u << 12), (1u << 12));
+	pmic_w(MT6359_ACCDET_CON20, 0x0100);
+	pmic_rmw(MT6359_ACCDET_CON1, (1u << 12), 0);
+	pmic_w(MT6359_ACCDET_CON2, 0x0067);
+	pmic_rmw(MT6359_ACCDET_CON1, (1u << 6), (1u << 6));	/* ACCDET_SW_EN / EINT enable */
+}
+
+/*
+ * Set the accdet comparator up once (idempotent), and once the game audio ring is
+ * live pick the boot-time route from the first debounced read, so a console booted
+ * with a headset already in comes up on headphones. Called from the bring-up sites.
+ */
+void jack_detect_init(void)
+{
+	if (!s_jack_inited) {
+		jack_accdet_init();
+		s_jack_inited = 1;
+		s_jack_poll_tick = gpt4_get_current_tick();
+	}
+	if (s_gbc_audio_on && !s_jack_route_picked) {
+		int i, p = -1;
+		/* the comparator needs settling after enable (note: >=300 ms); exit as soon
+		 * as a definite read lands so a warm comparator costs only one step */
+		for (i = 0; i < 30; i++) {
+			mdelay(10);
+			p = jack_plugged();
+			if (p >= 0)
+				break;
+		}
+		g_jack_plugged = p;
+		s_jack_route_picked = 1;
+		if (p == 1)
+			jack_route(1);
+	}
+}
+
+/*
+ * Throttled poll hook from the audio submit path. Cheap when nothing changed (one
+ * comparator read every ~100 ms). On a confirmed plug change it does the accdet
+ * housekeeping and switches the route; while on headphones it also eases the analog
+ * gain one step towards the level mapped from the current software volume.
+ */
+void jack_poll(void)
+{
+	unsigned now;
+	int p;
+
+	if (!s_jack_inited || !s_gbc_audio_on)
+		return;
+	now = gpt4_get_current_tick();
+	if ((unsigned)(now - s_jack_poll_tick) < JACK_POLL_TICKS)
+		return;
+	s_jack_poll_tick = now;
+
+	p = jack_plugged();
+	g_jack_plugged = p;
+	if (p >= 0 && p != s_jack_route) {
+		jack_eint_after_change(p);
+		jack_route(p);
+		return;
+	}
+	if (s_jack_route == 1) {
+		int want = jack_hp_idx_for_vol(s_gbc_vol);
+		if (want != s_jack_hp_cur_idx) {
+			s_jack_hp_cur_idx += (want > s_jack_hp_cur_idx) ? 1 : -1;
+			pmic_rmw(MT6359_ZCD_CON2, JACK_ZCD_MASK,
+				 ((unsigned)s_jack_hp_cur_idx << 7) | (unsigned)s_jack_hp_cur_idx);
+		}
+	}
+}
+
+/*
+ * Leave the accdet and HP analog registers in the clean state the kernel's accdet
+ * re-init expects (note line 23), so the Android handoff is not confused. If we are
+ * on the headphone route, tear the HP codec down first.
+ */
+static void jack_teardown_for_android(void)
+{
+	if (!s_jack_inited)
+		return;
+	if (s_jack_route == 1) {
+		jack_hp_codec_down();
+		s_jack_route = 0;
+		g_jack_route = 0;
+	}
+	pmic_rmw(MT6359_AUDENC_ANA_CON18, (1u << 11) | (1u << 12), 0);	/* clear comparator mic bits */
+	pmic_rmw(MT6359_AUDENC_ANA_CON16, (1u << 0), 0);		/* MICBIAS1 off */
+	pmic_rmw(MT6359_ACCDET_CON1, (1u << 6), 0);			/* ACCDET_SW_EN off */
+	pmic_rmw(MT6359_ACCDET_CON18, (1u << 2), 0);			/* clear the CON18 latch */
+	s_jack_inited = 0;
+	s_jack_route_picked = 0;
+}
+
 /* is the boot chime still playing? (emulator waits for it before taking over) */
 int ayaneo_boot_audio_active(void) { return s_audio_active; }
 
@@ -1477,6 +1933,7 @@ void ayaneo_gbc_audio_shutdown(void)
 		return;
 	s_gbc_audio_on = 0;
 	timer_cancel(&s_ring_sweep);
+	jack_teardown_for_android();	/* clean accdet + HP analog state before Android */
 	audio_shutdown();
 }
 
@@ -1522,6 +1979,7 @@ void ayaneo_gbc_audio_init(void)
 	spk_amp_enable(1);
 	s_swept = 0;
 	s_gbc_audio_on = 1;
+	jack_detect_init();		/* accdet up + pick the boot-time speaker/headphone route */
 	timer_initialize(&s_ring_sweep);
 	timer_set_periodic(&s_ring_sweep, 4, ring_sweep, 0);
 }
@@ -1538,6 +1996,7 @@ void ayaneo_gbc_audio_submit(const unsigned int *samples, unsigned count)
 
 	if (!s_gbc_audio_on || s_gbc_paused)
 		return;
+	jack_poll();			/* throttled headphone-jack detection + route switch */
 	aud_lead_note();
 	{	/* a sample out each time the phase passes thr: a little lower when short of the lead */
 		int err = aud_lean();
@@ -1660,6 +2119,7 @@ void ayaneo_gba_audio_submit(const short *interleaved, unsigned frames)
 	g_dbg_asub_done++;
 	g_dbg_asub_frames += frames;
 	g_dbg_aud_in += frames;
+	jack_poll();			/* throttled headphone-jack detection + route switch */
 	aud_lead_note();
 
 	/*
@@ -1841,6 +2301,7 @@ void ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigne
 	if (!s_gbc_audio_on || s_gbc_paused || !frames)
 		return;
 	if (src_hz < 8000u || src_hz > 96000u) src_hz = 32040u;   /* sanity */
+	jack_poll();			/* throttled headphone-jack detection + route switch */
 	aud_lead_note();
 	step = (src_hz << 16) / GBC_DST_HZ;                        /* input samples per output (<1.0 => upsample) */
 

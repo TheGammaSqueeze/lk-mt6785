@@ -2512,6 +2512,32 @@ static void cmd_aw(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem jack - Konkr 3.5mm headphone-jack detection: the raw ACCDET_CON26, the decoded
+ * EINT0_MEM_IN, the debounced plug state, the active route, and the plug-type (pole)
+ * bits. Use it on the device to validate MEM_IN polarity, plug-out detection and the
+ * 3 vs 4 pole classification. */
+static void cmd_jack(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned ayaneo_jack_con26(void);
+	extern int ayaneo_jack_mem_in(void);
+	extern int ayaneo_jack_plugged_state(void);
+	extern int ayaneo_jack_route_state(void);
+	extern int ayaneo_jack_pole(void);
+	unsigned con26 = ayaneo_jack_con26();
+	int mem = ayaneo_jack_mem_in();
+	int plug = ayaneo_jack_plugged_state();
+	int route = ayaneo_jack_route_state();
+	int pole = ayaneo_jack_pole();
+	const char *memn = (mem == 0) ? "plugged" : (mem == 3) ? "unplugged" : "no-change";
+	const char *plugn = (plug < 0) ? "unknown" : (plug ? "in" : "out");
+	const char *polen = (pole == 0) ? "3-pole" : (pole == 1) ? "4-pole-mic" : (pole == 3) ? "none" : "?";
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "jack: con26=0x%04x mem_in=%d(%s) plug=%s route=%s pole=%d(%s)",
+		 con26, mem, memn, plugn, route ? "headphone" : "speaker", pole, polen);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem bfi[:window] - Konkr: lit fraction of the frame (1024ths) for the Strobe (BFI) mode */
 static void cmd_bfi(const char *arg, void *data, unsigned sz)
 {
@@ -2808,6 +2834,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem shot", cmd_shot, 1, 0);
 #if defined(KONKR_KPA)
 	fastboot_register("oem aw", cmd_aw, 1, 0);
+	fastboot_register("oem jack", cmd_jack, 1, 0);
 	fastboot_register("oem bfi", cmd_bfi, 1, 0);
 	fastboot_register("oem led", cmd_led, 1, 0);
 	fastboot_register("oem persist", cmd_persist, 1, 0);
