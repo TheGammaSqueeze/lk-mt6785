@@ -2126,7 +2126,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 						pico_tm tm;
 						int days;
 						pico_clock_split(pico_clock_local(), &tm);
-						if (it == SET_YEAR) tm.year = tm.year + dir < 2024 ? 2099 : tm.year + dir > 2099 ? 2024 : tm.year + dir;
+						if (it == SET_YEAR) tm.year = tm.year + dir < 2024 ? 2095 : tm.year + dir > 2095 ? 2024 : tm.year + dir;   /* the RTC holds 1968..2095 */
 						if (it == SET_MONTH) tm.mon = (tm.mon - 1 + dir + 12) % 12 + 1;
 						days = pico_clock_days_in(tm.year, tm.mon);
 						if (it == SET_DAY) tm.mday = (tm.mday - 1 + dir + days) % days + 1;

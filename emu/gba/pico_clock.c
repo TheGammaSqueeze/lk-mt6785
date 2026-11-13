@@ -60,7 +60,7 @@ static void rtc_read_utc(void)
 	rtc_get_time(&r);
 	tm.year = r.tm_year; tm.mon = r.tm_mon; tm.mday = r.tm_mday;
 	tm.hour = r.tm_hour; tm.min = r.tm_min; tm.sec = r.tm_sec;
-	if (tm.mon < 1 || tm.mon > 12 || tm.mday < 1 || tm.mday > 31 || tm.year < 1970) {   /* never set: 2026 */
+	if (tm.mon < 1 || tm.mon > 12 || tm.mday < 1 || tm.mday > 31 || tm.year < 2020) {   /* unset or lost: 2026 */
 		tm.year = 2026; tm.mon = 1; tm.mday = 1; tm.hour = tm.min = tm.sec = 0;
 	}
 	enter_critical_section();

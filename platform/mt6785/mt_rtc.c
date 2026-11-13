@@ -373,8 +373,13 @@ void rtc_get_time(struct rtc_time *tm) {
 void rtc_set_time(const struct rtc_time *tm)
 {
 	U16 mth = RTC_Read(RTC_TC_MTH) & ~RTC_TC_MTH_MASK;
+	/* the year counter is RTC_NUM_YEARS wide from RTC_MIN_YEAR: clamp so a year past it cannot
+	 * overflow the field and read back as an early year (2099 would wrap to 1971) */
+	int yea = tm->tm_year;
+	if (yea < RTC_MIN_YEAR) yea = RTC_MIN_YEAR;
+	if (yea > RTC_MIN_YEAR + RTC_NUM_YEARS - 1) yea = RTC_MIN_YEAR + RTC_NUM_YEARS - 1;
 	rtc_writeif_unlock();
-	RTC_Write(RTC_TC_YEA, (U16)(tm->tm_year - RTC_MIN_YEAR));
+	RTC_Write(RTC_TC_YEA, (U16)(yea - RTC_MIN_YEAR));
 	RTC_Write(RTC_TC_MTH, mth | (tm->tm_mon & RTC_TC_MTH_MASK));
 	RTC_Write(RTC_TC_DOM, tm->tm_mday);
 	RTC_Write(RTC_TC_HOU, tm->tm_hour);
