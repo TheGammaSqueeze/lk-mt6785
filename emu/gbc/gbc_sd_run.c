@@ -423,7 +423,9 @@ static int gm_change(int i, int dir, int act)
 	case GM_BATTERY: changed = 0; break;
 	case GM_SLOT:    if (dir) s_gbc_slot = (s_gbc_slot + dir + GBC_SLOT_COUNT) % GBC_SLOT_COUNT; changed = 0; break;
 	case GM_SAVE:    if (act && s_menu_ahead_sz) { s_menu_c->state_save(s_menu_ahead);
-			     mput(s_mstat, gba_sd_write_state(s_menu_vol, s_menu_rom->name, s_gbc_slot, s_menu_ahead, s_menu_ahead_sz) == 0 ? "State saved" : "Save failed"); }
+			     /* on the card from the writer's thread: the game and its sound go on (the note once it is there) */
+			     gba_sd_write_state_bg(s_menu_vol, s_menu_rom->name, s_gbc_slot, s_menu_ahead, s_menu_ahead_sz,
+						   s_mstat, sizeof s_mstat, "State saved", "Save failed"); }
 			 changed = 0; break;
 	case GM_LOAD:    if (act && s_menu_ahead_sz) { unsigned n = gba_sd_load_state(s_menu_vol, s_menu_rom->name, s_gbc_slot, s_menu_ahead, 0x00A00000u);
 			     int ok = (n && s_menu_c->state_load(s_menu_ahead, n) == 0);

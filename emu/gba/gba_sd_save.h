@@ -22,6 +22,15 @@ uint32_t gba_sd_load_sav(fat_vol *v, const char *rom, unsigned char *dst, uint32
 int      gba_sd_write_sav(fat_vol *v, const char *rom, const void *buf, uint32_t len);
 uint32_t gba_sd_load_state(fat_vol *v, const char *rom, int slot, unsigned char *dst, uint32_t cap);
 int      gba_sd_write_state(fat_vol *v, const char *rom, int slot, const void *buf, uint32_t len);
+/* The same writes off the caller's thread (card_writer.c): the data is copied at once, the file is
+ * on the card a little later. status, when given, gets ok or fail then (a menu's note). */
+int      gba_sd_write_state_bg(fat_vol *v, const char *rom, int slot, const void *buf, uint32_t len,
+			       char *status, int cap, const char *ok, const char *fail);
+int      gba_sd_write_sav_bg(fat_vol *v, const char *rom, const void *buf, uint32_t len);
+/* "<rombase>.<ext>", as the card keeps a game's file under (out holds cap bytes) */
+void     gba_sd_state_name(const char *romname, const char *ext, char *out, int cap);
+int      gba_sd_write_named_bg(fat_vol *v, const char *dir, const char *romname, const char *ext,
+			       const void *buf, uint32_t len);
 
 /* GammaOS Pico menu settings on the SD card (/gba/settings.bin). 0 = ok. */
 int gba_sd_settings_load(fat_vol *v);

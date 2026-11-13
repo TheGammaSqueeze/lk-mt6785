@@ -22,6 +22,7 @@
 #include <platform/spm.h>
 #include <platform/mt_gpio.h>
 #include <kernel/thread.h>
+#include <kernel/timer.h>
 #include <string.h>
 #include <debug.h>
 #include <part_interface.h>
@@ -1419,6 +1420,35 @@ static int aud_lean(void)
 	return err;
 }
 
+/* The ring plays round and round: when a game stops feeding it (a card write, a slow frame, a
+ * pause the game thread took), the read pointer comes back round to sound it already played and
+ * played it again, heard as a short loop. So what has been played is cleared a few milliseconds
+ * later: a stall then plays silence, and the lead logic above picks up again when the game does.
+ * The write cursor stays ahead of the read pointer, so nothing still to play is touched. */
+static timer_t s_ring_sweep;
+static unsigned s_swept;                       /* the ring is silent from here to the read pointer */
+volatile unsigned int g_dbg_swept;             /* oem persist: frames cleared after playing, since boot */
+static enum handler_return ring_sweep(struct timer *t, time_t now, void *arg)
+{
+	unsigned cur, base = (unsigned)(addr_t)s_gbc_ring, rd, n;
+	(void)t; (void)now; (void)arg;
+	if (!s_gbc_audio_on || s_gbc_paused) return INT_NO_RESCHEDULE;
+	cur = afe_r(AFE_DL1_CUR);
+	rd = (cur >= base) ? ((cur - base) / 4u) & (GBC_RING_FRAMES - 1) : 0u;
+	rd &= ~15u;                                /* whole cache lines (16 frames) */
+	n = (rd - s_swept) & (GBC_RING_FRAMES - 1);
+	if (n > GBC_RING_FRAMES / 2) { s_swept = rd; return INT_NO_RESCHEDULE; }   /* not ours to judge */
+	while (n) {
+		unsigned run = GBC_RING_FRAMES - s_swept < n ? GBC_RING_FRAMES - s_swept : n;
+		memset(&s_gbc_ring[s_swept * 2], 0, run * 4u);
+		arch_clean_cache_range((addr_t)&s_gbc_ring[s_swept * 2], run * 4u);
+		s_swept = (s_swept + run) & (GBC_RING_FRAMES - 1);
+		g_dbg_swept += run;
+		n -= run;
+	}
+	return INT_NO_RESCHEDULE;
+}
+
 /* is the boot chime still playing? (emulator waits for it before taking over) */
 int ayaneo_boot_audio_active(void) { return s_audio_active; }
 
@@ -1435,6 +1465,7 @@ void ayaneo_gbc_audio_shutdown(void)
 	if (!s_gbc_audio_on)
 		return;
 	s_gbc_audio_on = 0;
+	timer_cancel(&s_ring_sweep);
 	audio_shutdown();
 }
 
@@ -1478,7 +1509,10 @@ void ayaneo_gbc_audio_init(void)
 	afe_dl1_setup((unsigned int)(addr_t)s_gbc_ring, sizeof(s_gbc_ring));
 	mdelay(2);
 	spk_amp_enable(1);
+	s_swept = 0;
 	s_gbc_audio_on = 1;
+	timer_initialize(&s_ring_sweep);
+	timer_set_periodic(&s_ring_sweep, 4, ring_sweep, 0);
 }
 
 /* Resample `count` stereo samples (each u32 = L|R<<16 at 2097152 Hz) to 48 kHz

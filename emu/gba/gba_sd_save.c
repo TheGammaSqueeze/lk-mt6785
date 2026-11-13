@@ -2,6 +2,11 @@
 #include "gba_sd_save.h"
 #include "fat_wr.h"
 extern const char *g_gba_state_dir;   /* gba_driver.c: "/states/gba" for gpSP, the core's own folder for armGBA */
+/* the card writer (card_writer.c), where the LK has one: states and battery saves go to the card
+ * off the game's thread, and a read waits for what is still being written */
+extern int  card_writer_put(fat_vol *v, const char *dir, const char *name, const void *buf, uint32_t len,
+			    char *status, int status_cap, const char *ok, const char *fail) __attribute__((weak));
+extern void card_writer_flush(void) __attribute__((weak));
 
 /* "<rombase>.<ext>" from a ROM name into out[<=cap]. The roster already drops the ROM's
  * extension (sd_fat.c scan_rom_folder), so only a real ROM extension is stripped here: cutting at
@@ -38,6 +43,7 @@ static uint32_t read_one(fat_vol *v, const char *dir, const char *nm, unsigned c
 	char path[300];
 	int k = 0, i;
 	fat_file f;
+	if (card_writer_flush) card_writer_flush();   /* a file still being written is read once it is there */
 	for (i = 0; dir[i] && k < (int)sizeof path - 2; i++) path[k++] = dir[i];
 	if (k == 0 || path[k - 1] != '/') path[k++] = '/';
 	for (i = 0; nm[i] && k < (int)sizeof path - 1; i++) path[k++] = nm[i];
@@ -118,3 +124,34 @@ int gba_sd_settings_save(fat_vol *v)
 	unsigned char b[192];
 	return gba_sd_settings_write(v, b, ayaneo_settings_serialize(b, (int)sizeof b));
 }
+
+/* the same files, written off the caller's thread (status gets ok or fail once it is on the card) */
+static int write_named_bg(fat_vol *v, const char *dir, const char *romname, const char *ext,
+			  const void *buf, uint32_t len, char *status, int cap, const char *ok, const char *fail)
+{
+	char nm[288];
+	int rc, i;
+	base_ext(romname, ext, nm, (int)sizeof nm);
+	if (card_writer_put) return card_writer_put(v, dir, nm, buf, len, status, cap, ok, fail);
+	fat_wr_mkpath(v, dir);
+	rc = fat_wr_put(v, dir, nm, buf, len);
+	if (status && cap > 0) {
+		const char *m = rc ? fail : ok;
+		for (i = 0; i + 1 < cap && m && m[i]; i++) status[i] = m[i];
+		status[i] = 0;
+	}
+	return rc ? -1 : 0;
+}
+int gba_sd_write_sav_bg(fat_vol *v, const char *rom, const void *buf, uint32_t len)
+{ return write_named_bg(v, "/saves/gba", rom, "sav", buf, len, 0, 0, 0, 0); }
+int gba_sd_write_named_bg(fat_vol *v, const char *dir, const char *romname, const char *ext,
+			  const void *buf, uint32_t len)
+{ return write_named_bg(v, dir, romname, ext, buf, len, 0, 0, 0, 0); }
+int gba_sd_write_state_bg(fat_vol *v, const char *rom, int slot, const void *buf, uint32_t len,
+			  char *status, int cap, const char *ok, const char *fail)
+{
+	char ext[4]; ext[0] = 's'; ext[1] = 't'; ext[2] = (char)('0' + (slot % 10)); ext[3] = 0;
+	return write_named_bg(v, g_gba_state_dir, rom, ext, buf, len, status, cap, ok, fail);
+}
+/* "<rombase>.<ext>", as the card keeps a game's file under */
+void gba_sd_state_name(const char *romname, const char *ext, char *out, int cap) { base_ext(romname, ext, out, cap); }

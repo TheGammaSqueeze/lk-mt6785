@@ -538,6 +538,8 @@ static int  sd_state_read(unsigned char *scratch);
 static int  sd_manual_write(unsigned char *scratch);
 static int  sd_manual_read(unsigned char *scratch);
 static void sd_sav_write(void);
+static void sd_sav_write_bg(void);
+static int  sd_manual_write_bg(unsigned char *scratch, char *status);
 #endif
 static int  manual_state_write(unsigned char *scratch);  /* menu Save State -> selected slot */
 static int  manual_state_read(unsigned char *scratch);   /* menu Load State -> selected slot */
@@ -1508,6 +1510,8 @@ void ayaneo_leds_off_for_poweroff(void)
  * Callers mute with ayaneo_gbc_audio_pause(1) before their card writes. */
 void ayaneo_power_off_now(void)
 {
+	extern void card_writer_flush(void) __attribute__((weak));
+	if (card_writer_flush) card_writer_flush();   /* a save state still going to the card */
 	ayaneo_gbc_audio_pause(1);
 	ayaneo_gbc_audio_shutdown();
 	ayaneo_leds_off_for_poweroff();
@@ -1797,6 +1801,7 @@ static const char *menu_label(int item)
 	return "";
 }
 
+volatile unsigned int g_dbg_savestate_ms[3];   /* oem persist: the last menu save, state and battery save ms, and how many */
 static int s_menu_sel;
 static char s_menu_status[48];
 
@@ -1854,7 +1859,28 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	case MI_ASPECT:   if (dir) g_gba_aspect = (g_gba_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
 	case MI_SLOT:     if (dir) s_gba_slot = (s_gba_slot + dir + GBA_SLOT_COUNT) % GBA_SLOT_COUNT; changed = 0; break;
 	case MI_LOADSTATE: if (act) { int ok = manual_state_read(state); if (ok) gba_rewind_arm(); mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
-	case MI_SAVESTATE: if (act) { int ok = manual_state_write(state); sav_save(state); mi_puts(status, ok ? "State saved" : "Save failed"); } changed = 0; break;
+	case MI_SAVESTATE: if (act) {
+		/* the state and the battery save go to the card from the writer's thread, so the game and
+		 * its sound go on; the note comes once the state is there. oem persist: the time the game
+		 * itself was held (the state taken and handed over), ms */
+		extern volatile unsigned int g_dbg_savestate_ms[3];
+		unsigned int t0 = gpt4_get_current_tick();
+		int ok;
+#if defined(AYANEO_GBA_SD)
+		if (sd_mode_on()) ok = sd_manual_write_bg(state, status);
+		else
+#endif
+		{ ok = manual_state_write(state); mi_puts(status, ok ? "State saved" : "Save failed"); }
+		g_dbg_savestate_ms[0] = (gpt4_get_current_tick() - t0) / 13000u;
+		t0 = gpt4_get_current_tick();
+#if defined(AYANEO_GBA_SD)
+		if (sd_mode_on()) sd_sav_write_bg();
+		else
+#endif
+		sav_save(state);
+		g_dbg_savestate_ms[1] = (gpt4_get_current_tick() - t0) / 13000u;
+		g_dbg_savestate_ms[2]++;
+		if (!ok) mi_puts(status, "Save failed"); } changed = 0; break;
 	case MI_RESET:    if (act) { s_reset_req = 1; return 1; } changed = 0; break;
 	case MI_CLOSE:    if (act) { s_close_req = 1; return 1; } changed = 0; break;
 	default: changed = 0; break;
@@ -2491,6 +2517,16 @@ static int sd_manual_write(unsigned char *scratch)
 	return gba_sd_write_state(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, sz) == 0;
 }
 
+/* the same, to the card from the writer's thread; status gets the note once it is there */
+static int sd_manual_write_bg(unsigned char *scratch, char *status)
+{
+	unsigned sz = gba_core_state_size();
+	if (!sz) return 0;
+	gba_core_state_save(scratch);
+	return gba_sd_write_state_bg(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, sz,
+				     status, 48, "State saved", "Save failed") == 0;
+}
+
 static int sd_manual_read(unsigned char *scratch)
 {
 	unsigned sz = gba_core_state_size();
@@ -2586,6 +2622,11 @@ static void sd_sav_write(void)
 {
 	gba_sd_write_sav(&s_sd_vol, s_roms[s_sel_rom].name,
 			 gba_core_backup_ptr(), gba_core_backup_size());
+}
+static void sd_sav_write_bg(void)
+{
+	gba_sd_write_sav_bg(&s_sd_vol, s_roms[s_sel_rom].name,
+			    gba_core_backup_ptr(), gba_core_backup_size());
 }
 
 /* Mirror the GammaOS Pico settings to the SD card whenever they change, so they

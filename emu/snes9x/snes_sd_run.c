@@ -16,6 +16,7 @@
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
+#include "../gba/card_writer.h"   /* in-game saves go to the card off the game's thread */
 #include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #include "../gba/gba_sd_save.h"
 #include "../ayaneo_rewind.h"
@@ -548,9 +549,13 @@ static int sm_change(int i, int dir, int act)
 	case SM_SAVE: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF; unsigned ssz = s_menu_c->state_size();
 			char ext[4]; int ok; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;
 			snes_slot_ext(ext);
-			ok = (ssz && ssz <= SNES_STATE_CAP && s_menu_c->state_save(st, ssz) == 0 &&
-			      gba_sd_write_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, st, ssz) == 0);
-			smput(s_mstat, ok ? "State saved" : "Save failed");
+			ok = ssz && ssz <= SNES_STATE_CAP && s_menu_c->state_save(st, ssz) == 0;
+			/* on the card from the writer's thread: the game and its sound go on (the note once it is there) */
+			if (ok) {
+				char nm[288];
+				gba_sd_state_name(s_menu_rom->name, ext, nm, sizeof nm);
+				card_writer_put(s_menu_vol, "/states/snes", nm, st, ssz, s_mstat, sizeof s_mstat, "State saved", "Save failed");
+			} else smput(s_mstat, "Save failed");
 			if (ok) { s_slot_used = 1; s_slot_known[s_save_slot] = 1; }
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
 	case SM_LOAD: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF;

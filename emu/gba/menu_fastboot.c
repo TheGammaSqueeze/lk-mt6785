@@ -2227,6 +2227,14 @@ static void cmd_persist(const char *arg, void *data, unsigned sz)
 	else ayaneo_menu_settings_persist();
 	snprintf(lbuf, sizeof lbuf, "persist: n=%u settings=%uus core=%uus menu_lead_min=%d", g_dbg_persist_n, g_dbg_persist_us, g_dbg_persist_core_us, g_dbg_mlead_min);
 	fastboot_info(lbuf);
+	{ extern volatile unsigned int g_dbg_savestate_ms[3], g_dbg_cw_n, g_dbg_cw_ms, g_dbg_cw_fail;
+	  snprintf(lbuf, sizeof lbuf, "savestate: game held %u+%ums n=%u", g_dbg_savestate_ms[0], g_dbg_savestate_ms[1], g_dbg_savestate_ms[2]);
+	  fastboot_info(lbuf);
+	  snprintf(lbuf, sizeof lbuf, "card writer: %u files, last %ums, %u failed", g_dbg_cw_n, g_dbg_cw_ms, g_dbg_cw_fail);
+	  fastboot_info(lbuf); }
+	{ extern volatile unsigned int g_dbg_swept;
+	  snprintf(lbuf, sizeof lbuf, "audio: %u frames cleared after playing", g_dbg_swept);
+	  fastboot_info(lbuf); }
 	fastboot_okay("");
 }
 
