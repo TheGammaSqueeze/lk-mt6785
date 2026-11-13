@@ -212,5 +212,14 @@
  "Space": "Espaço",
  "Clear": "Limpar",
  "Results": "Resultados",
- "Keyboard": "Teclado"
+ "Keyboard": "Teclado",
+ "This game could not be read from the card": "Não foi possível ler este jogo do cartão",
+ "This archive is damaged": "Este arquivo está danificado",
+ "No game was found in this archive": "Nenhum jogo encontrado neste arquivo",
+ "This archive uses a compression the console cannot open": "Este arquivo usa uma compressão que o console não consegue abrir",
+ "This archive is password protected": "Este arquivo está protegido por senha",
+ "This game is too large for this system": "Este jogo é grande demais para este sistema",
+ "This archive is too large to open": "Este arquivo é grande demais para abrir",
+ "Archives split into parts are not supported": "Arquivos divididos em partes não são suportados",
+ "This game could not be started": "Não foi possível iniciar este jogo"
 }

@@ -32,6 +32,7 @@
 #include "pico_clock.h"         /* the date and time */
 #include "pico_stats.h"         /* play time and last played */
 #include "pico_libmem.h"        /* the library's tables: thousands of games */
+#include "rom_archive.h"        /* why a game did not start */
 #include <kernel/thread.h>       /* thread_sleep: a pack read tried again */
 
 extern unsigned int gpt4_get_current_tick(void);
@@ -666,6 +667,8 @@ static struct {
 	int kb_r, kb_c;                   /* the key in focus */
 	int sr_list;                      /* 1 while the results have the focus */
 	int sr_sel, sr_top, sr_n;         /* the results: focus, first shown, count */
+	int note_err;                     /* why a game did not start (RA_ERR_*), shown for note_t s */
+	float note_t;
 	float reveal;                     /* 0..1: the screen cascading in, top to bottom (1 at rest) */
 	float leave;                      /* 0..1 while the search cascades out, before the screen behind it */
 } S;
@@ -736,19 +739,31 @@ static void recent_load(void)
 		p = e + 1;
 	}
 }
-static void recent_add(int rom)
+static void recent_save(void)
 {
 	static char buf[NRECENT * 136];
 	fat_vol *v = gba_sd_menu_vol();
-	int i, k, len = 0;
+	int i, len = 0;
+	for (i = 0; i < S.nrec; i++)
+		len += snprintf(buf + len, sizeof buf - (size_t)len, "%d %s\n", s_roms[S.rec[i]].type, s_roms[S.rec[i]].name);
+	if (v) fat_wr_put(v, "/gammaos", "recent.txt", buf, (uint32_t)len);
+}
+static void recent_drop_first(void)
+{
+	int i;
+	for (i = 1; i < S.nrec; i++) S.rec[i - 1] = S.rec[i];
+	S.nrec--;
+	recent_save();
+}
+static void recent_add(int rom)
+{
+	int i, k;
 	for (i = 0; i < S.nrec && S.rec[i] != rom; i++) ;
 	if (i == S.nrec && S.nrec < NRECENT) S.nrec++;
 	if (i >= S.nrec) i = S.nrec - 1;
 	for (k = i; k > 0; k--) S.rec[k] = S.rec[k - 1];
 	S.rec[0] = rom;
-	for (i = 0; i < S.nrec; i++)
-		len += snprintf(buf + len, sizeof buf - (size_t)len, "%d %s\n", s_roms[S.rec[i]].type, s_roms[S.rec[i]].name);
-	if (v) fat_wr_put(v, "/gammaos", "recent.txt", buf, (uint32_t)len);
+	recent_save();
 }
 
 /* ---- the backdrop: a current of light, drawn every frame ------------------------------------- */
@@ -1447,6 +1462,7 @@ static void search_open(int sys, int from_lib)
 {
 	S.search = 1; S.sr_sys = sys; S.sr_from_lib = from_lib;
 	S.sr_list = 0; S.kb_r = 0; S.kb_c = 0;
+	S.sq_n = 0; S.sq[0] = 0;      /* every search starts afresh */
 	S.reveal = 0;                 /* it cascades in (frame_render) */
 	S.dip = from_lib ? 0 : .3f;   /* from the Games page the backdrop darkens under it */
 	search_run();
@@ -1493,10 +1509,16 @@ static void search_view(void)
 	/* the words typed, in a field */
 	pill_fill(U(kx), U(fy), U(kw), U(50), C_INK, 30);
 	magnifier(kx + 26, fy + 24, S.sq_n ? C_INK : C_MUTED, 256);
-	if (S.sq_n) {
-		char b[96];
-		const char *v = fit_str(&A.row, S.sq, U(kw - 90), b, sizeof b);
-		int w = text(&A.row, U(kx + 50), U(fy + 33), v, C_INK, 256, 0, 0, 0);
+	if (S.sq_n) {	/* a long query shows its end, where the typing is */
+		char b[sizeof S.sq + 4];
+		const char *v = S.sq;
+		int w;
+		if (text_w(&A.row, v, 0, 0) > U(kw - 90)) {
+			while (*v && text_w(&A.row, v, 0, 0) + text_w(&A.row, "...", 0, 0) > U(kw - 90)) v++;
+			snprintf(b, sizeof b, "...%s", v);
+			v = b;
+		}
+		w = text(&A.row, U(kx + 50), U(fy + 33), v, C_INK, 256, 0, 0, 0);
 		if (!S.sr_list) fill(U(kx + 50) + w + U(3), U(fy + 12), U(2) > 1 ? U(2) : 2, U(26), C_ACCENT, 256);
 	} else {
 		text(&A.row, U(kx + 50), U(fy + 33), tr("Type a name"), C_MUTED, 200, 0, 0, 0);
@@ -1540,6 +1562,7 @@ static void search_view(void)
 
 /* the menu into its own layer (transparent around it); redrawn only when something changed */
 volatile int g_dbg_anim_slow = 1;   /* oem animslow:N - the screen cascades N times slower, to look at */
+static void note_draw(void);   /* why a game did not start (with the launch, below) */
 static int s_ui_clean;   /* the layer is known clear outside what it tracked */
 /* clear what the last drawing of the menu layer touched, and start tracking again */
 static void ui_clear(void)
@@ -1590,6 +1613,7 @@ static void ui_compose(void)
 		else if (S.set_page) hints(hc_sub, hl_sub, 2);
 		else hints(hc_set, hl_set, 2);
 	}
+	note_draw();
 	g_track = 0;
 }
 /* the frame: the backdrop and its moving current, the menu over it, the dip of a screen change */
@@ -1725,6 +1749,35 @@ static void launch_arm(void)
 	gba_punch_ready = 1;
 }
 
+/* ---- a game that cannot start ---------------------------------------------------------------- */
+static void note_show(int err) { S.note_err = err; S.note_t = 4.5f; }
+/* the game, or -1 with a note saying why it cannot start (its archive is looked into first) */
+static int launch_check(int rom)
+{
+	int why;
+	if (rom < 0) return -1;
+	why = gba_rom_check(gba_sd_menu_vol(), &s_roms[rom]);
+	if (why == RA_OK) return rom;
+	note_show(why);
+	return -1;
+}
+/* the note: a dark pill along the bottom, a mark in the accent, the reason */
+static void note_draw(void)
+{
+	const char *t;
+	int tw, w, x, y = U(720 - 92), h = U(44);
+	if (S.note_t <= 0) return;
+	t = tr(rom_archive_error_text(S.note_err));
+	tw = text_w(&A.info, t, 0, 0);
+	if (tw > U(s_uw - 2 * s_p - 80)) tw = U(s_uw - 2 * s_p - 80);
+	w = tw + U(70);
+	x = (g_W - w) / 2;
+	pill_fill(x, y, w, h, C_SHADE, 240);
+	disc(x + U(26) + .0f, y + h / 2 + .0f, U(9) + .0f, C_ACCENT, 256);
+	text(&A.hintc, x + U(26), y + h / 2 + U(4), "!", C_BTN_INK, 256, 1, 0, 0);
+	text_fit(&A.info, x + U(46), y + h / 2 + U(5), t, C_INK, 256, tw);
+}
+
 /* ---- input ------------------------------------------------------------------------------------- */
 static struct { int prev[6]; float rep[6], held[6]; } K;   /* up down left right lb rb: held, repeat timer, held for */
 /* a press, and repeats while held (0.32 s, then every 0.085 s) */
@@ -1799,7 +1852,7 @@ volatile unsigned int g_dbg_cur_ms[12];
 int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_reverse)
 {
 	unsigned int pitch, W, H, saved_mhz, prev = 0, t_run = gpt4_get_current_tick();
-	int launch_gate = 1, i, dirty = 1, shown = 0;
+	int launch_gate = 1, i, dirty = 1, shown = 0, failed;
 	snes_input in;
 	(void)ayaneo_canvas_back(&pitch, &W, &H);
 	if (W * H * 4u > CUR_FRAME_MAX || nrom <= 0) return -2;
@@ -1855,6 +1908,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 	if (S.sys >= S.nsys) S.sys = 0;
 	S.sys_from = S.sys; S.sys_t = 1;
 	S.reveal = 1; S.leave = 0;   /* no cascade left over from before a game */
+	failed = gba_rom_take_error();   /* the last game did not start: why, below */
 	if (do_reverse) focus_rom(start_sel);   /* back from a game: on it */
 	for (i = 0; i < S.nsys; i++)
 		if (S.lib_sel[i] >= S.syscount[i]) { S.lib_sel[i] = 0; S.lib_top[i] = 0; }
@@ -1864,6 +1918,10 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 		if (theme_hash(i) == gba_menu_theme()) S.theme_pick = i;
 	CUR_MARK(9);
 	recent_load();
+	if (failed) {	/* it did not start: not among the games played, and the note says why */
+		note_show(failed);
+		if (S.nrec && S.rec[0] == start_sel) recent_drop_first();
+	}
 	CUR_MARK(10);
 	if (S.res_sel >= S.nrec) S.res_sel = 0;
 	S.batt = gba_battery_pct(&S.chg);
@@ -1954,8 +2012,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 					if (rb) list_move(s_res, S.sr_n, &S.sr_sel, &S.sr_top, LIB_ROWS);
 					if (lf || eb) S.sr_list = 0;
 					if (ey) { S.sr_list = 0; search_key(4, 4); }
-					if ((ea || est) && S.sr_n) {
-						rom = s_res[S.sr_sel];
+					if ((ea || est) && S.sr_n && (rom = launch_check(s_res[S.sr_sel])) >= 0) {
 						S.search = 0; S.lib = 1;   /* back from the game: its library, on it */
 					}
 				}
@@ -1972,7 +2029,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 				}
 				if (ey) { search_open(s, 1); S.lib = 0; }
 				else if (eb) { S.lib = 0; S.dip = .6f; }
-				else if (ea || est) rom = LIB(s)[S.lib_sel[s]];
+				else if (ea || est) rom = launch_check(LIB(s)[S.lib_sel[s]]);
 			} else {
 				if (lb && S.tab > 0) { S.tab--; S.dip = .45f; }
 				if (rb && S.tab < 2) { S.tab++; S.dip = .45f; }
@@ -1992,7 +2049,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 				} else if (S.tab == TAB_RESUME) {
 					if (up && S.res_sel > 0) S.res_sel--;
 					if (dn && S.res_sel < S.nrec - 1) S.res_sel++;
-					if ((ea || est) && S.nrec) rom = S.rec[S.res_sel];
+					if ((ea || est) && S.nrec) rom = launch_check(S.rec[S.res_sel]);
 				} else {
 					int dir = rt ? 1 : lf ? -1 : 0, it, flip = dir || ea;
 					if (up && S.set_sel > 0) S.set_sel--;
@@ -2071,6 +2128,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 		}
 		if (S.sys_t < 1) { S.sys_t += dt / .46f; if (S.sys_t >= 1) { S.sys_t = 1; S.sys_from = S.sys; dirty = 1; } }
 		if (S.dip > 0) { S.dip -= dt / .28f; if (S.dip <= 0) { S.dip = 0; dirty = 1; } }
+		if (S.note_t > 0) { S.note_t -= dt; if (S.note_t <= 0) { S.note_t = 0; dirty = 1; } }
 		if (S.reveal < 1) { S.reveal += dt / (.36f * g_dbg_anim_slow); if (S.reveal > 1) S.reveal = 1; }
 		if (S.leave > 0) {	/* the search going: when it has, the screen behind it comes in */
 			S.leave += dt / (.2f * g_dbg_anim_slow);

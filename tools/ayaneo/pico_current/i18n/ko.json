@@ -209,5 +209,14 @@
  "Space": "공백",
  "Clear": "모두 지우기",
  "Results": "결과",
- "Keyboard": "키보드"
+ "Keyboard": "키보드",
+ "This game could not be read from the card": "카드에서 게임을 읽을 수 없습니다",
+ "This archive is damaged": "압축 파일이 손상되었습니다",
+ "No game was found in this archive": "압축 파일에서 게임을 찾을 수 없습니다",
+ "This archive uses a compression the console cannot open": "기기가 열 수 없는 압축 방식입니다",
+ "This archive is password protected": "압축 파일이 암호로 보호되어 있습니다",
+ "This game is too large for this system": "이 시스템에서 실행하기에 게임이 너무 큽니다",
+ "This archive is too large to open": "압축 파일이 너무 커서 열 수 없습니다",
+ "Archives split into parts are not supported": "분할 압축 파일은 지원되지 않습니다",
+ "This game could not be started": "게임을 시작할 수 없습니다"
 }

@@ -1056,6 +1056,51 @@
    "en": "Keyboard",
    "kind": "hint",
    "note": "button hint: go back from the results to the on-screen keyboard"
+  },
+  {
+   "en": "This game could not be read from the card",
+   "kind": "about",
+   "note": "note shown along the bottom when a game cannot start: the card read failed"
+  },
+  {
+   "en": "This archive is damaged",
+   "kind": "about",
+   "note": "note: a .zip or .7z game archive is broken or its data does not check out"
+  },
+  {
+   "en": "No game was found in this archive",
+   "kind": "about",
+   "note": "note: the .zip or .7z holds no file for this system"
+  },
+  {
+   "en": "This archive uses a compression the console cannot open",
+   "kind": "about",
+   "note": "note: the .zip or .7z is packed with a method the console does not unpack"
+  },
+  {
+   "en": "This archive is password protected",
+   "kind": "about",
+   "note": "note: the .zip or .7z is encrypted"
+  },
+  {
+   "en": "This game is too large for this system",
+   "kind": "about",
+   "note": "note: the game does not fit the system's memory"
+  },
+  {
+   "en": "This archive is too large to open",
+   "kind": "about",
+   "note": "note: the archive's own file list is too big to read"
+  },
+  {
+   "en": "Archives split into parts are not supported",
+   "kind": "about",
+   "note": "note: a .zip or .7z cut into several files"
+  },
+  {
+   "en": "This game could not be started",
+   "kind": "about",
+   "note": "note: the emulator would not start the game"
   }
  ]
 }

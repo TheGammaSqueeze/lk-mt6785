@@ -212,5 +212,14 @@
  "Space": "Spatie",
  "Clear": "Leegmaken",
  "Results": "Resultaten",
- "Keyboard": "Toetsenbord"
+ "Keyboard": "Toetsenbord",
+ "This game could not be read from the card": "Deze game kon niet van de kaart worden gelezen",
+ "This archive is damaged": "Dit archief is beschadigd",
+ "No game was found in this archive": "Geen game gevonden in dit archief",
+ "This archive uses a compression the console cannot open": "Dit archief gebruikt een compressie die de console niet kan openen",
+ "This archive is password protected": "Dit archief is beveiligd met een wachtwoord",
+ "This game is too large for this system": "Deze game is te groot voor dit systeem",
+ "This archive is too large to open": "Dit archief is te groot om te openen",
+ "Archives split into parts are not supported": "Archieven in meerdere delen worden niet ondersteund",
+ "This game could not be started": "Deze game kon niet worden gestart"
 }

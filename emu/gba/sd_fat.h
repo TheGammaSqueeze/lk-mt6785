@@ -41,6 +41,8 @@ typedef struct {
 	unsigned char type;       /* GBA_CONSOLE_* */
 	unsigned char ex_nofat;   /* exFAT: one contiguous run, no FAT chain (fat_file.ex_nofat) */
 	unsigned char dir;        /* the folder it is in (gba_sd_rom_dir) */
+	unsigned char arc;        /* RA_NONE, or the archive it is in (RA_ZIP, RA_7Z: rom_archive.h) */
+	unsigned short member;    /* which ROM of the archive (0 the first) */
 } gba_rom_entry;
 
 /* Enumerate the ROMs into out[0..max), each tagged with its console type, merged
@@ -61,8 +63,22 @@ const char *gba_sd_rom_dir(const gba_rom_entry *r);
  * could not be created (read-only card / full FAT16 root). */
 int gba_sd_make_rom_dirs(fat_vol *v);
 
-/* Read a ROM (identified by its cached first_clus/size) into dst, up to cap bytes.
- * Returns the number of bytes read (== min(size,cap) on success). */
+/* Read a ROM (identified by its cached first_clus/size) into dst, up to cap bytes; one in an
+ * archive is unpacked there. Returns its length, or 0 with the reason kept for
+ * gba_rom_take_error. */
 uint32_t gba_sd_load_rom(fat_vol *v, const gba_rom_entry *r, unsigned char *dst, uint32_t cap);
+/* the first n bytes of a ROM (an archive's unpacked), 0 when they cannot be read */
+uint32_t gba_sd_rom_head(fat_vol *v, const gba_rom_entry *r, unsigned char *dst, uint32_t n);
+/* Before a launch: RA_OK, or why the game cannot start (RA_ERR_*, rom_archive.h); the archive is
+ * looked into, not unpacked. */
+int gba_rom_check(fat_vol *v, const gba_rom_entry *r);
+/* the reason the last load failed (0 none), cleared by the reading; a core that would not start
+ * the game sets RA_ERR_START */
+int  gba_rom_take_error(void);
+int  gba_rom_peek_error(void);
+void gba_rom_set_error(int err);
+/* a system's ROM extensions (".gba .agb"), and the most ROM its core holds */
+const char *gba_sd_rom_exts(int type);
+uint32_t gba_sd_rom_cap(int type);
 
 #endif

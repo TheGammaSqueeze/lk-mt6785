@@ -221,6 +221,14 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		fastboot_info(lbuf);
 	}
 	{
+		extern volatile unsigned int g_dbg_romload[4], g_dbg_aix[3];
+		snprintf(lbuf, sizeof lbuf, "romload: %u ms %u B arc %u err %d", g_dbg_romload[0], g_dbg_romload[1],
+			 g_dbg_romload[2], (int)g_dbg_romload[3]);
+		fastboot_info(lbuf);
+		snprintf(lbuf, sizeof lbuf, "archives: %u kept, %u read, index %u B", g_dbg_aix[0], g_dbg_aix[1], g_dbg_aix[2]);
+		fastboot_info(lbuf);
+	}
+	{
 		extern volatile unsigned int g_dbg_artimp_ok, g_dbg_artimp_fail, g_dbg_artimp_ms;
 		extern volatile int g_dbg_artimp_last;
 		snprintf(lbuf, sizeof lbuf, "artimport: %u PNG made .ART, %u left (last %d), %u ms", g_dbg_artimp_ok,

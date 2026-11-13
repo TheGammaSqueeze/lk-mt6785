@@ -209,5 +209,14 @@
  "Space": "空格",
  "Clear": "清空",
  "Results": "结果",
- "Keyboard": "键盘"
+ "Keyboard": "键盘",
+ "This game could not be read from the card": "无法从存储卡读取此游戏",
+ "This archive is damaged": "此压缩包已损坏",
+ "No game was found in this archive": "此压缩包中没有找到游戏",
+ "This archive uses a compression the console cannot open": "此压缩包使用了本机无法打开的压缩方式",
+ "This archive is password protected": "此压缩包受密码保护",
+ "This game is too large for this system": "此游戏对该系统来说太大",
+ "This archive is too large to open": "此压缩包过大，无法打开",
+ "Archives split into parts are not supported": "不支持分卷压缩包",
+ "This game could not be started": "无法启动此游戏"
 }

@@ -26,6 +26,7 @@
 #include "pico_libmem.h"            /* the roster's tables, PICO_GAMES_MAX */
 #include "gba_boxart_sd.h"          /* gba_boxart_load_sd */
 #include "pico_artimport.h"         /* pico_artimport_run */
+#include "rom_archive.h"            /* why a game did not start */
 #include "pico_i18n.h"              /* the menus' languages */
 #include <arch/arm/mmu.h>           /* arch_mmu_map: the box art slots (SNES_BOXART_PA) */
 #include <kernel/thread.h>          /* thread_sleep */
@@ -419,6 +420,16 @@ static snes_pack      s_boxart_full_pk;
 static int            s_have_boxart;
 static const snes_img_entry *s_cart_img;    /* placeholder cart tile, for the roster re-set */
 static int            s_filter_label_hold;  /* frames left to show the "System: X" toast */
+static int            s_note_hold;          /* frames left to show why a game did not start */
+static char           s_note[64];
+static void note_show(int err)
+{
+	const char *t = rom_archive_error_text(err);
+	int k;
+	for (k = 0; t[k] && k < (int)sizeof s_note - 1; k++) s_note[k] = t[k];
+	s_note[k] = 0;
+	s_note_hold = 240;   /* 4 s */
+}
 
 static uint32_t rd32(const unsigned char *p)
 { return (uint32_t)p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
@@ -1301,6 +1312,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	if (nrom <= 0) return -1;
 	if (!tables_alloc()) return -2;
 	if (nrom > PICO_GAMES_MAX) nrom = PICO_GAMES_MAX;
+	{ int why = gba_rom_take_error(); if (why) note_show(why); }   /* the last game did not start */
 
 	/* Own the panel and paint it BEFORE the slow pack decompress + one-time wallpaper/
 	 * chrome cache build, so the boot-logo -> menu handover is not a couple of black
@@ -1578,6 +1590,14 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			fade_in--;
 		}
 		menu_av_draw(fb, pitch, (int)W, (int)H);   /* volume/brightness OSD bar */
+		if (s_note_hold > 0) {   /* why a game did not start: along the bottom, in the toast's font */
+			int w = (int)strlen(s_note) * 16, x = ((int)W - w) / 2;
+			if (x < 8) x = 8;
+			ayaneo_fill_blend(fb, pitch, x - 12, (int)H - 76, w + 24, 44, 0xFF000000u, 150);
+			ayaneo_text(fb, pitch, x + 2, (int)H - 64, 2, 0xFF000000u, s_note);   /* shadow */
+			ayaneo_text(fb, pitch, x, (int)H - 66, 2, 0xFFFFFFFFu, s_note);
+			s_note_hold--;
+		}
 		if (s_filter_label_hold > 0) {   /* transient "System: X" toast, top-left, drop shadow for legibility */
 			char lbl[48]; int k = 0, j = 0;
 			const char *pre = "System: ", *nm = filter_name(s_sysfilter);
@@ -1643,6 +1663,10 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		launch = snes_menu_take_launch(&s_menu);
 		/* the menu returns a VIEW index (current filter); map it back to the full roms[] index */
 		if (launch >= 0 && launch < s_vn) launch = (int)s_vmap[launch]; else launch = -1;
+		if (launch >= 0 && launch < nrom) {	/* a game that cannot start says why and stays */
+			int why = gba_rom_check(gba_sd_menu_vol(), &roms[launch]);
+			if (why != RA_OK) { note_show(why); launch = -1; }
+		}
 		if (launch >= 0 && launch < nrom) {
 			/* Punch-hole launch: instead of fading the menu to black, CAPTURE the
 			 * final menu frame so the driver can composite live gameplay inside a

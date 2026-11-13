@@ -22,6 +22,7 @@
 #include <kernel/thread.h>
 #include <kernel/event.h>
 #include "../gba/emu_stack.h"
+#include "../gba/rom_archive.h"   /* RA_ERR_START */
 
 /* ---- LK / driver primitives (externs; no LK headers here) ---- */
 extern const struct gbc_core_exports *gbc_core_load(fat_vol *v);   /* gbc_core_loader.c: from the card */
@@ -575,15 +576,15 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	unsigned long long pace_n = 0;
 
 	c = gbc_core_load(vol);
-	if (!c) return;
+	if (!c) { gba_rom_set_error(RA_ERR_START); return; }
 
-	romsz = gba_sd_load_rom(vol, rom, rombuf, GBC_ROM_CAP);
+	romsz = gba_sd_load_rom(vol, rom, rombuf, GBC_ROM_CAP);   /* the reason kept when it fails */
 	if (!romsz) return;
 
 	c->heap_init((void *)GBC_HEAP_BASE, GBC_HEAP_SZ);
-	if (c->create() != 0) return;
+	if (c->create() != 0) { gba_rom_set_error(RA_ERR_START); return; }
 	flags = is_dmg ? GBC_FORCE_DMG : 0u;
-	if (c->load(rombuf, romsz, flags) != 0) return;
+	if (c->load(rombuf, romsz, flags) != 0) { gba_rom_set_error(RA_ERR_START); return; }
 	ahead_sz = c->state_size();
 	if (ahead_sz > 0x00A00000u) ahead_sz = 0;   /* sanity: must fit the 10 MB scratch gap */
 

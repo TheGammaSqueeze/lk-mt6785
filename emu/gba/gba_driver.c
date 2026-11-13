@@ -2238,6 +2238,7 @@ void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsign
 
 #ifdef AYANEO_GBA_SD
 #include "sd_fat.h"
+#include "rom_archive.h"     /* RA_ERR_START: a game the core would not start */
 #include "fat_wr.h"
 #include "gba_sd_save.h"
 #include "core_file.h"
@@ -2474,7 +2475,9 @@ static int gba_sd_rom_select(void)
 		int r;
 		extern void pico_stats_begin(int type, const char *name), pico_stats_end(void);
 		sd_bg_wait();   /* fast path: the card listing may still be running */
-		pico_stats_end();   /* the game played before this menu, its time added */
+		/* the game played before this menu: its time added, or, when it did not start, its start
+		 * taken back */
+		{ extern void pico_stats_abort(void); if (gba_rom_peek_error()) pico_stats_abort(); else pico_stats_end(); }
 		{	/* oem showcase:1 (until the next power on): the menus list only the release's demo
 			 * games, for the README's screenshots; nothing on the card changes */
 			extern volatile int g_dbg_showcase;
@@ -2816,14 +2819,7 @@ static int logo_header_from_card(unsigned char *dst)
 		if (s_roms[i].type == GBA_CONSOLE_GBA) { hdr_rom = i; break; }
 	if (hdr_rom < 0 && s_nrom > 0) hdr_rom = 0;
 	if (hdr_rom < 0) return 0;
-	{
-		fat_file f;
-		f.v = &s_sd_vol;
-		f.first_clus = s_roms[hdr_rom].first_clus;
-		f.size = s_roms[hdr_rom].size;
-		f.ex_nofat = s_roms[hdr_rom].ex_nofat;
-		return fat_read(&f, 0, dst, 0xC0u) == 0xC0u;
-	}
+	return gba_sd_rom_head(&s_sd_vol, &s_roms[hdr_rom], dst, 0xC0u) == 0xC0u;   /* an archive's unpacked */
 }
 /* after a listing: write the header file when it is missing or the first GBA game changed */
 static void cart_header_refresh(void)
@@ -2891,14 +2887,9 @@ static unsigned gba_sd_build_logo_cart(unsigned char *rp)
 		return 0x8000u;
 	}
 	if (hdr_rom >= 0) {
-		fat_file f;
-		f.v = &s_sd_vol;
-		f.first_clus = s_roms[hdr_rom].first_clus;
-		f.size = s_roms[hdr_rom].size;
-		f.ex_nofat = s_roms[hdr_rom].ex_nofat;
 		/* 0..0xC0 = real header: logo(0x04-0x9F) + checksum(0xBD) + entry(0x00,
 		 * which branches to 0x080000C0 -> our loop). Restores the loops beyond. */
-		fat_read(&f, 0, rp, 0xC0u);
+		gba_sd_rom_head(&s_sd_vol, &s_roms[hdr_rom], rp, 0xC0u);
 	}
 	return 0x8000u;
 }
@@ -3250,7 +3241,7 @@ static int emu_thread(void *arg)
 						continue;                                  /* back to the selector */
 					}
 					rp = gba_core_for_launch();   /* armGBA or gpSP from the card; rebuilds the arena */
-					if (!rp) { gba_dbg("GBA ERR: no GBA core loads from the card"); continue; }
+					if (!rp) { gba_dbg("GBA ERR: no GBA core loads from the card"); gba_rom_set_error(RA_ERR_START); continue; }
 					romsz = gba_sd_load_rom(&s_sd_vol, &s_roms[sel], rp, gba_core_rom_capacity());
 					if (romsz) break;
 					gba_dbg("GBA ERR: SD ROM load failed, back to selector");
@@ -3261,6 +3252,7 @@ static int emu_thread(void *arg)
 				 * which the first main-loop frame below triggers. */
 				if (gba_core_start(romsz, s_have_bios ? s_sd_bios : 0) != 0) {
 					gba_dbg("GBA ERR: SD game core_start failed");
+					gba_rom_set_error(RA_ERR_START);
 					return 0;
 				}
 				s_game_live = 1;

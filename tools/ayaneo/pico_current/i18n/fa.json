@@ -212,5 +212,14 @@
  "Space": "فاصله",
  "Clear": "پاک کردن",
  "Results": "نتایج",
- "Keyboard": "صفحه کلید"
+ "Keyboard": "صفحه کلید",
+ "This game could not be read from the card": "این بازی از کارت خوانده نشد",
+ "This archive is damaged": "این آرشیو خراب است",
+ "No game was found in this archive": "در این آرشیو بازی ای پیدا نشد",
+ "This archive uses a compression the console cannot open": "این آرشیو از فشرده سازی ای استفاده می کند که دستگاه نمی تواند باز کند",
+ "This archive is password protected": "این آرشیو با رمز محافظت شده است",
+ "This game is too large for this system": "این بازی برای این سیستم خیلی بزرگ است",
+ "This archive is too large to open": "این آرشیو برای باز شدن خیلی بزرگ است",
+ "Archives split into parts are not supported": "آرشیوهای چندبخشی پشتیبانی نمی شوند",
+ "This game could not be started": "این بازی اجرا نشد"
 }

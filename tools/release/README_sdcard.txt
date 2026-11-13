@@ -13,7 +13,7 @@ card in the console and power it on. The console needs the GammaOS Pico LK first
                        (16 KB). GBA games then run on Nintendo's BIOS with its boot logo; without
                        it armGBA's built-in replacement runs them, not every game the same way,
                        and gpSP cannot run (see bios/README.txt)
-  roms/<system>/       games: gb, gbc, gba, snes, genesis, sms, gg, sg (raw ROM files, not zips)
+  roms/<system>/       games: gb, gbc, gba, snes, genesis, sms, gg, sg (ROM files, or .zip / .7z)
   roms/<system>/boxart/<game>.ART   box art, named like the game file
   licences/            the demo games' and the cores' licences and credits
 
@@ -42,6 +42,14 @@ Big libraries: in a system's library hold Up or Down to speed through it, Left /
 page, L / R jump from letter to letter, and Y opens Search (on the Games page Y searches every
 system). Search has its own keyboard: A types the key, Y deletes, X adds a space, R goes to the
 games found.
+
+Games can stay in .zip or .7z archives (ZIP stored or deflated, ZIP64 too; 7z with LZMA, LZMA2
+or no compression). A game is unpacked as it starts, about half a second for a 16 MB Game Boy
+Advance game. An archive holding several games lists each one, named after its file inside
+(folders inside do not matter). An archive the console cannot open shows why when you try to
+start it: damaged, password protected, packed another way (bzip2, PPMd and the like), split into
+parts, or with no game inside. When a game is on the card both unpacked and in an archive, the
+unpacked one is used.
 
 Box art: put a PNG cover named like the game (<game>.png, or <game>.<extension>.png) in a boxart
 folder beside the game, for example ROMs/gba/boxart/Metroid Fusion.png. At the next power on the

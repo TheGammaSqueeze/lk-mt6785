@@ -213,5 +213,14 @@
  "Space": "רווח",
  "Clear": "ניקוי",
  "Results": "תוצאות",
- "Keyboard": "מקלדת"
+ "Keyboard": "מקלדת",
+ "This game could not be read from the card": "לא ניתן לקרוא את המשחק מהכרטיס",
+ "This archive is damaged": "הארכיון פגום",
+ "No game was found in this archive": "לא נמצא משחק בארכיון",
+ "This archive uses a compression the console cannot open": "הארכיון משתמש בדחיסה שהקונסולה לא יכולה לפתוח",
+ "This archive is password protected": "הארכיון מוגן בסיסמה",
+ "This game is too large for this system": "המשחק גדול מדי עבור מערכת זו",
+ "This archive is too large to open": "הארכיון גדול מדי לפתיחה",
+ "Archives split into parts are not supported": "ארכיונים מפוצלים אינם נתמכים",
+ "This game could not be started": "לא ניתן להפעיל את המשחק"
 }

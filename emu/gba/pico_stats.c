@@ -30,6 +30,8 @@ struct st_game { unsigned char type; unsigned int secs; long long last; char nam
 static struct st_game *s_g;
 static int s_n, s_loaded;
 static int s_cur = -1;                 /* the game in play */
+static long long s_cur_was;            /* its last played before this start, to take back */
+static int s_cur_new;                  /* it was not in the table before this start */
 static unsigned int s_saved_ms;               /* how far into it the time is added */
 static char *s_text;
 static mutex_t s_mtx;
@@ -121,8 +123,9 @@ void pico_stats_begin(int type, const char *name)
 	lock();
 	if (!s_loaded) load();
 	if (s_cur >= 0) save();
-	s_cur = find(type, name, 1);
+	{ int had = s_n, i = find(type, name, 0); s_cur = i >= 0 ? i : find(type, name, 1); s_cur_new = i < 0 && s_n > had; }
 	if (s_cur >= 0) {
+		s_cur_was = s_g[s_cur].last;
 		s_g[s_cur].last = pico_clock_utc();
 		s_saved_ms = (unsigned int)current_time();
 		save();
@@ -134,6 +137,18 @@ void pico_stats_end(void)
 {
 	lock();
 	if (s_cur >= 0) { save(); s_cur = -1; }
+	unlock();
+}
+
+void pico_stats_abort(void)
+{
+	lock();
+	if (s_cur >= 0) {	/* the game did not start: as if it had not been picked */
+		if (s_cur_new) { s_g[s_cur] = s_g[s_n - 1]; s_n--; }
+		else s_g[s_cur].last = s_cur_was;
+		s_cur = -1;
+		save();
+	}
 	unlock();
 }
 

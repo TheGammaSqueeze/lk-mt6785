@@ -213,5 +213,14 @@
  "Space": "Пробел",
  "Clear": "Очистить",
  "Results": "Результаты",
- "Keyboard": "Клавиатура"
+ "Keyboard": "Клавиатура",
+ "This game could not be read from the card": "Не удалось прочитать игру с карты",
+ "This archive is damaged": "Архив повреждён",
+ "No game was found in this archive": "В архиве не найдена игра",
+ "This archive uses a compression the console cannot open": "Архив сжат методом, который консоль не поддерживает",
+ "This archive is password protected": "Архив защищён паролем",
+ "This game is too large for this system": "Игра слишком велика для этой системы",
+ "This archive is too large to open": "Архив слишком велик, чтобы его открыть",
+ "Archives split into parts are not supported": "Многотомные архивы не поддерживаются",
+ "This game could not be started": "Не удалось запустить игру"
 }

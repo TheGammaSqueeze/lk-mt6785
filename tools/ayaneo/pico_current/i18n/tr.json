@@ -209,5 +209,14 @@
  "Space": "Boşluk",
  "Clear": "Temizle",
  "Results": "Sonuçlar",
- "Keyboard": "Klavye"
+ "Keyboard": "Klavye",
+ "This game could not be read from the card": "Bu oyun karttan okunamadı",
+ "This archive is damaged": "Bu arşiv hasarlı",
+ "No game was found in this archive": "Bu arşivde oyun bulunamadı",
+ "This archive uses a compression the console cannot open": "Bu arşiv, konsolun açamadığı bir sıkıştırma kullanıyor",
+ "This archive is password protected": "Bu arşiv parola korumalı",
+ "This game is too large for this system": "Bu oyun bu sistem için çok büyük",
+ "This archive is too large to open": "Bu arşiv açılamayacak kadar büyük",
+ "Archives split into parts are not supported": "Parçalara bölünmüş arşivler desteklenmiyor",
+ "This game could not be started": "Bu oyun başlatılamadı"
 }

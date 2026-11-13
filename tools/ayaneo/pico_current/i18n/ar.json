@@ -216,5 +216,14 @@
  "Space": "مسافة",
  "Clear": "مسح الكل",
  "Results": "النتائج",
- "Keyboard": "لوحة المفاتيح"
+ "Keyboard": "لوحة المفاتيح",
+ "This game could not be read from the card": "تعذرت قراءة هذه اللعبة من البطاقة",
+ "This archive is damaged": "هذا الأرشيف تالف",
+ "No game was found in this archive": "لم يتم العثور على لعبة في هذا الأرشيف",
+ "This archive uses a compression the console cannot open": "يستخدم هذا الأرشيف ضغطا لا يمكن للجهاز فتحه",
+ "This archive is password protected": "هذا الأرشيف محمي بكلمة مرور",
+ "This game is too large for this system": "هذه اللعبة كبيرة جدا على هذا النظام",
+ "This archive is too large to open": "هذا الأرشيف أكبر من أن يفتح",
+ "Archives split into parts are not supported": "الأرشيفات المقسمة إلى أجزاء غير مدعومة",
+ "This game could not be started": "تعذر تشغيل هذه اللعبة"
 }

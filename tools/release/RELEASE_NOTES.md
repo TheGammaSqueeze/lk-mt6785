@@ -27,6 +27,9 @@ bootloader, before any operating system, and owns the hardware outright.
   `<folder>/roms/<system>/`, with the usual folder names (`gba`, `snes`, `megadrive`,
   `mastersystem`, `gamegear` and so on). Drop a PNG cover named like the game into a `boxart`
   folder beside it and the console sizes it for the menu at the next power on.
+- **Zipped games welcome.** Games can stay in .zip or .7z archives, unpacked as they start (about
+  half a second for a 16 MB GBA game, resume at power on included). An archive with several games
+  lists each one, and one that cannot be opened says why instead of failing quietly.
 - **Made for big libraries.** Tens of thousands of games list in moments. Hold a direction to
   speed through a library, jump letter by letter with L / R, or press Y to search by name, in one
   system or all of them, with an on-screen keyboard. Box art loads as you reach it.

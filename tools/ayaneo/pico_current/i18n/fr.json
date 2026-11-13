@@ -212,5 +212,14 @@
  "Space": "Espace",
  "Clear": "Tout effacer",
  "Results": "Résultats",
- "Keyboard": "Clavier"
+ "Keyboard": "Clavier",
+ "This game could not be read from the card": "Ce jeu n'a pas pu être lu depuis la carte",
+ "This archive is damaged": "Cette archive est endommagée",
+ "No game was found in this archive": "Aucun jeu trouvé dans cette archive",
+ "This archive uses a compression the console cannot open": "Cette archive utilise une compression que la console ne peut pas ouvrir",
+ "This archive is password protected": "Cette archive est protégée par un mot de passe",
+ "This game is too large for this system": "Ce jeu est trop volumineux pour ce système",
+ "This archive is too large to open": "Cette archive est trop volumineuse pour être ouverte",
+ "Archives split into parts are not supported": "Les archives en plusieurs parties ne sont pas prises en charge",
+ "This game could not be started": "Ce jeu n'a pas pu être lancé"
 }

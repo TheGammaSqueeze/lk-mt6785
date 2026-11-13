@@ -23,6 +23,7 @@
 #include <kernel/thread.h>
 #include <kernel/event.h>
 #include "../gba/emu_stack.h"
+#include "../gba/rom_archive.h"   /* RA_ERR_START */
 extern const char *ayaneo_strobe_name(int b);
 
 extern const struct snes_core_exports *snes_core_load(fat_vol *v);   /* snes_core_loader.c: from the card */
@@ -626,7 +627,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	SNES_PRE_MARK(0);
 	c = snes_core_load(vol);
 	SNES_PRE_MARK(1);
-	if (!c) { g_snes_dbg_exit = 2; return; }   /* blob load failed */
+	if (!c) { g_snes_dbg_exit = 2; gba_rom_set_error(RA_ERR_START); return; }   /* blob load failed */
 	g_snes_dbg_stage = 2;
 
 	romsz = gba_sd_load_rom(vol, rom, rombuf, SNES_ROM_CAP);
@@ -640,7 +641,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	SNES_PRE_MARK(2);
 	g_snes_dbg_loadrc = (unsigned)c->load(rombuf, romsz);
 	SNES_PRE_MARK(3);
-	if (g_snes_dbg_loadrc != 0) { g_snes_dbg_exit = 4; return; }   /* core load failed */
+	if (g_snes_dbg_loadrc != 0) { g_snes_dbg_exit = 4; gba_rom_set_error(RA_ERR_START); return; }   /* core load failed */
 	g_snes_dbg_stage = 5;
 	c->av_info(&bw, &bh, &mw, &mh, &sr);
 	g_snes_dbg_w = bw; g_snes_dbg_h = bh;

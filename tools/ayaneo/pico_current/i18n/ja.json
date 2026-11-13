@@ -209,5 +209,14 @@
  "Space": "スペース",
  "Clear": "クリア",
  "Results": "結果",
- "Keyboard": "キーボード"
+ "Keyboard": "キーボード",
+ "This game could not be read from the card": "カードからゲームを読み込めませんでした",
+ "This archive is damaged": "アーカイブが破損しています",
+ "No game was found in this archive": "アーカイブ内にゲームが見つかりません",
+ "This archive uses a compression the console cannot open": "このアーカイブは本機で開けない圧縮形式です",
+ "This archive is password protected": "アーカイブはパスワードで保護されています",
+ "This game is too large for this system": "このゲームはこのシステムには大きすぎます",
+ "This archive is too large to open": "アーカイブが大きすぎて開けません",
+ "Archives split into parts are not supported": "分割アーカイブには対応していません",
+ "This game could not be started": "ゲームを起動できませんでした"
 }

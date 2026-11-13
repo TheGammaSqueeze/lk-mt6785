@@ -19,6 +19,7 @@
 #include <kernel/thread.h>
 #include <kernel/event.h>
 #include "../gba/emu_stack.h"
+#include "../gba/rom_archive.h"   /* RA_ERR_START */
 
 /* ---- LK / driver primitives (externs; no LK headers here) ---- */
 extern const struct genesis_core_exports *genesis_core_load(fat_vol *v);   /* genesis_core_loader.c: from the card */
@@ -500,7 +501,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	int up_p = 0, dn_p = 0, lt_p = 0, rt_p = 0, a_p = 0, b_p = 0;
 	struct genesis_frame fr;
 
-	if (!c) return;   /* blob load failed (g_gen_dbg_loaderr set by the loader) */
+	if (!c) { gba_rom_set_error(RA_ERR_START); return; }   /* blob load failed (g_gen_dbg_loaderr set by the loader) */
 
 	c->heap_init((void *)GEN_HEAP_BASE, GEN_HEAP_SZ);
 	c->init();
@@ -509,7 +510,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	g_gen_dbg_loadrc = -2;
 	if (!romsz) { ayaneo_menu_audio_silence(); return; }
 	if (c->load((const void *)GEN_ROM_BUF, romsz, rom_type_to_system(rom->type)) != 0) {
-		g_gen_dbg_loadrc = -1; ayaneo_menu_audio_silence(); return;
+		g_gen_dbg_loadrc = -1; gba_rom_set_error(RA_ERR_START); ayaneo_menu_audio_silence(); return;
 	}
 	g_gen_dbg_loadrc = 0;
 

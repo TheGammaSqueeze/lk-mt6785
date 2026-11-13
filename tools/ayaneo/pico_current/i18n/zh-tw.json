@@ -209,5 +209,14 @@
  "Space": "空格",
  "Clear": "清除",
  "Results": "結果",
- "Keyboard": "鍵盤"
+ "Keyboard": "鍵盤",
+ "This game could not be read from the card": "無法從記憶卡讀取此遊戲",
+ "This archive is damaged": "此壓縮檔已損毀",
+ "No game was found in this archive": "此壓縮檔中找不到遊戲",
+ "This archive uses a compression the console cannot open": "此壓縮檔使用本機無法開啟的壓縮方式",
+ "This archive is password protected": "此壓縮檔受密碼保護",
+ "This game is too large for this system": "此遊戲對該系統而言過大",
+ "This archive is too large to open": "此壓縮檔過大，無法開啟",
+ "Archives split into parts are not supported": "不支援分割壓縮檔",
+ "This game could not be started": "無法啟動此遊戲"
 }
