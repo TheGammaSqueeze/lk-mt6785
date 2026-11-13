@@ -199,5 +199,15 @@
  "Played %s": "플레이 시간 %s",
  "Last played %s": "마지막 플레이 %s",
  "today": "오늘",
- "yesterday": "어제"
+ "yesterday": "어제",
+ "Search": "검색",
+ "All systems": "모든 시스템",
+ "Type a name": "이름 입력",
+ "No games found": "게임을 찾을 수 없음",
+ "Type": "입력",
+ "Delete": "지우기",
+ "Space": "공백",
+ "Clear": "모두 지우기",
+ "Results": "결과",
+ "Keyboard": "키보드"
 }

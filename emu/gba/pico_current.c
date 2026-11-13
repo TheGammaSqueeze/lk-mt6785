@@ -31,6 +31,7 @@
 #include "pico_i18n.h"          /* tr(): the menus' languages */
 #include "pico_clock.h"         /* the date and time */
 #include "pico_stats.h"         /* play time and last played */
+#include "pico_libmem.h"        /* the library's tables: thousands of games */
 
 extern unsigned int gpt4_get_current_tick(void);
 extern unsigned int *ayaneo_canvas_back(unsigned int *pitch, unsigned int *W, unsigned int *H);
@@ -74,6 +75,8 @@ extern void gba_menu_av_poll(void);
 extern void gba_menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H);
 extern int  gba_menu_boxart_load(const gba_rom_entry *roms, int nrom);
 extern const unsigned char *gba_menu_boxart(int i, unsigned int *w, unsigned int *h);
+extern void gba_menu_boxart_budget(int n);
+extern int  gba_menu_boxart_pending(void);
 extern void gba_menu_reverse_into(void (*render)(uint32_t *snap, unsigned int pitch));
 extern void gba_menu_present(void);
 extern int  ayaneo_get_strobe(void);
@@ -652,36 +655,55 @@ static struct {
 	float push;                       /* phase still to add from a system move */
 	int bg_key[2];                    /* the colour each still backdrop was made in, -1 none */
 	int pal_colour;                   /* the colour the shaded palette was made in, -1 none */
+	float badge_t;                    /* seconds the letter badge of a long list still shows */
+	char badge;                       /* its letter */
+	int search;                       /* the search is open */
+	int sr_sys;                       /* where it looks: a system (index into the systems), -1 all */
+	int sr_from_lib;                  /* opened from a library: B goes back there */
+	char sq[44];                      /* the words looked for */
+	int sq_n;
+	int kb_r, kb_c;                   /* the key in focus */
+	int sr_list;                      /* 1 while the results have the focus */
+	int sr_sel, sr_top, sr_n;         /* the results: focus, first shown, count */
 } S;
 
 static const gba_rom_entry *s_roms;
 static int s_nrom;
-static char s_names[128][128];        /* the cleaned titles */
-static short s_libidx[NSYS][128];     /* per system the rom indices, card order */
+/* the library's tables (pico_libmem.c: thousands of games), taken once */
+static char (*s_names)[128];          /* the cleaned titles */
+static unsigned short *s_lib;         /* the rom indexes, system after system, card order */
+static int s_libofs[NSYS];            /* where each system's run starts in s_lib */
+static unsigned short *s_res;         /* the search's results */
+#define LIB(s) (s_lib + s_libofs[s])
 
 static int sys_of(int type) { int i; for (i = 0; i < S.nsys; i++) if (S.systype[i] == type) return i; return -1; }
 
-static void roster_build(void)
+static int roster_build(void)
 {
-	int i, t;
+	int i, t, k = 0;
+	if (!s_names) s_names = (char (*)[128])pico_lib_alloc(PICO_GAMES_MAX * 128u);
+	if (!s_lib) s_lib = (unsigned short *)pico_lib_alloc(PICO_GAMES_MAX * 2u);
+	if (!s_res) s_res = (unsigned short *)pico_lib_alloc(PICO_GAMES_MAX * 2u);
+	if (!s_names || !s_lib || !s_res) return -1;
 	S.nsys = 0;
 	for (t = 0; t < NSYS; t++) {
 		int n = 0;
-		for (i = 0; i < s_nrom && i < 128; i++)
-			if (s_roms[i].type == t) s_libidx[S.nsys][n++] = (short)i;
-		if (n) { S.systype[S.nsys] = t; S.syscount[S.nsys] = n; S.nsys++; }
+		for (i = 0; i < s_nrom; i++)
+			if (s_roms[i].type == t) s_lib[k + n++] = (unsigned short)i;
+		if (n) { S.systype[S.nsys] = t; S.syscount[S.nsys] = n; s_libofs[S.nsys] = k; S.nsys++; k += n; }
 	}
-	for (i = 0; i < s_nrom && i < 128; i++) {
+	for (i = 0; i < s_nrom; i++) {
 		gba_clean_name(s_roms[i].name, s_names[i]);
 		if (!s_names[i][0]) { strncpy(s_names[i], s_roms[i].name, 127); s_names[i][127] = 0; }
 	}
+	return 0;
 }
 
 /* ---- recently played: /gammaos/recent.txt, "<type> <name>" a line, newest first ----------- */
 static int rom_find(int type, const char *name)
 {
 	int i;
-	for (i = 0; i < s_nrom && i < 128; i++)
+	for (i = 0; i < s_nrom; i++)
 		if (s_roms[i].type == type && !strcmp(s_roms[i].name, name)) return i;
 	return -1;
 }
@@ -1189,8 +1211,34 @@ static void play_lines(int rom, float cx, float y)
 	snprintf(t, sizeof t, tr("Last played %s"), d);
 	text(&A.info, U(cx), U(y), t, C_MUTED, 256, 1, 0, 0);
 }
-static const char *s_rowtxt[128];
-static void game_list(const short *idx, int n, int sel, int top, int title_y, const char *title)
+static const char *s_rowtxt[LIB_ROWS];
+static const char *s_rowval[LIB_ROWS];
+/* A long list's place: a thin track down its right edge with the part in view, and under the
+ * list the focused row's number of the whole ("1204 / 3012"). Nothing for a list that fits. */
+static void list_marks(float x, float y, float w, int n, int top, int sel)
+{
+	float th = LIB_ROWS * 51.f - 8, tw = 2.4f, bar;
+	char t[32];
+	if (n <= LIB_ROWS) return;
+	bar = th * LIB_ROWS / n;
+	if (bar < 22) bar = 22;
+	fill(U(x + w + 9), U(y + 4), U(tw) > 1 ? U(tw) : 2, U(th), C_MUTED, 46);
+	fill(U(x + w + 9), U(y + 4 + (th - bar) * top / (n - LIB_ROWS)), U(tw) > 1 ? U(tw) : 2, U(bar), C_ACCENT, 256);
+	snprintf(t, sizeof t, "%d / %d", sel + 1, n);
+	text(&A.info, U(x + w), U(y + LIB_ROWS * 51 + 27), t, C_MUTED, 256, 2, 0, 0);
+}
+/* The letter a fast move or a jump lands on, large over the list for a moment (S.badge_t). */
+static void letter_badge(float cx, float cy)
+{
+	char t[2];
+	float r = 44;
+	if (S.badge_t <= 0) return;
+	t[0] = S.badge; t[1] = 0;
+	disc(U(cx) + .0f, U(cy) + .0f, U(r + 2) + .0f, C_ACCENT, 220);
+	disc(U(cx) + .0f, U(cy) + .0f, U(r) + .0f, C_SHADE, 236);
+	text(&A.dname, U(cx), U(cy + 11), t, C_INK, 256, 1, 0, 0);
+}
+static void game_list(const unsigned short *idx, int n, int sel, int top, int title_y, const char *title)
 {
 	float yy = 720 * .36f, lw = s_uw * .45f, rw = s_uw * .34f < 393 ? s_uw * .34f : 393, rh = 311;
 	float rx = s_uw - s_p - rw, ry = 720 * .30f;
@@ -1198,20 +1246,20 @@ static void game_list(const short *idx, int n, int sel, int top, int title_y, co
 	if (title) text(&A.tag13, U(s_p), U(title_y), tr(title), C_MUTED, 256, 0, U(2), 1);
 	for (i = 0; i < k; i++) s_rowtxt[i] = s_names[idx[top + i]];
 	rows(s_p, yy, lw, 51, s_rowtxt, 0, k, sel - top, &A.row, &A.rowf, 0);
-	if (top > 0) disc(U(s_p + lw - 8) + .0f, U(yy - 10) + .0f, U(2.5f) + .0f, C_MUTED, 200);
-	if (top + k < n) disc(U(s_p + lw - 8) + .0f, U(yy + LIB_ROWS * 51 + 6) + .0f, U(2.5f) + .0f, C_MUTED, 200);
+	list_marks(s_p, yy, lw, n, top, sel);
 	if (n) {
 		int rom = idx[sel];
 		art(rom, rx, ry, rw, rh);
 		text(&A.info, U(rx + rw / 2), U(ry + rh + 29), tr(s_sysname[s_roms[rom].type]), C_MUTED, 256, 1, 0, 0);
 		play_lines(rom, rx + rw / 2, ry + rh + 60);
 	}
+	letter_badge(s_p + lw / 2, yy + LIB_ROWS * 51 / 2);
 }
 static void home_resume(void)
 {
-	short idx[NRECENT];
+	unsigned short idx[NRECENT];
 	int i;
-	for (i = 0; i < S.nrec; i++) idx[i] = (short)S.rec[i];
+	for (i = 0; i < S.nrec; i++) idx[i] = (unsigned short)S.rec[i];
 	if (!S.nrec) {
 		text(&A.tag13, U(s_p), U(720 * .36f - 22), tr("Recently played"), C_MUTED, 256, 0, U(2), 1);
 		text(&A.empty, U(s_p), U(720 * .36f + 32), tr("The games you play appear here."), C_MUTED, 256, 0, 0, 0);
@@ -1333,7 +1381,157 @@ static void library(void)
 	int s = S.sys, t = S.systype[s];
 	text(&A.tag13, U(s_p), U(124), tr("Game library"), C_MUTED, 256, 0, U(2), 1);
 	draw_mask(&A.llogo[t], U(s_p), U(150 + 29) - A.llogo[t].h / 2, C_INK, 256);
-	game_list(s_libidx[s], S.syscount[s], S.lib_sel[s], S.lib_top[s], 0, 0);
+	game_list(LIB(s), S.syscount[s], S.lib_sel[s], S.lib_top[s], 0, 0);
+}
+
+/* ---- search -------------------------------------------------------------------------------------
+ * For libraries of thousands: Y in a library looks through its system, Y on the Games page through
+ * them all. The words are typed on a keyboard of the menu's own look, and the results follow every
+ * key: the games whose name holds each word, the ones that start with it first, then the ones with
+ * a word that does, then the rest, each part in the list's own order. */
+static const char *const k_kb[4] = { "ABCDEFGHIJ", "KLMNOPQRST", "UVWXYZ'&-.", "1234567890" };
+#define KB_ROWS 5                      /* four of keys, and Space / Delete / Clear */
+enum { KB_SPACE, KB_DEL, KB_CLEAR };
+static int kb_special(int c) { return c < 4 ? KB_SPACE : c < 7 ? KB_DEL : KB_CLEAR; }
+static const char *const k_short[NSYS] = { "GB", "GBC", "GBA", "SNES", "MD", "SMS", "GG", "SG" };
+
+static char lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c; }
+/* where word w (n letters, lower case) is in name s, without case: -1 none, else 0 at the start,
+ * 1 at the start of one of its words, 2 inside one */
+static int word_at(const char *s, const char *w, int n)
+{
+	int i, best = -1;
+	for (i = 0; s[i]; i++) {
+		int k;
+		for (k = 0; k < n && s[i + k] && lower(s[i + k]) == w[k]; k++) ;
+		if (k == n) {
+			int at = i == 0 ? 0 : (s[i - 1] == ' ' || s[i - 1] == '-' || s[i - 1] == ':' || s[i - 1] == '.') ? 1 : 2;
+			if (best < 0 || at < best) best = at;
+			if (best == 0) break;
+		}
+	}
+	return best;
+}
+/* the results for the words in S.sq, into s_res */
+static void search_run(void)
+{
+	char w[8][44];
+	int wl[8], nw = 0, i, pass, from = 0, to = s_nrom;
+	const unsigned short *list = 0;
+	for (i = 0; i < S.sq_n && nw < 8; ) {	/* the words, lower case */
+		int k = 0;
+		while (i < S.sq_n && S.sq[i] == ' ') i++;
+		while (i < S.sq_n && S.sq[i] != ' ' && k < 43) w[nw][k++] = lower(S.sq[i++]);
+		if (k) { w[nw][k] = 0; wl[nw++] = k; }
+	}
+	if (S.sr_sys >= 0) { list = LIB(S.sr_sys); to = S.syscount[S.sr_sys]; }
+	S.sr_n = 0;
+	for (pass = 0; pass < 3; pass++) {	/* names starting with the first word, then at a word, then the rest */
+		for (i = from; i < to; i++) {
+			int rom = list ? list[i] : i, k, rank = 0;
+			for (k = 0; k < nw; k++) {
+				int at = word_at(s_names[rom], w[k], wl[k]);
+				if (at < 0) { rank = -1; break; }
+				if (k == 0) rank = at;
+			}
+			if (rank == pass || (!nw && pass == 0)) s_res[S.sr_n++] = (unsigned short)rom;
+		}
+		if (!nw) break;
+	}
+	S.sr_sel = 0; S.sr_top = 0;
+}
+static void search_open(int sys, int from_lib)
+{
+	S.search = 1; S.sr_sys = sys; S.sr_from_lib = from_lib;
+	S.sr_list = 0; S.kb_r = 0; S.kb_c = 0;
+	S.dip = .45f;
+	search_run();
+}
+static void search_key(int r, int c)
+{
+	if (r < 4) {
+		if (S.sq_n < (int)sizeof S.sq - 1) S.sq[S.sq_n++] = k_kb[r][c];
+	} else if (kb_special(c) == KB_SPACE) {
+		if (S.sq_n && S.sq[S.sq_n - 1] != ' ' && S.sq_n < (int)sizeof S.sq - 1) S.sq[S.sq_n++] = ' ';
+	} else if (kb_special(c) == KB_DEL) {
+		if (S.sq_n) S.sq_n--;
+	} else S.sq_n = 0;
+	S.sq[S.sq_n] = 0;
+	search_run();
+}
+/* a magnifying glass: a ring and its handle */
+static void magnifier(float cx, float cy, uint32_t rgb, int op)
+{
+	int x0 = U(cx - 12), y0 = U(cy - 12), n = U(24) + 2, i, j;
+	float r = U(7.5f), th = U(1.9f) > 1.2f ? U(1.9f) : 1.2f, k;
+	for (j = 0; j < n; j++)
+		for (i = 0; i < n; i++) {
+			float dx = x0 + i + .5f - U(cx), dy = y0 + j + .5f - U(cy), d = sq(dx * dx + dy * dy) - r;
+			float c = th * .5f + .5f - (d < 0 ? -d : d);
+			if (c > 0) put(x0 + i, y0 + j, rgb, c >= 1 ? op : (int)(c * op));
+		}
+	for (k = 0; k <= 1; k += .125f)
+		disc(U(cx + 5.6f + 5.4f * k) + .0f, U(cy + 5.6f + 5.4f * k) + .0f, th * .62f, rgb, op);
+}
+static void search_view(void)
+{
+	float kx = s_p, kw = s_uw * .44f, kp = kw / 10, fy = 146, ky = 222, rx = kx + kw + s_uw * .055f;
+	float rw = s_uw - s_p - rx - 16, ly = 146;
+	int r, c, i, k;
+	char t[64];
+	/* where it looks */
+	{
+		int w = text(&A.tag13, U(kx), U(124), tr("Search"), C_MUTED, 256, 0, U(2), 1);
+		disc(U(kx) + w + U(12) + .0f, U(119) + .0f, U(2) + .0f, C_MUTED, 256);
+		text(&A.tag13, U(kx) + w + U(24), U(124), S.sr_sys >= 0 ? tr(s_sysname[S.systype[S.sr_sys]]) : tr("All systems"),
+		     C_MUTED, 256, 0, U(2), 1);
+	}
+	/* the words typed, in a field */
+	pill_fill(U(kx), U(fy), U(kw), U(50), C_INK, 30);
+	magnifier(kx + 26, fy + 24, S.sq_n ? C_INK : C_MUTED, 256);
+	if (S.sq_n) {
+		char b[96];
+		const char *v = fit_str(&A.row, S.sq, U(kw - 90), b, sizeof b);
+		int w = text(&A.row, U(kx + 50), U(fy + 33), v, C_INK, 256, 0, 0, 0);
+		if (!S.sr_list) fill(U(kx + 50) + w + U(3), U(fy + 12), U(2) > 1 ? U(2) : 2, U(26), C_ACCENT, 256);
+	} else {
+		text(&A.row, U(kx + 50), U(fy + 33), tr("Type a name"), C_MUTED, 200, 0, 0, 0);
+		if (!S.sr_list) fill(U(kx + 48), U(fy + 12), U(2) > 1 ? U(2) : 2, U(26), C_ACCENT, 256);
+	}
+	/* the keyboard: keys in the soft frame of the menu, the focused one in the accent */
+	for (r = 0; r < KB_ROWS; r++)
+		for (c = 0; c < 10; c++) {
+			int f = !S.sr_list && S.kb_r == r && (r < 4 ? S.kb_c == c : kb_special(S.kb_c) == kb_special(c));
+			float x = kx + c * kp, y = ky + r * 50, w = kp - 6;
+			const char *lab;
+			char one[2];
+			if (r == 4) {	/* the wide keys: drawn once, from their first column */
+				int sp = kb_special(c);
+				if (c != 0 && c != 4 && c != 7) continue;
+				w = (sp == KB_SPACE ? 4 : 3) * kp - 6;
+				lab = tr(sp == KB_SPACE ? "Space" : sp == KB_DEL ? "Delete" : "Clear");
+			} else { one[0] = k_kb[r][c]; one[1] = 0; lab = one; }
+			fill(U(x), U(y), U(w), U(44), f ? C_ACCENT : C_SHADE, f ? 70 : 110);
+			fill(U(x), U(y), U(w), 1, f ? C_ACCENT : C_MUTED, f ? 256 : 60);
+			fill(U(x), U(y + 44) - 1, U(w), 1, f ? C_ACCENT : C_MUTED, f ? 256 : 60);
+			fill(U(x), U(y), 1, U(44), f ? C_ACCENT : C_MUTED, f ? 256 : 60);
+			fill(U(x + w) - 1, U(y), 1, U(44), f ? C_ACCENT : C_MUTED, f ? 256 : 60);
+			if (r == 4) text_fit(&A.hint, U(x + w / 2) - text_w(&A.hint, lab, 0, 0) / 2, U(y + 27), lab, f ? C_INK : C_MUTED, 256, U(w - 8));
+			else text(f ? &A.rowf : &A.row, U(x + w / 2), U(y + 30), lab, f ? C_INK : C_MUTED, 256, 1, 0, 0);
+		}
+	/* the results */
+	if (S.sr_n) snprintf(t, sizeof t, tr_n(S.sr_n, "%d game", "%d games"), S.sr_n);
+	text(&A.tag13, U(rx), U(124), S.sr_n ? t : tr("No games found"), C_MUTED, 256, 0, U(2), 1);
+	k = S.sr_n - S.sr_top < LIB_ROWS ? S.sr_n - S.sr_top : LIB_ROWS;
+	for (i = 0; i < k; i++) {
+		int rom = s_res[S.sr_top + i];
+		s_rowtxt[i] = s_names[rom];
+		s_rowval[i] = S.sr_sys < 0 ? k_short[s_roms[rom].type] : 0;
+	}
+	rows(rx, ly, rw, 51, s_rowtxt, S.sr_sys < 0 ? s_rowval : 0, k, S.sr_list ? S.sr_sel - S.sr_top : -1,
+	     &A.row, &A.rowf, &A.info);
+	list_marks(rx, ly, rw, S.sr_n, S.sr_top, S.sr_sel);
+	letter_badge(rx + rw / 2, ly + LIB_ROWS * 51 / 2);
 }
 
 /* the menu into its own layer (transparent around it); redrawn only when something changed */
@@ -1355,7 +1553,11 @@ static void ui_clear(void)
 }
 static void ui_compose(void)
 {
-	static const char *hc_games[2] = { "A", "LR" }, *hl_games[2] = { "Open library", "Section" };
+	static const char *hc_games[3] = { "A", "Y", "LR" }, *hl_games[3] = { "Open library", "Search", "Section" };
+	static const char *hc_kb[5] = { "A", "Y", "X", "R", "B" }, *hl_kb[5] = { "Type", "Delete", "Space", "Results", "Back" };
+	static const char *hc_kb0[4] = { "A", "Y", "X", "B" }, *hl_kb0[4] = { "Type", "Delete", "Space", "Back" };
+	static const char *hc_sr[2] = { "A", "B" }, *hl_sr[2] = { "Launch", "Keyboard" };
+	static const char *hc_lib3[4] = { "A", "Y", "LR", "B" }, *hl_lib3[4] = { "Launch", "Search", "A-Z", "Back" };
 	static const char *hc_res[2] = { "A", "LR" }, *hl_res[2] = { "Resume", "Section" };
 	static const char *hc_set[2] = { "A", "LR" }, *hl_set[2] = { "Select", "Section" };
 	static const char *hc_lib[2] = { "A", "B" }, *hl_lib[2] = { "Launch", "Back" };
@@ -1363,15 +1565,22 @@ static void ui_compose(void)
 	g_fb = (uint32_t *)CUR_UI_PA;
 	ui_clear();
 	g_track = 1;
-	if (S.lib) {
+	if (S.search) {
+		search_view();
+		header("Search");
+		if (S.sr_list) hints(hc_sr, hl_sr, 2);
+		else if (S.sr_n) hints(hc_kb, hl_kb, 5);
+		else hints(hc_kb0, hl_kb0, 4);   /* nothing found: no results to go to */
+	} else if (S.lib) {
 		library();
 		header("Game library");
-		hints(hc_lib, hl_lib, 2);
+		if (S.syscount[S.sys] > 3 * LIB_ROWS) hints(hc_lib3, hl_lib3, 4);
+		else hints(hc_lib, hl_lib, 2);
 	} else {
 		rail();
 		if (S.tab == TAB_GAMES) home_games(); else if (S.tab == TAB_RESUME) home_resume(); else home_settings();
 		header(S.tab == TAB_SETTINGS ? "Settings" : "Home");
-		if (S.tab == TAB_GAMES) hints(hc_games, hl_games, 2);
+		if (S.tab == TAB_GAMES) hints(hc_games, hl_games, 3);
 		else if (S.tab == TAB_RESUME) { if (S.nrec) hints(hc_res, hl_res, 2); else hints(hc_res + 1, hl_res + 1, 1); }
 		else if (S.set_page) hints(hc_sub, hl_sub, 2);
 		else hints(hc_set, hl_set, 2);
@@ -1390,8 +1599,8 @@ static void frame_render(void)
 	const uint32_t *ui = (const uint32_t *)CUR_UI_PA;
 	int i, y;
 	g_fb = frame_target();   /* the canvas itself when it is laid out like the frame */
-	backdrop(S.lib || S.tab != TAB_GAMES);
-	if (!S.lib && S.tab == TAB_GAMES && S.sys_t < 1) stage_draw();   /* the consoles crossfading */
+	backdrop(S.lib || S.search || S.tab != TAB_GAMES);
+	if (!S.lib && !S.search && S.tab == TAB_GAMES && S.sys_t < 1) stage_draw();   /* the consoles crossfading */
 	for (y = 0; y < g_H; y++)	/* premultiplied over, only where the menu layer was drawn */
 		for (i = y * g_W + s_ux0[y]; i < y * g_W + s_ux1[y]; i++) {
 			uint32_t u = ui[i], a = u >> 24, d, k;
@@ -1437,7 +1646,7 @@ static void backdrop_into(uint32_t *dst, unsigned int pitch)
 {
 	unsigned int y;
 	g_fb = (uint32_t *)CUR_FRAME_PA;
-	backdrop(S.lib || S.tab != TAB_GAMES);
+	backdrop(S.lib || S.search || S.tab != TAB_GAMES);
 	for (y = 0; y < (unsigned)g_H; y++) memcpy(dst + y * pitch, g_fb + y * (unsigned)g_W, (size_t)g_W * 4);
 }
 /* the reveal of the way back: the backdrop into the transition's snapshot (the menu comes over it) */
@@ -1487,15 +1696,54 @@ static void launch_arm(void)
 }
 
 /* ---- input ------------------------------------------------------------------------------------- */
-static struct { int prev[6]; float rep[6]; } K;   /* up down left right lb rb: held, repeat timer */
+static struct { int prev[6]; float rep[6], held[6]; } K;   /* up down left right lb rb: held, repeat timer, held for */
 /* a press, and repeats while held (0.32 s, then every 0.085 s) */
 static int fire(int i, int level, float dt)
 {
 	int f = 0;
-	if (level && !K.prev[i]) { f = 1; K.rep[i] = .32f; }
-	else if (level) { K.rep[i] -= dt; if (K.rep[i] <= 0) { f = 1; K.rep[i] = .085f; } }
+	if (level && !K.prev[i]) { f = 1; K.rep[i] = .32f; K.held[i] = 0; }
+	else if (level) { K.held[i] += dt; K.rep[i] -= dt; if (K.rep[i] <= 0) { f = 1; K.rep[i] = .085f; } }
+	else K.held[i] = 0;
 	K.prev[i] = level;
 	return f;
+}
+/* rows a held Up or Down moves at each repeat: one, then more the longer it is held, so a list of
+ * thousands is crossed in seconds */
+static int step_of(int i) { return K.held[i] > 2.4f ? 24 : K.held[i] > 1.2f ? 5 : 1; }
+
+/* the moves in a list of n (the focus, the first row shown); a long move shows its letter */
+static void list_move(const unsigned short *idx, int n, int *sel, int *top, int d)
+{
+	int v = *sel + d;
+	if (n <= 0) return;
+	if (v < 0) v = 0;
+	if (v > n - 1) v = n - 1;
+	*sel = v;
+	if (*sel < *top) *top = *sel;
+	if (*sel >= *top + LIB_ROWS) *top = *sel - LIB_ROWS + 1;
+	if (d > 1 || d < -1) { S.badge = gba_name_letter(s_names[idx[v]]); S.badge_t = .7f; }
+}
+/* to the first game of the next letter, or back to the first of this one (of the one before when
+ * already there): L and R in a list of more than a few pages */
+static void list_letter(const unsigned short *idx, int n, int *sel, int *top, int dir)
+{
+	int i = *sel;
+	char cur;
+	if (n <= 0) return;
+	cur = gba_name_letter(s_names[idx[i]]);
+	if (dir > 0) {
+		while (i < n - 1 && gba_name_letter(s_names[idx[i]]) == cur) i++;
+	} else {
+		if (i > 0 && gba_name_letter(s_names[idx[i - 1]]) != cur) i--;
+		cur = gba_name_letter(s_names[idx[i]]);
+		while (i > 0 && gba_name_letter(s_names[idx[i - 1]]) == cur) i--;
+	}
+	*sel = i;
+	if (*sel < *top) *top = *sel;
+	if (*sel >= *top + LIB_ROWS) *top = *sel;   /* a jump: the letter's first game at the top */
+	if (*top > n - LIB_ROWS) *top = n - LIB_ROWS > 0 ? n - LIB_ROWS : 0;
+	S.badge = gba_name_letter(s_names[idx[i]]);
+	S.badge_t = .7f;
 }
 
 /* ---- the run ----------------------------------------------------------------------------------- */
@@ -1505,7 +1753,7 @@ static void focus_rom(int rom)
 	if (s < 0) return;
 	S.sys = S.sys_from = s;
 	for (k = 0; k < S.syscount[s]; k++)
-		if (s_libidx[s][k] == rom) {
+		if (LIB(s)[k] == rom) {
 			S.lib_sel[s] = k;
 			if (k < S.lib_top[s] || k >= S.lib_top[s] + LIB_ROWS) S.lib_top[s] = k >= LIB_ROWS ? k - LIB_ROWS + 1 : 0;
 		}
@@ -1554,8 +1802,8 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 	art_load();
 	CUR_MARK(7);
 	colour_set(ayaneo_get_menu_colour());
-	s_roms = roms; s_nrom = nrom > 128 ? 128 : nrom;
-	roster_build();
+	s_roms = roms; s_nrom = nrom > PICO_GAMES_MAX ? PICO_GAMES_MAX : nrom;
+	if (roster_build() != 0) { ayaneo_set_cpu_mhz(saved_mhz); return -2; }
 	CUR_MARK(8);
 	if (!S.nsys) { ayaneo_set_cpu_mhz(saved_mhz); return -2; }
 	S.bg_key[0] = S.bg_key[1] = -1; S.pal_colour = -1;   /* the game took their memory */
@@ -1633,22 +1881,60 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 		}
 		gba_menu_av_poll();
 		{
-			static int pa, pb, pst;
+			static int pa, pb, pst, px, py;
 			int ea = in.a && !pa, eb = in.b && !pb, est = in.start && !pst;
 			int up = fire(0, in.up, dt), dn = fire(1, in.down, dt), lf = fire(2, in.left, dt), rt = fire(3, in.right, dt);
 			int lb = fire(4, in.lb, dt), rb = fire(5, in.rb, dt);
-			pa = in.a; pb = in.b; pst = in.start;
-			if (ea || eb || est || up || dn || lf || rt || lb || rb) dirty = 1;
-			if (S.lib) {
+			int ey = in.y && !py, ex = in.x && !px;
+			pa = in.a; pb = in.b; pst = in.start; px = in.x; py = in.y;
+			if (ea || eb || est || up || dn || lf || rt || lb || rb || ey || ex) dirty = 1;
+			if (S.search) {
+				if (!S.sr_list) {	/* the keyboard */
+					if (up && S.kb_r > 0) S.kb_r--;
+					if (dn && S.kb_r < KB_ROWS - 1) S.kb_r++;
+					if (lf) {
+						if (S.kb_r == 4) S.kb_c = kb_special(S.kb_c) == KB_CLEAR ? 4 : 0;
+						else if (S.kb_c > 0) S.kb_c--;
+					}
+					if (rt) {
+						int last = S.kb_r == 4 ? kb_special(S.kb_c) == KB_CLEAR : S.kb_c == 9;
+						if (last) { if (S.sr_n) S.sr_list = 1; }
+						else if (S.kb_r == 4) S.kb_c = kb_special(S.kb_c) == KB_SPACE ? 4 : 7;
+						else S.kb_c++;
+					}
+					if (ea) search_key(S.kb_r, S.kb_c);
+					if (ey) search_key(4, 4);          /* Y: delete */
+					if (ex) search_key(4, 0);          /* X: a space */
+					if ((rb || est) && S.sr_n) S.sr_list = 1;
+					if (eb) {	/* back where it was opened */
+						S.search = 0; S.lib = S.sr_from_lib; S.dip = .45f;
+					}
+				} else {	/* the results */
+					if (up) list_move(s_res, S.sr_n, &S.sr_sel, &S.sr_top, -step_of(0));
+					if (dn) list_move(s_res, S.sr_n, &S.sr_sel, &S.sr_top, step_of(1));
+					if (lb) list_move(s_res, S.sr_n, &S.sr_sel, &S.sr_top, -LIB_ROWS);
+					if (rb) list_move(s_res, S.sr_n, &S.sr_sel, &S.sr_top, LIB_ROWS);
+					if (lf || eb) S.sr_list = 0;
+					if (ey) { S.sr_list = 0; search_key(4, 4); }
+					if ((ea || est) && S.sr_n) {
+						rom = s_res[S.sr_sel];
+						S.search = 0; S.lib = 1;   /* back from the game: its library, on it */
+					}
+				}
+			} else if (S.lib) {
 				int s = S.sys, n = S.syscount[s];
-				if (up && S.lib_sel[s] > 0) S.lib_sel[s]--;
-				if (dn && S.lib_sel[s] < n - 1) S.lib_sel[s]++;
-				if (lb || lf) S.lib_sel[s] = S.lib_sel[s] > LIB_ROWS ? S.lib_sel[s] - LIB_ROWS : 0;
-				if (rb || rt) S.lib_sel[s] = S.lib_sel[s] + LIB_ROWS < n ? S.lib_sel[s] + LIB_ROWS : n - 1;
-				if (S.lib_sel[s] < S.lib_top[s]) S.lib_top[s] = S.lib_sel[s];
-				if (S.lib_sel[s] >= S.lib_top[s] + LIB_ROWS) S.lib_top[s] = S.lib_sel[s] - LIB_ROWS + 1;
-				if (eb) { S.lib = 0; S.dip = .6f; }
-				if (ea || est) rom = s_libidx[s][S.lib_sel[s]];
+				const unsigned short *ix = LIB(s);
+				if (up) list_move(ix, n, &S.lib_sel[s], &S.lib_top[s], -step_of(0));
+				if (dn) list_move(ix, n, &S.lib_sel[s], &S.lib_top[s], step_of(1));
+				if (lf) list_move(ix, n, &S.lib_sel[s], &S.lib_top[s], -LIB_ROWS);
+				if (rt) list_move(ix, n, &S.lib_sel[s], &S.lib_top[s], LIB_ROWS);
+				if (lb || rb) {	/* a long list: letter by letter; a short one: a page */
+					if (n > 3 * LIB_ROWS) list_letter(ix, n, &S.lib_sel[s], &S.lib_top[s], rb ? 1 : -1);
+					else list_move(ix, n, &S.lib_sel[s], &S.lib_top[s], rb ? LIB_ROWS : -LIB_ROWS);
+				}
+				if (ey) { search_open(s, 1); S.lib = 0; }
+				else if (eb) { S.lib = 0; S.dip = .6f; }
+				else if (ea || est) rom = LIB(s)[S.lib_sel[s]];
 			} else {
 				if (lb && S.tab > 0) { S.tab--; S.dip = .45f; }
 				if (rb && S.tab < 2) { S.tab++; S.dip = .45f; }
@@ -1664,6 +1950,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 						S.push += 1.2f * (float)(to > S.sys_from ? 1 : -1);   /* the current moves on with it */
 					}
 					if (ea || est) { S.lib = 1; S.dip = .6f; S.sys_from = S.sys; S.sys_t = 1; }
+					else if (ey) { S.sys_from = S.sys; S.sys_t = 1; search_open(-1, 0); }
 				} else if (S.tab == TAB_RESUME) {
 					if (up && S.res_sel > 0) S.res_sel--;
 					if (dn && S.res_sel < S.nrec - 1) S.res_sel++;
@@ -1746,6 +2033,11 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 		}
 		if (S.sys_t < 1) { S.sys_t += dt / .46f; if (S.sys_t >= 1) { S.sys_t = 1; S.sys_from = S.sys; dirty = 1; } }
 		if (S.dip > 0) { S.dip -= dt / .28f; if (S.dip <= 0) { S.dip = 0; dirty = 1; } }
+		/* the badge stays whole, then goes: no fade, which would draw the menu again every frame */
+		if (S.badge_t > 0) { S.badge_t -= dt; if (S.badge_t <= 0) { S.badge_t = 0; dirty = 1; } }
+		/* a box art read a frame, none while a held key runs fast through a list (the art of the
+		 * games it passes would hold every frame up): it comes as the list slows */
+		gba_menu_boxart_budget(K.held[0] > 1.2f || K.held[1] > 1.2f ? 0 : 1);
 
 		/* the current drifts (0.9 rad/s, the design's pace) and takes up a system move's push */
 		{
@@ -1761,7 +2053,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 			unsigned int r0 = gpt4_get_current_tick(), us;
 			if (dirty || rom >= 0) {
 				unsigned int c0 = gpt4_get_current_tick();
-				ui_compose(); dirty = 0;
+				ui_compose(); dirty = gba_menu_boxart_pending();   /* art still to come: drawn again */
 				g_perf[4] = gpt4_get_current_tick() - c0;   /* oem diag rest: the last menu redraw */
 			}
 			frame_render();

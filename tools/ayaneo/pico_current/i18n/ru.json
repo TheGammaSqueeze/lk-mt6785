@@ -203,5 +203,15 @@
  "Played %s": "Время в игре: %s",
  "Last played %s": "Последний запуск: %s",
  "today": "сегодня",
- "yesterday": "вчера"
+ "yesterday": "вчера",
+ "Search": "Поиск",
+ "All systems": "Все системы",
+ "Type a name": "Введите название",
+ "No games found": "Игры не найдены",
+ "Type": "Ввод",
+ "Delete": "Стереть",
+ "Space": "Пробел",
+ "Clear": "Очистить",
+ "Results": "Результаты",
+ "Keyboard": "Клавиатура"
 }

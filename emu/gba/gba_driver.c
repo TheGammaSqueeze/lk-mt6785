@@ -2250,7 +2250,21 @@ static void sd_bg_wait(void);   /* fast boot path: wait for the card listing (de
 static unsigned char s_sd_bios[16384];
 static int s_have_bios;   /* the card has a GBA BIOS: the intro plays, and gpSP can run */
 static fat_vol s_sd_vol;
-static gba_rom_entry s_roms[128];   /* enumerated /roms/gba, sorted (task d/e) */
+/* the games on the card, sorted (sd_fat.c); in the library window, PICO_GAMES_MAX of them, and
+ * a handful here when that window is missing, so the menu still lists a few */
+#include "pico_libmem.h"
+static gba_rom_entry s_roms_few[16];
+static gba_rom_entry *s_roms = s_roms_few;
+static int s_roms_cap = 16;
+static void roms_alloc(void)
+{
+	static int s_tried;
+	gba_rom_entry *p;
+	if (s_tried) return;
+	s_tried = 1;
+	p = (gba_rom_entry *)pico_lib_alloc(PICO_GAMES_MAX * (unsigned)sizeof(gba_rom_entry));
+	if (p) { s_roms = p; s_roms_cap = PICO_GAMES_MAX; }
+}
 static int s_nrom;
 
 /* GB/GBC games run through the gambatte core blob (gbc_sd_run.c); it reuses the gpSP
@@ -2829,7 +2843,8 @@ static int sd_bg_thread(void *arg)
 	int total = 0;
 	(void)arg;
 	gba_sd_make_rom_dirs(&s_sd_vol);
-	s_nrom = gba_sd_list_roms(&s_sd_vol, s_roms, 128, &total);
+	roms_alloc();
+	s_nrom = gba_sd_list_roms(&s_sd_vol, s_roms, s_roms_cap, &total);
 	g_dbg_bt_list = BT_MS();
 	cart_header_refresh();
 	s_sd_bg_state = 1;
@@ -4096,7 +4111,8 @@ int ayaneo_gba_sd_boot(void)
 		/* first boot of this card (no header file yet): list first, so the intro has the logo */
 		int total = 0;
 		gba_sd_make_rom_dirs(&s_sd_vol);
-		s_nrom = gba_sd_list_roms(&s_sd_vol, s_roms, 128, &total);
+		roms_alloc();
+		s_nrom = gba_sd_list_roms(&s_sd_vol, s_roms, s_roms_cap, &total);
 		g_dbg_bt_list = BT_MS();
 		if (total > s_nrom)
 			GBA_LOG("gba-sd: WARNING %d roms present, showing first %d (cap)\n", total, s_nrom);

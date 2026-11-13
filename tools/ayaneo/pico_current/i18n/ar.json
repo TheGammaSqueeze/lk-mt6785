@@ -206,5 +206,15 @@
  "Played %s": "مدة اللعب: %s",
  "Last played %s": "آخر لعب: %s",
  "today": "اليوم",
- "yesterday": "أمس"
+ "yesterday": "أمس",
+ "Search": "بحث",
+ "All systems": "كل الأنظمة",
+ "Type a name": "اكتب اسما",
+ "No games found": "لا توجد ألعاب",
+ "Type": "كتابة",
+ "Delete": "حذف",
+ "Space": "مسافة",
+ "Clear": "مسح الكل",
+ "Results": "النتائج",
+ "Keyboard": "لوحة المفاتيح"
 }

@@ -202,5 +202,15 @@
  "Played %s": "Spielzeit: %s",
  "Last played %s": "Zuletzt gespielt: %s",
  "today": "heute",
- "yesterday": "gestern"
+ "yesterday": "gestern",
+ "Search": "Suche",
+ "All systems": "Alle Systeme",
+ "Type a name": "Namen eingeben",
+ "No games found": "Keine Spiele gefunden",
+ "Type": "Eingeben",
+ "Delete": "Löschen",
+ "Space": "Leerzeichen",
+ "Clear": "Leeren",
+ "Results": "Ergebnisse",
+ "Keyboard": "Tastatur"
 }

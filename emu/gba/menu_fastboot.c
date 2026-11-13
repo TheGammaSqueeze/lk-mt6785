@@ -552,7 +552,7 @@ static void cmd_snes_ra(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem launch - force-launch the focused ROM; oem nav:<L R U D A B S T [ ]> - inject one
+/* oem launch - force-launch the focused ROM; oem nav:<L R U D A B S T [ ] X Y> - inject one
  * clean nav press + report the peak render us for that movement (reset first) so the
  * flicker campaign can measure any state. g_dbg_force_launch when arg is empty. */
 extern volatile int g_dbg_key, g_dbg_key_hold, g_dbg_peak_reset, g_dbg_force_launch;
@@ -568,7 +568,7 @@ static void cmd_igm(const char *arg, void *data, unsigned sz)
 }
 static void cmd_nav(const char *arg, void *data, unsigned sz)
 {
-	static const char K[] = "LRUDABST[]";   /* codes 0..9 */
+	static const char K[] = "LRUDABST[]XY";   /* codes 0..11 */
 	int code = -1, i;
 	char c;
 	(void)data; (void)sz;
@@ -576,7 +576,7 @@ static void cmd_nav(const char *arg, void *data, unsigned sz)
 	c = *arg;
 	if (c == '!') { g_dbg_force_launch = 1; thread_sleep(300); fastboot_okay(""); return; }
 	if (c >= 'a' && c <= 'z') c -= 32;
-	for (i = 0; i < 10; i++) if (K[i] == c) { code = i; break; }
+	for (i = 0; i < 12; i++) if (K[i] == c) { code = i; break; }
 	if (code < 0) { fastboot_okay(""); return; }
 	/* nav:R:600 holds the key for 600 frames (10 s) so a sustained scroll can be measured
 	 * with oem diag while it runs; the default 7 is one tap. */
@@ -1733,6 +1733,17 @@ static void cmd_sd_ls(const char *arg, void *data, unsigned sz)
 	}
 	fastboot_okay("");
 }
+/* oem sd-check - every cluster on the card used by at most one file? (sd_check.c) */
+static void cmd_sd_check(const char *arg, void *data, unsigned sz)
+{
+	extern void *gba_sd_menu_vol(void);
+	extern int sd_check_run(fat_vol *v, void (*out)(const char *line));
+	fat_vol *v = (fat_vol *)gba_sd_menu_vol();
+	(void)arg; (void)data; (void)sz;
+	if (!v) { fastboot_fail("sd-check: no card in use"); return; }
+	sd_check_run(v, fastboot_info);
+	fastboot_okay("");
+}
 /* oem sd-rm:/path[#N] - delete a file, or an empty folder, on the card (on the menu's own volume,
  * so its FAT cache stays true); #N picks the N-th of several entries of that name */
 static void cmd_sd_rm(const char *arg, void *data, unsigned sz)
@@ -2671,6 +2682,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem resumeinfo", cmd_resumeinfo, 1, 0);
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
+	fastboot_register("oem sd-check", cmd_sd_check, 1, 0);
 	fastboot_register("oem sd-rm:", cmd_sd_rm, 1, 0);
 #if defined(KONKR_KPA)
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);

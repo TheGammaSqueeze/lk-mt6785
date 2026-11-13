@@ -1,4 +1,5 @@
 #include "snes_menu.h"
+#include "gba_name.h"        /* gba_name_letter: the jump between letters */
 #include "../pico_i18n.h"   /* tr(): the GammaOS words the authored tables do not carry */
 #include <string.h>       /* strcmp / memcpy (LK provides these via lib/libc) */
 
@@ -207,6 +208,12 @@ static const char *game_name(const snes_menu *m, int i)
 	i = ((i % n) + n) % n;
 	if (m->gba_mode) return m->gba_names ? m->gba_names[m->order[i]] : "";
 	return snes_str(m->pk, game_raw(m->pk, m->order[i])->name);
+}
+/* game gidx's box art, w=0 for none: through the caller's loader when it has one */
+static const snes_img_entry *gba_art(snes_menu *m, int gidx)
+{
+	if (m->gba_art_get) return m->gba_art_get(m, gidx);
+	return m->gba_boxart ? &m->gba_boxart[gidx] : 0;
 }
 static int str_cmp(const snes_pack *p, uint32_t a, uint32_t b)
 {
@@ -866,8 +873,9 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		 * order[gi], so a re-sort maps a slot to a different ROM's box front. */
 		if (m->gba_boxart && m->ngames > 0) {
 			int gidx = m->order[((gi % m->ngames) + m->ngames) % m->ngames];
-			if (m->gba_boxart[gidx].w) {
-				im = &m->gba_boxart[gidx];
+			const snes_img_entry *a = gba_art(m, gidx);
+			if (a && a->w) {
+				im = a;
 				impk = m->gba_boxart_pk ? m->gba_boxart_pk : m->pk;
 			}
 		}
@@ -1043,9 +1051,10 @@ static const uint32_t *fct_get(snes_menu *m, int gi)
 	}
 	tile = m->fct + (unsigned)slot * CT_PIX;
 	if (m->fct_key[slot] != want) {
+		m->gba_art_deferred = 0;
 		render_card_tile(m, gi, tile, 1.0f);         /* blue_a=1 -> active body */
 		g_perf_xf[1]++;
-		m->fct_key[slot] = want;
+		m->fct_key[slot] = m->gba_art_deferred ? -1 : want;   /* drawn without its art yet: again */
 		m->fct_ready = 1; m->fct_gi = want;
 	}
 	return tile;
@@ -1122,9 +1131,10 @@ static const uint32_t *ctile_get(snes_menu *m, int gi)
 		slot = gi % m->ctile_cap; if (slot < 0) slot += m->ctile_cap;
 	}
 	if (m->ctile_gi[slot] != gi) {
+		m->gba_art_deferred = 0;
 		render_card_tile(m, gi, m->ctile + (unsigned)slot * CT_PIX, 0.0f);
 		g_perf_xf[0]++;
-		m->ctile_gi[slot] = gi;
+		m->ctile_gi[slot] = m->gba_art_deferred ? -1 : gi;   /* drawn without its art yet: again */
 	}
 	return m->ctile + (unsigned)slot * CT_PIX;
 }
@@ -1176,7 +1186,7 @@ void snes_menu_set_gba_roster(snes_menu *m, const char *const *names, int n,
 {
 	int i;
 	if (n < 0) n = 0;
-	if (n > 128) n = 128;
+	if (n > m->order_cap) n = m->order_cap;
 	m->gba_mode = 1;
 	m->gba_names = names;
 	m->gba_cart_img = cart;
@@ -1187,6 +1197,13 @@ void snes_menu_set_gba_roster(snes_menu *m, const char *const *names, int n,
 	/* the card-tile cache keys by game index; a roster change invalidates it */
 	m->ctile_aspect = -1;
 	if (m->ctile_gi) for (i = 0; i < m->ctile_cap; i++) m->ctile_gi[i] = -1;
+}
+
+void snes_menu_set_order(snes_menu *m, unsigned short *buf, int cap)
+{
+	if (buf && cap > 0) { m->order = buf; m->order_cap = cap; }
+	else { m->order = m->order_own; m->order_cap = 128; }
+	if (m->ngames > m->order_cap) m->ngames = m->order_cap;
 }
 
 void snes_menu_set_gba_boxart(snes_menu *m, const snes_img_entry *img, const snes_pack *pk)
@@ -1409,8 +1426,9 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
 			const snes_pack *cpk = m->pk;
 			if (m->gba_boxart && n > 0) {
 				int gidx = m->order[((i % n) + n) % n];
-				if (m->gba_boxart[gidx].w) {
-					ci = &m->gba_boxart[gidx];
+				const snes_img_entry *a = gba_art(m, gidx);
+				if (a && a->w) {
+					ci = a;
 					cpk = m->gba_boxart_pk ? m->gba_boxart_pk : m->pk;
 				}
 			}
@@ -1876,6 +1894,8 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	unsigned i;
 	/* zero the struct fields we rely on */
 	m->pk = pk; m->wp = wp; m->wp_ready = 0; m->scroll = 0;
+	if (!m->order) { m->order = m->order_own; m->order_cap = 128; }
+	m->gba_art_get = 0; m->gba_art_deferred = 0;
 	m->wp43 = 0; m->wp43_ready = 0;
 	m->rcache = 0; m->rcache_ready = 0; m->rcache_sel = -1e9f;
 	m->sub_ready = 0; m->sub_key = 0; m->sub_op0 = 0; m->sub_op1 = 0;
@@ -2156,7 +2176,7 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->open_y = 0.0f; m->closing = 0; m->close_t = 0.0f; m->close_target = 0.0f; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f;
 	/* roster order (title sort by default) */
 	m->ngames = (int)pk->hdr->game_count;
-	if (m->ngames > 128) m->ngames = 128;
+	if (m->ngames > m->order_cap) m->ngames = m->order_cap;
 	for (i = 0; i < (unsigned)m->ngames; i++) m->order[i] = (unsigned short)i;
 	m->sort_rule = 0; m->sort_label_t = 0;
 	apply_sort(m);
@@ -2254,6 +2274,26 @@ static void car_navigate(snes_menu *m, int dir)
  * A55 (no live crossfade/scroll) and the filmstrip window follows the new focus. */
 #define CAR_PAGE       10
 #define CAR_JUMP_RATE  0.22f
+static void car_jump(snes_menu *m, int delta);
+/* L/R in a long roster (more than a few pages): to the first card of the next letter, or back to
+ * the first of this one (of the one before when already there), in the order shown */
+#define CAR_LETTER_MIN (3 * CAR_PAGE)
+static void car_letter(snes_menu *m, int dir)
+{
+	int n = m->ngames, f = ((m->focus % n) + n) % n, i, k;
+	char cur = gba_name_letter(game_name(m, f));
+	if (dir > 0) {
+		for (k = 1; k < n; k++) if (gba_name_letter(game_name(m, (f + k) % n)) != cur) break;
+		i = k < n ? (f + k) % n : f;
+	} else {
+		i = f;
+		if (i > 0 && gba_name_letter(game_name(m, i - 1)) != cur) i = (i - 1 + n) % n;   /* at its start: the one before */
+		else if (i == 0) i = n - 1;
+		cur = gba_name_letter(game_name(m, i));
+		while (i > 0 && gba_name_letter(game_name(m, i - 1)) == cur) i--;
+	}
+	if (i != f) car_jump(m, i - f);
+}
 static void car_jump(snes_menu *m, int delta)
 {
 	int n = m->ngames, nf, mag;
@@ -2658,8 +2698,16 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		if (m->gba_mode) {
 			int jdir = in->rb ? 1 : (in->lb ? -1 : 0);
 			if (jdir == 0) { m->jmp_dir = 0; m->jmp_t = 0.0f; }
-			else if (jdir != m->jmp_dir) { m->jmp_dir = jdir; m->jmp_t = 0.0f; car_jump(m, jdir * CAR_PAGE); }
-			else { m->jmp_t += dt; while (m->jmp_t >= CAR_JUMP_RATE) { m->jmp_t -= CAR_JUMP_RATE; car_jump(m, jdir * CAR_PAGE); } }
+			else if (jdir != m->jmp_dir) {
+				m->jmp_dir = jdir; m->jmp_t = 0.0f;
+				if (m->ngames > CAR_LETTER_MIN) car_letter(m, jdir); else car_jump(m, jdir * CAR_PAGE);
+			} else {
+				m->jmp_t += dt;
+				while (m->jmp_t >= CAR_JUMP_RATE) {
+					m->jmp_t -= CAR_JUMP_RATE;
+					if (m->ngames > CAR_LETTER_MIN) car_letter(m, jdir); else car_jump(m, jdir * CAR_PAGE);
+				}
+			}
 		}
 		if (eu) { m->state = 1; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; m->cur_slide_t = 0.0f; push_snd(m, m->sfx_up); }
 		if (ed && m->resume) {                 /* Down -> suspend-point menu */

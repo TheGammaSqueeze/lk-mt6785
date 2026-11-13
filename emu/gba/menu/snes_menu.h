@@ -14,9 +14,10 @@
 typedef struct {
 	int left, right, up, down, a, b, start, select;   /* level: 1 = pressed */
 	int lb, rb;                                       /* L/R shoulder: page jump */
+	int x, y;                                         /* the face buttons (the Current theme's search) */
 } snes_input;
 
-typedef struct {
+typedef struct snes_menu_s {
 	const snes_pack *pk;
 	snes_scene home, bg;
 	snes_rnode *wall;
@@ -90,8 +91,11 @@ typedef struct {
 	float cap_s;                  /* menubar caption scale, eases 0->1 (outExpo, after delay) */
 	float hl_s;                   /* menubar focus highlight (cursor) scale, eases 0->1 fast */
 
-	/* roster sort: order[] indirects the carousel/filmstrip into the game table */
-	unsigned short order[128];
+	/* roster sort: order[] indirects the carousel/filmstrip into the game table. Its own
+	 * 128 for the pack's games; a GBA roster of thousands brings its own (snes_menu_set_order) */
+	unsigned short *order;
+	int order_cap;
+	unsigned short order_own[128];
 	int ngames;
 	int sort_rule;                /* 0 title, 1 publisher, 2 players, 3 release */
 	float sort_label_t;           /* seconds remaining to show the sort-name label */
@@ -205,6 +209,11 @@ typedef struct {
 	 * cache keeps its single-shared-tile fast path). */
 	const snes_img_entry *gba_boxart;
 	const snes_pack *gba_boxart_pk;
+	/* Optional: game gidx's box art from the caller, who loads it when it is needed (a library
+	 * of thousands holds only some in memory). Art not in memory yet comes back w=0 with
+	 * gba_art_deferred set, and the tile drawn with the placeholder is then not kept. */
+	const snes_img_entry *(*gba_art_get)(struct snes_menu_s *m, int gidx);
+	int gba_art_deferred;
 	/* Per-ROM console type (0=GB, 1=GBC, 2=GBA; indexed by game index) and the three
 	 * console-badge logos, drawn bottom-right of each card. gba_types=0 -> no badge. */
 	const unsigned char *gba_types;
@@ -223,6 +232,8 @@ void snes_menu_set_gba_roster(snes_menu *m, const char *const *names, int n,
  * "no art, use the placeholder"), resolved against pack pk (the DRAM region the SD
  * .ART tiles were decoded into). Pass img=0 to revert to the shared placeholder. */
 void snes_menu_set_gba_boxart(snes_menu *m, const snes_img_entry *img, const snes_pack *pk);
+/* Hand the GBA roster an order array of its own, cap entries (the built-in one holds 128). */
+void snes_menu_set_order(snes_menu *m, unsigned short *buf, int cap);
 /* Provide per-ROM console types (types[0..ngames), values GBA_CONSOLE_*) and the
  * badge logos (gb/gbc/gba/snes, any may be 0). The correct badge is drawn in the
  * bottom-right of each card. Pass types=0 to disable badges. */

@@ -199,5 +199,15 @@
  "Played %s": "Oynama süresi: %s",
  "Last played %s": "Son oynama: %s",
  "today": "bugün",
- "yesterday": "dün"
+ "yesterday": "dün",
+ "Search": "Ara",
+ "All systems": "Tüm sistemler",
+ "Type a name": "Bir ad yazın",
+ "No games found": "Oyun bulunamadı",
+ "Type": "Yaz",
+ "Delete": "Sil",
+ "Space": "Boşluk",
+ "Clear": "Temizle",
+ "Results": "Sonuçlar",
+ "Keyboard": "Klavye"
 }

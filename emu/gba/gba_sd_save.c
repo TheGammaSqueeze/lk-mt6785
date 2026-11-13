@@ -37,6 +37,10 @@ static void base_ext_mode(const char *rom, const char *ext, char *out, int cap, 
 	out[k] = 0;
 }
 static void base_ext(const char *rom, const char *ext, char *out, int cap) { base_ext_mode(rom, ext, out, cap, 0); }
+void gba_sd_file_name(const char *rom, const char *ext, char *out, int cap, int legacy)
+{
+	base_ext_mode(rom, ext, out, cap, legacy);
+}
 
 static uint32_t read_one(fat_vol *v, const char *dir, const char *nm, unsigned char *dst, uint32_t cap)
 {

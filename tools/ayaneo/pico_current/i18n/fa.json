@@ -202,5 +202,15 @@
  "Played %s": "زمان بازی: %s",
  "Last played %s": "آخرین بازی: %s",
  "today": "امروز",
- "yesterday": "دیروز"
+ "yesterday": "دیروز",
+ "Search": "جستجو",
+ "All systems": "همه سیستم ها",
+ "Type a name": "نامی بنویسید",
+ "No games found": "بازی ای پیدا نشد",
+ "Type": "تایپ",
+ "Delete": "حذف",
+ "Space": "فاصله",
+ "Clear": "پاک کردن",
+ "Results": "نتایج",
+ "Keyboard": "صفحه کلید"
 }

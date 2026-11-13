@@ -17,6 +17,10 @@ uint32_t gba_sd_read_named(fat_vol *v, const char *dir, const char *romname,
 int gba_sd_write_named(fat_vol *v, const char *dir, const char *romname,
 		       const char *ext, const void *buf, uint32_t len);
 
+/* The file name <rombase>.<ext> the reads and writes above use for a game (legacy: the older form
+ * that cut the name at its last dot, whatever followed it). */
+void gba_sd_file_name(const char *rom, const char *ext, char *out, int cap, int legacy);
+
 /* Convenience wrappers for the fixed layout. slot 0..9 -> ".st0".."st9". */
 uint32_t gba_sd_load_sav(fat_vol *v, const char *rom, unsigned char *dst, uint32_t cap);
 int      gba_sd_write_sav(fat_vol *v, const char *rom, const void *buf, uint32_t len);

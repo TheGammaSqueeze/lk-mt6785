@@ -33,4 +33,17 @@ static void gba_clean_name(const char *nm, char *dst)
 	if (L == 0) { dst[0] = 0; }                            /* keep at least "" */
 }
 
+/* The letter a name files under in a long list: its first letter or digit, capitals; '#' for a
+ * name that starts with a digit or has neither (the jump between letters, its badge). */
+static inline char gba_name_letter(const char *s)
+{
+	for (; *s; s++) {
+		char c = *s;
+		if (c >= 'a' && c <= 'z') return (char)(c - 32);
+		if (c >= 'A' && c <= 'Z') return c;
+		if (c >= '0' && c <= '9') return '#';
+	}
+	return '#';
+}
+
 #endif /* GBA_NAME_H */

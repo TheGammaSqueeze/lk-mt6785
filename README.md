@@ -35,6 +35,9 @@ bootloader, before any operating system, and owns the hardware outright.
   `<folder>/roms/<system>/`, with the usual folder names (`gba`, `snes`, `megadrive`,
   `mastersystem`, `gamegear` and so on). Drop a PNG cover named like the game into a `boxart`
   folder beside it and the console sizes it for the menu at the next power on.
+- **Made for big libraries.** Tens of thousands of games list in moments. Hold a direction to
+  speed through a library, jump letter by letter with L / R, or press Y to search by name, in one
+  system or all of them, with an on-screen keyboard. Box art loads as you reach it.
 - **The good stuff from the start.** Rewind, fast forward, save states (written to the card while
   the game plays on), scanline and LCD filters, colour correction and backlight black frame
   insertion, in a box art menu: the Current theme, with the Classic and GBA Indigo themes in beta.
@@ -116,7 +119,7 @@ Every menu is in the language chosen in Settings.
 
 | Tab | What it holds |
 |---|---|
-| Games | the systems on the card, each with its console and logo; Left / Right move between systems, A opens a system's library (its games with their box art, how long each has been played and when last), where L / R page through a long list |
+| Games | the systems on the card, each with its console and logo; Left / Right move between systems, A opens a system's library (its games with their box art, how long each has been played and when last), where holding Up / Down speeds up, Left / Right turn a page and L / R jump from letter to letter; Y searches the system (or, on this page, every system) with an on-screen keyboard |
 | Resume | the games played most recently, newest first, to carry on with one press |
 | Settings | the console settings below |
 
@@ -167,6 +170,7 @@ pixel perfect, and the Theme row), Options (Mute BIOS Audio, Mute Menu Audio, bu
 Boot to Android),
 Language (English, French, German, Spanish, Italian, Dutch, Portuguese, Russian; the others leave
 it in English), Legal notices and the manual. Suspend points are made when you reset a game.
+X shows one system at a time; in a long carousel L / R jump from letter to letter.
 
 ## Install
 

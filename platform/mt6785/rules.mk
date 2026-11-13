@@ -392,6 +392,8 @@ OBJS += emu/gba/menu_fastboot.o
 OBJS += emu/gba/card_writer.o		# in-game saves written to the card off the game's thread
 OBJS += emu/gba/pico_clock.o emu/gba/pico_stats.o	# the date and time, play time
 OBJS += emu/gba/pico_png.o emu/gba/pico_artimport.o	# box art put on the card as PNG
+OBJS += emu/gba/pico_libmem.o	# the game library's memory
+OBJS += emu/gba/sd_check.o	# oem sd-check: the card's clusters each used once
 # The cores are loadable blobs on the SD card (/cores/*.blob, built in their own -pico repos);
 # lk_a carries only the loader and the session runner (video, input, audio) for each.
 OBJS += emu/gbc/gbc_core_loader.o

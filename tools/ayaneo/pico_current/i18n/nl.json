@@ -202,5 +202,15 @@
  "Played %s": "Speeltijd: %s",
  "Last played %s": "Laatst gespeeld: %s",
  "today": "vandaag",
- "yesterday": "gisteren"
+ "yesterday": "gisteren",
+ "Search": "Zoeken",
+ "All systems": "Alle systemen",
+ "Type a name": "Typ een naam",
+ "No games found": "Geen games gevonden",
+ "Type": "Typen",
+ "Delete": "Wissen",
+ "Space": "Spatie",
+ "Clear": "Leegmaken",
+ "Results": "Resultaten",
+ "Keyboard": "Toetsenbord"
 }

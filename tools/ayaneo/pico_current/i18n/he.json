@@ -203,5 +203,15 @@
  "Played %s": "זמן משחק: %s",
  "Last played %s": "שוחק לאחרונה: %s",
  "today": "היום",
- "yesterday": "אתמול"
+ "yesterday": "אתמול",
+ "Search": "חיפוש",
+ "All systems": "כל המערכות",
+ "Type a name": "הקלידו שם",
+ "No games found": "לא נמצאו משחקים",
+ "Type": "הקלדה",
+ "Delete": "מחיקה",
+ "Space": "רווח",
+ "Clear": "ניקוי",
+ "Results": "תוצאות",
+ "Keyboard": "מקלדת"
 }

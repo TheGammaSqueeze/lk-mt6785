@@ -22,6 +22,8 @@
 #include "menu/snes_audio.h"
 #include "menu/gba_name.h"          /* gba_clean_name (shared with host_render) */
 #include "sd_fat.h"                 /* gba_rom_entry */
+#include "gba_boxart.h"             /* gba_boxart_decode */
+#include "pico_libmem.h"            /* the roster's tables, PICO_GAMES_MAX */
 #include "gba_boxart_sd.h"          /* gba_boxart_load_sd */
 #include "pico_artimport.h"         /* pico_artimport_run */
 #include "pico_i18n.h"              /* the menus' languages */
@@ -186,6 +188,7 @@ extern int  mt_get_gpio_in(unsigned pin);
 #define K_LB 92    /* GBA L shoulder = page jump back */
 #define K_RB 81    /* GBA R shoulder = page jump forward */
 #define K_X  84    /* the cap the user reads as X in the carousel = cycle the system filter */
+#define K_Y  85    /* Y (the menus' search) */
 #define PRESSED(g) (mt_get_gpio_in(GP(g)) == 0)
 
 extern int pmic_detect_powerkey(void);
@@ -340,8 +343,8 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
 #define SNES_CTILE2_PA   0x54A80000u /* enlarged card-tile cache (12 * 320*360*4 = 5.4MB) */
 #define SNES_CTILE2_CAP  12
 #endif
-/* Per-ROM box art, one slot for every game the list holds (128). The gap between the transition
- * buffers above held only 20, and the games past the 20th drew the plain cartridge. The slots sit
+/* Per-ROM box art: 128 slots, a cache over the library (a card can hold thousands of games), each
+ * game's art read into one when a menu shows it (gba_menu_boxart). The slots sit
  * right above the emulator scratch, in DRAM the preloader leaves free (0x56000000..0x7D000000, oem
  * meminfo), outside the window the LK maps at boot: mapped write-back on the menu's first entry.
  * The rewind ring maps the free DRAM above REWIND_SCRATCH_END (ayaneo_rewind.c), which starts past
@@ -381,23 +384,36 @@ static int s_show_hud;   /* perf HUD off by default; Start+Select toggles it */
 static int s_hud_combo;  /* edge-latch for the toggle combo */
 static short s_mixbuf[16384 * 2];
 
-/* roster name storage (stripped ".gba"), + a pointer table for the menu */
-static char          s_names[128][128];
-static const char   *s_nameptr[128];
-static unsigned char s_types[128];   /* per-ROM console type (GBA_CONSOLE_*) for badges */
+/* The roster's tables, sized for the library (PICO_GAMES_MAX, in its window): the cleaned names
+ * and a pointer table for the menu, the console types. */
+static char          (*s_names)[128];
+static const char   **s_nameptr;
+static unsigned char *s_types;      /* per-ROM console type (GBA_CONSOLE_*) for badges */
 
 /* System filter (press X to cycle All -> each present system -> All). The menu is fed a
  * FILTERED VIEW of the roster; s_vmap maps a view index back to the full roms[] index so a
- * launch returns the right game. The view name/type/boxart tables are compact copies of the
- * full s_nameptr / s_types / s_boxart_full tables. */
-static const char    *s_vnameptr[128];
-static unsigned char  s_vtypes[128];
-static snes_img_entry s_vboxart[128];
-static unsigned short s_vmap[128];
+ * launch returns the right game. The view name/type tables are compact copies of the full
+ * s_nameptr / s_types tables; the box art comes through classic_art. */
+static const char   **s_vnameptr;
+static unsigned char *s_vtypes;
+static snes_img_entry *s_vboxart;   /* all w=0: marks per-ROM art for the menu, read through classic_art */
+static unsigned short *s_vmap;
+static unsigned short *s_vorder;    /* the menu's order array */
 static int            s_vn;                 /* games in the current view */
 static int            s_sysfilter = -1;     /* -1 = All, else a GBA_CONSOLE_* value */
-static snes_img_entry s_boxart_full[128];   /* full per-ROM boxart, indexed by roms[] */
-static unsigned int   s_boxart_key[128];    /* what slot i holds: the ROM's key, 0 = not tried */
+/* Box art of every game: where its .ART is on the card (found once a power on by art_index, so
+ * reading one is a run of clusters, no folder walk), and the slot holding it, if any. */
+struct art_loc { uint32_t clus, size; uint8_t nofat, state; uint16_t slot; };
+enum { ART_UNKNOWN, ART_NONE, ART_CARD };   /* not indexed (read through the folder), none, on the card */
+#define ART_NO_SLOT 0xFFFFu
+static struct art_loc *s_art;
+static snes_img_entry *s_boxart_full;       /* per game: its art in a slot, w=0 when not in memory */
+static int            s_slot_game[SNES_BOXART_CAP];   /* the game each slot holds, -1 none */
+static unsigned int   s_slot_stamp[SNES_BOXART_CAP], s_art_clock;
+static int            s_art_n;              /* the games the tables describe */
+static unsigned int   s_art_sig;            /* and the list they were made for */
+static int            s_art_budget = 1;     /* art reads allowed in this frame (gba_menu_boxart_budget) */
+static int            s_art_pending;        /* a menu asked for art past the budget: draw again */
 volatile unsigned int g_dbg_boxart_ms;      /* oem diag: the last box art load, ms */
 static snes_pack      s_boxart_full_pk;
 static int            s_have_boxart;
@@ -537,10 +553,28 @@ static void theme_apply(void)
  * font also lacks '(' ')' ',' glyphs, so these would render as gaps). Trailing
  * spaces are trimmed. dst holds up to 128 chars. */
 /* Build the display-name table from the SD roster (cleaned titles). */
+static int tables_alloc(void)
+{
+	static int s_ok = -1;
+	if (s_ok >= 0) return s_ok;
+	s_names = (char (*)[128])pico_lib_alloc(PICO_GAMES_MAX * 128u);
+	s_nameptr = (const char **)pico_lib_alloc(PICO_GAMES_MAX * (unsigned)sizeof(char *));
+	s_types = (unsigned char *)pico_lib_alloc(PICO_GAMES_MAX);
+	s_vnameptr = (const char **)pico_lib_alloc(PICO_GAMES_MAX * (unsigned)sizeof(char *));
+	s_vtypes = (unsigned char *)pico_lib_alloc(PICO_GAMES_MAX);
+	s_vboxart = (snes_img_entry *)pico_lib_alloc(PICO_GAMES_MAX * (unsigned)sizeof(snes_img_entry));
+	s_vmap = (unsigned short *)pico_lib_alloc(PICO_GAMES_MAX * 2u);
+	s_vorder = (unsigned short *)pico_lib_alloc(PICO_GAMES_MAX * 2u);
+	s_art = (struct art_loc *)pico_lib_alloc(PICO_GAMES_MAX * (unsigned)sizeof(struct art_loc));
+	s_boxart_full = (snes_img_entry *)pico_lib_alloc(PICO_GAMES_MAX * (unsigned)sizeof(snes_img_entry));
+	s_ok = s_names && s_nameptr && s_types && s_vnameptr && s_vtypes && s_vboxart && s_vmap && s_vorder &&
+	       s_art && s_boxart_full;
+	return s_ok;
+}
 static void build_names(const gba_rom_entry *roms, int nrom)
 {
 	int i;
-	for (i = 0; i < nrom && i < 128; i++) {
+	for (i = 0; i < nrom && i < PICO_GAMES_MAX; i++) {
 		gba_clean_name(roms[i].name, s_names[i]);
 		if (s_names[i][0] == 0) {                       /* pathological all-tag name */
 			int L = 0; const char *nm = roms[i].name;
@@ -604,7 +638,7 @@ void gba_menu_read_input(snes_input *in)
 	extern unsigned ayaneo_menu_debounce(unsigned raw, unsigned *hist);
 	extern unsigned int ayaneo_joypad_dpad(void);
 	extern void ayaneo_joypad_poll(void);
-	enum { DL=1, DR=2, DU=4, DD=8, DA=16, DB=32, DST=64, DSE=128, DLB=256, DRB=512 };
+	enum { DL=1, DR=2, DU=4, DD=8, DA=16, DB=32, DST=64, DSE=128, DLB=256, DRB=512, DX=1024, DY=2048 };
 	static unsigned mhist[3];	/* >= MENU_DEBOUNCE-1 words */
 	unsigned raw = 0, deb, jd;
 	int cs, csel;
@@ -621,6 +655,8 @@ void gba_menu_read_input(snes_input *in)
 	if (PRESSED(K_SELECT))raw |= DSE;
 	if (PRESSED(K_LB))    raw |= DLB;
 	if (PRESSED(K_RB))    raw |= DRB;
+	if (PRESSED(K_X))     raw |= DX;
+	if (PRESSED(K_Y))     raw |= DY;
 	/* The left stick moves too: the joypad D-pad bits (JOY_UP=1, DOWN=2, LEFT=4, RIGHT=8) onto
 	 * this layout (DL=1, DR=2, DU=4, DD=8); deadzoned, so a centred stick adds nothing. */
 	jd = ayaneo_joypad_dpad();
@@ -633,6 +669,7 @@ void gba_menu_read_input(snes_input *in)
 	in->up = !!(deb & DU); in->down = !!(deb & DD);
 	in->a = !!(deb & DA); in->b = !!(deb & DB);
 	in->lb = !!(deb & DLB); in->rb = !!(deb & DRB);
+	in->x = !!(deb & DX); in->y = !!(deb & DY);
 	/* Start+Select held together toggles the perf HUD and is consumed so it does not also
 	 * launch or sort; pressed alone they behave normally. Once the combo engages, keep
 	 * swallowing whichever button lingers until both release, or lifting Select while still
@@ -650,9 +687,9 @@ void gba_menu_read_input(snes_input *in)
 	}
 	/* fastboot-injected key: OR one button on for g_dbg_key_hold frames. */
 	if (g_dbg_key_hold > 0) {
-		int *b[10] = { &in->left, &in->right, &in->up, &in->down, &in->a,
-			       &in->b, &in->select, &in->start, &in->lb, &in->rb };
-		if (g_dbg_key >= 0 && g_dbg_key < 10) *b[g_dbg_key] = 1;
+		int *b[12] = { &in->left, &in->right, &in->up, &in->down, &in->a,
+			       &in->b, &in->select, &in->start, &in->lb, &in->rb, &in->x, &in->y };
+		if (g_dbg_key >= 0 && g_dbg_key < 12) *b[g_dbg_key] = 1;
 		g_dbg_key_hold--;
 	}
 }
@@ -667,31 +704,194 @@ void gba_menu_reverse_buffers(uint32_t *snap, unsigned int *dst)
 	s_rev_snap = snap ? snap : (const uint32_t *)GBA_REVERSE_SNAP_PA;
 	s_rev_dst = dst;
 }
-/* Load each ROM's box art from the SD card (<rom folder>/boxart/<romstem>.ART) into the box
- * art slots and fill the per-game image table (s_boxart_full). A missing or oversized tile leaves
- * w=0, the game then shows the placeholder. A slot that already holds a ROM's tile (or knows it has
- * none) is not read again, so a menu after a game only loads the art of games that changed place.
- * The raw .ART is read through the deflate staging, free once the menu's pack is loaded.
- * Returns the games that have art. Shared by every menu theme. */
-/* The box art is read once by the listing's thread during the BIOS intro (gba_driver.c), and the
- * menu's call then finds every slot already holding its game; one that comes before it is done
- * waits here only for the rest. */
+/* ---- box art: an index of the card, a cache of slots ----------------------------------------
+ * At the first menu of a power on (the listing's thread runs it during the BIOS intro), PNGs put on
+ * the card become .ART (pico_artimport.c), then every boxart folder the games use is listed once
+ * and each game told where its .ART is. The 128 slots hold what the menus show: the first games of
+ * each system are read in then, the rest when a menu asks (gba_menu_boxart, classic_art), the slot
+ * used longest ago making room. A menu is let read one a frame (a run of clusters, a few ms), so a
+ * scroll never stalls; what waits is drawn as the placeholder and comes in the frames after. */
 static mutex_t s_boxart_mtx;
 static volatile int s_boxart_mtx_up;
-int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom)
+static void art_lock(void)
 {
-	static int s_boxart_mapped;
-	unsigned char *region = (unsigned char *)SNES_BOXART_PA;
-	unsigned char *scratch = (unsigned char *)SNES_BOXART_STAGE;
-	fat_vol *vol = gba_sd_menu_vol();
-	unsigned int t0 = gpt4_get_current_tick();
-	int i, any = 0, tot = 0;
 	enter_critical_section();
 	if (!s_boxart_mtx_up) { mutex_init(&s_boxart_mtx); s_boxart_mtx_up = 1; }
 	exit_critical_section();
 	mutex_acquire(&s_boxart_mtx);
-	{	/* PNGs put on the card since the last power on become .ART first, so their games show
-		 * them now (a slot that knows its game has no art is not read again) */
+}
+static void art_unlock(void) { mutex_release(&s_boxart_mtx); }
+
+static unsigned int list_sig(const gba_rom_entry *roms, int nrom)
+{
+	unsigned int h = 2166136261u ^ (unsigned)nrom;
+	int i;
+	for (i = 0; i < nrom; i++) {
+		const char *c;
+		h = (h ^ roms[i].type ^ (roms[i].dir << 8)) * 16777619u;
+		for (c = roms[i].name; *c; c++) h = (h ^ (unsigned char)*c) * 16777619u;
+	}
+	return h | 1u;
+}
+
+/* the index's hash of (folder, name): two independent 32 bit hashes stand for the name */
+struct art_ent { uint32_t h1, h2, clus, size; uint8_t nofat, used; };
+static void name_hashes(int dir, const char *nm, uint32_t *h1, uint32_t *h2)
+{
+	uint32_t a = 2166136261u ^ (uint32_t)dir, b = 5381u + (uint32_t)dir * 33u;
+	for (; *nm; nm++) {
+		unsigned char c = (unsigned char)*nm;
+		if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
+		a = (a ^ c) * 16777619u;
+		b = b * 33u + c;
+	}
+	*h1 = a; *h2 = b;
+}
+static struct art_ent *ent_slot(struct art_ent *t, uint32_t mask, uint32_t h1, uint32_t h2)
+{
+	uint32_t i = (h1 ^ (h2 << 7)) & mask;
+	while (t[i].used && (t[i].h1 != h1 || t[i].h2 != h2)) i = (i + 1u) & mask;
+	return &t[i];
+}
+static int ends_art(const char *n)
+{
+	int L = (int)strlen(n);
+	return L > 4 && n[L - 4] == '.' && (n[L - 3] | 32) == 'a' && (n[L - 2] | 32) == 'r' && (n[L - 1] | 32) == 't';
+}
+static int path_eq(const char *a, const char *b)
+{
+	for (; *a && *b; a++, b++)
+		if ((*a >= 'A' && *a <= 'Z' ? *a + 32 : *a) != (*b >= 'A' && *b <= 'Z' ? *b + 32 : *b)) return 0;
+	return *a == *b;
+}
+volatile unsigned int g_dbg_artidx_ms, g_dbg_artidx_files;   /* oem diag: the index, ms and .ART files */
+/* Where each game's .ART is: its own folder's boxart, then /roms/<system>/boxart. Without the
+ * scratch memory the games stay ART_UNKNOWN and are read through the folders. */
+static void art_index(fat_vol *v, const gba_rom_entry *roms, int nrom)
+{
+	extern void *ayaneo_import_arena(unsigned int *size);
+	unsigned int sz, t0 = gpt4_get_current_tick(), files = 0;
+	struct art_ent *t = (struct art_ent *)ayaneo_import_arena(&sz);
+	uint32_t mask = 1u << 18;
+	char dirs[80][112];
+	int nd = 0, i, j, rd_id[64], home_id[8];
+	if (!t) return;
+	while (mask * sizeof *t > sz) mask >>= 1;
+	memset(t, 0, mask * sizeof *t);
+	mask--;
+	for (i = 0; i < 64; i++) rd_id[i] = -1;
+	for (i = 0; i < 8; i++) home_id[i] = -1;
+	/* the folders to list, each once: the boxart beside each game folder, and the home ones */
+	for (i = 0; i < nrom; i++) {
+		int d = roms[i].dir < 64 ? roms[i].dir : 0, ty = roms[i].type < 8 ? roms[i].type : 0;
+		if (rd_id[d] < 0) {
+			char p[112];
+			gba_boxart_dir(&roms[i], p, sizeof p);
+			for (j = 0; j < nd && !path_eq(dirs[j], p); j++) ;
+			if (j == nd && nd < 80) strcpy(dirs[nd++], p);
+			rd_id[d] = j < 80 ? j : 0;
+		}
+		if (home_id[ty] < 0 && gba_boxart_home_dir(ty)) {
+			const char *p = gba_boxart_home_dir(ty);
+			for (j = 0; j < nd && !path_eq(dirs[j], p); j++) ;
+			if (j == nd && nd < 80) strcpy(dirs[nd++], p);
+			home_id[ty] = j < 80 ? j : 0;
+		}
+	}
+	for (j = 0; j < nd; j++) {
+		fat_dir d;
+		fat_dirent e;
+		if (fat_opendir(v, dirs[j], &d) != 0) continue;
+		while (fat_readdir(&d, &e)) {
+			uint32_t h1, h2;
+			struct art_ent *x;
+			if (e.is_dir || e.size < 12 || !ends_art(e.name)) continue;
+			if (files >= (mask + 1u) / 2u) break;   /* half full: enough */
+			name_hashes(j, e.name, &h1, &h2);
+			x = ent_slot(t, mask, h1, h2);
+			if (x->used) continue;
+			x->h1 = h1; x->h2 = h2; x->clus = e.first_clus; x->size = e.size; x->nofat = e.ex_nofat; x->used = 1;
+			files++;
+		}
+	}
+	for (i = 0; i < nrom; i++) {
+		int d = roms[i].dir < 64 ? roms[i].dir : 0, ty = roms[i].type < 8 ? roms[i].type : 0, k, f;
+		struct art_ent *x = 0;
+		char nm[288];
+		for (k = 0; k < 4 && !x; k++) {	/* own folder, home folder; the name, then its older cut form */
+			int dir = (k & 1) ? home_id[ty] : rd_id[d];
+			uint32_t h1, h2;
+			if (dir < 0 || ((k & 1) && dir == rd_id[d])) continue;
+			gba_sd_file_name(roms[i].name, "ART", nm, sizeof nm, k >= 2);
+			name_hashes(dir, nm, &h1, &h2);
+			x = ent_slot(t, mask, h1, h2);
+			if (!x->used) x = 0;
+		}
+		f = x != 0;
+		s_art[i].state = f ? ART_CARD : ART_NONE;
+		s_art[i].clus = f ? x->clus : 0;
+		s_art[i].size = f ? x->size : 0;
+		s_art[i].nofat = f ? x->nofat : 0;
+	}
+	g_dbg_artidx_ms = (gpt4_get_current_tick() - t0) / 13000u;
+	g_dbg_artidx_files = files;
+}
+
+/* game g's art into a slot (the free one, or the one used longest ago); 0 when it is there */
+static int art_read(fat_vol *v, const gba_rom_entry *roms, int g)
+{
+	unsigned char *region = (unsigned char *)SNES_BOXART_PA, *scratch = (unsigned char *)SNES_BOXART_STAGE;
+	struct art_loc *a = &s_art[g];
+	int s, k, ok = 0;
+	unsigned int off;
+	if (a->state == ART_NONE) return -1;
+	for (s = 0, k = 1; k < SNES_BOXART_CAP; k++)
+		if (s_slot_game[s] >= 0 && (s_slot_game[k] < 0 || (int)(s_slot_stamp[k] - s_slot_stamp[s]) < 0)) s = k;
+	if (s_slot_game[s] >= 0) {	/* the game there gives it up */
+		int old = s_slot_game[s];
+		s_boxart_full[old].w = 0;
+		s_art[old].slot = ART_NO_SLOT;
+		s_slot_game[s] = -1;
+	}
+	off = (unsigned)s * SNES_BOXART_SLOT;
+	if (a->state == ART_CARD) {
+		fat_file f;
+		uint32_t n = a->size < SNES_BOXART_STAGE_MAX ? a->size : SNES_BOXART_STAGE_MAX;
+		unsigned short w = 0, h = 0;
+		f.v = v; f.first_clus = a->clus; f.size = a->size; f.ex_nofat = a->nofat;
+		if (fat_read(&f, 0, scratch, n) == n &&
+		    gba_boxart_decode(scratch, n, region + off, SNES_BOXART_SLOT, &w, &h) == 0) {
+			s_boxart_full[g].w = w; s_boxart_full[g].h = h;
+			s_boxart_full[g].flags = SNES_IMG_RGB565; s_boxart_full[g].pad = 0;
+			s_boxart_full[g].pixels = off;
+			ok = 1;
+		}
+	} else {	/* not indexed: through the folders, as before */
+		ok = gba_boxart_load_sd(v, &roms[g], scratch, SNES_BOXART_STAGE_MAX, region + off, SNES_BOXART_SLOT,
+					off, &s_boxart_full[g]) == 0;
+	}
+	if (!ok) { a->state = ART_NONE; s_boxart_full[g].w = 0; return -1; }
+	a->slot = (uint16_t)s;
+	s_slot_game[s] = g;
+	s_slot_stamp[s] = ++s_art_clock;
+	return 0;
+}
+
+static const gba_rom_entry *s_art_roms;
+
+/* Get the box art ready for the menus: the PNG import, the index and the first slots, once for
+ * each list of games (the listing's thread runs it during the intro; a menu that comes first waits
+ * for it here). Returns the games that have art. Shared by every menu theme. */
+int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom)
+{
+	static int s_boxart_mapped;
+	fat_vol *vol = gba_sd_menu_vol();
+	unsigned int t0 = gpt4_get_current_tick(), sig;
+	int i, any = 0;
+	if (!tables_alloc()) return 0;
+	if (nrom > PICO_GAMES_MAX) nrom = PICO_GAMES_MAX;
+	art_lock();
+	{	/* PNGs put on the card since the last power on become .ART first */
 		static int s_imported;
 		if (!s_imported && vol) { s_imported = 1; pico_artimport_run(vol, roms, nrom); }
 	}
@@ -699,44 +899,100 @@ int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom)
 		s_boxart_mapped = arch_mmu_map(SNES_BOXART_PA, SNES_BOXART_PA,
 					       MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA,
 					       SNES_BOXART_MAP) == 0;
-	s_boxart_full_pk.base = region;
-	for (i = 0; i < nrom && i < 128; i++) {
-		/* the slot's key: the ROM's console and name. A slot that already holds this ROM's
-		 * tile (or knows it has none) is not read again: a menu after a game only loads the
-		 * art of games that changed place. */
-		unsigned int key = 2166136261u ^ roms[i].type;
-		const char *c;
-		for (c = roms[i].name; *c; c++) key = (key ^ (unsigned char)*c) * 16777619u;
-		key |= 1u;
-		if (!vol || !s_boxart_mapped || i >= SNES_BOXART_CAP) { s_boxart_full[i].w = 0; continue; }
-		tot++;
-		if (s_boxart_key[i] == key) { if (s_boxart_full[i].w) any++; continue; }
+	s_boxart_full_pk.base = (unsigned char *)SNES_BOXART_PA;
+	sig = list_sig(roms, nrom);
+	s_art_roms = roms;
+	if (sig != s_art_sig && vol && s_boxart_mapped) {	/* a new list: index it, fill the slots */
+		int ty, got;
+		s_art_sig = sig;
+		s_art_n = nrom;
+		for (i = 0; i < SNES_BOXART_CAP; i++) s_slot_game[i] = -1;
+		for (i = 0; i < nrom; i++) {
+			s_art[i].state = ART_UNKNOWN; s_art[i].slot = ART_NO_SLOT;
+			s_boxart_full[i].w = 0;
+		}
+		art_index(vol, roms, nrom);
+		/* the first games with art of every system, in turn, as many as the slots hold: what
+		 * a library shows when it opens */
 		{
-			unsigned off = (unsigned)i * SNES_BOXART_SLOT;
-			s_boxart_full[i].w = 0;		/* default: no art */
-			if (gba_boxart_load_sd(vol, &roms[i], scratch, SNES_BOXART_STAGE_MAX,
-					       region + off, SNES_BOXART_SLOT, off,
-					       &s_boxart_full[i]) == 0)
-				any++;
-			s_boxart_key[i] = key;
+			int cur[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+			for (got = 0; got < SNES_BOXART_CAP; ) {
+				int took = 0;
+				for (ty = 0; ty < 8 && got < SNES_BOXART_CAP; ty++) {
+					while (cur[ty] < nrom && (roms[cur[ty]].type != ty || s_art[cur[ty]].state == ART_NONE))
+						cur[ty]++;
+					if (cur[ty] >= nrom) continue;
+					took = 1;
+					if (art_read(vol, roms, cur[ty]) == 0) got++;
+					cur[ty]++;
+				}
+				if (!took) break;
+			}
 		}
 	}
+	for (i = 0; i < s_art_n; i++) if (s_art[i].state != ART_NONE) any++;
+	s_have_boxart = any > 0;
 	g_dbg_boxart_ms = (gpt4_get_current_tick() - t0) / 13000u;
 	g_dbg_boxart_ok = (unsigned)any;	/* reported via oem diag bx=ok/tot */
-	g_dbg_boxart_tot = (unsigned)tot;
-	s_have_boxart = (any > 0);
-	mutex_release(&s_boxart_mtx);
+	g_dbg_boxart_tot = (unsigned)s_art_n;
+	art_unlock();
 	return any;
 }
 
+/* A menu's art reads in this frame: 1 normally, 0 while a list scrolls fast (the art comes once it
+ * slows). Art past it is drawn as the placeholder and gba_menu_boxart_pending says so. */
+void gba_menu_boxart_budget(int n) { s_art_budget = n; }
+int gba_menu_boxart_pending(void) { int p = s_art_pending; s_art_pending = 0; return p; }
+
+/* game i's art in a slot, reading it when the frame's budget allows; NULL for none (yet) */
+static const snes_img_entry *art_get(int i)
+{
+	fat_vol *vol;
+	if (!s_art || i < 0 || i >= s_art_n) return 0;
+	if (s_art[i].slot != ART_NO_SLOT) {
+		s_slot_stamp[s_art[i].slot] = ++s_art_clock;
+		return &s_boxart_full[i];
+	}
+	if (s_art[i].state == ART_NONE || !(vol = gba_sd_menu_vol())) return 0;
+	if (s_art_budget <= 0) { s_art_pending = 1; return 0; }
+	s_art_budget--;
+	art_lock();
+	if (s_art[i].slot == ART_NO_SLOT) art_read(vol, s_art_roms, i);
+	art_unlock();
+	return s_art[i].slot != ART_NO_SLOT ? &s_boxart_full[i] : 0;
+}
+
 /* Game i's box art (gba_menu_boxart_load): the RGB565 + A8 interleaved pixels and their size,
- * or NULL without art. */
+ * or NULL without art (or before it is read: then gba_menu_boxart_pending). */
 const unsigned char *gba_menu_boxart(int i, unsigned int *w, unsigned int *h)
 {
-	if (i < 0 || i >= 128 || !s_boxart_full[i].w) return 0;
-	if (w) *w = s_boxart_full[i].w;
-	if (h) *h = s_boxart_full[i].h;
-	return (const unsigned char *)SNES_BOXART_PA + s_boxart_full[i].pixels;
+	const snes_img_entry *e = art_get(i);
+	if (!e || !e->w) return 0;
+	if (w) *w = e->w;
+	if (h) *h = e->h;
+	return (const unsigned char *)SNES_BOXART_PA + e->pixels;
+}
+/* does game i have art on the card (read or not) */
+int gba_menu_boxart_has(int i)
+{
+	return s_art && i >= 0 && i < s_art_n && s_art[i].state != ART_NONE;
+}
+
+/* the classic menu's art for view game vi: the same cache; what waits marks its tile not kept */
+static const snes_img_entry s_no_art;
+static const snes_img_entry *classic_art(snes_menu *m, int vi)
+{
+	const snes_img_entry *e;
+	int g;
+	if (vi < 0 || vi >= s_vn) return &s_no_art;
+	g = s_vmap[vi];
+	e = art_get(g);
+	if (!e) {
+		if (s_art && g < s_art_n && s_art[g].state != ART_NONE && s_art[g].slot == ART_NO_SLOT)
+			m->gba_art_deferred = 1;
+		return &s_no_art;
+	}
+	return e;
 }
 
 /* Present the frame the menu drew into the canvas: the power-hold bar on top, then the present
@@ -942,19 +1198,22 @@ static const char *filter_name(int f)
 static void apply_filter(int full_n)
 {
 	int i, k = 0;
-	if (full_n > 128) full_n = 128;
+	if (full_n > PICO_GAMES_MAX) full_n = PICO_GAMES_MAX;
 	for (i = 0; i < full_n; i++) {
 		if (s_sysfilter >= 0 && (int)s_types[i] != s_sysfilter) continue;
 		s_vnameptr[k] = s_nameptr[i];
 		s_vtypes[k]   = s_types[i];
-		s_vboxart[k]  = s_boxart_full[i];
 		s_vmap[k]     = (unsigned short)i;
 		k++;
 	}
 	s_vn = k;
 	s_menu.focus = 0;
+	snes_menu_set_order(&s_menu, s_vorder, PICO_GAMES_MAX);
 	snes_menu_set_gba_roster(&s_menu, s_vnameptr, s_vn, s_cart_img);
-	if (s_have_boxart) snes_menu_set_gba_boxart(&s_menu, s_vboxart, &s_boxart_full_pk);
+	if (s_have_boxart) {	/* per-ROM art, read as the cards come into view (classic_art) */
+		snes_menu_set_gba_boxart(&s_menu, s_vboxart, &s_boxart_full_pk);
+		s_menu.gba_art_get = classic_art;
+	}
 }
 
 /* X advances the filter to All or the next system that actually has ROMs (skips empty ones). */
@@ -971,7 +1230,7 @@ static void cycle_filter(int full_n)
 		f = ord[cur];
 		if (f < 0) { s_sysfilter = -1; break; }        /* All is always available */
 		{ int j, present = 0;
-		  for (j = 0; j < full_n && j < 128; j++) if ((int)s_types[j] == f) { present = 1; break; }
+		  for (j = 0; j < full_n && j < PICO_GAMES_MAX; j++) if ((int)s_types[j] == f) { present = 1; break; }
 		  if (present) { s_sysfilter = f; break; } }
 	}
 	apply_filter(full_n);
@@ -1040,6 +1299,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	unsigned int handover = ayaneo_get_intro_black() ? 0xFF000000u : 0xFFFFFFFFu;
 
 	if (nrom <= 0) return -1;
+	if (!tables_alloc()) return -2;
+	if (nrom > PICO_GAMES_MAX) nrom = PICO_GAMES_MAX;
 
 	/* Own the panel and paint it BEFORE the slow pack decompress + one-time wallpaper/
 	 * chrome cache build, so the boot-logo -> menu handover is not a couple of black
@@ -1202,6 +1463,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		 * stable sustained point. Re-assert only when it has actually dropped (e.g. a
 		 * game-close restored the 600 MHz clock), so no per-frame PLL relock. */
 		if (ayaneo_get_cpu_mhz() < 1100) ayaneo_set_cpu_mhz(1200);
+		/* a box art read a frame, none while a held key runs the carousel on (the art of the
+		 * cards it passes would hold every frame up); it comes when the carousel settles */
+		gba_menu_boxart_budget(s_menu.rep_primed || s_menu.jmp_dir ? 0 : 1);
 		/* real elapsed dt (not a fixed 1/60) so animations run at the correct
 		 * wall-clock speed even when the frame rate dips below 60. Clamp to a sane
 		 * range so a first frame / long stall does not jump the animations. */
@@ -1342,7 +1606,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		if (g_dbg_snes_launch) {
 			int i;
 			g_dbg_snes_launch = 0;
-			for (i = 0; i < s_vn && i < 128; i++)   /* search the current view (index space the menu uses) */
+			for (i = 0; i < s_vn; i++)   /* search the current view (index space the menu uses) */
 				if (s_vtypes[i] == GBA_CONSOLE_SNES && dbg_name_match(s_vnameptr[i], g_dbg_snes_name)) { s_menu.launch = i; g_dbg_snes_chosen = s_vnameptr[i]; break; }
 		}
 		/* Display > Theme picked another theme: save it (written before the card is read again)

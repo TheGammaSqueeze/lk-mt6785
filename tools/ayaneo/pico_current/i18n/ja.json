@@ -199,5 +199,15 @@
  "Played %s": "プレイ時間 %s",
  "Last played %s": "最終プレイ %s",
  "today": "今日",
- "yesterday": "昨日"
+ "yesterday": "昨日",
+ "Search": "検索",
+ "All systems": "すべてのシステム",
+ "Type a name": "名前を入力",
+ "No games found": "ゲームが見つかりません",
+ "Type": "入力",
+ "Delete": "削除",
+ "Space": "スペース",
+ "Clear": "クリア",
+ "Results": "結果",
+ "Keyboard": "キーボード"
 }

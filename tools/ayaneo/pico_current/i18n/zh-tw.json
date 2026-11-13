@@ -199,5 +199,15 @@
  "Played %s": "已玩 %s",
  "Last played %s": "上次遊玩 %s",
  "today": "今天",
- "yesterday": "昨天"
+ "yesterday": "昨天",
+ "Search": "搜尋",
+ "All systems": "所有系統",
+ "Type a name": "輸入名稱",
+ "No games found": "找不到遊戲",
+ "Type": "輸入",
+ "Delete": "刪除",
+ "Space": "空格",
+ "Clear": "清除",
+ "Results": "結果",
+ "Keyboard": "鍵盤"
 }

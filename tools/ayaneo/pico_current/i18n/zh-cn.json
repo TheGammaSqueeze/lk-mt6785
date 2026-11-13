@@ -199,5 +199,15 @@
  "Played %s": "已玩 %s",
  "Last played %s": "上次游玩 %s",
  "today": "今天",
- "yesterday": "昨天"
+ "yesterday": "昨天",
+ "Search": "搜索",
+ "All systems": "所有系统",
+ "Type a name": "输入名称",
+ "No games found": "未找到游戏",
+ "Type": "输入",
+ "Delete": "删除",
+ "Space": "空格",
+ "Clear": "清空",
+ "Results": "结果",
+ "Keyboard": "键盘"
 }

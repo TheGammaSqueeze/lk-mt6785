@@ -1,6 +1,7 @@
 /* On-device SD -> FAT glue (LK only). See sd_fat.h. */
 #include "sd_fat.h"
 #include "fat_wr.h"   /* fat_wr_mkpath for gba_sd_make_rom_dirs */
+#include "pico_libmem.h"   /* PICO_GAMES_MAX, the listing's tables */
 #include <string.h>   /* memcpy: the sector cache */
 
 /* LK MMC block-read: reads blkcnt 512B sectors at LBA blknr from mmc device
@@ -292,7 +293,7 @@ static int word_in(const char *name, const char *list, int suffix)
 
 /* The folders the games were found in: a game keeps the index of its own (gba_rom_entry.dir),
  * for the box art beside it. Filled again by every listing. */
-#define ROM_DIRS 48
+#define ROM_DIRS 64
 static char s_rom_dir[ROM_DIRS][96];
 static uint32_t s_rom_dir_id[ROM_DIRS];
 static int s_nrom_dir;
@@ -311,6 +312,45 @@ static void path_join(char *out, int cap, const char *a, const char *b)
 	out[k] = 0;
 }
 
+/* The listing's own tables, sized for PICO_GAMES_MAX: a hash of the games listed so far (system
+ * and name, for the duplicate check) and the sort's index arrays. Taken once. */
+#define DUP_SLOTS 65536u               /* a power of two, twice PICO_GAMES_MAX */
+static unsigned short *s_dup;          /* game index + 1, 0 empty */
+static unsigned short *s_ord, *s_tmp;
+static void *list_mem(unsigned int n)
+{
+#ifdef __arm__
+	return pico_lib_alloc(n);
+#else
+	extern void *calloc(unsigned long, unsigned long);
+	return calloc(1, n);
+#endif
+}
+static int list_tables(void)
+{
+	if (!s_dup) s_dup = (unsigned short *)list_mem(DUP_SLOTS * 2u);
+	if (!s_ord) s_ord = (unsigned short *)list_mem(PICO_GAMES_MAX * 2u);
+	if (!s_tmp) s_tmp = (unsigned short *)list_mem(PICO_GAMES_MAX * 2u);
+	return s_dup && s_ord && s_tmp;
+}
+static unsigned int name_hash(unsigned char type, const char *nm)
+{
+	unsigned int h = 2166136261u ^ type;
+	for (; *nm; nm++) h = (h ^ (unsigned char)lc(*nm)) * 16777619u;
+	return h;
+}
+/* the slot of (type, nm) in the duplicate hash: where it is, or the empty one it would take */
+static unsigned int dup_slot(const gba_rom_entry *out, unsigned char type, const char *nm)
+{
+	unsigned int i = name_hash(type, nm) & (DUP_SLOTS - 1u);
+	while (s_dup[i]) {
+		const gba_rom_entry *r = &out[s_dup[i] - 1u];
+		if (r->type == type && name_ci_cmp(r->name, nm) == 0) break;
+		i = (i + 1u) & (DUP_SLOTS - 1u);
+	}
+	return i;
+}
+
 /* Append the games of system `sys` in folder `path` (cluster `id`) to out[]. A game already
  * listed for the same system (the same name in another folder) is left out, so a card holding
  * both layouts lists each game once, from the folder found first. *tot counts every game, also
@@ -327,7 +367,7 @@ static int scan_rom_folder(fat_vol *v, const char *path, uint32_t id, const stru
 	s_rom_dir_id[di] = id;
 	{ int k; for (k = 0; path[k] && k < 95; k++) s_rom_dir[di][k] = path[k]; s_rom_dir[di][k] = 0; }
 	while (fat_readdir(&d, &e)) {
-		int el, k, dup = 0;
+		int el, k;
 		if (e.is_dir || e.size == 0) continue;  /* folders, empty placeholder files */
 		if (e.name[0] == '.') continue;         /* macOS "._" resource files and the like */
 		el = word_in(e.name, sys->exts, 1);
@@ -342,12 +382,15 @@ static int scan_rom_folder(fat_vol *v, const char *path, uint32_t id, const stru
 			if (L > 127) L = 127;
 			for (k = 0; k < L; k++) nm[k] = e.name[k];
 			nm[L] = 0;
-			for (k = 0; k < n && !dup; k++)
-				if (out[k].type == sys->type && name_ci_cmp(out[k].name, nm) == 0) dup = 1;
-			if (dup) continue;
+			if (n >= max) { (*tot)++; continue; }   /* past the cap: counted, not checked */
+			{
+				unsigned int slot = dup_slot(out, sys->type, nm);
+				if (s_dup[slot]) continue;      /* listed already, from a folder found first */
+				for (k = 0; k <= L; k++) out[n].name[k] = nm[k];
+				out[n].type = sys->type;
+				s_dup[slot] = (unsigned short)(n + 1);
+			}
 			(*tot)++;
-			if (n >= max) continue;
-			for (k = 0; k <= L; k++) out[n].name[k] = nm[k];
 		}
 		out[n].first_clus = e.first_clus;
 		out[n].size = e.size;
@@ -383,12 +426,47 @@ static int not_a_rom_root(const char *nm)
 	       name_ci_cmp(nm, "System Volume Information") == 0 || name_ci_cmp(nm, "LOST.DIR") == 0;
 }
 
+/* case-insensitive by name, stable: a merge sort of indexes, then the entries moved into that
+ * order in place, cycle by cycle (tens of thousands of games, no second copy of the list) */
+static void sort_by_name(gba_rom_entry *out, int n)
+{
+	int w, i;
+	for (i = 0; i < n; i++) s_ord[i] = (unsigned short)i;
+	for (w = 1; w < n; w *= 2) {
+		unsigned short *a = s_ord, *b = s_tmp, *t;
+		for (i = 0; i < n; i += 2 * w) {
+			int l = i, m = i + w < n ? i + w : n, r = i + 2 * w < n ? i + 2 * w : n, x = l, y = m, k = l;
+			while (x < m && y < r) b[k++] = name_ci_cmp(out[a[y]].name, out[a[x]].name) < 0 ? a[y++] : a[x++];
+			while (x < m) b[k++] = a[x++];
+			while (y < r) b[k++] = a[y++];
+		}
+		t = s_ord; s_ord = s_tmp; s_tmp = t;
+	}
+	/* position i takes entry s_ord[i]; s_tmp marks the positions done */
+	for (i = 0; i < n; i++) s_tmp[i] = 0;
+	for (i = 0; i < n; i++) {
+		gba_rom_entry hold;
+		int j = i;
+		if (s_tmp[i] || s_ord[i] == i) { s_tmp[i] = 1; continue; }
+		hold = out[i];
+		for (;;) {
+			int k = s_ord[j];
+			s_tmp[j] = 1;
+			if (k == i) { out[j] = hold; break; }
+			out[j] = out[k];
+			j = k;
+		}
+	}
+}
+
 int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
 {
-	int n = 0, i, j, tot = 0;
+	int n = 0, tot = 0;
 	if (total) *total = 0;
 	s_nrom_dir = 0;
-	if (max <= 0) return 0;
+	if (max <= 0 || !list_tables()) return 0;
+	if (max > PICO_GAMES_MAX) max = PICO_GAMES_MAX;
+	memset(s_dup, 0, DUP_SLOTS * 2u);
 	/* Where the games may be, in this order (a game in two places is listed from the first):
 	 * /roms/<system> (GammaOS), /<system> at the root, and for every other folder at the
 	 * root, its system folders and those of its roms folder: /ROMs/<system> (ES-DE),
@@ -413,12 +491,7 @@ int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
 		}
 	}
 	if (total) *total = tot;
-	for (i = 1; i < n; i++) {           /* insertion sort, case-insensitive by name */
-		gba_rom_entry t = out[i];
-		for (j = i - 1; j >= 0 && name_ci_cmp(out[j].name, t.name) > 0; j--)
-			out[j + 1] = out[j];
-		out[j + 1] = t;
-	}
+	sort_by_name(out, n);
 	return n;
 }
 

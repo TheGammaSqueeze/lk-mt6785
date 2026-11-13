@@ -1006,6 +1006,56 @@
    "en": "yesterday",
    "kind": "word",
    "note": "last played yesterday (inside 'Last played %s')"
+  },
+  {
+   "en": "Search",
+   "kind": "hint",
+   "note": "header, heading in capitals and button hint: look for games by name"
+  },
+  {
+   "en": "All systems",
+   "kind": "heading",
+   "note": "heading in capitals after Search: the search looks through every system"
+  },
+  {
+   "en": "Type a name",
+   "kind": "about",
+   "note": "grey text in the empty search field: type part of a game's name"
+  },
+  {
+   "en": "No games found",
+   "kind": "heading",
+   "note": "heading in capitals over the search results when nothing matches"
+  },
+  {
+   "en": "Type",
+   "kind": "hint",
+   "note": "button hint on the on-screen keyboard: A types the focused key"
+  },
+  {
+   "en": "Delete",
+   "kind": "hint",
+   "note": "button hint and keyboard key: delete the last letter typed"
+  },
+  {
+   "en": "Space",
+   "kind": "hint",
+   "note": "button hint and keyboard key: type a space"
+  },
+  {
+   "en": "Clear",
+   "kind": "hint",
+   "note": "keyboard key: delete everything typed"
+  },
+  {
+   "en": "Results",
+   "kind": "hint",
+   "note": "button hint: go from the keyboard to the list of games found"
+  },
+  {
+   "en": "Keyboard",
+   "kind": "hint",
+   "note": "button hint: go back from the results to the on-screen keyboard"
   }
  ]
 }

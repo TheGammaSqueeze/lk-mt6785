@@ -15,20 +15,23 @@
 #include "pico_clock.h"
 #include "card_writer.h"
 #include "fat_ro.h"
+#include "pico_libmem.h"
 
 extern fat_vol *gba_sd_menu_vol(void);
 
 #define ST_DIR   "/gammaos"
 #define ST_FILE  "playtime.txt"
-#define ST_MAX   256
+#define ST_MAX   4096                  /* games remembered; the one played longest ago makes room */
+#define ST_TEXT  (ST_MAX * 160u)
 #define ST_EVERY (5u * 60u * 1000u)    /* a session in play is saved this often, ms */
 
 struct st_game { unsigned char type; unsigned int secs; long long last; char name[128]; };
-static struct st_game s_g[ST_MAX];
+/* in the library's window (pico_libmem.c): a big library plays many games */
+static struct st_game *s_g;
 static int s_n, s_loaded;
 static int s_cur = -1;                 /* the game in play */
 static unsigned int s_saved_ms;               /* how far into it the time is added */
-static char s_text[ST_MAX * 160];
+static char *s_text;
 static mutex_t s_mtx;
 static volatile int s_mtx_up;
 
@@ -38,6 +41,8 @@ static void lock(void)
 	if (!s_mtx_up) { mutex_init(&s_mtx); s_mtx_up = 1; }
 	exit_critical_section();
 	mutex_acquire(&s_mtx);
+	if (!s_g) s_g = (struct st_game *)pico_lib_alloc(ST_MAX * (unsigned)sizeof(struct st_game));
+	if (!s_text) s_text = (char *)pico_lib_alloc(ST_TEXT);
 }
 static void unlock(void) { mutex_release(&s_mtx); }
 
@@ -49,8 +54,8 @@ static void load(void)
 	char *p, *end;
 	s_loaded = 1;
 	s_n = 0;
-	if (!v || fat_open(v, ST_DIR "/" ST_FILE, &f) != 0) return;
-	n = f.size < sizeof s_text - 1 ? f.size : sizeof s_text - 1;
+	if (!s_g || !s_text || !v || fat_open(v, ST_DIR "/" ST_FILE, &f) != 0) return;
+	n = f.size < ST_TEXT - 1 ? f.size : ST_TEXT - 1;
 	if (fat_read(&f, 0, s_text, n) != n) return;
 	s_text[n] = 0;
 	for (p = s_text, end = s_text + n; p < end && s_n < ST_MAX; ) {
@@ -79,6 +84,7 @@ static void load(void)
 static int find(int type, const char *name, int add)
 {
 	int i;
+	if (!s_g) return -1;                  /* no memory for the table: nothing kept */
 	for (i = 0; i < s_n; i++)
 		if (s_g[i].type == type && !strcmp(s_g[i].name, name)) return i;
 	if (!add) return -1;
@@ -103,8 +109,9 @@ static void save(void)
 		s_g[s_cur].secs += (now - s_saved_ms) / 1000u;
 		s_saved_ms = now - (now - s_saved_ms) % 1000u;   /* the part of a second left over stays */
 	}
-	for (i = 0; i < s_n && n < (int)sizeof s_text - 160; i++)
-		n += snprintf(s_text + n, sizeof s_text - n, "%u %u %lld %s\n", s_g[i].type, s_g[i].secs, s_g[i].last, s_g[i].name);
+	if (!s_g || !s_text) return;
+	for (i = 0; i < s_n && n < (int)ST_TEXT - 160; i++)
+		n += snprintf(s_text + n, ST_TEXT - n, "%u %u %lld %s\n", s_g[i].type, s_g[i].secs, s_g[i].last, s_g[i].name);
 	if (v) card_writer_put(v, ST_DIR, ST_FILE, s_text, (uint32_t)n, 0, 0, 0, 0);
 }
 

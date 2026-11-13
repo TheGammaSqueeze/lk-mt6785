@@ -566,6 +566,10 @@ static int write_entries(fat_vol *v, fat_dir *dir, uint32_t lba, int ent, const 
 	uint8_t fatb[512]; uint32_t fatb_sec = 0xFFFFFFFFu;
 	for (i = 0; i < n; i++) {
 		if (write_entry(v, lba, ent, ents + i * 32) != 0) return -1;
+		/* on to the next entry's place only when there is one: a set that ends on the last
+		 * entry of the directory's last sector must not look past its allocation (that failed
+		 * the write after the set was on the card, which then pointed at freed clusters) */
+		if (i + 1 == n) break;
 		if (++ent >= 16) {
 			ent = 0;
 			/* next sector: within the cluster, or the next cluster of the directory */
