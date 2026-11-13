@@ -403,7 +403,7 @@ OBJS += emu/genesis/genesis_sd_run.o
 OBJS += emu/gba/menu/snes_pack.o emu/gba/menu/snes_scene.o emu/gba/menu/snes_render.o emu/gba/menu/snes_audio.o
 OBJS += emu/gba/menu/snes_menu.o emu/gba/gba_snes_menu.o
 # the Current menu theme (its own layout, drawn in software from its card pack)
-OBJS += emu/gba/pico_current.o
+OBJS += emu/gba/pico_current.o emu/gba/pico_i18n.o
 GBA_MENU_FP := -mfpu=neon -mfloat-abi=softfp -ffast-math
 # perf-critical BLITTER: -O2 + NEON for full 60fps. This is the dominant per-frame
 # cost (wallpaper + card + text blits); -Os here drops below 60fps and the double
@@ -421,6 +421,7 @@ $(BUILDDIR)/emu/gba/gba_driver.o:       CFLAGS += -Os
 $(BUILDDIR)/emu/gba/menu/snes_pack.o:   CFLAGS += -Os
 $(BUILDDIR)/emu/gba/gba_snes_menu.o:    CFLAGS += $(GBA_MENU_FP) -Os
 $(BUILDDIR)/emu/gba/pico_current.o:     CFLAGS += $(GBA_MENU_FP) -O2
+$(BUILDDIR)/emu/gba/pico_i18n.o:       CFLAGS += -Os
 # reclaim the last few KB of the 2MB lk_a budget from the (correctness-safe) SD
 # driver objects that carry this menu variant
 $(BUILDDIR)/emu/gba/gba_driver.o:       CFLAGS += -Os

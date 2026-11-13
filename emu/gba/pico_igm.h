@@ -26,13 +26,13 @@ struct igm_core {
 	 * with Left/Right on the save and load rows rather than shown as a row */
 	int slot_item, save_item, load_item, reset_item, exit_item;
 	const char *(*label)(int item);
-	const char *(*value)(int item, char *buf);      /* buf holds 48 */
+	const char *(*value)(int item, char *buf);      /* buf holds 96 */
 	int (*change)(int item, int dir, int act);       /* the core's handler; 1 closes the menu */
 	char *status;                                    /* the core's status line: shown, then cleared */
 	/* the core's own options (the IGM_CORE page), or 0 */
 	int (*opt_n)(void);
 	const char *(*opt_label)(int i);
-	const char *(*opt_value)(int i, char *buf);
+	const char *(*opt_value)(int i, char *buf);     /* buf holds 96 */
 	void (*opt_change)(int i, int dir);
 	int system;                                      /* GBA_CONSOLE_* */
 	const char *game;                                /* the game's file name */

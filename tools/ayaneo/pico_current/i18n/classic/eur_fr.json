@@ -1,0 +1,5 @@
+{
+ "sys_option_init_Title": "Démarrer le système",
+ "sys_option_init_cm_Decide": "Quitter et démarrer le système d'exploitation",
+ "sys_option_init_dialog_Confirm": "L'émulateur va se fermer pour démarrer\nle système d'exploitation.\nProgression sauvegardée sur la carte SD.\nVoulez-vous vraiment continuer ? "
+}

@@ -1,0 +1,5 @@
+{
+ "sys_option_init_Title": "OS opstarten",
+ "sys_option_init_cm_Decide": "Afsluiten en het besturingssysteem opstarten",
+ "sys_option_init_dialog_Confirm": "Hiermee sluit je de emulator af en start\nje het besturingssysteem op.\nJe voortgang wordt op de SD-kaart bewaard. \nWeet je zeker dat je wilt doorgaan? "
+}

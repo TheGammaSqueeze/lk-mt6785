@@ -7,6 +7,9 @@
  *   run:    ./host_render <snes_pack.bin> <out.ppm> [frames] [nav]
  *           nav = a string of L/R/U/D/A/B/S/T applied one per frame before render
  */
+/* the host harness draws the English: no language packs here */
+const char *tr(const char *en);
+const char *tr(const char *en) { return en; }
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

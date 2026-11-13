@@ -1,0 +1,816 @@
+{
+ "_about": "The English of every menu text tr() looks up (emu/gba/pico_i18n.c), exactly as in the code. kind says where it is drawn; 'one' is the English for a count of 1 where the text changes with a count. Each <code>.json maps these to its language: a text, or for a count an object of the forms the language has (one, two, few, many, zero, other).",
+ "strings": [
+  {
+   "en": "Games",
+   "kind": "rail",
+   "note": "home rail tab next to an icon; one short word"
+  },
+  {
+   "en": "Resume",
+   "kind": "rail",
+   "note": "home rail tab next to an icon; one short word"
+  },
+  {
+   "en": "Settings",
+   "kind": "rail",
+   "note": "home rail tab next to an icon; one short word"
+  },
+  {
+   "en": "Home",
+   "kind": "header",
+   "note": "header next to the GammaOS Pico brand: the home screen"
+  },
+  {
+   "en": "Game library",
+   "kind": "header",
+   "note": "header and heading: the list of games of one system"
+  },
+  {
+   "en": "Open library",
+   "kind": "hint",
+   "note": "button hint and button: open the selected system's game list"
+  },
+  {
+   "en": "Section",
+   "kind": "hint",
+   "note": "button hint: L/R switch the home tab"
+  },
+  {
+   "en": "Select",
+   "kind": "hint",
+   "note": "button hint: A picks the focused row"
+  },
+  {
+   "en": "Launch",
+   "kind": "hint",
+   "note": "button hint: A starts the game"
+  },
+  {
+   "en": "Back",
+   "kind": "hint",
+   "note": "button hint: B goes back"
+  },
+  {
+   "en": "Game systems",
+   "kind": "heading",
+   "note": "heading in capitals over the selected system's logo"
+  },
+  {
+   "en": "%d games",
+   "kind": "value",
+   "note": "the number of games of a system; %d is the count",
+   "one": "%d game"
+  },
+  {
+   "en": "Library",
+   "kind": "word",
+   "note": "small word after the game count (the system's library)"
+  },
+  {
+   "en": "Systems",
+   "kind": "heading",
+   "note": "heading in capitals left of the strip of system logos; very short"
+  },
+  {
+   "en": "Recently played",
+   "kind": "heading",
+   "note": "heading in capitals over the list of recent games"
+  },
+  {
+   "en": "The games you play appear here.",
+   "kind": "about",
+   "note": "shown when no game has been played yet"
+  },
+  {
+   "en": "Blue",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Violet",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Crimson",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Amber",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Emerald",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Graphite",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Brightness",
+   "kind": "label",
+   "note": "settings row: screen brightness"
+  },
+  {
+   "en": "Volume",
+   "kind": "label",
+   "note": "settings row: sound volume"
+  },
+  {
+   "en": "Black Frame Insertion",
+   "kind": "label",
+   "note": "settings row: display setting that inserts black frames to reduce motion blur"
+  },
+  {
+   "en": "Theme",
+   "kind": "label",
+   "note": "settings row: the menu's visual theme"
+  },
+  {
+   "en": "Colour",
+   "kind": "label",
+   "note": "settings row: the colour of the menu theme"
+  },
+  {
+   "en": "BIOS Boot",
+   "kind": "label",
+   "note": "settings row: opens a page of settings for the Game Boy Advance start-up screen"
+  },
+  {
+   "en": "Game Resume",
+   "kind": "label",
+   "note": "settings row: opens a page of settings about carrying on games"
+  },
+  {
+   "en": "Boot to Android",
+   "kind": "label",
+   "note": "settings row: restart the device into Android"
+  },
+  {
+   "en": "Skip BIOS Intro",
+   "kind": "label",
+   "note": "settings row: start games without the Game Boy Advance logo screen"
+  },
+  {
+   "en": "BIOS Intro Background",
+   "kind": "label",
+   "note": "settings row: colour behind the start-up logo: Black or White"
+  },
+  {
+   "en": "Mute BIOS Audio",
+   "kind": "label",
+   "note": "settings row: silence the start-up chime"
+  },
+  {
+   "en": "BIOS Intro on Resume",
+   "kind": "label",
+   "note": "settings row: show the start-up logo before a resumed game"
+  },
+  {
+   "en": "Resume on Power On",
+   "kind": "label",
+   "note": "settings row: when the device powers on, go straight back into the last game"
+  },
+  {
+   "en": "Resume on Game Open",
+   "kind": "label",
+   "note": "settings row: opening a game continues where it was left"
+  },
+  {
+   "en": "Language",
+   "kind": "label",
+   "note": "settings row: the language of the menus"
+  },
+  {
+   "en": "The Game Boy Advance start-up screen",
+   "kind": "about",
+   "note": "explanation line under a setting; 'B: fresh' means pressing B starts the game fresh"
+  },
+  {
+   "en": "Where games carry on from",
+   "kind": "about",
+   "note": "explanation line under a setting; 'B: fresh' means pressing B starts the game fresh"
+  },
+  {
+   "en": "Restart into Android",
+   "kind": "about",
+   "note": "explanation line under a setting; 'B: fresh' means pressing B starts the game fresh"
+  },
+  {
+   "en": "Start games without the logo screen",
+   "kind": "about",
+   "note": "explanation line under a setting; 'B: fresh' means pressing B starts the game fresh"
+  },
+  {
+   "en": "Behind the logo at start-up",
+   "kind": "about",
+   "note": "explanation line under a setting; 'B: fresh' means pressing B starts the game fresh"
+  },
+  {
+   "en": "The start-up chime",
+   "kind": "about",
+   "note": "explanation line under a setting; 'B: fresh' means pressing B starts the game fresh"
+  },
+  {
+   "en": "The logo first, then the resumed game fades in",
+   "kind": "about",
+   "note": "explanation line under a setting; 'B: fresh' means pressing B starts the game fresh"
+  },
+  {
+   "en": "Power on straight back into the game you left",
+   "kind": "about",
+   "note": "explanation line under a setting; 'B: fresh' means pressing B starts the game fresh"
+  },
+  {
+   "en": "Games carry on where you left them (B: fresh)",
+   "kind": "about",
+   "note": "explanation line under a setting; 'B: fresh' means pressing B starts the game fresh"
+  },
+  {
+   "en": "The language of the menus",
+   "kind": "about",
+   "note": "explanation line under a setting; 'B: fresh' means pressing B starts the game fresh"
+  },
+  {
+   "en": "BIOS boot",
+   "kind": "heading",
+   "note": "heading in capitals of the BIOS Boot settings page"
+  },
+  {
+   "en": "Game resume",
+   "kind": "heading",
+   "note": "heading in capitals of the Game Resume settings page"
+  },
+  {
+   "en": "On",
+   "kind": "value",
+   "note": "a setting is on"
+  },
+  {
+   "en": "Off",
+   "kind": "value",
+   "note": "a setting is off"
+  },
+  {
+   "en": "Black",
+   "kind": "value",
+   "note": "colour"
+  },
+  {
+   "en": "White",
+   "kind": "value",
+   "note": "colour"
+  },
+  {
+   "en": "Open",
+   "kind": "value",
+   "note": "opens a page"
+  },
+  {
+   "en": "Press A to apply",
+   "kind": "about",
+   "note": "under a picked theme or language that is not applied yet"
+  },
+  {
+   "en": "%s (Beta)",
+   "kind": "value",
+   "note": "a theme's name (%s) marked as still being finished"
+  },
+  {
+   "en": "Beta",
+   "kind": "word",
+   "note": "small tag on a theme's picture: still being finished"
+  },
+  {
+   "en": "Classic",
+   "kind": "value",
+   "note": "name of the classic menu theme"
+  },
+  {
+   "en": "Display",
+   "kind": "label",
+   "note": "in-game menu: page of display settings"
+  },
+  {
+   "en": "Sound",
+   "kind": "label",
+   "note": "in-game menu: page of sound settings"
+  },
+  {
+   "en": "Gameplay",
+   "kind": "label",
+   "note": "in-game menu: page of gameplay settings (speed, rewind)"
+  },
+  {
+   "en": "System",
+   "kind": "label",
+   "note": "in-game menu: page of system settings"
+  },
+  {
+   "en": "Core options",
+   "kind": "label",
+   "note": "in-game menu: page of the emulator core's own options"
+  },
+  {
+   "en": "Save state",
+   "kind": "label",
+   "note": "in-game menu action"
+  },
+  {
+   "en": "Load state",
+   "kind": "label",
+   "note": "in-game menu action"
+  },
+  {
+   "en": "Reset game",
+   "kind": "label",
+   "note": "in-game menu action"
+  },
+  {
+   "en": "Exit game",
+   "kind": "label",
+   "note": "in-game menu action"
+  },
+  {
+   "en": "Slot %s · %s",
+   "kind": "value",
+   "note": "save state slot: %s the slot number, then Used or Empty"
+  },
+  {
+   "en": "Slot %s",
+   "kind": "value",
+   "note": "save state slot: %s the slot number"
+  },
+  {
+   "en": "Used",
+   "kind": "word",
+   "note": "a save state slot that holds a state"
+  },
+  {
+   "en": "Empty",
+   "kind": "word",
+   "note": "a save state slot with nothing in it"
+  },
+  {
+   "en": "LCD Filter",
+   "kind": "label",
+   "note": "in-game menu setting: a filter that imitates an LCD screen"
+  },
+  {
+   "en": "Color Correction",
+   "kind": "label",
+   "note": "in-game menu setting: colour correction of the handheld screen"
+  },
+  {
+   "en": "Aspect Ratio",
+   "kind": "label",
+   "note": "in-game menu setting: shape of the picture"
+  },
+  {
+   "en": "Save Slot",
+   "kind": "label",
+   "note": "in-game menu setting: which save state slot"
+  },
+  {
+   "en": "Load State",
+   "kind": "label",
+   "note": "in-game menu setting: load a save state"
+  },
+  {
+   "en": "Save State",
+   "kind": "label",
+   "note": "in-game menu setting: save a save state"
+  },
+  {
+   "en": "Battery",
+   "kind": "label",
+   "note": "in-game menu setting: battery level"
+  },
+  {
+   "en": "CPU Clock",
+   "kind": "label",
+   "note": "in-game menu setting: processor speed"
+  },
+  {
+   "en": "Panel Refresh",
+   "kind": "label",
+   "note": "in-game menu setting: the screen's measured refresh rate"
+  },
+  {
+   "en": "BFI",
+   "kind": "label",
+   "note": "in-game menu setting: black frame insertion (abbreviation, keep short)"
+  },
+  {
+   "en": "Run-Ahead",
+   "kind": "label",
+   "note": "in-game menu setting: input latency reduction by running frames ahead"
+  },
+  {
+   "en": "Rewind",
+   "kind": "label",
+   "note": "in-game menu setting: rewinding the game"
+  },
+  {
+   "en": "Benchmark (Uncap)",
+   "kind": "label",
+   "note": "in-game menu setting: run the game as fast as possible to measure speed"
+  },
+  {
+   "en": "Show FPS",
+   "kind": "label",
+   "note": "in-game menu setting: show frames per second on screen"
+  },
+  {
+   "en": "Latency LED",
+   "kind": "label",
+   "note": "in-game menu setting: an LED that flashes to measure input latency"
+  },
+  {
+   "en": "GBA Core",
+   "kind": "label",
+   "note": "in-game menu setting: which Game Boy Advance emulator core"
+  },
+  {
+   "en": "Core Settings",
+   "kind": "label",
+   "note": "in-game menu setting: the emulator core's own settings"
+  },
+  {
+   "en": "Reset Game",
+   "kind": "label",
+   "note": "in-game menu setting: restart the game"
+  },
+  {
+   "en": "Close",
+   "kind": "label",
+   "note": "in-game menu setting: close the menu"
+  },
+  {
+   "en": "Exit Game",
+   "kind": "label",
+   "note": "in-game menu setting: leave the game for the menu"
+  },
+  {
+   "en": "Palette",
+   "kind": "label",
+   "note": "in-game menu setting: colours used for original Game Boy games"
+  },
+  {
+   "en": "Correction Mode",
+   "kind": "label",
+   "note": "in-game menu setting: how colour correction is computed"
+  },
+  {
+   "en": "Dark Filter",
+   "kind": "label",
+   "note": "in-game menu setting: darkens the picture"
+  },
+  {
+   "en": "Region",
+   "kind": "label",
+   "note": "in-game menu setting: console region of the game"
+  },
+  {
+   "en": "Refresh Rate",
+   "kind": "label",
+   "note": "in-game menu setting: refresh rate"
+  },
+  {
+   "en": "Overscan",
+   "kind": "label",
+   "note": "in-game menu setting: cropping of the picture's border"
+  },
+  {
+   "en": "Audio Filter",
+   "kind": "label",
+   "note": "in-game menu setting: sound interpolation"
+  },
+  {
+   "en": "Hi-Res Blend",
+   "kind": "label",
+   "note": "in-game menu setting: blending of high resolution modes"
+  },
+  {
+   "en": "Turbo (auto-fire)",
+   "kind": "label",
+   "note": "in-game menu setting: automatic repeated button presses"
+  },
+  {
+   "en": "BIOS",
+   "kind": "label",
+   "note": "in-game menu setting: which Game Boy Advance BIOS is used"
+  },
+  {
+   "en": "LCD Ghosting",
+   "kind": "label",
+   "note": "in-game menu setting: imitates the blur of the original screen"
+  },
+  {
+   "en": "Interlaced Rows",
+   "kind": "label",
+   "note": "in-game menu setting: imitates interlaced screen rows"
+  },
+  {
+   "en": "Audio Low-Pass Filter",
+   "kind": "label",
+   "note": "in-game menu setting: softens the sound"
+  },
+  {
+   "en": "Solar Sensor",
+   "kind": "label",
+   "note": "in-game menu setting: light level for games with a solar sensor"
+  },
+  {
+   "en": "Scanlines",
+   "kind": "value",
+   "note": "in-game menu value: screen filter"
+  },
+  {
+   "en": "LCD Grid",
+   "kind": "value",
+   "note": "in-game menu value: screen filter"
+  },
+  {
+   "en": "Dot Matrix",
+   "kind": "value",
+   "note": "in-game menu value: screen filter"
+  },
+  {
+   "en": "Stretch",
+   "kind": "value",
+   "note": "in-game menu value: fill the whole screen"
+  },
+  {
+   "en": "Fit",
+   "kind": "value",
+   "note": "in-game menu value: fit the screen keeping shape"
+  },
+  {
+   "en": "Pixel Perfect",
+   "kind": "value",
+   "note": "in-game menu value: whole-pixel scaling"
+  },
+  {
+   "en": "Balanced",
+   "kind": "value",
+   "note": "in-game menu value: run-ahead level"
+  },
+  {
+   "en": "Responsive",
+   "kind": "value",
+   "note": "in-game menu value: run-ahead level"
+  },
+  {
+   "en": "Max",
+   "kind": "value",
+   "note": "in-game menu value: run-ahead level: maximum"
+  },
+  {
+   "en": "Charging",
+   "kind": "value",
+   "note": "in-game menu value: battery is charging"
+  },
+  {
+   "en": "(next game)",
+   "kind": "value",
+   "note": "in-game menu value: the change applies from the next game started"
+  },
+  {
+   "en": "None",
+   "kind": "value",
+   "note": "in-game menu value: nothing"
+  },
+  {
+   "en": "Auto",
+   "kind": "value",
+   "note": "in-game menu value: automatic"
+  },
+  {
+   "en": "Auto (Detect)",
+   "kind": "value",
+   "note": "in-game menu value: detected automatically"
+  },
+  {
+   "en": "Fast",
+   "kind": "value",
+   "note": "in-game menu value: quicker method"
+  },
+  {
+   "en": "Accurate",
+   "kind": "value",
+   "note": "in-game menu value: exact method"
+  },
+  {
+   "en": "Pixel",
+   "kind": "value",
+   "note": "in-game menu value: pixel aspect"
+  },
+  {
+   "en": "Core",
+   "kind": "value",
+   "note": "in-game menu value: as the emulator core says"
+  },
+  {
+   "en": "Square",
+   "kind": "value",
+   "note": "in-game menu value: square pixels"
+  },
+  {
+   "en": "Grid",
+   "kind": "value",
+   "note": "in-game menu value: screen filter"
+  },
+  {
+   "en": "Grid+",
+   "kind": "value",
+   "note": "in-game menu value: screen filter"
+  },
+  {
+   "en": "USA",
+   "kind": "value",
+   "note": "in-game menu value: region"
+  },
+  {
+   "en": "Europe",
+   "kind": "value",
+   "note": "in-game menu value: region"
+  },
+  {
+   "en": "Japan",
+   "kind": "value",
+   "note": "in-game menu value: region"
+  },
+  {
+   "en": "Crop 8px",
+   "kind": "value",
+   "note": "in-game menu value: cut 8 pixels from the border"
+  },
+  {
+   "en": "Crop 12px",
+   "kind": "value",
+   "note": "in-game menu value: cut 12 pixels from the border"
+  },
+  {
+   "en": "Crop 16px",
+   "kind": "value",
+   "note": "in-game menu value: cut 16 pixels from the border"
+  },
+  {
+   "en": "Linear",
+   "kind": "value",
+   "note": "in-game menu value: sound interpolation"
+  },
+  {
+   "en": "Gaussian",
+   "kind": "value",
+   "note": "in-game menu value: sound interpolation"
+  },
+  {
+   "en": "Cubic",
+   "kind": "value",
+   "note": "in-game menu value: sound interpolation"
+  },
+  {
+   "en": "Sinc",
+   "kind": "value",
+   "note": "in-game menu value: sound interpolation"
+  },
+  {
+   "en": "Merge",
+   "kind": "value",
+   "note": "in-game menu value: blend method"
+  },
+  {
+   "en": "Blur",
+   "kind": "value",
+   "note": "in-game menu value: blend method"
+  },
+  {
+   "en": "N/A (>2MB)",
+   "kind": "value",
+   "note": "in-game menu value: not available for games larger than 2 MB"
+  },
+  {
+   "en": "Nintendo (SD card)",
+   "kind": "value",
+   "note": "in-game menu value: the original BIOS file from the SD card"
+  },
+  {
+   "en": "armGBA (built in)",
+   "kind": "value",
+   "note": "in-game menu value: the BIOS built into armGBA"
+  },
+  {
+   "en": "0 (Dark)",
+   "kind": "value",
+   "note": "in-game menu value: solar sensor level 0: dark"
+  },
+  {
+   "en": "10 (Full Sun)",
+   "kind": "value",
+   "note": "in-game menu value: solar sensor level 10: full sun"
+  },
+  {
+   "en": "%dh %02dm left",
+   "kind": "value",
+   "note": "battery time left: %d hours and %02d minutes, in that order"
+  },
+  {
+   "en": "%dh %02dm to full",
+   "kind": "value",
+   "note": "time until the battery is full: %d hours and %02d minutes, in that order"
+  },
+  {
+   "en": "No armGBA core on the card",
+   "kind": "status",
+   "note": "short note shown after an action in the in-game menu"
+  },
+  {
+   "en": "Takes effect at the next game start",
+   "kind": "status",
+   "note": "short note shown after an action in the in-game menu"
+  },
+  {
+   "en": "gpSP has no core settings",
+   "kind": "status",
+   "note": "short note shown after an action in the in-game menu"
+  },
+  {
+   "en": "State loaded",
+   "kind": "status",
+   "note": "short note shown after an action in the in-game menu"
+  },
+  {
+   "en": "No save state",
+   "kind": "status",
+   "note": "short note shown after an action in the in-game menu"
+  },
+  {
+   "en": "State saved",
+   "kind": "status",
+   "note": "short note shown after an action in the in-game menu"
+  },
+  {
+   "en": "Save failed",
+   "kind": "status",
+   "note": "short note shown after an action in the in-game menu"
+  },
+  {
+   "en": "Region set (some games need Reset)",
+   "kind": "status",
+   "note": "short note shown after an action in the in-game menu"
+  },
+  {
+   "en": "Mute Menu Audio",
+   "kind": "label",
+   "note": "classic theme options row: silence menu sounds"
+  },
+  {
+   "en": "Mute BIOS",
+   "kind": "label",
+   "note": "short form of Mute BIOS Audio"
+  },
+  {
+   "en": "Mute Menu",
+   "kind": "label",
+   "note": "short form of Mute Menu Audio"
+  },
+  {
+   "en": "Sort: Title",
+   "kind": "status",
+   "note": "classic theme note: game list sorted by title"
+  },
+  {
+   "en": "Sort: Publisher",
+   "kind": "status",
+   "note": "classic theme note: sorted by publisher"
+  },
+  {
+   "en": "Sort: Players",
+   "kind": "status",
+   "note": "classic theme note: sorted by number of players"
+  },
+  {
+   "en": "Sort: Release",
+   "kind": "status",
+   "note": "classic theme note: sorted by release date"
+  },
+  {
+   "en": "Sort A to Z",
+   "kind": "status",
+   "note": "classic theme note: sorted alphabetically"
+  },
+  {
+   "en": "Sort Z to A",
+   "kind": "status",
+   "note": "classic theme note: sorted reverse alphabetically"
+  }
+ ]
+}

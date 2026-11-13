@@ -23,6 +23,7 @@ Offsets are from the start of the raw pack and 4-byte aligned.
 import argparse, os, struct, zlib
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+import fontsrc
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ART = os.path.join(HERE, "art")
@@ -91,11 +92,23 @@ def fit(im, bw, bh):
     return im.resize((max(1, round(im.width * k)), max(1, round(im.height * k))), Image.LANCZOS)
 
 
-def write_font(pack, name, path, px):
+def name_codes():
+    """The code points of the languages' names beyond CHARS, each with the CJK face it is drawn in:
+    every menu font carries them, so the Language row shows each language in its own letters."""
+    have, out = set(CHARS), {}
+    for text, face in fontsrc.native_names():
+        for ch in text:
+            if ord(ch) not in have and ord(ch) not in out:
+                out[ord(ch)] = face
+    return sorted(out.items())
+
+
+def write_font(pack, name, path, px, weight=None):
     """Font entry: u16 px, ascent, descent, count, atlas w, atlas h, kern count, pad;
     then per glyph u32 code, s16 xoff, s16 yoff (from the pen at the baseline), u16 x, y, w, h,
     u32 advance (1/64 px); then kerning u32 (first << 16 | second), s32 (1/64 px), sorted;
-    then the u8 atlas."""
+    then the u8 atlas. CHARS come first at fixed places; with a weight, the languages' names'
+    letters follow, sorted (from the Noto fonts where Inter has none)."""
     f = ImageFont.truetype(path, px)
     asc, desc = f.getmetrics()
     glyphs = []
@@ -103,21 +116,19 @@ def write_font(pack, name, path, px):
         ch = chr(c)
         bb = f.getbbox(ch, anchor="ls")
         w, h = max(0, bb[2] - bb[0]), max(0, bb[3] - bb[1])
-        glyphs.append([c, bb[0], bb[1], w, h, round(f.getlength(ch) * 64)])
-    # shelf-pack the glyphs into a 512-wide atlas
-    aw, x, y, shelf = 512, 0, 0, 0
-    for g in glyphs:
-        if x + g[3] + 1 > aw:
-            x, y, shelf = 0, y + shelf + 1, 0
-        g.append(x); g.append(y)
-        x += g[3] + 1
-        shelf = max(shelf, g[4])
-    ah = y + shelf + 1
-    atlas = Image.new("L", (aw, ah), 0)
-    d = ImageDraw.Draw(atlas)
-    for c, xo, yo, w, h, adv, gx, gy in glyphs:
+        im = None
         if w and h:
-            d.text((gx - xo, gy - yo), chr(c), font=f, fill=255, anchor="ls")
+            im = Image.new("L", (w, h), 0)
+            ImageDraw.Draw(im).text((-bb[0], -bb[1]), ch, font=f, fill=255, anchor="ls")
+        glyphs.append([c, bb[0], bb[1], w, h, round(f.getlength(ch) * 64), im])
+    if weight:
+        for c, face in name_codes():
+            g = fontsrc.glyph(c, weight, px, face)
+            if not g:
+                raise SystemExit("no font has U+%04X (a language's name): run subset_fonts.py" % c)
+            glyphs.append(g)
+    atlas = fontsrc.shelf_pack(glyphs)
+    aw, ah = atlas.size
     kern = []
     base = {c: f.getlength(chr(c)) for c in range(0x20, 0x7F)}
     for a in range(0x21, 0x7F):
@@ -126,7 +137,7 @@ def write_font(pack, name, path, px):
             if abs(k) >= 0.25:
                 kern.append(((a << 16) | b, round(k * 64)))
     blob = bytearray(struct.pack("<HHHHHHHH", px, asc, desc, len(glyphs), aw, ah, len(kern), 0))
-    for c, xo, yo, w, h, adv, gx, gy in glyphs:
+    for c, xo, yo, w, h, adv, im, gx, gy in glyphs:
         blob += struct.pack("<IhhHHHHI", c, xo, yo, gx, gy, w, h, adv)
     for key, k in sorted(kern):
         blob += struct.pack("<Ii", key, k)
@@ -209,7 +220,7 @@ def main():
         pack.mask("ic_%s" % name, im.resize((u(29), u(29)), Image.LANCZOS))
     for name in ("library", "play"):
         pack.mask("ic_" + name, Image.open(os.path.join(ART, "icons", name + ".png")).resize((u(18), u(18)), Image.LANCZOS))
-    for name in ("sun", "sound", "bfi", "display", "colour", "power", "mute"):
+    for name in ("sun", "sound", "bfi", "display", "colour", "power", "mute", "language"):
         pack.mask("ic_" + name, Image.open(os.path.join(ART, "icons", name + ".png")).resize((u(39), u(39)), Image.LANCZOS))
     # the Settings subsections (BIOS boot, game resume) and the chevron of a row that opens one
     for name, src in (("bios", "system"), ("rsm", "resume")):
@@ -224,12 +235,14 @@ def main():
 
     fdir = os.path.join(ART, "fonts")
     for name, size, weight in FONTS:
-        write_font(pack, "f_" + name, os.path.join(fdir, "Inter-%s.ttf" % weight), u(size))
+        write_font(pack, "f_" + name, os.path.join(fdir, "Inter-%s.ttf" % weight), u(size), weight)
 
     lines = []
     for spec in a.themes:
         name, tdir = spec.split("=", 1)
-        lines.append("%s|%s" % (name, label_of(name, tdir)))
+        # a third field marks a theme still being finished (a 'beta' file in its folder)
+        beta = "|beta" if os.path.exists(os.path.join(tdir, "beta")) else ""
+        lines.append("%s|%s%s" % (name, label_of(name, tdir), beta))
     pack.text("themes", "\n".join(lines))
 
     raw, z = pack.write(a.out, (W, H))
@@ -258,7 +271,7 @@ def igm_pack(out, W, H, u):
     roles = {name: (size, weight) for name, size, weight in FONTS}
     for name in IGM_FONTS:
         size, weight = roles[name]
-        write_font(pack, "f_" + name, os.path.join(fdir, "Inter-%s.ttf" % weight), u(size))
+        write_font(pack, "f_" + name, os.path.join(fdir, "Inter-%s.ttf" % weight), u(size), weight)
     raw, z = pack.write(out, (W, H))
     print("in-game pack %dx%d: %d entries, %d bytes (%d raw)" % (W, H, len(pack.entries), z, raw))
 

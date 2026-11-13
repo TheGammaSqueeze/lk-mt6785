@@ -98,3 +98,9 @@ if [ -f "$THEMES_DIR/current/layout" ]; then
 			"${THEME_ARGS[@]}" || exit 1
 	done
 fi
+# The menus' languages: a pack per language and screen, its words and the glyphs the fonts lack
+# (tools/ayaneo/pico_current/i18n). Any theme reads them; English needs none.
+echo ">> Building the language packs"
+for size in 960x640 1280x960; do
+	python3 tools/ayaneo/pico_current/build_lang.py "$size" out/sdcard/gammaos || exit 1
+done

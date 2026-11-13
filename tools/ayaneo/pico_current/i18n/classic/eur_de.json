@@ -1,0 +1,5 @@
+{
+ "sys_option_init_Title": "Betriebssystem starten",
+ "sys_option_init_cm_Decide": "Beenden und das Betriebssystem starten",
+ "sys_option_init_dialog_Confirm": "Der Emulator wird beendet und das\nBetriebssystem gestartet.\nDein Spielfortschritt wird auf der\nSD-Karte gespeichert.\nMöchtest du wirklich fortfahren? "
+}

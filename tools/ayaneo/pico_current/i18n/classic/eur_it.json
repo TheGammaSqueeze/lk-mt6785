@@ -1,0 +1,5 @@
+{
+ "sys_option_init_Title": "Avvia il sistema",
+ "sys_option_init_cm_Decide": "Esci e avvia il sistema operativo",
+ "sys_option_init_dialog_Confirm": "L'emulatore verrà chiuso e verrà\navviato il sistema operativo.\nI progressi sono salvati sulla scheda SD.\nVuoi continuare? "
+}

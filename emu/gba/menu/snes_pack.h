@@ -52,6 +52,7 @@ const snes_res_entry *snes_res_find(const snes_pack *p, uint32_t hash);
 const snes_img_entry  *snes_res_img(const snes_pack *p, uint32_t hash);   /* TEXTURE */
 const snes_spr_entry  *snes_res_spr(const snes_pack *p, uint32_t hash);   /* SPRITE */
 const snes_font_entry *snes_res_font(const snes_pack *p, uint32_t hash);
+int snes_pack_set_locale(snes_pack *p, const char *name);
 const snes_anim_entry *snes_res_anim(const snes_pack *p, uint32_t hash);
 const snes_sanim_entry*snes_res_sanim(const snes_pack *p, uint32_t hash);
 const snes_snd_entry  *snes_res_snd(const snes_pack *p, uint32_t hash);

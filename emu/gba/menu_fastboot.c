@@ -135,6 +135,20 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 						 g_dbg_bt_frame1, g_dbg_bt_intro_end, g_dbg_bt_intro_frames, g_dbg_intro_aw_wait_ms);
 					fastboot_info(lbuf);
 				}
+				{	/* the Current menu's last opening (pico_current.c), ms from its start */
+					extern volatile unsigned int g_dbg_cur_ms[12];
+					extern volatile unsigned g_dbg_sc_hit, g_dbg_sc_miss;
+					snprintf(lbuf, sizeof lbuf, "cur_ms: %u igm %u pack %u lang %u setup %u art %u",
+						 g_dbg_cur_ms[0], g_dbg_cur_ms[1], g_dbg_cur_ms[2], g_dbg_cur_ms[3], g_dbg_cur_ms[4],
+						 g_dbg_cur_ms[5]);
+					fastboot_info(lbuf);
+					snprintf(lbuf, sizeof lbuf, "cur_ms: shown %u fonts %u roster %u rec %u %u batt %u",
+						 g_dbg_cur_ms[6], g_dbg_cur_ms[7], g_dbg_cur_ms[8], g_dbg_cur_ms[9], g_dbg_cur_ms[10],
+						 g_dbg_cur_ms[11]);
+					fastboot_info(lbuf);
+					snprintf(lbuf, sizeof lbuf, "card sectors: %u from the cache, %u read", g_dbg_sc_hit, g_dbg_sc_miss);
+					fastboot_info(lbuf);
+				}
 			}
 		}
 		snprintf(lbuf, sizeof lbuf, "render_us=%u peak_us=%u fps=%u",
@@ -227,7 +241,9 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			 g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list, g_dbg_bt_coreload, g_dbg_bt_coreinit);
 		fastboot_info(lbuf);
 		extern volatile int g_dbg_bt_retime;
-		snprintf(lbuf, sizeof lbuf, "bt: start=%u frame1=%u ms retime=%d", g_dbg_bt_start, g_dbg_bt_frame1, g_dbg_bt_retime);
+		{ extern volatile unsigned int g_dbg_bt_boxart;
+		  snprintf(lbuf, sizeof lbuf, "bt: start=%u frame1=%u ms retime=%d boxart=%u", g_dbg_bt_start, g_dbg_bt_frame1,
+			   g_dbg_bt_retime, g_dbg_bt_boxart); }
 		fastboot_info(lbuf);
 	}
 	{

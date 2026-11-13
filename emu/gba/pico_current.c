@@ -28,6 +28,7 @@
 #include "sd_fat.h"                 /* gba_rom_entry, GBA_CONSOLE_* */
 #include "fat_ro.h"
 #include "fat_wr.h"
+#include "pico_i18n.h"          /* tr(): the menus' languages */
 
 extern unsigned int gpt4_get_current_tick(void);
 extern unsigned int *ayaneo_canvas_back(unsigned int *pitch, unsigned int *W, unsigned int *H);
@@ -140,7 +141,11 @@ enum { T_IMAGE = 1, T_MASK = 2, T_FONT = 3, T_TEXT = 4 };
 typedef struct { char name[32]; uint16_t type, flags, w, h; uint32_t off, len; } cur_entry;
 typedef struct { int w, h; const uint16_t *rgb; const uint8_t *a; const uint8_t *rgb24; } cimg;   /* no rgb: a mask */
 typedef struct { uint32_t code; int16_t xo, yo; uint16_t x, y, w, h; uint32_t adv; } cglyph;
-typedef struct { int px, asc, n, aw, nk; const cglyph *g; const int32_t *kern; const uint8_t *atlas; } cfont;
+/* a font, and the glyphs the language in use adds to it (its own atlas) */
+typedef struct {
+	int px, asc, n, aw, nk; const cglyph *g; const int32_t *kern; const uint8_t *atlas;
+	int sn, saw; const cglyph *sg; const uint8_t *satlas;
+} cfont;
 
 static const uint8_t *s_raw;
 static const cur_entry *s_ent;
@@ -167,10 +172,26 @@ static cimg img(const char *name)
 	}
 	return r;
 }
+/* the language pack's glyphs for the font of this name (pico_i18n.c), or none */
+static void font_extra(cfont *f, const char *name)
+{
+	uint32_t len = 0;
+	const uint8_t *e = pico_lang_entry(name, T_FONT, &len);
+	f->sn = 0; f->saw = 0; f->sg = 0; f->satlas = 0;
+	if (e && len >= 16) {
+		const uint16_t *h = (const uint16_t *)e;
+		if (16u + h[3] * sizeof(cglyph) + (uint32_t)h[4] * h[5] <= len) {
+			f->sn = h[3]; f->saw = h[4];
+			f->sg = (const cglyph *)(e + 16);
+			f->satlas = (const uint8_t *)(f->sg + f->sn);
+		}
+	}
+}
 static cfont font(const char *name)
 {
-	cfont f = { 0, 0, 0, 0, 0, 0, 0, 0 };
+	cfont f;
 	const cur_entry *e = find(name, T_FONT);
+	memset(&f, 0, sizeof f);
 	if (e) {
 		const uint16_t *h = (const uint16_t *)(s_raw + e->off);
 		f.px = h[0]; f.asc = h[1]; f.n = h[3]; f.aw = h[4]; f.nk = h[6];
@@ -178,6 +199,7 @@ static cfont font(const char *name)
 		f.kern = (const int32_t *)(f.g + f.n);
 		f.atlas = (const uint8_t *)(f.kern + 2 * f.nk);
 	}
+	font_extra(&f, name);
 	return f;
 }
 
@@ -395,11 +417,30 @@ static uint32_t utf8_next(const char **ps)
 	} else *ps += 1;
 	return c;
 }
-static const cglyph *glyph(const cfont *f, uint32_t c)
+#define GLYPHS_FIXED 193           /* ASCII, Latin-1, the bullet and the ellipsis at fixed places */
+static const cglyph *glyph_find(const cglyph *g, int lo, int hi, uint32_t c)
+{
+	while (lo <= hi) {
+		int m = (lo + hi) >> 1;
+		if (g[m].code == c) return &g[m];
+		if (g[m].code < c) lo = m + 1; else hi = m - 1;
+	}
+	return 0;
+}
+/* a code point's glyph and the atlas it is in: the font's fixed ones, then the others it carries
+ * (the languages' names, sorted), then the language pack's; '?' when none has it */
+static const cglyph *glyph(const cfont *f, uint32_t c, const uint8_t **atlas, int *aw)
 {
 	int i = c >= 0x20 && c < 0x7F ? (int)c - 0x20 : c >= 0xA0 && c <= 0xFF ? 95 + (int)c - 0xA0 :
-		c == 0x2022 ? 191 : c == 0x2026 ? 192 : '?' - 0x20;
-	return i < f->n ? &f->g[i] : &f->g['?' - 0x20];
+		c == 0x2022 ? 191 : c == 0x2026 ? 192 : -1;
+	const cglyph *g;
+	*atlas = f->atlas; *aw = f->aw;
+	if (i >= 0 && i < f->n) return &f->g[i];
+	if (i < 0) {
+		if ((g = glyph_find(f->g, GLYPHS_FIXED, f->n - 1, c))) return g;
+		if (f->sg && (g = glyph_find(f->sg, 0, f->sn - 1, c))) { *atlas = f->satlas; *aw = f->saw; return g; }
+	}
+	return &f->g['?' - 0x20];
 }
 static int kern(const cfont *f, uint32_t a, uint32_t b)   /* 1/64 px */
 {
@@ -417,13 +458,16 @@ static int kern(const cfont *f, uint32_t a, uint32_t b)   /* 1/64 px */
 /* width in px of text (ls: extra px between letters, upper: draw in capitals) */
 static int text_w(const cfont *f, const char *s, int ls, int upper)
 {
-	int w = 0;
+	int w = 0, aw;
 	uint32_t prev = 0;
+	const uint8_t *at;
+	char vis[512];
 	if (!f->g) return 0;
+	s = pico_bidi(s, vis, sizeof vis);   /* right-to-left letters in drawing order */
 	while (*s) {
 		uint32_t c = utf8_next(&s);
-		if (upper && c >= 'a' && c <= 'z') c -= 32;
-		w += (int)glyph(f, c)->adv + kern(f, prev, c) + ls * 64;
+		if (upper) c = pico_upper(c);
+		w += (int)glyph(f, c, &at, &aw)->adv + kern(f, prev, c) + ls * 64;
 		prev = c;
 	}
 	return (w + 32) >> 6;
@@ -433,19 +477,22 @@ static int text(const cfont *f, int x, int y, const char *s, uint32_t rgb, int o
 {
 	int pen, w = text_w(f, s, ls, upper);
 	uint32_t prev = 0;
+	char vis[512];
 	if (!f->g) return 0;
+	s = pico_bidi(s, vis, sizeof vis);
 	if (anchor == 1) x -= w / 2; else if (anchor == 2) x -= w;
 	pen = x * 64;
 	while (*s) {
 		uint32_t c = utf8_next(&s);
 		const cglyph *g;
-		int i, j, gx;
-		if (upper && c >= 'a' && c <= 'z') c -= 32;
+		const uint8_t *at;
+		int i, j, gx, aw;
+		if (upper) c = pico_upper(c);
 		pen += kern(f, prev, c);
-		g = glyph(f, c);
+		g = glyph(f, c, &at, &aw);
 		gx = ((pen + 32) >> 6) + g->xo;
 		for (j = 0; j < g->h; j++) {
-			const uint8_t *a = f->atlas + (g->y + j) * f->aw + g->x;
+			const uint8_t *a = at + (g->y + j) * aw + g->x;
 			for (i = 0; i < g->w; i++)
 				if (a[i]) { int al = (a[i] * op) >> 8; put(gx + i, y + g->yo + j, rgb, al + (al >> 7)); }
 		}
@@ -454,12 +501,11 @@ static int text(const cfont *f, int x, int y, const char *s, uint32_t rgb, int o
 	}
 	return w;
 }
-/* text cut to max_w px with an ellipsis */
-static void text_fit(const cfont *f, int x, int y, const char *s, uint32_t rgb, int op, int max_w)
+/* s as it fits in max_w px: itself, or cut with an ellipsis into buf (cap bytes) */
+static const char *fit_str(const cfont *f, const char *s, int max_w, char *buf, int cap)
 {
-	char buf[160];
 	int n = (int)strlen(s);
-	if (text_w(f, s, 0, 0) <= max_w || n >= (int)sizeof buf - 4) { text(f, x, y, s, rgb, op, 0, 0, 0); return; }
+	if (text_w(f, s, 0, 0) <= max_w || n >= cap - 4) return s;
 	memcpy(buf, s, (size_t)n + 1);
 	while (n > 0) {
 		n--;
@@ -467,16 +513,46 @@ static void text_fit(const cfont *f, int x, int y, const char *s, uint32_t rgb, 
 		buf[n] = (char)0xE2; buf[n + 1] = (char)0x80; buf[n + 2] = (char)0xA6; buf[n + 3] = 0;   /* ... */
 		if (text_w(f, buf, 0, 0) <= max_w) break;
 	}
-	text(f, x, y, buf, rgb, op, 0, 0, 0);
+	return buf;
+}
+/* text cut to max_w px with an ellipsis */
+static void text_fit(const cfont *f, int x, int y, const char *s, uint32_t rgb, int op, int max_w)
+{
+	char buf[192];
+	text(f, x, y, fit_str(f, s, max_w, buf, sizeof buf), rgb, op, 0, 0, 0);
+}
+/* text over at most two lines of max_w px, broken at a space (between any two letters for a
+ * script written without them), the second cut with an ellipsis; returns the lines drawn */
+static int text_wrap2(const cfont *f, int x, int y, int line_h, const char *s, uint32_t rgb, int op, int max_w)
+{
+	char a[192];
+	int n = (int)strlen(s), cut = 0, sp = 0, i;
+	if (text_w(f, s, 0, 0) <= max_w || n >= (int)sizeof a) { text_fit(f, x, y, s, rgb, op, max_w); return 1; }
+	for (i = 1; i <= n; i++) {	/* the longest first line that fits, preferring to end at a space */
+		if (i < n && ((unsigned char)s[i] & 0xC0) == 0x80) continue;
+		memcpy(a, s, (size_t)i); a[i] = 0;
+		if (text_w(f, a, 0, 0) > max_w) break;
+		cut = i;
+		if (s[i] == ' ') sp = i;
+	}
+	if (sp > cut / 2) cut = sp;
+	if (!cut) { text_fit(f, x, y, s, rgb, op, max_w); return 1; }
+	memcpy(a, s, (size_t)cut); a[cut] = 0;
+	text(f, x, y, a, rgb, op, 0, 0, 0);
+	while (s[cut] == ' ') cut++;
+	text_fit(f, x, y + line_h, s + cut, rgb, op, max_w);
+	return 2;
 }
 
 /* ---- the theme's art and type, looked up once per pack load -------------------------------- */
 /* the settings rows: the main list, then the two subsections it opens */
 enum { SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_BIOS, SET_RESUME, SET_BOOT_OS,
-       SET_SKIP_INTRO, SET_INTRO_BG, SET_MUTE_BIOS, SET_INTRO_RESUME, SET_RESUME_BOOT, SET_RESUME_OPEN, SET_N };
+       SET_SKIP_INTRO, SET_INTRO_BG, SET_MUTE_BIOS, SET_INTRO_RESUME, SET_RESUME_BOOT, SET_RESUME_OPEN,
+       SET_LANGUAGE, SET_N };
 enum { SPAGE_MAIN, SPAGE_BIOS, SPAGE_RESUME, SPAGE_N };
-static const signed char k_set_page[SPAGE_N][9] = {
-	{ SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_BIOS, SET_RESUME, SET_BOOT_OS, -1 },
+#define SET_ROWS 10                   /* rows in a settings list, at most, with its end */
+static const signed char k_set_page[SPAGE_N][SET_ROWS] = {
+	{ SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_LANGUAGE, SET_BIOS, SET_RESUME, SET_BOOT_OS, -1 },
 	{ SET_SKIP_INTRO, SET_INTRO_BG, SET_MUTE_BIOS, SET_INTRO_RESUME, -1 },
 	{ SET_RESUME_BOOT, SET_RESUME_OPEN, -1 },
 };
@@ -488,6 +564,7 @@ static struct {
 	      srow, srowf, sval, dname, dnum, dunit, hintc, hint, empty;
 	int nthemes;
 	char theme_id[NTHEMES][24], theme_label[NTHEMES][24];
+	unsigned char theme_beta[NTHEMES];   /* still being finished: shown as Beta */
 } A;
 
 static void art_load(void)
@@ -495,7 +572,7 @@ static void art_load(void)
 	static const char *sys[NSYS] = { "gb", "gbc", "gba", "snes", "genesis", "sms", "gg", "sg" };
 	static const char *rail[3] = { "games", "resume", "settings" };
 	static const char *setic[SET_N] = { "sun", "sound", "bfi", "display", "colour", "bios", "rsm", "power",
-					    "bios", "display", "mute", "rsm", "rsm", "rsm" };
+					    "bios", "display", "mute", "rsm", "rsm", "rsm", "language" };
 	char n[32];
 	int i;
 	for (i = 0; i < NSYS; i++) {
@@ -521,7 +598,7 @@ static void art_load(void)
 	A.dname = font("f_dname"); A.dnum = font("f_dnum"); A.dunit = font("f_dunit");
 	A.hintc = font("f_hintc"); A.hint = font("f_hint"); A.empty = font("f_empty");
 	A.nthemes = 0;
-	{	/* the card's themes, "id|Label" a line, in menu order */
+	{	/* the card's themes, "id|Label" a line (then "|beta" for one still being finished), in menu order */
 		const cur_entry *e = find("themes", T_TEXT);
 		const char *p = e ? (const char *)(s_raw + e->off) : 0, *end = p ? p + e->len : 0;
 		while (p && p < end && A.nthemes < NTHEMES) {
@@ -529,8 +606,9 @@ static void art_load(void)
 			while (p < end && *p != '|' && *p != '\n' && k < 23) A.theme_id[A.nthemes][k++] = *p++;
 			A.theme_id[A.nthemes][k] = 0;
 			if (p < end && *p == '|') p++;
-			while (p < end && *p != '\n' && m < 23) A.theme_label[A.nthemes][m++] = *p++;
+			while (p < end && *p != '\n' && *p != '|' && m < 23) A.theme_label[A.nthemes][m++] = *p++;
 			A.theme_label[A.nthemes][m] = 0;
+			A.theme_beta[A.nthemes] = p + 5 <= end && !strncmp(p, "|beta", 5);
 			while (p < end && *p != '\n') p++;
 			if (p < end) p++;
 			if (k) A.nthemes++;
@@ -551,7 +629,7 @@ static struct {
 	float sys_t;                      /* 0..1, the console and the current moving to the new system */
 	float dip;                        /* 1..0, the short dip of a screen change */
 	int lib_sel[NSYS], lib_top[NSYS];
-	int res_sel, set_sel, theme_pick;
+	int res_sel, set_sel, theme_pick, lang_pick;
 	int set_page;                     /* the settings list shown: the main one or a subsection */
 	int nrec, rec[NRECENT];           /* recently played, rom indices, newest first */
 	int batt, chg;
@@ -919,7 +997,7 @@ static void header(const char *realm)
 	w = x + U(31) + w + U(8);
 	w += text(&A.sub, w, U(47), "Pico", C_MUTED, 256, 0, 0, 0);
 	fill(w + U(14), U(31), 1, U(17), C_MUTED, 115);
-	text(&A.realm, w + U(32), U(46), realm, C_MUTED, 256, 0, 0, 0);
+	text(&A.realm, w + U(32), U(46), tr(realm), C_MUTED, 256, 0, 0, 0);
 	if (pct >= 0) {	/* the battery: an outline, its level, the percent */
 		char t[8];
 		int tx = U(s_uw - s_p), bx;
@@ -943,21 +1021,22 @@ static void hints(const char *const *codes, const char *const *labels, int n)
 		else draw_mask(&A.pillm, xx, U(720 - 35), C_MUTED, 256);
 		text(&A.hintc, xx + rad, U(720 - 22.9f), codes[i], C_INK, 256, 1, 0, 0);
 		xx += 2 * rad + U(8);
-		xx += text(&A.hint, xx, U(720 - 22), labels[i], C_MUTED, 256, 0, 0, 0) + U(13);
+		xx += text(&A.hint, xx, U(720 - 22), tr(labels[i]), C_MUTED, 256, 0, 0, 0) + U(13);
 	}
 }
 static void rail(void)
 {
 	static const char *label[3] = { "Games", "Resume", "Settings" };
-	float pitch = s_uw * .116f < 148 ? s_uw * .116f : 148, yy = 119;
+	float pitch = s_uw * .116f < 148 ? s_uw * .116f : 148, yy = 119, x = s_p;
 	int i;
 	for (i = 0; i < 3; i++) {
-		float x = s_p + i * pitch;
 		int f = i == S.tab;
+		float need = 42 + (float)text_w(&A.railf_t, tr(label[i]), 0, 0) / g_s + 22;   /* a long word pushes the next tab on */
 		if (f) draw_mask(&A.glow, U(x + 20) - A.glow.w / 2, U(yy + 15) - A.glow.h / 2, C_ACCENT, 256);
 		draw_mask(f ? &A.railf[i] : &A.rail[i], U(x), U(yy) + (f ? 0 : U(2.5f)), f ? C_INK : C_MUTED, 256);
-		text(f ? &A.railf_t : &A.rail_t, U(x + 42), U(yy + 23), label[i], f ? C_INK : C_MUTED, 256, 0, 0, 0);
+		text(f ? &A.railf_t : &A.rail_t, U(x + 42), U(yy + 23), tr(label[i]), f ? C_INK : C_MUTED, 256, 0, 0, 0);
 		if (f) fill(U(x), U(yy + 41) - 1, U(77), U(1.8f) > 1 ? U(1.8f) : 2, C_ACCENT, 256);
+		x += need > pitch ? need : pitch;
 	}
 }
 /* list rows: the focused one gets the accent wash and bar */
@@ -975,16 +1054,22 @@ static void rows(float x, float y, float w, float pitch, const char *const *item
 			}
 			fill(xi, yy + U(8), U(2.5f) > 2 ? U(2.5f) : 2, ph - U(18), C_ACCENT, 256);
 		}
-		text_fit(sel ? ff : fn, xi + U(16), yy + (int)(ph * .61f), items[i], sel ? C_INK : C_MUTED, 256,
-			 wi - U(32) - (values ? U(90) : 0));
-		if (values && values[i])
-			text(fv, xi + wi - U(12), yy + (int)(ph * .61f), values[i], sel ? C_INK : C_MUTED, 256, 2, 0, 0);
+		{	/* the value at the right, at most 55 % of the row; the name in what is left */
+			char vb[96];
+			const char *v = values && values[i] && values[i][0] ? fit_str(fv, values[i], wi * 55 / 100, vb, sizeof vb) : 0;
+			int vw = v ? text_w(fv, v, 0, 0) + U(16) : values ? U(40) : 0;
+			text_fit(sel ? ff : fn, xi + U(16), yy + (int)(ph * .61f), items[i], sel ? C_INK : C_MUTED, 256,
+				 wi - U(28) - vw);
+			if (v) text(fv, xi + wi - U(12), yy + (int)(ph * .61f), v, sel ? C_INK : C_MUTED, 256, 2, 0, 0);
+		}
 		hline(xi + U(14), xi + wi, yy + ph - 1, C_MUTED, 49);
 	}
 }
 static void button(float x, float y, const char *label, const cimg *icon)
 {
-	int tw = text_w(&A.button, label, 0, 0), w = U(38) + tw + U(20);
+	int tw, w;
+	label = tr(label);
+	tw = text_w(&A.button, label, 0, 0); w = U(38) + tw + U(20);
 	pill_fill(U(x), U(y), w, U(41), C_INK, 256);
 	if (icon) draw_mask(icon, U(x + 12), U(y + 11), C_BTN_INK, 256);
 	text(&A.button, U(x + 38), U(y + 26), label, C_BTN_INK, 256, 0, 0, 0);
@@ -1033,20 +1118,20 @@ static void home_games(void)
 {
 	float x = s_p + 9, yy = 720 * .375f, base = 720 - 101, span;
 	int cur = S.systype[S.sys], i, cx, w;
-	char t[32];
+	char t[64];
 	if (S.sys_t >= 1) stage_draw();   /* at rest the consoles are part of the menu layer */
 	/* the system, its count, the way in */
-	text(&A.tag13, U(x), U(yy), "Game systems", C_MUTED, 256, 0, U(2), 1);
+	text(&A.tag13, U(x), U(yy), tr("Game systems"), C_MUTED, 256, 0, U(2), 1);
 	draw_mask(&A.logo[cur], U(x), U(yy + 25 + 41.5f) - A.logo[cur].h / 2, C_INK, 256);
-	snprintf(t, sizeof t, "%d %s", S.syscount[S.sys], S.syscount[S.sys] == 1 ? "game" : "games");
+	snprintf(t, sizeof t, tr_n(S.syscount[S.sys], "%d game", "%d games"), S.syscount[S.sys]);
 	w = text(&A.count, U(x), U(yy + 154), t, C_INK, 256, 0, 0, 0);
 	cx = U(x) + w + U(14);
 	disc((float)cx, U(yy + 148) + .0f, U(2) + .0f, C_MUTED, 256);
-	text(&A.lib, cx + U(14), U(yy + 154), "Library", C_MUTED, 256, 0, 0, 0);
+	text(&A.lib, cx + U(14), U(yy + 154), tr("Library"), C_MUTED, 256, 0, 0, 0);
 	button(x, yy + 190, "Open library", &A.ic_library);
 	/* the systems strip */
 	hline(U(s_p), U(s_uw - s_p), U(base - 27), C_MUTED, 72);
-	text(&A.tag11, U(s_p), U(base + 4), "Systems", C_MUTED, 256, 0, U(2), 1);
+	text(&A.tag11, U(s_p), U(base + 4), tr("Systems"), C_MUTED, 256, 0, U(2), 1);
 	span = (s_uw - 2 * s_p - 121) / (S.nsys > 4 ? S.nsys : 4);
 	if (span > 168) span = 168;
 	for (i = 0; i < S.nsys; i++) {
@@ -1062,7 +1147,7 @@ static void game_list(const short *idx, int n, int sel, int top, int title_y, co
 	float yy = 720 * .36f, lw = s_uw * .45f, rw = s_uw * .34f < 393 ? s_uw * .34f : 393, rh = 311;
 	float rx = s_uw - s_p - rw, ry = 720 * .30f;
 	int i, k = n - top < LIB_ROWS ? n - top : LIB_ROWS;
-	if (title) text(&A.tag13, U(s_p), U(title_y), title, C_MUTED, 256, 0, U(2), 1);
+	if (title) text(&A.tag13, U(s_p), U(title_y), tr(title), C_MUTED, 256, 0, U(2), 1);
 	for (i = 0; i < k; i++) s_rowtxt[i] = s_names[idx[top + i]];
 	rows(s_p, yy, lw, 51, s_rowtxt, 0, k, sel - top, &A.row, &A.rowf, 0);
 	if (top > 0) disc(U(s_p + lw - 8) + .0f, U(yy - 10) + .0f, U(2.5f) + .0f, C_MUTED, 200);
@@ -1070,7 +1155,7 @@ static void game_list(const short *idx, int n, int sel, int top, int title_y, co
 	if (n) {
 		int rom = idx[sel];
 		art(rom, rx, ry, rw, rh);
-		text(&A.info, U(rx + rw / 2), U(ry + rh + 29), s_sysname[s_roms[rom].type], C_MUTED, 256, 1, 0, 0);
+		text(&A.info, U(rx + rw / 2), U(ry + rh + 29), tr(s_sysname[s_roms[rom].type]), C_MUTED, 256, 1, 0, 0);
 	}
 }
 static void home_resume(void)
@@ -1079,8 +1164,8 @@ static void home_resume(void)
 	int i;
 	for (i = 0; i < S.nrec; i++) idx[i] = (short)S.rec[i];
 	if (!S.nrec) {
-		text(&A.tag13, U(s_p), U(720 * .36f - 22), "Recently played", C_MUTED, 256, 0, U(2), 1);
-		text(&A.empty, U(s_p), U(720 * .36f + 32), "The games you play appear here.", C_MUTED, 256, 0, 0, 0);
+		text(&A.tag13, U(s_p), U(720 * .36f - 22), tr("Recently played"), C_MUTED, 256, 0, U(2), 1);
+		text(&A.empty, U(s_p), U(720 * .36f + 32), tr("The games you play appear here."), C_MUTED, 256, 0, 0, 0);
 		return;
 	}
 	game_list(idx, S.nrec, S.res_sel, S.res_sel >= LIB_ROWS ? S.res_sel - LIB_ROWS + 1 : 0,
@@ -1091,48 +1176,56 @@ static unsigned int theme_hash(int i) { return snes_hash(A.theme_id[i < 0 ? 0 : 
 static const char *const k_set_name[SET_N] = { "Brightness", "Volume", "Black Frame Insertion", "Theme", "Colour",
 	"BIOS Boot", "Game Resume", "Boot to Android",
 	"Skip BIOS Intro", "BIOS Intro Background", "Mute BIOS Audio", "BIOS Intro on Resume",
-	"Resume on Power On", "Resume on Game Open" };
+	"Resume on Power On", "Resume on Game Open", "Language" };
 /* the line under a setting on the left, where it says more than its value */
 static const char *const k_set_about[SET_N] = { 0, 0, 0, 0, 0,
 	"The Game Boy Advance start-up screen", "Where games carry on from", "Restart into Android",
 	"Start games without the logo screen", "Behind the logo at start-up", "The start-up chime",
 	"The logo first, then the resumed game fades in",
-	"Power on straight back into the game you left", "Games carry on where you left them (B: fresh)" };
+	"Power on straight back into the game you left", "Games carry on where you left them (B: fresh)",
+	"The language of the menus" };
 static void set_value(int i, char *buf, int n, int *num)
 {
 	*num = -1;
 	switch (i) {
 	case SET_BRIGHT: *num = ayaneo_brightness_pct(); snprintf(buf, n, "%d%%", *num); break;
 	case SET_VOLUME: *num = ayaneo_gbc_audio_get_volume(); snprintf(buf, n, "%d%%", *num); break;
-	case SET_BFI:    snprintf(buf, n, "%s", ayaneo_strobe_name(ayaneo_get_strobe())); break;
-	case SET_THEME:  snprintf(buf, n, "%s", S.theme_pick < A.nthemes ? A.theme_label[S.theme_pick] : ""); break;
-	case SET_COLOUR: snprintf(buf, n, "%s", k_colour[g_colour].name); break;
+	case SET_BFI:    snprintf(buf, n, "%s", tr(ayaneo_strobe_name(ayaneo_get_strobe()))); break;
+	case SET_THEME:
+		if (S.theme_pick >= A.nthemes) buf[0] = 0;
+		else if (A.theme_beta[S.theme_pick]) snprintf(buf, n, tr("%s (Beta)"), tr(A.theme_label[S.theme_pick]));
+		else snprintf(buf, n, "%s", tr(A.theme_label[S.theme_pick]));
+		break;
+	case SET_COLOUR: snprintf(buf, n, "%s", tr(k_colour[g_colour].name)); break;
 	case SET_BIOS: case SET_RESUME: buf[0] = 0; break;   /* a subsection: its chevron */
-	case SET_SKIP_INTRO:  snprintf(buf, n, "%s", ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
-	case SET_INTRO_BG:    snprintf(buf, n, "%s", ayaneo_get_intro_black() ? "Black" : "White"); break;
-	case SET_MUTE_BIOS:   snprintf(buf, n, "%s", ayaneo_get_mute_bios() ? "On" : "Off"); break;
-	case SET_INTRO_RESUME: snprintf(buf, n, "%s", ayaneo_get_intro_on_resume() ? "On" : "Off"); break;
-	case SET_RESUME_BOOT: snprintf(buf, n, "%s", ayaneo_get_resume_on_boot() ? "On" : "Off"); break;
-	case SET_RESUME_OPEN:   snprintf(buf, n, "%s", ayaneo_get_resume_on_open() ? "On" : "Off"); break;
-	default: snprintf(buf, n, "Open"); break;
+	case SET_SKIP_INTRO:  snprintf(buf, n, "%s", tr(ayaneo_get_skip_gba_intro() ? "On" : "Off")); break;
+	case SET_INTRO_BG:    snprintf(buf, n, "%s", tr(ayaneo_get_intro_black() ? "Black" : "White")); break;
+	case SET_MUTE_BIOS:   snprintf(buf, n, "%s", tr(ayaneo_get_mute_bios() ? "On" : "Off")); break;
+	case SET_INTRO_RESUME: snprintf(buf, n, "%s", tr(ayaneo_get_intro_on_resume() ? "On" : "Off")); break;
+	case SET_RESUME_BOOT: snprintf(buf, n, "%s", tr(ayaneo_get_resume_on_boot() ? "On" : "Off")); break;
+	case SET_RESUME_OPEN:   snprintf(buf, n, "%s", tr(ayaneo_get_resume_on_open() ? "On" : "Off")); break;
+	case SET_LANGUAGE:    snprintf(buf, n, "%s", pico_lang_name(S.lang_pick)); break;
+	default: snprintf(buf, n, "%s", tr("Open")); break;
 	}
 }
-static int set_count(int page) { int n = 0; while (n < 9 && k_set_page[page][n] >= 0) n++; return n; }
+static int set_count(int page) { int n = 0; while (n < SET_ROWS && k_set_page[page][n] >= 0) n++; return n; }
+/* the row of the main list that holds a setting */
+static int set_row_of(int item) { int n = 0; while (n < SET_ROWS && k_set_page[SPAGE_MAIN][n] != item) n++; return n < SET_ROWS ? n : 0; }
 static int set_item(void) { return k_set_page[S.set_page][S.set_sel]; }
 static void home_settings(void)
 {
-	static char vals[9][24];
-	const char *names[9], *vp[9];
+	static char vals[SET_ROWS][64];
+	const char *names[SET_ROWS], *vp[SET_ROWS];
 	float top = 720 * .315f, xx = s_uw * .46f, lw = s_uw - s_p - xx, mid = top + 35, sw = s_uw * .255f, pitch;
 	int i, num, n = set_count(S.set_page), it = set_item();
 	pitch = (720 - 62 - top) / n;
 	if (pitch > 57.6f) pitch = 57.6f;
 	for (i = 0; i < n; i++) {
 		int k = k_set_page[S.set_page][i];
-		names[i] = k_set_name[k];
+		names[i] = tr(k_set_name[k]);
 		set_value(k, vals[i], sizeof vals[i], &num); vp[i] = vals[i];
 	}
-	if (S.set_page) text(&A.tag13, U(xx + 16), U(top - 22), k_set_page_name[S.set_page], C_MUTED, 256, 0, U(2), 1);
+	if (S.set_page) text(&A.tag13, U(xx + 16), U(top - 22), tr(k_set_page_name[S.set_page]), C_MUTED, 256, 0, U(2), 1);
 	rows(xx, top, lw, pitch, names, vp, n, S.set_sel, &A.srow, &A.srowf, &A.sval);
 	for (i = 0; i < n; i++) {	/* the rows that open a subsection: a chevron where the value goes */
 		int k = k_set_page[S.set_page][i];
@@ -1143,7 +1236,7 @@ static void home_settings(void)
 	/* the focused setting, large on the left */
 	if (sw > 270) sw = 270;
 	draw_mask(&A.ic_set[it], U(s_p), U(mid), C_ACCENT, 256);
-	text(&A.dname, U(s_p), U(mid + 93), k_set_name[it], C_INK, 256, 0, 0, 0);
+	text_fit(&A.dname, U(s_p), U(mid + 93), tr(k_set_name[it]), C_INK, 256, U(xx - s_p - 20));
 	set_value(it, vals[0], sizeof vals[0], &num);
 	if (num >= 0) {
 		char t[8];
@@ -1155,19 +1248,20 @@ static void home_settings(void)
 		fill(U(s_p), U(mid + 176), U(sw) * num / 100, U(3), C_ACCENT, 256);
 		disc(U(s_p) + U(sw) * num / 100 + .0f, U(mid + 177.5f) + .0f, U(5.3f) + .0f, C_INK, 256);
 	} else if (it == SET_BOOT_OS || it == SET_BIOS || it == SET_RESUME) {
-		text(&A.lib, U(s_p), U(mid + 141), k_set_about[it], C_MUTED, 256, 0, 0, 0);
+		text_wrap2(&A.lib, U(s_p), U(mid + 141), U(27), tr(k_set_about[it]), C_MUTED, 256, U(xx - s_p - 20));
 	} else {
-		text(&A.dname, U(s_p), U(mid + 141), vals[0], C_INK, 256, 0, 0, 0);
-		if (it == SET_THEME && A.nthemes && theme_hash(S.theme_pick) != gba_menu_theme())
-			text(&A.lib, U(s_p), U(mid + 178), "Press A to apply", C_MUTED, 256, 0, 0, 0);
+		text_fit(&A.dname, U(s_p), U(mid + 141), vals[0], C_INK, 256, U(xx - s_p - 20));
+		if ((it == SET_THEME && A.nthemes && theme_hash(S.theme_pick) != gba_menu_theme()) ||
+		    (it == SET_LANGUAGE && S.lang_pick != pico_lang()))
+			text_wrap2(&A.lib, U(s_p), U(mid + 178), U(27), tr("Press A to apply"), C_MUTED, 256, U(xx - s_p - 20));
 		else if (k_set_about[it])
-			text(&A.lib, U(s_p), U(mid + 178), k_set_about[it], C_MUTED, 256, 0, 0, 0);
+			text_wrap2(&A.lib, U(s_p), U(mid + 178), U(27), tr(k_set_about[it]), C_MUTED, 256, U(xx - s_p - 20));
 	}
 }
 static void library(void)
 {
 	int s = S.sys, t = S.systype[s];
-	text(&A.tag13, U(s_p), U(124), "Game library", C_MUTED, 256, 0, U(2), 1);
+	text(&A.tag13, U(s_p), U(124), tr("Game library"), C_MUTED, 256, 0, U(2), 1);
 	draw_mask(&A.llogo[t], U(s_p), U(150 + 29) - A.llogo[t].h / 2, C_INK, 256);
 	game_list(s_libidx[s], S.syscount[s], S.lib_sel[s], S.lib_top[s], 0, 0);
 }
@@ -1349,10 +1443,15 @@ static void focus_rom(int rom)
 
 /* Returns the picked game, -3 when a theme was picked (the caller runs the menu again), or -2
  * when the theme's pack is missing or does not fit this screen (the classic menu runs). */
+/* oem diag "cur_ms": the last opening of this menu, ms from its start to each step done: the panel
+ * handed over, the in-game menu's pack, the menu's pack, the language's, the setup, the box art and
+ * the first frame shown; then within the setup the fonts, the roster, the recent games, the battery */
+volatile unsigned int g_dbg_cur_ms[12];
+#define CUR_MARK(i) (g_dbg_cur_ms[i] = (gpt4_get_current_tick() - t_run) / 13000u)
 int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_reverse)
 {
-	unsigned int pitch, W, H, saved_mhz, prev = 0;
-	int launch_gate = 1, i, dirty = 1;
+	unsigned int pitch, W, H, saved_mhz, prev = 0, t_run = gpt4_get_current_tick();
+	int launch_gate = 1, i, dirty = 1, shown = 0;
 	snes_input in;
 	(void)ayaneo_canvas_back(&pitch, &W, &H);
 	if (W * H * 4u > CUR_FRAME_MAX || nrom <= 0) return -2;
@@ -1372,15 +1471,22 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 		for (i = 0; i < (int)H; i++) memset(fb + i * pitch, 0, (size_t)W * 4);
 		ayaneo_canvas_present();
 	}
+	CUR_MARK(0);
 	igm_preload();   /* the in-game menu's pack, where it is kept */
+	CUR_MARK(1);
 	if (pack_load(W, H) != 0) { ayaneo_set_cpu_mhz(saved_mhz); return -2; }
+	CUR_MARK(2);
+	pico_lang_load(W, H);   /* the words and glyphs of the language in use (none for English) */
+	CUR_MARK(3);
 	g_W = (int)W; g_H = (int)H; g_s = (float)H / 720.0f;
 	s_uw = (float)W / g_s;
 	s_p = s_uw * .048f > 38 ? s_uw * .048f : 38;
 	art_load();
+	CUR_MARK(7);
 	colour_set(ayaneo_get_menu_colour());
 	s_roms = roms; s_nrom = nrom > 128 ? 128 : nrom;
 	roster_build();
+	CUR_MARK(8);
 	if (!S.nsys) { ayaneo_set_cpu_mhz(saved_mhz); return -2; }
 	S.bg_key[0] = S.bg_key[1] = -1; S.pal_colour = -1;   /* the game took their memory */
 	s_ui_clean = 0;
@@ -1396,15 +1502,21 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 	if (do_reverse) focus_rom(start_sel);   /* back from a game: on it */
 	for (i = 0; i < S.nsys; i++)
 		if (S.lib_sel[i] >= S.syscount[i]) { S.lib_sel[i] = 0; S.lib_top[i] = 0; }
+	S.lang_pick = pico_lang();
 	S.theme_pick = 0;
 	for (i = 0; i < A.nthemes; i++)
 		if (theme_hash(i) == gba_menu_theme()) S.theme_pick = i;
+	CUR_MARK(9);
 	recent_load();
+	CUR_MARK(10);
 	if (S.res_sel >= S.nrec) S.res_sel = 0;
 	S.batt = gba_battery_pct(&S.chg);
+	CUR_MARK(11);
 	S.batt_tick = gpt4_get_current_tick();
 	ayaneo_menu_audio_silence();
+	CUR_MARK(4);
 	gba_menu_boxart_load(roms, nrom);
+	CUR_MARK(5);
 	g_menu_live = 1;
 
 	if (do_reverse) {	/* back from a game: it crossfades into the backdrop, the menu zooming in */
@@ -1487,7 +1599,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 					if (dn && S.set_sel < set_count(S.set_page) - 1) S.set_sel++;
 					it = set_item();
 					if (eb && S.set_page) {	/* back to the main list, on the row that opened it */
-						S.set_sel = S.set_page == SPAGE_BIOS ? 5 : 6;
+						S.set_sel = set_row_of(S.set_page == SPAGE_BIOS ? SET_BIOS : SET_RESUME);
 						S.set_page = SPAGE_MAIN; S.dip = .45f;
 					} else if ((it == SET_BIOS || it == SET_RESUME) && (ea || rt)) {
 						S.set_page = it == SET_BIOS ? SPAGE_BIOS : SPAGE_RESUME; S.set_sel = 0; S.dip = .45f;
@@ -1524,6 +1636,15 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 							return -3;
 						}
 					}
+					if (it == SET_LANGUAGE && dir) S.lang_pick = (S.lang_pick + dir + LANG_N) % LANG_N;
+					if (it == SET_LANGUAGE && ea && S.lang_pick != pico_lang()) {
+						/* the words and glyphs of the new language, then the fonts take them up */
+						pico_lang_set(S.lang_pick);
+						ayaneo_menu_settings_persist();
+						pico_lang_load(W, H);
+						art_load();
+						S.dip = .45f;
+					}
 					if (it == SET_BOOT_OS && ea) ayaneo_boot_to_os();   /* never returns */
 				}
 			}
@@ -1550,6 +1671,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 			}
 			frame_render();
 			show();
+			if (!shown) { shown = 1; CUR_MARK(6); }
 			us = (gpt4_get_current_tick() - r0) / 13u;
 			g_dbg_render_us = us;
 			if (us > peak) peak = us;
@@ -1625,14 +1747,15 @@ static struct {
 	float top[IGM_NPAGES];       /* the first row shown, eased */
 	float hy;                    /* the focus wash, units from the first row */
 	int nudge_row; float nudge_t; int nudge_dir;
-	char toast[64]; float toast_t;
+	char toast[96]; float toast_t;
 	unsigned int tick, last_paint;
 	int dirty, prev_keys;
 	float rep[4];
 	int ext_prev;                /* the width the last picture covered, px */
 	int batt, chg;               /* read at the opening and every 20 s (the gauge is slow to ask) */
 	unsigned int batt_tick;
-	char fig[IGM_ROWS][48];      /* the figures rows (battery, refresh): read once a second */
+	char fig[IGM_ROWS][96];      /* the figures rows (battery, refresh): read once a second */
+	unsigned int lang_serial;    /* the language pack the fonts' extra glyphs come from */
 	unsigned int fig_tick;
 	int fig_page;
 } G;
@@ -1656,11 +1779,21 @@ static int igm_load(void)
 	G.tag11 = font("f_tag11"); G.tag13 = font("f_tag13"); G.srow = font("f_srow"); G.srowf = font("f_srowf");
 	G.sval = font("f_sval"); G.dname = font("f_dname"); G.info = font("f_info");
 	G.hint = font("f_hint"); G.hintc = font("f_hintc");
+	G.lang_serial = pico_lang_serial();
 	for (i = 0; i < IC_N; i++) G.ic[i] = img(ic[i]);
 	G.chev = img("ig_chev"); G.back = img("ig_back"); G.gamma = img("gamma");
 	G.ring = img("hint_ring"); G.pillm = img("hint_pill");
 	if (!G.srow.g || !G.dname.g) return -1;
 	return 0;
+}
+/* the fonts take up the glyphs of the language pack in memory now */
+static void igm_fonts_extra(void)
+{
+	font_extra(&G.brand, "f_brand"); font_extra(&G.sub, "f_sub"); font_extra(&G.realm, "f_realm");
+	font_extra(&G.tag11, "f_tag11"); font_extra(&G.tag13, "f_tag13"); font_extra(&G.srow, "f_srow");
+	font_extra(&G.srowf, "f_srowf"); font_extra(&G.sval, "f_sval"); font_extra(&G.dname, "f_dname");
+	font_extra(&G.info, "f_info"); font_extra(&G.hint, "f_hint"); font_extra(&G.hintc, "f_hintc");
+	G.lang_serial = pico_lang_serial();
 }
 static uint32_t igm_sum(void)
 {
@@ -1690,8 +1823,12 @@ static void igm_forget(void)
 
 int pico_igm_on(void)
 {
+	unsigned int W, H;
 	if (gba_menu_theme() != snes_hash("current")) return 0;
 	if (!igm_valid() && (G.failed || igm_read() != 0)) return 0;
+	ayaneo_canvas_dims(&W, &H);
+	pico_lang_load(W, H);   /* a game started straight from power on: the menu never read it */
+	if (G.lang_serial != pico_lang_serial()) igm_fonts_extra();
 	return 1;
 }
 
@@ -1703,12 +1840,12 @@ static int igm_lines(int page, igm_line *out)
 	if (page == IGM_CORE) {
 		int k = c->opt_n ? c->opt_n() : 0;
 		for (i = 0; i < k && n < IGM_ROWS; i++) {
-			out[n].kind = IGM_VALUE; out[n].item = i; out[n].icon = IC_NONE; out[n].label = c->opt_label(i);
+			out[n].kind = IGM_VALUE; out[n].item = i; out[n].icon = IC_NONE; out[n].label = tr(c->opt_label(i));
 			n++;
 		}
 		return n;
 	}
-	if (page == IGM_TOP) { out[0].kind = IGM_ACTION; out[0].item = -1; out[0].icon = IC_PLAY; out[0].label = "Resume"; n = 1; }
+	if (page == IGM_TOP) { out[0].kind = IGM_ACTION; out[0].item = -1; out[0].icon = IC_PLAY; out[0].label = tr("Resume"); n = 1; }
 	for (i = 0; i < c->nrows && n < IGM_ROWS; i++) {
 		const struct igm_row *r = &c->rows[i];
 		igm_line *l = &out[n];
@@ -1716,12 +1853,12 @@ static int igm_lines(int page, igm_line *out)
 		l->kind = r->kind; l->item = r->item; l->icon = IC_NONE; l->label = 0;
 		if (r->kind == IGM_LINK) {
 			if (r->item == IGM_CORE && (!c->opt_n || !c->opt_n())) continue;
-			l->label = k_igm_page[r->item]; l->icon = k_igm_page_ic[r->item];
-		} else if (r->item == c->save_item) { l->label = "Save state"; l->icon = IC_SAVE; }
-		else if (r->item == c->load_item) { l->label = "Load state"; l->icon = IC_LOAD; }
-		else if (r->item == c->reset_item) { l->label = "Reset game"; l->icon = IC_RESET; }
-		else if (r->item == c->exit_item) { l->label = "Exit game"; l->icon = IC_EXIT; }
-		else l->label = c->label(r->item);
+			l->label = tr(k_igm_page[r->item]); l->icon = k_igm_page_ic[r->item];
+		} else if (r->item == c->save_item) { l->label = tr("Save state"); l->icon = IC_SAVE; }
+		else if (r->item == c->load_item) { l->label = tr("Load state"); l->icon = IC_LOAD; }
+		else if (r->item == c->reset_item) { l->label = tr("Reset game"); l->icon = IC_RESET; }
+		else if (r->item == c->exit_item) { l->label = tr("Exit game"); l->icon = IC_EXIT; }
+		else l->label = tr(c->label(r->item));
 		if (page != IGM_TOP) l->icon = IC_NONE;
 		n++;
 	}
@@ -1733,14 +1870,17 @@ static const char *igm_value(int page, const igm_line *l, char *buf)
 {
 	const struct igm_core *c = G.c;
 	buf[0] = 0;
-	if (page == IGM_CORE) return c->opt_value(l->item, buf);
+	if (page == IGM_CORE) return tr(c->opt_value(l->item, buf));
 	if (l->kind == IGM_LINK || l->item < 0) return 0;
 	if ((l->item == c->save_item || l->item == c->load_item) && c->slot_item >= 0) {
-		char v[48], *sp;
+		char v[96], w[32], *sp;
 		c->value(c->slot_item, v);
 		sp = strchr(v, ' ');
-		if (sp) { *sp = 0; snprintf(buf, 48, "Slot %s \xC2\xB7 %c%s", v, sp[1] >= 'a' && sp[1] <= 'z' ? sp[1] - 32 : sp[1], sp + 2); }
-		else snprintf(buf, 48, "Slot %s", v);
+		if (sp) {	/* "3 used": the slot, then its word with a capital ("Used") */
+			*sp = 0;
+			snprintf(w, sizeof w, "%c%s", sp[1] >= 'a' && sp[1] <= 'z' ? sp[1] - 32 : sp[1], sp[1] ? sp + 2 : "");
+			snprintf(buf, 96, tr("Slot %s \xC2\xB7 %s"), v, tr(w));
+		} else snprintf(buf, 96, tr("Slot %s"), v);
 		return buf;
 	}
 	if (l->kind == IGM_ACTION) return 0;
@@ -1748,10 +1888,10 @@ static const char *igm_value(int page, const igm_line *l, char *buf)
 		int r = (int)(l - s_igm_ln);
 		if (r >= 0 && r < IGM_ROWS) {
 			if (!G.fig[r][0] || G.fig_page != page) c->value(l->item, G.fig[r]);
-			return G.fig[r];
+			return tr(G.fig[r]);
 		}
 	}
-	return c->value(l->item, buf);
+	return tr(c->value(l->item, buf));
 }
 
 extern volatile unsigned int g_dbg_igm_open_us, g_dbg_igm_open_part[2], g_dbg_igm_glass_us;
@@ -1791,7 +1931,7 @@ void pico_igm_dismiss(void)
 }
 static void igm_toast(const char *t)
 {
-	snprintf(G.toast, sizeof G.toast, "%s", t);
+	snprintf(G.toast, sizeof G.toast, "%s", tr(t));
 	G.toast_t = 0; G.dirty = 1;
 }
 /* a page in, deeper (+1) or back (-1) */
@@ -1904,7 +2044,7 @@ static int s_igm_ox;   /* the panel's slide, px */
 static void igm_rows(int page, float dx, int op, int wash)
 {
 	igm_line own[IGM_ROWS], *ln = page == G.page ? s_igm_ln : own;
-	char vb[64];
+	char vb[96], vfit[128];
 	int n = igm_lines(page, ln), i, nv = (int)((720 - 64 - IGM_Y0) / IGM_RP), sel = G.sel[page];
 	float rx = 18 + dx, rw = G.pwu - 36, top = G.top[page];
 	int first = (int)top, xi = IX(rx), wi = U(rw), ph = U(IGM_RP);
@@ -1934,12 +2074,22 @@ static void igm_rows(int page, float dx, int op, int wash)
 			draw_mask(m, lx, yy + (ph - m->h) / 2, f ? C_ACCENT : C_MUTED, rop);
 			lx += m->w + U(14);
 		}
-		text_fit(f ? &G.srowf : &G.srow, lx, yy + (int)(ph * .63f), ln[i].label, f ? C_INK : C_MUTED, rop,
-			 IX(rx + rw) - lx - U(110));
 		vx = IX(rx + rw + rdx) - U(14);
+		v = ln[i].kind == IGM_LINK ? 0 : igm_value(page, &ln[i], vb);
+		{	/* the value takes at most 55 % of the row (cut with an ellipsis), the name what is left */
+			int arrows = f && v && v[0] && (ln[i].kind == IGM_VALUE || ((ln[i].item == G.c->save_item ||
+				     ln[i].item == G.c->load_item) && G.c->slot_item >= 0));
+			int room = ln[i].kind == IGM_LINK ? G.chev.w + U(16) : U(40);
+			if (v && v[0]) {
+				v = fit_str(&G.sval, v, U(rw) * 55 / 100 - (arrows ? 2 * G.chev.w + U(12) : 0), vfit, sizeof vfit);
+				room = text_w(&G.sval, v, 0, 0) + U(28) + (arrows ? 2 * G.chev.w + U(12) : 0);
+			}
+			text_fit(f ? &G.srowf : &G.srow, lx, yy + (int)(ph * .63f), ln[i].label, f ? C_INK : C_MUTED, rop,
+				 IX(rx + rw) - lx - room);
+		}
 		if (ln[i].kind == IGM_LINK) {
 			draw_mask(&G.chev, vx - G.chev.w, yy + (ph - G.chev.h) / 2, f ? C_INK : C_MUTED, rop);
-		} else if ((v = igm_value(page, &ln[i], vb)) && v[0]) {
+		} else if (v && v[0]) {
 			int nudge = 0, vop = rop, w, pct = -1, len = (int)strlen(v);
 			if (i == G.nudge_row && page == G.page && G.nudge_t < 1) {
 				float e = igm_ease(G.nudge_t);
@@ -2113,8 +2263,11 @@ static void igm_bg_build(void)
 static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box);
 static int igm_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box)
 {
-	int y, y0 = -1, y1 = -1, x, w;
-	if (!igm_paint_all(buf, pitch, W, H, box)) return 0;
+	int y, y0 = -1, y1 = -1, x, w, drawn;
+	pico_tr_igm_scope(1);   /* the cores' rows come out in the language in use */
+	drawn = igm_paint_all(buf, pitch, W, H, box);
+	pico_tr_igm_scope(0);
+	if (!drawn) return 0;
 	w = box[2];
 	for (y = 0; y < (int)H && y < 1024; y++) {
 		const uint32_t *r = buf + y * W;
@@ -2193,9 +2346,9 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 		const struct igm_core *c = G.c;
 		float k = igm_smooth(G.page_t);
 		int sys = c->system >= 0 && c->system < NSYS ? c->system : 0, w;
-		const char *now_t = G.page == IGM_TOP ? G.title : k_igm_page[G.page];
-		const char *was_t = G.from == IGM_TOP ? G.title : k_igm_page[G.from];
-		text(&G.tag13, IX(30), U(106), s_sysname[sys], C_MUTED, op, 0, U(2), 1);
+		const char *now_t = G.page == IGM_TOP ? G.title : tr(k_igm_page[G.page]);
+		const char *was_t = G.from == IGM_TOP ? G.title : tr(k_igm_page[G.from]);
+		text(&G.tag13, IX(30), U(106), tr(s_sysname[sys]), C_MUTED, op, 0, U(2), 1);
 		w = U(G.pwu - 60);
 		if (k < 1 && G.from != G.page) {
 			int o = (int)(op * (1 - k));
@@ -2232,7 +2385,7 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 			draw_mask(&G.ring, xx, cy - G.ring.h / 2, C_MUTED, op);
 			text(&G.hintc, xx + rad, U(720 - 22.9f), codes[i], C_INK, op, 1, 0, 0);
 			xx += 2 * rad + U(8);
-			xx += text(&G.hint, xx, U(720 - 22), labels[i], C_MUTED, op, 0, 0, 0) + U(16);
+			xx += text(&G.hint, xx, U(720 - 22), tr(labels[i]), C_MUTED, op, 0, 0, 0) + U(16);
 		}
 	}
 	if (G.toast[0] && G.toast_t < 2.2f) {	/* a note: up and in, then out */

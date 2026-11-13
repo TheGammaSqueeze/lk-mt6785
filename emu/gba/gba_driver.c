@@ -41,6 +41,11 @@ extern int _dprintf(const char *fmt, ...);
  * become g_core->state_save(x), and the three shared flags become pointer derefs. */
 #include "gba_core_abi.h"
 #include "pico_igm.h"
+#if defined(AYANEO_GBA_SD)
+#include "pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
+#else
+#define tr_igm(s) (s)
+#endif
 #include "../ayaneo_rewind.h"
 
 static const struct gba_core_exports *g_core;
@@ -1677,10 +1682,10 @@ static const char *menu_value(int item, char *buf)
 		 * right now (it backs off to hold 60 fps), so the user sees it adapt -
 		 * e.g. "Max (1)". */
 		switch (pf) {
-		case 1:  p = mi_puts(p, "Balanced"); break;
-		case 2:  p = mi_puts(p, "Responsive"); break;
-		case 3:  p = mi_puts(p, "Max"); break;
-		default: p = mi_puts(p, "Off"); break;
+		case 1:  p = mi_puts(p, tr_igm("Balanced")); break;
+		case 2:  p = mi_puts(p, tr_igm("Responsive")); break;
+		case 3:  p = mi_puts(p, tr_igm("Max")); break;
+		default: p = mi_puts(p, tr_igm("Off")); break;
 		}
 		if (pf > 0) {
 			p = mi_puts(p, " (");
@@ -1707,9 +1712,9 @@ static const char *menu_value(int item, char *buf)
 	case MI_RESET:     p = mi_puts(p, "[A]"); break;
 	case MI_BATTERY: {
 		extern int ayaneo_gauge_time_str(char *out, int n);
-		char ts[24];
+		char ts[64];
 		p = mi_putu(p, (unsigned)s_batt_pct); p = mi_puts(p, "% ");
-		p = mi_puts(p, upmu_is_chr_det() ? "Charging" : "Battery");
+		p = mi_puts(p, tr_igm(upmu_is_chr_det() ? "Charging" : "Battery"));
 		if (ayaneo_gauge_time_str(ts, sizeof ts)) { p = mi_puts(p, "  "); p = mi_puts(p, ts); }
 		break; }
 	case MI_CPU: {
@@ -1741,7 +1746,7 @@ static const char *menu_value(int item, char *buf)
 	case MI_CORE:
 		if (s_sdcore_present == 0) p = mi_puts(p, "gpSP");
 		else p = mi_puts(p, s_core_pref ? "gpSP" : "armGBA");
-		if ((s_core_pref == 0 && s_sdcore_present > 0) != s_core_is_sd) p = mi_puts(p, " (next game)");
+		if ((s_core_pref == 0 && s_sdcore_present > 0) != s_core_is_sd) { p = mi_puts(p, " "); p = mi_puts(p, tr_igm("(next game)")); }
 		break;
 	case MI_CORESET:
 		p = mi_puts(p, (g_core && g_core->version >= GBA_CORE_ABI_V3 && g_core->opt_count && g_core->opt_count() > 0) ? ">" : "None");
@@ -2368,6 +2373,7 @@ static unsigned char *gba_core_for_launch(void)
 static unsigned int s_bt_t0;
 volatile unsigned g_dbg_emu_abs_ms; volatile int g_dbg_emu_chime;   /* oem led: emu_thread start on the gpt4 clock, chime still playing */
 volatile unsigned int g_dbg_bt_mount, g_dbg_bt_bios, g_dbg_bt_list;
+volatile unsigned int g_dbg_bt_boxart;   /* ms the box art took on the listing's thread */
 volatile int g_dbg_bt_retime = -2;   /* GammaOS panel timing: -2 not applied (stock), else the panel write timeouts */
 volatile unsigned int g_dbg_bt_coreload, g_dbg_bt_coreinit, g_dbg_bt_start, g_dbg_bt_frame1;
 #define BT_MS() ((gpt4_get_current_tick() - s_bt_t0) / 13000u)
@@ -2697,7 +2703,7 @@ static void sd_bg_launch(void)
 	thread_t *t;
 	if (!s_sd_bg_pending) return;
 	s_sd_bg_pending = 0;
-	t = thread_create("gba_sdbg", &sd_bg_thread, NULL, LOW_PRIORITY, 32768);
+	t = thread_create("gba_sdbg", &sd_bg_thread, (void *)1, LOW_PRIORITY, 32768);
 	if (t) thread_resume(t); else sd_bg_thread(NULL);
 }
 static int cart_header_read(fat_vol *v)
@@ -2746,6 +2752,18 @@ static int sd_bg_thread(void *arg)
 	g_dbg_bt_list = BT_MS();
 	cart_header_refresh();
 	s_sd_bg_state = 1;
+	if (arg) {	/* on its own thread, while the intro plays: the games' box art, for the menu after it */
+		extern int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom);
+		extern int ayaneo_resume_peek(char *out, int cap);
+		extern int ayaneo_get_resume_on_boot(void);
+		char nm[100];
+		unsigned int t0 = gpt4_get_current_tick();
+		/* when the boot goes straight back into a game, after it: its loads have the card to
+		 * themselves, and the art is read in the time the game leaves idle */
+		if (ayaneo_get_resume_on_boot() && ayaneo_resume_peek(nm, sizeof nm)) thread_sleep(8000);
+		gba_menu_boxart_load(s_roms, s_nrom);
+		g_dbg_bt_boxart = (gpt4_get_current_tick() - t0) / 13000u;
+	}
 	return 0;
 }
 static void sd_bg_wait(void)

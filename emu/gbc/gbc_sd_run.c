@@ -16,6 +16,7 @@
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
+#include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #include "../gba/gba_sd_save.h"
 #include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
@@ -353,10 +354,10 @@ static const char *gm_value(int i, char *buf)
 				 int sel = s_menu_pal ? *s_menu_pal : 0;
 				 if (sel == 0) {   /* Auto: name the detected per-game palette, else plain */
 					 if (s_auto_hit && s_rom_title[0]) {
-						 int j; p = mput(p, "< Auto: ");
+						 int j; p = mput(p, "< "); p = mput(p, tr_igm("Auto")); p = mput(p, ": ");
 						 for (j = 0; s_rom_title[j] && j < 16; j++) *p++ = s_rom_title[j];
 						 p = mput(p, " >");
-					 } else p = mput(p, "< Auto (Detect) >");
+					 } else { p = mput(p, "< "); p = mput(p, tr_igm("Auto (Detect)")); p = mput(p, " >"); }
 				 } else {
 					 const char *nm = dmg_pal_name(s_menu_c, sel);
 					 int nl = 0; while (nm[nl] && nl < 30) nl++;   /* clamp long TWB64 names */
@@ -374,7 +375,8 @@ static const char *gm_value(int i, char *buf)
 	case GM_RESUME:  { extern int ayaneo_get_resume_on_boot(void); p = mput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case GM_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = mput(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
 	case GM_BATTERY: { extern int ayaneo_gauge_pct(void); extern int ayaneo_gauge_time_str(char *out, int n); extern int upmu_is_chr_det(void);
-			   char ts[24]; p = mputu(p, (unsigned)ayaneo_gauge_pct()); p = mput(p, upmu_is_chr_det() ? "% Charging" : "%");
+			   char ts[64]; p = mputu(p, (unsigned)ayaneo_gauge_pct()); p = mput(p, "%");
+			   if (upmu_is_chr_det()) { p = mput(p, " "); p = mput(p, tr_igm("Charging")); }
 			   if (ayaneo_gauge_time_str(ts, sizeof ts)) { p = mput(p, " "); p = mput(p, ts); } } break;
 	case GM_SLOT:    p = mputu(p, (unsigned)s_gbc_slot); break;
 	case GM_SAVE: case GM_LOAD: p = mput(p, "[A]"); break;

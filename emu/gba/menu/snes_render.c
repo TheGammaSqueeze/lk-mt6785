@@ -394,6 +394,19 @@ static const snes_glyph *glyph_find(const snes_font_entry *fe, const snes_glyph 
 	return 0;
 }
 
+/* whether a font has a glyph for every letter of s (spaces and line breaks need none) */
+int snes_font_covers(const snes_pack *pk, const snes_font_entry *fe, const char *s)
+{
+	const snes_glyph *g;
+	if (!fe || !s) return 0;
+	g = (const snes_glyph *)(pk->base + fe->glyphs);
+	while (*s) {
+		uint32_t c = utf8_next(&s);
+		if (c != ' ' && c != '\n' && !glyph_find(fe, g, c)) return 0;
+	}
+	return 1;
+}
+
 static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 		       const float m[6], const float col[4])
 {

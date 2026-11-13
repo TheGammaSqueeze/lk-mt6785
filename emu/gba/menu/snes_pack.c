@@ -37,6 +37,15 @@ int snes_pack_open(snes_pack *p, const void *blob, unsigned len)
 	return 0;
 }
 
+/* use the string table of this locale ("eur_de"); 0 when the pack has it */
+int snes_pack_set_locale(snes_pack *p, const char *name)
+{
+	uint32_t i;
+	for (i = 0; i < p->hdr->str_count; i++)
+		if (streq(snes_str(p, p->str[i].locale), name)) { p->locale = (int)i; return 0; }
+	return -1;
+}
+
 const snes_res_entry *snes_res_find(const snes_pack *p, uint32_t hash)
 {
 	uint32_t mask = p->res_mask, i;

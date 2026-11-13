@@ -51,6 +51,7 @@ typedef struct {
 	int theme_n;                  /* themes in the pack, 0..SNES_THEME_MAX */
 	int theme_req;                /* the theme A picked, for the LK layer to switch to; -1 none */
 	const snes_img_entry *theme_thumb[SNES_THEME_MAX];
+	unsigned int theme_beta;      /* the themes still being finished, tagged Beta (a bit each) */
 	float sub_rep_t;              /* submenu D-pad auto-repeat countdown (navFire) */
 	int sub_rep_ctrl;             /* held D-pad for repeat: 1 up, 2 down, 3 left, 4 right, 0 none */
 
@@ -241,6 +242,7 @@ int snes_menu_take_theme(snes_menu *m);
 /* Overwrite the label of Options toggle row idx (0..2) in place; lets the LK layer
  * repurpose the cosmetic toggles as real settings. 0 ok, <0 if it does not fit. */
 int snes_menu_relabel_option(snes_menu *m, int idx, const char *text);
+void snes_menu_set_language(snes_menu *m, int grid);
 /* Re-apply the Options toggle sprites after the LK layer seeds opt_on. */
 void snes_menu_apply_options(snes_menu *m);
 

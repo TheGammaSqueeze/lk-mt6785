@@ -318,6 +318,10 @@ void ayaneo_set_menu_theme(unsigned int hash)  { s_menu_theme = hash; }
 static unsigned char s_menu_colour;
 int  ayaneo_get_menu_colour(void)    { return s_menu_colour; }
 void ayaneo_set_menu_colour(int c)   { s_menu_colour = (unsigned char)(c < 0 ? 0 : c > 15 ? 15 : c); }
+/* the menus' language (pico_i18n.c's list), 0 = English */
+static unsigned char s_menu_lang;
+int  ayaneo_get_language(void)       { return s_menu_lang; }
+void ayaneo_set_language(int l)      { s_menu_lang = (unsigned char)(l < 0 || l > 63 ? 0 : l); }
 static void resume_fields_write(unsigned char *b)
 {
 	unsigned i;
@@ -329,6 +333,7 @@ static void resume_fields_write(unsigned char *b)
 	b[178] = (unsigned char)(s_resume_on_open ? 2u : 1u);   /* 0 = never written -> on */
 	b[179] = (unsigned char)(s_intro_on_resume ? 2u : 1u);  /* 0 = never written -> on */
 	wr32(b + 180, s_menu_theme);
+	b[184] = (unsigned char)(s_menu_lang + 1u);   /* 0 = never written -> English */
 }
 static unsigned char s_cpu_manual[4];   /* manual CPU clock per core, grid index + 1, 0 = automatic */
 static void resume_fields_read(const unsigned char *b, int len)
@@ -338,6 +343,7 @@ static void resume_fields_read(const unsigned char *b, int len)
 	if (len >= 184) { s_menu_theme = rd32(b + 180); if (b[177]) s_menu_colour = (unsigned char)((b[177] - 1u) & 15u); }
 	if (len >= 184 && (b[178] == 1u || b[178] == 2u)) s_resume_on_open = (b[178] == 2u);
 	if (len >= 184 && (b[179] == 1u || b[179] == 2u)) s_intro_on_resume = (b[179] == 2u);
+	if (len >= 185 && b[184] && b[184] <= 64u) s_menu_lang = (unsigned char)(b[184] - 1u);
 	if (len >= 176) { s_cpu_manual[0] = b[172] & 15; s_cpu_manual[1] = b[173] & 15; s_cpu_manual[2] = b[174] & 15; s_cpu_manual[3] = b[175] & 15; }
 	if (len < 172) return;
 	{ unsigned int r = rd32(b + 64); if (r == 1u || r == 2u) s_resume_on_boot = (r == 2u); }

@@ -1,4 +1,5 @@
 #include "snes_menu.h"
+#include "../pico_i18n.h"   /* tr(): the GammaOS words the authored tables do not carry */
 #include <string.h>       /* strcmp / memcpy (LK provides these via lib/libc) */
 
 /* ---- optional per-phase render profiler ----
@@ -1808,6 +1809,12 @@ static void draw_theme_strip(snes_menu *m, snes_target *t)
 		float x = g_theme_slot_x[j];
 		if (i >= m->theme_n) break;
 		if (m->theme_thumb[i]) snes_blit_tex(t, m->pk, m->theme_thumb[i], x, cy, 172.0f, 98.0f, 1.0f);
+		if ((m->theme_beta >> i) & 1u) {	/* still being finished: a Beta tag in its top corner */
+			const char *tag = tr("Beta");
+			if (!snes_font_covers(m->pk, snes_res_font(m->pk, m->f_s), tag)) tag = "Beta";
+			snes_fill_quad(t, x + 44.0f, cy - 31.0f, 78.0f, 28.0f, 1.0f, 0.74f, 0.24f, 0.95f);
+			snes_draw_text(t, m->pk, m->f_s, x + 44.0f, cy - 40.0f, 0.8f, 0xFF1B1408u, 1, tag);
+		}
 		/* the theme in use: check marker (atlas 67,809 20x14), centred on the item */
 		if (i == m->theme_applied && m->card_act) {
 			snes_spr_entry ck = { m->card_act->img, 67, 809, 20, 14, 10, 7 };
@@ -2397,6 +2404,8 @@ static snes_comp_label *relabel_subtree(snes_menu *m, snes_rnode *n, const char 
 			while (dst[cap]) cap++;
 			while (text[ln]) ln++;
 			if (ln > cap) return 0;		/* would overflow the pool slot */
+			if (!snes_font_covers(m->pk, snes_res_font(m->pk, cl->font_hash), text))
+				return 0;		/* a letter its font has no glyph for */
 			for (k = 0; k < ln; k++) dst[k] = text[k];
 			dst[ln] = 0;
 			cl->text_key = 0;		/* draw the literal, not the @key */
@@ -2413,6 +2422,13 @@ static snes_comp_label *relabel_subtree(snes_menu *m, snes_rnode *n, const char 
 /* Repurpose one of the three Options toggle rows (idx 0..2): overwrite its label.
  * Public so the LK layer can turn the cosmetic toggles into functional settings.
  * Returns 0 on success, <0 if the row/label is missing or the text does not fit. */
+/* The Language page's selection, a grid index (-1: the language in use is not on the page). */
+void snes_menu_set_language(snes_menu *m, int grid)
+{
+	m->lang_sel = grid >= 0 && grid < 8 ? grid : -1;
+	m->lang_cur = m->lang_sel >= 0 ? m->lang_sel : 0;
+	apply_language_state(m);
+}
 int snes_menu_relabel_option(snes_menu *m, int idx, const char *text)
 {
 	static const char *nm[3] = { "setting0", "setting1", "setting2" };
@@ -2460,7 +2476,7 @@ static const char *lang_name(int idx)
 {
 	static const char *nm[8] = { "language01", "language05", "language02", "language06",
 				     "language03", "language07", "language04", "language08" };
-	return (idx >= 0 && idx < 8) ? nm[idx] : "language01";
+	return (idx >= 0 && idx < 8) ? nm[idx] : "";   /* "" names no cell: a language not on the page */
 }
 /* cursor_area (blue box) on the lang_cur cell; the selection dot is custom-drawn
  * in the render by lang_sel, so only the cursor is reflected here. */
@@ -2720,7 +2736,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 				m->reset_armed = 0; m->reset_t = 0.0f;
 				close_reset_dialog(m);   /* also hides gauge + dialog node */
 			} else if (m->open == 2) {   /* Language: cursor opens on the selection */
-				m->lang_cur = m->lang_sel;
+				m->lang_cur = m->lang_sel >= 0 ? m->lang_sel : 0;
 				apply_language_state(m);
 			} else if (m->open == 3) {   /* Legal: open on the IP Notice tab, top */
 				legal_set_tab(m, 0);
@@ -3280,6 +3296,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		/* the SNES title font has no ':' glyph, so use words the font can render */
 		static const char *gbanm[2] = { "Sort A to Z", "Sort Z to A" };
 		const char *lbl = m->gba_mode ? gbanm[m->sort_rule & 1] : nm[m->sort_rule & 3];
+		if (snes_font_covers(m->pk, snes_res_font(m->pk, m->f_s), tr(lbl))) lbl = tr(lbl);   /* its font may lack the language's letters */
 		snes_fill_quad(t, 640, 210, 360, 40, 0.06f, 0.08f, 0.10f, 0.85f);
 		snes_draw_text(t, m->pk, m->f_s, 640, 202, 1.0f, 0xFFE0E8F0u, 1, lbl);
 	}

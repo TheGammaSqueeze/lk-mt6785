@@ -882,6 +882,9 @@ def main():
             raise SystemExit("theme %s: no %s" % (name, thumb))
         tix = add_image(thumb, False)
         res_map["theme_thumb_" + key] = (RES_TEXTURE, tix)
+        if os.path.exists(os.path.join(tdir, "beta")):
+            # a theme still being finished: the Display page tags it Beta
+            res_map["theme_beta_" + key] = (RES_TEXTURE, tix)
         atlas = os.path.join(tdir, "packed.png")
         if os.path.exists(os.path.join(tdir, "layout")):
             # a theme with a menu of its own (its own card pack): only its thumbnail here, and a

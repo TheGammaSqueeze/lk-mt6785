@@ -12,6 +12,7 @@
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
+#include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #include "../gba/gba_sd_save.h"
 #include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
@@ -317,7 +318,8 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 	case GM_REWIND: { extern int ayaneo_get_rewind(void); p = mput(p, ayaneo_get_rewind() ? "On" : "Off"); } break;
 	case GM_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = mput(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
 	case GM_BATTERY: { extern int ayaneo_gauge_pct(void); extern int ayaneo_gauge_time_str(char *out, int n); extern int upmu_is_chr_det(void);
-		char ts[24]; p = mputu(p, (unsigned)ayaneo_gauge_pct()); p = mput(p, upmu_is_chr_det() ? "% Charging" : "%");
+		char ts[64]; p = mputu(p, (unsigned)ayaneo_gauge_pct()); p = mput(p, "%");
+		if (upmu_is_chr_det()) { p = mput(p, " "); p = mput(p, tr_igm("Charging")); }
 		if (ayaneo_gauge_time_str(ts, sizeof ts)) { p = mput(p, " "); p = mput(p, ts); } } break;
 	case GM_RESUME: { extern int ayaneo_get_resume_on_boot(void); p = mput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case GM_RUNAHEAD: p = mput(p, gen_ra_name(ayaneo_get_preempt_frames())); break;

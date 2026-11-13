@@ -5,7 +5,9 @@ The menu's bitmap fonts (assets/fonts/*.font.json + *_0.png, BMFont layout) only
 characters their original screens needed: title.font has no digit but 2, no J, Q, U, '&' or
 '.', so a game called "Super Mario Advance 3" showed as "Super Mario Advance". This tool adds
 every missing printable ASCII character (and, for the title font, every glyph its twin l.font
-has) to each atlas.
+has) to each atlas, and every letter GammaOS's own texts need in the languages of the Language
+page (the Boot to OS entries in pico_current/i18n/classic, and the texts the classic menu takes
+from pico_current/i18n: its relabelled rows, sort notes and Beta tag).
 
 Each missing glyph comes from the source that draws most like the target, measured over the
 characters both already have (the overlap of their shapes once scaled to the same height):
@@ -33,6 +35,22 @@ TARGETS = ["title.font", "l.font", "m.font", "s.font"]
 FAMILY = ["title.font", "l.font", "m.font", "s.font"]
 FALLBACK_TTF = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 ASCII = [chr(c) for c in range(0x21, 0x7F)]
+I18N = os.path.join(HERE, "..", "pico_current", "i18n")
+CLASSIC_LANGS = ["fr", "de", "es", "it", "nl", "pt", "ru"]          # the Language page's, but English
+CLASSIC_TEXTS = ["Mute BIOS Audio", "Mute BIOS", "Mute Menu Audio", "Mute Menu", "Sort: Title",
+                 "Sort: Publisher", "Sort: Players", "Sort: Release", "Sort A to Z", "Sort Z to A", "Beta"]
+
+
+def gammaos_letters():
+    """The letters of GammaOS's texts in the classic menu's languages."""
+    out = []
+    for code in CLASSIC_LANGS:
+        d = json.load(open(os.path.join(I18N, code + ".json"), encoding="utf-8"))
+        out += [d[k] for k in CLASSIC_TEXTS if isinstance(d.get(k), str)]
+    for name in sorted(os.listdir(os.path.join(I18N, "classic"))):
+        if name.startswith("eur_"):
+            out += json.load(open(os.path.join(I18N, "classic", name), encoding="utf-8")).values()
+    return sorted({ch for t in out for ch in t if ch.isprintable() and not ch.isspace() and ord(ch) > 0x7E})
 PAD = 2
 
 
@@ -202,7 +220,7 @@ class TtfSource:
 
 
 def wanted(target, fonts):
-    want = list(ASCII)
+    want = list(ASCII) + gammaos_letters()
     if target.name == "title.font":            # its twin's extra glyphs too (accents, Cyrillic)
         want += [chr(int(k)) for k in fonts["l.font"].j["chars"]]
     seen, out = set(), []

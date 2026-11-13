@@ -1,0 +1,5 @@
+{
+ "sys_option_init_Title": "OSを起動",
+ "sys_option_init_cm_Decide": "終了してOSを起動する",
+ "sys_option_init_dialog_Confirm": "エミュレーターを終了して\nOSを起動します。\nゲームの進行状況は\nSDカードに保存されています。\n本当によろしいですか。"
+}

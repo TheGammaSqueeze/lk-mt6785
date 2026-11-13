@@ -1,6 +1,7 @@
 /* On-device SD -> FAT glue (LK only). See sd_fat.h. */
 #include "sd_fat.h"
 #include "fat_wr.h"   /* fat_wr_mkpath for gba_sd_make_rom_dirs */
+#include <string.h>   /* memcpy: the sector cache */
 
 /* LK MMC block-read: reads blkcnt 512B sectors at LBA blknr from mmc device
  * dev_num, partition part_id, into dst. Returns blkcnt on success. Declared here
@@ -59,9 +60,56 @@ int gba_sd_trace_get(unsigned idx, unsigned *op, unsigned *app, unsigned *err, u
 	return 1;
 }
 
+/* The last sectors read one at a time, kept: the FAT layer reads directories, the FAT and the
+ * exFAT bitmap a sector at a time (a directory's sector once per 32 byte entry in it), and every
+ * open walks its path from the root again, each read a whole card command. With no cache, opening
+ * one small file took most of a second and the menu's box art (a lookup per game through four
+ * directories) two and a half. Writes go through the cache too (sd_write), so it never holds a
+ * sector older than the card's; a mount starts it empty. */
+#define SEC_CACHE_N 64
+static struct { uint32_t lba, used; int ok; } s_sc[SEC_CACHE_N];
+static uint8_t s_sc_buf[SEC_CACHE_N][512];
+static uint32_t s_sc_clock;
+volatile unsigned g_dbg_sc_hit, g_dbg_sc_miss;   /* oem diag: the cache's hits and misses */
+static int sc_find(uint32_t lba)
+{
+	int i;
+	for (i = 0; i < SEC_CACHE_N; i++)
+		if (s_sc[i].ok && s_sc[i].lba == lba) return i;
+	return -1;
+}
+static void sc_keep(uint32_t lba, const void *buf)
+{
+	int i = sc_find(lba), k;
+	if (i < 0) {	/* the least recently used place */
+		for (i = 0, k = 1; k < SEC_CACHE_N; k++)
+			if (!s_sc[k].ok || (s_sc[i].ok && s_sc[k].used < s_sc[i].used)) i = k;
+	}
+	memcpy(s_sc_buf[i], buf, 512);
+	s_sc[i].lba = lba; s_sc[i].ok = 1; s_sc[i].used = ++s_sc_clock;
+}
+static void sc_clear(void)
+{
+	int i;
+	for (i = 0; i < SEC_CACHE_N; i++) s_sc[i].ok = 0;
+}
+
 static unsigned sd_read(void *ctx, uint32_t lba, uint32_t count, void *buf)
 {
 	(void)ctx;
+	if (count == 1) {	/* a sector read lately: from the cache, no card command */
+		int i;
+		ayaneo_storage_lock();
+		i = sc_find(lba);
+		if (i >= 0) {
+			memcpy(buf, s_sc_buf[i], 512);
+			s_sc[i].used = ++s_sc_clock;
+			g_dbg_sc_hit++;
+			ayaneo_storage_unlock();
+			return 1;
+		}
+		ayaneo_storage_unlock();
+	}
 #ifdef AYANEO_GBA_SD
 	/* Kick the 10s LK watchdog on every SD sector read so a long transfer (e.g.
 	 * loading a 16MB ROM, which is one big fat_read that blocks well past 10s)
@@ -74,6 +122,7 @@ static unsigned sd_read(void *ctx, uint32_t lba, uint32_t count, void *buf)
 		ayaneo_storage_lock();
 		r = (unsigned)mmc_wrap_bread(SD_DEV_NUM, (unsigned long)lba,
 					     (unsigned long)count, buf, SD_PART_USER);
+		if (count == 1 && r == 1) { sc_keep(lba, buf); g_dbg_sc_miss++; }
 		ayaneo_storage_unlock();
 		return r;
 	}
@@ -114,6 +163,15 @@ static unsigned sd_write(void *ctx, uint32_t lba, uint32_t count, const void *bu
 	ayaneo_storage_lock();
 	r = (unsigned)mmc_wrap_bwrite(SD_DEV_NUM, (unsigned long)lba,
 				      (unsigned long)count, buf, SD_PART_USER);
+	{	/* the cached copies of these sectors take what was written (dropped if it failed) */
+		uint32_t k;
+		for (k = 0; k < count; k++) {
+			int i = sc_find(lba + k);
+			if (i < 0) continue;
+			if (r == count) memcpy(s_sc_buf[i], (const uint8_t *)buf + k * 512u, 512);
+			else s_sc[i].ok = 0;
+		}
+	}
 	ayaneo_storage_unlock();
 	return r;
 }
@@ -167,6 +225,9 @@ int gba_sd_mount(fat_vol *v)
 {
 	int rc;
 	if (gba_sd_hw_init() != 0) return -5;   /* microSD slot could not be brought up */
+	ayaneo_storage_lock();
+	sc_clear();   /* a card put in since holds other sectors */
+	ayaneo_storage_unlock();
 	rc = fat_mount(v, sd_read, 0);
 	/* Attach the writer so save/state persistence (fat_wr_put) works on device.
 	 * Without this v->wr stays 0 and every write silently returns -1. */

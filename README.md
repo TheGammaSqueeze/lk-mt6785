@@ -32,7 +32,11 @@ bootloader, before any operating system, and owns the hardware outright.
   microSD card. Swap the card, swap the whole setup.
 - **The good stuff from the start.** Rewind, fast forward, save states, suspend points, scanline
   and LCD filters, colour correction and backlight black frame insertion, in a box art menu with
-  themes (Classic and GBA Indigo, picked on the Display page).
+  themes (Current, and Classic and GBA Indigo in beta, picked in Settings or on the classic
+  theme's Display page).
+- **In your language.** The menus and the in-game menu in 17 languages: English, French, German,
+  Spanish, Italian, Dutch, Portuguese, Russian, Japanese, Korean, Simplified and Traditional
+  Chinese, Polish, Turkish, Arabic, Hebrew and Persian (Settings > Language).
 
 ## Screenshots
 
@@ -126,6 +130,7 @@ glue. They are submodules here under `cores/`:
 | `tools/release/` | the release build: packages, scatter files, demo games and box covers |
 | `tools/ayaneo/`, `tools/konkr/` | signing, the menu packer, the card builder, the stock firmware files |
 | `tools/ayaneo/snes/themes/` | the menu themes (see its README) |
+| `tools/ayaneo/pico_current/` | the Current theme's card packs, and the languages: `i18n/` holds the texts, `build_lang.py` makes a pack per language |
 | `documentation/` | device docs, and `development/` for the engineering notes kept from the ports |
 | `build_*.sh` | build entry points: `build_konkr_kpa.sh`, `build_ayaneo_gba_sd.sh`, `build_ayaneo_pocket_air_mini.sh` |
 

@@ -19,15 +19,20 @@
 
 extern BOOT_ARGUMENT *g_boot_arg;
 
-#define REWIND_SCRATCH_END 0x5F400000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
+#define REWIND_SCRATCH_END 0x5FC00000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
 					   * menu's box art slots (SNES_BOXART_PA, 20 MB, gba_snes_menu.c),
-					   * then the armGBA core's own window (below); look above them all */
+					   * then the armGBA core's own window and the language pack (below);
+					   * look above them all */
 /* The armGBA core's heap: 128 MB of the island above the box art. The scratch's 62 MB held its ROM
  * buffer (32 MB), its recompiler's code buffer and what the recompiler notes on each block it
  * compiles, with a few MB to spare: a game that compiles a lot ran the heap out (the double speed,
  * the hang). Mapped once, executable like the scratch (the recompiler runs code from it). */
 #define GBA_HIGH_PA   0x57400000u
 #define GBA_HIGH_SIZE 0x08000000u
+/* The menus' language pack (pico_i18n.c): its strings and the glyphs the menu fonts lack, read once
+ * and kept for the whole power on, so the in-game menu finds them with a game running. */
+#define LANG_PA       0x5F400000u
+#define LANG_SIZE     0x00800000u
 #define REWIND_VA_LIMIT    0x100000000ULL /* LK is 32-bit VA (identity) - can only map phys < 4GB */
 #define REWIND_CAP         0x40000000u    /* per-block ceiling (1GB); the largest real island (mblk10
 					   * ~1022MB) sits just under it, so no block is actually capped -
@@ -145,26 +150,38 @@ unsigned int ayaneo_rewind_map(void)
 
 /* The armGBA core's window (GBA_HIGH_PA), mapped once; NULL when the DRAM there is not a usable
  * unreserved block (another SKU's memory map), and the core keeps the scratch arena. */
-void *ayaneo_gba_high_arena(unsigned int *size)
+/* map [pa, pa + size) once, if one mblock holds it all; state: 0 not tried, 1 mapped, -1 not there */
+static void *fixed_window(unsigned int pa, unsigned int size, int *state)
 {
-	static int s_state;   /* 0 not tried, 1 mapped, -1 not there */
-	if (!s_state) {
+	if (!*state) {
 		mblock_info_t *mi = g_boot_arg ? &g_boot_arg->mblock_info : 0;
 		unsigned int i;
-		s_state = -1;
+		*state = -1;
 		for (i = 0; mi && i < mi->mblock_num && i < 128u; i++) {
 			unsigned long long st = mi->mblock[i].start, en = st + mi->mblock[i].size;
-			if (st <= GBA_HIGH_PA && en >= (unsigned long long)GBA_HIGH_PA + GBA_HIGH_SIZE) {
-				if (arch_mmu_map((uint64_t)GBA_HIGH_PA, (vaddr_t)GBA_HIGH_PA,
-						 MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA, GBA_HIGH_SIZE) == 0)
-					s_state = 1;
+			if (st <= pa && en >= (unsigned long long)pa + size) {
+				if (arch_mmu_map((uint64_t)pa, (vaddr_t)pa,
+						 MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA, size) == 0)
+					*state = 1;
 				break;
 			}
 		}
 	}
-	if (s_state != 1) return 0;
-	if (size) *size = GBA_HIGH_SIZE;
-	return (void *)(addr_t)GBA_HIGH_PA;
+	return *state == 1 ? (void *)(addr_t)pa : 0;
+}
+void *ayaneo_gba_high_arena(unsigned int *size)
+{
+	static int s_state;
+	void *p = fixed_window(GBA_HIGH_PA, GBA_HIGH_SIZE, &s_state);
+	if (p && size) *size = GBA_HIGH_SIZE;
+	return p;
+}
+void *ayaneo_lang_arena(unsigned int *size)
+{
+	static int s_state;
+	void *p = fixed_window(LANG_PA, LANG_SIZE, &s_state);
+	if (p && size) *size = LANG_SIZE;
+	return p;
 }
 
 /* Walk every 2 MB section of every mapped island through the page tables. A section that is no

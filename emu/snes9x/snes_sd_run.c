@@ -16,6 +16,7 @@
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
+#include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #include "../gba/gba_sd_save.h"
 #include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
@@ -450,7 +451,8 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 		else p = smput(p, "Off"); break;
 	case SM_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = smput(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
 	case SM_BATTERY: { extern int ayaneo_gauge_pct(void); extern int ayaneo_gauge_time_str(char *out, int n); extern int upmu_is_chr_det(void);
-		char ts[24]; p = smputu(p, (unsigned)ayaneo_gauge_pct()); p = smput(p, upmu_is_chr_det() ? "% Charging" : "%");
+		char ts[64]; p = smputu(p, (unsigned)ayaneo_gauge_pct()); p = smput(p, "%");
+		if (upmu_is_chr_det()) { p = smput(p, " "); p = smput(p, tr_igm("Charging")); }
 		if (ayaneo_gauge_time_str(ts, sizeof ts)) { p = smput(p, " "); p = smput(p, ts); } } break;
 	case SM_PANEL: { unsigned hz = s_snes_hz1000;   /* Hz*1000 -> "60.11 Hz" */
 		p = smputu(p, hz / 1000); p = smput(p, ".");

@@ -80,12 +80,14 @@ static volatile int s_chr_prev = -1;
 static volatile unsigned int s_samples;
 static volatile unsigned int s_cur_n;     /* current samples since the charger last changed */
 volatile unsigned int g_dbg_gauge_raw;  /* "7h 20m left", "1h 05m to full", "" when unknown; returns the length */
+extern const char *tr_igm(const char *en) __attribute__((weak));   /* the menus' languages, card builds */
 int ayaneo_gauge_time_str(char *out, int n)
 {
 	int tf = 0, m = ayaneo_gauge_minutes(&tf);
+	const char *fmt = tf ? "%dh %02dm to full" : "%dh %02dm left";
 	if (m < 0 || n < 20) { if (n) out[0] = 0; return 0; }
 	if (m > 99 * 60 + 59) m = 99 * 60 + 59;
-	return snprintf(out, n, "%dh %02dm %s", m / 60, m % 60, tf ? "to full" : "left");
+	return snprintf(out, n, tr_igm ? tr_igm(fmt) : fmt, m / 60, m % 60);
 }
 
 /* oem gauge */

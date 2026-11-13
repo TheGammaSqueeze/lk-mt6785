@@ -1,0 +1,5 @@
+{
+ "sys_option_init_Title": "Iniciar el sistema",
+ "sys_option_init_cm_Decide": "Salir e iniciar el sistema operativo",
+ "sys_option_init_dialog_Confirm": "Se cerrará el emulador y se iniciará\nel sistema operativo.\nTu progreso se guarda en la tarjeta SD.\n¿Seguro que quieres continuar? "
+}

@@ -1,0 +1,107 @@
+{
+ "_about": "The menus' languages in the order of the saved setting (pico_i18n.h LANG_*; never reorder, add at the end): code, the name in the language itself, the Noto Sans CJK face its CJK characters come from, and whether it is written right to left.",
+ "languages": [
+  {
+   "code": "en",
+   "name": "English",
+   "cjk": null,
+   "rtl": false
+  },
+  {
+   "code": "fr",
+   "name": "Français",
+   "cjk": null,
+   "rtl": false
+  },
+  {
+   "code": "de",
+   "name": "Deutsch",
+   "cjk": null,
+   "rtl": false
+  },
+  {
+   "code": "es",
+   "name": "Español",
+   "cjk": null,
+   "rtl": false
+  },
+  {
+   "code": "it",
+   "name": "Italiano",
+   "cjk": null,
+   "rtl": false
+  },
+  {
+   "code": "nl",
+   "name": "Nederlands",
+   "cjk": null,
+   "rtl": false
+  },
+  {
+   "code": "pt",
+   "name": "Português",
+   "cjk": null,
+   "rtl": false
+  },
+  {
+   "code": "ru",
+   "name": "Русский",
+   "cjk": null,
+   "rtl": false
+  },
+  {
+   "code": "ja",
+   "name": "日本語",
+   "cjk": "JP",
+   "rtl": false
+  },
+  {
+   "code": "ko",
+   "name": "한국어",
+   "cjk": "KR",
+   "rtl": false
+  },
+  {
+   "code": "zh-cn",
+   "name": "简体中文",
+   "cjk": "SC",
+   "rtl": false
+  },
+  {
+   "code": "zh-tw",
+   "name": "繁體中文",
+   "cjk": "TC",
+   "rtl": false
+  },
+  {
+   "code": "pl",
+   "name": "Polski",
+   "cjk": null,
+   "rtl": false
+  },
+  {
+   "code": "tr",
+   "name": "Türkçe",
+   "cjk": null,
+   "rtl": false
+  },
+  {
+   "code": "ar",
+   "name": "العربية",
+   "cjk": null,
+   "rtl": true
+  },
+  {
+   "code": "he",
+   "name": "עברית",
+   "cjk": null,
+   "rtl": true
+  },
+  {
+   "code": "fa",
+   "name": "فارسی",
+   "cjk": null,
+   "rtl": true
+  }
+ ]
+}

@@ -23,7 +23,10 @@
 #include "menu/gba_name.h"          /* gba_clean_name (shared with host_render) */
 #include "sd_fat.h"                 /* gba_rom_entry */
 #include "gba_boxart_sd.h"          /* gba_boxart_load_sd */
+#include "pico_i18n.h"              /* the menus' languages */
 #include <arch/arm/mmu.h>           /* arch_mmu_map: the box art slots (SNES_BOXART_PA) */
+#include <kernel/thread.h>          /* thread_sleep */
+#include <kernel/mutex.h>           /* the box art loader is shared with the listing thread */
 #include <string.h>                 /* memcpy for the launch snapshot */
 #include <stdint.h>                 /* uintptr_t, size_t */
 
@@ -137,7 +140,6 @@ extern void mtk_wdt_restart(void);
  * launch forward-punch and the live SNES display geometry - reused for the reverse so the frozen
  * frame shrinks from EXACTLY what was last on screen (same size/aspect), not a centred integer box. */
 extern void ayaneo_snes_punch_prerender(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px);
-extern void thread_sleep(unsigned);
 extern int  zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstlen, int offset);
 extern void ayaneo_set_cpu_mhz(unsigned int mhz);
 extern unsigned int ayaneo_get_cpu_mhz(void);
@@ -349,6 +351,10 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
 #define SNES_BOXART_SLOT 0x25000u    /* bytes per tile slot (>= 224*224*3) */
 #define SNES_BOXART_CAP  128         /* 128 * 0x25000 = 0x1280000 */
 #define SNES_BOXART_MAP  0x01400000u /* the mapping: 20 MB, whole 2 MB sections */
+/* a box art file is read here before it is spread into its slot: the rest of the mapping past the
+ * slots, which nothing else uses, so the art can load while the BIOS intro runs a core */
+#define SNES_BOXART_STAGE     (SNES_BOXART_PA + SNES_BOXART_CAP * SNES_BOXART_SLOT)
+#define SNES_BOXART_STAGE_MAX (SNES_BOXART_MAP - SNES_BOXART_CAP * SNES_BOXART_SLOT)
 #if defined(KONKR_KPA)
 /* Konkr: the active (blue) card tiles, one per console type (8 x 320*360*4 = 0x384000), sit
  * above the 3:2 warped wallpaper cache (1800 x 640 x 4 at the 0.75 native scale ends at
@@ -433,7 +439,26 @@ static uint32_t s_theme_hash[SNES_THEME_MAX];
 static const snes_img_entry *s_theme_thumb[SNES_THEME_MAX], *s_theme_atlas[SNES_THEME_MAX];
 static const snes_img_entry *s_theme_wall[SNES_THEME_MAX];
 static int s_theme_layout[SNES_THEME_MAX];   /* a theme with a menu of its own (pico_current.c) */
+static unsigned int s_theme_beta;              /* the themes still being finished, a bit each */
 static int s_keep_focus = -1;   /* the game focused when a theme was picked: kept over the reload */
+/* The classic theme's Language page holds the first eight languages, in a grid ordered by row
+ * (language01, language05, language02, ...); the others leave the classic theme in English, as its
+ * fonts have no glyphs for their scripts. */
+static const signed char k_lang_grid[8] = { LANG_EN, LANG_IT, LANG_FR, LANG_NL, LANG_DE, LANG_PT, LANG_ES, LANG_RU };
+static const char *const k_lang_locale[8] = { "usa_en", "eur_fr", "eur_de", "eur_es", "eur_it", "eur_nl", "eur_pt", "eur_ru" };
+static int lang_grid_of(int lang)
+{
+	int i;
+	for (i = 0; i < 8; i++) if (k_lang_grid[i] == lang) return i;
+	return -1;
+}
+/* relabel an Options row in the language in use when its slot and font take it, else in English */
+static void relabel_row(int idx, const char *full, const char *brief)
+{
+	if (snes_menu_relabel_option(&s_menu, idx, tr(full)) == 0) return;
+	if (snes_menu_relabel_option(&s_menu, idx, tr(brief)) == 0) return;
+	if (snes_menu_relabel_option(&s_menu, idx, full) != 0) snes_menu_relabel_option(&s_menu, idx, brief);
+}
 static int theme_id(const char *id, const char *pfx, int *nn, const char **name)
 {
 	while (*pfx)
@@ -469,7 +494,7 @@ static void theme_apply(void)
 	for (k = 0; k < SNES_THEME_MAX; k++) {
 		s_theme_hash[k] = 0; s_theme_thumb[k] = 0; s_theme_atlas[k] = 0; s_theme_wall[k] = 0; s_theme_layout[k] = 0;
 	}
-	s_theme_n = 0; s_theme_cur = 0;
+	s_theme_n = 0; s_theme_cur = 0; s_theme_beta = 0;
 	for (i = 0; i < s_pk.hdr->res_count; i++) {
 		const snes_res_entry *e = &s_pk.res[i];
 		const char *name;
@@ -484,6 +509,8 @@ static void theme_apply(void)
 			s_theme_wall[nn] = &s_pk.img[e->index];
 		else if (theme_id(snes_str(&s_pk, e->id_str), "theme_layout_", &nn, &name) && nn < SNES_THEME_MAX)
 			s_theme_layout[nn] = 1;
+		else if (theme_id(snes_str(&s_pk, e->id_str), "theme_beta_", &nn, &name) && nn < SNES_THEME_MAX)
+			s_theme_beta |= 1u << nn;
 	}
 	while (s_theme_n < SNES_THEME_MAX && s_theme_thumb[s_theme_n] &&
 	       (s_theme_atlas[s_theme_n] || s_theme_layout[s_theme_n])) s_theme_n++;
@@ -645,14 +672,23 @@ void gba_menu_reverse_buffers(uint32_t *snap, unsigned int *dst)
  * none) is not read again, so a menu after a game only loads the art of games that changed place.
  * The raw .ART is read through the deflate staging, free once the menu's pack is loaded.
  * Returns the games that have art. Shared by every menu theme. */
+/* The box art is read once by the listing's thread during the BIOS intro (gba_driver.c), and the
+ * menu's call then finds every slot already holding its game; one that comes before it is done
+ * waits here only for the rest. */
+static mutex_t s_boxart_mtx;
+static volatile int s_boxart_mtx_up;
 int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom)
 {
 	static int s_boxart_mapped;
 	unsigned char *region = (unsigned char *)SNES_BOXART_PA;
-	unsigned char *scratch = (unsigned char *)SNES_COMP_PA;
+	unsigned char *scratch = (unsigned char *)SNES_BOXART_STAGE;
 	fat_vol *vol = gba_sd_menu_vol();
 	unsigned int t0 = gpt4_get_current_tick();
 	int i, any = 0, tot = 0;
+	enter_critical_section();
+	if (!s_boxart_mtx_up) { mutex_init(&s_boxart_mtx); s_boxart_mtx_up = 1; }
+	exit_critical_section();
+	mutex_acquire(&s_boxart_mtx);
 	if (!s_boxart_mapped)
 		s_boxart_mapped = arch_mmu_map(SNES_BOXART_PA, SNES_BOXART_PA,
 					       MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA,
@@ -672,7 +708,7 @@ int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom)
 		{
 			unsigned off = (unsigned)i * SNES_BOXART_SLOT;
 			s_boxart_full[i].w = 0;		/* default: no art */
-			if (gba_boxart_load_sd(vol, (int)roms[i].type, roms[i].name, scratch, SNES_COMP_MAX,
+			if (gba_boxart_load_sd(vol, (int)roms[i].type, roms[i].name, scratch, SNES_BOXART_STAGE_MAX,
 					       region + off, SNES_BOXART_SLOT, off,
 					       &s_boxart_full[i]) == 0)
 				any++;
@@ -683,6 +719,7 @@ int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom)
 	g_dbg_boxart_ok = (unsigned)any;	/* reported via oem diag bx=ok/tot */
 	g_dbg_boxart_tot = (unsigned)tot;
 	s_have_boxart = (any > 0);
+	mutex_release(&s_boxart_mtx);
 	return any;
 }
 
@@ -1016,6 +1053,13 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	}
 
 	if (load_pack() != 0) { ayaneo_set_cpu_mhz(saved_mhz); return -2; }
+	{	/* the language: the authored tables in it where the theme has them, and GammaOS's words */
+		unsigned int lp, lw, lh;
+		int lang = pico_lang();
+		ayaneo_canvas_back(&lp, &lw, &lh);
+		pico_lang_load(lw, lh);
+		if (lang >= 0 && lang < 8) snes_pack_set_locale(&s_pk, k_lang_locale[lang]);
+	}
 	theme_apply();   /* the saved theme's atlas, before the menu builds its caches from it */
 
 	if (snes_menu_init(&s_menu, &s_pk, (snes_rnode *)SNES_HOME_PA, HOME_CAP,
@@ -1046,6 +1090,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 				     snes_res_img(&s_pk, snes_hash("logo_gg")),
 				     snes_res_img(&s_pk, snes_hash("logo_sg")));
 	snes_menu_set_themes(&s_menu, s_theme_n, s_theme_thumb, s_theme_cur);   /* Display: the Theme row */
+	s_menu.theme_beta = s_theme_beta;
 	/* initial focus (start_sel) is applied after apply_filter() below, which resets focus */
 
 	/* Card-tile cache: cap SNES_CTILE2_CAP slots. Without boxart every GBA card body
@@ -1072,10 +1117,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * audio-mute settings: relabel them (fall back to a shorter label if the
 	 * authored pool slot is too small) and seed the toggle state from the saved
 	 * values. setting2 stays the untouched third cosmetic toggle. */
-	if (snes_menu_relabel_option(&s_menu, 0, "Mute BIOS Audio") != 0)
-		snes_menu_relabel_option(&s_menu, 0, "Mute BIOS");
-	if (snes_menu_relabel_option(&s_menu, 1, "Mute Menu Audio") != 0)
-		snes_menu_relabel_option(&s_menu, 1, "Mute Menu");
+	relabel_row(0, "Mute BIOS Audio", "Mute BIOS");
+	relabel_row(1, "Mute Menu Audio", "Mute Menu");
+	snes_menu_set_language(&s_menu, lang_grid_of(pico_lang()));
 	s_menu.opt_on = (s_menu.opt_on & ~3u)
 		| (ayaneo_get_mute_bios() ? 1u : 0u)
 		| (ayaneo_get_mute_menu() ? 2u : 0u);
@@ -1302,6 +1346,18 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 					return -3;
 				}
 			}
+		}
+		/* Language picked on its page: save it, and run the menu again in it, as for a theme */
+		if (s_menu.lang_sel >= 0 && s_menu.lang_sel < 8 && k_lang_grid[s_menu.lang_sel] != pico_lang()) {
+			extern void ayaneo_settings_persist_flush(void);
+			pico_lang_set(k_lang_grid[s_menu.lang_sel]);
+			ayaneo_menu_settings_persist();
+			ayaneo_settings_persist_flush();
+			s_keep_focus = s_menu.focus;
+			snes_audio_init(&s_mix);
+			ayaneo_menu_audio_silence();
+			ayaneo_set_cpu_mhz(saved_mhz);
+			return -3;
 		}
 		launch = snes_menu_take_launch(&s_menu);
 		/* the menu returns a VIEW index (current filter); map it back to the full roms[] index */
