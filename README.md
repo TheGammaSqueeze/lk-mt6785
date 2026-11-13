@@ -47,6 +47,12 @@ bootloader, before any operating system, and owns the hardware outright.
 - **The real time.** The console's own clock runs the games that keep time (Pokemon Ruby,
   Sapphire, Emerald, Gold, Silver and Crystal, Boktai), shows in the menus, and is set with its
   time zone in Settings > Date & Time. Each game shows how long it has been played and when last.
+- **Tilt, gyro and rumble.** The console's own motion sensor and vibration motor stand in for the
+  cartridges': Yoshi Topsy-Turvy and Kirby Tilt 'n' Tumble tilt (a flick of the console makes
+  Kirby jump), WarioWare: Twisted! turns and rumbles, as do Drill Dozer and the Game Boy Color's
+  rumble cartridges.
+- **Headphones.** Sound moves to the 3.5 mm jack as soon as headphones are plugged in, and back
+  to the speakers when they come out.
 - **In your language.** The menus and the in-game menu in 17 languages: English, French, German,
   Spanish, Italian, Dutch, Portuguese, Russian, Japanese, Korean, Simplified and Traditional
   Chinese, Polish, Turkish, Arabic, Hebrew and Persian (Settings > Language).
@@ -158,7 +164,8 @@ Exit game. The pages hold what each emulator offers:
 | System | Resume on Power On, Resume on Game Open, BIOS Intro Background, Skip BIOS Intro, Battery | Resume on Power On, Battery | Resume on Power On, Battery | Resume on Power On, Battery |
 
 armGBA's Core options: BIOS (Nintendo from the card, or armGBA's built-in), LCD Ghosting, Interlaced
-Rows, Audio Low-Pass Filter, Solar Sensor (for Boktai).
+Rows, Audio Low-Pass Filter, Solar Sensor (for Boktai), Motion Controls (tilt and gyro cartridges)
+and Rumble.
 
 The values: LCD Filter Off, Scanlines, LCD Grid, Dot Matrix, LCD1x, LCD3x (Genesis: Grid, Grid+);
 Aspect Ratio Stretch, Fit, Pixel Perfect (SNES 4:3, Pixel, NTSC, PAL, Stretch; Genesis Pixel, Core,
