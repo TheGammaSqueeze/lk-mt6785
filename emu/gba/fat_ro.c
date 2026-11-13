@@ -13,9 +13,10 @@ static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); 
 static uint32_t rd32(const uint8_t *p)
 { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 
-/* read one 512B sector into v->sec_buf */
-static int read_sec(fat_vol *v, uint32_t lba)
-{ return v->rd(v->ctx, lba, 1, v->sec_buf) == 1 ? 0 : -1; }
+/* read one 512B sector into the caller's buffer: each reader has its own, so threads reading the
+ * card at once (the menu, the card writer, the settings writer, fastboot) never share one */
+static int read_sec(fat_vol *v, uint32_t lba, uint8_t *buf)
+{ return v->rd(v->ctx, lba, 1, buf) == 1 ? 0 : -1; }
 
 /* absolute LBA of data cluster N (>=2) */
 static uint32_t clus_lba(fat_vol *v, uint32_t n)
@@ -237,6 +238,7 @@ static void dir_init(fat_vol *v, fat_dir *d, uint32_t first_clus)
 static int next_raw(fat_dir *d, uint8_t out[32])
 {
 	fat_vol *v = d->v;
+	uint8_t sb[512];
 	for (;;) {
 		uint32_t lba;
 		if (d->end) return 0;
@@ -247,9 +249,9 @@ static int next_raw(fat_dir *d, uint8_t out[32])
 			if (d->cluster < 2 || d->cluster >= v->total_clusters + 2) { d->end = 1; return 0; }
 			lba = clus_lba(v, d->cluster) + d->sec_in_clus;
 		}
-		if (read_sec(v, lba) != 0) { d->end = 1; return 0; }
+		if (read_sec(v, lba, sb) != 0) { d->end = 1; return 0; }
 		{
-			uint8_t *rec = v->sec_buf + d->ent_in_sec * 32;
+			uint8_t *rec = sb + d->ent_in_sec * 32;
 			d->ent_in_sec++;
 			if (d->ent_in_sec >= 16) {        /* advance to next sector */
 				d->ent_in_sec = 0;
@@ -449,7 +451,7 @@ uint32_t fat_read(fat_file *f, uint32_t off, void *buf, uint32_t len)
 			continue;
 		}
 		/* Partial cluster (a non-zero head offset, or a final tail < one cluster):
-		 * read whole sectors in bulk, bouncing through sec_buf only for a partial
+		 * read whole sectors in bulk, bouncing through a sector of its own only for a partial
 		 * head/tail sector. */
 		{
 			uint32_t sec = inclus / 512u, so = inclus % 512u;
@@ -464,8 +466,9 @@ uint32_t fat_read(fat_file *f, uint32_t off, void *buf, uint32_t len)
 					sec += nsec; lba += nsec;
 				} else {
 					uint32_t n = 512u - so; if (n > len) n = len;
-					if (read_sec(v, lba) != 0) return got;
-					fr_memcpy(out + got, v->sec_buf + so, n);
+					uint8_t sb[512];
+					if (read_sec(v, lba, sb) != 0) return got;
+					fr_memcpy(out + got, sb + so, n);
 					got += n; len -= n; so = 0; sec++; lba++;
 				}
 			}

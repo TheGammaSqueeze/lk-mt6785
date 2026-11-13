@@ -50,7 +50,6 @@ typedef struct {
 	uint32_t ex_bitmap_len;    /* bitmap length in bytes */
 	uint32_t ex_upcase_clus;   /* up-case table first cluster */
 	uint32_t ex_upcase_len;    /* up-case table length in bytes */
-	uint8_t  sec_buf[512];     /* scratch sector for FAT/dir reads */
 	/* fat_wr.c write-back cache of ONE FAT sector (FAT copy #0). A save touches
 	 * the same FAT sector hundreds of times (alloc + mirror writes); caching it
 	 * and flushing to all FAT copies once collapses that to a couple of writes.

@@ -82,9 +82,10 @@ int exfat_mount(fat_vol *v, uint32_t part_lba, const uint8_t *b)
 			uint32_t s;
 			for (s = 0; s < v->ex_spc; s++) {
 				int i;
-				if (rsec(v, clus_lba(v, c) + s, v->sec_buf) != 0) return -2;
+				uint8_t sb[512];
+				if (rsec(v, clus_lba(v, c) + s, sb) != 0) return -2;
 				for (i = 0; i < 16; i++) {
-					const uint8_t *e = v->sec_buf + i * 32;
+					const uint8_t *e = sb + i * 32;
 					if (e[0] == 0) goto done;
 					if (e[0] == ET_BITMAP && !(e[1] & 1u)) { v->ex_bitmap_clus = rd32(e + 0x14); v->ex_bitmap_len = rd32(e + 0x18); }
 					else if (e[0] == ET_UPCASE) { v->ex_upcase_clus = rd32(e + 0x14); v->ex_upcase_len = rd32(e + 0x18); }
@@ -109,12 +110,12 @@ static void dir_set(fat_vol *v, fat_dir *d, uint32_t first, int nofat, uint32_t 
 static int next_raw(fat_dir *d, uint8_t out[32])
 {
 	fat_vol *v = d->v;
-	uint8_t fatb[512]; uint32_t fatb_sec = 0xFFFFFFFFu;
+	uint8_t fatb[512], sb[512]; uint32_t fatb_sec = 0xFFFFFFFFu;
 	if (d->end) return 0;
 	if (d->ex_len && d->ex_pos >= d->ex_len) { d->end = 1; return 0; }
 	if (!clus_ok(v, d->cluster)) { d->end = 1; return 0; }
-	if (rsec(v, clus_lba(v, d->cluster) + d->sec_in_clus, v->sec_buf) != 0) { d->end = 1; return 0; }
-	ex_memcpy(out, v->sec_buf + d->ent_in_sec * 32, 32);
+	if (rsec(v, clus_lba(v, d->cluster) + d->sec_in_clus, sb) != 0) { d->end = 1; return 0; }
+	ex_memcpy(out, sb + d->ent_in_sec * 32, 32);
 	d->ex_pos += 32;
 	if (++d->ent_in_sec >= 16) {
 		d->ent_in_sec = 0;
@@ -255,9 +256,10 @@ uint32_t exfat_read(fat_file *f, uint32_t off, void *buf, uint32_t len)
 					if (v->rd(v->ctx, lba, nsec, out + got) != nsec) return got;
 					got += nsec * 512u; len -= nsec * 512u; sec += nsec; lba += nsec;
 				} else {
-					uint32_t n = 512u - so; if (n > len) n = len;
-					if (rsec(v, lba, v->sec_buf) != 0) return got;
-					ex_memcpy(out + got, v->sec_buf + so, n);
+					uint32_t n = 512u - so; uint8_t sb[512];
+					if (n > len) n = len;
+					if (rsec(v, lba, sb) != 0) return got;
+					ex_memcpy(out + got, sb + so, n);
 					got += n; len -= n; so = 0; sec++; lba++;
 				}
 			}
@@ -346,23 +348,23 @@ static uint16_t set_checksum(const uint8_t *ents, int nents)
 static uint16_t upcase_unit(fat_vol *v, uint16_t ch)
 {
 	uint32_t pos = 0, code = 0, fpos;
-	uint8_t fatb[512]; uint32_t fatb_sec = 0xFFFFFFFFu;
+	uint8_t fatb[512], sb[512]; uint32_t fatb_sec = 0xFFFFFFFFu;
 	if (!v->ex_upcase_clus) return (ch >= 'a' && ch <= 'z') ? (uint16_t)(ch - 32) : ch;
 	for (fpos = 0; fpos + 2u <= v->ex_upcase_len; ) {
 		uint32_t c = clus_at(v, v->ex_upcase_clus, 0, fpos, fatb, &fatb_sec);
 		uint32_t lba, so; uint16_t u;
 		if (!c) break;
 		lba = clus_lba(v, c) + (fpos % cbytes(v)) / 512u; so = fpos % 512u;
-		if (rsec(v, lba, v->sec_buf) != 0) break;
-		u = rd16(v->sec_buf + so);
+		if (rsec(v, lba, sb) != 0) break;
+		u = rd16(sb + so);
 		fpos += 2;
 		if (u == 0xFFFF) {                                /* run of identity mappings */
 			uint32_t cnt;
 			c = clus_at(v, v->ex_upcase_clus, 0, fpos, fatb, &fatb_sec);
 			if (!c) break;
 			lba = clus_lba(v, c) + (fpos % cbytes(v)) / 512u; so = fpos % 512u;
-			if (rsec(v, lba, v->sec_buf) != 0) break;
-			cnt = rd16(v->sec_buf + so);
+			if (rsec(v, lba, sb) != 0) break;
+			cnt = rd16(sb + so);
 			fpos += 2;
 			if (ch >= code && ch < code + cnt) return ch;
 			code += cnt;
@@ -396,13 +398,13 @@ static void dit_init(dit_t *it, fat_vol *v, const fat_dir *dir) { it->d = *dir; 
 static int dit_next(dit_t *it, uint8_t rec[32])
 {
 	fat_dir *d = &it->d; fat_vol *v = d->v;
-	uint8_t fatb[512]; uint32_t fatb_sec = 0xFFFFFFFFu;
+	uint8_t fatb[512], sb[512]; uint32_t fatb_sec = 0xFFFFFFFFu;
 	if (d->end) return 0;
 	if (d->ex_len && d->ex_pos >= d->ex_len) { d->end = 1; return 0; }
 	if (!clus_ok(v, d->cluster)) { d->end = 1; return 0; }
 	it->lba = clus_lba(v, d->cluster) + d->sec_in_clus; it->ent = (int)d->ent_in_sec;
-	if (rsec(v, it->lba, v->sec_buf) != 0) { d->end = 1; return 0; }
-	ex_memcpy(rec, v->sec_buf + d->ent_in_sec * 32, 32);
+	if (rsec(v, it->lba, sb) != 0) { d->end = 1; return 0; }
+	ex_memcpy(rec, sb + d->ent_in_sec * 32, 32);
 	d->ex_pos += 32;
 	if (++d->ent_in_sec >= 16) {
 		d->ent_in_sec = 0;

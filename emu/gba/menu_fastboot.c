@@ -1490,6 +1490,25 @@ static void cmd_gamefile(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem sd-get:/path - stage a file from the card for `fastboot get_staged <file>` (menu mode, on
+ * the menu's own volume) */
+static void cmd_sd_get(const char *arg, void *data, unsigned sz)
+{
+	extern void *gba_sd_menu_vol(void);
+	fat_vol *v = (fat_vol *)gba_sd_menu_vol();
+	fat_file f;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (!v) { fastboot_fail("sd-get: no card in use"); return; }
+	if (fat_open(v, arg, &f) != 0) { fastboot_fail("sd-get: not there"); return; }
+	if (f.size > SHOT_STAGE_MAX) { fastboot_fail("sd-get: too large"); return; }
+	if (fat_read(&f, 0, (void *)SHOT_STAGE_PA, f.size) != f.size) { fastboot_fail("sd-get: read failed"); return; }
+	s_stage_len = f.size;
+	snprintf(lbuf, sizeof lbuf, "staged %u bytes (fastboot get_staged <file>)", f.size);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem latled[:0|1] - the latency light (gba_driver.c): the power LED white while any button is
  * down; not saved */
 static void cmd_latled(const char *arg, void *data, unsigned sz)
@@ -1731,6 +1750,17 @@ static void cmd_sd_ls(const char *arg, void *data, unsigned sz)
 		fastboot_info(lbuf);
 		n++;
 	}
+	fastboot_okay("");
+}
+/* oem animslow:N - the Current menu's screen cascades N times slower (1 normal), to look at them */
+static void cmd_animslow(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_anim_slow;
+	int n = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg >= '0' && *arg <= '9') n = n * 10 + (*arg++ - '0');
+	g_dbg_anim_slow = n >= 1 && n <= 50 ? n : 1;
 	fastboot_okay("");
 }
 /* oem sd-check - every cluster on the card used by at most one file? (sd_check.c) */
@@ -2683,6 +2713,8 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
 	fastboot_register("oem sd-check", cmd_sd_check, 1, 0);
+	fastboot_register("oem animslow", cmd_animslow, 1, 0);
+	fastboot_register("oem sd-get:", cmd_sd_get, 1, 0);
 	fastboot_register("oem sd-rm:", cmd_sd_rm, 1, 0);
 #if defined(KONKR_KPA)
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);

@@ -32,6 +32,7 @@
 #include "pico_clock.h"         /* the date and time */
 #include "pico_stats.h"         /* play time and last played */
 #include "pico_libmem.h"        /* the library's tables: thousands of games */
+#include <kernel/thread.h>       /* thread_sleep: a pack read tried again */
 
 extern unsigned int gpt4_get_current_tick(void);
 extern unsigned int *ayaneo_canvas_back(unsigned int *pitch, unsigned int *W, unsigned int *H);
@@ -665,6 +666,8 @@ static struct {
 	int kb_r, kb_c;                   /* the key in focus */
 	int sr_list;                      /* 1 while the results have the focus */
 	int sr_sel, sr_top, sr_n;         /* the results: focus, first shown, count */
+	float reveal;                     /* 0..1: the screen cascading in, top to bottom (1 at rest) */
+	float leave;                      /* 0..1 while the search cascades out, before the screen behind it */
 } S;
 
 static const gba_rom_entry *s_roms;
@@ -1444,7 +1447,8 @@ static void search_open(int sys, int from_lib)
 {
 	S.search = 1; S.sr_sys = sys; S.sr_from_lib = from_lib;
 	S.sr_list = 0; S.kb_r = 0; S.kb_c = 0;
-	S.dip = .45f;
+	S.reveal = 0;                 /* it cascades in (frame_render) */
+	S.dip = from_lib ? 0 : .3f;   /* from the Games page the backdrop darkens under it */
 	search_run();
 }
 static void search_key(int r, int c)
@@ -1535,6 +1539,7 @@ static void search_view(void)
 }
 
 /* the menu into its own layer (transparent around it); redrawn only when something changed */
+volatile int g_dbg_anim_slow = 1;   /* oem animslow:N - the screen cascades N times slower, to look at */
 static int s_ui_clean;   /* the layer is known clear outside what it tracked */
 /* clear what the last drawing of the menu layer touched, and start tracking again */
 static void ui_clear(void)
@@ -1601,15 +1606,40 @@ static void frame_render(void)
 	g_fb = frame_target();   /* the canvas itself when it is laid out like the frame */
 	backdrop(S.lib || S.search || S.tab != TAB_GAMES);
 	if (!S.lib && !S.search && S.tab == TAB_GAMES && S.sys_t < 1) stage_draw();   /* the consoles crossfading */
-	for (y = 0; y < g_H; y++)	/* premultiplied over, only where the menu layer was drawn */
-		for (i = y * g_W + s_ux0[y]; i < y * g_W + s_ux1[y]; i++) {
-			uint32_t u = ui[i], a = u >> 24, d, k;
-			if (!a) continue;
-			if (a == 255) { g_fb[i] = u; continue; }
-			d = g_fb[i]; k = 256 - a - (a >> 7);
-			g_fb[i] = 0xFF000000u | ((((d & 0xFF00FFu) * k >> 8) & 0xFF00FFu) + (u & 0xFF00FFu)) |
-				  ((((d & 0x00FF00u) * k >> 8) & 0x00FF00u) + (u & 0x00FF00u));
+	if (S.reveal >= 1 && S.leave <= 0) {
+		for (y = 0; y < g_H; y++)	/* premultiplied over, only where the menu layer was drawn */
+			for (i = y * g_W + s_ux0[y]; i < y * g_W + s_ux1[y]; i++) {
+				uint32_t u = ui[i], a = u >> 24, d, k;
+				if (!a) continue;
+				if (a == 255) { g_fb[i] = u; continue; }
+				d = g_fb[i]; k = 256 - a - (a >> 7);
+				g_fb[i] = 0xFF000000u | ((((d & 0xFF00FFu) * k >> 8) & 0xFF00FFu) + (u & 0xFF00FFu)) |
+					  ((((d & 0x00FF00u) * k >> 8) & 0x00FF00u) + (u & 0x00FF00u));
+			}
+	} else {
+		/* A screen coming in (or the search going): the layer as it is, in bands from the top
+		 * down, each fading in as it rises into place (going: out from the bottom up, sinking).
+		 * Done here on the finished layer, so the menu is not drawn again for it. */
+		float e = S.leave > 0 ? 1 - S.leave : ease(S.reveal), soft = g_H * .38f, head = e * (g_H + soft);
+		int off = (int)((1 - e) * U(26));
+		for (y = 0; y < g_H; y++) {
+			int sy = y - off, j;
+			float f = (head - (float)sy) / soft;
+			uint32_t m;
+			if (sy < 0 || f <= 0) continue;
+			m = f >= 1 ? 256u : (uint32_t)(f * 256);
+			for (j = s_ux0[sy]; j < s_ux1[sy]; j++) {
+				uint32_t u = ui[sy * g_W + j], a, d, k;
+				if (!(u >> 24)) continue;
+				if (m < 256) u = ((((u & 0xFF00FFu) * m) >> 8) & 0xFF00FFu) | ((((u >> 8) & 0xFF00FFu) * m) & 0xFF00FF00u);
+				a = u >> 24;
+				i = y * g_W + j;
+				d = g_fb[i]; k = 256 - a - (a >> 7);
+				g_fb[i] = 0xFF000000u | ((((d & 0xFF00FFu) * k >> 8) & 0xFF00FFu) + (u & 0xFF00FFu)) |
+					  ((((d & 0x00FF00u) * k >> 8) & 0x00FF00u) + (u & 0x00FF00u));
+			}
 		}
+	}
 	if (S.dip > 0) fill(0, 0, g_W, g_H, 0x071021u, (int)(S.dip * 180));
 	perf_mark(3);
 }
@@ -1792,7 +1822,14 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 	CUR_MARK(0);
 	igm_preload();   /* the in-game menu's pack, where it is kept */
 	CUR_MARK(1);
-	if (pack_load(W, H) != 0) { ayaneo_set_cpu_mhz(saved_mhz); return -2; }
+	{	/* a read that fails once (the card busy elsewhere) is tried again: the fallback is another
+		 * theme, which must only come when the pack really is not there */
+		int tries = 0;
+		while (pack_load(W, H) != 0) {
+			if (++tries == 3) { ayaneo_set_cpu_mhz(saved_mhz); return -2; }
+			thread_sleep(30);
+		}
+	}
 	CUR_MARK(2);
 	pico_lang_load(W, H);   /* the words and glyphs of the language in use (none for English) */
 	CUR_MARK(3);
@@ -1817,6 +1854,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 	}
 	if (S.sys >= S.nsys) S.sys = 0;
 	S.sys_from = S.sys; S.sys_t = 1;
+	S.reveal = 1; S.leave = 0;   /* no cascade left over from before a game */
 	if (do_reverse) focus_rom(start_sel);   /* back from a game: on it */
 	for (i = 0; i < S.nsys; i++)
 		if (S.lib_sel[i] >= S.syscount[i]) { S.lib_sel[i] = 0; S.lib_top[i] = 0; }
@@ -1888,7 +1926,9 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 			int ey = in.y && !py, ex = in.x && !px;
 			pa = in.a; pb = in.b; pst = in.start; px = in.x; py = in.y;
 			if (ea || eb || est || up || dn || lf || rt || lb || rb || ey || ex) dirty = 1;
-			if (S.search) {
+			if (S.search && S.leave > 0) {
+				/* on its way out: the keys wait */
+			} else if (S.search) {
 				if (!S.sr_list) {	/* the keyboard */
 					if (up && S.kb_r > 0) S.kb_r--;
 					if (dn && S.kb_r < KB_ROWS - 1) S.kb_r++;
@@ -1906,9 +1946,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 					if (ey) search_key(4, 4);          /* Y: delete */
 					if (ex) search_key(4, 0);          /* X: a space */
 					if ((rb || est) && S.sr_n) S.sr_list = 1;
-					if (eb) {	/* back where it was opened */
-						S.search = 0; S.lib = S.sr_from_lib; S.dip = .45f;
-					}
+					if (eb) S.leave = .001f;   /* it cascades out, then back where it was opened */
 				} else {	/* the results */
 					if (up) list_move(s_res, S.sr_n, &S.sr_sel, &S.sr_top, -step_of(0));
 					if (dn) list_move(s_res, S.sr_n, &S.sr_sel, &S.sr_top, step_of(1));
@@ -2033,6 +2071,15 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 		}
 		if (S.sys_t < 1) { S.sys_t += dt / .46f; if (S.sys_t >= 1) { S.sys_t = 1; S.sys_from = S.sys; dirty = 1; } }
 		if (S.dip > 0) { S.dip -= dt / .28f; if (S.dip <= 0) { S.dip = 0; dirty = 1; } }
+		if (S.reveal < 1) { S.reveal += dt / (.36f * g_dbg_anim_slow); if (S.reveal > 1) S.reveal = 1; }
+		if (S.leave > 0) {	/* the search going: when it has, the screen behind it comes in */
+			S.leave += dt / (.2f * g_dbg_anim_slow);
+			if (S.leave >= 1) {
+				S.leave = 0; S.search = 0; S.lib = S.sr_from_lib; S.reveal = 0;
+				if (!S.lib) S.dip = .3f;
+				dirty = 1;
+			}
+		}
 		/* the badge stays whole, then goes: no fade, which would draw the menu again every frame */
 		if (S.badge_t > 0) { S.badge_t -= dt; if (S.badge_t <= 0) { S.badge_t = 0; dirty = 1; } }
 		/* a box art read a frame, none while a held key runs fast through a list (the art of the
