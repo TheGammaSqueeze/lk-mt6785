@@ -28,6 +28,13 @@
  "Amber": "كهرماني",
  "Emerald": "زمردي",
  "Graphite": "جرافيتي",
+ "Indigo": "نيلي",
+ "Orchid": "أوركيدي",
+ "Rose": "وردي",
+ "Coral": "مرجاني",
+ "Lime": "ليموني",
+ "Teal": "أزرق مخضر",
+ "Sepia": "بني داكن",
  "Brightness": "السطوع",
  "Volume": "مستوى الصوت",
  "Black Frame Insertion": "إدراج الإطار الأسود",
@@ -225,5 +232,9 @@
  "This game is too large for this system": "هذه اللعبة كبيرة جدا على هذا النظام",
  "This archive is too large to open": "هذا الأرشيف أكبر من أن يفتح",
  "Archives split into parts are not supported": "الأرشيفات المقسمة إلى أجزاء غير مدعومة",
- "This game could not be started": "تعذر تشغيل هذه اللعبة"
+ "This game could not be started": "تعذر تشغيل هذه اللعبة",
+ "About": "حول",
+ "Version %s": "الإصدار %s",
+ "Build %s, %s": "البناء %s، %s",
+ "Experimental software, provided as it is, with no warranty": "برنامج تجريبي يقدم كما هو دون أي ضمان"
 }

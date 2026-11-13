@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the Konkr Pocket Advance GammaOS Pico release from a clone of this repository.
 #
-#   tools/release/make_release_kpa.sh [version]        (default version: today, YYYY.MM.DD)
+#   tools/release/make_release_kpa.sh [version]        (default version: the VERSION file)
 #
 # Output in out/release/:
 #   gammaos-pico-kpa-<version>-flash.zip    the LK for lk_a and lk_b: SP Flash Tool packages (GammaOS Pico and
@@ -19,7 +19,9 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
-VER="${1:-$(date +%Y.%m.%d)}"
+# the version is the VERSION file's (the one the LK shows in Settings > About); an argument overrides it
+VER="${1:-$(head -1 VERSION 2>/dev/null)}"
+[ -n "$VER" ] || { echo "!! no version: VERSION is missing and none was given" >&2; exit 1; }
 R=out/release
 FILES=$R/files
 FLASH=gammaos-pico-kpa-$VER-flash
@@ -33,6 +35,11 @@ if [ -e .git ]; then
 fi
 (cd "$STOCK" && sha256sum -c --quiet SHA256SUMS) || { echo "!! $STOCK does not match its SHA256SUMS" >&2; exit 1; }
 
+# the LK shows its commit in Settings > About, with a "+" when it was built from changed files
+if [ -e .git ] && ! git diff --quiet HEAD -- && [ -z "$RELEASE_DIRTY" ]; then
+	echo "!! the tree has changes that are not committed: commit them first (RELEASE_DIRTY=1 to go on)" >&2
+	exit 1
+fi
 ./build_konkr_kpa.sh
 [ -f out/lk_a_kpa_signed.img ] && [ -d out/sdcard/cores ] || { echo "!! the LK build did not produce the image and the card template" >&2; exit 1; }
 for c in armgba-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico; do

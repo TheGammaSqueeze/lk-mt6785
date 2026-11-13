@@ -239,7 +239,7 @@ static volatile int s_mute_bios = 0;		/* mute the LK boot chime (boot_audio_lk) 
 static volatile int s_mute_menu = 0;		/* mute the SNES menu music + SFX */
 static volatile int s_show_fps = 0;		/* in-game frame rate badge (every core) */
 static volatile int s_intro_black = 1;		/* the GBA BIOS intro on black (default) or white; b+44 bit 2 set = white */
-static volatile int s_preempt_frames = 0;	/* run-ahead / preemptive frames (0=off, 1-3) */
+static volatile int s_preempt_frames = 1;	/* run-ahead / preemptive frames (0=off, 1-3); Balanced on a new card */
 static volatile unsigned s_snes_opts = 0;	/* packed snes9x menu picks: aspect | overscan<<8 |
 						 * audio_interp<<16 | hires_blend<<24 (each a small index) */
 static volatile int s_snes_slot = 0;		/* last-used SNES manual save-state slot (0..9) */
@@ -256,10 +256,10 @@ static void wr32(unsigned char *p, unsigned int v);
  * recorded (b+68 magic, b+72.. name) and the next boot skips the animation, the BIOS intro and
  * the menu and launches it straight away (each core reloads its own suspend state). */
 static int  s_resume_on_boot = 1;
-/* Rewind (every core's Pico menu), default Off: with it off no core takes the per frame rewind
- * snapshot (1.5 ms a frame for armGBA at 600 MHz) and the trigger does nothing. b+176: 0 never
- * written (Off), 1 Off, 2 On. */
-static int  s_rewind_on = 0;
+/* Rewind (every core's Pico menu), On on a new card: with it off no core takes the per frame
+ * rewind snapshot (1.5 ms a frame for armGBA at 600 MHz) and the trigger does nothing. b+176:
+ * 0 never written (the default, On), 1 Off, 2 On. */
+static int  s_rewind_on = 1;
 int  ayaneo_get_rewind(void)  { return s_rewind_on; }
 void ayaneo_set_rewind(int v) { s_rewind_on = v ? 1 : 0; }
 static char s_resume_name[100];
@@ -345,7 +345,7 @@ static void resume_fields_write(unsigned char *b)
 	b[185] = (unsigned char)(s_tz_q + 64);         /* 0 = never written -> UTC */
 	b[186] = (unsigned char)(s_clock12 + 1u);      /* 0 = never written -> 24 hour */
 }
-static unsigned char s_cpu_manual[4];   /* manual CPU clock per core, grid index + 1, 0 = automatic */
+static unsigned char s_cpu_manual[4] = { 5, 5, 5, 5 };   /* manual CPU clock per core, grid index + 1, 0 = automatic; 1400 (reads 1399) on a new card */
 static void resume_fields_read(const unsigned char *b, int len)
 {
 	unsigned i;

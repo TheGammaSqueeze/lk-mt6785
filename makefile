@@ -292,6 +292,11 @@ $(CONFIGHEADER): configheader
 	fi
 
 LAST_COMMIT_HASH := $(shell git log -1 --pretty=format:%h)
+# GammaOS Pico's version (the VERSION file) and the commit it was built from, "+" after it when the
+# tree had changes not committed (a build that is not that commit)
+PICO_VERSION := $(shell cat VERSION 2>/dev/null | head -1)
+PICO_DIRTY := $(shell git diff --quiet HEAD -- 2>/dev/null || echo +)
+PICO_BUILD_DAY := $(shell date +'%Y-%m-%d')
 LAST_COMMIT_DATE := $(shell git log -1 --date=format:'%Y%m%d%H%M%S' --pretty=format:"%cd")
 BUILD_DATE := $(shell date +'%Y%m%d%H%M%S')
 $(VERSIONHEADER): versionheader
@@ -303,6 +308,9 @@ $(VERSIONHEADER): versionheader
 	echo "/* LK_VER_TAG = <PROJECT>-<LAST_COMMIT_HASH>-<LAST_COMMIT_DATE>-<BUILD_DATE> */" >> $(VERSIONHEADER).tmp; \
 	echo "#define LK_VER_TAG \"$(PROJECT)-$(LAST_COMMIT_HASH)-$(LAST_COMMIT_DATE)-$(BUILD_DATE)\"" >> $(VERSIONHEADER).tmp; \
 	echo "#define PROJECT \"$(PROJECT)\"" >> $(VERSIONHEADER).tmp; \
+	echo "#define PICO_VERSION \"$(PICO_VERSION)\"" >> $(VERSIONHEADER).tmp; \
+	echo "#define PICO_COMMIT \"$(LAST_COMMIT_HASH)$(PICO_DIRTY)\"" >> $(VERSIONHEADER).tmp; \
+	echo "#define PICO_BUILD_DAY \"$(PICO_BUILD_DAY)\"" >> $(VERSIONHEADER).tmp; \
 	echo \#endif >> $(VERSIONHEADER).tmp; \
 	if [ -f "$(VERSIONHEADER)" ]; then \
 		if cmp "$(VERSIONHEADER).tmp" "$(VERSIONHEADER)"; then \

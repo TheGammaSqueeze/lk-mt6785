@@ -21,6 +21,13 @@
  "Amber": "琥珀色",
  "Emerald": "翡翠绿",
  "Graphite": "石墨色",
+ "Indigo": "靛蓝色",
+ "Orchid": "兰花紫",
+ "Rose": "玫瑰色",
+ "Coral": "珊瑚色",
+ "Lime": "青柠色",
+ "Teal": "蓝绿色",
+ "Sepia": "棕褐色",
  "Brightness": "亮度",
  "Volume": "音量",
  "Black Frame Insertion": "黑帧插入(BFI)",
@@ -218,5 +225,9 @@
  "This game is too large for this system": "此游戏对该系统来说太大",
  "This archive is too large to open": "此压缩包过大，无法打开",
  "Archives split into parts are not supported": "不支持分卷压缩包",
- "This game could not be started": "无法启动此游戏"
+ "This game could not be started": "无法启动此游戏",
+ "About": "关于",
+ "Version %s": "版本 %s",
+ "Build %s, %s": "构建 %s，%s",
+ "Experimental software, provided as it is, with no warranty": "实验性软件，按原样提供，不提供任何担保"
 }

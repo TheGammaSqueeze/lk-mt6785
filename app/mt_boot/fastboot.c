@@ -806,6 +806,9 @@ int fastboot_init(void *base, unsigned size)
 	fastboot_publish("version", "0.5");
 	fastboot_publish("version-preloader", g_boot_arg->pl_version);
 	fastboot_publish("version-bootloader", LK_VER_TAG);
+#ifdef PICO_VERSION
+	fastboot_publish("version-gammaos-pico", PICO_VERSION " " PICO_COMMIT);
+#endif
 	update_radio_version();
 	fastboot_publish("version-baseband", (const char *)radio_version);
 	publish_ab_variables();

@@ -21,6 +21,13 @@
  "Amber": "호박색",
  "Emerald": "에메랄드",
  "Graphite": "그래파이트",
+ "Indigo": "인디고",
+ "Orchid": "오키드",
+ "Rose": "로즈",
+ "Coral": "코랄",
+ "Lime": "라임",
+ "Teal": "청록색",
+ "Sepia": "세피아",
  "Brightness": "밝기",
  "Volume": "볼륨",
  "Black Frame Insertion": "검은 프레임 삽입",
@@ -218,5 +225,9 @@
  "This game is too large for this system": "이 시스템에서 실행하기에 게임이 너무 큽니다",
  "This archive is too large to open": "압축 파일이 너무 커서 열 수 없습니다",
  "Archives split into parts are not supported": "분할 압축 파일은 지원되지 않습니다",
- "This game could not be started": "게임을 시작할 수 없습니다"
+ "This game could not be started": "게임을 시작할 수 없습니다",
+ "About": "정보",
+ "Version %s": "버전 %s",
+ "Build %s, %s": "빌드 %s, %s",
+ "Experimental software, provided as it is, with no warranty": "실험적인 소프트웨어로, 있는 그대로 제공되며 보증하지 않습니다"
 }

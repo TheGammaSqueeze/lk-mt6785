@@ -592,6 +592,72 @@ static int scan_root(fat_vol *v, const char *root, gba_rom_entry *out, int max, 
 	return n;
 }
 
+/* ---- folders the user adds: /gammaos/folders.txt -------------------------------------------
+ * One folder a line: a system (any of its folder names: gba, gameboyadvance...), a space, then the
+ * folder's path from the card's root ("gba /My Games/Advance"); # starts a comment. Made with
+ * the instructions in it when it is not there, then only ever read. */
+#define FOLDERS_FILE "folders.txt"
+#define FOLDERS_MAX  16384u
+static const char k_folders_template[] =
+	"# GammaOS Pico: more folders to look for games in.\n"
+	"#\n"
+	"# One folder a line: the system, a space, then the folder's path from the card's root.\n"
+	"# The console already looks in roms/<system>, in <system> at the card's root, and in\n"
+	"# <any folder>/<system> and <any folder>/roms/<system> (see the wiki for the folder names it\n"
+	"# knows). Lines starting with # are ignored. A change counts from the next power on.\n"
+	"#\n"
+	"# Systems: gb gbc gba snes genesis sms gg sg\n"
+	"#\n"
+	"# Examples (take the # away to use one):\n"
+	"# gba /My Games/Game Boy Advance\n"
+	"# snes /Collections/Super Nintendo\n";
+volatile unsigned int g_dbg_user_dirs;   /* oem diag: folders from folders.txt that were listed */
+static int scan_user_folders(fat_vol *v, gba_rom_entry *out, int max, int n, int *tot)
+{
+	static char *buf;
+	fat_file f;
+	uint32_t len, i;
+	g_dbg_user_dirs = 0;
+	if (!buf) buf = (char *)list_mem(FOLDERS_MAX + 1);
+	if (!buf) return n;
+	if (fat_open(v, "/gammaos/" FOLDERS_FILE, &f) != 0) {
+		if (v->wr) {	/* the first time: the instructions, for the user to fill in */
+			fat_wr_mkpath(v, "/gammaos");
+			fat_wr_put(v, "/gammaos", FOLDERS_FILE, k_folders_template, sizeof k_folders_template - 1);
+		}
+		return n;
+	}
+	len = f.size < FOLDERS_MAX ? f.size : FOLDERS_MAX;
+	if (fat_read(&f, 0, buf, len) != len) return n;
+	buf[len] = 0;
+	for (i = 0; i < len; ) {
+		char *line = buf + i, *e = line, *sys, *path;
+		int s, k;
+		while (*e && *e != '\n') e++;
+		i = (uint32_t)(e - buf) + 1u;   /* past the newline, or past a stray NUL so the scan cannot stall */
+		*e = 0;
+		while (e > line && (e[-1] == '\r' || e[-1] == ' ' || e[-1] == '\t')) *--e = 0;   /* trailing space */
+		while (*line == ' ' || *line == '\t') line++;
+		if (!*line || *line == '#') continue;
+		sys = line;
+		while (*line && *line != ' ' && *line != '\t') line++;
+		if (!*line) continue;
+		*line++ = 0;
+		while (*line == ' ' || *line == '\t') line++;
+		path = line;
+		for (s = 0; s < N_SYSTEMS && !word_in(sys, k_systems[s].dirs, 0); s++) ;
+		if (s == N_SYSTEMS || path[0] != '/') continue;   /* a system it does not know, or no full path */
+		for (k = (int)strlen(path); k > 1 && path[k - 1] == '/'; k--) path[k - 1] = 0;
+		{
+			fat_dir d;
+			if (fat_opendir(v, path, &d) != 0) continue;   /* not on the card (yet) */
+			n = scan_rom_folder(v, path, v->is_exfat ? d.ex_first : d.cluster, &k_systems[s], out, max, n, tot);
+			g_dbg_user_dirs++;
+		}
+	}
+	return n;
+}
+
 /* folders at the card's root that never hold games: skipped when looking for a ROMs folder */
 static int not_a_rom_root(const char *nm)
 {
@@ -664,6 +730,7 @@ int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
 			}
 		}
 	}
+	n = scan_user_folders(v, out, max, n, &tot);   /* /gammaos/folders.txt */
 	aix_end(v);
 	if (total) *total = tot;
 	sort_by_name(out, n);

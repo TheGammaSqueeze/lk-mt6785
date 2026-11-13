@@ -25,6 +25,13 @@
  "Amber": "ענבר",
  "Emerald": "אזמרגד",
  "Graphite": "גרפיט",
+ "Indigo": "אינדיגו",
+ "Orchid": "סחלב",
+ "Rose": "ורוד",
+ "Coral": "אלמוג",
+ "Lime": "ליים",
+ "Teal": "כחול ירקרק",
+ "Sepia": "ספיה",
  "Brightness": "בהירות",
  "Volume": "עוצמת קול",
  "Black Frame Insertion": "הכנסת פריימים שחורים",
@@ -222,5 +229,9 @@
  "This game is too large for this system": "המשחק גדול מדי עבור מערכת זו",
  "This archive is too large to open": "הארכיון גדול מדי לפתיחה",
  "Archives split into parts are not supported": "ארכיונים מפוצלים אינם נתמכים",
- "This game could not be started": "לא ניתן להפעיל את המשחק"
+ "This game could not be started": "לא ניתן להפעיל את המשחק",
+ "About": "אודות",
+ "Version %s": "גרסה %s",
+ "Build %s, %s": "בנייה %s, %s",
+ "Experimental software, provided as it is, with no warranty": "תוכנה ניסיונית, כפי שהיא, ללא אחריות"
 }

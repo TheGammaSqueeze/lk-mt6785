@@ -21,6 +21,13 @@
  "Amber": "アンバー",
  "Emerald": "エメラルド",
  "Graphite": "グラファイト",
+ "Indigo": "インディゴ",
+ "Orchid": "オーキッド",
+ "Rose": "ローズ",
+ "Coral": "コーラル",
+ "Lime": "ライム",
+ "Teal": "ティール",
+ "Sepia": "セピア",
  "Brightness": "明るさ",
  "Volume": "音量",
  "Black Frame Insertion": "黒フレーム挿入",
@@ -218,5 +225,9 @@
  "This game is too large for this system": "このゲームはこのシステムには大きすぎます",
  "This archive is too large to open": "アーカイブが大きすぎて開けません",
  "Archives split into parts are not supported": "分割アーカイブには対応していません",
- "This game could not be started": "ゲームを起動できませんでした"
+ "This game could not be started": "ゲームを起動できませんでした",
+ "About": "情報",
+ "Version %s": "バージョン %s",
+ "Build %s, %s": "ビルド %s、%s",
+ "Experimental software, provided as it is, with no warranty": "試験的なソフトウェアです。現状のまま提供され、保証はありません"
 }

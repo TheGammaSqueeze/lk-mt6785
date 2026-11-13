@@ -24,6 +24,13 @@
  "Amber": "Ambre",
  "Emerald": "Émeraude",
  "Graphite": "Graphite",
+ "Indigo": "Indigo",
+ "Orchid": "Orchidée",
+ "Rose": "Rose",
+ "Coral": "Corail",
+ "Lime": "Citron vert",
+ "Teal": "Sarcelle",
+ "Sepia": "Sépia",
  "Brightness": "Luminosité",
  "Volume": "Volume",
  "Black Frame Insertion": "Insertion d'image noire",
@@ -221,5 +228,9 @@
  "This game is too large for this system": "Ce jeu est trop volumineux pour ce système",
  "This archive is too large to open": "Cette archive est trop volumineuse pour être ouverte",
  "Archives split into parts are not supported": "Les archives en plusieurs parties ne sont pas prises en charge",
- "This game could not be started": "Ce jeu n'a pas pu être lancé"
+ "This game could not be started": "Ce jeu n'a pas pu être lancé",
+ "About": "À propos",
+ "Version %s": "Version %s",
+ "Build %s, %s": "Build %s, %s",
+ "Experimental software, provided as it is, with no warranty": "Logiciel expérimental, fourni tel quel, sans garantie"
 }

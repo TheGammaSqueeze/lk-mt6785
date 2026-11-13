@@ -24,6 +24,13 @@
  "Amber": "Amber",
  "Emerald": "Smaragd",
  "Graphite": "Grafiet",
+ "Indigo": "Indigo",
+ "Orchid": "Orchidee",
+ "Rose": "Roze",
+ "Coral": "Koraal",
+ "Lime": "Limoen",
+ "Teal": "Petrol",
+ "Sepia": "Sepia",
  "Brightness": "Helderheid",
  "Volume": "Volume",
  "Black Frame Insertion": "Zwarte frameinvoeging",
@@ -221,5 +228,9 @@
  "This game is too large for this system": "Deze game is te groot voor dit systeem",
  "This archive is too large to open": "Dit archief is te groot om te openen",
  "Archives split into parts are not supported": "Archieven in meerdere delen worden niet ondersteund",
- "This game could not be started": "Deze game kon niet worden gestart"
+ "This game could not be started": "Deze game kon niet worden gestart",
+ "About": "Over",
+ "Version %s": "Versie %s",
+ "Build %s, %s": "Build %s, %s",
+ "Experimental software, provided as it is, with no warranty": "Experimentele software, zoals hij is, zonder garantie"
 }

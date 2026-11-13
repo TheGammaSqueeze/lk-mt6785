@@ -225,7 +225,9 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		snprintf(lbuf, sizeof lbuf, "romload: %u ms %u B arc %u err %d", g_dbg_romload[0], g_dbg_romload[1],
 			 g_dbg_romload[2], (int)g_dbg_romload[3]);
 		fastboot_info(lbuf);
-		snprintf(lbuf, sizeof lbuf, "archives: %u kept, %u read, index %u B", g_dbg_aix[0], g_dbg_aix[1], g_dbg_aix[2]);
+		extern volatile unsigned int g_dbg_user_dirs;
+		snprintf(lbuf, sizeof lbuf, "archives: %u kept, %u read, index %u B; folders.txt %u", g_dbg_aix[0],
+			 g_dbg_aix[1], g_dbg_aix[2], g_dbg_user_dirs);
 		fastboot_info(lbuf);
 	}
 	{
@@ -1517,6 +1519,45 @@ static void cmd_sd_get(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem part-read:<lk_a|lk_b>[:<offset, hex>] - stage up to 1 MB of the bootloader partition from
+ * offset (0 when left out) for `fastboot get_staged <file>`, so a computer can keep a copy before
+ * flashing. The INFO line gives the partition's size, the offset and the length staged; the
+ * caller steps the offset until it reaches the size. Only the two LK copies can be read. */
+#define PART_READ_STEP 0x100000u
+static void cmd_part_read(const char *arg, void *data, unsigned sz)
+{
+	extern long partition_read(const char *part, long long off, unsigned char *buf, unsigned long len);
+	extern unsigned long long partition_get_size_by_name(const char *part);
+	char name[8];
+	unsigned i = 0, off = 0, len;
+	unsigned long long psize;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg && *arg != ':' && i < sizeof name - 1) name[i++] = *arg++;
+	name[i] = 0;
+	if (strcmp(name, "lk_a") && strcmp(name, "lk_b")) { fastboot_fail("part-read: only lk_a and lk_b"); return; }
+	if (*arg == ':') {
+		arg++;
+		if (arg[0] == '0' && (arg[1] == 'x' || arg[1] == 'X')) arg += 2;
+		for (; *arg; arg++) {
+			int d = *arg >= '0' && *arg <= '9' ? *arg - '0' : *arg >= 'a' && *arg <= 'f' ? *arg - 'a' + 10 :
+				*arg >= 'A' && *arg <= 'F' ? *arg - 'A' + 10 : -1;
+			if (d < 0 || off > 0x0FFFFFFFu) { fastboot_fail("part-read: bad offset"); return; }
+			off = off * 16u + (unsigned)d;
+		}
+	}
+	psize = partition_get_size_by_name(name);
+	if (!psize || psize > 0x10000000ULL) { fastboot_fail("part-read: no such partition"); return; }
+	if (off >= psize) { fastboot_fail("part-read: offset past the end"); return; }
+	len = (unsigned)(psize - off) < PART_READ_STEP ? (unsigned)(psize - off) : PART_READ_STEP;
+	s_stage_len = 0;
+	if (partition_read(name, (long long)off, (unsigned char *)SHOT_STAGE_PA, len) != (long)len) { fastboot_fail("part-read: read failed"); return; }
+	s_stage_len = len;
+	snprintf(lbuf, sizeof lbuf, "part %s size 0x%x offset 0x%x len 0x%x", name, (unsigned)psize, off, len);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem latled[:0|1] - the latency light (gba_driver.c): the power LED white while any button is
  * down; not saved */
 static void cmd_latled(const char *arg, void *data, unsigned sz)
@@ -1758,6 +1799,19 @@ static void cmd_sd_ls(const char *arg, void *data, unsigned sz)
 		fastboot_info(lbuf);
 		n++;
 	}
+	fastboot_okay("");
+}
+/* oem showcolour:N - the Current menus in colour N (0 the design's blue) from their next opening,
+ * for screenshots; the saved setting is not touched. -1 back to the setting. */
+volatile int g_dbg_colour = -1;
+static void cmd_showcolour(const char *arg, void *data, unsigned sz)
+{
+	int n = 0, neg = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == '-') { neg = 1; arg++; }
+	while (*arg >= '0' && *arg <= '9') n = n * 10 + (*arg++ - '0');
+	g_dbg_colour = neg || n > 12 ? -1 : n;   /* NCOLOURS - 1 in pico_current.c */
 	fastboot_okay("");
 }
 /* oem animslow:N - the Current menu's screen cascades N times slower (1 normal), to look at them */
@@ -2721,8 +2775,10 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
 	fastboot_register("oem sd-check", cmd_sd_check, 1, 0);
+	fastboot_register("oem showcolour", cmd_showcolour, 1, 0);
 	fastboot_register("oem animslow", cmd_animslow, 1, 0);
 	fastboot_register("oem sd-get:", cmd_sd_get, 1, 0);
+	fastboot_register("oem part-read:", cmd_part_read, 1, 0);
 	fastboot_register("oem sd-rm:", cmd_sd_rm, 1, 0);
 #if defined(KONKR_KPA)
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);

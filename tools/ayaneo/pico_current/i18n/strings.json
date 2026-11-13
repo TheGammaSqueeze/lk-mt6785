@@ -113,6 +113,41 @@
    "note": "a colour of the menu theme"
   },
   {
+   "en": "Indigo",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Orchid",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Rose",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Coral",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Lime",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Teal",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
+   "en": "Sepia",
+   "kind": "value",
+   "note": "a colour of the menu theme"
+  },
+  {
    "en": "Brightness",
    "kind": "label",
    "note": "settings row: screen brightness"
@@ -1101,6 +1136,26 @@
    "en": "This game could not be started",
    "kind": "about",
    "note": "note: the emulator would not start the game"
+  },
+  {
+   "en": "About",
+   "kind": "label",
+   "note": "settings row: the name, version and build of GammaOS Pico"
+  },
+  {
+   "en": "Version %s",
+   "kind": "about",
+   "note": "under GammaOS Pico on the About page: %s the version number (1.0.0)"
+  },
+  {
+   "en": "Build %s, %s",
+   "kind": "about",
+   "note": "on the About page: the build, %s the commit (660b788), then %s its date (2026-11-13), in that order"
+  },
+  {
+   "en": "Experimental software, provided as it is, with no warranty",
+   "kind": "about",
+   "note": "on the About page: GammaOS Pico is experimental and comes with no warranty"
   }
  ]
 }

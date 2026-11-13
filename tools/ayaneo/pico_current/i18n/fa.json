@@ -24,6 +24,13 @@
  "Amber": "کهربایی",
  "Emerald": "زمردی",
  "Graphite": "گرافیتی",
+ "Indigo": "نیلی",
+ "Orchid": "ارکیده",
+ "Rose": "صورتی",
+ "Coral": "مرجانی",
+ "Lime": "لیمویی",
+ "Teal": "سبزآبی",
+ "Sepia": "سپیا",
  "Brightness": "روشنایی",
  "Volume": "بلندی صدا",
  "Black Frame Insertion": "درج فریم سیاه",
@@ -221,5 +228,9 @@
  "This game is too large for this system": "این بازی برای این سیستم خیلی بزرگ است",
  "This archive is too large to open": "این آرشیو برای باز شدن خیلی بزرگ است",
  "Archives split into parts are not supported": "آرشیوهای چندبخشی پشتیبانی نمی شوند",
- "This game could not be started": "این بازی اجرا نشد"
+ "This game could not be started": "این بازی اجرا نشد",
+ "About": "درباره",
+ "Version %s": "نسخه %s",
+ "Build %s, %s": "ساخت %s، %s",
+ "Experimental software, provided as it is, with no warranty": "نرم افزار آزمایشی، همان طور که هست، بدون هیچ ضمانتی"
 }

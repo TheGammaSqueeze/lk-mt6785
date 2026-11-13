@@ -33,6 +33,7 @@
 #include "pico_stats.h"         /* play time and last played */
 #include "pico_libmem.h"        /* the library's tables: thousands of games */
 #include "rom_archive.h"        /* why a game did not start */
+#include "pico_version.h"       /* the About row */
 #include <kernel/thread.h>       /* thread_sleep: a pack read tried again */
 
 extern unsigned int gpt4_get_current_tick(void);
@@ -115,7 +116,7 @@ extern void ayaneo_canvas_dims(unsigned int *cw, unsigned int *ch);
 
 /* The colours of the theme: the current is recoloured by a 3x3 matrix (1024 = 1.0; a hue turn
  * that keeps the brightness, or a desaturation) and the accent follows. 0 is the design's blue. */
-#define NCOLOURS 6
+#define NCOLOURS 13
 static const struct { const char *name; uint32_t accent; int16_t m[9]; } k_colour[NCOLOURS] = {
 	{ "Blue",     0x98E8FFu, { 1024, 0, 0, 0, 1024, 0, 0, 0, 1024 } },
 	{ "Violet",   0xD4BBFFu, { 595, -302, 731, 181, 1034, -191, -527, 786, 764 } },
@@ -123,7 +124,24 @@ static const struct { const char *name; uint32_t accent; int16_t m[9]; } k_colou
 	{ "Amber",    0xFFD49Au, { -610, 1355, 279, 454, 463, 106, 322, 1559, -857 } },
 	{ "Emerald",  0xA2F2C6u, { 637, 1250, -863, 20, 669, 335, 940, -165, 248 } },
 	{ "Graphite", 0xE2E6ECu, { 299, 659, 66, 196, 761, 66, 196, 659, 169 } },
+	{ "Indigo",   0xADB8FFu, { 928, -179, 275, 51, 1053, -80, -221, 240, 1005 } },
+	{ "Orchid",   0xF8ADFFu, { 293, -209, 939, 280, 968, -224, -613, 1165, 473 } },
+	{ "Rose",     0xFFADD9u, { -99, 98, 1026, 391, 838, -205, -554, 1550, 28 } },
+	{ "Coral",    0xFFBEADu, { -577, 951, 650, 481, 565, -21, -35, 1744, -685 } },
+	{ "Lime",     0xD6F0A8u, { -251, 1765, -490, 288, 417, 319, 909, 810, -695 } },
+	{ "Teal",     0xA7F1E7u, { 860, 910, -746, -27, 783, 268, 752, -288, 560 } },
+	{ "Sepia",    0xF0D9B5u, { 389, 857, 86, 314, 692, 69, 224, 494, 50 } },
 };
+/* The order Settings steps through them: round the colour wheel from the design's blue, then the
+ * two neutrals. The saved setting is the index above, so colours are only ever added at the end. */
+static const uint8_t k_colour_order[NCOLOURS] = { 0, 6, 1, 7, 8, 2, 9, 3, 10, 4, 11, 12, 5 };
+static int colour_step(int c, int dir)
+{
+	int i;
+	for (i = 0; i < NCOLOURS && k_colour_order[i] != c; i++) ;
+	if (i == NCOLOURS) i = 0;
+	return k_colour_order[(i + dir + NCOLOURS) % NCOLOURS];
+}
 static uint32_t g_accent = 0x98E8FFu;
 static int g_colour;
 static inline uint32_t recolour(uint32_t c)
@@ -556,12 +574,12 @@ static int text_wrap2(const cfont *f, int x, int y, int line_h, const char *s, u
 enum { SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_BIOS, SET_RESUME, SET_BOOT_OS,
        SET_SKIP_INTRO, SET_INTRO_BG, SET_MUTE_BIOS, SET_INTRO_RESUME, SET_RESUME_BOOT, SET_RESUME_OPEN,
        SET_LANGUAGE, SET_CLOCK, SET_YEAR, SET_MONTH, SET_DAY, SET_HOUR, SET_MINUTE, SET_ZONE, SET_CLOCK12,
-       SET_N };
+       SET_ABOUT, SET_N };
 enum { SPAGE_MAIN, SPAGE_BIOS, SPAGE_RESUME, SPAGE_CLOCK, SPAGE_N };
 #define SET_ROWS 12                   /* rows in a settings list, at most, with its end */
 static const signed char k_set_page[SPAGE_N][SET_ROWS] = {
 	{ SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_LANGUAGE, SET_CLOCK, SET_BIOS, SET_RESUME,
-	  SET_BOOT_OS, -1 },
+	  SET_BOOT_OS, SET_ABOUT, -1 },
 	{ SET_SKIP_INTRO, SET_INTRO_BG, SET_MUTE_BIOS, SET_INTRO_RESUME, -1 },
 	{ SET_RESUME_BOOT, SET_RESUME_OPEN, -1 },
 	{ SET_YEAR, SET_MONTH, SET_DAY, SET_HOUR, SET_MINUTE, SET_ZONE, SET_CLOCK12, -1 },
@@ -591,7 +609,7 @@ static void art_load(void)
 	static const char *rail[3] = { "games", "resume", "settings" };
 	static const char *setic[SET_N] = { "sun", "sound", "bfi", "display", "colour", "bios", "rsm", "power",
 					    "bios", "display", "mute", "rsm", "rsm", "rsm", "language", "clock",
-					    "clock", "clock", "clock", "clock", "clock", "clock", "clock" };
+					    "clock", "clock", "clock", "clock", "clock", "clock", "clock", "about" };
 	char n[32];
 	int i;
 	for (i = 0; i < NSYS; i++) {
@@ -1292,7 +1310,7 @@ static const char *const k_set_name[SET_N] = { "Brightness", "Volume", "Black Fr
 	"BIOS Boot", "Game Resume", "Boot to Android",
 	"Skip BIOS Intro", "BIOS Intro Background", "Mute BIOS Audio", "BIOS Intro on Resume",
 	"Resume on Power On", "Resume on Game Open", "Language", "Date & Time", "Year", "Month", "Day",
-	"Hour", "Minute", "Time zone", "24-hour clock" };
+	"Hour", "Minute", "Time zone", "24-hour clock", "About" };
 /* the line under a setting on the left, where it says more than its value */
 static const char *const k_set_about[SET_N] = { 0, 0, 0, 0, 0,
 	"The Game Boy Advance start-up screen", "Where games carry on from", "Restart into Android",
@@ -1300,7 +1318,7 @@ static const char *const k_set_about[SET_N] = { 0, 0, 0, 0, 0,
 	"The logo first, then the resumed game fades in",
 	"Power on straight back into the game you left", "Games carry on where you left them (B: fresh)",
 	"The language of the menus", "The clock the games and the menus keep", 0, 0, 0, 0, 0,
-	"Hours from UTC, as the Android clock is kept", 0 };
+	"Hours from UTC, as the Android clock is kept", 0, 0 };
 static void set_value(int i, char *buf, int n, int *num)
 {
 	*num = -1;
@@ -1334,6 +1352,7 @@ static void set_value(int i, char *buf, int n, int *num)
 		break; }
 	case SET_ZONE:        pico_clock_zone_text(pico_clock_zone(), buf, n); break;
 	case SET_CLOCK12:     snprintf(buf, n, "%s", tr(pico_clock_12h() ? "Off" : "On")); break;
+	case SET_ABOUT:       snprintf(buf, n, "%s", pico_version()); break;
 	default: snprintf(buf, n, "%s", tr("Open")); break;
 	}
 }
@@ -1383,6 +1402,15 @@ static void home_settings(void)
 		text_fit(&A.dname, U(s_p), U(mid + 141), t, C_INK, 256, U(xx - s_p - 20));
 		pico_clock_date_text(now, t, sizeof t);
 		text_fit(&A.lib, U(s_p), U(mid + 178), t, C_MUTED, 256, U(xx - s_p - 20));
+	} else if (it == SET_ABOUT) {	/* the name, its version, the build and its warning */
+		char t[96];
+		text_fit(&A.dname, U(s_p), U(mid + 141), "GammaOS Pico", C_INK, 256, U(xx - s_p - 20));
+		snprintf(t, sizeof t, tr("Version %s"), pico_version());
+		text_fit(&A.lib, U(s_p), U(mid + 178), t, C_INK, 256, U(xx - s_p - 20));
+		snprintf(t, sizeof t, tr("Build %s, %s"), pico_commit(), pico_build_day());
+		text_fit(&A.info, U(s_p), U(mid + 206), t, C_MUTED, 256, U(xx - s_p - 20));
+		text_wrap2(&A.info, U(s_p), U(mid + 240), U(21), tr("Experimental software, provided as it is, with no warranty"),
+			   C_MUTED, 256, U(xx - s_p - 20));
 	} else if (it == SET_BOOT_OS || it == SET_BIOS || it == SET_RESUME) {
 		text_wrap2(&A.lib, U(s_p), U(mid + 141), U(27), tr(k_set_about[it]), C_MUTED, 256, U(xx - s_p - 20));
 	} else {
@@ -1561,6 +1589,7 @@ static void search_view(void)
 }
 
 /* the menu into its own layer (transparent around it); redrawn only when something changed */
+extern volatile int g_dbg_colour;     /* oem showcolour:N - the menus in colour N for screenshots, the setting kept */
 volatile int g_dbg_anim_slow = 1;   /* oem animslow:N - the screen cascades N times slower, to look at */
 static void note_draw(void);   /* why a game did not start (with the launch, below) */
 static int s_ui_clean;   /* the layer is known clear outside what it tracked */
@@ -1588,7 +1617,7 @@ static void ui_compose(void)
 	static const char *hc_lib3[4] = { "A", "Y", "LR", "B" }, *hl_lib3[4] = { "Launch", "Search", "A-Z", "Back" };
 	static const char *hc_res[2] = { "A", "LR" }, *hl_res[2] = { "Resume", "Section" };
 	static const char *hc_set[2] = { "A", "LR" }, *hl_set[2] = { "Select", "Section" };
-	static const char *hc_lib[2] = { "A", "B" }, *hl_lib[2] = { "Launch", "Back" };
+	static const char *hc_lib[3] = { "A", "Y", "B" }, *hl_lib[3] = { "Launch", "Search", "Back" };
 	static const char *hc_sub[2] = { "A", "B" }, *hl_sub[2] = { "Select", "Back" };
 	g_fb = (uint32_t *)CUR_UI_PA;
 	ui_clear();
@@ -1603,7 +1632,7 @@ static void ui_compose(void)
 		library();
 		header("Game library");
 		if (S.syscount[S.sys] > 3 * LIB_ROWS) hints(hc_lib3, hl_lib3, 4);
-		else hints(hc_lib, hl_lib, 2);
+		else hints(hc_lib, hl_lib, 3);
 	} else {
 		rail();
 		if (S.tab == TAB_GAMES) home_games(); else if (S.tab == TAB_RESUME) home_resume(); else home_settings();
@@ -1891,7 +1920,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 	s_p = s_uw * .048f > 38 ? s_uw * .048f : 38;
 	art_load();
 	CUR_MARK(7);
-	colour_set(ayaneo_get_menu_colour());
+	colour_set(g_dbg_colour >= 0 ? g_dbg_colour : ayaneo_get_menu_colour());   /* oem showcolour */
 	s_roms = roms; s_nrom = nrom > PICO_GAMES_MAX ? PICO_GAMES_MAX : nrom;
 	if (roster_build() != 0) { ayaneo_set_cpu_mhz(saved_mhz); return -2; }
 	CUR_MARK(8);
@@ -2079,7 +2108,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 					}
 					if (it == SET_THEME && dir && A.nthemes) S.theme_pick = (S.theme_pick + dir + A.nthemes) % A.nthemes;
 					if (it == SET_COLOUR && flip) {	/* live: the backdrop is made again */
-						colour_set((g_colour + (dir ? dir : 1) + NCOLOURS) % NCOLOURS);
+						colour_set(colour_step(g_colour, dir ? dir : 1));
 						ayaneo_set_menu_colour(g_colour);
 						ayaneo_menu_settings_persist();
 					}
@@ -2410,7 +2439,7 @@ void pico_igm_open(const struct igm_core *c)
 	G.batt = gba_battery_last(&G.chg); G.batt_tick = G.tick;
 	G.fig_tick = 0; G.fig_page = -1;
 	gba_clean_name(c->game ? c->game : "", G.title);
-	colour_set(ayaneo_get_menu_colour());
+	colour_set(g_dbg_colour >= 0 ? g_dbg_colour : ayaneo_get_menu_colour());   /* oem showcolour */
 	G.pwu = s_uw * .42f < 470 ? s_uw * .42f : 470;
 	G.pw = U(G.pwu); G.sh = U(34);
 	if ((uint32_t)(G.pw + G.sh) * H * 4u > IGM_BG_MAX) G.sh = 0;
@@ -2623,7 +2652,10 @@ static void igm_rows(int page, float dx, int op, int wash)
  * The game's last frame (ayaneo_game_picture: the core's own small picture and where it goes on
  * the screen) is sampled into a coarse grid over the drawer, the grid is smoothed twice, and it is
  * spread back out at a quarter of the resolution: a wide blur for a fraction of a millisecond. It
- * follows the game up to 30 times a second, and only when the picture behind has changed. */
+ * follows the game up to 30 times a second, and only when the picture behind has changed. The
+ * glass stays where it is on the screen while the drawer slides: the game behind is taken at each
+ * point's place on the screen, not in the drawer, so the blur fills in under the edge as it comes
+ * across (the tint, the mist and the lit edge are the drawer's own and travel with it). */
 #define GLASS_C   16                  /* a cell of the grid, px */
 #define GLASS_MAX 72                  /* cells across or down, at most */
 #define GLASS_QW  160                 /* the quarter resolution picture, at most */
@@ -2631,6 +2663,7 @@ static void igm_rows(int page, float dx, int op, int wash)
 #define GLASS_TINT 180                /* how much of the tint over the game, of 256 */
 static struct {
 	int gw, gh, ok;
+	int ox;                               /* the drawer's slide the glass was painted for, px */
 	uint8_t c[GLASS_MAX][GLASS_MAX][3];   /* the blurred game, a cell each */
 	unsigned int tick;
 } s_gl;
@@ -2682,21 +2715,23 @@ static int igm_glass_sample(void)
 	s_gl.gw = gw; s_gl.gh = gh; s_gl.ok = 1;
 	return changed;
 }
-/* the drawer's background from the grid and the tint: each quarter resolution point fills 4 x 4 */
-static void igm_glass_paint(void)
+/* the drawer's background from the grid and the tint, with the drawer slid ox px (0 or less): each
+ * quarter resolution point fills 4 x 4; the points still off the screen are left */
+static void igm_glass_paint(int ox)
 {
 	uint32_t *bg = (uint32_t *)IGM_BG_PA;
 	int ext = G.pw + G.sh, qw = (G.pw + 3) / 4, qh = (g_H + 3) / 4, qx, qy, y;
 	uint32_t edge = C_ACCENT;
 	if (qw > GLASS_QW) qw = GLASS_QW;
 	if (qh > GLASS_QH) qh = GLASS_QH;
+	s_gl.ox = ox;
 	for (qy = 0; qy < qh; qy++) {
 		int py = qy * 4 + 2, gy = ((py - GLASS_C / 2) << 8) / GLASS_C, j0, j1, fy;
 		if (gy < 0) gy = 0;
 		j0 = gy >> 8; fy = gy & 255; j1 = j0 + 1;
 		if (j0 >= s_gl.gh - 1) { j0 = j1 = s_gl.gh - 1; fy = 0; }
-		for (qx = 0; qx < qw; qx++) {
-			int px = qx * 4 + 2, gx = ((px - GLASS_C / 2) << 8) / GLASS_C, i0, i1, fx, k, c[3], yy, xx;
+		for (qx = (-ox) / 4; qx < qw; qx++) {	/* the points before -ox are off the screen */
+			int px = qx * 4 + 2, gx = (px + ox - GLASS_C / 2) * 256 / GLASS_C, i0, i1, fx, k, c[3], yy, xx;
 			uint32_t tint = s_tint[qy][qx], out;
 			if (gx < 0) gx = 0;
 			i0 = gx >> 8; fx = gx & 255; i1 = i0 + 1;
@@ -2752,7 +2787,7 @@ static void igm_bg_build(void)
 		}
 	s_gl.ok = 0;
 	igm_glass_sample();
-	igm_glass_paint();
+	igm_glass_paint(-ext);   /* the first picture has the drawer just off the edge */
 	s_gl.tick = gpt4_get_current_tick();
 	G.bg_ok = 1;
 	g_dbg_igm_open_part[1] = (gpt4_get_current_tick() - t0) / 13u;
@@ -2792,7 +2827,7 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 	if (G.bg_ok && now - s_gl.tick >= 13000000u / 30u) {	/* the glass follows the game */
 		unsigned int tg = gpt4_get_current_tick();
 		s_gl.tick = now;
-		if (igm_glass_sample()) { igm_glass_paint(); G.dirty = 1; }
+		if (igm_glass_sample()) { igm_glass_paint(s_gl.ox); G.dirty = 1; }
 		g_dbg_igm_glass_us = (gpt4_get_current_tick() - tg) / 13u;
 	}
 	if (still && !G.dirty && now - G.last_paint < 6500000u) return 0;   /* live figures: twice a second */
@@ -2815,6 +2850,11 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 	if (op <= 0) return 1;
 	s_igm_ox = -(int)((1 - e) * ext + .5f);   /* the drawer slides in from beyond the edge, its shadow with it */
 	if (s_igm_ox <= -ext) return 1;
+	if (s_igm_ox != s_gl.ox) {	/* sliding: the glass again for where the drawer is now */
+		unsigned int tg = gpt4_get_current_tick();
+		igm_glass_paint(s_igm_ox);
+		g_dbg_igm_glass_us = (gpt4_get_current_tick() - tg) / 13u;
+	}
 	{	/* the background */
 		const uint32_t *bg = (const uint32_t *)IGM_BG_PA;
 		int x0 = -s_igm_ox, n = ext - x0;

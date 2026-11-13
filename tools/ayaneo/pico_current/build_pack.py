@@ -222,8 +222,9 @@ def main():
         pack.mask("ic_" + name, Image.open(os.path.join(ART, "icons", name + ".png")).resize((u(18), u(18)), Image.LANCZOS))
     for name in ("sun", "sound", "bfi", "display", "colour", "power", "mute", "language", "clock"):
         pack.mask("ic_" + name, Image.open(os.path.join(ART, "icons", name + ".png")).resize((u(39), u(39)), Image.LANCZOS))
-    # the Settings subsections (BIOS boot, game resume) and the chevron of a row that opens one
-    for name, src in (("bios", "system"), ("rsm", "resume")):
+    # the Settings subsections (BIOS boot, game resume), About (the GammaOS mark) and the chevron of
+    # a row that opens one
+    for name, src in (("bios", "system"), ("rsm", "resume"), ("about", "gamma")):
         pack.mask("ic_" + name, Image.open(os.path.join(ART, "icons", src + ".png")).resize((u(39), u(39)), Image.LANCZOS))
     pack.mask("ic_chev", Image.open(os.path.join(ART, "icons", "chev.png")).resize((u(16), u(16)), Image.LANCZOS))
     pack.mask("gamma", Image.open(os.path.join(ART, "icons", "gamma.png")).resize((u(26), u(26) * 128 // 128), Image.LANCZOS))

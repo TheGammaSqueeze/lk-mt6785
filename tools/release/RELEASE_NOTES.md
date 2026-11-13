@@ -129,7 +129,7 @@ the date, the time and the battery.
 | Volume | 0 to 100 % |
 | Black Frame Insertion | Off, 25 %, 50 %, 75 %: the backlight strobes for sharper motion |
 | Theme | Current; Classic and GBA Indigo (beta). A applies |
-| Colour | Blue, Violet, Crimson, Amber, Emerald, Graphite |
+| Colour | Blue, Indigo, Violet, Orchid, Rose, Crimson, Coral, Amber, Lime, Emerald, Teal, Sepia, Graphite |
 | Language | the 17 languages. A applies |
 | Date & Time | a page: Year, Month, Day, Hour, Minute (the console's clock, which Android shares), Time zone (UTC-12:00 to UTC+14:00 in quarter hours), 24-hour clock |
 | BIOS Boot | a page: Skip BIOS Intro, BIOS Intro Background (Black or White), Mute BIOS Audio, BIOS Intro on Resume |

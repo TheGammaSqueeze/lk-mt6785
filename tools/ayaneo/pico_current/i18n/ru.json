@@ -25,6 +25,13 @@
  "Amber": "Янтарный",
  "Emerald": "Изумрудный",
  "Graphite": "Графитовый",
+ "Indigo": "Индиго",
+ "Orchid": "Орхидея",
+ "Rose": "Розовый",
+ "Coral": "Коралловый",
+ "Lime": "Лаймовый",
+ "Teal": "Бирюзовый",
+ "Sepia": "Сепия",
  "Brightness": "Яркость",
  "Volume": "Громкость",
  "Black Frame Insertion": "Вставка чёрных кадров",
@@ -222,5 +229,9 @@
  "This game is too large for this system": "Игра слишком велика для этой системы",
  "This archive is too large to open": "Архив слишком велик, чтобы его открыть",
  "Archives split into parts are not supported": "Многотомные архивы не поддерживаются",
- "This game could not be started": "Не удалось запустить игру"
+ "This game could not be started": "Не удалось запустить игру",
+ "About": "О системе",
+ "Version %s": "Версия %s",
+ "Build %s, %s": "Сборка %s, %s",
+ "Experimental software, provided as it is, with no warranty": "Экспериментальное ПО, как есть, без гарантий"
 }

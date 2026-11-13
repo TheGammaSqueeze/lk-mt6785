@@ -5,7 +5,7 @@ It replaces only the LK bootloader and runs Game Boy, Game Boy Color, Game Boy A
 Mega Drive / Genesis, Master System, Game Gear and SG-1000 games straight from a microSD card.
 Take the card out and the console boots its stock Android as before.
 
-![The game list](documentation/screenshots/game-list.png)
+![A game library](documentation/screenshots/library.png)
 
 Supported consoles:
 
@@ -137,7 +137,7 @@ the date, the time and the battery.
 | Volume | 0 to 100 % |
 | Black Frame Insertion | Off, 25 %, 50 %, 75 %: the backlight strobes for sharper motion |
 | Theme | Current; Classic and GBA Indigo (beta). A applies |
-| Colour | Blue, Violet, Crimson, Amber, Emerald, Graphite |
+| Colour | Blue, Indigo, Violet, Orchid, Rose, Crimson, Coral, Amber, Lime, Emerald, Teal, Sepia, Graphite |
 | Language | the 17 languages. A applies |
 | Date & Time | a page: Year, Month, Day, Hour, Minute (the console's clock, which Android shares), Time zone (UTC-12:00 to UTC+14:00 in quarter hours), 24-hour clock |
 | BIOS Boot | a page: Skip BIOS Intro, BIOS Intro Background (Black or White), Mute BIOS Audio, BIOS Intro on Resume |
@@ -177,10 +177,12 @@ X shows one system at a time; in a long carousel L / R jump from letter to lette
 
 ## Install
 
-Grab the latest [release](https://github.com/TheGammaSqueeze/lk-mt6785/releases). The flash
-package writes the GammaOS Pico LK to `lk_a` and `lk_b` with SP Flash Tool (Windows) or mtkclient
-(Linux), both of which work on a stock console with a locked bootloader, or with fastboot once
-GammaOS Pico is installed. The SD card package goes on a FAT32 or exFAT card as it is: menu,
+Grab the latest [release](https://github.com/TheGammaSqueeze/lk-mt6785/releases). The GammaOS Pico
+LK goes to `lk_a` and `lk_b`. **The way to install it is SP Flash Tool (Windows) or mtkclient
+(Linux):** both write to a stock console with a locked bootloader, and neither needs an unlock or
+wipes anything. fastboot is only for updates once GammaOS Pico is already installed, never for the
+first install (the stock bootloader will not flash over fastboot without an unlock, which erases
+your data). The SD card package goes on a FAT32 or exFAT card as it is: menu,
 emulators and a set of freely licensed demo games with box art. Each package has a README. Then
 add the Game Boy Advance BIOS as `bios/gba_bios.bin` (see above) and your own games to
 `roms/<system>/` (or keep an ES-DE or EmuDeck style ROM folder, see above). For box art, put a

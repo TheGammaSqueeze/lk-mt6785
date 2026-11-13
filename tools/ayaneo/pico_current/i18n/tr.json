@@ -21,6 +21,13 @@
  "Amber": "Kehribar",
  "Emerald": "Zümrüt",
  "Graphite": "Grafit",
+ "Indigo": "Çivit",
+ "Orchid": "Orkide",
+ "Rose": "Pembe",
+ "Coral": "Mercan",
+ "Lime": "Misket",
+ "Teal": "Camgöbeği",
+ "Sepia": "Sepya",
  "Brightness": "Parlaklık",
  "Volume": "Ses seviyesi",
  "Black Frame Insertion": "Siyah kare ekleme",
@@ -218,5 +225,9 @@
  "This game is too large for this system": "Bu oyun bu sistem için çok büyük",
  "This archive is too large to open": "Bu arşiv açılamayacak kadar büyük",
  "Archives split into parts are not supported": "Parçalara bölünmüş arşivler desteklenmiyor",
- "This game could not be started": "Bu oyun başlatılamadı"
+ "This game could not be started": "Bu oyun başlatılamadı",
+ "About": "Hakkında",
+ "Version %s": "Sürüm %s",
+ "Build %s, %s": "Derleme %s, %s",
+ "Experimental software, provided as it is, with no warranty": "Deneysel yazılım, olduğu gibi, garantisiz sunulur"
 }
