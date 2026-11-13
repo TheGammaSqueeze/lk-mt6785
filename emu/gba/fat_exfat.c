@@ -165,6 +165,12 @@ int exfat_readdir(fat_dir *d, fat_dirent *e)
 	return 0;
 }
 
+/* a directory a listing found (its entry), positioned at its start */
+void exfat_dir_at(fat_vol *v, fat_dir *d, const fat_dirent *e)
+{
+	dir_set(v, d, e->first_clus, e->ex_nofat, e->ex_dir_len);
+}
+
 /* resolve a directory path; fills d (position at its start) */
 int exfat_opendir(fat_vol *v, const char *path, fat_dir *d)
 {
@@ -607,8 +613,9 @@ static int build_set(fat_vol *v, uint8_t *set, const char *name, int nlen, uint1
 	return 2 + nents;
 }
 
-/* delete every entry set in `dir` named `name` whose first cluster is not `keep` */
-static void delete_named(fat_vol *v, bm_t *bm, fat_dir *dir, const char *name, uint32_t keep)
+/* delete the entry sets in `dir` named `name`: every file whose first cluster is not `clus`
+ * (only = 0, a replace), or the file or (empty) folder that starts at `clus` (only = 1) */
+static void delete_match(fat_vol *v, bm_t *bm, fat_dir *dir, const char *name, uint32_t clus, int only)
 {
 	dit_t it; uint8_t rec[32];
 	dit_init(&it, v, dir);
@@ -627,7 +634,7 @@ static void delete_named(fat_vol *v, bm_t *bm, fat_dir *dir, const char *name, u
 			else if (s[0] == ET_NAME) for (j = 0; j < 15 && ni < nlen && ni < 255; j++, ni++) { uint16_t u = rd16(s + 2 + j * 2); nm[ni] = u < 0x80 ? (char)u : '_'; }
 		}
 		nm[ni] = 0;
-		if (ni && ci_eq(nm, name) && first != keep && !(rec[4] & ATTR_DIR)) {
+		if (ni && ci_eq(nm, name) && (only ? first == clus : first != clus) && (only || !(rec[4] & ATTR_DIR))) {
 			for (k = 0; k < nl; k++) {
 				uint8_t b[512];
 				if (rsec(v, locs_lba[k], b) != 0) return;
@@ -637,6 +644,22 @@ static void delete_named(fat_vol *v, bm_t *bm, fat_dir *dir, const char *name, u
 			if (first) free_clusters(v, bm, first, nofat, dlen);
 		}
 	}
+}
+static void delete_named(fat_vol *v, bm_t *bm, fat_dir *dir, const char *name, uint32_t keep)
+{ delete_match(v, bm, dir, name, keep, 0); }
+static void delete_one(fat_vol *v, bm_t *bm, fat_dir *dir, const char *name, uint32_t first)
+{ delete_match(v, bm, dir, name, first, 1); }
+
+/* delete the file `name` in `dirpath` that starts at cluster `first_clus`, and only that one */
+int exfat_wr_delete(fat_vol *v, const char *dirpath, const char *name, uint32_t first_clus)
+{
+	fat_dir dir; uint32_t str_lba; int str_ent;
+	bm_t bm;
+	if (!v->wr) return -1;
+	if (dir_resolve(v, dirpath, &dir, &str_lba, &str_ent) != 0) return -3;
+	bm.v = v; bm.valid = 0; bm.dirty = 0;
+	delete_one(v, &bm, &dir, name, first_clus);
+	return bm_flush(&bm) != 0 ? -9 : 0;
 }
 
 int exfat_wr_put(fat_vol *v, const char *dirpath, const char *name, const void *data, uint32_t len)
@@ -737,7 +760,8 @@ int exfat_wr_mkpath(fat_vol *v, const char *path)
 		child[ci] = 0;
 		while (*p == '/') p++;
 		if (n == 0) break;
-		if (exfat_opendir(v, child, &d) != 0) {
+		/* looked for twice: a read that failed once does not make a second folder */
+		if (exfat_opendir(v, child, &d) != 0 && exfat_opendir(v, child, &d) != 0) {
 			char comp[256]; int k = 0;
 			fat_dir parent; uint32_t str_lba; int str_ent;
 			bm_t bm; uint32_t c, s, cb = cbytes(v); uint8_t zb[512], set[19 * 32]; int nents;

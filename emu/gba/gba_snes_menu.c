@@ -23,6 +23,7 @@
 #include "menu/gba_name.h"          /* gba_clean_name (shared with host_render) */
 #include "sd_fat.h"                 /* gba_rom_entry */
 #include "gba_boxart_sd.h"          /* gba_boxart_load_sd */
+#include "pico_artimport.h"         /* pico_artimport_run */
 #include "pico_i18n.h"              /* the menus' languages */
 #include <arch/arm/mmu.h>           /* arch_mmu_map: the box art slots (SNES_BOXART_PA) */
 #include <kernel/thread.h>          /* thread_sleep */
@@ -666,7 +667,7 @@ void gba_menu_reverse_buffers(uint32_t *snap, unsigned int *dst)
 	s_rev_snap = snap ? snap : (const uint32_t *)GBA_REVERSE_SNAP_PA;
 	s_rev_dst = dst;
 }
-/* Load each ROM's box art from the SD card (/roms/<system>/boxart/<romstem>.ART) into the box
+/* Load each ROM's box art from the SD card (<rom folder>/boxart/<romstem>.ART) into the box
  * art slots and fill the per-game image table (s_boxart_full). A missing or oversized tile leaves
  * w=0, the game then shows the placeholder. A slot that already holds a ROM's tile (or knows it has
  * none) is not read again, so a menu after a game only loads the art of games that changed place.
@@ -689,6 +690,11 @@ int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom)
 	if (!s_boxart_mtx_up) { mutex_init(&s_boxart_mtx); s_boxart_mtx_up = 1; }
 	exit_critical_section();
 	mutex_acquire(&s_boxart_mtx);
+	{	/* PNGs put on the card since the last power on become .ART first, so their games show
+		 * them now (a slot that knows its game has no art is not read again) */
+		static int s_imported;
+		if (!s_imported && vol) { s_imported = 1; pico_artimport_run(vol, roms, nrom); }
+	}
 	if (!s_boxart_mapped)
 		s_boxart_mapped = arch_mmu_map(SNES_BOXART_PA, SNES_BOXART_PA,
 					       MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA,
@@ -708,7 +714,7 @@ int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom)
 		{
 			unsigned off = (unsigned)i * SNES_BOXART_SLOT;
 			s_boxart_full[i].w = 0;		/* default: no art */
-			if (gba_boxart_load_sd(vol, (int)roms[i].type, roms[i].name, scratch, SNES_BOXART_STAGE_MAX,
+			if (gba_boxart_load_sd(vol, &roms[i], scratch, SNES_BOXART_STAGE_MAX,
 					       region + off, SNES_BOXART_SLOT, off,
 					       &s_boxart_full[i]) == 0)
 				any++;

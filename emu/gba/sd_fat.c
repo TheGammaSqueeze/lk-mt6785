@@ -250,72 +250,168 @@ int gba_sd_load_bios(fat_vol *v, unsigned char *dst)
 static char lc(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
 static int name_ci_cmp(const char *a, const char *b)
 { while (*a && *b) { char x = lc(*a), y = lc(*b); if (x != y) return x - y; a++; b++; } return lc(*a) - lc(*b); }
-/* case-insensitive suffix match: does name end with the given dotted extension
- * (e.g. ".gb", ".gbc", ".gba")? Both are ASCII; ext must include the leading dot. */
-static int ends_ext(const char *n, const char *ext)
+
+/* The systems and the folder names a card may give them. /roms/<first name> is GammaOS's own
+ * layout (gba_sd_make_rom_dirs makes it); the others are the names ES-DE, RetroArch playlists
+ * and the like use, so a card set up for another front end lists as it is. */
+static const struct rom_system {
+	unsigned char type;
+	const char *dirs;     /* folder names, space separated, matched without case */
+	const char *exts;     /* the ROM extensions, space separated */
+} k_systems[] = {
+	{ GBA_CONSOLE_GB,      "gb gameboy",                         ".gb" },
+	{ GBA_CONSOLE_GBC,     "gbc gameboycolor",                   ".gbc" },
+	{ GBA_CONSOLE_GBA,     "gba gameboyadvance",                 ".gba" },
+	{ GBA_CONSOLE_SNES,    "snes sfc superfamicom snesna",       ".sfc .smc" },
+	{ GBA_CONSOLE_GENESIS, "genesis megadrive md megadrivejp",   ".md .gen .bin .smd" },
+	{ GBA_CONSOLE_SMS,     "sms mastersystem",                   ".sms" },
+	{ GBA_CONSOLE_GG,      "gg gamegear",                        ".gg" },
+	{ GBA_CONSOLE_SG,      "sg sg1000 sg-1000",                  ".sg" },
+};
+#define N_SYSTEMS ((int)(sizeof k_systems / sizeof k_systems[0]))
+
+/* is `name` one of the words of the space separated `list` (without case)? With `suffix`, does
+ * it end with one, and how long is that word */
+static int word_in(const char *name, const char *list, int suffix)
 {
-	int L = 0, E = 0, i;
-	while (n[L]) L++;
-	while (ext[E]) E++;
-	if (L < E + 1) return 0;                    /* need at least one char before the ext */
-	{ const char *e = n + L - E;
-	  for (i = 0; i < E; i++) if (lc(e[i]) != lc(ext[i])) return 0; }
-	return 1;
+	int L = 0;
+	while (name[L]) L++;
+	while (*list) {
+		int n = 0, i;
+		while (list[n] && list[n] != ' ') n++;
+		if (suffix ? L > n : L == n) {
+			const char *t = name + (suffix ? L - n : 0);
+			for (i = 0; i < n && lc(t[i]) == lc(list[i]); i++) ;
+			if (i == n) return n;
+		}
+		list += n;
+		while (*list == ' ') list++;
+	}
+	return 0;
 }
 
-/* Append every <ext> file in <path> to out[], tagged with <type>. n is the count
- * already stored; returns the new count. *tot is bumped for every match (even past
- * the cap) so the caller can detect truncation. A missing folder is not an error. */
-static int scan_rom_folder(fat_vol *v, const char *path, const char *ext,
-			   unsigned char type, gba_rom_entry *out, int max, int n, int *tot)
+/* The folders the games were found in: a game keeps the index of its own (gba_rom_entry.dir),
+ * for the box art beside it. Filled again by every listing. */
+#define ROM_DIRS 48
+static char s_rom_dir[ROM_DIRS][96];
+static uint32_t s_rom_dir_id[ROM_DIRS];
+static int s_nrom_dir;
+
+const char *gba_sd_rom_dir(const gba_rom_entry *r)
+{
+	return r && r->dir < s_nrom_dir ? s_rom_dir[r->dir] : "/roms";
+}
+
+static void path_join(char *out, int cap, const char *a, const char *b)
+{
+	int k = 0, i;
+	for (i = 0; a[i] && k < cap - 1; i++) out[k++] = a[i];
+	if (k < cap - 1) out[k++] = '/';
+	for (i = 0; b[i] && k < cap - 1; i++) out[k++] = b[i];
+	out[k] = 0;
+}
+
+/* Append the games of system `sys` in folder `path` (cluster `id`) to out[]. A game already
+ * listed for the same system (the same name in another folder) is left out, so a card holding
+ * both layouts lists each game once, from the folder found first. *tot counts every game, also
+ * past the cap, so the caller can tell the list was cut. Returns the new count. */
+static int scan_rom_folder(fat_vol *v, const char *path, uint32_t id, const struct rom_system *sys,
+			   gba_rom_entry *out, int max, int n, int *tot)
 {
 	fat_dir d; fat_dirent e;
-	if (fat_opendir(v, path, &d) != 0) return n;   /* folder absent -> nothing to add */
+	int di;
+	for (di = 0; di < s_nrom_dir && s_rom_dir_id[di] != id; di++) ;
+	if (di < s_nrom_dir) return n;                 /* this folder was listed already */
+	if (s_nrom_dir == ROM_DIRS || fat_opendir(v, path, &d) != 0) return n;
+	di = s_nrom_dir++;
+	s_rom_dir_id[di] = id;
+	{ int k; for (k = 0; path[k] && k < 95; k++) s_rom_dir[di][k] = path[k]; s_rom_dir[di][k] = 0; }
 	while (fat_readdir(&d, &e)) {
-		if (e.is_dir || !ends_ext(e.name, ext)) continue;
-		if (e.size == 0) continue;              /* skip empty/placeholder files */
-		(*tot)++;
-		if (n < max) {
-			int k = 0, el = 0;
-			while (e.name[k] && k < 127) { out[n].name[k] = e.name[k]; k++; }
-			out[n].name[k] = 0;
-			/* Strip the trailing ".gb/.gbc/.gba" for DISPLAY: the roster name is
-			 * only used for the menu label and for sav/state keying (base_ext there
-			 * re-strips any extension anyway), and the ROM itself opens by cluster,
-			 * so dropping the ext here is safe and gives a clean title. ends_ext
-			 * already matched, so the name is guaranteed to end with <ext>. */
-			while (ext[el]) el++;
-			if (k >= el) out[n].name[k - el] = 0;
-			out[n].first_clus = e.first_clus;
-			out[n].size = e.size;
-			out[n].ex_nofat = e.ex_nofat;
-			out[n].type = type;
-			n++;
+		int el, k, dup = 0;
+		if (e.is_dir || e.size == 0) continue;  /* folders, empty placeholder files */
+		if (e.name[0] == '.') continue;         /* macOS "._" resource files and the like */
+		el = word_in(e.name, sys->exts, 1);
+		if (!el) continue;
+		/* the name without its extension: the menu's label and the key of its saves and
+		 * states (the ROM itself is opened by its cluster) */
+		{
+			char nm[128];
+			int L = 0;
+			while (e.name[L]) L++;
+			L -= el;
+			if (L > 127) L = 127;
+			for (k = 0; k < L; k++) nm[k] = e.name[k];
+			nm[L] = 0;
+			for (k = 0; k < n && !dup; k++)
+				if (out[k].type == sys->type && name_ci_cmp(out[k].name, nm) == 0) dup = 1;
+			if (dup) continue;
+			(*tot)++;
+			if (n >= max) continue;
+			for (k = 0; k <= L; k++) out[n].name[k] = nm[k];
 		}
+		out[n].first_clus = e.first_clus;
+		out[n].size = e.size;
+		out[n].ex_nofat = e.ex_nofat;
+		out[n].type = sys->type;
+		out[n].dir = (unsigned char)di;
+		n++;
 	}
 	return n;
+}
+
+/* the system folders straight inside `root` ("" the card's root) */
+static int scan_root(fat_vol *v, const char *root, gba_rom_entry *out, int max, int n, int *tot)
+{
+	fat_dir d; fat_dirent e;
+	char path[96];
+	int s;
+	if (fat_opendir(v, root[0] ? root : "/", &d) != 0) return n;
+	while (fat_readdir(&d, &e)) {
+		if (!e.is_dir) continue;
+		for (s = 0; s < N_SYSTEMS && !word_in(e.name, k_systems[s].dirs, 0); s++) ;
+		if (s == N_SYSTEMS) continue;
+		path_join(path, sizeof path, root, e.name);
+		n = scan_rom_folder(v, path, e.first_clus, &k_systems[s], out, max, n, tot);
+	}
+	return n;
+}
+
+/* folders at the card's root that never hold games: skipped when looking for a ROMs folder */
+static int not_a_rom_root(const char *nm)
+{
+	return nm[0] == '.' || word_in(nm, "gammaos saves states cores bios boxart gba_states", 0) ||
+	       name_ci_cmp(nm, "System Volume Information") == 0 || name_ci_cmp(nm, "LOST.DIR") == 0;
 }
 
 int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
 {
 	int n = 0, i, j, tot = 0;
 	if (total) *total = 0;
+	s_nrom_dir = 0;
 	if (max <= 0) return 0;
-	/* Merge all three consoles into one roster; each entry keeps its type so the
-	 * menu can badge it and the launcher can pick the right core. */
-	n = scan_rom_folder(v, "/roms/gb",   ".gb",   GBA_CONSOLE_GB,   out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/gbc",  ".gbc",  GBA_CONSOLE_GBC,  out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/gba",  ".gba",  GBA_CONSOLE_GBA,  out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/snes", ".sfc",  GBA_CONSOLE_SNES, out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/snes", ".smc",  GBA_CONSOLE_SNES, out, max, n, &tot);
-	/* Sega, all via the Genesis-Plus-GX core (one blob) - the type routes the system hint. */
-	n = scan_rom_folder(v, "/roms/genesis", ".md",  GBA_CONSOLE_GENESIS, out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/genesis", ".gen", GBA_CONSOLE_GENESIS, out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/genesis", ".bin", GBA_CONSOLE_GENESIS, out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/genesis", ".smd", GBA_CONSOLE_GENESIS, out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/sms",     ".sms", GBA_CONSOLE_SMS, out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/gg",      ".gg",  GBA_CONSOLE_GG,  out, max, n, &tot);
-	n = scan_rom_folder(v, "/roms/sg",      ".sg",  GBA_CONSOLE_SG,  out, max, n, &tot);
+	/* Where the games may be, in this order (a game in two places is listed from the first):
+	 * /roms/<system> (GammaOS), /<system> at the root, and for every other folder at the
+	 * root, its system folders and those of its roms folder: /ROMs/<system> (ES-DE),
+	 * /Emulation/roms/<system> (EmuDeck), /<anything>/roms/<system>. Folder names are
+	 * matched without case. */
+	n = scan_root(v, "/roms", out, max, n, &tot);
+	n = scan_root(v, "", out, max, n, &tot);
+	{
+		fat_dir d; fat_dirent e;
+		if (fat_opendir(v, "/", &d) == 0) {
+			while (fat_readdir(&d, &e)) {
+				char top[96], sub[96];
+				int s, is_sys = 0;
+				if (!e.is_dir || not_a_rom_root(e.name) || name_ci_cmp(e.name, "roms") == 0) continue;
+				for (s = 0; s < N_SYSTEMS && !is_sys; s++) is_sys = word_in(e.name, k_systems[s].dirs, 0);
+				if (is_sys) continue;           /* /gba and the like: listed above */
+				path_join(top, sizeof top, "", e.name);
+				n = scan_root(v, top, out, max, n, &tot);
+				path_join(sub, sizeof sub, top, "roms");
+				n = scan_root(v, sub, out, max, n, &tot);
+			}
+		}
+	}
 	if (total) *total = tot;
 	for (i = 1; i < n; i++) {           /* insertion sort, case-insensitive by name */
 		gba_rom_entry t = out[i];

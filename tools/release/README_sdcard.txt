@@ -28,9 +28,19 @@ Buttons
   back. Settings holds the language, the date and time, and the themes.
 
 The demo games in roms/ are freely licensed homebrew, redistributed under their licences
-(licences/games/). Add your own games to the system folders. Box art for your games can be made
-with tools/ayaneo/gba/gen_boxart.py from the lk-mt6785 repository (a PNG per game, named like the
-game).
+(licences/games/). Add your own games to the system folders.
+
+Games can also stay where another front end keeps them: the console looks in roms/, at the
+card's root, and in every folder at the root and its roms folder (ROMs/<system>/ for ES-DE,
+Emulation/roms/<system>/ for EmuDeck). Folder names it knows (any case):
+  gb gameboy | gbc gameboycolor | gba gameboyadvance | snes sfc superfamicom snesna
+  genesis megadrive md megadrivejp | sms mastersystem | gg gamegear | sg sg1000 sg-1000
+A game found in two places is listed once. The menu lists up to 128 games.
+
+Box art: put a PNG cover named like the game (<game>.png, or <game>.<extension>.png) in a boxart
+folder beside the game, for example ROMs/gba/boxart/Metroid Fusion.png. At the next power on the
+console turns it into <game>.ART, sized for the menu, and deletes the PNG. A PNG it cannot read
+stays where it is.
 
 The console writes settings, saves (saves/) and save states (states/) to this card.
 

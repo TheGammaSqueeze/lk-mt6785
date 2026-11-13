@@ -18,9 +18,11 @@
 int      exfat_mount(fat_vol *v, uint32_t part_lba, const uint8_t *vbr);
 int      exfat_opendir(fat_vol *v, const char *path, fat_dir *d);
 int      exfat_readdir(fat_dir *d, fat_dirent *e);
+void     exfat_dir_at(fat_vol *v, fat_dir *d, const fat_dirent *e);
 int      exfat_open(fat_vol *v, const char *path, fat_file *f);
 uint32_t exfat_read(fat_file *f, uint32_t off, void *buf, uint32_t len);
 int      exfat_wr_put(fat_vol *v, const char *dirpath, const char *name, const void *data, uint32_t len);
 int      exfat_wr_mkpath(fat_vol *v, const char *path);
+int      exfat_wr_delete(fat_vol *v, const char *dirpath, const char *name, uint32_t first_clus);
 
 #endif

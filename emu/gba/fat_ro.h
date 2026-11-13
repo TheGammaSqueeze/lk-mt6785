@@ -96,6 +96,9 @@ typedef struct {
  * parse its BPB. Returns 0 on success, negative on failure (no card / not FAT). */
 int fat_mount(fat_vol *v, fat_read_fn rd, void *ctx);
 
+/* Open the directory a fat_readdir entry names (one of two folders of the same name). */
+int fat_opendir_entry(fat_vol *v, const fat_dirent *e, fat_dir *d);
+
 /* Attach a sector-write callback so the volume can be modified via fat_wr.c. */
 void fat_set_writer(fat_vol *v, fat_write_fn wr);
 

@@ -27,4 +27,11 @@ int fat_wr_put(fat_vol *v, const char *dirpath, const char *name,
  * error (no writer / disk full / a component name is not 8.3). */
 int fat_wr_mkpath(fat_vol *v, const char *path);
 
+/* Delete the file <name> in <dirpath> whose data starts at cluster <first_clus> (both as
+ * fat_readdir reported them), freeing its clusters; another file of that name is left alone.
+ * A folder can go the same way once it is empty (the caller checks: what is in it would be
+ * lost). FAT16/32 and exFAT. Returns 0 on success (also when it was not there), negative on
+ * error. */
+int fat_wr_delete(fat_vol *v, const char *dirpath, const char *name, uint32_t first_clus);
+
 #endif

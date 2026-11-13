@@ -30,6 +30,11 @@ bootloader, before any operating system, and owns the hardware outright.
   console starts its stock Android, untouched.
 - **Everything on the card.** Emulators, settings, saves, states and box art all live on the
   microSD card. Swap the card, swap the whole setup.
+- **Your card, your way.** Games are found in GammaOS's `roms/<system>/` or where another front
+  end keeps them: `ROMs/<system>/` (ES-DE), `Emulation/roms/<system>/` (EmuDeck) or any
+  `<folder>/roms/<system>/`, with the usual folder names (`gba`, `snes`, `megadrive`,
+  `mastersystem`, `gamegear` and so on). Drop a PNG cover named like the game into a `boxart`
+  folder beside it and the console sizes it for the menu at the next power on.
 - **The good stuff from the start.** Rewind, fast forward, save states (written to the card while
   the game plays on), scanline and LCD filters, colour correction and backlight black frame
   insertion, in a box art menu: the Current theme, with the Classic and GBA Indigo themes in beta.
@@ -171,7 +176,9 @@ package writes the GammaOS Pico LK to `lk_a` and `lk_b` with SP Flash Tool (Wind
 GammaOS Pico is installed. The SD card package goes on a FAT32 or exFAT card as it is: menu,
 emulators and a set of freely licensed demo games with box art. Each package has a README. Then
 add the Game Boy Advance BIOS as `bios/gba_bios.bin` (see above) and your own games to
-`roms/<system>/`.
+`roms/<system>/` (or keep an ES-DE or EmuDeck style ROM folder, see above). For box art, put a
+`<game>.png` in the `boxart` folder beside the game: at the next power on it becomes a `.ART`
+sized for the menu, and the PNG is deleted.
 
 ## Build from source
 

@@ -310,6 +310,15 @@ int fat_opendir(fat_vol *v, const char *path, fat_dir *d)
 	return 0;
 }
 
+/* open the directory a listing entry names (the right one of two with the same name) */
+int fat_opendir_entry(fat_vol *v, const fat_dirent *e, fat_dir *d)
+{
+	if (!v->mounted || !e->is_dir) return -1;
+	if (v->is_exfat) exfat_dir_at(v, d, e);
+	else dir_init(v, d, e->first_clus);
+	return 0;
+}
+
 int fat_readdir(fat_dir *d, fat_dirent *e)
 {
 	uint8_t rec[32];

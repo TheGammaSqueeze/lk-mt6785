@@ -31,6 +31,8 @@ extern void fastboot_info(const char *reason);
 #include "gba_core_abi.h"
 #include "fat_ro.h"
 #include "sd_fat.h"
+#include "fat_wr.h"       /* fat_wr_delete (oem sd-rm) */
+#include <string.h>
 extern void fastboot_okay(const char *info);
 extern void fastboot_fail(const char *reason);
 extern int  snprintf(char *str, unsigned long size, const char *fmt, ...);
@@ -216,6 +218,13 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 	{
 		extern volatile unsigned int g_dbg_boxart_ok, g_dbg_boxart_tot, g_dbg_boxart_ms;
 		snprintf(lbuf, sizeof lbuf, "boxart: %u of %u games, last load %u ms", g_dbg_boxart_ok, g_dbg_boxart_tot, g_dbg_boxart_ms);
+		fastboot_info(lbuf);
+	}
+	{
+		extern volatile unsigned int g_dbg_artimp_ok, g_dbg_artimp_fail, g_dbg_artimp_ms;
+		extern volatile int g_dbg_artimp_last;
+		snprintf(lbuf, sizeof lbuf, "artimport: %u PNG made .ART, %u left (last %d), %u ms", g_dbg_artimp_ok,
+			 g_dbg_artimp_fail, g_dbg_artimp_last, g_dbg_artimp_ms);
 		fastboot_info(lbuf);
 	}
 	{
@@ -1156,6 +1165,19 @@ static void cmd_clock(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem romdirs[:from] - the listed games with the folder each was found in, 20 at a time */
+static void cmd_romdirs(const char *arg, void *data, unsigned sz)
+{
+	extern int gba_sd_rom_line(int i, char *buf, int cap);
+	int i, from = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	while (*arg >= '0' && *arg <= '9') from = from * 10 + (*arg++ - '0');
+	for (i = from; i < from + 20 && gba_sd_rom_line(i, lbuf, sizeof lbuf); i++)
+		fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem faultregs - the last fault the screen showed (the LK halts there, fastboot still answers) */
 static void cmd_faultregs(const char *arg, void *data, unsigned sz)
 {
@@ -1683,12 +1705,78 @@ static void cmd_sd_ls(const char *arg, void *data, unsigned sz)
 	(void)data; (void)sz;
 	while (*arg == ' ' || *arg == ':') arg++;
 	if (gba_sd_mount(&s_fb_vol) != 0) { fastboot_fail("sd-ls: mount failed"); return; }
-	if (fat_opendir(&s_fb_vol, *arg ? arg : "/", &d) != 0) { fastboot_fail("sd-ls: no such directory"); return; }
+	if (strchr(arg, '#')) {	/* /path#N: the N-th folder of that name in its parent (1 the first) */
+		char par[256];
+		const char *hash = strchr(arg, '#'), *nm;
+		int want = 0, k, pl;
+		for (nm = hash + 1; *nm >= '0' && *nm <= '9'; nm++) want = want * 10 + (*nm - '0');
+		for (nm = hash; nm > arg && nm[-1] != '/'; nm--) ;
+		pl = (int)(nm - arg) - 1;
+		if (pl < 0 || pl >= (int)sizeof par) { fastboot_fail("sd-ls: need /path#N"); return; }
+		for (k = 0; k < pl; k++) par[k] = arg[k];
+		par[pl ? pl : 1] = 0;
+		if (!pl) par[0] = '/';
+		if (fat_opendir(&s_fb_vol, par, &d) != 0) { fastboot_fail("sd-ls: no such directory"); return; }
+		while (fat_readdir(&d, &e) == 1) {
+			const char *a = e.name, *b = nm;
+			while (*a && b < hash && (*a | 32) == (*b | 32)) { a++; b++; }
+			if (e.is_dir && !*a && b == hash && --want == 0) break;
+		}
+		if (want || fat_opendir_entry(&s_fb_vol, &e, &d) != 0) { fastboot_fail("sd-ls: no such folder"); return; }
+	} else if (fat_opendir(&s_fb_vol, *arg ? arg : "/", &d) != 0) { fastboot_fail("sd-ls: no such directory"); return; }
+	snprintf(lbuf, sizeof lbuf, "%s", s_fb_vol.is_exfat ? "exFAT" : s_fb_vol.is_fat32 ? "FAT32" : "FAT16");
+	fastboot_info(lbuf);
 	while (fat_readdir(&d, &e) == 1 && n < 400) {
-		snprintf(lbuf, sizeof lbuf, "%s%.52s %u", e.is_dir ? "[d] " : "", e.name, e.size);
+		snprintf(lbuf, sizeof lbuf, "%s%.40s %u @%u", e.is_dir ? "[d] " : "", e.name, e.size, e.first_clus);
 		fastboot_info(lbuf);
 		n++;
 	}
+	fastboot_okay("");
+}
+/* oem sd-rm:/path[#N] - delete a file, or an empty folder, on the card (on the menu's own volume,
+ * so its FAT cache stays true); #N picks the N-th of several entries of that name */
+static void cmd_sd_rm(const char *arg, void *data, unsigned sz)
+{
+	extern void *gba_sd_menu_vol(void);
+	static fat_dir d;
+	static fat_dirent e;
+	char dir[256], name[256];
+	const char *slash, *hash;
+	fat_vol *v = (fat_vol *)gba_sd_menu_vol();
+	int dn, k, want = 1, nl;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (!v) { fastboot_fail("sd-rm: no card in use"); return; }
+	slash = strrchr(arg, '/');
+	if (*arg != '/' || !slash || !slash[1]) { fastboot_fail("sd-rm: need /path"); return; }
+	dn = (int)(slash - arg);
+	if (dn >= (int)sizeof dir) { fastboot_fail("sd-rm: path too long"); return; }
+	for (k = 0; k < dn; k++) dir[k] = arg[k];
+	dir[dn ? dn : 1] = 0;
+	if (!dn) dir[0] = '/';
+	hash = strchr(slash, '#');
+	nl = hash ? (int)(hash - slash - 1) : (int)strlen(slash + 1);
+	if (nl <= 0 || nl >= (int)sizeof name) { fastboot_fail("sd-rm: bad name"); return; }
+	memcpy(name, slash + 1, (size_t)nl);
+	name[nl] = 0;
+	if (hash) { want = 0; for (k = 1; hash[k] >= '0' && hash[k] <= '9'; k++) want = want * 10 + (hash[k] - '0'); }
+	if (fat_opendir(v, dir, &d) != 0) { fastboot_fail("sd-rm: no such folder"); return; }
+	while (want > 0 && fat_readdir(&d, &e) == 1) {
+		const char *a = e.name, *b = name;
+		while (*a && *b && (*a | 32) == (*b | 32)) { a++; b++; }
+		if (!*a && !*b) want--;
+	}
+	if (want) { fastboot_fail("sd-rm: not there"); return; }
+	if (e.is_dir) {   /* only an empty folder: what is in it would be lost */
+		static fat_dir dd;
+		static fat_dirent ee;
+		if (fat_opendir_entry(v, &e, &dd) != 0) { fastboot_fail("sd-rm: folder unreadable"); return; }
+		while (fat_readdir(&dd, &ee) == 1)
+			if (strcmp(ee.name, ".") && strcmp(ee.name, "..")) { fastboot_fail("sd-rm: folder not empty"); return; }
+	}
+	k = fat_wr_delete(v, dir, e.name, e.first_clus);
+	snprintf(lbuf, sizeof lbuf, "sd-rm: %s @%u %s (%d)", e.is_dir ? "folder" : "file", e.first_clus, k ? "failed" : "deleted", k);
+	fastboot_info(lbuf);
 	fastboot_okay("");
 }
 /* oem pllog - the preloader's log from the pl/lk log store, staged for fastboot get_staged */
@@ -2579,9 +2667,11 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem clock", cmd_clock, 1, 0);
 	fastboot_register("oem showcase", cmd_showcase, 1, 0);
 	fastboot_register("oem faultregs", cmd_faultregs, 1, 0);
+	fastboot_register("oem romdirs", cmd_romdirs, 1, 0);
 	fastboot_register("oem resumeinfo", cmd_resumeinfo, 1, 0);
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
+	fastboot_register("oem sd-rm:", cmd_sd_rm, 1, 0);
 #if defined(KONKR_KPA)
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);
 #endif

@@ -2430,6 +2430,13 @@ const void *gba_sd_first_genesis_rom(void)
 		if (s_roms[i].type >= GBA_CONSOLE_GENESIS) return &s_roms[i];
 	return 0;
 }
+/* oem romdirs: listed game i as "<type> <folder>/<name>", 0 past the end */
+int gba_sd_rom_line(int i, char *buf, int cap)
+{
+	if (!s_sd_mode || i < 0 || i >= s_nrom) return 0;
+	snprintf(buf, cap, "%u %s/%s", s_roms[i].type, gba_sd_rom_dir(&s_roms[i]), s_roms[i].name);
+	return 1;
+}
 static int s_sel_rom = -1;          /* chosen ROM index (for save/state paths) */
 
 #include "rom_select_nav.h"   /* rs_move / rs_scroll (host-tested nav math) */

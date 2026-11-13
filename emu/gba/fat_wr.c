@@ -107,6 +107,15 @@ static int make_8_3(const char *name, uint8_t out[11])
 	bl = (dot < 0) ? L : dot;
 	el = (dot < 0) ? 0 : (L - dot - 1);
 	if (bl < 1 || bl > 8 || el > 3) return -1;
+	/* a character a short name cannot hold goes the long name way: a space above all, which
+	 * the reader takes for the end of the name ("B Game.ART" would come back as "B.ART") */
+	for (i = 0; i < L; i++) {
+		unsigned char c = (unsigned char)name[i];
+		if (i != dot && (c <= ' ' || c >= 0x7F || c == '.' || c == '"' || c == '*' || c == '+' ||
+				 c == ',' || c == '/' || c == ':' || c == ';' || c == '<' || c == '=' ||
+				 c == '>' || c == '?' || c == '[' || c == '\\' || c == ']' || c == '|'))
+			return -1;
+	}
 	for (i = 0; i < bl; i++) out[i] = (uint8_t)up(name[i]);
 	for (i = 0; i < el; i++) out[8 + i] = (uint8_t)up(name[dot + 1 + i]);
 	return 0;
@@ -235,6 +244,65 @@ static void mangle_short(fat_vol *v, uint32_t cluster, uint32_t root_sec, uint32
 	}
 }
 
+/* Delete the entries (LFN parts + short entry) named `name` in a directory and free their
+ * chains: every one but the file starting at cluster `clus` (only = 0, a replace), or that file
+ * alone (only = 1, a delete of the file a listing found). Characters outside ASCII compare as
+ * '_', the way fat_readdir shows them. */
+static void drop_entries(fat_vol *v, uint32_t cluster, uint32_t root_sec, uint32_t root_left,
+			 const char *name, uint32_t clus, int only)
+{
+	dir_iter it; uint32_t lba, o; uint8_t *rec;
+	uint32_t g_lba[24], g_off[24]; int gn = 0;
+	char lfnacc[300]; int lfnlen = 0;
+	static const int lo[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
+	di_init(&it, v, cluster, root_sec, root_left);
+	while (di_next(&it, &lba, &o, &rec)) {
+		if (rec[0] == 0x00) break;
+		if (rec[0] == 0xE5) { gn = 0; lfnlen = 0; continue; }
+		if (rec[11] == 0x0F) {                       /* LFN part */
+			int seq = rec[0] & 0x1F, cb = (seq - 1) * 13, k;
+			if (gn < 24) { g_lba[gn] = lba; g_off[gn] = o; gn++; }
+			for (k = 0; k < 13; k++) {
+				unsigned u = rec[lo[k]] | (rec[lo[k] + 1] << 8);
+				if (cb + k < 299) lfnacc[cb + k] = (u && u != 0xFFFF) ? (u < 0x80 ? (char)u : '_') : 0;
+			}
+			if (cb + 13 > lfnlen) lfnlen = cb + 13;
+			continue;
+		}
+		if (rec[11] & 0x08) { gn = 0; lfnlen = 0; continue; }   /* volume label */
+		{
+			char eff[300]; int k, match;
+			uint32_t of = ((uint32_t)rd16(rec + 20) << 16) | rd16(rec + 26);
+			if (gn > 0) { for (k = 0; k < lfnlen && lfnacc[k]; k++) eff[k] = lfnacc[k]; eff[k] = 0; }
+			else n11_to_name(rec, eff);
+			match = ci_eq(eff, name);
+			if (match && (only ? of == clus : of != clus)) {
+				for (k = 0; k < gn; k++) slot_del(v, g_lba[k], g_off[k]);
+				slot_del(v, lba, o);
+				if (of >= 2) free_chain(v, of);
+			}
+			gn = 0; lfnlen = 0;
+		}
+	}
+}
+
+/* FAT32: the FSINFO free-cluster count is stale after clusters were freed or taken */
+static void fsinfo_stale(fat_vol *v)
+{
+	/* mark it "unknown" (0xFFFFFFFF) so the OS recomputes it rather than trusting a wrong value */
+	if (v->is_fat32) {
+		uint8_t bs[512];
+		if (rsec(v, v->part_lba, bs) == 0) {
+			uint16_t fsi = rd16(bs + 0x30);
+			if (fsi != 0 && fsi != 0xFFFF && rsec(v, v->part_lba + fsi, bs) == 0) {
+				wr32(bs + 488, 0xFFFFFFFFu);   /* free count unknown */
+				wr32(bs + 492, 0xFFFFFFFFu);   /* next-free hint unknown */
+				wsec(v, v->part_lba + fsi, bs);
+			}
+		}
+	}
+}
+
 static int fat_wr_put_i(fat_vol *v, const char *dirpath, const char *name,
 			const void *buf, uint32_t len);
 
@@ -244,21 +312,55 @@ static int fat_wr_put_locked(fat_vol *v, const char *dirpath, const char *name,
 			     const void *data, uint32_t len);
 #ifdef __arm__
 #include <kernel/mutex.h>
-static mutex_t s_fat_wr_mtx; static int s_fat_wr_mtx_init;
+#include <kernel/thread.h>
+static mutex_t s_fat_wr_mtx; static volatile int s_fat_wr_mtx_init;
 #endif
+/* Every change to the card (a file written or deleted, a folder made) is one critical section:
+ * the settings writer, the card writer and the listing's thread may all call in at once, and a
+ * folder looked up while another call is rewriting its parent, or two bitmap or FAT caches
+ * taking the same free cluster, would leave the card wrong (a second folder of the same name
+ * was found made that way). */
+static void wr_lock(void)
+{
+#ifdef __arm__
+	enter_critical_section();
+	if (!s_fat_wr_mtx_init) { mutex_init(&s_fat_wr_mtx); s_fat_wr_mtx_init = 1; }
+	exit_critical_section();
+	mutex_acquire(&s_fat_wr_mtx);
+#endif
+}
+static void wr_unlock(void)
+{
+#ifdef __arm__
+	mutex_release(&s_fat_wr_mtx);
+#endif
+}
 /* a whole file write (data clusters + FAT + directory entry) is one critical section: the
  * settings writer thread and the game thread (saves, states) may both call this */
 int fat_wr_put(fat_vol *v, const char *dirpath, const char *name, const void *data, uint32_t len)
 {
 	int r;
-#ifdef __arm__
-	if (!s_fat_wr_mtx_init) { mutex_init(&s_fat_wr_mtx); s_fat_wr_mtx_init = 1; }
-	mutex_acquire(&s_fat_wr_mtx);
-#endif
+	wr_lock();
 	r = fat_wr_put_locked(v, dirpath, name, data, len);
-#ifdef __arm__
-	mutex_release(&s_fat_wr_mtx);
-#endif
+	wr_unlock();
+	return r;
+}
+/* delete the file `name` in `dirpath` that starts at cluster `first_clus` (as fat_readdir gave
+ * them); nothing else of that name is touched */
+int fat_wr_delete(fat_vol *v, const char *dirpath, const char *name, uint32_t first_clus)
+{
+	uint32_t cluster, root_sec, root_left;
+	int r = 0;
+	if (!v->wr) return -1;
+	wr_lock();
+	if (v->is_exfat) r = exfat_wr_delete(v, dirpath, name, first_clus);
+	else if (dir_head(v, dirpath, &cluster, &root_sec, &root_left) != 0) r = -3;
+	else {
+		drop_entries(v, cluster, root_sec, root_left, name, first_clus, 1);
+		fsinfo_stale(v);
+		if (fatw_flush(v) != 0) r = -9;
+	}
+	wr_unlock();
 	return r;
 }
 static int fat_wr_put_locked(fat_vol *v, const char *dirpath, const char *name,
@@ -416,55 +518,8 @@ static int fat_wr_put_i(fat_vol *v, const char *dirpath, const char *name,
 	 * (before the new dirent lands) or both entries valid (after) - the save is
 	 * never lost to a mid-write crash. The just-written entry is identified by
 	 * its data chain head `first` and skipped so we do not delete ourselves. */
-	{
-		dir_iter it; uint32_t lba, o; uint8_t *rec;
-		uint32_t g_lba[24], g_off[24]; int gn = 0;
-		char lfnacc[300]; int lfnlen = 0;
-		static const int lo[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
-		di_init(&it, v, cluster, root_sec, root_left);
-		while (di_next(&it, &lba, &o, &rec)) {
-			if (rec[0] == 0x00) break;
-			if (rec[0] == 0xE5) { gn = 0; lfnlen = 0; continue; }
-			if (rec[11] == 0x0F) {                       /* LFN part */
-				int seq = rec[0] & 0x1F, cb = (seq - 1) * 13, k;
-				if (gn < 24) { g_lba[gn] = lba; g_off[gn] = o; gn++; }
-				for (k = 0; k < 13; k++) {
-					unsigned u = rec[lo[k]] | (rec[lo[k] + 1] << 8);
-					if (cb + k < 299) lfnacc[cb + k] = (u && u != 0xFFFF) ? (char)(u & 0x7f) : 0;
-				}
-				if (cb + 13 > lfnlen) lfnlen = cb + 13;
-				continue;
-			}
-			if (rec[11] & 0x08) { gn = 0; lfnlen = 0; continue; }   /* volume label */
-			{
-				char eff[300]; int k, match;
-				uint32_t of = ((uint32_t)rd16(rec + 20) << 16) | rd16(rec + 26);
-				if (gn > 0) { for (k = 0; k < lfnlen && lfnacc[k]; k++) eff[k] = lfnacc[k]; eff[k] = 0; }
-				else n11_to_name(rec, eff);
-				match = ci_eq(eff, name);
-				if (match && of != first) {          /* never delete the entry we just wrote */
-					for (k = 0; k < gn; k++) slot_del(v, g_lba[k], g_off[k]);
-					slot_del(v, lba, o);
-					if (of >= 2) free_chain(v, of);
-				}
-				gn = 0; lfnlen = 0;
-			}
-		}
-	}
-
-	/* FAT32: the FSINFO free-cluster count is now stale - mark it "unknown"
-	 * (0xFFFFFFFF) so the OS recomputes it rather than trusting a wrong value. */
-	if (v->is_fat32) {
-		uint8_t bs[512];
-		if (rsec(v, v->part_lba, bs) == 0) {
-			uint16_t fsi = rd16(bs + 0x30);
-			if (fsi != 0 && fsi != 0xFFFF && rsec(v, v->part_lba + fsi, bs) == 0) {
-				wr32(bs + 488, 0xFFFFFFFFu);   /* free count unknown */
-				wr32(bs + 492, 0xFFFFFFFFu);   /* next-free hint unknown */
-				wsec(v, v->part_lba + fsi, bs);
-			}
-		}
-	}
+	drop_entries(v, cluster, root_sec, root_left, name, first, 0);
+	fsinfo_stale(v);
 	return 0;
 }
 
@@ -544,9 +599,13 @@ static int fat_wr_mkpath_i(fat_vol *v, const char *path);
 int fat_wr_mkpath(fat_vol *v, const char *path)
 {
 	int r;
-	if (v->is_exfat) return exfat_wr_mkpath(v, path);
-	r = fat_wr_mkpath_i(v, path);
-	if (fatw_flush(v) != 0 && r == 0) r = -9;
+	wr_lock();
+	if (v->is_exfat) r = exfat_wr_mkpath(v, path);
+	else {
+		r = fat_wr_mkpath_i(v, path);
+		if (fatw_flush(v) != 0 && r == 0) r = -9;
+	}
+	wr_unlock();
 	return r;
 }
 static int fat_wr_mkpath_i(fat_vol *v, const char *path)
@@ -568,7 +627,9 @@ static int fat_wr_mkpath_i(fat_vol *v, const char *path)
 		child[ci] = 0;
 		while (*p == '/') p++;
 		if (n == 0) break;
-		if (fat_opendir(v, child, &d) != 0) {         /* missing -> create it */
+		/* missing -> create it; looked for twice, so a read that failed once does not
+		 * make a second folder of the same name */
+		if (fat_opendir(v, child, &d) != 0 && fat_opendir(v, child, &d) != 0) {
 			char comp[64]; int k = 0;
 			uint32_t pcl, prs, prl, parent_first;
 			for (i = ci - n; i < ci; i++) comp[k++] = child[i];

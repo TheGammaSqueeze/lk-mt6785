@@ -19,10 +19,11 @@
 
 extern BOOT_ARGUMENT *g_boot_arg;
 
-#define REWIND_SCRATCH_END 0x60000000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
+#define REWIND_SCRATCH_END 0x61000000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
 					   * menu's box art slots (SNES_BOXART_PA, 20 MB, gba_snes_menu.c),
 					   * then the armGBA core's own window, the language pack, the card
-					   * writer's buffer and the emulator stacks (below); look above them all */
+					   * writer's buffer, the emulator stacks and the box art import
+					   * (below); look above them all */
 /* The armGBA core's heap: 128 MB of the island above the box art. The scratch's 62 MB held its ROM
  * buffer (32 MB), its recompiler's code buffer and what the recompiler notes on each block it
  * compiles, with a few MB to spare: a game that compiles a lot ran the heap out (the double speed,
@@ -44,6 +45,10 @@ extern BOOT_ARGUMENT *g_boot_arg;
 #define EMUSTK_PA     0x5FE00000u
 #define EMUSTK_SIZE   0x00200000u
 #define EMUSTK_SLOT   0x00040000u
+/* The box art import (emu/gba/pico_artimport.c): a PNG put on the card is read here whole and
+ * turned into the menu's .ART at boot. */
+#define IMPORT_PA     0x60000000u
+#define IMPORT_SIZE   0x01000000u
 #define REWIND_VA_LIMIT    0x100000000ULL /* LK is 32-bit VA (identity) - can only map phys < 4GB */
 #define REWIND_CAP         0x40000000u    /* per-block ceiling (1GB); the largest real island (mblk10
 					   * ~1022MB) sits just under it, so no block is actually capped -
@@ -203,6 +208,13 @@ void *ayaneo_emu_stack(unsigned int slot, unsigned int size)
 	if (size > EMUSTK_SLOT || slot >= EMUSTK_SIZE / EMUSTK_SLOT) return 0;
 	p = (unsigned char *)fixed_window(EMUSTK_PA, EMUSTK_SIZE, &s_state);
 	return p ? p + slot * EMUSTK_SLOT : 0;
+}
+void *ayaneo_import_arena(unsigned int *size)
+{
+	static int s_state;
+	void *p = fixed_window(IMPORT_PA, IMPORT_SIZE, &s_state);
+	if (p && size) *size = IMPORT_SIZE;
+	return p;
 }
 void *ayaneo_lang_arena(unsigned int *size)
 {
