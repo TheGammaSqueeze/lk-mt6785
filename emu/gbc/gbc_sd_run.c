@@ -21,6 +21,7 @@
 #include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
 #include <kernel/event.h>
+#include "../gba/emu_stack.h"
 
 /* ---- LK / driver primitives (externs; no LK headers here) ---- */
 extern const struct gbc_core_exports *gbc_core_load(fat_vol *v);   /* gbc_core_loader.c: from the card */
@@ -1060,8 +1061,8 @@ void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 	if (!s_gbc_thread) {
 		event_init(&s_gbc_kick, false, EVENT_FLAG_AUTOUNSIGNAL);
 		event_init(&s_gbc_done, false, EVENT_FLAG_AUTOUNSIGNAL);
-		s_gbc_thread = thread_create("gbc_emu", &gbc_thread_fn, NULL,
-					     DEFAULT_PRIORITY, 262144);
+		s_gbc_thread = emu_thread_create("gbc_emu", &gbc_thread_fn, NULL,
+					     DEFAULT_PRIORITY, EMU_STACK_GBC, 262144);
 		if (!s_gbc_thread) { gbc_session_body(vol, rom); return; }  /* fallback: inline */
 		thread_resume(s_gbc_thread);
 	}

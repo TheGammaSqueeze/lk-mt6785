@@ -19,10 +19,10 @@
 
 extern BOOT_ARGUMENT *g_boot_arg;
 
-#define REWIND_SCRATCH_END 0x5FE00000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
+#define REWIND_SCRATCH_END 0x60000000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
 					   * menu's box art slots (SNES_BOXART_PA, 20 MB, gba_snes_menu.c),
-					   * then the armGBA core's own window, the language pack and the card
-					   * writer's buffer (below); look above them all */
+					   * then the armGBA core's own window, the language pack, the card
+					   * writer's buffer and the emulator stacks (below); look above them all */
 /* The armGBA core's heap: 128 MB of the island above the box art. The scratch's 62 MB held its ROM
  * buffer (32 MB), its recompiler's code buffer and what the recompiler notes on each block it
  * compiles, with a few MB to spare: a game that compiles a lot ran the heap out (the double speed,
@@ -37,6 +37,13 @@ extern BOOT_ARGUMENT *g_boot_arg;
  * and a battery save go to the card from there while the game runs on. */
 #define CARDW_PA      0x5FC00000u
 #define CARDW_SIZE    0x00200000u
+/* The emulator threads' stacks (gbc_emu, snes_emu, genesis_emu: 256 KB each). The LK heap is only
+ * what the image leaves below its end of RAM, a few hundred KB, and two of these stacks never fit in
+ * it at once; a launch whose thread could not be made ran nothing, or worse. A slot each, 2 MB in
+ * all (one section). */
+#define EMUSTK_PA     0x5FE00000u
+#define EMUSTK_SIZE   0x00200000u
+#define EMUSTK_SLOT   0x00040000u
 #define REWIND_VA_LIMIT    0x100000000ULL /* LK is 32-bit VA (identity) - can only map phys < 4GB */
 #define REWIND_CAP         0x40000000u    /* per-block ceiling (1GB); the largest real island (mblk10
 					   * ~1022MB) sits just under it, so no block is actually capped -
@@ -186,6 +193,16 @@ void *ayaneo_cardw_arena(unsigned int *size)
 	void *p = fixed_window(CARDW_PA, CARDW_SIZE, &s_state);
 	if (p && size) *size = CARDW_SIZE;
 	return p;
+}
+/* the stack for emulator thread slot (EMU_STACK_* in emu/gba/emu_stack.h), NULL if the window is not
+ * there or the size asked does not fit a slot */
+void *ayaneo_emu_stack(unsigned int slot, unsigned int size)
+{
+	static int s_state;
+	unsigned char *p;
+	if (size > EMUSTK_SLOT || slot >= EMUSTK_SIZE / EMUSTK_SLOT) return 0;
+	p = (unsigned char *)fixed_window(EMUSTK_PA, EMUSTK_SIZE, &s_state);
+	return p ? p + slot * EMUSTK_SLOT : 0;
 }
 void *ayaneo_lang_arena(unsigned int *size)
 {

@@ -1156,6 +1156,31 @@ static void cmd_clock(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem faultregs - the last fault the screen showed (the LK halts there, fastboot still answers) */
+static void cmd_faultregs(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned g_fault_regs[5];
+	extern volatile unsigned g_fault_info[4];
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "fault: shown=%u pc=%08x dfar=%08x spsr=%08x", g_fault_info[3], g_fault_info[0],
+		 g_fault_info[1], g_fault_info[2]);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "r0=%08x r1=%08x r2=%08x r3=%08x", g_fault_regs[0], g_fault_regs[1], g_fault_regs[2], g_fault_regs[3]);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "lr=%08x", g_fault_regs[4]);
+	fastboot_info(lbuf);
+	{
+		extern void heap_get_info(unsigned long *free_total, unsigned long *largest);
+		extern volatile unsigned g_snes_dbg_nothread;
+		unsigned long t, l;
+		heap_get_info(&t, &l);
+		snprintf(lbuf, sizeof lbuf, "heap: free=%u largest=%u snes_nothread=%u", (unsigned)t, (unsigned)l,
+			 g_snes_dbg_nothread);
+		fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
+
 /* oem showcase:1 - from the next menu until the power goes off, only the release's demo games are
  * listed (for the README's screenshots) */
 static void cmd_showcase(const char *arg, void *data, unsigned sz)
@@ -2553,6 +2578,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem suspendtest", cmd_suspendtest, 1, 0);
 	fastboot_register("oem clock", cmd_clock, 1, 0);
 	fastboot_register("oem showcase", cmd_showcase, 1, 0);
+	fastboot_register("oem faultregs", cmd_faultregs, 1, 0);
 	fastboot_register("oem resumeinfo", cmd_resumeinfo, 1, 0);
 	fastboot_register("oem gamefile", cmd_gamefile, 1, 0);
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);

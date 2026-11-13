@@ -68,6 +68,7 @@ typedef struct thread {
 	/* stack stuff */
 	void *stack;
 	size_t stack_size;
+	int stack_owned;    /* the stack came from the heap (thread_create), freed with the thread */
 
 	/* entry point */
 	thread_start_routine entry;
@@ -102,6 +103,8 @@ void thread_become_idle(void) __NO_RETURN;
 void thread_set_name(const char *name);
 void thread_set_priority(int priority);
 thread_t *thread_create(const char *name, thread_start_routine entry, void *arg, int priority, size_t stack_size);
+thread_t *thread_create_on_stack(const char *name, thread_start_routine entry, void *arg, int priority,
+				 void *stack, size_t stack_size);
 status_t thread_resume(thread_t *);
 void thread_exit(int retcode) __NO_RETURN;
 void thread_sleep(time_t delay);

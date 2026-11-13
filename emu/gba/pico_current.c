@@ -1172,10 +1172,13 @@ static void play_lines(int rom, float cx, float y)
 	long long last;
 	char d[64], t[96];
 	if (!pico_stats_get(s_roms[rom].type, s_roms[rom].name, &secs, &last) || !last) return;
-	if (secs >= 3600) snprintf(d, sizeof d, tr("%d h %02d min"), (int)(secs / 3600), (int)(secs / 60 % 60));
-	else snprintf(d, sizeof d, tr("%d min"), (int)((secs + 59) / 60));   /* a short go counts as a minute */
-	snprintf(t, sizeof t, tr("Played %s"), d);
-	text(&A.info, U(cx), U(y), t, C_MUTED, 256, 1, 0, 0);
+	if (secs) {	/* a launch that never got going has no play time to show */
+		if (secs >= 3600) snprintf(d, sizeof d, tr("%d h %02d min"), (int)(secs / 3600), (int)(secs / 60 % 60));
+		else snprintf(d, sizeof d, tr("%d min"), (int)((secs + 59) / 60));   /* a short go counts as a minute */
+		snprintf(t, sizeof t, tr("Played %s"), d);
+		text(&A.info, U(cx), U(y), t, C_MUTED, 256, 1, 0, 0);
+		y += 24;
+	}
 	{	/* today, yesterday or the day, in the time zone set */
 		long long now = pico_clock_local(), then = last + (long long)pico_clock_zone() * 900;
 		long long days = now / 86400 - then / 86400;
@@ -1184,7 +1187,7 @@ static void play_lines(int rom, float cx, float y)
 		else pico_clock_date_text(then, d, sizeof d);
 	}
 	snprintf(t, sizeof t, tr("Last played %s"), d);
-	text(&A.info, U(cx), U(y + 24), t, C_MUTED, 256, 1, 0, 0);
+	text(&A.info, U(cx), U(y), t, C_MUTED, 256, 1, 0, 0);
 }
 static const char *s_rowtxt[128];
 static void game_list(const short *idx, int n, int sel, int top, int title_y, const char *title)

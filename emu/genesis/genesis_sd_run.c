@@ -18,6 +18,7 @@
 #include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
 #include <kernel/event.h>
+#include "../gba/emu_stack.h"
 
 /* ---- LK / driver primitives (externs; no LK headers here) ---- */
 extern const struct genesis_core_exports *genesis_core_load(fat_vol *v);   /* genesis_core_loader.c: from the card */
@@ -1044,8 +1045,8 @@ void genesis_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 	if (!s_gen_thread) {
 		event_init(&s_gen_kick, false, EVENT_FLAG_AUTOUNSIGNAL);
 		event_init(&s_gen_done, false, EVENT_FLAG_AUTOUNSIGNAL);
-		s_gen_thread = thread_create("genesis_emu", &genesis_thread_fn, NULL,
-					     DEFAULT_PRIORITY, 262144);
+		s_gen_thread = emu_thread_create("genesis_emu", &genesis_thread_fn, NULL,
+					     DEFAULT_PRIORITY, EMU_STACK_GENESIS, 262144);
 		if (!s_gen_thread) { genesis_session_body(vol, rom); return; }   /* fallback: inline */
 		thread_resume(s_gen_thread);
 	}
@@ -1063,8 +1064,8 @@ void genesis_sd_bench(fat_vol *vol, const gba_rom_entry *rom, int frames)
 	if (!s_gen_thread) {
 		event_init(&s_gen_kick, false, EVENT_FLAG_AUTOUNSIGNAL);
 		event_init(&s_gen_done, false, EVENT_FLAG_AUTOUNSIGNAL);
-		s_gen_thread = thread_create("genesis_emu", &genesis_thread_fn, NULL,
-					     DEFAULT_PRIORITY, 262144);
+		s_gen_thread = emu_thread_create("genesis_emu", &genesis_thread_fn, NULL,
+					     DEFAULT_PRIORITY, EMU_STACK_GENESIS, 262144);
 		if (!s_gen_thread) { s_gen_bench_n = frames; genesis_bench_body(vol, rom, frames); s_gen_bench_n = 0; return; }
 		thread_resume(s_gen_thread);
 	}

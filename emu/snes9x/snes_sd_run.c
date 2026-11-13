@@ -22,6 +22,7 @@
 #include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
 #include <kernel/event.h>
+#include "../gba/emu_stack.h"
 extern const char *ayaneo_strobe_name(int b);
 
 extern const struct snes_core_exports *snes_core_load(fat_vol *v);   /* snes_core_loader.c: from the card */
@@ -1347,6 +1348,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 /* ---- dedicated emulation thread (see CORE_PORTING_NOTES item 2) ---- */
 static thread_t *s_snes_thread;
+volatile unsigned g_snes_dbg_nothread;   /* oem faultregs: launches refused for want of a stack */
 static event_t   s_snes_kick, s_snes_done;
 static fat_vol            *s_snes_vol;
 static const gba_rom_entry *s_snes_rom;
@@ -1368,7 +1370,11 @@ void snes_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 	if (!s_snes_thread) {
 		event_init(&s_snes_kick, false, EVENT_FLAG_AUTOUNSIGNAL);
 		event_init(&s_snes_done, false, EVENT_FLAG_AUTOUNSIGNAL);
-		s_snes_thread = thread_create("snes_emu", snes_thread_fn, 0, DEFAULT_PRIORITY, 262144);
+		s_snes_thread = emu_thread_create("snes_emu", snes_thread_fn, 0, DEFAULT_PRIORITY, EMU_STACK_SNES, 262144);
+		/* no stack for it (no window, and no room on the heap): back to the menu. snes9x does
+		 * not fit on the caller's 64 KB stack, so unlike the GBC and Genesis sessions it is not
+		 * run inline. */
+		if (!s_snes_thread) { g_snes_dbg_nothread++; return; }
 		thread_resume(s_snes_thread);
 	}
 	event_signal(&s_snes_kick, true);

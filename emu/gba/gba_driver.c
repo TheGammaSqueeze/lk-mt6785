@@ -2173,6 +2173,7 @@ static char *gba_hex(char *p, unsigned v)
  * the panel. If pc lands in the translation-cache arena (0x50000000+), the
  * generated code itself faulted; dfar is the bad data address it touched. */
 unsigned g_fault_regs[5];   /* set by arch/arm/faults.c before the banner: r0 r1 r2 r3 svc_lr */
+volatile unsigned g_fault_info[4];   /* oem faultregs: pc, dfar, spsr, and 1 once a fault was shown */
 void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsigned spsr)
 {
 	char l1[64], l2[128], *p;
@@ -2181,6 +2182,7 @@ void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsign
 	 * screen as unreadable garbage. Restore the normal full-panel OVL path first. */
 	extern void ayaneo_snes_rsz_restore(void);
 	ayaneo_snes_rsz_restore();
+	g_fault_info[0] = pc; g_fault_info[1] = addr; g_fault_info[2] = spsr; g_fault_info[3] = 1;
 
 	/* l1 = the message (already short, e.g. "data abort, halting") */
 	for (n = 0; msg[n] && n < 40; n++) l1[n] = msg[n];
@@ -2212,20 +2214,22 @@ void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsign
 		q = mi_puts(q, " rszsel="); q = gba_hex(q, g_rszdbg[11]); *q = 0;
 		{	/* rewind ring: wr/arena records recon prev lastoff+len bad rewinding */
 			extern void ayaneo_rewind_dbg_line(char *out, unsigned int cap);
-			static char l5[160], l6[128];
+			static char l5[160], l6[128], l7[64];
 			char *r = l5; r = mi_puts(r, "rw "); ayaneo_rewind_dbg_line(r, (unsigned)(sizeof l5 - 4));
 			r = l6; r = mi_puts(r, "r0="); r = gba_hex(r, g_fault_regs[0]); r = mi_puts(r, " r1="); r = gba_hex(r, g_fault_regs[1]);
-			r = mi_puts(r, " r2="); r = gba_hex(r, g_fault_regs[2]); r = mi_puts(r, " r3="); r = gba_hex(r, g_fault_regs[3]);
-			r = mi_puts(r, " lr="); r = gba_hex(r, g_fault_regs[4]); *r = 0;
+			*r = 0;
+			r = l7; r = mi_puts(r, "r2="); r = gba_hex(r, g_fault_regs[2]); r = mi_puts(r, " r3="); r = gba_hex(r, g_fault_regs[3]);
+			r = mi_puts(r, " lr="); r = gba_hex(r, g_fault_regs[4]); *r = 0;   /* its own line: it ran off the panel */
 			for (i = 0; i < 2; i++) {
 				unsigned int pitch, W, H;
 				unsigned int *buf = ayaneo_canvas_back(&pitch, &W, &H);
-				ayaneo_fill(buf, pitch, 0, 0, (int)W, 192, 0xFF200000u);
+				ayaneo_fill(buf, pitch, 0, 0, (int)W, 224, 0xFF200000u);
 				ayaneo_text(buf, pitch, 20, 20, 2, 0xFFFFFFFFu, l2);
 				ayaneo_text(buf, pitch, 20, 60, 2, 0xFFFFC0C0u, l3);
 				ayaneo_text(buf, pitch, 20, 92, 2, 0xFFFFC0C0u, l4);
 				ayaneo_text(buf, pitch, 20, 124, 2, 0xFFFFE0A0u, l5);
 				ayaneo_text(buf, pitch, 20, 156, 2, 0xFFA0E0FFu, l6);
+				ayaneo_text(buf, pitch, 20, 188, 2, 0xFFA0E0FFu, l7);
 				ayaneo_canvas_present();
 			}
 		}

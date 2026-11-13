@@ -145,7 +145,8 @@ static void init_thread_struct(thread_t *t, const char *name)
  *
  * @return  Pointer to thread object, or NULL on failure.
  */
-thread_t *thread_create(const char *name, thread_start_routine entry, void *arg, int priority, size_t stack_size)
+static thread_t *thread_create_common(const char *name, thread_start_routine entry, void *arg, int priority,
+				      void *stack, size_t stack_size)
 {
 	thread_t *t;
 
@@ -163,8 +164,9 @@ thread_t *thread_create(const char *name, thread_start_routine entry, void *arg,
 	t->blocking_wait_queue = NULL;
 	t->wait_queue_block_ret = NO_ERROR;
 
-	/* create the stack */
-	t->stack = malloc(stack_size);
+	/* create the stack, unless the caller brings its own (kept when the thread is freed) */
+	t->stack_owned = (stack == NULL);
+	t->stack = stack ? stack : malloc(stack_size);
 	if (!t->stack) {
 		free(t);
 		return NULL;
@@ -186,6 +188,21 @@ thread_t *thread_create(const char *name, thread_start_routine entry, void *arg,
 	exit_critical_section();
 
 	return t;
+}
+
+thread_t *thread_create(const char *name, thread_start_routine entry, void *arg, int priority, size_t stack_size)
+{
+	return thread_create_common(name, entry, arg, priority, NULL, stack_size);
+}
+
+/* GammaOS Pico: a thread on a stack the caller provides (memory outside the heap, which is only
+ * what the LK image leaves below its end of RAM); the stack is never freed here */
+thread_t *thread_create_on_stack(const char *name, thread_start_routine entry, void *arg, int priority,
+				 void *stack, size_t stack_size)
+{
+	if (!stack)
+		return NULL;
+	return thread_create_common(name, entry, arg, priority, stack, stack_size);
 }
 
 /**
@@ -235,7 +252,7 @@ static void thread_cleanup_dpc(void *thread)
 	exit_critical_section();
 
 	/* free its stack and the thread structure itself */
-	if (t->stack)
+	if (t->stack && t->stack_owned)
 		free(t->stack);
 
 	free(t);

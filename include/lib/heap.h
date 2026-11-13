@@ -30,6 +30,7 @@ void *heap_realloc(void *ptr, size_t size);
 void heap_free(void *);
 
 void heap_init(void);
+void heap_get_info(size_t *free_total, size_t *largest);
 
 
 

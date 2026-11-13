@@ -398,6 +398,22 @@ void heap_free(void *ptr)
 //	heap_dump();
 }
 
+/* GammaOS Pico: the free space and the largest free chunk, for `fastboot oem faultregs` (the
+ * emulator threads' 256 KB stacks come from here, and the heap is only what the LK image leaves) */
+void heap_get_info(size_t *free_total, size_t *largest)
+{
+	struct free_heap_chunk *chunk;
+	size_t t = 0, l = 0;
+	enter_critical_section();
+	list_for_every_entry(&theheap.free_list, chunk, struct free_heap_chunk, node) {
+		t += chunk->len;
+		if (chunk->len > l) l = chunk->len;
+	}
+	exit_critical_section();
+	if (free_total) *free_total = t;
+	if (largest) *largest = l;
+}
+
 void heap_init(void)
 {
 	LTRACE_ENTRY;
