@@ -61,13 +61,18 @@ the root and add games.
 
 ```
 /gammaos/boot.cfg        boot=sd (start GammaOS Pico) or boot=android (one key per line, # comments)
-/gammaos/menu.pack       the menu assets (compressed)
+/gammaos/menu.pack       the Classic and GBA Indigo themes' menu (compressed)
+/gammaos/current-<W>x<H>.pack, current-igm-<W>x<H>.pack   the Current theme and its in-game menu
+/gammaos/lang-<code>-<W>x<H>.pack   a language's texts and the glyphs it needs (one per language)
+/gammaos/recent.txt      the games played most recently (written by the LK)
+/gammaos/playtime.txt    each game's play time and when it was last played (written by the LK)
 /gammaos/settings.bin    the settings (written by the LK; /gba/settings.bin is still read once)
 /gammaos/cart_header.bin the last game's header, so the intro starts at once (written by the LK)
 /gammaos/blackbox.bin    fault and event records moved here from DRAM (oem blackbox)
 /cores/armgba-pico.blob  /cores/gpsp-pico.blob  /cores/gambatte-pico.blob
 /cores/snes9x-pico.blob  /cores/genesis-plus-gx-pico.blob
-/bios/gba_bios.bin       optional GBA BIOS, exactly 16384 bytes (/gba_bios.bin is read too)
+/bios/gba_bios.bin       the GBA BIOS, exactly 16384 bytes: put your own here (/gba_bios.bin is read
+                         too); without it armGBA runs on its built-in replacement, gpSP not at all
 /roms/gb/*.gb            /roms/gbc/*.gbc        /roms/gba/*.gba
 /roms/snes/*.sfc|.smc    /roms/genesis/*.md|.gen|.bin|.smd
 /roms/sms/*.sms          /roms/gg/*.gg          /roms/sg/*.sg      (raw files, not zips)

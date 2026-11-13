@@ -5,7 +5,7 @@ console starts a console menu and plays Game Boy, Game Boy Color, Game Boy Advan
 Mega Drive / Genesis, Master System, Game Gear and SG-1000 games from the card. Without the card,
 or after Boot to Android in the menu, Android starts exactly as before.
 
-![The game list](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/game-list.png)
+![Home](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/home.png)
 
 ## What makes it different
 
@@ -22,26 +22,49 @@ bootloader, before any operating system, and owns the hardware outright.
   console starts its stock Android, untouched.
 - **Everything on the card.** Emulators, settings, saves, states and box art all live on the
   microSD card. Swap the card, swap the whole setup.
-- **The good stuff from the start.** Rewind, fast forward, save states, suspend points, scanline
-  and LCD filters, colour correction and backlight black frame insertion, in a box art menu with
-  themes (Classic and GBA Indigo, picked on the Display page).
+- **The good stuff from the start.** Rewind, fast forward, save states (written to the card while
+  the game plays on), scanline and LCD filters, colour correction and backlight black frame
+  insertion, in a box art menu: the Current theme, with the Classic and GBA Indigo themes in beta.
+- **The real time.** The console's own clock runs the games that keep time (Pokemon Ruby,
+  Sapphire, Emerald, Gold, Silver and Crystal, Boktai), shows in the menus, and is set with its
+  time zone in Settings > Date & Time. Each game shows how long it has been played and when last.
+- **In your language.** The menus and the in-game menu in 17 languages: English, French, German,
+  Spanish, Italian, Dutch, Portuguese, Russian, Japanese, Korean, Simplified and Traditional
+  Chinese, Polish, Turkish, Arabic, Hebrew and Persian (Settings > Language).
+
+> **Put the real Game Boy Advance BIOS on the card.** Copy your own console's BIOS as
+> `bios/gba_bios.bin` (16 KB). GBA games then start on Nintendo's own BIOS: the original boot logo
+> and chime, and the exact BIOS routines every game was made against. Without it armGBA falls back
+> to its built-in replacement, which runs most games but not all of them the same way, and gpSP
+> (the second GBA emulator) cannot run at all. The BIOS is Nintendo's and is not included.
 
 ## Screenshots
 
-Captured on a Konkr Pocket Advance.
+Captured on a Konkr Pocket Advance from the display buffers, with the demo games from the release;
+the in-game menu shots lay its drawer over the game the way the display hardware blends them.
 
 | | |
 |---|---|
-| ![Game list with the demo games](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/demo-games.png) | ![Suspend points](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/suspend-points.png) |
-| The game list, every system in one row, with the demo games from this release | Suspend points, made when you reset a game |
-| ![Display settings](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/display.png) | ![Options](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/options.png) |
-| Display: CRT filter, 4:3 or pixel perfect, and the menu theme | Options: menu and BIOS sounds, burn-in reduction, Boot to Android |
-| ![In game](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/in-game.png) | ![The Pico menu](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu.png) |
-| In game, with the LCD filter | The Pico menu over the game (Menu button) |
-| ![More of the Pico menu](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu-more.png) | ![Core Settings](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/core-settings.png) |
-| Run-ahead, rewind, BFI, the live panel refresh and the core choice | Core Settings: each core's own options |
-| ![The GBA Indigo theme](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/theme-gba-indigo.png) | ![Display in GBA Indigo](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/theme-gba-indigo-display.png) |
-| The GBA Indigo theme | The Display page in GBA Indigo, with the Theme row |
+| ![Home](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/home.png) | ![Game library](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/library.png) |
+| Home: the systems on the card, with the date, the time and the battery | A system's library: box art, how long each game has been played and when last |
+| ![Recently played](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/recent.png) | ![Settings](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/settings.png) |
+| Resume: the games played most recently | Settings |
+| ![Date and time](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/date-time.png) | ![BIOS boot](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/bios-boot.png) |
+| Date & Time: the console's clock and time zone, which the games' clocks run on | BIOS Boot: the Game Boy Advance start-up screen |
+| ![Japanese](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/language-ja.png) | ![Arabic](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/language-ar.png) |
+| In Japanese | In Arabic, written right to left |
+| ![In game](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/in-game.png) | ![The in-game menu](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu.png) |
+| In game (Tobu Tobu Girl Deluxe, LCD filter) | The in-game menu over the game (Menu button) |
+| ![Display page](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu-display.png) | ![Gameplay page](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu-gameplay.png) |
+| Display: brightness, filters, aspect ratio, colour correction, BFI | Gameplay: CPU clock, run-ahead, rewind, the GBA core, the live panel refresh |
+| ![Core options](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/core-options.png) | ![System page](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu-system.png) |
+| armGBA's own options | System: resume, the BIOS intro and the battery |
+| ![Game Boy Color display page](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu-gbc.png) | ![Theme setting](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/settings-theme.png) |
+| A Game Boy Color game's Display page: palette, colour correction, dark filter | Picking a theme |
+| ![Classic theme](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/theme-classic.png) | ![Classic theme display page](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/theme-classic-display.png) |
+| The Classic theme (beta) | Its Display page, with the themes |
+| ![GBA Indigo theme](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/theme-gba-indigo.png) | |
+| The GBA Indigo theme (beta) | |
 
 ## Buttons
 
@@ -71,6 +94,67 @@ In a game:
 In the game list, START plays, SELECT sorts and X switches between systems. During the boot logo,
 hold B to skip it; the volume wheel works there too.
 
+## The menus
+
+Everything GammaOS Pico can set, as it is laid out on the console (the Current theme, the default).
+Every menu is in the language chosen in Settings.
+
+### Home
+
+| Tab | What it holds |
+|---|---|
+| Games | the systems on the card, each with its console and logo; Left / Right move between systems, A opens a system's library (its games with their box art, how long each has been played and when last), where L / R page through a long list |
+| Resume | the games played most recently, newest first, to carry on with one press |
+| Settings | the console settings below |
+
+L and R switch between the tabs, A picks and B goes back. The header shows the menu you are in,
+the date, the time and the battery.
+
+### Settings
+
+| Row | Values |
+|---|---|
+| Brightness | the backlight, 0 to 100 % |
+| Volume | 0 to 100 % |
+| Black Frame Insertion | Off, 25 %, 50 %, 75 %: the backlight strobes for sharper motion |
+| Theme | Current; Classic and GBA Indigo (beta). A applies |
+| Colour | Blue, Violet, Crimson, Amber, Emerald, Graphite |
+| Language | the 17 languages. A applies |
+| Date & Time | a page: Year, Month, Day, Hour, Minute (the console's clock, which Android shares), Time zone (UTC-12:00 to UTC+14:00 in quarter hours), 24-hour clock |
+| BIOS Boot | a page: Skip BIOS Intro, BIOS Intro Background (Black or White), Mute BIOS Audio, BIOS Intro on Resume |
+| Game Resume | a page: Resume on Power On (switching off in a game saves your place and the next power on goes straight back), Resume on Game Open (opening a game carries on where you left it; hold B while opening to start afresh) |
+| Boot to Android | restarts the console into Android; hold SELECT at power on to come back |
+
+### In a game
+
+The Menu button opens the in-game menu over the game. Its first page: Resume, Save state and Load
+state (Left / Right pick the slot), the Display, Sound, Gameplay and System pages, Reset game and
+Exit game. The pages hold what each emulator offers:
+
+| Page | Game Boy Advance | Game Boy / Game Boy Color | SNES | Mega Drive, Master System, Game Gear, SG-1000 |
+|---|---|---|---|---|
+| Display | Brightness, LCD Filter, Aspect Ratio, Color Correction, BFI, Show FPS | Brightness, LCD Filter, Aspect Ratio, Palette (original Game Boy), Color Correction, Correction Mode, Dark Filter, BFI, Show FPS | Brightness, LCD Filter, Aspect Ratio, Overscan, Hi-Res Blend, BFI, Show FPS | Brightness, Aspect Ratio, LCD Filter, BFI, Show FPS |
+| Sound | Volume | Volume | Volume, Audio Filter | Volume |
+| Gameplay | CPU Clock, Run-Ahead, Rewind, Benchmark, GBA Core (armGBA or gpSP), Core options, Latency LED, Panel Refresh | CPU Clock, Run-Ahead, Rewind | CPU Clock, Run-Ahead, Rewind, Turbo (auto-fire), Benchmark, Panel Refresh | CPU Clock, Run-Ahead, Rewind, Region, Refresh Rate |
+| System | Resume on Power On, Resume on Game Open, BIOS Intro Background, Skip BIOS Intro, Battery | Resume on Power On, Battery | Resume on Power On, Battery | Resume on Power On, Battery |
+
+armGBA's Core options: BIOS (Nintendo from the card, or armGBA's built-in), LCD Ghosting, Interlaced
+Rows, Audio Low-Pass Filter, Solar Sensor (for Boktai).
+
+The values: LCD Filter Off, Scanlines, LCD Grid, Dot Matrix, LCD1x, LCD3x (Genesis: Grid, Grid+);
+Aspect Ratio Stretch, Fit, Pixel Perfect (SNES 4:3, Pixel, NTSC, PAL, Stretch; Genesis Pixel, Core,
+Stretch, 4:3, Square, 16:9); Run-Ahead Off, Balanced, Responsive, Max; Overscan Crop 8, 12 or 16 px
+or Off; Audio Filter Linear, Gaussian, Cubic, Sinc, None; Hi-Res Blend Off, Merge, Blur; Turbo Off,
+A, B, A+B; Region Auto, USA, Europe, Japan.
+
+### Classic theme (beta)
+
+The SNES Classic style carousel, with its own pages from the top bar: Display (CRT filter, 4:3 or
+pixel perfect, and the Theme row), Options (Mute BIOS Audio, Mute Menu Audio, burn-in reduction,
+Boot to Android),
+Language (English, French, German, Spanish, Italian, Dutch, Portuguese, Russian; the others leave
+it in English), Legal notices and the manual. Suspend points are made when you reset a game.
+
 ## Downloads
 
 - **gammaos-pico-kpa-@VERSION@-flash.zip**: the LK for `lk_a` and `lk_b`, to install GammaOS Pico and to go
@@ -86,8 +170,9 @@ hold B to skip it; the volume wheel works there too.
    (V6 `.xml` or v5 `.txt` scatter, mode Download Only, only `lk_a` and `lk_b` ticked); on Linux
    `mtkclient/flash_gammaos.sh` with [mtkclient](https://github.com/bkerler/mtkclient).
 2. Copy the sdcard package's contents to a microSD card, put it in and power on.
-3. Optional: put your own Game Boy Advance BIOS on the card as `bios/gba_bios.bin` for the original
-   boot logo; without it armGBA's own Open BIOS splash plays.
+3. Put your own Game Boy Advance BIOS on the card as `bios/gba_bios.bin` (16 KB). GBA games then
+   run on Nintendo's own BIOS, with the original boot logo; without it armGBA falls back to its
+   built-in replacement, which not every game runs the same way on, and gpSP cannot run.
 
 To go back, flash `spflash/stock/` or run `mtkclient/flash_stock.sh` the same way.
 

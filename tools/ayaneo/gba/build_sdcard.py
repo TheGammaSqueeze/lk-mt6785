@@ -33,10 +33,12 @@ BOOT_CFG = ("# GammaOS Pico boot mode for this card.\n"
             "#   boot=sd       start the GammaOS Pico menu from this card\n"
             "#   boot=android  boot Android (hold SELECT at power on to come back)\n"
             "boot=sd\n")
-BIOS_README = ("Put the Game Boy Advance BIOS here as gba_bios.bin (16384 bytes) for the GBA BIOS boot\n"
-               "intro. Without it armGBA's own Open BIOS splash is the intro and GBA games run on\n"
-               "armGBA's built-in BIOS. gpSP (when armGBA is not in cores/, or chosen in the game menu)\n"
-               "needs this file.\n")
+BIOS_README = ("Put the Game Boy Advance BIOS here as gba_bios.bin (16384 bytes): copy your own\n"
+               "console's. GBA games then run on Nintendo's own BIOS, with its boot logo and chime\n"
+               "and the exact routines the games were made against. Without it armGBA's built-in\n"
+               "replacement BIOS runs them, not every game the same way, and its own splash is the\n"
+               "intro. gpSP (when armGBA is not in cores/, or chosen in the in-game menu) needs this\n"
+               "file. The BIOS is Nintendo's and is not included.\n")
 
 
 def check_core(name, data):
