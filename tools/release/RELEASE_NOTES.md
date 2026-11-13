@@ -5,7 +5,7 @@ console starts a console menu and plays Game Boy, Game Boy Color, Game Boy Advan
 Mega Drive / Genesis, Master System, Game Gear and SG-1000 games from the card. Without the card,
 or after Boot to Android in the menu, Android starts exactly as before.
 
-![Home](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/home.png)
+![Home](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/home.png)
 
 ## What makes it different
 
@@ -62,25 +62,25 @@ the in-game menu shots lay its drawer over the game the way the display hardware
 
 | | |
 |---|---|
-| ![Home](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/home.png) | ![Game library](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/library.png) |
+| ![Home](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/home.png) | ![Game library](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/library.png) |
 | Home: the systems on the card, with the date, the time and the battery | A system's library: box art, how long each game has been played and when last |
-| ![Recently played](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/recent.png) | ![Settings](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/settings.png) |
+| ![Recently played](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/recent.png) | ![Settings](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/settings.png) |
 | Resume: the games played most recently | Settings |
-| ![Date and time](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/date-time.png) | ![BIOS boot](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/bios-boot.png) |
+| ![Date and time](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/date-time.png) | ![BIOS boot](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/bios-boot.png) |
 | Date & Time: the console's clock and time zone, which the games' clocks run on | BIOS Boot: the Game Boy Advance start-up screen |
-| ![Japanese](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/language-ja.png) | ![Arabic](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/language-ar.png) |
+| ![Japanese](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/language-ja.png) | ![Arabic](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/language-ar.png) |
 | In Japanese | In Arabic, written right to left |
-| ![In game](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/in-game.png) | ![The in-game menu](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu.png) |
+| ![In game](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/in-game.png) | ![The in-game menu](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/pico-menu.png) |
 | In game (Tobu Tobu Girl Deluxe, LCD filter) | The in-game menu over the game (Menu button) |
-| ![Display page](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu-display.png) | ![Gameplay page](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu-gameplay.png) |
+| ![Display page](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/pico-menu-display.png) | ![Gameplay page](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/pico-menu-gameplay.png) |
 | Display: brightness, filters, aspect ratio, colour correction, BFI | Gameplay: CPU clock, run-ahead, rewind, the GBA core, the live panel refresh |
-| ![Core options](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/core-options.png) | ![System page](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu-system.png) |
+| ![Core options](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/core-options.png) | ![System page](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/pico-menu-system.png) |
 | armGBA's own options | System: resume, the BIOS intro and the battery |
-| ![Game Boy Color display page](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/pico-menu-gbc.png) | ![Theme setting](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/settings-theme.png) |
+| ![Game Boy Color display page](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/pico-menu-gbc.png) | ![Theme setting](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/settings-theme.png) |
 | A Game Boy Color game's Display page: palette, colour correction, dark filter | Picking a theme |
-| ![Classic theme](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/theme-classic.png) | ![Classic theme display page](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/theme-classic-display.png) |
+| ![Classic theme](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/theme-classic.png) | ![Classic theme display page](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/theme-classic-display.png) |
 | The Classic theme (beta) | Its Display page, with the themes |
-| ![GBA Indigo theme](https://raw.githubusercontent.com/TheGammaSqueeze/lk-mt6785/@COMMIT_FULL@/documentation/screenshots/theme-gba-indigo.png) | |
+| ![GBA Indigo theme](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/theme-gba-indigo.png) | |
 | The GBA Indigo theme (beta) | |
 
 ## Buttons
@@ -204,7 +204,6 @@ To go back, flash `spflash/stock/` or run `mtkclient/flash_stock.sh` the same wa
 | SP Flash Tool v5 with the `.txt` scatter | **untested** on a console (same partitions and files as V6) |
 | mtkclient on Linux | **untested** on a console (writes the same two partitions) |
 
-If you use one of the untested methods, please report how it went.
 
 ## Demo games
 

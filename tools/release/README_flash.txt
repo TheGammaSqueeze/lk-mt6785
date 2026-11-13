@@ -16,7 +16,7 @@ stock console with a locked bootloader. fastboot needs the GammaOS Pico LK alrea
 
 Tested on a console: SP Flash Tool V6 with the .xml scatter, and the fastboot scripts.
 Not yet tested on a console: SP Flash Tool v5 with the .txt scatter, and mtkclient. They write
-the same two partitions with the same files; if you try one, please report how it went.
+the same two partitions with the same files.
 
 1. Windows: SP Flash Tool
    Install the MediaTek USB VCOM driver. Two scatter files are given; use the one for your tool:
