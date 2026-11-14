@@ -29,6 +29,7 @@
  * MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
  */
 
+#include <trace_mark.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <stdint.h>
@@ -284,7 +285,9 @@ static int mboot_common_load_part_info(char *part_name,
 	//*
 	while (1) {
 
+		TRACE_MARK("part_info: read header");
 		len = partition_read(part_name, offset, (uchar *)part_hdr, sizeof(part_hdr_t));
+		TRACE_MARK("part_info: header read");
 
 		if (len < 0) {
 			pal_log_err("[%s] %s partition read error. LINE: %d\n", MODULE_NAME,

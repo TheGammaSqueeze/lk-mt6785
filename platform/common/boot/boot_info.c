@@ -38,6 +38,9 @@
 #include <load_vfy_boot.h>
 #include <boot_info.h>
 #include <bootimg.h>
+#ifdef VENDOR_BOOT_SUPPORT
+#include <bootimg_v3.h>
+#endif
 #include <boot_opt.h>
 
 #include <platform/boot_mode.h>
@@ -100,8 +103,18 @@ int load_bootinfo_bootimg(void *bootimg_addr)
 			pal_log_err("invalid boot image header\n");
 			return -1;
 		}
-		memcpy(&g_bootimg_hdr, bootimg_addr, sizeof(struct bootimg_hdr));
-		platform_parse_bootopt(g_bootimg_hdr.cmdline);
+#ifdef VENDOR_BOOT_SUPPORT
+		if (bootimg_is_v3(bootimg_addr)) {
+			/* version 3/4: described to the rest of the LK as a legacy image */
+			if (bootimg_v3_to_legacy(bootimg_addr, &g_bootimg_hdr) != 0)
+				return -1;
+			platform_parse_bootopt((uint8_t *)bootimg_v3_cmdline());
+		} else
+#endif
+		{
+			memcpy(&g_bootimg_hdr, bootimg_addr, sizeof(struct bootimg_hdr));
+			platform_parse_bootopt(g_bootimg_hdr.cmdline);
+		}
 		mboot_allocate_bootimg_from_mblock(&g_bootimg_hdr);
 		g_boot_info.hdr_loaded = 1;
 	}
@@ -111,6 +124,30 @@ int load_bootinfo_bootimg(void *bootimg_addr)
 	  * extract correct main dtb address,
 	  * kernel real size by different boot image version
 	  */
+#ifdef VENDOR_BOOT_SUPPORT
+	if (g_bootimg_hdr.header_version >= 3) {
+		/* the device tree is vendor_boot's */
+		dtb_ptr = (char *)vendor_boot_dtb(&dtb_size);
+		if (dtb_ptr == NULL || dtb_size == 0) {
+			pal_log_err("can't find the vendor_boot dtb\n");
+			goto fail;
+		}
+		if (DT_TABLE_MAGIC == fdt_magic(dtb_ptr)) {
+			struct dt_table_header *dt_tbl_hdr = (struct dt_table_header *)dtb_ptr;
+			struct dt_table_entry *entry = (struct dt_table_entry *)(dtb_ptr
+				+ fdt32_to_cpu(dt_tbl_hdr->dt_entries_offset));
+			/* the first entry, as androidboot.dtb_idx=0 says */
+			g_boot_info.dtb_load_addr = (uint32_t)dtb_ptr + fdt32_to_cpu(entry->dt_offset);
+		} else if (FDT_MAGIC == fdt_magic(dtb_ptr)) {
+			g_boot_info.dtb_load_addr = (uint32_t)dtb_ptr;
+		} else {
+			pal_log_err("vendor_boot dtb is not packed with valid fdt format!");
+			goto fail;
+		}
+		g_boot_info.dtb_img_size = fdt_totalsize(g_boot_info.dtb_load_addr);
+		g_boot_info.kernel_real_size = g_bootimg_hdr.kernel_sz;
+	} else
+#endif
 	if (g_bootimg_hdr.header_version >= BOOT_HEADER_VERSION_TWO) {
 		dtb_ptr = (char *)(g_boot_info.bootimg_load_addr + g_bootimg_hdr.page_sz
 			+ ROUNDUP(g_bootimg_hdr.kernel_sz, g_bootimg_hdr.page_sz)
@@ -275,6 +312,26 @@ uint32_t load_bootimg_hdr(uint32_t bootimg_type)
 		pal_log_err("invalid boot image header\n");
 		return -1;
 	}
+
+#ifdef VENDOR_BOOT_SUPPORT
+	if (g_bootimg_hdr.header_version >= 3) {
+		char boot_part[32], vendor_part[32];
+		const char *suffix = "";
+#ifdef MTK_AB_OTA_UPDATER
+		extern const char *get_suffix(void);
+		suffix = get_suffix();
+#endif
+		snprintf(boot_part, sizeof(boot_part), "%s%s", part_name, suffix);
+		snprintf(vendor_part, sizeof(vendor_part), "vendor_boot%s", suffix);
+		if (bootimg_v3_hdr_from_partitions(boot_part, vendor_part, &g_bootimg_hdr) != 0)
+			return -1;
+		g_boot_info.hdr_loaded = 1;
+		g_boot_info.type = bootimg_type;
+		platform_parse_bootopt((uint8_t *)bootimg_v3_cmdline());
+		mboot_allocate_bootimg_from_mblock(&g_bootimg_hdr);
+		return 0;
+	}
+#endif
 
 	if (mkimg_hdr_valid((uint8_t *)&g_mkimg_hdr))
 		g_boot_info.kernel_with_mkimg_hdr = 1;
@@ -464,6 +521,11 @@ uint32_t get_tags_addr(void)
 char *get_cmdline(void)
 {
 	PAL_ASSERT(g_boot_info.hdr_loaded);
+
+#ifdef VENDOR_BOOT_SUPPORT
+	if (g_bootimg_hdr.header_version >= 3)
+		return (char *)bootimg_v3_cmdline();
+#endif
 
 	/* ensure commandline is terminated */
 	g_bootimg_hdr.cmdline[BOOTIMG_ARGS_SZ - 1] = 0;

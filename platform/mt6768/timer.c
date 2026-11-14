@@ -140,5 +140,40 @@ void platform_early_init_timer(void)
 	//dprintf(SPEW, "platform_early_init_timer\n");
 
 	gpt_power_on(1);
+
+	/* The Android 12 preloader of the Konkr Block hands GPT4 over with its clock divider at 2
+	 * (GPT4_CLK = 0x1), so the free running "13 MHz" counter every LK delay, timestamp and timeout
+	 * is built on really ticks at 6.5 MHz and all of them run at half speed (seen on the board:
+	 * a 150 ms LED step lasted 0.3 s). Re-arm it on the undivided 13 MHz system clock when the
+	 * divider is not 1. The counter restarts from zero; nothing has sampled it before this point. */
+	{
+		volatile unsigned int *gpt4_con = (volatile unsigned int *)(APXGPT_BASE + 0x0040);
+		volatile unsigned int *gpt4_clk = (volatile unsigned int *)(APXGPT_BASE + 0x0044);
+		if (*gpt4_clk != 0) {
+			*gpt4_con = 0x0;    /* disable */
+			*gpt4_con = 0x2;    /* clear the counter */
+			*gpt4_clk = 0x0;    /* 13 MHz system clock, divider 1 */
+			*gpt4_con = 0x31;   /* enable, free run */
+		}
+	}
 }
 
+
+/* Boot timeline (oem boottime): milliseconds since the SoC came out of reset, from the ARM
+ * architected counter (13 MHz, running from reset). Each stamp is taken once. */
+volatile unsigned int g_boot_stamp_ms[16];
+void ayaneo_boot_stamp(int i)
+{
+	unsigned long long c;
+	if (i < 0 || i >= 16 || g_boot_stamp_ms[i]) return;
+	__asm__ volatile("mrrc p15, 0, %Q0, %R0, c14" : "=r"(c));
+	g_boot_stamp_ms[i] = (unsigned int)(c / 13000ull);
+	if (!g_boot_stamp_ms[i]) g_boot_stamp_ms[i] = 1;
+#ifdef BOOT_TRACE
+	{
+		extern void boot_trace_stage(unsigned int stage, unsigned int ms);
+		boot_trace_stage((unsigned int)i, g_boot_stamp_ms[i]);
+		dprintf(CRITICAL, "[TRACE] stage %d at %u ms\n", i, g_boot_stamp_ms[i]);
+	}
+#endif
+}

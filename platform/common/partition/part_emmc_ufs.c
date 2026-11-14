@@ -28,6 +28,7 @@
  * OR REFUND ANY SOFTWARE LICENSE FEES OR SERVICE CHARGE PAID BY RECEIVER TO
  * MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
  */
+#include <trace_mark.h>
 #include <platform/mt_typedefs.h>
 #ifdef MTK_GPT_SCHEME_SUPPORT
 #include <partition.h>
@@ -82,10 +83,12 @@ ssize_t partition_read(const char *part_name, off_t offset, u8* data, size_t siz
 
 	read_addr = part_addr + (uint64_t)offset;
 
+	TRACE_MARK("partition_read: storage_read");
 	len = storage_read(partition_get_region(index),
 				read_addr,
 				(uint8_t *)data,
 				(uint32_t)size);
+	TRACE_MARK("partition_read: storage_read returned");
 	if (len != (ssize_t)size) {
 		pal_log_err("[%s]%s: read '%s' fail\n",
 				PART_COMMON_TAG,

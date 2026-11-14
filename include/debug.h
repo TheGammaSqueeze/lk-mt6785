@@ -37,6 +37,10 @@ extern "C" {
  * verbosity for bring-up debugging. */
 #ifdef AYANEO_DEBUG_LOGGING
 #define DEBUGLEVEL 2
+#elif defined(LK_LOG_INFO)
+/* the LK's own log at the stock level (read back with fastboot oem dump_pllk_log); the kernel
+ * command line is not changed by this */
+#define DEBUGLEVEL 1
 #else
 #define DEBUGLEVEL 0
 #endif

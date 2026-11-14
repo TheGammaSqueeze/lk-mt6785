@@ -29,6 +29,7 @@
 * MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
 */
 
+#include <led_stage.h>
 #include <debug.h>
 #include <err.h>
 #include <string.h>
@@ -812,6 +813,7 @@ int fastboot_init(void *base, unsigned size)
 	update_radio_version();
 	fastboot_publish("version-baseband", (const char *)radio_version);
 	publish_ab_variables();
+	LED_MARK(1);	/* red: A/B variables */
 	fastboot_publish("is-userspace", "no");
 	fastboot_register("signature", cmd_install_sig, FALSE, TRUE);
 
@@ -831,13 +833,18 @@ int fastboot_init(void *base, unsigned size)
 
 	fastboot_publish("product", PROJECT);
 	fastboot_publish("kernel", "lk");
+	LED_MARK(2);	/* green: commands registered, lock state next */
 	register_secure_unlocked_var();
+	LED_MARK(3);	/* yellow: lock state read */
 #ifdef MTK_OFF_MODE_CHARGE_SUPPORT
 	register_off_mode_charge_var();
+	LED_MARK(4);	/* blue: off mode charge read */
 #endif
 	fastboot_publish("serialno", sn_buf);
+	LED_MARK(6);	/* cyan: serial published, partition variables next */
 
 	register_partition_var();
+	LED_MARK(7);	/* white: partition variables */
 
 	update_device_info();
 	fastboot_publish("battery-voltage", (const char *) battery_voltage);

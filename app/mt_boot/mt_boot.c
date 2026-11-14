@@ -29,6 +29,7 @@
 * MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
 */
 
+#include <led_stage.h>
 #include <atags.h>              // for target_atag_masp_data()
 #include <app.h>
 #include <debug.h>
@@ -50,6 +51,9 @@
 #include <boot_opt.h>
 #include <bootimg.h>
 #include <boot_info.h>
+#ifdef VENDOR_BOOT_SUPPORT
+#include <bootimg_v3.h>
+#endif
 #ifdef MTK_GPT_SCHEME_SUPPORT
 #include <platform/partition.h>
 #else
@@ -721,6 +725,14 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	char tmpbuf[TMPBUF_SIZE];
 	dt_dram_info mem_reg_property[128];
 
+#ifdef BOOT_TRACE
+	{
+		extern void boot_trace_save_now(const char *milestone);
+		boot_trace_save_now("images loaded");
+	}
+	LED_STAGE(9);	/* 9 blinks: boot and vendor_boot loaded, building the device tree */
+#endif
+
 #ifdef AYANEO_RAINBOW_BOOT
 	/*
 	 * Stop the boot-logo rainbow animation thread before we start building the
@@ -1294,7 +1306,11 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	 * encrypted userdata. Confirmed on-device: ro.boot.fstab_suffix=emmc,
 	 * ro.hardware=mt6785.
 	 */
+#if !defined(KONKR_BLOCK)
 	cmdline_append("androidboot.fstab_suffix=emmc");
+#endif
+	/* The Konkr Block has only fstab.mt6768 / fstab.mt8786 and its stock LK sets no suffix:
+	 * init picks fstab.${ro.hardware} as it always has there. */
 
 	/*
 	 * AYANEO Pocket Air Mini: match the stock/binary-patched LK's ramoops
@@ -1438,6 +1454,43 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	/* send kernel the dtbo_idx upon overlay success */
 	snprintf(tmpbuf, TMPBUF_SIZE, "androidboot.dtb_idx=0 androidboot.dtbo_idx=%d", get_dtbo_index());
 	cmdline_append(tmpbuf);
+#ifdef BOOT_TRACE
+	{	/* the arguments an oem tryboot:... attempt asked for */
+		extern const char *boot_trace_extra_args(void);
+		const char *extra = boot_trace_extra_args();
+		if (extra[0]) {
+			pal_log_err("[TRACE] extra kernel arguments: %s\n", extra);
+			cmdline_append(extra);
+		}
+	}
+#endif
+
+#ifdef VENDOR_BOOT_SUPPORT
+	if (get_header_version() >= 3) {
+		/* androidboot.* settings go to the kernel as the bootconfig block at the end of the
+		 * initrd; the command line keeps the rest and gains "bootconfig" */
+		static char bc_cmdline[CMDLINE_LEN];
+		int bc_len, chosen;
+
+		strncpy(bc_cmdline, cmdline_get(), CMDLINE_LEN - 1);
+		bc_cmdline[CMDLINE_LEN - 1] = '\0';
+		bc_len = bootconfig_attach(bc_cmdline, CMDLINE_LEN, (uint8_t *)ramdisk + ramdisk_sz,
+					   BOOTCONFIG_ROOM);
+		if (bc_len < 0)
+			panic("bootconfig does not fit\n");
+		cmdline_replace(bc_cmdline);
+		ramdisk_sz += bc_len;
+		chosen = fdt_path_offset(fdt, "/chosen");
+		ret = fdt_setprop_cell(fdt, chosen, "linux,initrd-end",
+				       (unsigned int)ramdisk + ramdisk_sz);
+		if (ret) {
+			assert(0);
+			return FALSE;
+		}
+		offset = chosen;
+		pal_log_err("bootconfig: %d bytes after the ramdisks\n", bc_len);
+	}
+#endif
 
 	ret = fdt_setprop_string(fdt, offset, "bootargs", (char *)cmdline_get());
 	if (ret) {
@@ -1473,6 +1526,14 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 		assert(0);
 		return FALSE;
 	}
+#ifdef VENDOR_BOOT_SUPPORT
+	{	/* Android 12 kernels: /debug-kinfo on the preloader's reserved block */
+		extern int fdt_debug_kinfo_append(void *fdt);
+		ret = fdt_debug_kinfo_append(fdt);
+		if (ret)
+			pal_log_err("debug-kinfo node: %d\n", ret);
+	}
+#endif
 #endif
 #endif
 
@@ -1518,6 +1579,29 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 		}
 	}
 
+#ifdef BOOT_TRACE
+	{	/* oem tryboot:lk.nodisp - the display engine stopped before the kernel takes over */
+		extern const char *boot_trace_extra_args(void);
+		extern void mt_disp_power(BOOL on);
+		if (strstr(boot_trace_extra_args(), "lk.nodisp")) {
+			pal_log_err("[TRACE] display powered off before the kernel\n");
+			mt_disp_power(FALSE);
+		}
+	}
+	{	/* a hang from here to the kernel's own watchdog driver ends in a warm reset, which keeps
+		 * this log in DRAM for oem trace */
+		extern void mtk_wdt_arm(unsigned int seconds);
+		extern void boot_trace_save_now(const char *milestone);
+		boot_trace_save_now("hand-off");
+		{	/* the boot state records the kernel now: from here on there is no eMMC access */
+			extern void boot_trace_mark(unsigned int flag);
+			boot_trace_mark(0x8u);
+		}
+		LED_STAGE(10);	/* 10 blinks: handing over to the kernel */
+		mtk_wdt_arm(30);
+		pal_log_err("[TRACE] watchdog armed for the hand-off to the kernel\n");
+	}
+#endif
 	enter_critical_section();
 	/* do any platform specific cleanup before kernel entry */
 	platform_uninit();
@@ -1582,6 +1666,14 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	if (Debug_log_EMI_MPU)
 		Debug_log_EMI_MPU();
 
+#ifdef BOOT_TRACE
+	{
+		extern void boot_trace_mark(unsigned int flag);
+		extern void boot_trace_guard_stop(void);
+		boot_trace_guard_stop();
+		boot_trace_mark(0x8u);
+	}
+#endif
 	if (g_is_64bit_kernel) {
 		lk_jump64((u32)entry, (u32)tags, 0, KERNEL_64BITS);
 	} else {
@@ -1785,6 +1877,22 @@ int boot_linux_from_storage(void)
 	}
 	else
 #endif /* MTK_RECOVERY_RAMDISK_SPLIT */
+#ifdef VENDOR_BOOT_SUPPORT
+	if (get_header_version() >= 3) {
+		/* the vendor ramdisk first, then the generic one from boot, as one initrd */
+		uint32_t vendor_sz = 0;
+		const void *vendor_rd = vendor_boot_ramdisk(&vendor_sz);
+
+		if (vendor_rd == NULL || vendor_sz == 0)
+			panic("vendor_boot has no ramdisk\n");
+		if ((uint64_t)vendor_sz + ramdisk_real_sz + BOOTCONFIG_ROOM > LK_RAMDISK_MAX_SIZE)
+			panic("ramdisks too large: 0x%x + 0x%x\n", vendor_sz, ramdisk_real_sz);
+		memcpy((void *)ramdisk_target_addr, vendor_rd, vendor_sz);
+		memcpy((void *)(ramdisk_target_addr + vendor_sz), (void *)ramdisk_addr,
+			(size_t)ramdisk_real_sz);
+		ramdisk_real_sz += vendor_sz;
+	} else
+#endif
 	/* relocate rootfs */
 	memcpy((void *)ramdisk_target_addr,
 		(void *)ramdisk_addr,
@@ -2020,6 +2128,60 @@ set_serialno:
 	surf_udc_device.serialno = sn_buf;
 }
 
+#ifdef BOOT_TRACE
+/* The preloader takes a try off the active slot on every boot Android has not marked successful,
+ * and a trace build mostly stops in fastboot, so without this the bring-up cycles alone use up
+ * slot a and the preloader moves to slot b, which the factory never writes (no lk_b): the board
+ * then reboots in the preloader for good. Every boot that stays in the LK gives the try back. */
+static void boot_trace_keep_try(void)
+{
+#ifdef MTK_AB_OTA_UPDATER
+	if (increase_tries_remaining() != 0)
+		dprintf(CRITICAL, "[TRACE] giving the slot its try back failed\n");
+#endif
+}
+
+/* The boot before stopped before fastboot or the kernel (boot_trace.c): bring fastboot up here,
+ * early in platform_init, and wait, so `fastboot oem trace` can read why. Never returns;
+ * `fastboot reboot` starts a normal boot again. */
+void boot_trace_rescue_fastboot(void)
+{
+	extern void boot_trace_mark(unsigned int flag);
+
+	extern void boot_trace_guard_stop(void);
+
+	extern int boot_trace_save_last(void);
+
+	boot_trace_guard_stop();
+	mtk_wdt_disable();
+	{
+		extern BOOT_ARGUMENT *g_boot_arg;
+		dprintf(CRITICAL, "[TRACE] the boot before stopped short: rescue fastboot (boot reason %u, "
+			"reset status 0x%x)\n", g_boot_arg ? g_boot_arg->boot_reason : 0xffffffffu,
+			*(volatile unsigned int *)0x1000700Cu);
+	}
+	/* rescue fastboot comes up from early in platform_init: the environment the fastboot
+	 * variables read (off-mode-charge) is not loaded yet */
+	env_init();
+	boot_trace_keep_try();
+	boot_trace_save_last();
+	LED_STAGE(2);	/* 2 blinks: the last log is on the eMMC (end of misc) */
+	set_serial_num();
+	LED_STAGE(3);	/* 3 blinks: serial number read */
+	target_fastboot_init();
+	LED_STAGE(4);	/* 4 blinks: fastboot target set up */
+	udc_init(&surf_udc_device);
+	LED_STAGE(5);	/* 5 blinks: USB controller up */
+	fastboot_init(target_get_scratch_address(), target_get_max_flash_size());
+	boot_trace_mark(0x4u);
+	dprintf(CRITICAL, "[TRACE] rescue fastboot starting USB\n");
+	LED_STAGE(7);	/* 7 blinks, then white: rescue fastboot is coming up on USB */
+	udc_start();	/* serves USB from here on (on MUSB it does not return) */
+	for (;;)
+		thread_sleep(1000);
+}
+#endif
+
 void mt_boot_init(const struct app_descriptor *app)
 {
 	unsigned usb_init = 0;
@@ -2036,6 +2198,19 @@ void mt_boot_init(const struct app_descriptor *app)
 	goto lk_debug;
 #endif
 
+#ifdef BOOT_TRACE
+	{	/* a trace build boots the system only when oem tryboot asked for it */
+		extern int boot_trace_is_try(void);
+		if (!boot_trace_is_try()) {
+			dprintf(CRITICAL, "[TRACE] no boot attempt asked for: fastboot\n");
+			boot_trace_keep_try();
+			g_boot_mode = FASTBOOT;
+		} else {
+			dprintf(CRITICAL, "[TRACE] boot attempt\n");
+			LED_STAGE(8);	/* 8 blinks: mt_boot, a boot attempt */
+		}
+	}
+#endif
 	if (g_boot_mode == FASTBOOT)
 		goto fastboot;
 
@@ -2051,6 +2226,12 @@ void mt_boot_init(const struct app_descriptor *app)
 #endif
 #endif
 
+#ifdef BOOT_TRACE
+	{
+		extern void boot_trace_save_now(const char *milestone);
+		boot_trace_save_now("mt_boot");
+	}
+#endif
 	/* Will not return */
 	boot_linux_from_storage();
 
@@ -2062,6 +2243,18 @@ fastboot:
 	mt_part_dump();
 	sz = target_get_max_flash_size();
 	fastboot_init(target_get_scratch_address(), sz);
+#ifdef BOOT_TRACE
+	{	/* fastboot is coming up: no more watchdog or guard, they would reset an idle fastboot.
+		 * Before udc_start, which on MUSB serves USB from then on and does not return. */
+		extern void boot_trace_mark(unsigned int flag);
+		extern void boot_trace_guard_stop(void);
+		boot_trace_guard_stop();
+		boot_trace_mark(0x4u);
+		mtk_wdt_disable();
+		dprintf(CRITICAL, "[TRACE] fastboot starting, watchdog off\n");
+		LED_STAGE(7);	/* 7 blinks, then white: fastboot is coming up on USB */
+	}
+#endif
 	udc_start();
 
 #ifdef MTK_DEBUG_SHELL

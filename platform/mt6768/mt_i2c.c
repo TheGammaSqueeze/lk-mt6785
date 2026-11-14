@@ -1,3 +1,4 @@
+#include <string.h>
 #include <platform/mt_i2c.h>
 #include <platform/mt_pmic_wrap_init.h>
 #include <platform/mt_gpio.h>
@@ -623,9 +624,14 @@ err:
 
 }
 
+/* one bit per controller an LK transfer has set up, for mt_i2c_release_all() */
+static U32 s_i2c_used;
+
 void _config_mt_i2c(mt_i2c *i2c)
 {
 	//I2CFUC();
+	if (i2c->id <= I2C8)
+		s_i2c_used |= 1u << i2c->id;
 	switch (i2c->id) {
 	case I2C0:
 		i2c->base = I2C0_BASE;
@@ -937,3 +943,40 @@ int mt_i2c_test(void)
 	return 0;
 }
 #endif
+
+/*
+ * Before the kernel: leave every controller the LK used the way a reset leaves it. A transfer
+ * that completes keeps TRANSAC_COMP latched in INTR_STAT (the polling loop never clears it), and
+ * the kernel driver enables the controller's interrupt in its probe before it has touched the
+ * hardware. Status is cleared (write one to clear), the interrupt is masked and the controller is
+ * reset. Only the I2C registers of controllers a transfer used are touched: their clocks are on.
+ * The APDMA channels are left alone, the LK never uses them (dma_en is always off here) and
+ * their clock may be gated, where an access stalls the bus. What was pending is logged first.
+ */
+void mt_i2c_release_all(void)
+{
+	U32 id;
+
+	dprintf(CRITICAL, "[I2C] release: controllers used 0x%x\n", s_i2c_used);
+	for (id = I2C0; id <= I2C8; id++) {
+		mt_i2c i2c;
+
+		if (!(s_i2c_used & (1u << id)))
+			continue;
+		memset(&i2c, 0, sizeof(i2c));
+		i2c.id = id;
+		_config_mt_i2c(&i2c);
+		dprintf(CRITICAL, "[I2C] release i2c%u: INTR_STAT 0x%x INTR_MASK 0x%x CONTROL 0x%x\n",
+			id, i2c_readl(&i2c, OFFSET_INTR_STAT), i2c_readl(&i2c, OFFSET_INTR_MASK),
+			i2c_readl(&i2c, OFFSET_CONTROL));
+		i2c_writel(&i2c, OFFSET_INTR_MASK, 0x0000);
+		dprintf(CRITICAL, "[I2C] release i2c%u: masked\n", id);
+		i2c_writel(&i2c, OFFSET_INTR_STAT, 0xffff);
+		dprintf(CRITICAL, "[I2C] release i2c%u: status cleared\n", id);
+		i2c_writel(&i2c, OFFSET_SOFTRESET, 0x0001);
+		i2c_writel(&i2c, OFFSET_FIFO_ADDR_CLR, 0x0005);
+		dprintf(CRITICAL, "[I2C] release i2c%u: now INTR_STAT 0x%x INTR_MASK 0x%x\n",
+			id, i2c_readl(&i2c, OFFSET_INTR_STAT), i2c_readl(&i2c, OFFSET_INTR_MASK));
+	}
+	s_i2c_used = 0;
+}

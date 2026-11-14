@@ -29,6 +29,7 @@
 * MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
 */
 
+#include <led_stage.h>
 #include <string.h>
 #include <stdlib.h>
 #include <video_fb.h>
@@ -309,6 +310,7 @@ void mt_disp_init(void *lcdbase)
 	if (round_corner == NULL)
 		return;
 #endif
+	LED_MARK(1);	/* red: mt_disp_init */
 	/// fb base pa and va
 	fb_addr_pa_k = arm_mmu_va2pa((unsigned int)lcdbase);
 
@@ -329,6 +331,13 @@ void mt_disp_init(void *lcdbase)
 		assert(0);
 	}
 
+	LED_MARK(2);	/* green: logo buffer reserved */
+#ifdef BOOT_TRACE
+	{
+		extern void boot_trace_save_now(const char *milestone);
+		boot_trace_save_now("logo reserved");
+	}
+#endif
 	// va;
 	logo_db_addr = logo_db_addr_pa;
 

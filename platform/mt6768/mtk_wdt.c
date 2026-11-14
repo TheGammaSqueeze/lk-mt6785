@@ -376,6 +376,14 @@ void mtk_wdt_init(void)
 #endif
 }
 
+/* Watchdog on, in reset mode (no interrupt first), timing out after `seconds` without a kick. */
+void mtk_wdt_arm(unsigned int seconds)
+{
+	mtk_wdt_set_time_out_value(seconds);
+	mtk_wdt_mode_config(FALSE, FALSE, TRUE, FALSE, TRUE);
+	mtk_wdt_restart();
+}
+
 BOOL mtk_is_rgu_trigger_reset(void)
 {
 	if (is_rgu_trigger_rst)
@@ -407,6 +415,13 @@ int mtk_wdt_boot_check(void)
 void mtk_arch_reset(char mode)
 {
 	WDTLOG("mtk_arch_reset\n");
+#ifdef BOOT_TRACE
+	{
+		extern void boot_trace_flush(void);
+		dprintf(CRITICAL, "[TRACE] mtk_arch_reset(%d) called from %p\n", mode, __builtin_return_address(0));
+		boot_trace_flush();	/* the log and its flags reach DRAM before the reset */
+	}
+#endif
 
 	mtk_wdt_reset(mode);
 

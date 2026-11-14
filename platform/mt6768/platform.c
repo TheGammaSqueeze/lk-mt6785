@@ -29,6 +29,10 @@
 * MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
 */
 
+#ifdef EMI_TAG_V2
+#include <led_stage.h>
+#include <emi/emi_dt.h>
+#endif
 #include <debug.h>
 #include <stdlib.h>
 #include <string.h>
@@ -148,6 +152,18 @@ extern void mt_pll_turn_off(void);
 
 struct mmu_initial_mapping mmu_initial_mappings[] = {
 
+#ifdef NULL_PAGE_GUARD
+	/* The first 1 MB (boot ROM) is left unmapped: a null pointer dereference is then an ordinary
+	 * data abort the LK reports with its address, instead of a read of the boot ROM that resets
+	 * this SoC without a word. */
+	{
+		.phys = (uint64_t)0x00100000,
+		.virt = (uint32_t)0x00100000,
+		.size = 0x40000000 - 0x00100000,
+		.flags = MMU_MEMORY_TYPE_STRONGLY_ORDERED | MMU_MEMORY_AP_P_RW_U_NA,
+		.name = "mcusys"
+	},
+#else
 	{
 		.phys = (uint64_t)0,
 		.virt = (uint32_t)0,
@@ -155,6 +171,7 @@ struct mmu_initial_mapping mmu_initial_mappings[] = {
 		.flags = MMU_MEMORY_TYPE_STRONGLY_ORDERED | MMU_MEMORY_AP_P_RW_U_NA,
 		.name = "mcusys"
 	},
+#endif
 	{
 		.phys = (uint64_t)MEMBASE,
 		.virt = (uint32_t)MEMBASE,
@@ -286,6 +303,9 @@ int dram_init(void)
 					break;
 				case BOOT_TAG_EMI_INFO:
 					memcpy(&(g_boot_arg->emi_info), &(tags->u.emi_info), sizeof(emi_info_t));
+#ifdef EMI_TAG_V2
+					emi_tag_v2_capture(&tags->u, tags->hdr.size * 4 - sizeof(tags->hdr));
+#endif
 					break;
 				case BOOT_TAG_IMGVER_INFO:
 					g_boot_arg->pl_imgver_status = tags->u.imgver_info.pl_imgver_status;
@@ -510,6 +530,9 @@ void init_storage(void)
 ******************************************************************************/
 void platform_early_init(void)
 {
+#ifdef BOOT_TRACE
+	{ extern void boot_trace_init(void); boot_trace_init(); }
+#endif
 	PROFILING_START("platform_early_init");
 #ifdef MTK_LK_REGISTER_WDT
 	lk_register_wdt_callback();
@@ -540,6 +563,15 @@ void platform_early_init(void)
 	PROFILING_START("WDT Init");
 	mtk_wdt_init();
 	PROFILING_END();
+#ifdef BOOT_TRACE
+	{	/* a hang anywhere from here resets the board (straight reset, no interrupt first) */
+		extern void mtk_wdt_arm(unsigned int seconds);
+		extern void boot_trace_report(void);
+		mtk_wdt_arm(30);
+		dprintf(CRITICAL, "[TRACE] watchdog armed, 30 s\n");
+		boot_trace_report();
+	}
+#endif
 
 	//i2c init
 	i2c_hw_init();
@@ -594,7 +626,15 @@ static void lk_vb_init(void)
 
 	PROFILING_START("Security init");
 	/* initialize security library */
+#ifdef SKIP_LK_IMAGE_AUTH
+	/* The prebuilt security library cannot read an Android 12 preloader's security data (its
+	 * secure boot configuration comes back as a value it panics on) and would rewrite seccfg in
+	 * its own format. This LK does not check its own images (sec_policy.c), takes the lock state
+	 * from seccfg_ro.c and the verified boot key from AVB, so the library is not set up. */
+	(void)pl_start_addr;
+#else
 	sec_func_init(pl_start_addr);
+#endif
 	seclib_set_oemkey(g_oemkey, OEM_PUBK_SZ);
 	PROFILING_END();
 #endif
@@ -621,10 +661,30 @@ void platform_init(void)
 	bool backlight_on = false;
 	int logo_size;
 
+
 	PROFILING_START("platform_init");
 	dprintf(CRITICAL, "platform_init()\n");
 
+	LED_STAGE(1);	/* 1 blink: platform_init, the storage next */
 	init_storage();
+	LED_STAGE(2);	/* 2 blinks: storage up */
+#ifdef BOOT_TRACE
+	{
+		extern int boot_trace_prev_failed(void);
+		extern void boot_trace_rescue_fastboot(void);
+		extern void boot_trace_guard_start(unsigned int ms);
+		extern void boot_trace_storage_up(void);
+		boot_trace_storage_up();
+		if (boot_trace_prev_failed())
+			boot_trace_rescue_fastboot();
+		boot_trace_guard_start(60000);
+		{
+			extern void boot_trace_save_now(const char *milestone);
+			boot_trace_save_now("storage");
+		}
+		LED_STAGE(3);	/* 3 blinks: log copy written, device tree next */
+	}
+#endif
 	lk_vb_init();
 
 	extern void dummy_ap_entry(void)__attribute__((weak)); /* This is empty function for normal load */
@@ -641,9 +701,11 @@ void platform_init(void)
 	 * tree overlay, from PARA partition
 	 */
 	rsc_init();
+	/* (RSC read) */
 
 	/* The device tree should be loaded as early as possible. */
 	load_device_tree();
+	LED_STAGE(4);	/* 4 blinks: device tree loaded */
 
 #if defined(USE_DTB_NO_DWS) && !defined(MACH_FPGA)
 	mt_gpio_set_default();
@@ -686,11 +748,22 @@ void platform_init(void)
 
 #ifndef MACH_FPGA_NO_DISPLAY
 	PROFILING_START("disp init");
+#ifdef BOOT_TRACE
+	{
+		extern void boot_trace_save_now(const char *milestone);
+		boot_trace_save_now("display next");
+		LED_STAGE(5);	/* 5 blinks: display next */
+		boot_trace_save_now("after 5 blinks");
+	}
+#else
+	LED_STAGE(5);	/* 5 blinks: display next */
+#endif
 	mt_disp_init((void *)g_fb_base);
 	PROFILING_END();
 
 	PROFILING_START("vedio init");
 	drv_video_init();
+	LED_STAGE(6);	/* 6 blinks: display up */
 	PROFILING_END();
 #endif /* MACH_FPGA_NO_DISPLAY */
 
@@ -898,21 +971,35 @@ void platform_init(void)
 	}
 #endif
 
+#ifdef BOOT_TRACE
+	{
+		extern void boot_trace_save_now(const char *milestone);
+		boot_trace_save_now("display");
+	}
+#endif
 #ifndef MACH_FPGA
 	PROFILING_START("sw_env");
 	sw_env();
 	PROFILING_END();
 #endif
+	LED_STAGE(7);	/* 7 blinks: platform_init done */
 	PROFILING_END(); /* platform_init */
 }
 
 void platform_uninit(void)
 {
+	extern void mt_i2c_release_all(void);
+
 #ifndef MACH_FPGA
 	leds_deinit();
+	dprintf(CRITICAL, "[uninit] leds off\n");
 	platform_clear_all_on_mux();
+	dprintf(CRITICAL, "[uninit] mux cleared\n");
 #endif
+	mt_i2c_release_all();
+	dprintf(CRITICAL, "[uninit] i2c released\n");
 	platform_deinit_interrupts();
+	dprintf(CRITICAL, "[uninit] interrupts off\n");
 	return;
 }
 

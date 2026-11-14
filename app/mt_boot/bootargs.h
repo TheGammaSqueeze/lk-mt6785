@@ -37,6 +37,7 @@ extern char *cmdline_get(void);
 extern void cmdline_print(void);
 extern bool cmdline_append(const char *append_string);
 extern bool cmdline_overwrite(const char *overwrite_string);
+extern bool cmdline_replace(const char *s);
 extern bool cmdline_clear_string(void);
 #endif /* __BOOTARGS_H */
 

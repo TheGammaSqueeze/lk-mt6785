@@ -320,6 +320,24 @@ AvbIOResult avb_hal_read_is_device_unlocked(AvbOps *ops, bool *out_is_unlocked)
 
 	*out_is_unlocked = FALSE;
 
+#if defined(KEEP_STOCK_BOOT_STATE)
+	/* A board that runs its stock, locked Android reports the real lock state, as its stock LK
+	 * does: Android and the TEE see exactly what they saw before. */
+#ifdef MTK_SECURITY_SW_SUPPORT
+	ret = get_lock_state(&lock_state);
+	if (ret != 0)
+		return AVB_IO_RESULT_ERROR_IO;
+
+	if ((lock_state == LKS_DEFAULT) || (lock_state == LKS_MP_DEFAULT) ||
+	    lock_state == LKS_LOCK)
+		*out_is_unlocked = FALSE;
+	else
+		*out_is_unlocked = TRUE;
+#else
+	*out_is_unlocked = TRUE;
+#endif
+	pal_log_err("[AVB20] lock_state = 0x%x\n", lock_state);
+#else
 #ifdef MTK_SECURITY_SW_SUPPORT
 	ret = get_lock_state(&lock_state);
 #endif
@@ -332,6 +350,7 @@ AvbIOResult avb_hal_read_is_device_unlocked(AvbOps *ops, bool *out_is_unlocked)
 	 */
 	*out_is_unlocked = TRUE;
 	pal_log_err("[AVB20] lock_state = 0x%x (forced unlocked)\n", lock_state);
+#endif
 
 	return AVB_IO_RESULT_OK;
 }

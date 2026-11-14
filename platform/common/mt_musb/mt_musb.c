@@ -1914,6 +1914,34 @@ enum handler_return udc_interrupt(void *arg)
 }
 #endif
 
+/* Drop a queued request whose host side went away (a fastboot reply that timed out): stop the
+ * endpoint's queue, flush it and forget the request, so the bytes are never handed to the next
+ * host that connects as the answer to its first command. */
+int udc_request_cancel(struct udc_endpoint *ept, struct udc_request *req)
+{
+	if (!ept)
+		return -1;
+	enter_critical_section();
+	if (ept->req == req || req == NULL) {
+#ifdef SUPPORT_QMU
+		mu3d_hal_flush_qmu(ept->num, ept->in ? USB_DIR_IN : USB_DIR_OUT);
+#else
+		u8 index = readb(INDEX);
+
+		writeb(ept->num, INDEX);
+		if (ept->in)
+			writew(readw(IECSR + TXCSR) | EPX_TX_FLUSHFIFO, IECSR + TXCSR);
+		else
+			writew(readw(IECSR + RXCSR) | EPX_RX_FLUSHFIFO, IECSR + RXCSR);
+		writeb(index, INDEX);
+#endif
+		ept->req = NULL;
+		ept->status = -1;
+	}
+	exit_critical_section();
+	return 0;
+}
+
 int udc_register_gadget(struct udc_gadget *gadget)
 {
 	if (the_gadget) {

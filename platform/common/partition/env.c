@@ -170,6 +170,10 @@ int set_env_with_area(char *name, char *value, int area)
 
 	uchar *env_data = (uchar *)g_env[area].env_data;
 
+	if (env_data == NULL) {	/* env_init() has not run: there is no buffer to write into */
+		dprintf(CRITICAL, "[%s]set_env %s before env_init, not written\n", MODULE_NAME, name);
+		return -1;
+	}
 	dprintf(CRITICAL, "[%s]set_env %s %s\n",MODULE_NAME,name,value);
 
 	oldval = -1;

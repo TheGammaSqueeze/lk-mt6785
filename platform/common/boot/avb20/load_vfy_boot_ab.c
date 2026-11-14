@@ -56,6 +56,9 @@
 #include <avb_persist.h>
 #include <dm_verity_status.h>
 #include <avb_RoT.h>
+#ifdef VENDOR_BOOT_SUPPORT
+#include <bootimg_v3.h>
+#endif
 
 #define KB (1024)
 #define MB (1024 * KB)
@@ -73,7 +76,13 @@ unsigned long get_timer(unsigned long base);
 void *avb_heap;
 uint32_t avb_heap_sz;
 
+#ifdef VENDOR_BOOT_SUPPORT
+/* With boot header version 3/4 the vendor ramdisk, the device tree and the vendor command line
+ * live in vendor_boot, which vbmeta verifies along with boot. */
+static const char *boot_partitions[] = {"boot", "vendor_boot", NULL};
+#else
 static const char *boot_partitions[] = {"boot", NULL};
+#endif
 static const char *recovery_partitions[] = {"recovery", NULL};
 
 static uint32_t boot_partitions_sz = sizeof(boot_partitions) / sizeof(char *) - 1;
@@ -296,6 +305,29 @@ static uint32_t boot_post_processing(AvbOps *ops, uint32_t bootimg_type,
 			break;
 		}
 	}
+#ifdef VENDOR_BOOT_SUPPORT
+	/* vendor_boot after it in the scratch area, 1 MB aligned */
+	if (i < slot_data->num_loaded_partitions) {
+		uint32_t boot_size = slot_data->loaded_partitions[i].data_size;
+		uint32_t vb_addr = boot_load_addr + ((boot_size + 0xfffff) & ~0xfffffu);
+		uint32_t k;
+
+		for (k = 0; k < slot_data->num_loaded_partitions; k++) {
+			AvbPartitionData *p = &slot_data->loaded_partitions[k];
+
+			if (strcmp(p->partition_name, "vendor_boot"))
+				continue;
+			if (vb_addr - boot_load_addr + p->data_size > SCRATCH_SIZE) {
+				pal_log_err("[avb] vendor_boot (0x%x) does not fit the scratch area\n",
+					    (uint32_t)p->data_size);
+				return AVB_IO_RESULT_ERROR_OOM;
+			}
+			memcpy((void *)vb_addr, p->data, p->data_size);
+			vendor_boot_set_image((void *)vb_addr, p->data_size);
+			break;
+		}
+	}
+#endif
 #endif
 	load_bootinfo_bootimg((void *)boot_load_addr);
 	prepare_kernel_dtb();
@@ -536,7 +568,13 @@ end:
 	 * unlocked bootloader. Green/locked makes the kernel reject the modified
 	 * images and silently reboot.
 	 */
+#if !defined(KEEP_STOCK_BOOT_STATE)
 	g_boot_state = BOOT_STATE_ORANGE;
+#else
+	/* the stock rule: an unlocked device boots orange, a locked one keeps the verified state */
+	if (ret == 0 && lock_state == LKS_UNLOCK)
+		g_boot_state = BOOT_STATE_ORANGE;
+#endif
 
 	dm_verity_handler((uint32_t)hashtree_error_mode);
 

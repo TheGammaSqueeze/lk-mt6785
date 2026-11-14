@@ -28,6 +28,10 @@
 #include <platform/mt_uart.h>
 #include "log_store_lk.h"
 
+#ifdef BOOT_TRACE
+extern void boot_trace_putc(char c);
+#endif
+
 void _dputc(char c)
 {
 	if (c == '\n') {
@@ -36,6 +40,9 @@ void _dputc(char c)
 	}
 	uart_putc(c);
 	lk_log_store(c);
+#ifdef BOOT_TRACE
+	boot_trace_putc(c);
+#endif
 }
 
 int dgetc(char *c, bool wait)
@@ -53,6 +60,14 @@ int dgetc(char *c, bool wait)
 void platform_halt()
 {
 	arch_disable_ints();
+#ifdef BOOT_TRACE
+	{	/* a panic, a failed assert or an abort: reset (warm, the RAM and so this log are kept)
+		 * instead of spinning with nothing to end it; the next boot offers rescue fastboot */
+		extern void mtk_arch_reset(char mode);
+		dprintf(CRITICAL, "[TRACE] halted: warm reset\n");
+		mtk_arch_reset(1);
+	}
+#endif
 	for (;;);
 }
 

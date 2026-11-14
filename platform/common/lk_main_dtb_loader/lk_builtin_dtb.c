@@ -33,6 +33,7 @@
 * have been modified by MediaTek Inc. All revisions are subject to any receiver\'s
 * applicable license agreements with MediaTek Inc.
 */
+#include <trace_mark.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -92,8 +93,10 @@ static int load_lk_dtb(char *part_name, char *img_name, void *addr)
 	unsigned int policy_entry_idx = 0;
 	unsigned int img_auth_required = 0;
 
+	TRACE_MARK("lk_dtb: policy lookup");
 	policy_entry_idx = get_policy_entry_idx(part_name);
 	img_auth_required = get_vfy_policy(policy_entry_idx);
+	TRACE_MARK("lk_dtb: policy done");
 	/* verify cert chain of boot img */
 	if (img_auth_required) {
 		vfy_time = get_timer(0);
@@ -111,6 +114,7 @@ static int load_lk_dtb(char *part_name, char *img_name, void *addr)
 	}
 #endif
 
+	TRACE_MARK("lk_dtb: load part");
 	dtb_img_size = mboot_common_load_part(part_name, img_name, (uint32_t)addr);
 	dprintf(CRITICAL, "%s(): load %s dtb_img_size=%d\n", __func__, img_name, dtb_img_size);
 	if (dtb_img_size <= 0)
@@ -142,6 +146,7 @@ int32_t lk_dtb_init(void)
 
 	PROFILING_START("lk_dtb_init");
 
+	TRACE_MARK("lk_dtb: start");
 	lk_main_dtb_ptr = lk_overlayed_dtb_addr;
 	/* search lk self-built-in dtb */
 	PROFILING_START("load_lk_dtb");
@@ -151,7 +156,9 @@ int32_t lk_dtb_init(void)
 		goto end;
 	/* read dtbo image */
 	PROFILING_START("load_dtbo_buffer");
+	TRACE_MARK("lk_dtb: load dtbo");
 	ret = load_dtbo_buffer(&dtbo_ptr, &dtbo_size);
+	TRACE_MARK("lk_dtb: dtbo loaded");
 	PROFILING_END();
 	if (ret < 0) {
 		if (dtbo_ptr)
@@ -170,8 +177,10 @@ int32_t lk_dtb_init(void)
 	selected_dtbo_addr = dtbo_ptr;
 	memcpy(lk_dtbo, dtbo_ptr, dtbo_size);
 	lk_main_dtb_size = fdt_totalsize(lk_main_dtb_ptr);
+	TRACE_MARK("lk_dtb: overlay");
 	ret = dtb_overlay(lk_main_dtb_ptr, lk_main_dtb_size, lk_dtbo, dtbo_size,
 		&lk_overlayed_dtb_ptr, DTB_MAX_SIZE);
+	TRACE_MARK("lk_dtb: overlay done");
 	assert(ret == 0);
 	if (ret < 0)
 		goto end;
@@ -181,6 +190,7 @@ int32_t lk_dtb_init(void)
 	}
 	memcpy(lk_overlayed_dtb_addr, lk_overlayed_dtb_ptr, lk_overlayed_dtb_size);
 
+	TRACE_MARK("lk_dtb: dconfig");
 	if (dtb_dconfig_overlay(lk_overlayed_dtb_addr) == FALSE) {
 		panic("dconfig DT overlay failed, system not bootable\n");
 	}

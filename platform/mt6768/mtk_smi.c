@@ -29,6 +29,7 @@
 * MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
 */
 
+#include <led_stage.h>
 #include "platform/mtk_smi.h"
 #include <debug.h>
 #include "platform/mt_typedefs.h"

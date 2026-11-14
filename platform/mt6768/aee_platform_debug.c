@@ -711,6 +711,13 @@ int dfd_set_base_addr(void *fdt)
 	if (!fdt)
 		return -1;
 
+#ifndef LK_LD_MD_SUPPORT
+	/* the DFD buffer address comes from the modem's shared memory map: without a modem there
+	 * is none to give (a WiFi only board) */
+	(void)ret; (void)offset; (void)cache_dump; (void)addr; (void)dfd_size; (void)addr_msb;
+	(void)md_addr; (void)ap_addr; (void)plat;
+	return -1;
+#endif
 	ret = get_ccci_md_view_smem_addr_size(0, &ap_addr, &md_addr, &dfd_size);
 	if (ret < 0)
 		return ret;

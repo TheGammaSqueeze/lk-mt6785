@@ -67,19 +67,24 @@ struct policy_part_map g_policy_map[] = {
 	{0, "NULL", "NULL", "NULL", "NULL", 0 , 0, 0, 0, 0},
 };
 
+/* A table entry names its partition in up to four slots; an unused slot is a null pointer and
+ * matches nothing. Comparing against it would read address 0, which on this SoC stops the board
+ * outright. */
+static int policy_name_is(const char *part_name, const char *slot)
+{
+	return slot != NULL && strcmp(part_name, slot) == 0;
+}
+
 unsigned int get_policy_entry_idx(const char *part_name)
 {
 	unsigned int i = 0;
 	unsigned int num_of_entries = sizeof(g_policy_map)/sizeof(struct policy_part_map);
 
 	while (i < num_of_entries) {
-		if (0 == strcmp(part_name, g_policy_map[i].part_name1))
-			break;
-		else if (0 == strcmp(part_name, g_policy_map[i].part_name2))
-			break;
-		else if (0 == strcmp(part_name, g_policy_map[i].part_name3))
-			break;
-		else if (0 == strcmp(part_name, g_policy_map[i].part_name4))
+		if (policy_name_is(part_name, g_policy_map[i].part_name1) ||
+		    policy_name_is(part_name, g_policy_map[i].part_name2) ||
+		    policy_name_is(part_name, g_policy_map[i].part_name3) ||
+		    policy_name_is(part_name, g_policy_map[i].part_name4))
 			break;
 		i++;
 	}
@@ -202,6 +207,14 @@ unsigned int get_hash_binding_policy(unsigned int policy_entry_idx)
 unsigned int get_vfy_policy(unsigned int policy_entry_idx)
 {
 	unsigned char sec_policy = 0;
+#ifdef SKIP_LK_IMAGE_AUTH
+	/* This LK does not check the images it loads for itself (its device tree, the logo, the
+	 * firmware blobs), as the GammaOS LK on the other boards; Android's own verified boot (AVB)
+	 * is unchanged. */
+	(void)policy_entry_idx;
+	(void)sec_policy;
+	return 0;
+#endif
 	sec_policy = get_sec_policy(policy_entry_idx);
 
 	if (VFY_BIT_SET(sec_policy))

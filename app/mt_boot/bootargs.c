@@ -193,6 +193,25 @@ bool cmdline_overwrite(const char *overwrite_string)
 	return true;
 }
 
+#ifdef VENDOR_BOOT_SUPPORT
+/* Replace the whole command line and continue appending after it. */
+bool cmdline_replace(const char *s)
+{
+	size_t len = strlen(s);
+
+	if (len > CMDLINE_LEN - 1) {
+		pal_log_err(CMDLINE_OVERFLOW_STR"\n");
+		panic(CMDLINE_OVERFLOW_STR);
+		return false;
+	}
+	enter_critical_section();
+	memcpy(g_cmdline, s, len + 1);
+	cmdline_tail = g_cmdline + len;
+	exit_critical_section();
+	return true;
+}
+#endif
+
 bool cmdline_clear_string(void)
 {
 	int i = 0;

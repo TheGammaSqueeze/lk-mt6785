@@ -6,8 +6,9 @@
 From the stock BW03 scatter every partition is unticked with no file except the given LK
 partitions (default lk_a and lk_b), which get the LK file and are ticked. The preloader keeps its
 file name, unticked: SP Flash Tool reads its memory setup to connect, it is not written. The text
-scatter (for SP Flash Tool v5) also has its config version lowered from V2.2.0, which v5 refuses,
-to V2.1.0; the .xml scatter (for SP Flash Tool V6) keeps the stock version.
+scatter (for SP Flash Tool v5) also has a V2.2.0 config version, which v5 refuses, lowered to
+V2.1.0 (an older version, as the Konkr Block's V1.1.8, is kept); the .xml scatter (for SP Flash
+Tool V6) keeps the stock version.
 """
 import re, sys
 
@@ -44,7 +45,8 @@ def main():
         if m:
             ind, key, val = m.groups()
             if key == "config_version":
-                line = ind + "config_version: V2.1.0"
+                if val.strip() == "V2.2.0":   # older scatter versions already suit v5
+                    line = ind + "config_version: V2.1.0"
             elif key == "partition_name":
                 name = val.strip()
             elif key == "file_name":

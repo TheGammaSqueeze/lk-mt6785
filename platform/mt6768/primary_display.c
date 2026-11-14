@@ -29,6 +29,7 @@
 * MEDIATEK FOR SUCH MEDIATEK SOFTWARE AT ISSUE.
 */
 
+#include <led_stage.h>
 #include <video_fb.h>
 #include <target/board.h>
 #include <env.h>
@@ -527,6 +528,7 @@ int primary_display_init(char *lcm_name)
 	LCM_PARAMS *lcm_param = NULL;
 
 	dpmgr_init();
+	LED_MARK(3);	/* yellow: display manager up, panel probe next */
 #ifndef DDP_LK_BOOT
 	mutex_init(&(pgc->lock));
 #endif
@@ -544,6 +546,7 @@ int primary_display_init(char *lcm_name)
 	}
 
 
+	LED_MARK(4);	/* blue: panel probed */
 	lcm_param = disp_lcm_get_params(pgc->plcm);
 
 	if (lcm_param == NULL) {
@@ -583,6 +586,7 @@ int primary_display_init(char *lcm_name)
 	dpmgr_path_set_video_mode(pgc->dpmgr_handle, primary_display_is_video_mode());
 
 	dpmgr_path_init(pgc->dpmgr_handle, CMDQ_DISABLE);
+	LED_MARK(6);	/* cyan: display path set up */
 
 	disp_ddp_path_config data_config;
 	memset((void*)&data_config, 0, sizeof(disp_ddp_path_config));
@@ -610,6 +614,7 @@ int primary_display_init(char *lcm_name)
 
 	ret = dpmgr_path_config(pgc->dpmgr_handle, &data_config, CMDQ_DISABLE);
 	ret = disp_lcm_init(pgc->plcm);
+	LED_MARK(7);	/* white: panel init sequence sent */
 
 	if (primary_display_is_video_mode()) {
 		if (lcm_param->dsi.lfr_enable == 1) {

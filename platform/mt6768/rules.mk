@@ -317,7 +317,6 @@ OBJS += \
 	$(LOCAL_DIR)/aee_platform_debug.o\
 	$(LOCAL_DIR)/mt_dramc_memtest.o\
 	$(LOCAL_DIR)/../common/emi/emi_mpu_v1.o\
-	$(LOCAL_DIR)/../common/emi/emi_info_v1.o\
 	$(LOCAL_DIR)/pll.o \
 	$(LOCAL_DIR)/spm_md_mtcmos.o \
 	$(LOCAL_DIR)/md1_off.o \
@@ -478,7 +477,8 @@ OBJS +=$(LOCAL_DIR)/dummy_ap.o
 DEFINES += DUMMY_AP_MODE
 endif
 
-LK_LD_MD_SUPPORT := yes
+# a board without a modem (a WiFi only MT8786) sets LK_LD_MD_SUPPORT := no
+LK_LD_MD_SUPPORT ?= yes
 ifeq ($(LK_LD_MD_SUPPORT), yes)
 	INCLUDES += -I$(LOCAL_DIR)/../common/md
 	OBJS +=$(LOCAL_DIR)/ccci_lk_load_img_plat.o
@@ -564,3 +564,41 @@ endif
 CFG_LOG_STORE_SUPPORT := yes
 
 -include $(LOCAL_DIR)/../../../../../../internal/bootloader/lk/rsc/rules.mk
+
+# Android 12 preloaders (EMI boot tag with the DRAM tables) and kernels (/dramc, /emicen, /emimpu,
+# /emiisu); older ones keep the /emi properties.
+ifeq ($(EMI_TAG_V2),yes)
+DEFINES += EMI_TAG_V2
+OBJS += $(LOCAL_DIR)/../common/emi/emi_dt.o
+else
+OBJS += $(LOCAL_DIR)/../common/emi/emi_info_v1.o
+endif
+
+# Bring-up trace without a serial console (platform/common/boot_trace.c).
+ifeq ($(BOOT_TRACE),yes)
+DEFINES += BOOT_TRACE
+OBJS += $(LOCAL_DIR)/../common/boot_trace.o
+endif
+
+# Bring-up checkpoints on the Konkr Block's RGB LED (platform/mt6768/block_led_diag.c).
+ifeq ($(BLOCK_LED_DIAG),yes)
+DEFINES += BLOCK_LED_DIAG
+OBJS += $(LOCAL_DIR)/block_led_diag.o
+endif
+
+# The security configuration read by our own code, never written (platform/common/seccfg_ro.c),
+# in place of the prebuilt library's seccfg code.
+ifeq ($(SECCFG_READ_ONLY),yes)
+DEFINES += SECCFG_READ_ONLY
+OBJS += $(LOCAL_DIR)/../common/seccfg_ro.o
+endif
+
+# The LK does not check its own images and does not set up the prebuilt security library.
+ifeq ($(SKIP_LK_IMAGE_AUTH),yes)
+DEFINES += SKIP_LK_IMAGE_AUTH
+endif
+
+# Null pointer dereferences become reported data aborts (platform.c, mmu_initial_mappings).
+ifeq ($(NULL_PAGE_GUARD),yes)
+DEFINES += NULL_PAGE_GUARD
+endif

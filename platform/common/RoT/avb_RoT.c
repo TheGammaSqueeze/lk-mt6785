@@ -318,7 +318,9 @@ void send_root_of_trust_info(void)
 	 * exact parity with the binary-patched LK, not a security downgrade (the
 	 * device is intentionally run unlocked).
 	 */
+#if !defined(KEEP_STOCK_BOOT_STATE)
 	device_lock_state = 0;
+#endif
 
 #ifdef AYANEO_DEBUG_LOGGING
 	dprintf(CRITICAL, "AYANEO_ROT: lock=%d boot_state=%u osver=%u ospatch=%u vpatch=%u bpatch=%u\n",

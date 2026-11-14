@@ -745,6 +745,11 @@ static struct mtk_charger_ops rt9467_mchr_ops = {
 };
 
 
+/* The I2C bus the charger sits on; a board on another bus sets RT9467_I2C_ID in its project. */
+#ifndef RT9467_I2C_ID
+#define RT9467_I2C_ID I2C1
+#endif
+
 /* Info of primary charger */
 static struct rt9467_info g_rt9467_info = {
 	.mchr_info = {
@@ -754,7 +759,7 @@ static struct rt9467_info g_rt9467_info = {
 		.mchr_ops = &rt9467_mchr_ops,
 	},
 	.i2c = {
-		.id = I2C1,
+		.id = RT9467_I2C_ID,
 		.addr = RT9467_SLAVE_ADDR,
 		.mode = ST_MODE,
 		.speed = 100,
