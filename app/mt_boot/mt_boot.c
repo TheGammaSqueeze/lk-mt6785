@@ -1237,7 +1237,20 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 	} else
 		pal_log_err("PTP_INFO Only support in MT6795\n");
 
+#ifdef KONKR_BLOCK
+	{	/* atag,masp from ROM_INFO version 2, as the Block's stock LK builds it */
+		extern unsigned *block_atag_masp(unsigned *ptr);
+		ptr = (char *)block_atag_masp((unsigned *)buf);
+		ret = fdt_setprop(fdt, offset, "atag,masp", buf, ptr - buf);
+		if (ret) {
+			assert(0);
+			return FALSE;
+		}
+	}
+	if (0) {
+#else
 	if (target_atag_masp_data) {
+#endif
 		ptr = (char *)target_atag_masp_data((unsigned *)buf);
 		ret = fdt_setprop(fdt, offset, "atag,masp", buf, ptr - buf);
 		if (ret) {
@@ -1245,8 +1258,11 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 			return FALSE;
 		} else
 			pal_log_err("create masp atag OK\n");
-	} else
+	}
+#ifndef KONKR_BLOCK
+	else
 		pal_log_err("masp atag not support in this platform\n");
+#endif
 
 	/*
 	 * AYANEO Pocket Air Mini: set /chosen/tee_reserved_mem from the boot args.
@@ -1334,6 +1350,8 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 			 */
 #ifdef AYANEO_DEBUG_LOGGING
 			cmdline_append("printk.disable_uart=0 mtk_printk_ctrl.disable_uart=0 ignore_loglevel");
+#elif defined(KONKR_BLOCK)
+			cmdline_append("mtk_printk_ctrl.disable_uart=1");	/* the stock LK's token only */
 #else
 			cmdline_append("printk.disable_uart=1 mtk_printk_ctrl.disable_uart=1");
 #endif
@@ -1372,10 +1390,11 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 
 		/*Append pre-loader boot time to kernel command line*/
 		pl_t = g_boot_arg->boot_time;
+		lk_t = ((unsigned int)get_timer(boot_time));
+#ifndef KONKR_BLOCK	/* the Block gives these in /bootprof (block_fdt_parity) */
 		snprintf(tmpbuf, TMPBUF_SIZE, "%s%d", "bootprof.pl_t=", pl_t);
 		cmdline_append(tmpbuf);
 		/*Append lk boot time to kernel command line*/
-		lk_t = ((unsigned int)get_timer(boot_time));
 		snprintf(tmpbuf, TMPBUF_SIZE, "%s%d", "bootprof.lk_t=", lk_t);
 		cmdline_append(tmpbuf);
 
@@ -1383,6 +1402,7 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 			snprintf(tmpbuf, TMPBUF_SIZE, "%s%d", "bootprof.logo_t=", logo_lk_t);
 			cmdline_append(tmpbuf);
 		}
+#endif
 
 		PROFILING_PRINTF("1st logo takes %d ms", logo_lk_t);
 		PROFILING_PRINTF("boot_time takes %d ms", lk_t);
@@ -1558,6 +1578,16 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 
 	ccci_create_MD_attr_dt_node(fdt);
 
+#ifdef KONKR_BLOCK
+	{
+		extern int block_fdt_parity(void *fdt, unsigned int pl_t, unsigned int lk_t,
+					    unsigned int logo_t);
+		ret = block_fdt_parity(fdt, g_boot_arg->boot_time, (unsigned int)get_timer(boot_time),
+				       logo_lk_t);
+		if (ret)
+			pal_log_err("[parity] /chosen not found (%d)\n", ret);
+	}
+#endif
 #ifdef BOOT_TRACE
 	{	/* oem tryboot:lk.dtoff=<node path>[,<node path>...]: those nodes are handed to the
 		 * kernel disabled, to take one device out of a boot attempt */

@@ -335,6 +335,13 @@ int dram_init(void)
 				case BOOT_TAG_SOC_ID:
 					memcpy(g_boot_arg->socid, tags->u.socid.id, SOC_ID_LEN);
 					break;
+#ifdef KONKR_BLOCK
+				case 0x88610035: {	/* the preloader's security settings (atag,masp) */
+					extern void block_sec_tag_capture(const void *payload, unsigned int len);
+					block_sec_tag_capture(&tags->u, tags->hdr.size * 4 - sizeof(tags->hdr));
+					break;
+				}
+#endif
 				default:
 					break;
 			}

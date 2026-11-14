@@ -70,11 +70,20 @@ static int set_dramc(void *fdt)
 	off = node(fdt, "/dramc", "/soc/dramc");
 	if (off < 0)
 		return off;
+#ifdef KONKR_BLOCK
+	/* as the stock LK of the Block writes them: a rank that is not there reads 0xffffffff and
+	 * the mode register cells 0xffff (the kernel reads the vendor id itself) */
+	for (i = 0; i < 2; i++)
+		cell(&rk[i], i < (int)s_emi.rk_cnt ? (uint32_t)(s_emi.rk_size[i] >> 27) : 0xffffffffu);
+	for (i = 0; i < 2; i++)
+		cell(&mr[i], 0xffffu);
+#else
 	/* both rank entries as the preloader filled them, whatever the rank count */
 	for (i = 0; i < 2; i++)
 		cell(&rk[i], s_emi.rk_cnt ? (uint32_t)(s_emi.rk_size[i] >> 27) : 0);
 	for (i = 0; i < 2; i++)
 		cell(&mr[i], s_emi.mr_cnt ? s_emi.mr[i] : 0);
+#endif
 	for (i = 0; i < 3; i++)
 		cell(&freq[i], i < s_emi.freq_cnt ? s_emi.freq_step[i] : 0);
 

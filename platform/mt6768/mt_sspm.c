@@ -60,7 +60,7 @@ int platform_fdt_sspm(void *fdt)
 
 		dprintf(CRITICAL, "SSPM: set reserved mem status=%s\n", ret);
 
-		fdt_setprop(fdt, nodeoffset, "status", ret, strlen(ret));
+		fdt_setprop(fdt, nodeoffset, "status", ret, strlen(ret) + 1);
 
 #ifdef USER_BUILD
 		prop = fdt_get_property(fdt, nodeoffset, "debug-only", &len);

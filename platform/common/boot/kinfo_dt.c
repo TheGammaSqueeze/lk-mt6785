@@ -37,7 +37,11 @@ int fdt_debug_kinfo_append(void *fdt)
 	phandle = fdt_get_phandle(fdt, region);
 	if (phandle == 0 || phandle == (uint32_t)-1) {
 		phandle = max_phandle(fdt) + 1;
+#ifdef KONKR_BLOCK
+		cell = phandle;	/* native order, the same as the reference below (see there) */
+#else
 		cell = cpu_to_fdt32(phandle);
+#endif
 		ret = fdt_setprop(fdt, region, "phandle", &cell, sizeof(cell));
 		if (ret)
 			return ret;
@@ -52,6 +56,13 @@ int fdt_debug_kinfo_append(void *fdt)
 	ret = fdt_setprop_string(fdt, node, "compatible", "google,debug-kinfo");
 	if (ret)
 		return ret;
+#ifdef KONKR_BLOCK
+	/* As the Block's stock LK writes them: the region's phandle and this reference to it both
+	 * in native (little endian) order. They still match each other, so the kernel resolves
+	 * the region; only the value differs from a big endian cell. */
+	cell = phandle;
+#else
 	cell = cpu_to_fdt32(phandle);
+#endif
 	return fdt_setprop(fdt, node, "memory-region", &cell, sizeof(cell));
 }

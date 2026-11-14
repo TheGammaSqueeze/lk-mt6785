@@ -602,3 +602,9 @@ endif
 ifeq ($(NULL_PAGE_GUARD),yes)
 DEFINES += NULL_PAGE_GUARD
 endif
+
+# The Konkr Block: what its stock LK hands the kernel and this tree did not (atag,masp from
+# ROM_INFO v2, /chosen and /bootprof properties).
+ifeq ($(KONKR_BLOCK),yes)
+OBJS += $(LOCAL_DIR)/block_fdt_parity.o
+endif

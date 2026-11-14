@@ -118,6 +118,12 @@ void mrdump_append_cmdline(void *fdt)
 {
 	int res;
 
+#ifdef KONKR_BLOCK
+	/* the Block's kernel takes the crash dump settings from /chosen (block_fdt_parity), as the
+	 * stock LK gives them, not from the command line */
+	return;
+#endif
+
 	res  = mrdump_ddr_reserved_mode_control();
 	if (!res)
 		dprintf(CRITICAL, "MT-RAMDUMP: DDR reserve mode not ready, skipped (0x%x)\n", g_boot_arg->ddr_reserve_ready);

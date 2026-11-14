@@ -103,7 +103,13 @@ void boot_mode_select(void)
 #ifdef BOOT_TRACE
 	/* A trace build leaves the kernel's exception data alone: the crash dump maps pstore
 	 * cacheable, rewrites it and resets the board once more, and then the kernel log the trace
-	 * tools read back (oem pstore) is no longer what the kernel left. */
+	 * tools read back (oem pstore) is no longer what the kernel left. The RAM console layout is
+	 * still set up (the dump path is where that happens): the kernel's mboot_params writes its
+	 * part at off_linux, and a value left from the preloader puts it past the end of the SRAM. */
+	{
+		extern void ram_console_init(void);
+		ram_console_init();
+	}
 	if (0) {
 #else
 	if (kedump_mini) {
