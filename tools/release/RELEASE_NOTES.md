@@ -7,6 +7,29 @@ or after Boot to Android in the menu, Android starts exactly as before.
 
 ![Home](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/home.png)
 
+## What's new in 1.0.1
+
+- **Game names in any language.** Names show as the card has them: accented letters, Greek,
+  Cyrillic, Japanese, Chinese, Korean, Hebrew and Arabic, in the library, the recently played
+  list, search and the in-game menu. Names written on a Mac show the same, and search and the A to
+  Z jumps ignore accents (typing `enchante` finds "enchanté").
+- **No more merged games.** Two games whose names differed only outside plain ASCII (two Chinese
+  titles of the same length, say) were listed as one and shared a save. Each is now listed, with
+  its own saves.
+- **Saves under the real name.** Battery saves, states, box art and play time are kept under the
+  game's full name. Those made by 1.0.0 are still found and move to the full name on the next save.
+- **Windows install.** The flash packages are for SP Flash Tool v5; `gammaos-pico-kpa-windows-tools.zip`
+  has it, with MediaTek's USB driver.
+- A game named longer than 127 bytes that sits in two folders is listed once, and the card carries
+  the menu fonts' licences (`licences/fonts`).
+
+| | |
+|---|---|
+| ![Names in any language](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/names-library.png) | ![The in-game menu, in Japanese](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/names-igm.png) |
+| A library with names in eight scripts | The in-game menu with a Japanese name |
+| ![Search without accents](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/names-search.png) | |
+| Search finds accented names by their plain letters | |
+
 ## What makes it different
 
 GammaOS Pico isn't an app on top of Android or a Linux distro. It runs inside the console's

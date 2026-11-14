@@ -2492,7 +2492,9 @@ static int gba_sd_rom_select(void)
 		 * taken back */
 		{ extern void pico_stats_abort(void); if (gba_rom_peek_error()) pico_stats_abort(); else pico_stats_end(); }
 		{	/* oem showcase:1 (until the next power on): the menus list only the release's demo
-			 * games, for the README's screenshots; nothing on the card changes */
+			 * games, and games named in other scripts (copies of them under translated names, for
+			 * the screenshots of names in any language), for the README's screenshots; nothing on
+			 * the card changes */
 			extern volatile int g_dbg_showcase;
 			static const char *const demo[] = { "The Hat Chooses the Wizard", "Collie Defense",
 				"Libbet and the Magic Floor", "Tobu Tobu Girl", "Tobu Tobu Girl Deluxe", "uCity",
@@ -2501,8 +2503,10 @@ static int gba_sd_rom_select(void)
 			if (g_dbg_showcase == 1) {
 				int i, k, n = 0;
 				for (i = 0; i < s_nrom; i++) {
+					const unsigned char *c = (const unsigned char *)s_roms[i].name;
 					for (k = 0; demo[k] && strcmp(demo[k], s_roms[i].name); k++) ;
-					if (demo[k]) s_roms[n++] = s_roms[i];
+					while (*c && *c < 0x80) c++;
+					if (demo[k] || *c) s_roms[n++] = s_roms[i];
 				}
 				s_nrom = n; s_sel_rom = 0;
 				g_dbg_showcase = 2;
