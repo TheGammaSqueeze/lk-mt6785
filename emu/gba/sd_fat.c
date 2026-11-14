@@ -510,11 +510,15 @@ static const uint8_t *aix_archive(fat_vol *v, const char *dir, const fat_dirent 
 static int add_game(gba_rom_entry *out, int max, int n, int *tot, unsigned char type, int di,
 		    const fat_dirent *e, const char *nm, int arc, unsigned member)
 {
+	char key[sizeof out[0].name];
 	unsigned int slot;
 	int k;
 	if (!nm[0]) return n;
 	if (n >= max) { (*tot)++; return n; }   /* past the cap: counted, not checked */
-	slot = dup_slot(out, type, nm);
+	/* the name as it is kept (cut at 127 bytes), so a game in two folders is found again even
+	 * when its name is longer than that */
+	u8_copy(key, nm, sizeof key);
+	slot = dup_slot(out, type, key);
 	if (s_dup[slot]) {
 		gba_rom_entry *was = &out[s_dup[slot] - 1u];
 		if (was->arc && !arc) {
@@ -523,8 +527,8 @@ static int add_game(gba_rom_entry *out, int max, int n, int *tot, unsigned char 
 		}
 		return n;
 	}
-	u8_copy(out[n].name, nm, sizeof out[n].name);
-	for (k = 0; (out[n].uname[k] = out[n].name[k]) != 0; k++) ;
+	for (k = 0; (out[n].name[k] = key[k]) != 0; k++) ;
+	for (k = 0; (out[n].uname[k] = key[k]) != 0; k++) ;
 	out[n].type = type;
 	out[n].first_clus = e->first_clus;
 	out[n].size = e->size;
