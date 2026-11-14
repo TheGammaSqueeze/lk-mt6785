@@ -58,6 +58,9 @@ bootloader, before any operating system, and owns the hardware outright.
   rumble cartridges.
 - **Headphones.** Sound moves to the 3.5 mm jack as soon as headphones are plugged in, and back
   to the speakers when they come out.
+- **Names in any language.** Game names show as the card has them: accented letters, Greek,
+  Cyrillic, Japanese, Chinese, Korean, Hebrew and Arabic, and search finds them by their letters
+  without accents.
 - **In your language.** The menus and the in-game menu in 17 languages: English, French, German,
   Spanish, Italian, Dutch, Portuguese, Russian, Japanese, Korean, Simplified and Traditional
   Chinese, Polish, Turkish, Arabic, Hebrew and Persian (Settings > Language).
@@ -190,7 +193,7 @@ X shows one system at a time; in a long carousel L / R jump from letter to lette
 ## Install
 
 Grab the latest [release](https://github.com/TheGammaSqueeze/GammaOSPico/releases) from GammaOSPico,
-where GammaOS Pico is published (the releases here are older betas). The GammaOS Pico
+where GammaOS Pico is published. The GammaOS Pico
 LK goes to `lk_a` and `lk_b`. **The way to install it is SP Flash Tool v5 (Windows; the release's
 windows-tools package has it with MediaTek's USB driver, and V6 does not take the packages) or
 mtkclient (Linux):** both write to a stock console with a locked bootloader, and neither needs an unlock or

@@ -386,16 +386,16 @@ int rom_7z_open(fat_file *f, const char *exts, unsigned member, uint8_t *dst, ui
 		const uint8_t *q = names;
 		uint32_t stream = 0, fi, k, sub_first, seen = 0;
 		for (i = 0; i < nfiles; i++) {
-			char nm[256];
+			char nm[512];                 /* the name in UTF-8 (7z keeps names in UTF-16) */
+			uint16_t un[255];
 			int n = 0, has = !empty[i];
 			while (q + 1 < names_end && (q[0] | q[1])) {
-				uint32_t u = q[0] | (q[1] << 8);
-				if (n < 255) nm[n++] = u < 0x80 ? (char)u : '_';
+				if (n < 255) un[n++] = (uint16_t)(q[0] | (q[1] << 8));
 				q += 2;
 			}
 			if (q + 1 >= names_end) return RA_ERR_DAMAGED;
 			q += 2;
-			nm[n] = 0;
+			fat_u16_to_u8(un, n, nm, sizeof nm);
 			if (!has) continue;
 			if (stream >= st.nsub) return RA_ERR_DAMAGED;
 			if (ra_ext_match(nm, exts)) {

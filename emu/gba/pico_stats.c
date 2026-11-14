@@ -16,6 +16,7 @@
 #include "card_writer.h"
 #include "fat_ro.h"
 #include "pico_libmem.h"
+#include "gba_sd_save.h"           /* gba_sd_legacy_key */
 
 extern fat_vol *gba_sd_menu_vol(void);
 
@@ -83,12 +84,22 @@ static void load(void)
 	}
 }
 
+/* a game's line: under its name, else (a name with characters outside ASCII) under the form
+ * versions before 1.1 kept it under, when no other game has that form; add renames that one to the
+ * name, so it is not there twice */
 static int find(int type, const char *name, int add)
 {
 	int i;
+	char legacy[128];
 	if (!s_g) return -1;                  /* no memory for the table: nothing kept */
 	for (i = 0; i < s_n; i++)
 		if (s_g[i].type == type && !strcmp(s_g[i].name, name)) return i;
+	if (gba_sd_legacy_own(name, legacy, sizeof legacy))
+		for (i = 0; i < s_n; i++)
+			if (s_g[i].type == type && !strcmp(s_g[i].name, legacy)) {
+				if (add) snprintf(s_g[i].name, sizeof s_g[i].name, "%s", name);
+				return i;
+			}
 	if (!add) return -1;
 	if (s_n == ST_MAX) {	/* full: the game played longest ago makes room */
 		int old = 0;
@@ -123,7 +134,13 @@ void pico_stats_begin(int type, const char *name)
 	lock();
 	if (!s_loaded) load();
 	if (s_cur >= 0) save();
-	{ int had = s_n, i = find(type, name, 0); s_cur = i >= 0 ? i : find(type, name, 1); s_cur_new = i < 0 && s_n > had; }
+	{
+		int had = s_n, i = find(type, name, 0);
+		/* found under its older form: from now on it is kept under the name */
+		if (i >= 0 && strcmp(s_g[i].name, name)) snprintf(s_g[i].name, sizeof s_g[i].name, "%s", name);
+		s_cur = i >= 0 ? i : find(type, name, 1);
+		s_cur_new = i < 0 && s_n > had;
+	}
 	if (s_cur >= 0) {
 		s_cur_was = s_g[s_cur].last;
 		s_g[s_cur].last = pico_clock_utc();

@@ -1785,10 +1785,14 @@ static void cmd_sd_ls(const char *arg, void *data, unsigned sz)
 		par[pl ? pl : 1] = 0;
 		if (!pl) par[0] = '/';
 		if (fat_opendir(&s_fb_vol, par, &d) != 0) { fastboot_fail("sd-ls: no such directory"); return; }
-		while (fat_readdir(&d, &e) == 1) {
-			const char *a = e.name, *b = nm;
-			while (*a && b < hash && (*a | 32) == (*b | 32)) { a++; b++; }
-			if (e.is_dir && !*a && b == hash && --want == 0) break;
+		{
+			char comp[256];
+			int cl = (int)(hash - nm);
+			if (cl >= (int)sizeof comp) cl = (int)sizeof comp - 1;
+			memcpy(comp, nm, (size_t)cl);
+			comp[cl] = 0;
+			while (fat_readdir(&d, &e) == 1)
+				if (e.is_dir && fat_name_eq(comp, e.name) && --want == 0) break;
 		}
 		if (want || fat_opendir_entry(&s_fb_vol, &e, &d) != 0) { fastboot_fail("sd-ls: no such folder"); return; }
 	} else if (fat_opendir(&s_fb_vol, *arg ? arg : "/", &d) != 0) { fastboot_fail("sd-ls: no such directory"); return; }
@@ -1864,11 +1868,8 @@ static void cmd_sd_rm(const char *arg, void *data, unsigned sz)
 	name[nl] = 0;
 	if (hash) { want = 0; for (k = 1; hash[k] >= '0' && hash[k] <= '9'; k++) want = want * 10 + (hash[k] - '0'); }
 	if (fat_opendir(v, dir, &d) != 0) { fastboot_fail("sd-rm: no such folder"); return; }
-	while (want > 0 && fat_readdir(&d, &e) == 1) {
-		const char *a = e.name, *b = name;
-		while (*a && *b && (*a | 32) == (*b | 32)) { a++; b++; }
-		if (!*a && !*b) want--;
-	}
+	while (want > 0 && fat_readdir(&d, &e) == 1)
+		if (fat_name_eq(name, e.name)) want--;
 	if (want) { fastboot_fail("sd-rm: not there"); return; }
 	if (e.is_dir) {   /* only an empty folder: what is in it would be lost */
 		static fat_dir dd;
@@ -1881,6 +1882,20 @@ static void cmd_sd_rm(const char *arg, void *data, unsigned sz)
 	snprintf(lbuf, sizeof lbuf, "sd-rm: %s @%u %s (%d)", e.is_dir ? "folder" : "file", e.first_clus, k ? "failed" : "deleted", k);
 	fastboot_info(lbuf);
 	fastboot_okay("");
+}
+
+/* oem sd-rmn - the same with the path in the staged data (UTF-8, ending in a 0), for names a command
+ * line would not carry */
+static void cmd_sd_rmn(const char *arg, void *data, unsigned sz)
+{
+	static char path[256];
+	const char *d = (const char *)data;
+	unsigned i;
+	(void)arg;
+	for (i = 0; d && i < sz && i < sizeof path - 1 && d[i]; i++) path[i] = d[i];
+	if (!d || i == 0 || i >= sizeof path - 1) { fastboot_fail("sd-rmn: stage the path first"); return; }
+	path[i] = 0;
+	cmd_sd_rm(path, 0, 0);
 }
 /* oem pllog - the preloader's log from the pl/lk log store, staged for fastboot get_staged */
 static void cmd_pllog(const char *arg, void *data, unsigned sz)
@@ -2909,6 +2924,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem accelf", cmd_accelf, 1, 0);
 	fastboot_register("oem rumble", cmd_rumble, 1, 0);
 	fastboot_register("oem sd-rm:", cmd_sd_rm, 1, 0);
+	fastboot_register("oem sd-rmn", cmd_sd_rmn, 1, 0);
 #if defined(KONKR_KPA)
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);
 #endif

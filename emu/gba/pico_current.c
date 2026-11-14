@@ -25,6 +25,9 @@
 #include "menu/snespack.h"          /* snes_hash: the theme names are saved as this hash */
 #include "menu/snes_menu.h"         /* snes_input */
 #include "menu/gba_name.h"          /* gba_clean_name */
+#include "pico_names.h"            /* names in any script */
+#include "gba_sd_save.h"           /* gba_sd_legacy_own */
+#include "pico_fold.h"             /* names' letters without their accents */
 #include "sd_fat.h"                 /* gba_rom_entry, GBA_CONSOLE_* */
 #include "fat_ro.h"
 #include "fat_wr.h"
@@ -166,11 +169,14 @@ enum { T_IMAGE = 1, T_MASK = 2, T_FONT = 3, T_TEXT = 4 };
 typedef struct { char name[32]; uint16_t type, flags, w, h; uint32_t off, len; } cur_entry;
 typedef struct { int w, h; const uint16_t *rgb; const uint8_t *a; const uint8_t *rgb24; } cimg;   /* no rgb: a mask */
 typedef struct { uint32_t code; int16_t xo, yo; uint16_t x, y, w, h; uint32_t adv; } cglyph;
-/* a font, and the glyphs the language in use adds to it (its own atlas) */
+/* a font, the glyphs the language in use adds to it (its own atlas), and for a font that shows game
+ * names the names' glyphs past the font's own (pico_names.c, an atlas of their own too) */
 typedef struct {
 	int px, asc, n, aw, nk; const cglyph *g; const int32_t *kern; const uint8_t *atlas;
 	int sn, saw; const cglyph *sg; const uint8_t *satlas;
+	int nn, naw, nmed; unsigned int nser; const cglyph *ng; const uint8_t *natlas;
 } cfont;
+typedef char cglyph_is_pico_nglyph[sizeof(cglyph) == sizeof(pico_nglyph) ? 1 : -1];
 
 static const uint8_t *s_raw;
 static const cur_entry *s_ent;
@@ -211,6 +217,22 @@ static void font_extra(cfont *f, const char *name)
 			f->satlas = (const uint8_t *)(f->sg + f->sn);
 		}
 	}
+}
+/* the names' glyphs at this font's size (medium: its weight is the focused rows'); again whenever
+ * more were read */
+static void font_names(cfont *f, int medium)
+{
+	const pico_nglyph *g = 0;
+	const uint8_t *at = 0;
+	int aw = 0;
+	f->nmed = medium;
+	f->nser = pico_names_serial();
+	f->nn = pico_names_set(f->px, medium, &g, &at, &aw);
+	f->ng = (const cglyph *)g; f->natlas = at; f->naw = aw;
+}
+static void font_names_sync(cfont *f)
+{
+	if (f->g && f->nser && f->nser != pico_names_serial()) font_names(f, f->nmed);
 }
 static cfont font(const char *name)
 {
@@ -439,6 +461,8 @@ static uint32_t utf8_next(const char **ps)
 	if (c >= 0xC0 && c < 0xE0 && (s[1] & 0xC0) == 0x80) { c = ((c & 31) << 6) | (s[1] & 63); *ps += 2; }
 	else if (c >= 0xE0 && c < 0xF0 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80) {
 		c = ((c & 15) << 12) | ((s[1] & 63) << 6) | (s[2] & 63); *ps += 3;
+	} else if (c >= 0xF0 && c < 0xF8 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80) {
+		c = ((c & 7) << 18) | ((s[1] & 63) << 12) | ((s[2] & 63) << 6) | (s[3] & 63); *ps += 4;
 	} else *ps += 1;
 	return c;
 }
@@ -453,7 +477,8 @@ static const cglyph *glyph_find(const cglyph *g, int lo, int hi, uint32_t c)
 	return 0;
 }
 /* a code point's glyph and the atlas it is in: the font's fixed ones, then the others it carries
- * (the languages' names, sorted), then the language pack's; '?' when none has it */
+ * (the languages' names, sorted), then the language pack's, then the game names'; '?' when none
+ * has it */
 static const cglyph *glyph(const cfont *f, uint32_t c, const uint8_t **atlas, int *aw)
 {
 	int i = c >= 0x20 && c < 0x7F ? (int)c - 0x20 : c >= 0xA0 && c <= 0xFF ? 95 + (int)c - 0xA0 :
@@ -464,6 +489,7 @@ static const cglyph *glyph(const cfont *f, uint32_t c, const uint8_t **atlas, in
 	if (i < 0) {
 		if ((g = glyph_find(f->g, GLYPHS_FIXED, f->n - 1, c))) return g;
 		if (f->sg && (g = glyph_find(f->sg, 0, f->sn - 1, c))) { *atlas = f->satlas; *aw = f->saw; return g; }
+		if (f->ng && (g = glyph_find(f->ng, 0, f->nn - 1, c))) { *atlas = f->natlas; *aw = f->naw; return g; }
 	}
 	return &f->g['?' - 0x20];
 }
@@ -631,6 +657,7 @@ static void art_load(void)
 	A.rail_t = font("f_rail"); A.railf_t = font("f_railf"); A.tag13 = font("f_tag13"); A.tag11 = font("f_tag11");
 	A.count = font("f_count"); A.lib = font("f_lib"); A.button = font("f_button");
 	A.row = font("f_row"); A.rowf = font("f_rowf"); A.info = font("f_info");
+	font_names(&A.row, 0); font_names(&A.rowf, 1);
 	A.srow = font("f_srow"); A.srowf = font("f_srowf"); A.sval = font("f_sval");
 	A.dname = font("f_dname"); A.dnum = font("f_dnum"); A.dunit = font("f_dunit");
 	A.hintc = font("f_hintc"); A.hint = font("f_hint"); A.empty = font("f_empty");
@@ -702,6 +729,12 @@ static unsigned short *s_res;         /* the search's results */
 
 static int sys_of(int type) { int i; for (i = 0; i < S.nsys; i++) if (S.systype[i] == type) return i; return -1; }
 
+/* the names' glyphs: what the library's names use is read, then the fonts that show names take them */
+static void names_take(void)
+{
+	pico_names_prepare(&s_names[0][0], 128, s_nrom);
+	font_names_sync(&A.row); font_names_sync(&A.rowf);
+}
 static int roster_build(void)
 {
 	int i, t, k = 0;
@@ -717,18 +750,30 @@ static int roster_build(void)
 		if (n) { S.systype[S.nsys] = t; S.syscount[S.nsys] = n; s_libofs[S.nsys] = k; S.nsys++; k += n; }
 	}
 	for (i = 0; i < s_nrom; i++) {
-		gba_clean_name(s_roms[i].name, s_names[i]);
-		if (!s_names[i][0]) { strncpy(s_names[i], s_roms[i].name, 127); s_names[i][127] = 0; }
+		char clean[128], lab[128];
+		const char *l;
+		gba_clean_name(s_roms[i].uname[0] ? s_roms[i].uname : s_roms[i].name, clean);
+		if (!clean[0]) { strncpy(clean, s_roms[i].uname[0] ? s_roms[i].uname : s_roms[i].name, 127); clean[127] = 0; }
+		l = pico_names_label(clean, lab, sizeof lab);   /* Arabic joined, right to left in drawing order */
+		strncpy(s_names[i], l, 127); s_names[i][127] = 0;
 	}
+	names_take();
 	return 0;
 }
 
 /* ---- recently played: /gammaos/recent.txt, "<type> <name>" a line, newest first ----------- */
 static int rom_find(int type, const char *name)
 {
+	char legacy[128];
 	int i;
 	for (i = 0; i < s_nrom; i++)
 		if (s_roms[i].type == type && !strcmp(s_roms[i].name, name)) return i;
+	/* a line written before names were kept whole: the old form, '_' for each character outside
+	 * ASCII, when no other game's name came out the same (the next save of the list writes the
+	 * whole name) */
+	for (i = 0; i < s_nrom; i++)
+		if (s_roms[i].type == type && gba_sd_legacy_own(s_roms[i].name, legacy, (int)sizeof legacy) &&
+		    !strcmp(legacy, name)) return i;
 	return -1;
 }
 static void recent_load(void)
@@ -1264,6 +1309,21 @@ static void list_marks(float x, float y, float w, int n, int top, int sel)
 	text(&A.info, U(x + w), U(y + LIB_ROWS * 51 + 27), t, C_MUTED, 256, 2, 0, 0);
 }
 /* The letter a fast move or a jump lands on, large over the list for a moment (S.badge_t). */
+/* the letter a name files under in a long list: its first letter without accents, capital, or '#'
+ * for a name that starts with a digit or a letter of another script (sorted after Z) */
+static char name_letter(const char *s)
+{
+	while (*s) {
+		uint32_t c = pico_fold_cp(pico_utf8_next(&s));
+		if (c >= 'a' && c <= 'z') return (char)(c - 32);
+		if (c >= 'A' && c <= 'Z') return (char)c;
+		if (c >= '0' && c <= '9') return '#';
+		if ((c >= 0x370 && c <= 0x1FFF) || (c >= 0x3040 && c <= 0xD7A3) || (c >= 0xF900 && c <= 0xFAFF) ||
+		    (c >= 0xFB1D && c <= 0xFEFF) || (c >= 0xFF21 && c <= 0xFF5A) || c >= 0x20000)
+			return '#';   /* a letter of another script */
+	}
+	return '#';
+}
 static void letter_badge(float cx, float cy)
 {
 	char t[2];
@@ -1444,17 +1504,33 @@ static const char *const k_short[NSYS] = { "GB", "GBC", "GBA", "SNES", "MD", "SM
 static char lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c; }
 /* where word w (n letters, lower case) is in name s, without case: -1 none, else 0 at the start,
  * 1 at the start of one of its words, 2 inside one */
+/* a name's character as a search compares it: its letter without accents, small; 0 for a mark
+ * that only puts an accent on the letter before */
+static uint32_t fold_low(uint32_t c)
+{
+	c = pico_fold_cp(c);
+	return c >= 'A' && c <= 'Z' ? c + 32 : c;
+}
 static int word_at(const char *s, const char *w, int n)
 {
-	int i, best = -1;
-	for (i = 0; s[i]; i++) {
-		int k;
-		for (k = 0; k < n && s[i + k] && lower(s[i + k]) == w[k]; k++) ;
+	const char *p = s, *prev = 0;
+	int best = -1;
+	while (*p) {
+		const char *q = p;
+		int k = 0;
+		while (k < n && *q) {
+			uint32_t c = fold_low(pico_utf8_next(&q));
+			if (!c) continue;
+			if (c != (unsigned char)w[k]) break;
+			k++;
+		}
 		if (k == n) {
-			int at = i == 0 ? 0 : (s[i - 1] == ' ' || s[i - 1] == '-' || s[i - 1] == ':' || s[i - 1] == '.') ? 1 : 2;
+			int at = p == s ? 0 : (*prev == ' ' || *prev == '-' || *prev == ':' || *prev == '.') ? 1 : 2;
 			if (best < 0 || at < best) best = at;
 			if (best == 0) break;
 		}
+		prev = p;
+		pico_utf8_next(&p);
 	}
 	return best;
 }
@@ -1833,7 +1909,7 @@ static void list_move(const unsigned short *idx, int n, int *sel, int *top, int 
 	*sel = v;
 	if (*sel < *top) *top = *sel;
 	if (*sel >= *top + LIB_ROWS) *top = *sel - LIB_ROWS + 1;
-	if (d > 1 || d < -1) { S.badge = gba_name_letter(s_names[idx[v]]); S.badge_t = .7f; }
+	if (d > 1 || d < -1) { S.badge = name_letter(s_names[idx[v]]); S.badge_t = .7f; }
 }
 /* to the first game of the next letter, or back to the first of this one (of the one before when
  * already there): L and R in a list of more than a few pages */
@@ -1842,19 +1918,19 @@ static void list_letter(const unsigned short *idx, int n, int *sel, int *top, in
 	int i = *sel;
 	char cur;
 	if (n <= 0) return;
-	cur = gba_name_letter(s_names[idx[i]]);
+	cur = name_letter(s_names[idx[i]]);
 	if (dir > 0) {
-		while (i < n - 1 && gba_name_letter(s_names[idx[i]]) == cur) i++;
+		while (i < n - 1 && name_letter(s_names[idx[i]]) == cur) i++;
 	} else {
-		if (i > 0 && gba_name_letter(s_names[idx[i - 1]]) != cur) i--;
-		cur = gba_name_letter(s_names[idx[i]]);
-		while (i > 0 && gba_name_letter(s_names[idx[i - 1]]) == cur) i--;
+		if (i > 0 && name_letter(s_names[idx[i - 1]]) != cur) i--;
+		cur = name_letter(s_names[idx[i]]);
+		while (i > 0 && name_letter(s_names[idx[i - 1]]) == cur) i--;
 	}
 	*sel = i;
 	if (*sel < *top) *top = *sel;
 	if (*sel >= *top + LIB_ROWS) *top = *sel;   /* a jump: the letter's first game at the top */
 	if (*top > n - LIB_ROWS) *top = n - LIB_ROWS > 0 ? n - LIB_ROWS : 0;
-	S.badge = gba_name_letter(s_names[idx[i]]);
+	S.badge = name_letter(s_names[idx[i]]);
 	S.badge_t = .7f;
 }
 
@@ -2300,6 +2376,7 @@ static int igm_load(void)
 	G.tag11 = font("f_tag11"); G.tag13 = font("f_tag13"); G.srow = font("f_srow"); G.srowf = font("f_srowf");
 	G.sval = font("f_sval"); G.dname = font("f_dname"); G.info = font("f_info");
 	G.hint = font("f_hint"); G.hintc = font("f_hintc");
+	font_names(&G.dname, 0);
 	G.lang_serial = pico_lang_serial();
 	for (i = 0; i < IC_N; i++) G.ic[i] = img(ic[i]);
 	G.chev = img("ig_chev"); G.back = img("ig_back"); G.gamma = img("gamma");
@@ -2451,7 +2528,14 @@ void pico_igm_open(const struct igm_core *c)
 	G.ext_prev = 0; s_igm_rowh_ok = 0;
 	G.batt = gba_battery_last(&G.chg); G.batt_tick = G.tick;
 	G.fig_tick = 0; G.fig_page = -1;
-	gba_clean_name(c->game ? c->game : "", G.title);
+	{	/* the game's name as the menus draw it, and its glyphs */
+		char clean[128], lab[128];
+		gba_clean_name(c->game ? c->game : "", clean);
+		strncpy(G.title, pico_names_label(clean, lab, sizeof lab), sizeof G.title - 1);
+		G.title[sizeof G.title - 1] = 0;
+		pico_names_prepare_one(G.title);
+		font_names_sync(&G.dname);
+	}
 	colour_set(g_dbg_colour >= 0 ? g_dbg_colour : ayaneo_get_menu_colour());   /* oem showcolour */
 	G.pwu = s_uw * .42f < 470 ? s_uw * .42f : 470;
 	G.pw = U(G.pwu); G.sh = U(34);

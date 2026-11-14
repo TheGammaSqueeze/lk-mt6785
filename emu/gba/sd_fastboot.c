@@ -38,10 +38,12 @@ static unsigned long parse_u(const char *s)
 
 static void cmd_sd_probe(const char *arg, void *data, unsigned sz)
 {
-	unsigned char s0[512];
-	fat_vol v;
+	/* static: the fastboot thread's stack is 8 KB, and the listing below goes deep (commands run
+	 * one at a time) */
+	static unsigned char s0[512];
+	static fat_vol v;
+	static gba_rom_entry roms[16];
 	fat_file f;
-	gba_rom_entry roms[16];
 	unsigned long n;
 	int rc, i, nr;
 	(void)arg; (void)data; (void)sz;
@@ -271,17 +273,16 @@ static void cmd_sd_wtest(const char *arg, void *data, unsigned sz)
  * fastboot USB bulk stack + the tested FAT writer, so no separate UMS/ADB gadget is
  * needed to get files (e.g. boxart) onto the card.
  */
-static void cmd_sd_put(const char *arg, void *data, unsigned sz)
+/* write data to the card at path (its folders made as needed) and send fastboot its reply */
+static void sd_put(const char *path, const void *data, unsigned sz)
 {
-	static char dir[96];
-	const char *path = arg, *slash = 0, *name;
+	static char dir[256];
+	const char *slash = 0, *name;
 	fat_vol v;
 	int rc, i;
 
-	while (*path == ' ' || *path == ':') path++;
 	if (*path != '/' || sz == 0 || !data) { fastboot_fail("sd-put: need /path + payload"); return; }
-
-	/* split at the LAST '/': dir = leading part, name = trailing 8.3 component */
+	/* split at the LAST '/': dir = leading part, name = the last component */
 	for (i = 0; path[i]; i++) if (path[i] == '/') slash = path + i;
 	if (!slash || !slash[1]) { fastboot_fail("sd-put: bad path"); return; }
 	name = slash + 1;
@@ -306,10 +307,31 @@ static void cmd_sd_put(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+static void cmd_sd_put(const char *arg, void *data, unsigned sz)
+{
+	while (*arg == ' ' || *arg == ':') arg++;
+	sd_put(arg, data, sz);
+}
+
+/* oem sd-putn: the same with the path in the staged data instead of the command, for names a
+ * command line would not carry (any UTF-8): the path, a 0 byte, then the file's bytes */
+static void cmd_sd_putn(const char *arg, void *data, unsigned sz)
+{
+	static char path[256];
+	const char *d = (const char *)data;
+	unsigned i;
+	(void)arg;
+	for (i = 0; i < sz && i < sizeof path - 1 && d && d[i]; i++) path[i] = d[i];
+	if (!d || i >= sz || d[i] || i == 0) { fastboot_fail("sd-putn: need path, 0, payload"); return; }
+	path[i] = 0;
+	sd_put(path, d + i + 1, sz - i - 1);
+}
+
 void gba_sd_fastboot_register(void)
 {
 	fastboot_register("oem sd-probe", cmd_sd_probe, 1, 0);
 	fastboot_register("oem sd-read:", cmd_sd_read, 1, 0);
 	fastboot_register("oem sd-wtest", cmd_sd_wtest, 1, 0);
 	fastboot_register("oem sd-put:", cmd_sd_put, 1, 1);
+	fastboot_register("oem sd-putn", cmd_sd_putn, 1, 1);
 }

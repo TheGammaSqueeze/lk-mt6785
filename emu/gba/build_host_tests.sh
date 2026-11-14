@@ -7,7 +7,8 @@
 # on pre-existing files (unlike fat_ro_test.c, which is run separately against a
 # fixed image with known content).
 #
-# Needs: gcc, mkfs.fat, fsck.fat, sudo (loop-mount to make dirs + verify). No mtools.
+# Needs: gcc, zlib, mkfs.fat, fsck.fat, sudo (loop-mount to make dirs + verify). No mtools.
+# Names outside ASCII have their own test, fat_names_test.sh (run last).
 #
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -16,10 +17,16 @@ MNT=/tmp/gba_sd_mnt
 mkdir -p "$MNT" 2>/dev/null || true
 
 echo "== building =="
+# the LK's <lib/zlib.h> is the host's zlib here, and the state folder a constant
+INC=$(mktemp -d); trap 'rm -rf "$INC"' EXIT
+mkdir -p "$INC/lib"; echo '#include <zlib.h>' > "$INC/lib/zlib.h"
+echo 'const char *g_gba_state_dir = "/states/gba";' > "$INC/statedir.c"
+printf 'int ayaneo_settings_serialize(unsigned char *b, int c) { (void)b; (void)c; return 0; }\nvoid ayaneo_settings_deserialize(const unsigned char *b, int n) { (void)b; (void)n; }\n' > "$INC/settings.c"
 gcc -O2 -I. -o /tmp/wr_test   fat_wr_test.c      fat_ro.c fat_wr.c fat_exfat.c
-gcc -O2 -I. -o /tmp/save_test gba_sd_save_test.c fat_ro.c fat_wr.c fat_exfat.c gba_sd_save.c
+gcc -O2 -I. -o /tmp/save_test gba_sd_save_test.c fat_ro.c fat_wr.c fat_exfat.c gba_sd_save.c "$INC/statedir.c"
 gcc -O2 -I. -o /tmp/dirext_test fat_dirext_test.c fat_ro.c fat_wr.c fat_exfat.c
-gcc -O2 -I. -o /tmp/sdfat_test  sd_fat_test.c      fat_ro.c sd_fat.c fat_wr.c fat_exfat.c
+gcc -O2 -I. -I"$INC" -o /tmp/sdfat_test  sd_fat_test.c      fat_ro.c sd_fat.c fat_wr.c fat_exfat.c \
+	rom_archive.c rom_7z.c rom_lzma.c pico_fold.c gba_sd_save.c "$INC/statedir.c" "$INC/settings.c" -lz
 gcc -O2 -I. -o /tmp/nav_test    rom_select_nav_test.c
 gcc -O2 -I. -o /tmp/mkdir_test  fat_mkdir_test.c   fat_ro.c fat_wr.c fat_exfat.c
 gcc -O2 -I. -o /tmp/exfat_test  fat_exfat_test.c   fat_ro.c fat_wr.c fat_exfat.c
@@ -36,7 +43,7 @@ mkimg() { # <img> <mkfs-args...>  - fresh image with the SD dir layout (no roms 
 	sudo dd if=/dev/urandom of="$MNT/roms/gba/good2.gba" bs=4096 count=1 status=none
 	sudo dd if=/dev/urandom of="$MNT/roms/gba/good3.gba" bs=4096 count=1 status=none
 	sudo touch "$MNT/roms/gba/empty.gba"
-	sudo sync; sudo umount "$MNT"
+	sudo umount "$MNT"
 }
 
 run() { # <label> <mkfs-args...>
@@ -51,7 +58,7 @@ run() { # <label> <mkfs-args...>
 	local mimg=/tmp/gba_sd_$2.mkd
 	rm -f "$mimg"; dd if=/dev/zero of="$mimg" bs=1M count=96 status=none
 	mkfs.fat "${@:2}" "$mimg" >/dev/null 2>&1
-	sudo mount -o loop "$mimg" "$MNT"; sudo mkdir -p "$MNT/roms/gba"; sudo sync; sudo umount "$MNT"
+	sudo mount -o loop "$mimg" "$MNT"; sudo mkdir -p "$MNT/roms/gba"; sudo umount "$MNT"
 	/tmp/mkdir_test "$mimg"
 	echo -n "fsck(mkd): "; fsck.fat -n "$mimg" 2>&1 | tail -1
 	echo -n "fsck: "; fsck.fat -n "$img.b" 2>&1 | tail -1
@@ -62,3 +69,4 @@ run "FAT32 32KB" -F 32 -s 64
 run "FAT16 2KB"  -F 16 -s 4
 
 echo "== all FAT-write host tests PASS =="
+bash ./fat_names_test.sh

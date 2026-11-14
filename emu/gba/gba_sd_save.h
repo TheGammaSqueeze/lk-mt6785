@@ -21,6 +21,30 @@ int gba_sd_write_named(fat_vol *v, const char *dir, const char *romname,
  * that cut the name at its last dot, whatever followed it). */
 void gba_sd_file_name(const char *rom, const char *ext, char *out, int cap, int legacy);
 
+/* A game's key (gba_rom_entry.name, UTF-8) as versions before 1.1 filed it: every character
+ * outside ASCII as '_', one for each UTF-16 unit it takes (so two for one beyond U+FFFF), cut at
+ * 127. Returns 1 when that differs from the key (it holds a character outside ASCII), 0 when it
+ * is the same; out (cap bytes) gets it either way. Reads of a game's files fall back to it, and
+ * writes always go under the key, so a game's files move to it the first time they are written. */
+int gba_sd_legacy_key(const char *key, char *out, int cap);
+
+/* The underscore forms the library's games have, so a game reads files under its form only when
+ * it is its alone: two games of one form (two names of the same shape in other scripts, or a name
+ * that is that form itself) leave such files as they are, for neither can tell whose they are.
+ * The listing (sd_fat.c) calls begin, then add with every game's key. */
+void gba_sd_legacy_begin(void);
+void gba_sd_legacy_add(const char *key);
+/* 1 when two or more of the games listed have this underscore form (or nothing is listed yet):
+ * no game reads files under it */
+int  gba_sd_legacy_shared(const char *legacy);
+/* gba_sd_legacy_key, then 1 only when that form differs from the key and is the game's alone */
+int  gba_sd_legacy_own(const char *key, char *out, int cap);
+
+/* Is the resume record rec (the name ayaneo_resume_mark kept, its first 99 bytes) the game of this
+ * key? 2: it is the key; 1: it is the key's form before 1.1 (gba_sd_legacy_key) and no other
+ * game has that form (gba_sd_legacy_own); 0: no. A caller looks for a 2 first. */
+int gba_sd_resume_is(const char *key, const char *rec);
+
 /* Convenience wrappers for the fixed layout. slot 0..9 -> ".st0".."st9". */
 uint32_t gba_sd_load_sav(fat_vol *v, const char *rom, unsigned char *dst, uint32_t cap);
 int      gba_sd_write_sav(fat_vol *v, const char *rom, const void *buf, uint32_t len);

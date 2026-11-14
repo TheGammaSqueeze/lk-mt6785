@@ -108,6 +108,53 @@ static uint64_t le64(const uint8_t *p) { return le32(p) | ((uint64_t)le32(p + 4)
 
 struct zip_rom { uint32_t method, flags, crc; uint64_t csize, usize, data; };
 
+/* The upper half of code page 437, the character set a zip entry's name is in when it is not
+ * marked UTF-8 (and does not read as UTF-8): the Unicode code point of bytes 0x80..0xFF. */
+static const uint16_t k_cp437[128] = {
+	0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7, 0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5,
+	0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9, 0x00FF, 0x00D6, 0x00DC, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192,
+	0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA, 0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+	0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556, 0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
+	0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F, 0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
+	0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B, 0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+	0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4, 0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,
+	0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248, 0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+};
+/* do n bytes read as UTF-8, every character whole */
+static int is_utf8(const uint8_t *s, uint32_t n)
+{
+	uint32_t i = 0;
+	while (i < n) {
+		uint32_t more = s[i] < 0x80 ? 0 : (s[i] & 0xE0) == 0xC0 ? 1 : (s[i] & 0xF0) == 0xE0 ? 2 : (s[i] & 0xF8) == 0xF0 ? 3 : 4, k;
+		if (more == 4 || (more && (s[i] < 0xC2 || i + more >= n))) return 0;
+		for (k = 1; k <= more; k++) if ((s[i + k] & 0xC0) != 0x80) return 0;
+		i += 1 + more;
+	}
+	return 1;
+}
+/* a zip entry's name (n bytes) in UTF-8: as it is when the entry says it is UTF-8 (flag bit 11)
+ * or it reads as UTF-8, else from code page 437 */
+static void zip_name_utf8(const uint8_t *raw, uint32_t n, int utf8_flag, char *out, int cap)
+{
+	uint32_t i;
+	int o = 0;
+	if (utf8_flag || is_utf8(raw, n)) {
+		for (i = 0; i < n && o < cap - 1; i++) out[o++] = (char)raw[i];
+		out[o] = 0;
+		return;
+	}
+	for (i = 0; i < n; i++) {
+		uint32_t c = raw[i] < 0x80 ? raw[i] : k_cp437[raw[i] - 0x80];
+		if (c < 0x80) { if (o + 1 > cap - 1) break; out[o++] = (char)c; }
+		else if (c < 0x800) { if (o + 2 > cap - 1) break; out[o++] = (char)(0xC0 | (c >> 6)); out[o++] = (char)(0x80 | (c & 63)); }
+		else {
+			if (o + 3 > cap - 1) break;
+			out[o++] = (char)(0xE0 | (c >> 12)); out[o++] = (char)(0x80 | ((c >> 6) & 63)); out[o++] = (char)(0x80 | (c & 63));
+		}
+	}
+	out[o] = 0;
+}
+
 /* the ROM's entry: found through the central directory, its data placed through its local header */
 static int zip_find(fat_file *f, const char *exts, unsigned member, struct ra_scratch *sc, struct zip_rom *z,
 		    void (*each)(void *ctx, const char *name), void *ctx, uint32_t *count)
@@ -159,7 +206,11 @@ static int zip_find(fat_file *f, const char *exts, unsigned member, struct ra_sc
 		if (ra_ext_match(name, exts) && (each || seen++ == member) && !found) {
 			const uint8_t *x = b + i + 46 + nlen, *xe = x + xlen;
 			uint64_t loc = le32(b + i + 42);
-			if (each) { each(ctx, name); (*count)++; i += 46 + nlen + xlen + clen; continue; }
+			if (each) {	/* listed by its name in UTF-8 */
+				char un[512];
+				zip_name_utf8(b + i + 46, nlen < 255 ? nlen : 255, le16(b + i + 8) & 0x800u, un, sizeof un);
+				each(ctx, un); (*count)++; i += 46 + nlen + xlen + clen; continue;
+			}
 			found = 1;
 			z->flags = le16(b + i + 8); z->method = le16(b + i + 10); z->crc = le32(b + i + 16);
 			z->csize = le32(b + i + 20); z->usize = le32(b + i + 24);

@@ -95,6 +95,10 @@ for dir in armGBA-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico;
 	printf 'Built from https://github.com/TheGammaSqueeze/%s at commit %s\n(the emulator upstream is its submodule, the GammaOS Pico changes are in patches/).\n' \
 		"$dir" "$(git -C cores/$dir rev-parse HEAD)" > "$d/SOURCE.txt"
 done
+# the menus' fonts (Inter, Noto), whose glyphs the menu, language and names packs are drawn from
+mkdir -p "$S/licences/fonts"
+cp tools/ayaneo/pico_current/art/fonts/OFL.txt "$S/licences/fonts/Inter-OFL.txt"
+cp tools/ayaneo/pico_current/art/fonts/OFL-Noto.txt "$S/licences/fonts/Noto-OFL.txt"
 sed "s/@VERSION@/$VER/; s/@COMMIT@/$LK_COMMIT/" tools/release/README_sdcard.txt > "$S/README.txt"
 
 # ---- zips, checksums, notes ----

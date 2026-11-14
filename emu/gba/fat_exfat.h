@@ -4,11 +4,11 @@
  * fat_mount detects an exFAT volume and hands over to exfat_mount; every public call then
  * dispatches here when v->is_exfat is set, so the cores keep using fat_opendir / fat_readdir /
  * fat_open / fat_read / fat_wr_put / fat_wr_mkpath unchanged. Reading follows cluster chains
- * or contiguous runs (the NoFatChain flag), names are decoded from UTF-16 to the same ASCII
- * form the FAT reader produces. Writing replaces a whole file like the FAT writer: allocate in
- * the bitmap (a contiguous run when one exists, so no FAT writes are needed), write the data,
- * append a file / stream / name entry set with its checksums, then remove the old set and
- * free its clusters, so a power cut never loses the previous file.
+ * or contiguous runs (the NoFatChain flag), names are decoded from UTF-16 to UTF-8, as the FAT
+ * reader gives them. Writing replaces a whole file like the FAT writer: allocate in the bitmap
+ * (a contiguous run when one exists, so no FAT writes are needed), write the data, append a file
+ * / stream / name entry set with its checksums, then remove the old set and free its clusters,
+ * so a power cut never loses the previous file.
  */
 #ifndef FAT_EXFAT_H
 #define FAT_EXFAT_H

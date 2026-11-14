@@ -35,7 +35,7 @@ struct igm_core {
 	const char *(*opt_value)(int i, char *buf);     /* buf holds 96 */
 	void (*opt_change)(int i, int dir);
 	int system;                                      /* GBA_CONSOLE_* */
-	const char *game;                                /* the game's file name */
+	const char *game;                                /* the game's file name as the card has it (UTF-8) */
 };
 
 /* the Current theme is in use and the menu's pack loads (loaded on the first call of a game) */

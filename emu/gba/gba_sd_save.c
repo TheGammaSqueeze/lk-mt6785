@@ -1,6 +1,7 @@
 /* Save/state persistence to the microSD - see gba_sd_save.h. */
 #include "gba_sd_save.h"
 #include "fat_wr.h"
+#include <string.h>
 extern const char *g_gba_state_dir;   /* gba_driver.c: "/states/gba" for gpSP, the core's own folder for armGBA */
 /* the card writer (card_writer.c), where the LK has one: states and battery saves go to the card
  * off the game's thread, and a read waits for what is still being written */
@@ -42,6 +43,97 @@ void gba_sd_file_name(const char *rom, const char *ext, char *out, int cap, int 
 	base_ext_mode(rom, ext, out, cap, legacy);
 }
 
+int gba_sd_legacy_key(const char *key, char *out, int cap)
+{
+	int o = 0, other = 0;
+	if (cap > 128) cap = 128;              /* the 127 characters the older key was cut at */
+	if (cap < 1) return 0;
+	while (*key && o < cap - 1) {
+		uint32_t c = fat_u8_next(&key);
+		if (c < 0x80) { out[o++] = (char)c; continue; }
+		other = 1;
+		out[o++] = '_';
+		if (c >= 0x10000 && o < cap - 1) out[o++] = '_';
+	}
+	out[o] = 0;
+	return other;
+}
+
+/* the underscore forms of the games listed: a hash set of their two 32 bit hashes, with how many
+ * games have each (up to 2: enough to say shared) */
+#define LEG_SLOTS 65536u                  /* a power of two, twice the games listed at most */
+struct leg_ent { uint32_t a, b; uint8_t n; };
+static struct leg_ent *s_leg;
+static int s_leg_ready;
+static void *leg_mem(unsigned int n)
+{
+#ifdef __arm__
+	extern void *pico_lib_alloc(unsigned int size);
+	return pico_lib_alloc(n);
+#else
+	extern void *calloc(unsigned long, unsigned long);
+	return calloc(1, n);
+#endif
+}
+/* the slot of a form: where it is, or the empty one it would take (nothing written) */
+static struct leg_ent *leg_slot(const char *s, uint32_t *pa, uint32_t *pb)
+{
+	uint32_t a = 2166136261u, b = 5381u, i;
+	for (; *s; s++) {
+		unsigned char c = (unsigned char)*s;
+		if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);   /* the card's names match in either case */
+		a = (a ^ c) * 16777619u;
+		b = b * 33u + c;
+	}
+	a |= 1u;                                                      /* 0 marks an empty slot */
+	for (i = (a ^ (b << 9)) & (LEG_SLOTS - 1u); s_leg[i].a && (s_leg[i].a != a || s_leg[i].b != b);
+	     i = (i + 1u) & (LEG_SLOTS - 1u)) ;
+	*pa = a; *pb = b;
+	return &s_leg[i];
+}
+void gba_sd_legacy_begin(void)
+{
+	s_leg_ready = 0;
+	if (!s_leg) s_leg = (struct leg_ent *)leg_mem(LEG_SLOTS * (unsigned)sizeof *s_leg);
+	if (s_leg) { memset(s_leg, 0, LEG_SLOTS * sizeof *s_leg); s_leg_ready = 1; }
+}
+void gba_sd_legacy_add(const char *key)
+{
+	char legacy[128];
+	struct leg_ent *e;
+	uint32_t a, b;
+	if (!s_leg_ready) return;
+	gba_sd_legacy_key(key, legacy, (int)sizeof legacy);
+	e = leg_slot(legacy, &a, &b);
+	e->a = a; e->b = b;
+	if (e->n < 2) e->n++;
+}
+int gba_sd_legacy_shared(const char *legacy)
+{
+	uint32_t a, b;
+	if (!s_leg_ready) return 1;           /* nothing listed: whose a file is cannot be told */
+	return leg_slot(legacy, &a, &b)->n >= 2;
+}
+int gba_sd_legacy_own(const char *key, char *out, int cap)
+{
+	return gba_sd_legacy_key(key, out, cap) && !gba_sd_legacy_shared(out);
+}
+
+#define RESUME_REC 99                  /* the bytes of a name the resume record holds */
+/* rec names key: the same, or key's start when the record was cut */
+static int rec_is(const char *key, const char *rec)
+{
+	size_t L = strlen(rec);
+	return L == RESUME_REC ? !strncmp(key, rec, L) : !strcmp(key, rec);
+}
+int gba_sd_resume_is(const char *key, const char *rec)
+{
+	char legacy[128];
+	if (!key || !rec || !rec[0]) return 0;
+	if (rec_is(key, rec)) return 2;
+	return gba_sd_legacy_own(key, legacy, (int)sizeof legacy) && rec_is(legacy, rec) ? 1 : 0;
+}
+
 static uint32_t read_one(fat_vol *v, const char *dir, const char *nm, unsigned char *dst, uint32_t cap)
 {
 	char path[300];
@@ -56,19 +148,31 @@ static uint32_t read_one(fat_vol *v, const char *dir, const char *nm, unsigned c
 	return fat_read(&f, 0, dst, cap < f.size ? cap : f.size);
 }
 
+/* the file a game's key and an older form of it would name, unless it is one already tried */
+static uint32_t read_form(fat_vol *v, const char *dir, const char *rom, const char *ext, int cut,
+			  char tried[4][288], int *nt, unsigned char *dst, uint32_t cap)
+{
+	int i;
+	base_ext_mode(rom, ext, tried[*nt], (int)sizeof tried[0], cut);
+	for (i = 0; i < *nt; i++) if (!strcmp(tried[i], tried[*nt])) return 0;
+	return read_one(v, dir, tried[(*nt)++], dst, cap);
+}
+
 uint32_t gba_sd_read_named(fat_vol *v, const char *dir, const char *romname,
 			   const char *ext, unsigned char *dst, uint32_t cap)
 {
-	char nm[288], old[288];
+	char tried[4][288], legacy[128];
+	int nt = 0;
 	uint32_t n;
-	base_ext(romname, ext, nm, (int)sizeof nm);
-	n = read_one(v, dir, nm, dst, cap);
-	if (n) return n;
-	/* a file written before the fix sits under the cut name: read it there (the next
-	 * write puts it under the full name) */
-	base_ext_mode(romname, ext, old, (int)sizeof old, 1);
-	{ int i = 0; while (nm[i] && nm[i] == old[i]) i++; if (nm[i] == old[i]) return 0; }
-	return read_one(v, dir, old, dst, cap);
+	/* the name; then where older versions put the file (the next write puts it under the name):
+	 * cut at its last dot, whatever followed it; and with each character outside ASCII as '_' */
+	if ((n = read_form(v, dir, romname, ext, 0, tried, &nt, dst, cap)) != 0) return n;
+	if ((n = read_form(v, dir, romname, ext, 1, tried, &nt, dst, cap)) != 0) return n;
+	/* the underscore form only when it is this game's alone: another game of that form may be
+	 * the one the file is for */
+	if (!gba_sd_legacy_own(romname, legacy, (int)sizeof legacy)) return 0;
+	if ((n = read_form(v, dir, legacy, ext, 0, tried, &nt, dst, cap)) != 0) return n;
+	return read_form(v, dir, legacy, ext, 1, tried, &nt, dst, cap);
 }
 
 int gba_sd_write_named(fat_vol *v, const char *dir, const char *romname,

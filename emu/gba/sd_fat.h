@@ -35,7 +35,12 @@ enum {
 
 /* One ROM found on the card (name kept for display + save/state matching). */
 typedef struct {
-	char name[128];           /* file name without its extension (truncated to 127) */
+	char name[128];           /* the key the game's saves, states, box art, play time and resume
+				   * record are filed under: its file name as the card has it, UTF-8,
+				   * without its extension (cut at 127 bytes, at a character's end).
+				   * Versions before 1.1 filed a name with characters outside ASCII under
+				   * an underscore form, still read (gba_sd_legacy_key) */
+	char uname[128];          /* the same name, for showing, sorting and searching */
 	uint32_t first_clus;
 	uint32_t size;
 	unsigned char type;       /* GBA_CONSOLE_* */

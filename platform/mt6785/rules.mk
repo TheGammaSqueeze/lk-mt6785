@@ -398,6 +398,8 @@ OBJS += emu/gba/pico_libmem.o	# the game library's memory
 OBJS += emu/gba/sd_check.o	# oem sd-check: the card's clusters each used once
 OBJS += emu/gba/rom_archive.o emu/gba/rom_7z.o emu/gba/rom_lzma.o	# games in .zip and .7z
 OBJS += emu/gba/pico_version.o	# the version and commit, for the menus
+OBJS += emu/gba/pico_fold.o	# games' names: accents folded for sorting and the ASCII menus
+OBJS += emu/gba/pico_names.o	# games' names in any script: the names glyph pack
 # The cores are loadable blobs on the SD card (/cores/*.blob, built in their own -pico repos);
 # lk_a carries only the loader and the session runner (video, input, audio) for each.
 OBJS += emu/gbc/gbc_core_loader.o

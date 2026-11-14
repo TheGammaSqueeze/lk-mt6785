@@ -35,8 +35,8 @@ enum {
 int rom_archive_probe(int kind, fat_file *f, const char *exts, unsigned member, uint32_t *size);
 int rom_archive_load(int kind, fat_file *f, const char *exts, unsigned member, uint8_t *dst, uint32_t cap, uint32_t *size);
 int rom_archive_head(int kind, fat_file *f, const char *exts, unsigned member, uint8_t *dst, uint32_t cap, uint32_t *size);
-/* Every ROM in the archive, in order: each(ctx, its name inside, folders and all). Returns how
- * many, or an RA_ERR_* code (the archive could not be read). */
+/* Every ROM in the archive, in order: each(ctx, its name inside in UTF-8, folders and all).
+ * Returns how many, or an RA_ERR_* code (the archive could not be read). */
 int rom_archive_list(int kind, fat_file *f, const char *exts, void (*each)(void *ctx, const char *name), void *ctx);
 
 /* the menus' words for an RA_ERR_* code (English; the menus translate it) */

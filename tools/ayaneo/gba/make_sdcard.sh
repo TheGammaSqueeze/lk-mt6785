@@ -98,6 +98,10 @@ if [ -f "$THEMES_DIR/current/layout" ]; then
 			"${THEME_ARGS[@]}" || exit 1
 	done
 fi
+# Game names in any script: the glyphs past the menu fonts' own, drawn once at a master size that the
+# LK scales to each font that shows names (tools/ayaneo/pico_current/build_names.py)
+echo ">> Building the names glyph pack"
+python3 tools/ayaneo/pico_current/build_names.py out/sdcard/gammaos/names.pack || exit 1
 # The menus' languages: a pack per language and screen, its words and the glyphs the fonts lack
 # (tools/ayaneo/pico_current/i18n). Any theme reads them; English needs none.
 echo ">> Building the language packs"

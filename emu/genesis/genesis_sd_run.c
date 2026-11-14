@@ -824,7 +824,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (g_genesis_menu_open && s_gen_igm_on) pico_igm_dismiss();   /* closes animated */
 				else if (!g_genesis_menu_open && pico_igm_on()) {
 					s_gen_igm_on = 1; s_mstat[0] = 0; g_genesis_menu_open = 1;
-					s_gen_igm.game = s_menu_rom->name; s_gen_igm.system = s_menu_rom->type;
+					s_gen_igm.game = s_menu_rom->uname[0] ? s_menu_rom->uname : s_menu_rom->name; s_gen_igm.system = s_menu_rom->type;
 					pico_igm_open(&s_gen_igm);
 				} else { g_genesis_menu_open = !g_genesis_menu_open; s_mstat[0] = 0;
 					ayaneo_menu_overlay_mark_dirty(); }

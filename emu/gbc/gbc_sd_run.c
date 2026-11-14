@@ -867,7 +867,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (g_gbc_menu_open && s_gbc_igm_on) pico_igm_dismiss();   /* closes animated */
 				else if (!g_gbc_menu_open && pico_igm_on()) {
 					s_gbc_igm_on = 1; s_mstat[0] = 0; s_pal_pick = 0; g_gbc_menu_open = 1;
-					s_gbc_igm.game = s_menu_rom->name;
+					s_gbc_igm.game = s_menu_rom->uname[0] ? s_menu_rom->uname : s_menu_rom->name;
 					s_gbc_igm.system = is_dmg ? GBA_CONSOLE_GB : GBA_CONSOLE_GBC;
 					pico_igm_open(&s_gbc_igm);
 				} else { g_gbc_menu_open = !g_gbc_menu_open; s_mstat[0] = 0; if (!g_gbc_menu_open) s_pal_pick = 0; ayaneo_menu_overlay_mark_dirty(); }

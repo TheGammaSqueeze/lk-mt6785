@@ -1097,7 +1097,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (g_snes_menu_open && s_snes_igm_on) pico_igm_dismiss();   /* closes animated */
 			else if (!g_snes_menu_open && pico_igm_on()) {
 				s_snes_igm_on = 1; s_mstat[0] = 0; g_snes_menu_open = 1;
-				s_snes_igm.game = s_menu_rom->name;
+				s_snes_igm.game = s_menu_rom->uname[0] ? s_menu_rom->uname : s_menu_rom->name;
 				pico_igm_open(&s_snes_igm);
 			} else {
 				g_snes_menu_open = !g_snes_menu_open; s_mstat[0] = 0;

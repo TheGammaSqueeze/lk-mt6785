@@ -49,6 +49,9 @@ bootloader, before any operating system, and owns the hardware outright.
   rumble cartridges.
 - **Headphones.** Sound moves to the 3.5 mm jack as soon as headphones are plugged in, and back
   to the speakers when they come out.
+- **Names in any language.** Game names show as the card has them: accented letters, Greek,
+  Cyrillic, Japanese, Chinese, Korean, Hebrew and Arabic, and search finds them by their letters
+  without accents.
 - **In your language.** The menus and the in-game menu in 17 languages: English, French, German,
   Spanish, Italian, Dutch, Portuguese, Russian, Japanese, Korean, Simplified and Traditional
   Chinese, Polish, Turkish, Arabic, Hebrew and Persian (Settings > Language).

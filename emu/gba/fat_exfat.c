@@ -11,9 +11,6 @@ static void wr32(uint8_t *p, uint32_t v)
 static void ex_memcpy(void *d, const void *s, unsigned n)
 { unsigned char *dp = d; const unsigned char *sp = s; while (n--) *dp++ = *sp++; }
 static void ex_memset(void *d, int c, unsigned n) { unsigned char *dp = d; while (n--) *dp++ = (unsigned char)c; }
-static char ex_upper(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
-static int ci_eq(const char *a, const char *b)
-{ while (*a && *b) { if (ex_upper(*a) != ex_upper(*b)) return 0; a++; b++; } return *a == *b; }
 
 static int rsec(fat_vol *v, uint32_t lba, uint8_t *b) { return v->rd(v->ctx, lba, 1, b) == 1 ? 0 : -1; }
 static int wsec(fat_vol *v, uint32_t lba, const uint8_t *b) { return v->wr && v->wr(v->ctx, lba, 1, b) == 1 ? 0 : -1; }
@@ -134,8 +131,10 @@ int exfat_readdir(fat_dir *d, fat_dirent *e)
 {
 	uint8_t rec[32];
 	while (next_raw(d, rec)) {
-		int secs, got_stream = 0, nlen = 0, ni = 0, k;
+		int secs, got_stream = 0, nlen = 0, ni = 0, k, uo = 0, ufull = 0;
 		uint8_t attr;
+		uint32_t hi = 0;                                 /* a high surrogate waiting for its pair */
+		uint16_t tail[16];                               /* the name's last units: its extension */
 		if (rec[0] != ET_FILE) continue;                 /* deleted, bitmap, label, up-case, unknown */
 		secs = rec[1]; attr = rec[4];
 		e->name[0] = 0; e->size = 0; e->first_clus = 0; e->ex_nofat = 0; e->ex_dir_len = 0;
@@ -152,13 +151,28 @@ int exfat_readdir(fat_dir *d, fat_dirent *e)
 				e->ex_dir_len = e->size;
 				if (rd32(s + 0x1C)) e->size = 0xFFFFFFFFu;
 			} else if (s[0] == ET_NAME) {
+				/* UTF-8 made as the units come, up to the last character that fits whole */
 				for (j = 0; j < 15 && ni < nlen && ni < 255; j++, ni++) {
-					uint16_t u = rd16(s + 2 + j * 2);
-					e->name[ni] = u < 0x80 ? (char)u : '_';
+					uint32_t u = rd16(s + 2 + j * 2), c;
+					tail[ni & 15] = (uint16_t)u;
+					if (u >= 0xD800 && u < 0xDC00) { c = hi ? 0xFFFDu : 0; hi = u; }
+					else if (u >= 0xDC00 && u < 0xE000) { c = hi ? 0x10000u + ((hi - 0xD800u) << 10) + (u - 0xDC00u) : 0xFFFDu; hi = 0; }
+					else {
+						if (hi && !ufull) { int r = fat_u8_put(e->name, uo, 256, 0xFFFDu); if (r < 0) ufull = 1; else uo = r; }
+						c = u; hi = 0;
+					}
+					if (c && !ufull) { int r = fat_u8_put(e->name, uo, 256, c); if (r < 0) ufull = 1; else uo = r; }
 				}
 			}
 		}
-		e->name[ni < 255 ? ni : 255] = 0;
+		if (hi && !ufull) { int r = fat_u8_put(e->name, uo, 256, 0xFFFDu); if (r >= 0) uo = r; else ufull = 1; }
+		e->name[uo] = 0;
+		if (ufull) {	/* too long for the name: it keeps its extension */
+			uint16_t t[16];
+			int nt = ni < 16 ? ni : 16;
+			for (k = 0; k < nt; k++) t[k] = tail[(ni - nt + k) & 15];
+			uo = fat_name_keep_ext(e->name, uo, 256, t, nt);
+		}
 		if (!got_stream || ni == 0) continue;
 		if (e->is_dir) e->size = 0;
 		return 1;
@@ -187,7 +201,7 @@ int exfat_opendir(fat_vol *v, const char *path, fat_dir *d)
 		while (*p == '/') p++;
 		if (n == 0) break;
 		while (exfat_readdir(&cur, &e)) {
-			if (e.is_dir && ci_eq(comp, e.name)) { dir_set(v, &cur, e.first_clus, e.ex_nofat, e.ex_dir_len); found = 1; break; }
+			if (e.is_dir && fat_name_eq(comp, e.name)) { dir_set(v, &cur, e.first_clus, e.ex_nofat, e.ex_dir_len); found = 1; break; }
 		}
 		if (!found) return -2;
 	}
@@ -215,7 +229,7 @@ int exfat_open(fat_vol *v, const char *path, fat_file *f)
 	split_path(path, dir, &fname);
 	if (exfat_opendir(v, dir, &d) != 0) return -2;
 	while (exfat_readdir(&d, &e)) {
-		if (!e.is_dir && ci_eq(fname, e.name)) {
+		if (!e.is_dir && fat_name_eq(fname, e.name)) {
 			f->v = v; f->first_clus = e.first_clus; f->size = e.size; f->ex_nofat = e.ex_nofat;
 			return 0;
 		}
@@ -381,7 +395,7 @@ static uint16_t name_hash(fat_vol *v, const char *name, int nlen)
 {
 	uint16_t h = 0; int i;
 	for (i = 0; i < nlen; i++) {
-		uint16_t u = upcase_unit(v, (uint8_t)name[i]);
+		uint16_t u = upcase_unit(v, fat_u8_unit_at(name, i));
 		h = (uint16_t)(((h & 1u) ? 0x8000u : 0u) + (h >> 1) + (u & 0xffu));
 		h = (uint16_t)(((h & 1u) ? 0x8000u : 0u) + (h >> 1) + (u >> 8));
 	}
@@ -456,7 +470,7 @@ static int dir_resolve(fat_vol *v, const char *dirpath, fat_dir *out, uint32_t *
 			dit_t it; uint8_t rec[32];
 			dit_init(&it, v, &cur);
 			while (dit_next(&it, rec)) {
-				int secs, k, nlen = 0, ni = 0; char nm[256]; uint8_t attr;
+				int secs, k, nlen = 0, ni = 0; uint16_t nm[255]; uint8_t attr;
 				uint32_t first = 0, dlen = 0, slba = 0; int sent = 0, nofat = 0;
 				if (rec[0] == 0) break;
 				if (rec[0] != ET_FILE) continue;
@@ -465,10 +479,9 @@ static int dir_resolve(fat_vol *v, const char *dirpath, fat_dir *out, uint32_t *
 					uint8_t s[32]; int j;
 					if (!dit_next(&it, s)) break;
 					if (s[0] == ET_STREAM) { nlen = s[3]; nofat = (s[1] & SF_NOFAT) ? 1 : 0; first = rd32(s + 0x14); dlen = rd32(s + 0x18); slba = it.lba; sent = it.ent; }
-					else if (s[0] == ET_NAME) for (j = 0; j < 15 && ni < nlen && ni < 255; j++, ni++) { uint16_t u = rd16(s + 2 + j * 2); nm[ni] = u < 0x80 ? (char)u : '_'; }
+					else if (s[0] == ET_NAME) for (j = 0; j < 15 && ni < nlen && ni < 255; j++, ni++) nm[ni] = rd16(s + 2 + j * 2);
 				}
-				nm[ni] = 0;
-				if ((attr & ATTR_DIR) && ci_eq(comp, nm)) {
+				if ((attr & ATTR_DIR) && fat_u16_is(comp, nm, ni)) {
 					dir_set(v, &cur, first, nofat, dlen); *str_lba = slba; *str_ent = sent; found = 1; break;
 				}
 			}
@@ -589,7 +602,7 @@ static int write_entries(fat_vol *v, fat_dir *dir, uint32_t lba, int ent, const 
 	return 0;
 }
 
-/* build the file + stream + name entries for `name` (ASCII) */
+/* build the file + stream + name entries for a UTF-8 name of nlen UTF-16 units */
 static int build_set(fat_vol *v, uint8_t *set, const char *name, int nlen, uint16_t attr,
 		     uint32_t first, uint32_t len, int nofat)
 {
@@ -612,7 +625,7 @@ static int build_set(fat_vol *v, uint8_t *set, const char *name, int nlen, uint1
 		e[0] = ET_NAME;
 		for (i = 0; i < 15; i++) {
 			int ci = k * 15 + i;
-			wr16(e + 2 + i * 2, ci < nlen ? (uint16_t)(uint8_t)name[ci] : 0u);
+			wr16(e + 2 + i * 2, ci < nlen ? fat_u8_unit_at(name, ci) : 0u);
 		}
 	}
 	wr16(set + 2, set_checksum(set, 2 + nents));
@@ -627,7 +640,7 @@ static void delete_match(fat_vol *v, bm_t *bm, fat_dir *dir, const char *name, u
 	dit_init(&it, v, dir);
 	while (dit_next(&it, rec)) {
 		uint32_t locs_lba[20]; int locs_ent[20], nl = 0;
-		int secs, k, nlen = 0, ni = 0, nofat = 0; char nm[256]; uint32_t first = 0, dlen = 0;
+		int secs, k, nlen = 0, ni = 0, nofat = 0; uint16_t nm[255]; uint32_t first = 0, dlen = 0;
 		if (rec[0] == 0) break;
 		if (rec[0] != ET_FILE) continue;
 		locs_lba[nl] = it.lba; locs_ent[nl++] = it.ent;
@@ -637,10 +650,9 @@ static void delete_match(fat_vol *v, bm_t *bm, fat_dir *dir, const char *name, u
 			if (!dit_next(&it, s)) return;
 			if (nl < 20) { locs_lba[nl] = it.lba; locs_ent[nl++] = it.ent; }
 			if (s[0] == ET_STREAM) { nlen = s[3]; nofat = (s[1] & SF_NOFAT) ? 1 : 0; first = rd32(s + 0x14); dlen = rd32(s + 0x18); }
-			else if (s[0] == ET_NAME) for (j = 0; j < 15 && ni < nlen && ni < 255; j++, ni++) { uint16_t u = rd16(s + 2 + j * 2); nm[ni] = u < 0x80 ? (char)u : '_'; }
+			else if (s[0] == ET_NAME) for (j = 0; j < 15 && ni < nlen && ni < 255; j++, ni++) nm[ni] = rd16(s + 2 + j * 2);
 		}
-		nm[ni] = 0;
-		if (ni && ci_eq(nm, name) && (only ? first == clus : first != clus) && (only || !(rec[4] & ATTR_DIR))) {
+		if (ni && fat_u16_is(name, nm, ni) && (only ? first == clus : first != clus) && (only || !(rec[4] & ATTR_DIR))) {
 			for (k = 0; k < nl; k++) {
 				uint8_t b[512];
 				if (rsec(v, locs_lba[k], b) != 0) return;
@@ -671,11 +683,11 @@ int exfat_wr_delete(fat_vol *v, const char *dirpath, const char *name, uint32_t 
 int exfat_wr_put(fat_vol *v, const char *dirpath, const char *name, const void *data, uint32_t len)
 {
 	fat_dir dir; uint32_t str_lba; int str_ent;
-	bm_t bm; uint32_t cb, need, first = 0; int nofat = 1, nlen = 0, nents, rc = 0;
+	bm_t bm; uint32_t cb, need, first = 0; int nofat = 1, nlen, nents, rc = 0;
 	uint8_t set[19 * 32];
 	const uint8_t *src = data;
 	if (!v->wr) return -1;
-	while (name[nlen]) nlen++;
+	nlen = fat_u8_units(name);                        /* its length in UTF-16, as the card keeps it */
 	if (nlen < 1 || nlen > 255) return -2;
 	if (dir_resolve(v, dirpath, &dir, &str_lba, &str_ent) != 0) return -3;
 	bm.v = v; bm.valid = 0; bm.dirty = 0;
@@ -750,7 +762,7 @@ fail:
 	return rc;
 }
 
-/* mkdir -p for ASCII names */
+/* mkdir -p (names in UTF-8) */
 int exfat_wr_mkpath(fat_vol *v, const char *path)
 {
 	char cur[256]; const char *p = path; int curlen = 1;
@@ -772,15 +784,18 @@ int exfat_wr_mkpath(fat_vol *v, const char *path)
 			fat_dir parent; uint32_t str_lba; int str_ent;
 			bm_t bm; uint32_t c, s, cb = cbytes(v); uint8_t zb[512], set[19 * 32]; int nents;
 			uint32_t slba; int sent, tries = 0;
+			int ulen;
 			for (i = ci - n; i < ci; i++) comp[k++] = child[i];
 			comp[k] = 0;
+			ulen = fat_u8_units(comp);
+			if (ulen < 1 || ulen > 255) return -4;
 			if (dir_resolve(v, cur, &parent, &str_lba, &str_ent) != 0) return -2;
 			bm.v = v; bm.valid = 0; bm.dirty = 0;
 			c = bm_find_run(&bm, 1u);
 			if (!c || bm_set(&bm, c, 1) != 0) { bm_flush(&bm); return -3; }
 			ex_memset(zb, 0, 512);
 			for (s = 0; s < v->ex_spc; s++) if (wsec(v, clus_lba(v, c) + s, zb) != 0) { bm_flush(&bm); return -3; }
-			nents = build_set(v, set, comp, k, ATTR_DIR, c, cb, 1);
+			nents = build_set(v, set, comp, ulen, ATTR_DIR, c, cb, 1);
 			if (nents < 0) { bm_flush(&bm); return -4; }
 			while (!find_slots(v, &parent, nents, &slba, &sent)) {
 				if (tries++ > 2 || dir_grow(v, &bm, &parent, str_lba, str_ent) != 0) { bm_set(&bm, c, 0); bm_flush(&bm); return -5; }

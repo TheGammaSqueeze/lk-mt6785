@@ -1975,6 +1975,7 @@ static void menu_tick(unsigned char *state)
 #if defined(AYANEO_GBA_SD)   /* the card build: the only one with the Current theme */
 #include "sd_fat.h"          /* GBA_CONSOLE_GBA */
 static const char *gba_sd_current_name(void);
+static const char *gba_sd_current_uname(void);
 static const struct igm_row k_gba_igm_rows[] = {
 	{ MI_SAVESTATE, IGM_TOP, IGM_ACTION }, { MI_LOADSTATE, IGM_TOP, IGM_ACTION },
 	{ IGM_DISPLAY, IGM_TOP, IGM_LINK }, { IGM_SOUND, IGM_TOP, IGM_LINK },
@@ -2035,7 +2036,7 @@ static void gba_igm_toggle(void)
 		s_gba_igm_on = pico_igm_on();
 		if (s_gba_igm_on) {
 			s_menu_open = 1; s_menu_status[0] = 0; s_menu_page = 0;
-			s_gba_igm.game = gba_sd_current_name();
+			s_gba_igm.game = gba_sd_current_uname();
 			battery_poll(BATTERY_MENU_FRAMES);
 			pico_igm_open(&s_gba_igm);
 			return;
@@ -2557,6 +2558,12 @@ static int sd_mode_on(void) { return s_sd_mode && s_sel_rom >= 0 && s_sel_rom < 
 static const char *gba_sd_current_name(void)
 {
 	return (s_sd_mode && s_sel_rom >= 0 && s_sel_rom < s_nrom) ? s_roms[s_sel_rom].name : (const char *)0;
+}
+/* the same game's name as the card has it, for showing (gba_rom_entry.uname) */
+static const char *gba_sd_current_uname(void)
+{
+	if (!s_sd_mode || s_sel_rom < 0 || s_sel_rom >= s_nrom) return (const char *)0;
+	return s_roms[s_sel_rom].uname[0] ? s_roms[s_sel_rom].uname : s_roms[s_sel_rom].name;
 }
 
 static int sd_state_write(unsigned char *scratch)

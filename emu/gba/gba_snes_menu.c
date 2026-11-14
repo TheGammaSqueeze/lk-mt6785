@@ -22,6 +22,8 @@
 #include "menu/snes_audio.h"
 #include "menu/gba_name.h"          /* gba_clean_name (shared with host_render) */
 #include "sd_fat.h"                 /* gba_rom_entry */
+#include "pico_fold.h"              /* names in the themes' ASCII fonts */
+#include "gba_sd_save.h"            /* the games' files under their older names */
 #include "gba_boxart.h"             /* gba_boxart_decode */
 #include "pico_libmem.h"            /* the roster's tables, PICO_GAMES_MAX */
 #include "gba_boxart_sd.h"          /* gba_boxart_load_sd */
@@ -582,13 +584,17 @@ static int tables_alloc(void)
 	       s_art && s_boxart_full;
 	return s_ok;
 }
+/* the names as these themes' fonts can show them: ASCII, a Latin letter with an accent as the
+ * letter, any other character outside ASCII as '_' (pico_fold_ascii) */
 static void build_names(const gba_rom_entry *roms, int nrom)
 {
 	int i;
 	for (i = 0; i < nrom && i < PICO_GAMES_MAX; i++) {
-		gba_clean_name(roms[i].name, s_names[i]);
+		char nm[128];
+		pico_fold_ascii(roms[i].uname[0] ? roms[i].uname : roms[i].name, nm, sizeof nm);
+		gba_clean_name(nm, s_names[i]);
 		if (s_names[i][0] == 0) {                       /* pathological all-tag name */
-			int L = 0; const char *nm = roms[i].name;
+			int L = 0;
 			while (nm[L] && L < 127) { s_names[i][L] = nm[L]; L++; }
 			s_names[i][L] = 0;                       /* fall back to the raw name */
 		}
@@ -828,12 +834,16 @@ static void art_index(fat_vol *v, const gba_rom_entry *roms, int nrom)
 	for (i = 0; i < nrom; i++) {
 		int d = roms[i].dir < 64 ? roms[i].dir : 0, ty = roms[i].type < 8 ? roms[i].type : 0, k, f;
 		struct art_ent *x = 0;
-		char nm[288];
-		for (k = 0; k < 4 && !x; k++) {	/* own folder, home folder; the name, then its older cut form */
+		char nm[288], legacy[128];
+		int other = gba_sd_legacy_own(roms[i].name, legacy, sizeof legacy);
+		/* own folder, home folder; the name, then its older cut form; then the same with each
+		 * character outside ASCII as '_', as versions before 1.1 named the .ART, when no other game
+		 * has that form */
+		for (k = 0; k < (other ? 8 : 4) && !x; k++) {
 			int dir = (k & 1) ? home_id[ty] : rd_id[d];
 			uint32_t h1, h2;
 			if (dir < 0 || ((k & 1) && dir == rd_id[d])) continue;
-			gba_sd_file_name(roms[i].name, "ART", nm, sizeof nm, k >= 2);
+			gba_sd_file_name(k >= 4 ? legacy : roms[i].name, "ART", nm, sizeof nm, (k & 2) != 0);
 			name_hashes(dir, nm, &h1, &h2);
 			x = ent_slot(t, mask, h1, h2);
 			if (!x->used) x = 0;
@@ -1276,11 +1286,13 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		extern volatile int g_dbg_resume[4];
 		g_dbg_resume[3] = ayaneo_get_resume_on_boot();
 		if (ayaneo_get_resume_on_boot() && ayaneo_resume_take(rn, sizeof rn)) {
-			int k;
+			int k, want;
 			g_dbg_resume[1] = 1;
 			ayaneo_menu_settings_persist();   /* the cleared record */
-			for (k = 0; k < nrom; k++)
-				if (strcmp(roms[k].name, rn) == 0) { g_dbg_resume[2] = k + 1; s_launch_resumes = 1; return k; }
+			/* the game whose name it is; then one whose name it is in the form before 1.1 */
+			for (want = 2; want >= 1; want--)
+				for (k = 0; k < nrom; k++)
+					if (gba_sd_resume_is(roms[k].name, rn) == want) { g_dbg_resume[2] = k + 1; s_launch_resumes = 1; return k; }
 		}
 	}
 	/* the Current theme is a menu of its own: it runs instead of this one, and hands back here

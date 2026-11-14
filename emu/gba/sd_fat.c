@@ -3,6 +3,8 @@
 #include "fat_wr.h"   /* fat_wr_mkpath for gba_sd_make_rom_dirs */
 #include "pico_libmem.h"   /* PICO_GAMES_MAX, the listing's tables */
 #include "rom_archive.h"   /* games in .zip and .7z */
+#include "pico_fold.h"     /* the order of the games' names */
+#include "gba_sd_save.h"   /* the games' older file names */
 #include <string.h>   /* memcpy: the sector cache */
 
 /* LK MMC block-read: reads blkcnt 512B sectors at LBA blknr from mmc device
@@ -313,6 +315,22 @@ static void path_join(char *out, int cap, const char *a, const char *b)
 	out[k] = 0;
 }
 
+/* a UTF-8 name into dst[cap], cut at a whole character */
+static void u8_copy(char *dst, const char *src, int cap)
+{
+	const char *p = src;
+	int o = 0;
+	while (*p) {
+		const char *q = p;
+		int len;
+		fat_u8_next(&q);
+		len = (int)(q - p);
+		if (o + len > cap - 1) break;
+		while (p < q) dst[o++] = *p++;
+	}
+	dst[o] = 0;
+}
+
 /* The listing's own tables, sized for PICO_GAMES_MAX: a hash of the games listed so far (system
  * and name, for the duplicate check) and the sort's index arrays. Taken once. */
 #define DUP_SLOTS 65536u               /* a power of two, twice PICO_GAMES_MAX */
@@ -358,7 +376,9 @@ static unsigned int dup_slot(const gba_rom_entry *out, unsigned char type, const
  * /gammaos/archives.idx (its folder and name, size and first cluster, then the names of its ROMs),
  * so only an archive that is new or changed is read again; the file is written again when
  * anything changed. Records: u32 key, u32 size, u32 first cluster, u16 count (AIX_BAD: it could
- * not be read), then each name as a length byte and its bytes. */
+ * not be read), then each name as a length byte and its bytes, UTF-8 (format 2; format 1 kept the
+ * names as the archive had them and is read again). */
+#define AIX_VERSION 2u
 #define AIX_FILE   "archives.idx"
 #define AIX_MAX    (2u << 20)
 #define AIX_SLOTS  65536u
@@ -406,7 +426,7 @@ static void aix_begin(fat_vol *v)
 	memset(s_aix_slot, 0, AIX_SLOTS * 4u);
 	g_dbg_aix[0] = g_dbg_aix[1] = 0;
 	if (fat_open(v, "/gammaos/" AIX_FILE, &f) != 0 || f.size < 8 || f.size > AIX_MAX ||
-	    fat_read(&f, 0, s_aix_old, f.size) != f.size || memcmp(s_aix_old, "GAIX", 4) != 0 || rd32le(s_aix_old + 4) != 1) {
+	    fat_read(&f, 0, s_aix_old, f.size) != f.size || memcmp(s_aix_old, "GAIX", 4) != 0 || rd32le(s_aix_old + 4) != AIX_VERSION) {
 		s_aix_changed = 1;   /* none yet, or another form: written afresh */
 		return;
 	}
@@ -442,7 +462,7 @@ static void aix_end(fat_vol *v)
 	g_dbg_aix[2] = s_aix_ok ? s_aix_new_n : 0;
 	if (!s_aix_ok || (!s_aix_changed && s_aix_new_n == s_aix_old_n)) return;
 	memcpy(s_aix_new, "GAIX", 4);
-	wr32le(s_aix_new + 4, 1);
+	wr32le(s_aix_new + 4, AIX_VERSION);
 	if (s_aix_new_n == 8 && s_aix_old_n == 8) return;   /* no archives, and none before */
 	fat_wr_mkpath(v, "/gammaos");
 	fat_wr_put(v, "/gammaos", AIX_FILE, s_aix_new, s_aix_new_n);
@@ -452,11 +472,13 @@ struct aix_build { uint8_t *rec; uint32_t len; uint32_t n; };
 static void aix_each(void *ctx, const char *name)
 {
 	struct aix_build *b = (struct aix_build *)ctx;
-	uint32_t L = (uint32_t)strlen(name);
+	char cut[128];
+	uint32_t L;
 	if (b->n >= AIX_ONE) return;
-	if (L > 127) L = 127;
+	u8_copy(cut, name, sizeof cut);         /* at most 127 bytes, whole characters */
+	L = (uint32_t)strlen(cut);
 	b->rec[b->len] = (uint8_t)L;
-	memcpy(b->rec + b->len + 1, name, L);
+	memcpy(b->rec + b->len + 1, cut, L);
 	b->len += 1 + L;
 	b->n++;
 }
@@ -482,9 +504,9 @@ static const uint8_t *aix_archive(fat_vol *v, const char *dir, const fat_dirent 
 	return b.rec;
 }
 
-/* one game into out[] (its file e, the name it lists under, the archive it is in and which ROM
- * of it); a game already listed for the system keeps its first place, unless that was an archive
- * and this is the ROM itself (no unpacking). Returns the new count. */
+/* one game into out[] (its file e, its name in UTF-8, the archive it is in and which ROM of it);
+ * a game already listed for the system keeps its first place, unless that was an archive and this
+ * is the ROM itself (no unpacking). Returns the new count. */
 static int add_game(gba_rom_entry *out, int max, int n, int *tot, unsigned char type, int di,
 		    const fat_dirent *e, const char *nm, int arc, unsigned member)
 {
@@ -501,8 +523,8 @@ static int add_game(gba_rom_entry *out, int max, int n, int *tot, unsigned char 
 		}
 		return n;
 	}
-	for (k = 0; nm[k] && k < 127; k++) out[n].name[k] = nm[k];
-	out[n].name[k] = 0;
+	u8_copy(out[n].name, nm, sizeof out[n].name);
+	for (k = 0; (out[n].uname[k] = out[n].name[k]) != 0; k++) ;
 	out[n].type = type;
 	out[n].first_clus = e->first_clus;
 	out[n].size = e->size;
@@ -532,7 +554,7 @@ static int scan_rom_folder(fat_vol *v, const char *path, uint32_t id, const stru
 	{ int k; for (k = 0; path[k] && k < 95; k++) s_rom_dir[di][k] = path[k]; s_rom_dir[di][k] = 0; }
 	while (fat_readdir(&d, &e)) {
 		int el, k, arc = RA_NONE, L = 0;
-		char nm[128];
+		char nm[256];
 		const uint8_t *rec;
 		uint32_t cnt;
 		if (e.is_dir || e.size == 0) continue;  /* folders, empty placeholder files */
@@ -548,7 +570,6 @@ static int scan_rom_folder(fat_vol *v, const char *path, uint32_t id, const stru
 		 * same as the game unpacked would have (the ROM itself is opened by its cluster) */
 		while (e.name[L]) L++;
 		L -= el;
-		if (L > 127) L = 127;
 		for (k = 0; k < L; k++) nm[k] = e.name[k];
 		nm[L] = 0;
 		if (arc && (el = word_in(nm, sys->exts, 1)) != 0) nm[L -= el] = 0;
@@ -665,8 +686,9 @@ static int not_a_rom_root(const char *nm)
 	       name_ci_cmp(nm, "System Volume Information") == 0 || name_ci_cmp(nm, "LOST.DIR") == 0;
 }
 
-/* case-insensitive by name, stable: a merge sort of indexes, then the entries moved into that
- * order in place, cycle by cycle (tens of thousands of games, no second copy of the list) */
+/* by name as the card has it, accents folded and either case alike (pico_fold_cmp), stable: a
+ * merge sort of indexes, then the entries moved into that order in place, cycle by cycle (tens of
+ * thousands of games, no second copy of the list) */
 static void sort_by_name(gba_rom_entry *out, int n)
 {
 	int w, i;
@@ -675,7 +697,7 @@ static void sort_by_name(gba_rom_entry *out, int n)
 		unsigned short *a = s_ord, *b = s_tmp, *t;
 		for (i = 0; i < n; i += 2 * w) {
 			int l = i, m = i + w < n ? i + w : n, r = i + 2 * w < n ? i + 2 * w : n, x = l, y = m, k = l;
-			while (x < m && y < r) b[k++] = name_ci_cmp(out[a[y]].name, out[a[x]].name) < 0 ? a[y++] : a[x++];
+			while (x < m && y < r) b[k++] = pico_fold_cmp(out[a[y]].uname, out[a[x]].uname) < 0 ? a[y++] : a[x++];
 			while (x < m) b[k++] = a[x++];
 			while (y < r) b[k++] = a[y++];
 		}
@@ -734,6 +756,12 @@ int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total)
 	aix_end(v);
 	if (total) *total = tot;
 	sort_by_name(out, n);
+	if (tot <= n) {	/* the underscore forms of all the games, so a form two games share is known
+			 * (gba_sd_save.c); a list cut short (oem sd's) leaves the last full one's */
+		int i;
+		gba_sd_legacy_begin();
+		for (i = 0; i < n; i++) gba_sd_legacy_add(out[i].name);
+	}
 	return n;
 }
 

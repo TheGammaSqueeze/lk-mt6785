@@ -7,7 +7,6 @@ static void fr_memcpy(void *d, const void *s, unsigned n)
 { unsigned char *dp = d; const unsigned char *sp = s; while (n--) *dp++ = *sp++; }
 static int fr_memcmp(const void *a, const void *b, unsigned n)
 { const unsigned char *x = a, *y = b; while (n--) { if (*x != *y) return *x - *y; x++; y++; } return 0; }
-static char fr_upper(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t rd32(const uint8_t *p)
@@ -272,14 +271,15 @@ static int next_raw(fat_dir *d, uint8_t out[32])
 	}
 }
 
-/* decode the 13 UTF-16 units of one LFN record into ascii dst[0..12] (bit7 stripped) */
-static void lfn_chunk(const uint8_t *rec, char *dst)
+/* the 13 UTF-16 units of one LFN record, as they are (the padding after the name's end, 0xFFFF,
+ * read as 0) */
+static void lfn_chunk(const uint8_t *rec, uint16_t *dst)
 {
 	static const int off[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
 	int i;
 	for (i = 0; i < 13; i++) {
 		uint16_t u = rd16(rec + off[i]);
-		dst[i] = (u == 0 || u == 0xFFFF) ? 0 : (u < 0x80 ? (char)u : '_');
+		dst[i] = u == 0xFFFF ? 0 : u;
 	}
 }
 
@@ -299,11 +299,8 @@ int fat_opendir(fat_vol *v, const char *path, fat_dir *d)
 		while (*p == '/') p++;
 		if (n == 0) break;
 		while (fat_readdir(&cur, &e)) {
-			if (e.is_dir) {
-				int i, eq = 1;
-				for (i = 0; comp[i] || e.name[i]; i++)
-					if (fr_upper(comp[i]) != fr_upper(e.name[i])) { eq = 0; break; }
-				if (eq) { dir_init(v, &cur, e.first_clus); found = 1; break; }
+			if (e.is_dir && fat_name_eq(comp, e.name)) {
+				dir_init(v, &cur, e.first_clus); found = 1; break;
 			}
 		}
 		if (!found) return -2;
@@ -324,7 +321,7 @@ int fat_opendir_entry(fat_vol *v, const fat_dirent *e, fat_dir *d)
 int fat_readdir(fat_dir *d, fat_dirent *e)
 {
 	uint8_t rec[32];
-	char lfn[260];
+	uint16_t lfn[261];                             /* the long name's UTF-16 units, 0 after its end */
 	int have_lfn = 0, i;
 	if (d->v && d->v->is_exfat) return exfat_readdir(d, e);
 	lfn[0] = 0;
@@ -333,19 +330,17 @@ int fat_readdir(fat_dir *d, fat_dirent *e)
 		if (rec[0] == 0xE5) { have_lfn = 0; lfn[0] = 0; continue; }   /* deleted */
 		if (attr == 0x0F) {                            /* LFN record */
 			int seq = (rec[0] & 0x1F);
-			char chunk[13];
 			if (seq >= 1 && seq <= 20) {
-				lfn_chunk(rec, chunk);
-				fr_memcpy(lfn + (seq - 1) * 13, chunk, 13);
+				lfn_chunk(rec, lfn + (seq - 1) * 13);
 				if ((seq - 1) * 13 + 13 > have_lfn) have_lfn = (seq - 1) * 13 + 13;
-				lfn[have_lfn < 260 ? have_lfn : 259] = 0;
+				lfn[have_lfn] = 0;
 			}
 			continue;
 		}
 		if (attr & 0x08) { have_lfn = 0; lfn[0] = 0; continue; }      /* volume label */
 		/* short entry: build the name */
 		if (have_lfn && lfn[0]) {
-			int j = 0; while (lfn[j] && j < 255) { e->name[j] = lfn[j]; j++; } e->name[j] = 0;
+			fat_u16_name(lfn, have_lfn, e->name, 256);
 		} else {
 			char nm[13]; int k = 0;
 			for (i = 0; i < 8 && rec[i] != ' '; i++) nm[k++] = rec[i];
@@ -384,11 +379,8 @@ int fat_open(fat_vol *v, const char *path, fat_file *f)
 	{
 		const char *fname = slash ? slash + 1 : path;
 		while (fat_readdir(&d, &e)) {
-			if (!e.is_dir) {
-				int i, eq = 1;
-				for (i = 0; fname[i] || e.name[i]; i++)
-					if (fr_upper(fname[i]) != fr_upper(e.name[i])) { eq = 0; break; }
-				if (eq) { f->v = v; f->first_clus = e.first_clus; f->size = e.size; f->ex_nofat = 0; return 0; }
+			if (!e.is_dir && fat_name_eq(fname, e.name)) {
+				f->v = v; f->first_clus = e.first_clus; f->size = e.size; f->ex_nofat = 0; return 0;
 			}
 		}
 	}

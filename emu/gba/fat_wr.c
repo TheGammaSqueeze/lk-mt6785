@@ -193,9 +193,6 @@ static int slot_del(fat_vol *v, uint32_t lba, uint32_t off)
 	return wsec(v, lba, b);
 }
 
-/* case-insensitive compare of an ascii name vs a reconstructed name */
-static int ci_eq(const char *a, const char *b)
-{ while (*a && *b) { if (up(*a) != up(*b)) return 0; a++; b++; } return *a == *b; }
 
 /* 8.3 field -> dotted ascii name (for comparing short-only entries) */
 static void n11_to_name(const uint8_t n11[11], char *out)
@@ -213,15 +210,20 @@ static void mangle_short(fat_vol *v, uint32_t cluster, uint32_t root_sec, uint32
 	int i, dot = -1, L = 0, bl = 0;
 	uint8_t base[8], ext[3]; int el = 0;
 	int n;
+	const char *q;
 	while (name[L]) L++;
 	for (i = L - 1; i >= 0; i--) if (name[i] == '.') { dot = i; break; }
-	for (i = 0; (dot < 0 ? i < L : i < dot) && bl < 6; i++) {           /* up to 6 base chars */
-		char c = up(name[i]);
+	/* a character outside ASCII (UTF-8) stands in the short name as one '_' */
+	for (q = name; *q && (dot < 0 || q < name + dot) && bl < 6; ) {    /* up to 6 base chars */
+		uint32_t c = fat_u8_next(&q);
 		if (c == ' ' || c == '.') continue;
-		base[bl++] = (uint8_t)c;
+		base[bl++] = c < 0x80 ? (uint8_t)up((char)c) : '_';
 	}
 	if (bl == 0) base[bl++] = 'S';
-	if (dot >= 0) for (i = dot + 1; name[i] && el < 3; i++) { char c = up(name[i]); if (c != ' ') ext[el++] = (uint8_t)c; }
+	if (dot >= 0) for (q = name + dot + 1; *q && el < 3; ) {
+		uint32_t c = fat_u8_next(&q);
+		if (c != ' ') ext[el++] = c < 0x80 ? (uint8_t)up((char)c) : '_';
+	}
 	for (n = 1; n <= 999; n++) {                                        /* try BASE~n */
 		dir_iter it; uint32_t lba, off; uint8_t *rec; int taken = 0, p;
 		char tail[6]; int tl = 0, k;
@@ -246,14 +248,14 @@ static void mangle_short(fat_vol *v, uint32_t cluster, uint32_t root_sec, uint32
 
 /* Delete the entries (LFN parts + short entry) named `name` in a directory and free their
  * chains: every one but the file starting at cluster `clus` (only = 0, a replace), or that file
- * alone (only = 1, a delete of the file a listing found). Characters outside ASCII compare as
- * '_', the way fat_readdir shows them. */
+ * alone (only = 1, a delete of the file a listing found). `name` is UTF-8, as fat_readdir gives
+ * it. */
 static void drop_entries(fat_vol *v, uint32_t cluster, uint32_t root_sec, uint32_t root_left,
 			 const char *name, uint32_t clus, int only)
 {
 	dir_iter it; uint32_t lba, o; uint8_t *rec;
 	uint32_t g_lba[24], g_off[24]; int gn = 0;
-	char lfnacc[300]; int lfnlen = 0;
+	uint16_t lfnacc[300]; int lfnlen = 0;
 	static const int lo[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
 	di_init(&it, v, cluster, root_sec, root_left);
 	while (di_next(&it, &lba, &o, &rec)) {
@@ -264,18 +266,17 @@ static void drop_entries(fat_vol *v, uint32_t cluster, uint32_t root_sec, uint32
 			if (gn < 24) { g_lba[gn] = lba; g_off[gn] = o; gn++; }
 			for (k = 0; k < 13; k++) {
 				unsigned u = rec[lo[k]] | (rec[lo[k] + 1] << 8);
-				if (cb + k < 299) lfnacc[cb + k] = (u && u != 0xFFFF) ? (u < 0x80 ? (char)u : '_') : 0;
+				if (cb + k < 299) lfnacc[cb + k] = u == 0xFFFF ? 0 : (uint16_t)u;
 			}
 			if (cb + 13 > lfnlen) lfnlen = cb + 13;
 			continue;
 		}
 		if (rec[11] & 0x08) { gn = 0; lfnlen = 0; continue; }   /* volume label */
 		{
-			char eff[300]; int k, match;
+			char eff[13]; int k, match;
 			uint32_t of = ((uint32_t)rd16(rec + 20) << 16) | rd16(rec + 26);
-			if (gn > 0) { for (k = 0; k < lfnlen && lfnacc[k]; k++) eff[k] = lfnacc[k]; eff[k] = 0; }
-			else n11_to_name(rec, eff);
-			match = ci_eq(eff, name);
+			if (gn > 0) match = fat_u16_is(name, lfnacc, lfnlen);
+			else { n11_to_name(rec, eff); match = fat_name_eq(name, eff); }
 			if (match && (only ? of == clus : of != clus)) {
 				for (k = 0; k < gn; k++) slot_del(v, g_lba[k], g_off[k]);
 				slot_del(v, lba, o);
@@ -378,13 +379,13 @@ static int fat_wr_put_i(fat_vol *v, const char *dirpath, const char *name,
 	const uint8_t *src = buf;
 	uint8_t short11[11], sec[512];
 	uint32_t cluster, root_sec, root_left, cbytes;
-	uint32_t need_clus, first = 0, prev = 0, i, off, nlen = 0;
+	uint32_t need_clus, first = 0, prev = 0, i, off, nlen;
 	int is83, nlfn, need_slots, s;
 
 	if (!v->wr) return -1;
 	if (dir_head(v, dirpath, &cluster, &root_sec, &root_left) != 0) return -3;
 	cbytes = (uint32_t)v->sec_per_clus * 512u;
-	while (name[nlen]) nlen++;
+	nlen = (uint32_t)fat_u8_units(name);                  /* the long name's length in UTF-16 */
 	if (nlen == 0 || nlen > 255) return -2;
 
 	is83 = (make_8_3(name, short11) == 0);
@@ -491,7 +492,7 @@ static int fat_wr_put_i(fat_vol *v, const char *dirpath, const char *name,
 			r[11] = 0x0F; r[13] = cks;
 			for (k = 0; k < 13; k++) {
 				unsigned u; int ci = cb + k;
-				if (ci < (int)nlen) u = (unsigned char)name[ci];
+				if (ci < (int)nlen) u = fat_u8_unit_at(name, ci);
 				else if (ci == (int)nlen) u = 0x0000; else u = 0xFFFF;
 				r[lo[k]] = (uint8_t)(u & 0xff); r[lo[k] + 1] = (uint8_t)(u >> 8);
 			}
