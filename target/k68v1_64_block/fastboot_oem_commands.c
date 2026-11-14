@@ -4,11 +4,14 @@
  * BOOT_TRACE builds (bring-up without a serial console, platform/common/boot_trace.c):
  *   oem tryboot[:args]  boot the system once, with the watchdog armed (and the kernel arguments
  *                  given, if any); any hang comes back to fastboot
+ *   oem tryarg:<text>  queue kernel arguments for a plain oem tryboot (a fastboot command is at
+ *                  most 64 bytes)
  *   oem trace      the LK log of the previous boot
  *   oem lastkmsg   the kernel console the previous boot left in ramoops
  *   oem pstore     every ramoops zone in pstore (panic and oops records, console)
  *   oem savedtrace the log the last boot attempt copied to misc at its milestones
  *   oem savenow    copy this boot's log to misc now, and show the reset reason it saw
+ *   oem fdtdump    the device tree the last boot attempt handed to the kernel, in hex
  */
 #include <debug.h>
 #include <reg.h>
@@ -19,6 +22,7 @@ void fastboot_register(const char *prefix, void (*handle)(const char *arg, void 
 		       unsigned allowed_when_security_on, unsigned forbidden_when_lock_on);
 void fastboot_okay(const char *info);
 void fastboot_info(const char *reason);
+void fastboot_fail(const char *reason);
 
 #ifdef BOOT_TRACE
 extern void boot_trace_request_try(const char *extra_args);
@@ -27,6 +31,9 @@ extern void boot_trace_dump_kmsg(void (*info)(const char *));
 extern void boot_trace_dump_pstore(void (*info)(const char *));
 extern void boot_trace_dump_saved(void (*info)(const char *));
 extern void boot_trace_force_save(void (*info)(const char *));
+extern void boot_trace_dump_fdt(void (*info)(const char *));
+extern int boot_trace_queue_arg(const char *text);
+extern const char *boot_trace_queued_args(void);
 extern void mtk_arch_reset(char mode);
 extern void mdelay(unsigned long msec);
 
@@ -69,6 +76,23 @@ static void cmd_oem_savenow(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem tryarg:<text>: queue kernel arguments for the next plain oem tryboot */
+static void cmd_oem_tryarg(const char *arg, void *data, unsigned sz)
+{
+	if (!arg || arg[0] != ':' || boot_trace_queue_arg(arg + 1) != 0) {
+		fastboot_fail("oem tryarg:<text>, 191 characters in all at most");
+		return;
+	}
+	fastboot_info(boot_trace_queued_args());
+	fastboot_okay("");
+}
+
+static void cmd_oem_fdtdump(const char *arg, void *data, unsigned sz)
+{
+	boot_trace_dump_fdt(fastboot_info);
+	fastboot_okay("");
+}
+
 static void cmd_oem_savedtrace(const char *arg, void *data, unsigned sz)
 {
 	boot_trace_dump_saved(fastboot_info);
@@ -85,5 +109,7 @@ void fastboot_oem_register()
 	fastboot_register("oem pstore", cmd_oem_pstore, 1, 0);
 	fastboot_register("oem savedtrace", cmd_oem_savedtrace, 1, 0);
 	fastboot_register("oem savenow", cmd_oem_savenow, 1, 0);
+	fastboot_register("oem fdtdump", cmd_oem_fdtdump, 1, 0);
+	fastboot_register("oem tryarg", cmd_oem_tryarg, 1, 0);
 #endif
 }

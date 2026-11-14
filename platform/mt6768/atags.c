@@ -186,6 +186,11 @@ unsigned *target_atag_boot(unsigned *ptr)
 	*ptr++ = tag_size(tag_boot);
 	*ptr++ = ATAG_BOOT;
 	*ptr++ = g_boot_mode;
+#ifdef KONKR_BLOCK
+	/* as the stock LK of the Block: the boot device type after the mode (1: eMMC), which the
+	 * kernel's boot mode driver reads, while the size field still counts three words */
+	*ptr++ = 1;
+#endif
 
 	return ptr;
 }
@@ -728,6 +733,15 @@ int target_fdt_model(void *fdt)
 	if (prop) {
 		int namestroff;
 		const char *str = model_name[model_index];
+#ifdef KONKR_BLOCK
+		/* the Block's chip is sold as the MT8786: the stock LK names it so (segment 0x0A,
+		 * the MT6769V/CU entry here) in the model and two more properties beside it */
+		if (model_index == 15) {
+			str = "MT8786V/CU";
+			fdt_setprop_string(fdt, nodeoffset, "model-external-name", str);
+			fdt_setprop_string(fdt, nodeoffset, "model-part-name", str);
+		}
+#endif
 		//dprintf(INFO, "prop->data=0x%8x\n", (uint32_t *)prop->data);
 		fdt_setprop_string(fdt, nodeoffset, prop_name, str);
 		prop = fdt_get_property(fdt, nodeoffset, prop_name, &len);

@@ -381,8 +381,14 @@ static void partition_commandline_bootdevice(void)
 	(void)boot_device;
 	(void)bootdev_buf;
 	(void)remain;
+#ifdef KONKR_BLOCK
+	/* the Konkr Block (eMMC on MSDC0 only): the stock LK's exact string, the loop setting included */
+	ret = snprintf(cmdline_buf, CMDLINE_BUF_SIZE,
+		"loop.max_part=7 androidboot.boot_devices=bootdevice,soc/11230000.mmc,11230000.mmc,soc/11230000.msdc,11230000.msdc");
+#else
 	ret = snprintf(cmdline_buf, CMDLINE_BUF_SIZE,
 		"androidboot.boot_devices=bootdevice,soc/11230000.mmc,11230000.mmc,soc/11270000.ufshci,11270000.ufshci");
+#endif
 	if (ret < 0) {
 		pal_log_err(PART_COMMON_TAG"append bootdevice to command line fail\n");
 		return;

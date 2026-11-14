@@ -1489,6 +1489,25 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 		}
 		offset = chosen;
 		pal_log_err("bootconfig: %d bytes after the ramdisks\n", bc_len);
+#ifdef BOOT_TRACE
+		{	/* the block as the kernel gets it (text, then a 12-byte trailer) */
+			const char *bc = (const char *)ramdisk + ramdisk_sz - bc_len;
+			char line[160];
+			int i, n = 0;
+
+			for (i = 0; i < bc_len - 12; i++) {
+				if (bc[i] == '\n' || bc[i] == '\0' || n == (int)sizeof(line) - 1) {
+					line[n] = '\0';
+					if (n)
+						pal_log_err("[TRACE] bootconfig: %s\n", line);
+					n = 0;
+					if (bc[i] == '\n' || bc[i] == '\0')
+						continue;
+				}
+				line[n++] = bc[i];
+			}
+		}
+#endif
 	}
 #endif
 
@@ -1539,6 +1558,32 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 
 	ccci_create_MD_attr_dt_node(fdt);
 
+#ifdef BOOT_TRACE
+	{	/* oem tryboot:lk.dtoff=<node path>[,<node path>...]: those nodes are handed to the
+		 * kernel disabled, to take one device out of a boot attempt */
+		extern const char *boot_trace_extra_args(void);
+		const char *a = strstr(boot_trace_extra_args(), "lk.dtoff=");
+
+		if (a) {
+			char path[96];
+			unsigned int n;
+
+			a += 9;
+			while (*a && *a != ' ') {
+				for (n = 0; *a && *a != ' ' && *a != ',' && n < sizeof(path) - 1; a++)
+					path[n++] = *a;
+				path[n] = '\0';
+				if (*a == ',')
+					a++;
+				offset = fdt_path_offset(fdt, path);
+				if (offset >= 0 && fdt_setprop_string(fdt, offset, "status", "disabled") == 0)
+					pal_log_err("[TRACE] %s disabled for this boot\n", path);
+				else
+					pal_log_err("[TRACE] %s: no such node\n", path);
+			}
+		}
+	}
+#endif
 	ret = fdt_pack(fdt);
 	if (ret) {
 		assert(0);
@@ -1592,7 +1637,45 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 		 * this log in DRAM for oem trace */
 		extern void mtk_wdt_arm(unsigned int seconds);
 		extern void boot_trace_save_now(const char *milestone);
+		{	/* the interrupt polarity inversion the kernel inherits (MCUCFG 0xA650, one bit per
+			 * SPI) and the I2C0 controller's interrupt state: I2C0 (SPI 105, register 3 bit 9)
+			 * storms CPU 0 as soon as the kernel enables it */
+			unsigned int r;
+			for (r = 0; r < 7; r++)
+				dprintf(CRITICAL, "[TRACE] INT_POL_CTL%u = 0x%08x\n", r,
+					*(volatile unsigned int *)(0x0C53A650u + r * 4));
+			{	/* every I2C controller (one shared clock), and the infracfg clock gates */
+				static const unsigned int base[9] = { 0x11007000, 0x11008000, 0x11009100,
+					0x1100F100, 0x11011100, 0x11016000, 0x1100D000, 0x11004000, 0x11005000 };
+				static const unsigned int cg[4] = { 0x10001090, 0x10001094, 0x100010AC, 0x100010C8 };
+				unsigned int k;
+				for (k = 0; k < 9; k++)
+					dprintf(CRITICAL, "[TRACE] I2C%u INTR_MASK 0x%x INTR_STAT 0x%x CONTROL 0x%x\n", k,
+						*(volatile unsigned int *)(base[k] + 0x08),
+						*(volatile unsigned int *)(base[k] + 0x0C),
+						*(volatile unsigned int *)(base[k] + 0x10));
+				static const unsigned int dma[9] = { 0x11000080, 0x11000100, 0x11000180,
+					0x11000300, 0x11000400, 0x11000580, 0x11000600, 0x11000680, 0x11000800 };
+				for (k = 0; k < 4; k++)
+					dprintf(CRITICAL, "[TRACE] infracfg CG status 0x%08x = 0x%08x\n", cg[k],
+						*(volatile unsigned int *)cg[k]);
+				for (k = 0; k < 9; k++)
+					dprintf(CRITICAL, "[TRACE] I2C%u DMA INT_FLAG 0x%x INT_EN 0x%x EN 0x%x CON 0x%x\n", k,
+						*(volatile unsigned int *)(dma[k] + 0x00),
+						*(volatile unsigned int *)(dma[k] + 0x04),
+						*(volatile unsigned int *)(dma[k] + 0x08),
+						*(volatile unsigned int *)(dma[k] + 0x18));
+			}
+		}
+		{
+			extern void mt_i2c_release_all(void);
+			mt_i2c_release_all();	/* here too, so its log is in the copy below */
+		}
 		boot_trace_save_now("hand-off");
+		{
+			extern void boot_trace_save_fdt(const void *fdt, unsigned int size);
+			boot_trace_save_fdt(fdt, fdt_totalsize(fdt));
+		}
 		{	/* the boot state records the kernel now: from here on there is no eMMC access */
 			extern void boot_trace_mark(unsigned int flag);
 			boot_trace_mark(0x8u);

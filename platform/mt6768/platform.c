@@ -878,6 +878,12 @@ void platform_init(void)
 	mt_pll_turn_off();
 #endif  // !defined(NO_PLL_TURN_OFF)
 #if !defined(NO_DCM)
+#ifdef BOOT_TRACE
+	extern const char *boot_trace_extra_args(void);
+	if (strstr(boot_trace_extra_args(), "lk.nodcm"))	/* a boot attempt without the LK's DCM set up */
+		dprintf(CRITICAL, "[TRACE] DCM left as the preloader set it\n");
+	else
+#endif
 	if (mt_dcm_init())
 		dprintf(CRITICAL, "mt_dcm_init fail\n");
 #endif  // !defined(NO_DCM)
@@ -998,6 +1004,39 @@ void platform_uninit(void)
 #endif
 	mt_i2c_release_all();
 	dprintf(CRITICAL, "[uninit] i2c released\n");
+#ifdef KONKR_BLOCK
+	{	/* Interrupt polarity for the kernel. Many peripheral interrupt lines of this SoC are
+		 * active low, and the polarity block (MCUCFG 0xA650, one bit per SPI) inverts a line
+		 * for the GIC. The Block's kernel device tree gives every interrupt as level high on
+		 * the GIC itself, so it expects each active low line inverted when it starts; this
+		 * LK's drivers invert only the few they use (GPT, the watchdog, MSDC). A line left
+		 * as it is reads asserted as soon as the kernel enables it, and the interrupt never
+		 * ends: CPU 0, where they are routed, then does nothing else (seen with the I2C
+		 * controllers, then the GCE). Inverting every line is wrong too: the active high ones
+		 * (the CPU complex below SPI 32, the system timer, EINT, pwrap, SSPM, SCP) then fire
+		 * at once. These are the active low and edge SPIs the Block's stock LK inverts (97 lines). */
+		static const unsigned short active_low[] = {
+			66, 73, 75, 78,
+			97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111,
+			112, 113, 114, 115, 116, 117,
+			133, 134, 135, 136, 138, 139, 141, 142, 145, 146, 147, 148,
+			156, 157, 158, 159, 160, 161, 163, 164, 165, 166, 169, 170, 174, 176,
+			195, 203,
+			223, 224, 225, 226, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238,
+			239, 240, 242, 243, 245, 246, 247, 250, 251, 252, 256, 257, 258, 259, 261,
+			270, 271, 273, 274, 275, 276, 277, 278, 283, 284, 285, 287, 293, 295,
+		};
+		unsigned int k;
+
+		for (k = 0; k < sizeof(active_low) / sizeof(active_low[0]); k++)
+			*(volatile unsigned int *)(0x0C53A650u + (active_low[k] / 32u) * 4u) |=
+				1u << (active_low[k] % 32u);
+		/* SPI 214 is active high, whatever the preloader left (the stock LK of the Block sets it so) */
+		*(volatile unsigned int *)(0x0C53A650u + (214u / 32u) * 4u) &= ~(1u << (214u % 32u));
+		dsb();
+		dprintf(CRITICAL, "[uninit] active low SPIs inverted for the kernel\n");
+	}
+#endif
 	platform_deinit_interrupts();
 	dprintf(CRITICAL, "[uninit] interrupts off\n");
 	return;

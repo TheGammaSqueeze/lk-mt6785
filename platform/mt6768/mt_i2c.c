@@ -945,38 +945,42 @@ int mt_i2c_test(void)
 #endif
 
 /*
- * Before the kernel: leave every controller the LK used the way a reset leaves it. A transfer
- * that completes keeps TRANSAC_COMP latched in INTR_STAT (the polling loop never clears it), and
- * the kernel driver enables the controller's interrupt in its probe before it has touched the
- * hardware. Status is cleared (write one to clear), the interrupt is masked and the controller is
- * reset. Only the I2C registers of controllers a transfer used are touched: their clocks are on.
- * The APDMA channels are left alone, the LK never uses them (dma_en is always off here) and
- * their clock may be gated, where an access stalls the bus. What was pending is logged first.
+ * Before the kernel: every I2C controller with its interrupt masked and nothing pending. Out of
+ * reset a controller has every interrupt source enabled (INTR_MASK 0x1ff); the kernel driver
+ * enables the controller's interrupt in its probe and clears only the status bits it knows, so a
+ * source it leaves set holds the line up and CPU 0, where the interrupts go, never gets out of
+ * the handler (seen in the kernel's IRQ trace: the I2C interrupts back to back, every 2 to 3 us).
+ * All nine controllers share one clock, on in the LK. The soft reset goes first (it may bring the
+ * mask back to its default), then the status is cleared (write one to clear) and the mask zeroed.
+ * The controller's APDMA channel is stopped and reset as well (its clock, like the I2C one, is
+ * on in the LK). What each controller had is logged first.
  */
 void mt_i2c_release_all(void)
 {
 	U32 id;
 
-	dprintf(CRITICAL, "[I2C] release: controllers used 0x%x\n", s_i2c_used);
 	for (id = I2C0; id <= I2C8; id++) {
 		mt_i2c i2c;
 
-		if (!(s_i2c_used & (1u << id)))
-			continue;
 		memset(&i2c, 0, sizeof(i2c));
 		i2c.id = id;
 		_config_mt_i2c(&i2c);
-		dprintf(CRITICAL, "[I2C] release i2c%u: INTR_STAT 0x%x INTR_MASK 0x%x CONTROL 0x%x\n",
-			id, i2c_readl(&i2c, OFFSET_INTR_STAT), i2c_readl(&i2c, OFFSET_INTR_MASK),
-			i2c_readl(&i2c, OFFSET_CONTROL));
-		i2c_writel(&i2c, OFFSET_INTR_MASK, 0x0000);
-		dprintf(CRITICAL, "[I2C] release i2c%u: masked\n", id);
-		i2c_writel(&i2c, OFFSET_INTR_STAT, 0xffff);
-		dprintf(CRITICAL, "[I2C] release i2c%u: status cleared\n", id);
+		dprintf(CRITICAL, "[I2C] release i2c%u%s: INTR_STAT 0x%x INTR_MASK 0x%x CONTROL 0x%x\n", id,
+			(s_i2c_used & (1u << id)) ? " (used)" : "", i2c_readl(&i2c, OFFSET_INTR_STAT),
+			i2c_readl(&i2c, OFFSET_INTR_MASK), i2c_readl(&i2c, OFFSET_CONTROL));
 		i2c_writel(&i2c, OFFSET_SOFTRESET, 0x0001);
 		i2c_writel(&i2c, OFFSET_FIFO_ADDR_CLR, 0x0005);
-		dprintf(CRITICAL, "[I2C] release i2c%u: now INTR_STAT 0x%x INTR_MASK 0x%x\n",
-			id, i2c_readl(&i2c, OFFSET_INTR_STAT), i2c_readl(&i2c, OFFSET_INTR_MASK));
+		i2c_writel(&i2c, OFFSET_INTR_STAT, 0xffff);
+		i2c_writel(&i2c, OFFSET_INTR_MASK, 0x0000);
+		/* the controller's DMA channel: with IRQ_SEL its interrupt shares the I2C line */
+		mt_reg_sync_writel(0x0000, i2c.pdmabase + OFFSET_INT_EN);
+		mt_reg_sync_writel(0x0000, i2c.pdmabase + OFFSET_EN);
+		mt_reg_sync_writel(0x0000, i2c.pdmabase + OFFSET_INT_FLAG);
+		mt_reg_sync_writel(0x0001, i2c.pdmabase + OFFSET_RST);
+		mt_reg_sync_writel(0x0000, i2c.pdmabase + OFFSET_RST);
+		dprintf(CRITICAL, "[I2C] release i2c%u: now INTR_STAT 0x%x INTR_MASK 0x%x, DMA INT_FLAG 0x%x\n",
+			id, i2c_readl(&i2c, OFFSET_INTR_STAT), i2c_readl(&i2c, OFFSET_INTR_MASK),
+			DRV_Reg32(i2c.pdmabase + OFFSET_INT_FLAG));
 	}
 	s_i2c_used = 0;
 }

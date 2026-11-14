@@ -207,6 +207,8 @@ const char *bootimg_v3_cmdline(void)
 
 /* ---- bootconfig ---- */
 
+#define BOOT_DEVICES_KEY "androidboot.boot_devices"
+
 /* The end of the command line word starting at s: up to a space outside double quotes. */
 static const char *word_end(const char *s)
 {
@@ -292,9 +294,28 @@ int bootconfig_attach(char *cmdline, uint32_t cmdline_cap, uint8_t *dst, uint32_
 				pal_log_err("[bootconfig] %.*s: a quote in the value, left out\n", klen, in);
 			} else if (!has_key((const char *)dst, pos, in, klen)) {
 				if (put(dst, cap, &pos, in, klen) != 0 ||
-				    put(dst, cap, &pos, " = \"", 4) != 0 ||
-				    put(dst, cap, &pos, val, vlen) != 0 ||
-				    put(dst, cap, &pos, "\"\n", 2) != 0)
+				    put(dst, cap, &pos, " = \"", 4) != 0)
+					return -1;
+				if (klen == sizeof(BOOT_DEVICES_KEY) - 1 &&
+				    memcmp(in, BOOT_DEVICES_KEY, klen) == 0) {
+					/* the boot devices as a bootconfig array ("a", "b", ...), as the stock
+					 * LK writes them: init reads this key back split at the spaces between
+					 * the items, so one quoted "a,b,c" would be a single device name and
+					 * no /dev/block/by-name link would ever be made */
+					uint32_t k;
+
+					for (k = 0; k < vlen; k++) {
+						if (val[k] == ',') {
+							if (put(dst, cap, &pos, "\", \"", 4) != 0)
+								return -1;
+						} else if (put(dst, cap, &pos, val + k, 1) != 0) {
+							return -1;
+						}
+					}
+				} else if (put(dst, cap, &pos, val, vlen) != 0) {
+					return -1;
+				}
+				if (put(dst, cap, &pos, "\"\n", 2) != 0)
 					return -1;
 			}
 		} else {

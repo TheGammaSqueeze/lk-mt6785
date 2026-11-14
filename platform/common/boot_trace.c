@@ -183,19 +183,14 @@ void boot_trace_storage_up(void)
  * log of that boot can be read. */
 int boot_trace_prev_failed(void)
 {
-	/* TOPRGU status bits: the watchdog timed out (hardware or interrupt mode). Every reset the
-	 * LK asks for itself (oem tryboot, fastboot reboot, the guard, a halt) is a software reset,
-	 * so a timeout means something hung: the LK with its kick stopped, or a kernel. The RAM
-	 * may not have survived it (the preloader's DDR reserve mode can fail), so this does not
-	 * depend on the log being found. */
-	extern BOOT_ARGUMENT *g_boot_arg;
+	/* The boot state on the eMMC says how far the boot before got. Without it: a watchdog
+	 * timeout in the TOPRGU status (the preloader usually clears it), or the RAM log. */
 	unsigned int rgu = s_ready ? s_hdr->reserved[0] : 0;
-	unsigned int reason = g_boot_arg ? g_boot_arg->boot_reason : 0;
 
-	if ((rgu & (0x80000000u | 0x20000000u)) || reason == BR_WDT_HW || reason == BR_KERNEL_PANIC)
-		return 1;
-	if (s_state_ok)
+	if (s_state_ok)	/* the boot state on the eMMC: a boot that reached the kernel is not a failure */
 		return s_prev_progress == PROGRESS_STARTED;
+	if (rgu & (0x80000000u | 0x20000000u))
+		return 1;
 	return s_have_last && !(s_last_hdr.flags & (TF_FASTBOOT | TF_KERNEL));
 }
 
@@ -257,12 +252,35 @@ void boot_trace_mark(unsigned int flag)
 		state_progress(PROGRESS_FASTBOOT);
 }
 
+/* A fastboot command is at most 64 bytes, and a longer one wedges the link: longer kernel
+ * arguments are queued in pieces with oem tryarg:<text>, and a plain oem tryboot uses them. */
+static char s_queued_args[192];
+
+int boot_trace_queue_arg(const char *text)
+{
+	unsigned int n = strlen(s_queued_args), k = strlen(text);
+
+	if (n + (n ? 1 : 0) + k >= sizeof(s_queued_args))
+		return -1;
+	if (n)
+		s_queued_args[n++] = ' ';
+	memcpy(s_queued_args + n, text, k + 1);
+	return 0;
+}
+
+const char *boot_trace_queued_args(void)
+{
+	return s_queued_args;
+}
+
 void boot_trace_request_try(const char *extra_args)
 {
 	unsigned int i = 0;
 
 	if (!s_ready)
 		return;
+	if ((!extra_args || !extra_args[0]) && s_queued_args[0])
+		extra_args = s_queued_args;
 	if (extra_args)
 		for (; extra_args[i] && i < sizeof(s_hdr->extra_args) - 1; i++)
 			s_hdr->extra_args[i] = extra_args[i];
@@ -538,6 +556,71 @@ void boot_trace_dump_saved(void (*info)(const char *))
 		;
 	emit_text(buf, strnlen(buf, SAVE_HDR), info, 58);
 	emit_text(buf + SAVE_HDR, len - SAVE_HDR, info, 58);
+}
+
+/* ---- the device tree handed to the kernel, for a comparison with the stock one ----
+ * A boot attempt writes its final FDT 16 MB into expdb (20 MB, the AEE exception log, which only
+ * uses its start); `oem fdtdump` prints it in hex for dtc on the PC. */
+#define FDT_PART    "expdb"
+#define FDT_OFFSET  0x1000000u
+#define FDT_MAGIC   0x54444647u   /* "GFDT" */
+#define FDT_MAX     0x80000u
+
+void boot_trace_save_fdt(const void *fdt, unsigned int size)
+{
+	static unsigned int hdr[128] __attribute__((aligned(64)));
+	unsigned int len = (size + 511u) & ~511u;
+
+	if (!boot_trace_is_try() || size == 0 || len > FDT_MAX)
+		return;
+	memset(hdr, 0, sizeof(hdr));
+	hdr[0] = FDT_MAGIC;
+	hdr[1] = size;
+	hdr[2] = s_state_ok ? s_state.seq : 0;
+	if (partition_write(FDT_PART, FDT_OFFSET, (u8 *)hdr, sizeof(hdr)) != (ssize_t)sizeof(hdr) ||
+	    partition_write(FDT_PART, FDT_OFFSET + 512u, (u8 *)fdt, len) != (ssize_t)len)
+		dprintf(CRITICAL, "[TRACE] saving the device tree failed\n");
+	else
+		dprintf(CRITICAL, "[TRACE] device tree saved (%u bytes)\n", size);
+}
+
+void boot_trace_dump_fdt(void (*info)(const char *))
+{
+	static const char hexd[] = "0123456789abcdef";
+	unsigned int hdr[128] __attribute__((aligned(64)));
+	unsigned char *buf;
+	unsigned int size, i, k;
+	char line[64];
+
+	if (partition_read(FDT_PART, FDT_OFFSET, (u8 *)hdr, sizeof(hdr)) != (ssize_t)sizeof(hdr) ||
+	    hdr[0] != FDT_MAGIC || hdr[1] == 0 || hdr[1] > FDT_MAX) {
+		info("no saved device tree");
+		return;
+	}
+	size = hdr[1];
+	buf = (unsigned char *)s_save_buf;   /* reused in 0x10200-byte windows */
+	snprintf(line, sizeof(line), "FDT %u bytes, boot %u", size, hdr[2]);
+	info(line);
+	for (i = 0; i < size; i += sizeof(s_save_buf) - 512u) {
+		unsigned int chunk = size - i, j;
+
+		if (chunk > sizeof(s_save_buf) - 512u)
+			chunk = sizeof(s_save_buf) - 512u;
+		if (partition_read(FDT_PART, FDT_OFFSET + 512u + i, buf, (chunk + 511u) & ~511u) < 0) {
+			info("read failed");
+			return;
+		}
+		for (j = 0; j < chunk; j += 28) {
+			unsigned int n = chunk - j < 28 ? chunk - j : 28;
+
+			for (k = 0; k < n; k++) {
+				line[2 * k] = hexd[buf[j + k] >> 4];
+				line[2 * k + 1] = hexd[buf[j + k] & 15];
+			}
+			line[2 * n] = '\0';
+			info(line);
+		}
+	}
 }
 
 /* ---- every ramoops zone the kernel left in pstore ----

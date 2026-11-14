@@ -100,7 +100,14 @@ void boot_mode_select(void)
 	//  int forbid_mode;
 	/*We put conditions here to filer some cases that can not do key detection*/
 	extern int kedump_mini(void) __attribute__((weak));
+#ifdef BOOT_TRACE
+	/* A trace build leaves the kernel's exception data alone: the crash dump maps pstore
+	 * cacheable, rewrites it and resets the board once more, and then the kernel log the trace
+	 * tools read back (oem pstore) is no longer what the kernel left. */
+	if (0) {
+#else
 	if (kedump_mini) {
+#endif
 		if (kedump_mini()) {
 			mrdump_check();
 			if (g_boot_mode == FASTBOOT)
