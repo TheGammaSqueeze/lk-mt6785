@@ -26,7 +26,7 @@ or after Boot to Android in the menu, Android starts exactly as before.
 | | |
 |---|---|
 | ![Names in any language](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/names-library.png) | ![The in-game menu, in Japanese](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/names-igm.png) |
-| A library with names in eight scripts | The in-game menu with a Japanese name |
+| A library with names in seven scripts | The in-game menu with a Japanese name |
 | ![Search without accents](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/names-search.png) | |
 | Search finds accented names by their plain letters | |
 
