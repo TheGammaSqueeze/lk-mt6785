@@ -655,7 +655,18 @@ void check_low_battery(void)
 			dprintf(CRITICAL, "[%s] Kernel Low Battery Power Off Charging Mode\n", __func__);
 			g_boot_mode = LOW_POWER_OFF_CHARGING_BOOT;
 
+#ifdef BOOT_TRACE
+			{	/* the hardware watchdog is fed all through the charging loop; the trace
+				 * guard is not, and minutes of charging would read to it as a hang */
+				extern void boot_trace_guard_stop(void);
+				extern void boot_trace_guard_start(unsigned int ms);
+				boot_trace_guard_stop();
+				check_bat_protect_status();
+				boot_trace_guard_start(60000);
+			}
+#else
 			check_bat_protect_status();
+#endif
 
 		} else {
 			dprintf(CRITICAL, "[BATTERY] battery voltage(%dmV) <= CLV ! Can not Boot Linux Kernel !! \n\r",bat_vol);

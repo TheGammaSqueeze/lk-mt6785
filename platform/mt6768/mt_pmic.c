@@ -191,6 +191,15 @@ void mt_power_off(void)
 {
 #ifndef NO_POWER_OFF
 	dprintf(CRITICAL, "mt_power_off new\n");
+#ifdef BOOT_TRACE
+	{	/* a charger pulled in the charging mode, no battery, too low a voltage: the next boot
+		 * must not take this for a hang and stop in rescue fastboot */
+		extern void boot_trace_guard_stop(void);
+		extern void boot_trace_mark(unsigned int flag);
+		boot_trace_guard_stop();
+		boot_trace_mark(0x10u);
+	}
+#endif
 
 	primary_display_suspend();
 #ifdef MTK_CHARGER_NEW_ARCH

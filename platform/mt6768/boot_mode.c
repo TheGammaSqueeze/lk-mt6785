@@ -132,6 +132,21 @@ void boot_mode_select(void)
 		return;
 	}
 
+#ifdef KONKR_BLOCK
+	{	/* The Block's kernel asks for fastboot (reboot bootloader) through the reboot-mode
+		 * register in the watchdog block, not the RTC bit checked below. */
+		extern unsigned int mtk_wdt_reboot_mode(void);
+		unsigned int mode = mtk_wdt_reboot_mode();
+
+		dprintf(CRITICAL, "[BOOT] reboot mode %u\n", mode);
+		if (mode == 3u) {
+			dprintf(CRITICAL, "[FASTBOOT] reboot to boot loader\n");
+			g_boot_mode = FASTBOOT;
+			return;
+		}
+	}
+#endif
+
 #if defined (HAVE_LK_TEXT_MENU)
 	/*Check RTC to know if system want to reboot to Fastboot*/
 	if (Check_RTC_PDN1_bit13()) {

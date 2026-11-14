@@ -277,6 +277,23 @@ const char *mtk_wdt_get_last_stage(void)
 	return "rst from: unknown";
 }
 
+/* The reboot reason the kernel's reboot-mode driver leaves in bits 3:0 of NONRST_REG2 (the
+ * toprgu reboot-mode node: 1 charger, 2 recovery, 3 bootloader, 4 dm-verity corrupt, 5 kpoc,
+ * 6 ddr reserve, 7 meta, 8 rpmbpk). Read once and cleared there, as the stock LK does, so a
+ * request is used by the boot that follows it and by no later one. 0 when none was left. */
+unsigned int mtk_wdt_reboot_mode(void)
+{
+	static unsigned int mode = 0xffu;
+	unsigned int reg;
+
+	if (mode == 0xffu) {
+		reg = DRV_Reg32(MTK_WDT_NONRST_REG2);
+		mode = reg & 0xfu;
+		DRV_WriteReg32(MTK_WDT_NONRST_REG2, reg & ~0xfu);
+	}
+	return mode;
+}
+
 static void mtk_wdt_mark_stage(unsigned int stage)
 {
 	unsigned int reg = DRV_Reg32(MTK_WDT_NONRST_REG2);

@@ -2312,16 +2312,19 @@ void mt_boot_init(const struct app_descriptor *app)
 #endif
 
 #ifdef BOOT_TRACE
-	{	/* a trace build boots the system only when oem tryboot asked for it */
+	{	/* A trace build boots as the stock LK does: the power key starts Android, a charger
+		 * plugged into a powered off board starts the charging mode, and fastboot comes up
+		 * only when it was asked for (reboot bootloader, the key). An oem tryboot attempt is
+		 * the same boot with its extra kernel arguments and the milestone log copies. */
 		extern int boot_trace_is_try(void);
-		if (!boot_trace_is_try()) {
-			dprintf(CRITICAL, "[TRACE] no boot attempt asked for: fastboot\n");
-			boot_trace_keep_try();
-			g_boot_mode = FASTBOOT;
-		} else {
+		if (boot_trace_is_try()) {
 			dprintf(CRITICAL, "[TRACE] boot attempt\n");
 			LED_STAGE(8);	/* 8 blinks: mt_boot, a boot attempt */
+		} else {
+			dprintf(CRITICAL, "[TRACE] boot mode %d\n", g_boot_mode);
 		}
+		if (g_boot_mode == FASTBOOT)
+			boot_trace_keep_try();
 	}
 #endif
 	if (g_boot_mode == FASTBOOT)
