@@ -46,6 +46,10 @@
 #include "memory_layout.h"
 #include <platform/boot_mode.h>
 #include <pal_log.h>
+#if defined(AYANEO_GBA_SD)
+/* GammaOS Pico's display code, shared with the MT6785 boards (platform/common/pico) */
+#include "../common/pico/pico_disp_head.inc"
+#endif
 
 //#define DFO_DISP
 #define FB_LAYER            0
@@ -73,6 +77,9 @@ extern void disp_log_enable(int enable);
 extern void dbi_log_enable(int enable);
 extern void * memset(void *,int,unsigned int);
 extern void arch_clean_cache_range(addr_t start, size_t len);
+#if defined(AYANEO_GBA_SD)
+#include "../common/pico/pico_disp_cache.inc"
+#endif
 extern UINT32 memory_size(void);
 
 UINT32 mt_disp_get_vram_size(void)
@@ -541,6 +548,10 @@ void mt_disp_update(UINT32 x, UINT32 y, UINT32 width, UINT32 height)
 #endif
 }
 
+#if defined(AYANEO_GBA_SD)
+#include "../common/pico/pico_disp.inc"
+#endif
+
 static void mt_disp_adjusting_hardware_addr(void)
 {
 	dprintf(CRITICAL,"mt_disp_adjusting_hardware_addr fb_offset_logo = %d fb_size=%d\n",fb_offset_logo,fb_size);
@@ -647,3 +658,7 @@ void video_set_lut(unsigned int index,  /* color number */
 }
 
 #endif  // CONFIG_CFB_CONSOLE
+
+#if defined(AYANEO_GBA_SD)
+#include "../common/pico/pico_disp_tail.inc"
+#endif

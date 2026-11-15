@@ -47,12 +47,18 @@ extern DDP_MODULE_DRIVER ddp_driver_gamma;
 extern DDP_MODULE_DRIVER ddp_driver_dither;
 /* extern DDP_MODULE_DRIVER ddp_driver_split; */
 extern DDP_MODULE_DRIVER ddp_driver_pwm;
+#if defined(AYANEO_GBA_SD)
+extern DDP_MODULE_DRIVER ddp_driver_rsz;	/* GammaOS Pico: the resizer in the primary path */
+#define BLOCK_RSZ_DRIVER	(&ddp_driver_rsz)
+#else
+#define BLOCK_RSZ_DRIVER	NULL
+#endif
 
 ddp_module  ddp_modules[DISP_MODULE_NUM] = {
 		{DISP_MODULE_OVL0,"ovl0",1,&ddp_driver_ovl},
 		{DISP_MODULE_OVL0_2L,"ovl0_2l",1,&ddp_driver_ovl},
 		{DISP_MODULE_OVL1_2L,"ovl1_2l",0,NULL},
-		{DISP_MODULE_RSZ,"disp_rsz",1,NULL},
+		{DISP_MODULE_RSZ,"disp_rsz",1,BLOCK_RSZ_DRIVER},
 		{DISP_MODULE_RSZ0_VIRTUAL0,"disp_rsz0_virtual0",1,NULL},
 		{DISP_MODULE_RSZ0_VIRTUAL1,"disp_rsz0_virtual1",1,NULL},
 		{DISP_MODULE_RDMA0,"rdma0",1,&ddp_driver_rdma},

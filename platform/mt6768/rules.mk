@@ -300,6 +300,7 @@ OBJS += \
 	$(LOCAL_DIR)/ddp_manager.o\
 	$(LOCAL_DIR)/ddp_path.o\
 	$(LOCAL_DIR)/ddp_ovl.o\
+	$(LOCAL_DIR)/ddp_rsz.o\
 	$(LOCAL_DIR)/ddp_rdma.o\
 	$(LOCAL_DIR)/ddp_misc.o\
 	$(LOCAL_DIR)/ddp_info.o\
@@ -607,4 +608,19 @@ endif
 # ROM_INFO v2, /chosen and /bootprof properties).
 ifeq ($(KONKR_BLOCK),yes)
 OBJS += $(LOCAL_DIR)/block_fdt_parity.o
+endif
+
+# GammaOS Pico on the Konkr Block: the shared emulator, menu and SD card objects (emu/pico.mk),
+# the board-neutral platform helpers (platform/common/pico) and the Block's own hardware code.
+ifeq ($(AYANEO_GBA_SD),yes)
+OBJS += \
+	platform/common/pico/ayaneo_blackbox.o \
+	platform/common/pico/ayaneo_meminfo.o \
+	platform/common/pico/ayaneo_rewind.o \
+	platform/common/pico/ayaneo_rot_neon.o \
+	platform/common/pico/ayaneo_volume_input.o \
+	$(LOCAL_DIR)/block_audio.o \
+	$(LOCAL_DIR)/block_pico.o
+$(BUILDDIR)/platform/common/pico/ayaneo_rot_neon.o: CFLAGS += -O2 -mfpu=neon -mfloat-abi=softfp
+include emu/pico.mk
 endif

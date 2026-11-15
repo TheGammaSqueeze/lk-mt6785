@@ -24,6 +24,9 @@
 #include <arch/arm.h>
 #include <kernel/thread.h>
 #include <platform/ram_console.h>
+#if defined(KONKR_BLOCK)
+#include <printf.h>
+#endif
 // #include <platform/mtk_wdt.h>       // for mtk_wdt_restart();
 void mtk_wdt_restart(void);
 
@@ -132,12 +135,24 @@ static void dump_fault_frame(struct arm_fault_frame *frame)
 
 static void exception_die(struct arm_fault_frame *frame, int pc_off, const char *msg)
 {
+#if defined(KONKR_BLOCK) && defined(BOOT_TRACE)
+	*(volatile unsigned int *)0x4D0DF820u = 0xF1;	/* how far the fault path got (block_pico.c) */
+#endif
 	ram_console_set_exp_type(AEE_EXP_TYPE_LK_CRASH);
+#if defined(KONKR_BLOCK) && defined(BOOT_TRACE)
+	*(volatile unsigned int *)0x4D0DF820u = 0xF2;	/* how far the fault path got (block_pico.c) */
+#endif
 
 	inc_critical_section();
 	frame->pc += pc_off;
 	dprintf(CRITICAL, "%s", msg);
+#if defined(KONKR_BLOCK) && defined(BOOT_TRACE)
+	*(volatile unsigned int *)0x4D0DF820u = 0xF3;	/* how far the fault path got (block_pico.c) */
+#endif
 	dump_fault_frame(frame);
+#if defined(KONKR_BLOCK) && defined(BOOT_TRACE)
+	*(volatile unsigned int *)0x4D0DF820u = 0xF4;	/* how far the fault path got (block_pico.c) */
+#endif
 
 #if defined(AYANEO_GBA)
 	/* This device does not surface LK's UART, so paint the fault (type + faulting
@@ -153,8 +168,20 @@ static void exception_die(struct arm_fault_frame *frame, int pc_off, const char 
 			__asm__ volatile("cps #0x13\n\tmov %0, lr\n\tmov %1, sp\n\tcps #0x17" : "=r"(svc_lr), "=r"(svc_sp) : : "memory");
 		g_fault_regs[0] = frame->r[0]; g_fault_regs[1] = frame->r[1]; g_fault_regs[2] = frame->r[2];
 		g_fault_regs[3] = frame->r[3]; g_fault_regs[4] = svc_lr;
+#if defined(KONKR_BLOCK) && defined(BOOT_TRACE)
+		{	/* into the boot log first, which a reset keeps in RAM (oem trace): drawing the
+			 * fault screen below needs the display, and may never come back */
+			extern void boot_trace_flush(void);
+			char line[160];
+			snprintf(line, sizeof(line), "[FAULT] %s pc %08x dfar %08x spsr %08x lr %08x sp %08x thread %s\n",
+				 msg ? msg : "", frame->pc, arch_read_dfar(), frame->spsr, svc_lr, svc_sp,
+				 current_thread ? current_thread->name : "?");
+			_dputs(line);
+			boot_trace_flush();
+		}
+#endif
 		ayaneo_gba_fault_screen(msg, frame->pc, arch_read_dfar(), frame->spsr);
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 		{	/* keep it for the next boot (oem blackbox): nobody may be watching the screen */
 			extern void ayaneo_bb_fault(const char *msg, unsigned pc, unsigned dfar, unsigned spsr,
 						    const unsigned *r4, unsigned lr, unsigned sp);

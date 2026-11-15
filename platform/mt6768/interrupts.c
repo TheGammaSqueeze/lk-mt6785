@@ -99,6 +99,12 @@ enum handler_return platform_irq(struct arm_iframe *frame)
 {
 	unsigned int irq = mt_irq_get();
 
+#if defined(KONKR_BLOCK) && defined(BOOT_TRACE)
+	{	/* the bring-up hang log: each interrupt and where it came in (block_pico.c) */
+		extern void block_irq_note(unsigned int irq, unsigned int pc);
+		block_irq_note(irq, frame->pc);
+	}
+#endif
 	if (irq == MT_GPT_IRQ_ID)
 		lk_scheduler();
 	else if (irq == MT_USB0_IRQ_ID)

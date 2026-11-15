@@ -126,9 +126,41 @@ void mt_logo_get_custom_if(void)
  * Show first boot logo when phone boot up
  *
  */
+static void show_stock_boot_logo(void);
+#if defined(AYANEO_GBA_SD)
+static int s_logo_deferred;
+/* The boot logo held back by mt_disp_show_boot_logo because a card was in: shown now that the SD
+ * gate sent the boot to Android after all (no GammaOS card, boot=android, SELECT + START, a failed
+ * gate). */
+void ayaneo_show_deferred_logo(void)
+{
+	if (!s_logo_deferred)
+		return;
+	s_logo_deferred = 0;
+	show_stock_boot_logo();
+}
+#endif
+
 void mt_disp_show_boot_logo(void)
 {
 	dprintf(INFO, "[lk logo: %s %d]\n",__FUNCTION__,__LINE__);
+#if defined(AYANEO_GBA_SD)
+	/* With a card in, a normal boot may go to GammaOS Pico, whose GBA BIOS intro (or menu) is the
+	 * first thing on the panel: the logo waits until the SD gate knows, and its fall back to
+	 * Android shows it (ayaneo_show_deferred_logo). No card: the logo now, as the stock LK does. */
+	{
+		extern int ayaneo_logo_defer(void);	/* block_pico.c */
+		if (ayaneo_logo_defer()) {
+			s_logo_deferred = 1;
+			return;
+		}
+	}
+#endif
+	show_stock_boot_logo();
+}
+
+static void show_stock_boot_logo(void)
+{
 	mt_logo_get_custom_if();
 
 	if (logo_cust_if->show_boot_logo) {

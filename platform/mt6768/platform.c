@@ -574,8 +574,11 @@ void platform_early_init(void)
 	{	/* a hang anywhere from here resets the board (straight reset, no interrupt first) */
 		extern void mtk_wdt_arm(unsigned int seconds);
 		extern void boot_trace_report(void);
+#if !defined(AYANEO_GBA_SD)
+		/* the Android bring-up build only: GammaOS Pico keeps the watchdog as the KPA does */
 		mtk_wdt_arm(30);
 		dprintf(CRITICAL, "[TRACE] watchdog armed, 30 s\n");
+#endif
 		boot_trace_report();
 	}
 #endif
@@ -650,6 +653,12 @@ static void lk_vb_init(void)
 static void lk_vb_vfy_logo(void)
 {
 #ifdef MTK_SECURITY_SW_SUPPORT
+#ifdef SKIP_LK_IMAGE_AUTH
+	/* This LK does not check the images it loads for itself (sec_policy.c), as the KPA's does not:
+	 * nothing is verified here, and img_auth_stor would still set up the security library's image
+	 * buffer, a heap block the GammaOS Pico LK has no room for. */
+	return;
+#endif
 	/*  bypass logo vfy in fast meta mode */
 	if(g_boot_mode == META_BOOT)
 		return;
@@ -682,9 +691,20 @@ void platform_init(void)
 		extern void boot_trace_guard_start(unsigned int ms);
 		extern void boot_trace_storage_up(void);
 		boot_trace_storage_up();
+#if !defined(AYANEO_GBA_SD)
+		/* The Android bring-up build only: a boot that stopped short comes up in rescue
+		 * fastboot, and a boot that reaches neither fastboot nor the kernel in 60 s is reset.
+		 * A GammaOS Pico console boots as the KPA does: a power hold after a hang gives the
+		 * menu (or Android) again, never a fastboot it cannot leave. Its log stays in RAM for
+		 * oem savenow / oem savedtrace over Pico's USB channel. */
 		if (boot_trace_prev_failed())
 			boot_trace_rescue_fastboot();
 		boot_trace_guard_start(60000);
+#else
+		(void)boot_trace_prev_failed;
+		(void)boot_trace_rescue_fastboot;
+		(void)boot_trace_guard_start;
+#endif
 		{
 			extern void boot_trace_save_now(const char *milestone);
 			boot_trace_save_now("storage");
@@ -717,6 +737,13 @@ void platform_init(void)
 #if defined(USE_DTB_NO_DWS) && !defined(MACH_FPGA)
 	mt_gpio_set_default();
 #endif  // defined(USE_DTB_NO_DWS) && !defined(MACH_FPGA)
+#if defined(KONKR_BLOCK) && defined(AYANEO_GBA_SD)
+	{	/* the buttons up now, right after the device tree's pin defaults pulled them down, so
+		 * they have long settled when the SD gate reads the boot combos (block_pico.c) */
+		extern void block_buttons_init(void);
+		block_buttons_init();
+	}
+#endif
 
 #ifndef MACH_FPGA
 	PROFILING_START("led init");

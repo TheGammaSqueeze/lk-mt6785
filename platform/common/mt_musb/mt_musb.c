@@ -1989,6 +1989,13 @@ static void udc_ifc_desc_fill(struct udc_gadget *g, unsigned char *data)
 	}
 }
 
+#if defined(AYANEO_GBA_SD)
+/* GammaOS Pico's USB debug channel runs beside the emulator, so its udc_start returns once the
+ * controller is up: the controller is serviced from its interrupt (USB_GINTR), and the loop at
+ * the end only ever sleeps, holding the caller (the SD gate) for good. */
+int g_musb_start_returns;
+#endif
+
 int udc_start(void)
 {
 	struct udc_descriptor *desc;
@@ -2077,6 +2084,14 @@ int udc_start(void)
 	/* enable the pullup resistor */
 	mt_usb_connect_internal();
 
+#if defined(AYANEO_GBA_SD)
+	if (g_musb_start_returns) {
+#ifndef USB_GINTR
+#error "GammaOS Pico's USB channel needs the interrupt driven controller (USB_GINTR)"
+#endif
+		return 0;
+	}
+#endif
 	while (1) {
 #ifdef USB_GINTR
 		thread_sleep(1);

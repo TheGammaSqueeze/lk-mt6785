@@ -2306,6 +2306,16 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 #define IGM_BG_PA    0x54300000u      /* the panel's background, drawn at each opening */
 #define IGM_BG_MAX   0x00140000u      /* up to the live layer's second buffer (0x54440000) */
 #define IGM_KEEP     1
+#elif defined(KONKR_BLOCK)
+/* Konkr Pocket Block (960 x 720): the opening's snapshot and the live layer's first buffer take
+ * 0x54000000 with a frame 0x2A3000 long, so the pack and the background go to the memory between
+ * the game's first buffer (0x55000000, ending 0x552A3000) and the frozen frame (0x55800000), which
+ * neither a game nor an opening writes: kept from one game to the next as on the KPA. */
+#define IGM_PACK_PA  0x552B0000u
+#define IGM_PACK_MAX 0x00100000u      /* the 960 x 720 pack unpacks to 0.75 MB; ends 0x553B0000 */
+#define IGM_BG_PA    0x553C0000u
+#define IGM_BG_MAX   0x00200000u      /* ends 0x555C0000 */
+#define IGM_KEEP     1
 #else
 #define IGM_PACK_PA  0x54000000u
 #define IGM_PACK_MAX 0x00180000u      /* 1 MB at 1280 x 960 */

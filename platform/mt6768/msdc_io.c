@@ -520,12 +520,41 @@ void msdc_clock(struct mmc_host *host, int on)
 
 /* perloader will pre-set msdc pll and the mux channel of msdc pll */
 /* note: pll will not changed */
+#if defined(MMC_MSDC_DRV_LK) && defined(AYANEO_GBA_SD)
+/* GammaOS Pico: the microSD card's host (msdc1) on its own clock. The preloader sets up only the
+ * eMMC's (msdc0) and this LK never programmed msdc1's mux, and for every host it looked msdc0's
+ * 400 MHz source up in msdc1's table (one past its end). The mux as the console's kernel defines it
+ * (clk-mt6768, msdc30_1_sel): TOPCKGEN 0x070 bits 18:16 with set/clear words at 0x074/0x078, its
+ * gate at bit 23, taken by bit 14 of the update word at 0x004; its parents are clk26m, msdcpll_d2,
+ * univpll2_d2, ..., and Android runs the card from msdcpll_d2, half the 384 MHz MSDC PLL. */
+#define BLOCK_MSDC1_MUX_SET	(TOPCKGEN_BASE + 0x074)
+#define BLOCK_MSDC1_MUX_CLR	(TOPCKGEN_BASE + 0x078)
+#define BLOCK_CLK_CFG_UPDATE	(TOPCKGEN_BASE + 0x004)
+#define BLOCK_MSDC1_SRC_SEL	1u		/* msdcpll_d2 */
+#define BLOCK_MSDC1_SRC_HZ	192000000u
+static void block_msdc1_clock(struct mmc_host *host)
+{
+	MSDC_WRITE32(BLOCK_MSDC1_MUX_CLR, (0x7u << 16) | (1u << 23));	/* select and gate cleared */
+	MSDC_WRITE32(BLOCK_MSDC1_MUX_SET, BLOCK_MSDC1_SRC_SEL << 16);
+	MSDC_WRITE32(BLOCK_CLK_CFG_UPDATE, 1u << 14);
+	host->pll_mux_clk = BLOCK_MSDC1_SRC_SEL;
+	host->src_clk = BLOCK_MSDC1_SRC_HZ;
+}
+#endif
+
 void msdc_config_clksrc(struct mmc_host *host, int clksrc)
 {
 #if !defined(FPGA_PLATFORM)
 	#if defined(MMC_MSDC_DRV_PRELOADER) || defined(MMC_MSDC_DRV_LK)
+	#if defined(MMC_MSDC_DRV_LK) && defined(AYANEO_GBA_SD)
+	if (host->id == 1) {
+		block_msdc1_clock(host);
+	} else
+	#endif
+	{
 	host->pll_mux_clk = MSDC0_CLKSRC_DEFAULT;
 	host->src_clk = msdc_get_hclk(host->id, MSDC0_CLKSRC_DEFAULT);
+	}
 	#endif
 
 	#if defined(MMC_MSDC_DRV_CTP)
@@ -732,8 +761,38 @@ void msdc_set_rdsel_wrap(struct mmc_host *host)
 		msdc_set_rdsel_by_id(host->id, MSDC_TDRDSEL_3V, 0);
 }
 
+#if defined(MMC_MSDC_DRV_LK) && defined(AYANEO_GBA_SD)
+#include <platform/mt_gpio.h>
+/* GammaOS Pico: msdc1's pads, which this BSP leaves unset for host 1 (its pin mode, pull, input
+ * enable and Schmitt helpers are empty). As the console's device tree gives them (mmc1default):
+ * CMD and DAT0..3 on GPIO 170, 161..164 in mode 1 with a pull up and the input buffer on, the
+ * clock on GPIO 171 in mode 1 with a pull down. The card detect line (GPIO 18, low when a card is
+ * in) is the SD code's. */
+static void block_msdc1_pads(void)
+{
+	static const unsigned char cmd_dat[5] = { 170, 161, 162, 163, 164 };
+	unsigned int i;
+
+	for (i = 0; i < 5; i++) {
+		u32 pin = 0x80000000u | cmd_dat[i];
+		mt_set_gpio_mode(pin, 1);
+		mt_set_gpio_pull_enable(pin, GPIO_PULL_ENABLE);
+		mt_set_gpio_pull_select(pin, GPIO_PULL_UP);
+		mt_set_gpio_ies(pin, GPIO_IES_ENABLE);
+		mt_set_gpio_smt(pin, GPIO_SMT_ENABLE);
+	}
+	mt_set_gpio_mode(0x80000000u | 171, 1);
+	mt_set_gpio_pull_enable(0x80000000u | 171, GPIO_PULL_ENABLE);
+	mt_set_gpio_pull_select(0x80000000u | 171, GPIO_PULL_DOWN);
+}
+#endif
+
 void msdc_gpio_and_pad_init(struct mmc_host *host)
 {
+#if defined(MMC_MSDC_DRV_LK) && defined(AYANEO_GBA_SD)
+	if (host->id == 1)
+		block_msdc1_pads();
+#endif
 	/* set smt enable */
 	msdc_set_smt(host, 1);
 
@@ -1026,3 +1085,63 @@ void msdc_apply_timing(unsigned int id)
 }
 #endif
 
+#if defined(MMC_MSDC_DRV_LK) && defined(AYANEO_GBA_SD)
+/* ---------------------------------------------------------------------------------------------
+ * GammaOS Pico: the microSD card's power on the Konkr Pocket Block. The card's rails are the
+ * MT6358's VMCH (card power) and VMC (its I/O), reached through the PMIC wrapper; this LK's msdc
+ * power code is built for the CTP tests only. Register fields from upmu_hw.h, voltage codes from
+ * the console's own regulator driver (mt6358-regulator: VMCH 2/3/5 = 2.9/3.0/3.3 V in bits 10:8 of
+ * 0x1E48; VMC 4/10/11/13 = 1.8/2.9/3.0/3.3 V in bits 11:8 of 0x1E4C), and checked against Android's
+ * running card: VMCH 0x0200 (2.9 V), VMC 0x0400 (1.8 V, UHS signalling). The LK runs the card at
+ * default and high speed, so both rails go to 3.0 V: card power first, then its I/O.
+ * ------------------------------------------------------------------------------------------- */
+extern signed int pwrap_read(unsigned int adr, unsigned int *rdata);
+extern signed int pwrap_write(unsigned int adr, unsigned int wdata);
+extern void mdelay(unsigned long msec);
+
+#define BLOCK_VMC_EN		0x1CC4u		/* LDO_VMC_CON0 bit 0 */
+#define BLOCK_VMCH_EN		0x1CD8u		/* LDO_VMCH_CON0 bit 0 */
+#define BLOCK_VMCH_VOSEL	0x1E48u		/* VMCH_ANA_CON0: bits 10:8 the voltage, 3:0 its trim */
+#define BLOCK_VMC_VOSEL		0x1E4Cu		/* VMC_ANA_CON0: bits 11:8 the voltage, 3:0 its trim */
+#define BLOCK_VMCH_3V0		3u
+#define BLOCK_VMC_3V0		11u
+
+static unsigned int block_pmic_r(unsigned int reg)
+{
+	unsigned int v = 0;
+	pwrap_read(reg, &v);
+	return v & 0xFFFFu;
+}
+
+static void block_pmic_rmw(unsigned int reg, unsigned int mask, unsigned int val)
+{
+	pwrap_write(reg, (block_pmic_r(reg) & ~mask) | (val & mask));
+}
+
+void msdc_ext_sd_power_on(void)
+{
+	/* A card left powered by an earlier session (a warm restart) is switched off long enough to
+	 * reset cleanly; from a cold start it is off already and a short settle is enough. */
+	int was_on = block_pmic_r(BLOCK_VMCH_EN) & 1u;
+
+	block_pmic_rmw(BLOCK_VMC_EN, 1u, 0);
+	block_pmic_rmw(BLOCK_VMCH_EN, 1u, 0);
+	mdelay(was_on ? 250 : 5);
+	block_pmic_rmw(BLOCK_VMCH_VOSEL, 0x070Fu, BLOCK_VMCH_3V0 << 8);
+	block_pmic_rmw(BLOCK_VMC_VOSEL, 0x0F0Fu, BLOCK_VMC_3V0 << 8);
+	block_pmic_rmw(BLOCK_VMCH_EN, 1u, 1u);
+	mdelay(10);
+	block_pmic_rmw(BLOCK_VMC_EN, 1u, 1u);
+	mdelay(30);
+	dprintf(CRITICAL, "sd: VMCH en %u vosel 0x%04x, VMC en %u vosel 0x%04x\n",
+		block_pmic_r(BLOCK_VMCH_EN) & 1u, block_pmic_r(BLOCK_VMCH_VOSEL),
+		block_pmic_r(BLOCK_VMC_EN) & 1u, block_pmic_r(BLOCK_VMC_VOSEL));
+}
+
+/* read only probes for the SD diagnostics (oem sd-probe) */
+unsigned msdc_pmic_read(unsigned reg) { return block_pmic_r(reg); }
+unsigned msdc1_reg_read(unsigned off) { return (unsigned)MSDC_READ32(0x11240000u + off); }
+unsigned msdc_mmio_read(unsigned addr) { return (unsigned)MSDC_READ32(addr); }
+/* the KPA's SD rails are on an MT6360; the Block has none */
+unsigned msdc_mt6360_read(unsigned reg) { (void)reg; return 0xFFFFFFFFu; }
+#endif

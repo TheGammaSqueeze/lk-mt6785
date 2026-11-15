@@ -289,6 +289,10 @@ int OVLROI(DISP_MODULE_ENUM module,
 	DISP_REG_SET(handle,idx*DISP_INDEX_OFFSET+DISP_REG_OVL_ROI_SIZE, bgH<<16 | bgW);
 
 	DISP_REG_SET(handle,idx*DISP_INDEX_OFFSET+DISP_REG_OVL_ROI_BGCLR, bgColor);
+#if defined(AYANEO_GBA_SD)
+	/* the constant layer (the resizer's picture after it) covers the whole ROI */
+	DISP_REG_SET(handle, idx * DISP_INDEX_OFFSET + DISP_REG_OVL_LC_SRC_SIZE, bgH << 16 | bgW);
+#endif
 
 	return 0;
 }
@@ -702,6 +706,25 @@ int OVLConnect(DISP_MODULE_ENUM module, DISP_MODULE_ENUM prev,
 	else
 		DISP_REG_SET_FIELD(handle, DATAPATH_CON_FLD_BGCLR_IN_SEL,
 				   idx * DISP_INDEX_OFFSET + DISP_REG_OVL_DATAPATH_CON, 0);
+#if defined(AYANEO_GBA_SD)
+	/* After the resizer the picture comes in on the constant layer (LC) as a direct link,
+	 * blended under the memory layers with no alpha of its own; anywhere else LC is off. */
+	if (connect && prev == DISP_MODULE_RSZ) {
+		DISP_REG_SET_FIELD(handle, OVL_LC_CON_FLD_LAYER_SRC,
+				   idx * DISP_INDEX_OFFSET + DISP_REG_OVL_LC_CON, 2);
+		DISP_REG_SET_FIELD(handle, OVL_LC_SRC_SEL_FLD_CONST_LAYER_SEL,
+				   idx * DISP_INDEX_OFFSET + DISP_REG_OVL_LC_SRC_SEL, 0);
+		DISP_REG_SET_FIELD(handle, OVL_LC_CON_FLD_ALPHA_EN,
+				   idx * DISP_INDEX_OFFSET + DISP_REG_OVL_LC_CON, 0);
+		DISP_REG_SET_FIELD(handle, SRC_CON_FLD_LC_EN,
+				   idx * DISP_INDEX_OFFSET + DISP_REG_OVL_SRC_CON, 1);
+	} else {
+		DISP_REG_SET_FIELD(handle, SRC_CON_FLD_LC_EN,
+				   idx * DISP_INDEX_OFFSET + DISP_REG_OVL_SRC_CON, 0);
+		DISP_REG_SET_FIELD(handle, OVL_LC_CON_FLD_LAYER_SRC,
+				   idx * DISP_INDEX_OFFSET + DISP_REG_OVL_LC_CON, 0);
+	}
+#endif
 	return 0;
 }
 
@@ -1233,7 +1256,13 @@ static int OVLConfig_l(DISP_MODULE_ENUM module, disp_ddp_path_config* pConfig, v
 
 	}
 
+#if defined(AYANEO_GBA_SD)
+	/* the four memory layers only: the constant layer's enable (bit 4, the resizer's picture
+	 * after the resizer, OVLConnect) stays as the path set it */
+	DISP_REG_SET_FIELD(handle, REG_FLD(4, 0), idx * DISP_INDEX_OFFSET + DISP_REG_OVL_SRC_CON, enabled_layers);
+#else
 	DISP_REG_SET(handle, idx * DISP_INDEX_OFFSET + DISP_REG_OVL_SRC_CON, enabled_layers);
+#endif
 
 	return 0;
 }

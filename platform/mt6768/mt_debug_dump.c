@@ -134,6 +134,18 @@ void lk_register_wdt_callback(void)
 #else
 		atf_aee_debug_addr = (void *) mt_secure_call(MTK_SIP_LK_WDT_AARCH32, (unsigned long) &lk_wdt_dump, 0, 0);
 #endif
+		/* The ATF answers with the address of its register save area, or with an error code
+		 * (the Konkr Pocket Block's ATF answers 0xFFFFFFFF here). An error mapped as an address
+		 * wrapped the 32 bit space: two pages from 0xFFFFF000 put page 0 on physical 0x1_0000_0000,
+		 * memory this board does not have, and every later null access hung the bus with no
+		 * abort. Only DRAM is mapped; anything else leaves the dump hook off. */
+		if ((uint32_t)atf_aee_debug_addr < DRAM_PHY_ADDR ||
+		    (uint32_t)atf_aee_debug_addr > 0xFFFF0000u - sizeof(struct atf_aee_regs)) {
+			dprintf(CRITICAL, "[WDT] ATF watchdog dump area %p not in DRAM: hook off\n",
+				atf_aee_debug_addr);
+			atf_aee_debug_addr = NULL;
+			return;
+		}
 		start = ROUNDDOWN((uint32_t)atf_aee_debug_addr, PAGE_SIZE);
 		size = sizeof(struct atf_aee_regs);
 		size = ROUNDUP(((uint32_t)atf_aee_debug_addr - start + size), PAGE_SIZE);

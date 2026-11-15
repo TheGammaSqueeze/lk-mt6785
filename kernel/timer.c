@@ -276,7 +276,7 @@ void timer_init(void)
 	list_initialize(&timer_queue);
 
 	/* register for a periodic timer tick */
-#ifdef KONKR_KPA
+#if defined(KONKR_KPA) || (defined(KONKR_BLOCK) && defined(AYANEO_GBA_SD))
 	/* 1 ms tick: the cores sleep for the last few ms of every frame wait (ayaneo_idle_until)
 	 * so the helper threads run; a 10 ms tick would make that sleep overshoot the refresh. */
 	platform_set_periodic_timer(timer_tick, NULL, 1);

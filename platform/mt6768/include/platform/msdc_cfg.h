@@ -77,7 +77,10 @@
 //#define MTK_MSDC_BRINGUP_DEBUG
 #endif
 
-#if (defined(MMC_MSDC_DRV_CTP) && !defined(FPGA_PLATFORM))
+/* GammaOS Pico needs a second host in the LK: the eMMC is msdc0, the microSD card (the games, the
+ * menus) is msdc1, which only the SD code ever starts (mmc_legacy_init(2)). */
+#if (defined(MMC_MSDC_DRV_CTP) && !defined(FPGA_PLATFORM)) \
+	|| (defined(MMC_MSDC_DRV_LK) && defined(AYANEO_GBA_SD) && !defined(FPGA_PLATFORM))
 #define MSDC_MAX_NUM            (2)
 #else
 #define MSDC_MAX_NUM            (1)
@@ -157,6 +160,11 @@
 #define FEATURE_ERASE
 #ifdef MTK_POWER_ON_WP
 #define FEATURE_MMC_POWER_ON_WP
+#endif
+/* GammaOS Pico: the microSD card is identified as an SD card (CMD8 SEND_IF_COND, ACMD41
+ * SD_SEND_OP_COND); the LK otherwise builds only the eMMC's CMD1, which a card does not answer */
+#if defined(AYANEO_GBA_SD)
+#define FEATURE_MMC_SDCARD
 #endif
 #endif
 

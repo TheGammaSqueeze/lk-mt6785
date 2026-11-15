@@ -67,7 +67,8 @@ struct msdc_cust msdc_cap[MSDC_MAX_NUM] = {
 #endif
 	}
 
-#if (defined(MMC_MSDC_DRV_CTP) && !defined(FPGA_PLATFORM))
+/* msdc1, the microSD card: in the CTP tests, and in a GammaOS Pico LK (the SD code starts it) */
+#if (defined(MMC_MSDC_DRV_CTP) || (defined(MMC_MSDC_DRV_LK) && defined(AYANEO_GBA_SD))) && !defined(FPGA_PLATFORM)
 	,
 	{
 		MSDC1_CLKSRC_DEFAULT, /* host clock source           */
@@ -87,8 +88,13 @@ struct msdc_cust msdc_cap[MSDC_MAX_NUM] = {
 #else
 		0, 0,               /* power status                  */
 #endif
-		/* hardware capability flags     */
+		/* hardware capability flags: the LK runs the card at high speed SDR only (no UHS or DDR
+		 * tuning, which the LK has no calibration for) */
+#if defined(MMC_MSDC_DRV_CTP)
 		MSDC_HIGHSPEED | MSDC_UHS1 | MSDC_DDR //|MSDC_UHS1|MSDC_SDIO_IRQ|MSDC_DDR
+#else
+		MSDC_HIGHSPEED
+#endif
 	}
 #endif
 };

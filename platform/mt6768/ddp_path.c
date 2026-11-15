@@ -80,7 +80,13 @@ typedef struct selection_s {
 int module_list_scenario[DDP_SCENARIO_MAX][DDP_ENING_NUM] = {
 	/* DDP_SCENARIO_PRIMARY_DISP */
 	{
+#if defined(AYANEO_GBA_SD)
+		/* GammaOS Pico, as on the KPA: the two layer overlay (the game) feeds the resizer,
+		 * whose output is OVL0's constant layer under OVL0's four (the menus, the HUD). */
+		DISP_MODULE_OVL0_2L, DISP_MODULE_RSZ, DISP_MODULE_OVL0, DISP_MODULE_RDMA0,
+#else
 		DISP_MODULE_OVL0, DISP_MODULE_OVL0_2L, DISP_MODULE_RDMA0,
+#endif
 		DISP_MODULE_RSZ0_VIRTUAL0, DISP_MODULE_RSZ0_VIRTUAL1,
 #if 0 /* Shang: Wait PQ ready */
 		DISP_MODULE_COLOR0,

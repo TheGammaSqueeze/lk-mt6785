@@ -296,6 +296,32 @@ int RDMAConfig(DISP_MODULE_ENUM module,
 	return 0;
 }
 
+#if defined(AYANEO_GBA_SD)
+/* GammaOS Pico: a real refresh edge for the presenter (platform/common/pico/pico_disp.inc). RDMA0
+ * raises FRAME_END (INT_STATUS bit 2) at the end of every scanned frame in video mode; the status
+ * register clears by writing zero, so writing all ones but bit 2 clears only that flag. Then poll
+ * until it rises again, bounded by timeout_us: 1 on an edge, 0 on a timeout. (dpmgr's frame done
+ * event is not set up on the LK path and returns at once.) */
+int ayaneo_rdma_wait_frame_end(unsigned int timeout_us)
+{
+	const unsigned int fe = 1u << 2;
+	unsigned int waited = 0;
+	DISP_CPU_REG_SET(DISP_REG_RDMA_INT_STATUS, ~fe);
+	while ((DISP_REG_GET(DISP_REG_RDMA_INT_STATUS) & fe) == 0) {
+		extern void ayaneo_volume_sample(void);
+		if (waited >= timeout_us) return 0;
+		ayaneo_volume_sample();   /* the volume keys are read at this rate while it waits */
+		udelay(20);
+		waited += 20;
+	}
+	return 1;
+}
+
+/* RDMA0's interrupt flags, read, and cleared without a wait (the presenter's late hand over) */
+unsigned int ayaneo_rdma_int_status(void) { return DISP_REG_GET(DISP_REG_RDMA_INT_STATUS); }
+void ayaneo_rdma_int_clear(unsigned int mask) { DISP_CPU_REG_SET(DISP_REG_RDMA_INT_STATUS, ~mask); }
+#endif
+
 int RDMAWait(DISP_MODULE_ENUM module,void * handle)
 {
 	unsigned int cnt = 0;

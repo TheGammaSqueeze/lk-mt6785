@@ -41,6 +41,24 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
 /* pad GPIOs (match gba_driver.c / gbc_sd_run.c). Active-low. */
 #define GP(n)          ((n) | 0x80000000u)
 #define PRESSED(g)     (mt_get_gpio_in(GP(g)) == 0)
+#if defined(KONKR_BLOCK)
+/* Konkr Pocket Block: every button is a GPIO, active low (the board's gamepad and gpio-keys
+ * nodes): A 4, B 5, X 3, Y 6, L1 14, R1 10, L2 15, R2 9, START 7, SELECT 24, the d-pad 25/27/28/26
+ * (up/down/left/right), MODE 17 (the menu key here) */
+#define GPIO_AYA       17      /* return to the selector */
+#define GPIO_LB        14
+#define GPIO_RB        10
+#define GPIO_SELECT    24
+#define GPIO_START     7
+#define GPIO_B         5       /* held at launch = start fresh (skip resume) */
+#define GPIO_A         4
+#define GPIO_X         3
+#define GPIO_Y         6
+#define GPIO_UP        25
+#define GPIO_DOWN      27
+#define GPIO_LEFT      28
+#define GPIO_RIGHT     26
+#else
 #define GPIO_AYA       86      /* return to the selector */
 #define GPIO_LB        92
 #define GPIO_RB        81
@@ -64,6 +82,7 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
 #define GPIO_DOWN      79
 #define GPIO_LEFT      78
 #define GPIO_RIGHT     80
+#endif
 
 /* retro joypad bit positions (RETRO_DEVICE_ID_JOYPAD_*) */
 #define RJ_B 0

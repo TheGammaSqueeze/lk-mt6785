@@ -240,7 +240,7 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 	{
 		/* frame drops: menu loop periods over 20 ms since the last peak reset (oem nav), and
 		 * whether the overlay really showed the buffer presented one frame earlier. */
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 		extern volatile unsigned int g_dbg_menu_frames, g_dbg_menu_long, g_dbg_latch_hit, g_dbg_latch_miss;
 		snprintf(lbuf, sizeof lbuf, "drops: frames=%u long=%u latch hit=%u miss=%u",
 			 g_dbg_menu_frames, g_dbg_menu_long, g_dbg_latch_hit, g_dbg_latch_miss);
@@ -1364,6 +1364,157 @@ static void cmd_gpio(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 #endif
+#if defined(KONKR_BLOCK)
+/* `oem gpio:N` on the Konkr Pocket Block: one pin's mode, direction, pull and level, read without
+ * changing it (pins 81..84 and 89/90 are I2C pads here, the display bias and the touch panel's) */
+static void cmd_gpio(const char *arg, void *data, unsigned sz)
+{
+	extern int mt_get_gpio_in(unsigned pin);
+	extern int mt_get_gpio_mode(unsigned pin);
+	extern int mt_get_gpio_dir(unsigned pin);
+	extern int mt_get_gpio_pull_enable(unsigned pin);
+	extern int mt_get_gpio_pull_select(unsigned pin);
+	unsigned n;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	n = fb_dec(&arg);
+	snprintf(lbuf, sizeof lbuf, "gpio%u=%d mode=%d dir=%d pull=%d/%d", n,
+		 mt_get_gpio_in(n | 0x80000000u), mt_get_gpio_mode(n | 0x80000000u),
+		 mt_get_gpio_dir(n | 0x80000000u), mt_get_gpio_pull_enable(n | 0x80000000u),
+		 mt_get_gpio_pull_select(n | 0x80000000u));
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* `oem rd:ADDR[,N]` on the Konkr Pocket Block: N (1..16) 32 bit words read from a register
+ * block, nothing written. Only 0x10000000..0x14FFFFFF (infra, the PMIC wrapper, the display
+ * system) and the LK's own RAM (its page tables); the caller names the block, and a clock gated
+ * one is the caller's to avoid. */
+static void cmd_rd(const char *arg, void *data, unsigned sz)
+{
+	unsigned a, n, i, len;
+	(void)data; (void)sz;
+	a = fb_hex(&arg) & ~3u;
+	n = fb_dec(&arg);
+	if (n < 1u) n = 1u;
+	if (n > 16u) n = 16u;
+	if ((a < 0x10000000u || a + n * 4u > 0x15000000u) && (a < 0x4C400000u || a + n * 4u > 0x4CD00000u)) {
+		fastboot_fail("rd: 0x10000000..0x14FFFFFF or the LK's RAM only");
+		return;
+	}
+	for (i = 0; i < n; i += 4u) {
+		unsigned k;
+		len = (unsigned)snprintf(lbuf, sizeof lbuf, "%08x:", a + i * 4u);
+		for (k = i; k < n && k < i + 4u; k++)
+			len += (unsigned)snprintf(lbuf + len, sizeof lbuf - len, " %08x",
+						  *(volatile unsigned *)(a + k * 4u));
+		fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
+/* `oem memfill:ADDR,LEN` on the Konkr Pocket Block (both hex): writes a pattern word by word over a
+ * DRAM range in the emulator scratch (0x4E000000..0x7F800000) and reads it back, to find memory
+ * the AP may not write (a range that hangs the board is found by halving). The range is the
+ * caller's to choose: anything in it is overwritten. */
+static void cmd_memfill(const char *arg, void *data, unsigned sz)
+{
+	volatile unsigned *p;
+	unsigned a, len, i, bad = 0, first = 0;
+	(void)data; (void)sz;
+	a = fb_hex(&arg) & ~3u;
+	len = fb_hex(&arg) & ~3u;
+	if (a < 0x4E000000u || len == 0u || a + len > 0x7F800000u || a + len < a) {
+		fastboot_fail("memfill: 0x4E000000..0x7F800000 only");
+		return;
+	}
+	p = (volatile unsigned *)a;
+	for (i = 0; i < len / 4u; i++)
+		p[i] = (a + i * 4u) ^ 0xA5A55A5Au;
+	__asm__ volatile("dsb sy" : : : "memory");
+	for (i = 0; i < len / 4u; i++)
+		if (p[i] != ((a + i * 4u) ^ 0xA5A55A5Au)) { if (!bad) first = a + i * 4u; bad++; }
+	snprintf(lbuf, sizeof lbuf, "memfill: %08x..%08x written, %u words wrong (first %08x)", a, a + len, bad, first);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* `oem nulltest` on the Konkr Pocket Block: a read of address 0x10, in the unmapped first megabyte
+ * (NULL_PAGE_GUARD), to check that a data abort reaches the fault records */
+static void cmd_nulltest(const char *arg, void *data, unsigned sz)
+{
+	volatile unsigned int *null_page = (volatile unsigned int *)0x10u;
+	(void)arg; (void)data; (void)sz;
+	fastboot_info("nulltest: reading address 0x10 now");
+	(void)*null_page;
+	fastboot_okay("");
+}
+
+/* `oem vrate[:LINE]` on the Konkr Pocket Block: one second of tight polling of RDMA0's interrupt
+ * flags, counting their rising edges without clearing any (the presenter clears them too), with
+ * the target line set to LINE first when given */
+static void cmd_vrate(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int gpt4_get_current_tick(void);
+	volatile unsigned int *st = (volatile unsigned int *)(0x1400D000u + 0x004u);	/* RDMA0 INT_STATUS */
+	volatile unsigned int *tl = (volatile unsigned int *)(0x1400D000u + 0x01Cu);	/* RDMA0 TARGET_LINE */
+	unsigned int t0, f, prev, rise[7] = { 0 }, k, line;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg >= '0' && *arg <= '9') {
+		line = fb_dec(&arg);
+		*tl = line;
+	}
+	prev = *st & 0x7Fu;
+	t0 = gpt4_get_current_tick();
+	while ((gpt4_get_current_tick() - t0) < 13000000u) {
+		f = *st & 0x7Fu;
+		for (k = 0; k < 7u; k++)
+			if ((f & ~prev) & (1u << k)) rise[k]++;
+		prev = f;
+	}
+	/* RDMA0 INT_STATUS rising edges (others clear the flags: nothing is cleared here): 0 reg
+	 * update, 1 frame start, 2 frame end, 3 eof abnormal, 4 underflow, 5 target line, 6 empty */
+	snprintf(lbuf, sizeof lbuf, "vrate/s: start %u end %u line %u (at %u)", rise[1], rise[2], rise[5], *tl);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "vrate/s: upd %u abn %u underflow %u empty %u", rise[0], rise[3], rise[4], rise[6]);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* `oem pr:REG[,N]` on the Konkr Pocket Block: N (1..8) 16 bit PMIC registers from REG (hex, step
+ * 2), read through the PMIC wrapper, nothing written */
+static void cmd_pr(const char *arg, void *data, unsigned sz)
+{
+	extern signed int pwrap_read(unsigned int adr, unsigned int *rdata);
+	unsigned int reg, n, i, v, len;
+	(void)data; (void)sz;
+	reg = fb_hex(&arg) & ~1u;
+	n = fb_dec(&arg);
+	if (n < 1u) n = 1u;
+	if (n > 8u) n = 8u;
+	len = (unsigned int)snprintf(lbuf, sizeof lbuf, "pr %04x:", reg);
+	for (i = 0; i < n; i++) {
+		v = 0;
+		pwrap_read(reg + 2u * i, &v);
+		len += (unsigned int)snprintf(lbuf + len, sizeof lbuf - len, " %04x", v & 0xffffu);
+	}
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* `oem stacktest[:w]` on the Konkr Pocket Block: block_stacktest (block_pico.c) */
+static void cmd_stacktest(const char *arg, void *data, unsigned sz)
+{
+	extern int block_stacktest(int on_window);
+	int ms;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	ms = block_stacktest(*arg != 'w');
+	snprintf(lbuf, sizeof lbuf, "stacktest: %s after %d ms", ms >= 0 ? "done" : "NOT done", ms < 0 ? -ms : ms);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+#endif
 
 /* `oem mode`: which fastboot we are talking to. The same oem commands are registered in the
  * plain bootloader and in the emulator's USB channel, so a tool cannot tell them apart by
@@ -1608,7 +1759,7 @@ static void cmd_close(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-#if defined(KONKR_KPA)   /* the Konkr's panel pacer (mt_disp_drv.c AYANEO_ROT) */
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)   /* the Konkr's panel pacer (mt_disp_drv.c AYANEO_ROT) */
 /* oem fdmargin[:base_us[:latch_us]] - the frame delay's slack floor on top of the measured work and
  * the part of the front porch the late hand over leaves unused; shows the live slack. Not saved. */
 static void cmd_fdmargin(const char *arg, void *data, unsigned sz)
@@ -1696,7 +1847,7 @@ static void cmd_memstage(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-#if defined(KONKR_KPA)   /* the Konkr's panel pacer (mt_disp_drv.c AYANEO_ROT) */
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)   /* the Konkr's panel pacer (mt_disp_drv.c AYANEO_ROT) */
 /* oem palate[:a|0|us] - the late hand over (mt_disp_drv.c rot_pace): a = the front porch less a
  * margin (default), 0 = off, else a fixed window in us. Reports the window, frames handed over
  * late and frames that measured the edge since the last call, and the refresh measured over the
@@ -1735,7 +1886,7 @@ static void cmd_palate(const char *arg, void *data, unsigned sz)
 }
 #endif
 
-#if defined(KONKR_KPA)   /* the Konkr's panel pacer (mt_disp_drv.c AYANEO_ROT) */
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)   /* the Konkr's panel pacer (mt_disp_drv.c AYANEO_ROT) */
 /* oem fdelay[:0|1] - the frame delay (mt_disp_drv.c ayaneo_frame_delay): the last frame's delay
  * before the button read, its measured work, delayed frames that still missed their refresh,
  * whether it is backed off; with :0 / :1 turns it off / on (not saved, for A/B checks). */
@@ -2925,17 +3076,17 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem rumble", cmd_rumble, 1, 0);
 	fastboot_register("oem sd-rm:", cmd_sd_rm, 1, 0);
 	fastboot_register("oem sd-rmn", cmd_sd_rmn, 1, 0);
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 	fastboot_register("oem fdelay", cmd_fdelay, 1, 0);
 #endif
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 	fastboot_register("oem palate", cmd_palate, 1, 0);
 #endif
 	fastboot_register("oem memstage", cmd_memstage, 1, 0);
 	fastboot_register("oem gbcpace", cmd_gbcpace, 1, 0);
 	fastboot_register("oem gencommit", cmd_gencommit, 1, 0);
 	fastboot_register("oem fbwc", cmd_fbwc, 1, 0);
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 	fastboot_register("oem fdmargin", cmd_fdmargin, 1, 0);
 #endif
 	fastboot_register("oem close", cmd_close, 1, 0);
@@ -2992,6 +3143,28 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem latch", cmd_latch, 1, 0);        /* overlay buffer switches per second */
 	fastboot_register("oem clk", cmd_clk, 1, 0);            /* gpt4 rate vs the ARM architected timer */
 	fastboot_register("oem vdiv:", cmd_vdiv, 1, 0);         /* vsync divider (panel = N x core rate) */
+#if defined(KONKR_BLOCK)
+	/* the board neutral ones of the KPA's set, and the pin reader */
+	fastboot_register("oem persist", cmd_persist, 1, 0);
+	fastboot_register("oem env:", cmd_env, 1, 0);
+	fastboot_register("oem serialinfo", cmd_serialinfo, 1, 0);
+	fastboot_register("oem blackbox", cmd_blackbox, 1, 0);
+	fastboot_register("oem core", cmd_core, 1, 0);
+	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);
+	fastboot_register("oem bbram", cmd_bbram, 1, 0);
+	fastboot_register("oem dsitime", cmd_dsitime, 1, 0);
+	fastboot_register("oem introbg", cmd_introbg, 1, 0);
+	fastboot_register("oem gray", cmd_gray, 1, 0);
+	fastboot_register("oem rewindmap", cmd_rewindmap, 1, 0);
+	fastboot_register("oem mmuq:", cmd_mmuq, 1, 0);
+	fastboot_register("oem gpio:", cmd_gpio, 1, 0);         /* one pin's state, unchanged */
+	fastboot_register("oem rd:", cmd_rd, 1, 0);             /* register words, read only */
+	fastboot_register("oem memfill:", cmd_memfill, 1, 0);   /* which DRAM the AP may write */
+	fastboot_register("oem stacktest", cmd_stacktest, 1, 0);
+	fastboot_register("oem nulltest", cmd_nulltest, 1, 0);
+	fastboot_register("oem vrate", cmd_vrate, 1, 0);
+	fastboot_register("oem pr:", cmd_pr, 1, 0);             /* PMIC registers, read only */         /* the real refresh, and RDMA0's frame ends */   /* a null read: does the abort get recorded */ /* the SNES thread's stack window under load */
+#endif
 #ifdef KONKR_KPA
 	fastboot_register("oem lcm", cmd_lcm, 1, 0);            /* Konkr: glass id pins + dsi state */
 	fastboot_register("oem lcminit:", cmd_lcminit, 1, 0);   /* Konkr: force panel init with table N */

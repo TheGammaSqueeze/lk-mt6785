@@ -13,6 +13,23 @@ MODULES += app/mt_boot \
 KONKR_BLOCK := yes
 DEFINES += KONKR_BLOCK
 
+# GammaOS Pico: the games, the menus and everything else run from the microSD card; the LK owns
+# lk_a only. With no card (or the boot to the system chosen) the stock Android boots as before.
+# The same switches the Konkr Pocket Advance and the Pocket Air Mini set in k85v1_64.mk.
+AYANEO_GBA_SD := yes
+AYANEO_GBA := yes
+DEFINES += AYANEO_GBA_SD AYANEO_GBA
+GBA_LIB :=
+AYANEO_GBC := no
+# the emulator display code is built with the boot animation switch (the animation itself is
+# compiled out of the SD build)
+AYANEO_RAINBOW_BOOT := yes
+DEFINES += AYANEO_RAINBOW_BOOT
+# no boot chime: the GBA BIOS intro from the card is the boot sound
+AYANEO_BOOT_AUDIO := no
+AYANEO_AUDIO_VOLUME := 40
+DEFINES += AYANEO_AUDIO_VOLUME=$(AYANEO_AUDIO_VOLUME)
+
 # Android knows the SoC as mt8786 (ro.boot.hardware, /firmware/android hardware), as the stock LK
 # reports it.
 MTK_PRODUCT_LINE_PLATFORM = MT8786
@@ -70,7 +87,9 @@ VENDOR_BOOT_SUPPORT := yes
 DEFINES += KEEP_STOCK_BOOT_STATE
 
 # Bring-up: the LK keeps its log (fastboot oem dump_pllk_log) at the stock level.
+ifneq ($(AYANEO_GBA_SD),yes)
 DEFINES += LK_LOG_INFO
+endif
 
 # The Android 12 preloader's EMI boot tag and the kernel's /dramc, /emicen, /emimpu, /emiisu nodes.
 EMI_TAG_V2 := yes

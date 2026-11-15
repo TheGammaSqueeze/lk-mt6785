@@ -361,6 +361,13 @@ void thread_resched(void)
 	if (newthread == oldthread)
 		return;
 
+#if defined(KONKR_BLOCK) && defined(BOOT_TRACE)
+	{	/* the Konkr Pocket Block's bring-up: every switch noted where a reset keeps it */
+		extern void block_sched_note(const char *name);
+		block_sched_note(newthread->name);
+	}
+#endif
+
 	/* set up quantum for the new thread if it was consumed */
 	if (newthread->remaining_quantum <= 0) {
 		newthread->remaining_quantum = quantum; // XXX make this smarter

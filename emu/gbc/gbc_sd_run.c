@@ -66,6 +66,23 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
  * free for the session controls. */
 #define GP(n)          ((n) | 0x80000000u)
 #define PRESSED(g)     (mt_get_gpio_in(GP(g)) == 0)
+#if defined(KONKR_BLOCK)
+/* Konkr Pocket Block: every button is a GPIO, active low (the board's gamepad and gpio-keys
+ * nodes): A 4, B 5, X 3, Y 6, L1 14, R1 10, L2 15, R2 9, START 7, SELECT 24, the d-pad 25/27/28/26
+ * (up/down/left/right), MODE 17 (the menu key here) */
+#define GPIO_AYA       17      /* return to the selector */
+#define GPIO_LB        14      /* DMG palette prev */
+#define GPIO_RB        10      /* DMG palette next */
+#define GPIO_SELECT    24      /* + START + L + R held = soft reset */
+#define GPIO_START     7
+#define GPIO_UP        25
+#define GPIO_DOWN      27
+#define GPIO_LEFT      28
+#define GPIO_RIGHT     26
+#define GPIO_B         5       /* held at launch = start fresh (skip resume); menu back */
+#define GPIO_A         4       /* menu select */
+#define GPIO_X         3       /* menu: reset an option */
+#else
 #define GPIO_AYA       86      /* return to the selector */
 #define GPIO_LB        92      /* DMG palette prev */
 #define GPIO_RB        81      /* DMG palette next */
@@ -87,6 +104,7 @@ extern int      ayaneo_get_preempt_frames(void);   /* run-ahead depth 0..3 (shar
 #define GPIO_X         85      /* PHYSICAL X button (GBA driver labels 84/85 X/Y for
                                 * autofire, which reads swapped vs the printed caps; the
                                 * menu uses the physically-labelled X to reset an option) */
+#endif
 #endif
 #define RESET_HOLD_FRAMES 30    /* ~0.5 s at 59.7 Hz */
 
@@ -166,7 +184,7 @@ static void gbc_apply_clock(void)
  * the Game Boy's 59.7275 Hz; a second clock there only adds a wait at a phase set by when the
  * session started, anywhere in the refresh, and that pushed the next frame's start and its
  * button read past the point the frame delay had picked. */
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 volatile int g_gbc_counter_pace = 0;   /* oem gbcpace:0|1, for A/B checks */
 #else
 volatile int g_gbc_counter_pace = 1;
@@ -705,7 +723,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	s_menu_is_dmg = is_dmg; s_menu_pal = &pal_idx;
 	s_msel = 0; s_mstat[0] = 0; g_gbc_menu_open = 0; s_pal_pick = 0; s_gbc_igm_on = 0; s_gbc_igm_exit = 0;
 
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 	{	/* the panel at the GB rate, one refresh per frame (the pacer's rate too), whatever the
 		 * last core left it at */
 		extern void ayaneo_dsi_set_vfp(unsigned int vfp); extern unsigned int ayaneo_dsi_default_vfp(void);

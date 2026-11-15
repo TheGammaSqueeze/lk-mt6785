@@ -379,3 +379,26 @@ void rtc_get_time(struct rtc_time *tm) {
 	}
 	tm->tm_year += RTC_MIN_YEAR;
 }
+
+#if defined(AYANEO_GBA_SD)
+/* GammaOS Pico: set the time counter (the year in full and the month 1..12, as rtc_get_time gives
+ * them; the time of day is UTC, as Android keeps it). The MT6358 month register's upper bits hold
+ * other flags and are kept. The year counter covers RTC_NUM_YEARS from RTC_MIN_YEAR: a year past
+ * it is clamped, not wrapped. */
+void rtc_set_time(const struct rtc_time *tm)
+{
+	U16 mth = RTC_Read(RTC_TC_MTH) & ~PMIC_TC_MONTH_MASK;
+	int yea = tm->tm_year;
+	if (yea < RTC_MIN_YEAR) yea = RTC_MIN_YEAR;
+	if (yea > RTC_MIN_YEAR + RTC_NUM_YEARS - 1) yea = RTC_MIN_YEAR + RTC_NUM_YEARS - 1;
+	rtc_writeif_unlock();
+	RTC_Write(RTC_TC_YEA, (U16)(yea - RTC_MIN_YEAR));
+	RTC_Write(RTC_TC_MTH, mth | (tm->tm_mon & PMIC_TC_MONTH_MASK));
+	RTC_Write(RTC_TC_DOM, tm->tm_mday);
+	RTC_Write(RTC_TC_HOU, tm->tm_hour);
+	RTC_Write(RTC_TC_MIN, tm->tm_min);
+	RTC_Write(RTC_TC_SEC, tm->tm_sec);
+	rtc_write_trigger();
+	rtc_writeif_lock();
+}
+#endif

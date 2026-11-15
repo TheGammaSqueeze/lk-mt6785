@@ -149,6 +149,25 @@ extern int      mt_get_gpio_in(unsigned pin);
 /* pad GPIOs (match gba_driver.c). Active-low. */
 #define GP(n)          ((n) | 0x80000000u)
 #define PRESSED(g)     (mt_get_gpio_in(GP(g)) == 0)
+#if defined(KONKR_BLOCK)
+/* Konkr Pocket Block: every button is a GPIO, active low (the board's gamepad and gpio-keys
+ * nodes): A 4, B 5, X 3, Y 6, L1 14, R1 10, L2 15, R2 9, START 7, SELECT 24, the d-pad 25/27/28/26
+ * (up/down/left/right), MODE 17 (the menu key here) */
+#define GPIO_AYA       17
+#define GPIO_LB        14
+#define GPIO_RB        10
+#define GPIO_SELECT    24
+#define GPIO_START     7
+#define GPIO_B         5
+#define GPIO_A         4
+#define GPIO_X         3
+#define GPIO_Y         6
+#define GPIO_UP        25
+#define GPIO_DOWN      27
+#define GPIO_LEFT      28
+#define GPIO_RIGHT     26
+#define GPIO_R2        9       /* second-stage right trigger = fast-forward (matches GBA) */
+#else
 #define GPIO_AYA       86
 #define GPIO_LB        92
 #define GPIO_RB        81
@@ -173,6 +192,7 @@ extern int      mt_get_gpio_in(unsigned pin);
 #define GPIO_LEFT      78
 #define GPIO_RIGHT     80
 #define GPIO_R2        57      /* second-stage right trigger = fast-forward (matches GBA) */
+#endif
 
 /* RETRO_DEVICE_ID_JOYPAD_* bit positions (what the core's input_state_cb reads). */
 #define RJ_B 0
@@ -620,6 +640,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	unsigned saved_mhz = 0;
 	int aya_hold = 0;
 
+#if defined(KONKR_BLOCK)
+	{ extern volatile unsigned g_block_launch_mark; g_block_launch_mark = 7; }
+#endif
 	g_snes_dbg_stage = 1; g_snes_dbg_frames = 0; g_snes_dbg_exit = 0; g_snes_dbg_audframes = 0;
 	g_snes_dbg_heapused = 0;
 	g_snes_dbg_w = g_snes_dbg_h = 0; g_snes_dbg_loadrc = 0xFF;
@@ -1359,6 +1382,9 @@ static int snes_thread_fn(void *arg)
 	(void)arg;
 	for (;;) {
 		event_wait(&s_snes_kick);
+#if defined(KONKR_BLOCK)
+		{ extern volatile unsigned g_block_launch_mark; g_block_launch_mark = 6; }
+#endif
 		snes_session_body(s_snes_vol, s_snes_rom);
 		event_signal(&s_snes_done, false);
 	}
@@ -1368,6 +1394,9 @@ static int snes_thread_fn(void *arg)
 void snes_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 {
 	s_snes_vol = vol; s_snes_rom = rom;
+#if defined(KONKR_BLOCK)
+	{ extern volatile unsigned g_block_launch_mark; g_block_launch_mark = 1; }
+#endif
 	if (!s_snes_thread) {
 		event_init(&s_snes_kick, false, EVENT_FLAG_AUTOUNSIGNAL);
 		event_init(&s_snes_done, false, EVENT_FLAG_AUTOUNSIGNAL);
@@ -1376,8 +1405,21 @@ void snes_sd_session(fat_vol *vol, const gba_rom_entry *rom)
 		 * not fit on the caller's 64 KB stack, so unlike the GBC and Genesis sessions it is not
 		 * run inline. */
 		if (!s_snes_thread) { g_snes_dbg_nothread++; return; }
+#if defined(KONKR_BLOCK)
+		{ extern volatile unsigned g_block_launch_mark; g_block_launch_mark = 2; }
+#endif
 		thread_resume(s_snes_thread);
+#if defined(KONKR_BLOCK)
+		{ extern volatile unsigned g_block_launch_mark; g_block_launch_mark = 3; }
+#endif
 	}
+#if defined(KONKR_BLOCK)
+	{ extern volatile unsigned g_block_launch_mark; g_block_launch_mark = 4; }
+#endif
 	event_signal(&s_snes_kick, true);
+#if defined(KONKR_BLOCK)
+	{ extern volatile unsigned g_block_launch_mark; g_block_launch_mark = 5; }
+#endif
+
 	event_wait(&s_snes_done);
 }

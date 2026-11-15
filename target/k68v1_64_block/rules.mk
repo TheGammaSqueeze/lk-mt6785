@@ -25,6 +25,10 @@ MEMSIZE := 0x00900000 # 9MB
 else ifeq ($(MTK_TLC_NAND_SUPPORT), yes)
 DEFINES += MTK_TLC_NAND_SUPPORT
 MEMSIZE := 0x00900000 # 9MB
+else ifeq ($(AYANEO_GBA_SD), yes)
+# GammaOS Pico: the emulator, the menus and their buffers take the LK past 8 MB (end of bss
+# about 0x4CC57000); 9 MB as the KPA's, ending at 0x4CD00000, below the ATF at 0x4CE00000
+MEMSIZE := 0x00900000 # 9MB
 else
 MEMSIZE := 0x00400000 # 4MB
 endif

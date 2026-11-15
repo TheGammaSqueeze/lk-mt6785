@@ -1390,11 +1390,13 @@ int boot_linux_fdt(void *kernel, unsigned *tags,
 
 		/*Append pre-loader boot time to kernel command line*/
 		pl_t = g_boot_arg->boot_time;
+#ifdef KONKR_BLOCK	/* the Block gives these in /bootprof (block_fdt_parity) */
 		lk_t = ((unsigned int)get_timer(boot_time));
-#ifndef KONKR_BLOCK	/* the Block gives these in /bootprof (block_fdt_parity) */
+#else
 		snprintf(tmpbuf, TMPBUF_SIZE, "%s%d", "bootprof.pl_t=", pl_t);
 		cmdline_append(tmpbuf);
 		/*Append lk boot time to kernel command line*/
+		lk_t = ((unsigned int)get_timer(boot_time));
 		snprintf(tmpbuf, TMPBUF_SIZE, "%s%d", "bootprof.lk_t=", lk_t);
 		cmdline_append(tmpbuf);
 
@@ -1891,6 +1893,40 @@ int boot_linux_from_storage(void)
 			}
 		}
 		if (g_boot_mode != FASTBOOT && !kpa_skip_emu && ayaneo_gba_sd_boot() >= 0)
+#elif defined(KONKR_BLOCK)
+		/* The Konkr Pocket Block, the same combos with its own pins (active low, pulled up as the
+		 * stock DT leaves them): SELECT + START (GPIO24 + GPIO7) held while the LK starts boots
+		 * Android, no menu, with the card left in; SELECT + START + R1 (GPIO10) goes to fastboot,
+		 * so the console stays recoverable over USB. */
+		int block_skip_emu = 0;
+		{	/* the buttons are pulled down by the boot pin table: up first, settled
+			 * (block_pico.c), and a combo has to read held twice, 2 ms apart */
+			extern S32 mt_get_gpio_in(u32 pin);
+			extern void block_buttons_init(void);
+			const u32 sel = 24u | 0x80000000u, start = 7u | 0x80000000u, r1 = 10u | 0x80000000u;
+			int held = 0, fb = 0, k;
+			block_buttons_init();
+			for (k = 0; k < 2; k++) {
+				int both = mt_get_gpio_in(sel) == 0 && mt_get_gpio_in(start) == 0;
+				held += both;
+				fb += both && mt_get_gpio_in(r1) == 0;
+				mdelay(2);
+			}
+			if (fb == 2) {
+				/* fastboot follows this function's return in mt_boot_init; carrying on here
+				 * would load the boot image for a fastboot mode and stop at its assert */
+				extern void ayaneo_show_deferred_logo(void);
+				dprintf(CRITICAL, "[BLOCK] SELECT+START+R1 held at boot: fastboot\n");
+				ayaneo_show_deferred_logo();	/* held back for the menu (mt_logo.c) */
+				g_boot_mode = FASTBOOT;
+				return 0;
+			}
+			if (held == 2) {
+				dprintf(CRITICAL, "[BLOCK] SELECT+START held at boot: Android\n");
+				block_skip_emu = 1;
+			}
+		}
+		if (!block_skip_emu && ayaneo_gba_sd_boot() >= 0)
 #else
 		if (ayaneo_gba_sd_boot() >= 0)
 #endif
@@ -2281,6 +2317,12 @@ void boot_trace_rescue_fastboot(void)
 	LED_STAGE(2);	/* 2 blinks: the last log is on the eMMC (end of misc) */
 	set_serial_num();
 	LED_STAGE(3);	/* 3 blinks: serial number read */
+	{	/* the charger's watchdog off, as the normal fastboot has it (mtk_charger_start): left on,
+		 * the charger's resets cut the USB link in a long download */
+		extern int rt9467_wdt_off_early(void) __attribute__((weak));
+		if (rt9467_wdt_off_early)
+			rt9467_wdt_off_early();
+	}
 	target_fastboot_init();
 	LED_STAGE(4);	/* 4 blinks: fastboot target set up */
 	udc_init(&surf_udc_device);
@@ -2399,6 +2441,12 @@ void ayaneo_fastboot_usb_start(void)
 	udc_init(&surf_udc_device);   /* emulator path never ran the fastboot: label, so udc is down */
 	sz = target_get_max_flash_size();
 	fastboot_init(target_get_scratch_address(), sz);
+#if defined(KONKR_BLOCK)
+	{	/* mt6768's udc_start would never return (its idle loop): the gate has to come back */
+		extern int g_musb_start_returns;
+		g_musb_start_returns = 1;
+	}
+#endif
 	udc_start();
 }
 #endif

@@ -89,10 +89,12 @@ done
 python3 tools/ayaneo/gba/build_sdcard.py out/snes_pack.bin out/sdcard "${CORE_ARGS[@]}"
 
 # A theme with a menu of its own (a 'layout' file in its folder) brings its card packs, one per
-# screen it was drawn for: the Current theme's are built from tools/ayaneo/pico_current.
+# screen it was drawn for: the Current theme's are built from tools/ayaneo/pico_current. 960x640
+# is the Konkr Pocket Advance's screen, 960x720 the Konkr Pocket Block's, 1280x960 the Pocket Air
+# Mini's.
 if [ -f "$THEMES_DIR/current/layout" ]; then
 	echo ">> Building the Current theme's packs"
-	for size in 960x640 1280x960; do
+	for size in 960x640 960x720 1280x960; do
 		python3 tools/ayaneo/pico_current/build_pack.py "$size" "out/sdcard/gammaos/current-$size.pack" \
 			--igm "out/sdcard/gammaos/current-igm-$size.pack" \
 			"${THEME_ARGS[@]}" || exit 1
@@ -105,6 +107,6 @@ python3 tools/ayaneo/pico_current/build_names.py out/sdcard/gammaos/names.pack |
 # The menus' languages: a pack per language and screen, its words and the glyphs the fonts lack
 # (tools/ayaneo/pico_current/i18n). Any theme reads them; English needs none.
 echo ">> Building the language packs"
-for size in 960x640 1280x960; do
+for size in 960x640 960x720 1280x960; do
 	python3 tools/ayaneo/pico_current/build_lang.py "$size" out/sdcard/gammaos || exit 1
 done

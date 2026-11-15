@@ -204,7 +204,11 @@ int gba_sd_card_present(void)
 	extern int mt_set_gpio_pull_enable(unsigned int pin, unsigned int en);
 	extern int mt_set_gpio_pull_select(unsigned int pin, unsigned int sel);
 	extern void udelay(unsigned long usec);
+#if defined(KONKR_BLOCK)
+	const unsigned int cd = 18u | 0x80000000u;   /* the Konkr Pocket Block's cd-gpios, low with a card in */
+#else
 	const unsigned int cd = 8u | 0x80000000u;
+#endif
 	mt_set_gpio_mode(cd, 0); mt_set_gpio_dir(cd, 0);
 	mt_set_gpio_pull_enable(cd, 1); mt_set_gpio_pull_select(cd, 1);
 	udelay(200);

@@ -172,6 +172,24 @@ extern int  ayaneo_text(unsigned int *buf, unsigned int pitch_w, int x, int y,
 /* GBA button GPIOs (active-low), same panel as the SNES build's map */
 extern int  mt_get_gpio_in(unsigned pin);
 #define GP(n) (n)
+#if defined(KONKR_BLOCK)
+/* Konkr Pocket Block: every button a GPIO, active low (see gba_driver.c), read through the pin
+ * handle (a bare number logs a warning a pin, every frame) */
+#undef GP
+#define GP(n) ((n) | 0x80000000u)
+#define K_LEFT 28
+#define K_RIGHT 26
+#define K_UP 25
+#define K_DOWN 27
+#define K_A 4
+#define K_B 5
+#define K_START 7
+#define K_SELECT 24
+#define K_LB 14    /* L shoulder = page jump back */
+#define K_RB 10    /* R shoulder = page jump forward */
+#define K_X  3     /* X = cycle the system filter */
+#define K_Y  6     /* Y (the menus' search) */
+#else
 #define K_LEFT 78
 #define K_RIGHT 80
 #define K_UP 89
@@ -192,6 +210,7 @@ extern int  mt_get_gpio_in(unsigned pin);
 #define K_RB 81    /* GBA R shoulder = page jump forward */
 #define K_X  84    /* the cap the user reads as X in the carousel = cycle the system filter */
 #define K_Y  85    /* Y (the menus' search) */
+#endif
 #define PRESSED(g) (mt_get_gpio_in(GP(g)) == 0)
 
 extern int pmic_detect_powerkey(void);
@@ -336,7 +355,7 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
  *   fct     0x55E00000 .. 0x55E70800  (after game-full)
  * Boxart tiles are on the SD card, never in lk_a.
  */
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 /* Konkr: the virtual 1280x853 menu canvas + rotated-frame scratch take 0x54800000..0x54C2A400
  * (mt_disp_drv.c), so the card tile cache moves up and shrinks to stay below the reveal buffer:
  * 8 * 320*360*4 = 3.5MB, 0x54C40000..0x54FC4000. */
@@ -369,6 +388,13 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
  * across mixed console types then never re-renders a focused tile (2.7 ms each). */
 #define SNES_FCT_PA      0x54470000u
 #define SNES_FCT_CAP     8
+#elif defined(KONKR_BLOCK)
+/* Konkr Pocket Block: the 4:3 warped wallpaper cache is built here (2025 x 720 x 4 at the 0.75
+ * scale, 0x54000000..0x5458FD40), so the active card tiles sit after it and below the canvas
+ * (0x54800000): five of them, 0x54590000..0x547C2800. A sixth console type in a held scroll
+ * renders its focused tile again (2.7 ms) instead of keeping it. */
+#define SNES_FCT_PA      0x54590000u
+#define SNES_FCT_CAP     5
 #else
 #define SNES_FCT_PA      0x55E00000u /* focused (blue) card-body tile (320*360*4 = 450KB) */
 #define SNES_FCT_CAP     1
@@ -1266,7 +1292,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 {
 	const snes_img_entry *cart;
 	unsigned int saved_mhz;
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 	{ extern void ayaneo_joypad_kpa_reset_toggles(void); ayaneo_joypad_kpa_reset_toggles(); }   /* L2/R2 toggles never carry across sessions */
 #endif
 	int do_reverse = g_reverse_punch;	/* consume now so a failed re-entry (pack missing)

@@ -304,6 +304,26 @@ long gba_host_time(void)
 #define GP(n)	((n) | 0x80000000u)
 #define PRESSED(g)	(mt_get_gpio_in(GP(g)) == 0)
 
+#if defined(KONKR_BLOCK)
+/* Konkr Pocket Block: every button is a GPIO, active low (the board's gamepad and gpio-keys
+ * nodes): A 4, B 5, X 3, Y 6, L1 14, R1 10, L2 15, R2 9, START 7, SELECT 24, the d-pad 25/27/28/26
+ * (up/down/left/right), MODE 17 (the menu key here). L2 and R2 toggle rewind and fast forward
+ * (block_pico.c). */
+#define GPIO_UP		25
+#define GPIO_DOWN	27
+#define GPIO_LEFT	28
+#define GPIO_RIGHT	26
+#define GPIO_A		4
+#define GPIO_B		5
+#define GPIO_START	7
+#define GPIO_SELECT	24
+#define GPIO_LB		14	/* L shoulder */
+#define GPIO_RB		10	/* R shoulder */
+#define GPIO_X		3	/* autofire B */
+#define GPIO_Y		6	/* autofire A */
+#define GPIO_R2		9	/* fast forward (a toggle, through ayaneo_joypad_ff_level) */
+#define GPIO_AYA	17	/* menu */
+#else
 #define GPIO_UP		89
 #define GPIO_DOWN	79
 #define GPIO_LEFT	78
@@ -331,6 +351,7 @@ long gba_host_time(void)
 #endif
 #define GPIO_R2		57	/* key_rc / second-stage right trigger = fast-forward */
 #define GPIO_AYA	86	/* menu */
+#endif
 #define AUTOFIRE_HZ	12
 
 static const struct { unsigned gpio; unsigned mask; } s_btn[] = {
@@ -438,7 +459,7 @@ static void update_buttons(void)
 			raw |= s_btn[i].mask;
 	if (PRESSED(GPIO_X))  raw |= RB_X;
 	if (PRESSED(GPIO_Y))  raw |= RB_Y;
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 	{ extern int ayaneo_joypad_ff_level(void); if (ayaneo_joypad_ff_level() > 0) raw |= RB_FF; }   /* R2 toggle */
 #else
 	if (PRESSED(GPIO_R2)) raw |= RB_FF;
@@ -1306,7 +1327,7 @@ static int ocv_pct(int mv)
 /* boot facts from the preloader's arguments, for every board (oem boottime, the black box) */
 unsigned ayaneo_pl_boot_ms(void) { extern BOOT_ARGUMENT *g_boot_arg; return g_boot_arg ? g_boot_arg->boot_time : 0u; }
 int ayaneo_boot_reason(void) { extern BOOT_ARGUMENT *g_boot_arg; return g_boot_arg ? (int)g_boot_arg->boot_reason : -1; }
-#ifdef KONKR_KPA
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 /* The MT6360 charger's own state (PMU block, I2C5 slave 0x34, CHG_STAT 0x4A bits 7:6):
  * 0 ready, 1 charging, 2 done, 3 fault; -1 when the read fails. The voltage table cannot
  * tell a full pack under charge apart from one still taking current (it rests at ~94%). */
@@ -1319,6 +1340,8 @@ void ayaneo_ramcon_info(char *out, int n)
 	snprintf(out, n, "ramcon: sram %08x+%x def %u", g_boot_arg->ram_console_sram_addr,
 		 g_boot_arg->ram_console_sram_size, g_boot_arg->ram_console_def_type);
 }
+#endif
+#ifdef KONKR_KPA
 int ayaneo_mt6360_chg_reg(unsigned char reg)
 {
 	mt_i2c i2c; unsigned char b[2];
@@ -1444,6 +1467,8 @@ static int led_thread(void *arg)
 	thread_sleep(2500);
 #ifdef KONKR_KPA
 	{ extern int ayaneo_mt6360_chrind_off(void); ayaneo_mt6360_chrind_off(); }
+	{ extern void ayaneo_bb_boot_check(void); ayaneo_bb_boot_check(); }   /* records the last runs left in DRAM -> the card */
+#elif defined(KONKR_BLOCK)
 	{ extern void ayaneo_bb_boot_check(void); ayaneo_bb_boot_check(); }   /* records the last runs left in DRAM -> the card */
 #endif
 	for (;;) {
@@ -2991,6 +3016,12 @@ static int emu_thread(void *arg)
 	g_dbg_boot_step = 3;
 	if (!ayaneo_boot_audio_active())
 		ayaneo_gbc_audio_init();
+#elif defined(KONKR_BLOCK)
+	{ extern unsigned int ayaneo_rewind_map(void); ayaneo_rewind_map(); }   /* islands mapped now, so oem rewindmap works from the menu */
+	{	/* the panel at the GBA rate from here (the LCM boots it at its stock 60 Hz) */
+		extern void ayaneo_dsi_set_vfp(unsigned int vfp); extern unsigned int ayaneo_dsi_default_vfp(void);
+		ayaneo_dsi_set_vfp(ayaneo_dsi_default_vfp());
+	}
 #endif
 	g_dbg_boot_step = 4;
 
@@ -3121,7 +3152,7 @@ static int emu_thread(void *arg)
 		 * the retune to ~5973 = 59.73 Hz for the vsync-locked pacing */
 		extern int primary_display_get_vsync_interval(void);
 		char m[48], *p;
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 		/* the dpmgr vsync wait returns at once on this board (the DSI frame events never
 		 * fire in video mode), so the timed interval is garbage and seeded the resampler
 		 * with a wrong pitch for the BIOS intro: take the rate the porch produces instead */
@@ -3264,6 +3295,9 @@ static int emu_thread(void *arg)
 				for (;;) {
 					int sel = gba_sd_rom_select();
 					s_sel_rom = sel;
+#if defined(KONKR_BLOCK)
+					{ extern volatile unsigned g_block_launch_mark; g_block_launch_mark = 0x100u | (unsigned)s_roms[sel].type; }
+#endif
 					if (s_roms[sel].type == GBA_CONSOLE_SNES) {
 						snes_sd_session(&s_sd_vol, &s_roms[sel]);  /* SNES via snes9x */
 						s_gpsp_dirty = 1;
@@ -3346,7 +3380,7 @@ static int emu_thread(void *arg)
 				}
 				if (lt > 104000u && lt < 300000u) {   /* 8..23 ms; reject doubled frames */
 					unsigned int hz = 0;
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 					/* The Konkr's pacer counts the refreshes between the frame ends it measures
 					 * and stamps the last one: refreshes over their span is the exact rate. The
 					 * loop period is not: a late frame splits into a long period (rejected) and a

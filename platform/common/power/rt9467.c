@@ -768,6 +768,25 @@ static struct rt9467_info g_rt9467_info = {
 	.hidden_mode_cnt = 0,
 };
 
+/* For a fastboot that comes up before the charger is set up (the bring-up build's rescue
+ * fastboot, early in platform_init): the charger's own watchdog off, as mtk_charger_start turns it
+ * off before the normal fastboot. Left on, the charger resets when the watchdog is not serviced and
+ * runs its USB charger detection again on D+ / D-, which cut the link in the middle of a long
+ * download (short commands went through). Nothing else is touched: no chip reset, no charging
+ * setting. Returns the CHG_CTRL13 value it found, or -1 without the chip. */
+int rt9467_wdt_off_early(void)
+{
+	u8 v = 0;
+
+	if (!rt9467_is_hw_exist(&g_rt9467_info))
+		return -1;
+	rt9467_i2c_read_byte(&g_rt9467_info, RT9467_REG_CHG_CTRL13, &v);
+	rt9467_enable_watchdog_timer(&g_rt9467_info, false);
+	dprintf(CRITICAL, "%s: CHG_CTRL13 was 0x%02x (watchdog %s), now off\n", __func__, v,
+		(v & RT9467_MASK_WDT_EN) ? "on" : "off");
+	return v;
+}
+
 int rt9467_probe(void)
 {
 	int ret = 0;

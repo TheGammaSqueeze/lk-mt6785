@@ -3643,3 +3643,22 @@ DDP_MODULE_DRIVER ddp_driver_dsidual = {
 	.set_lcm_utils  = ddp_dsi_set_lcm_utils,
 	.polling_irq    = ddp_dsi_polling_irq
 };
+
+#if defined(AYANEO_GBA_SD)
+/* GammaOS Pico on the Konkr Pocket Block: the panel timing the shared DSI helpers work from.
+ * JD9168S 960x720, 4 lanes, sync pulse video mode, PLL_CLOCK 140 (280 Mbps), hsa/hbp/hfp 20/20/20
+ * pixels, vsa/vbp/vfp 2/6/9 lines, 720 active: 1020 pixels and 737 lines a frame at 45104 kHz,
+ * 59.9995 Hz. The rate stays the stock one (no fractional boot rate on this PHY yet), so the
+ * refresh moves with the front porch: 740 lines (vfp 12) is 59.757 Hz for the GBA's 59.7275.
+ * The line constant is the nominal one (45104000 / 1020 lines a second, in milli-Hz times lines);
+ * it is to be measured on the device (oem palate) as the KPA's was. The porch limit is a cautious
+ * guess until the panel's tolerance for a long blanking is tried (50 Hz needs vfp 156). */
+#define AYANEO_GBA_DR_KHZ      280000u
+#define AYANEO_DSI_REF_DR_KHZ  280000u
+#define AYANEO_DSI_LINE_CONST  44219608u
+#define AYANEO_DSI_FIXED_LINES 728u
+#define AYANEO_DSI_VFP_MAX     160u
+#define AYANEO_DSI_VFP_2X      4u
+#include "../common/pico/pico_dsi.inc"
+#include "../common/pico/pico_dsi_vm.inc"
+#endif

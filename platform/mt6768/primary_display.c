@@ -675,6 +675,16 @@ int priamry_display_wait_for_vsync(void)
 	return 0;
 }
 
+#if defined(AYANEO_GBA_SD)
+/* GammaOS Pico: wait until the current frame has been scanned out (frame done), with a short
+ * timeout so it cannot hang. */
+int ayaneo_wait_frame_done(void)
+{
+	return dpmgr_wait_event_timeout(pgc->dpmgr_handle,
+				       DISP_PATH_EVENT_FRAME_DONE, HZ / 20);
+}
+#endif
+
 int primary_display_suspend(void)
 {
 	DISP_STATUS ret = DISP_STATUS_OK;
@@ -996,6 +1006,24 @@ int primary_display_trigger(int blocking)
 	return ret;
 }
 
+#if defined(AYANEO_GBA_SD)
+/* GammaOS Pico: the number of configurations written (primary_display_config_input), so a change
+ * kept with primary_display_config_pending is known to have gone out once it moves. */
+volatile unsigned int g_disp_commit_seq;
+
+/* GammaOS Pico: change one layer in the kept configuration without writing it. Every
+ * primary_display_config_input copies the kept configuration and writes all of its layers, so the
+ * change goes out with the next one: the game's own present at its frame end, the one safe point
+ * of the scan, and with no wait of its own (the live in-game menu flips its buffers this way). */
+void primary_display_config_pending(disp_input_config *input)
+{
+	if (pgc->mode != DIRECT_LINK_MODE && pgc->mode != DECOUPLE_MODE) return;
+	_primary_path_lock();
+	_convert_disp_input_to_ovl(&(dpmgr_path_get_last_config(pgc->dpmgr_handle)->ovl_config[input->layer]), input);
+	_primary_path_unlock();
+}
+#endif
+
 int primary_display_config_input(disp_input_config* input)
 {
 	int ret = 0;
@@ -1016,13 +1044,26 @@ int primary_display_config_input(disp_input_config* input)
 
 	if (pgc->mode == DIRECT_LINK_MODE || pgc->mode == DECOUPLE_MODE) {
 		if (dpmgr_path_is_busy(pgc->dpmgr_handle)) {
+#if defined(AYANEO_GBA_SD)
+			/* the Pico presenter aligns to the frame end itself and then skips this wait
+			 * (ayaneo_present_skip_framedone); the backlight strobe phase-locks here */
+			extern int ayaneo_present_skip_framedone;
+			if (primary_display_is_video_mode() && !ayaneo_present_skip_framedone) {
+				dpmgr_wait_event_timeout(pgc->dpmgr_handle, DISP_PATH_EVENT_FRAME_DONE, HZ*1);
+				{ extern void disp_pwm_strobe_tick(void); disp_pwm_strobe_tick(); }
+			}
+#else
 			if (primary_display_is_video_mode()) {
 				dpmgr_wait_event_timeout(pgc->dpmgr_handle, DISP_PATH_EVENT_FRAME_DONE, HZ*1);
 			}
+#endif
 		}
 		ret = _convert_disp_input_to_ovl(&(data_config.ovl_config[input->layer]), input);
 		data_config.ovl_dirty = 1;
 		ret = dpmgr_path_config(pgc->dpmgr_handle, &data_config, primary_display_use_cmdq);
+#if defined(AYANEO_GBA_SD)
+		g_disp_commit_seq++;
+#endif
 
 		// this is used for decouple mode, to indicate whether we need to trigger ovl
 		pgc->need_trigger_overlay = 1;

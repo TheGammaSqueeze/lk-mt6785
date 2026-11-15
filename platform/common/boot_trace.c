@@ -25,7 +25,7 @@
 #include <platform/boot_mode.h>
 
 #define TRACE_BASE      0x4D0E0000u   /* pstore 0x4D010000 + 0xE0000: its last 64 KB (pmsg) */
-#define TRACE_SIZE      0x10000u
+#define TRACE_SIZE      0xF000u       /* the last 4 KB is the black box page (ayaneo_blackbox.c) */
 #define KMSG_BASE       0x4D0A0000u   /* ramoops console zone (0x40000) */
 #define KMSG_SIZE       0x40000u
 #define TRACE_MAGIC     0x42525447u   /* "GTRB" */
@@ -36,6 +36,7 @@
 #define TF_FASTBOOT     0x4u          /* reached fastboot */
 #define TF_KERNEL       0x8u          /* jumped to the kernel */
 #define TF_POWEROFF     0x10u         /* the LK powered the board off (no charger, low battery) */
+#define TF_EMU          0x20u         /* GammaOS Pico started: the boot reached its system */
 
 struct trace_hdr {
 	unsigned int magic, seq, flags, head, wrapped, stage, stage_ms, reserved[9];
@@ -113,7 +114,7 @@ void boot_trace_report(void)
 #define STATE_OFFSET   0x3F000u
 #define STATE_MAGIC    0x54534754u   /* "GTST" */
 
-enum { PROGRESS_NONE, PROGRESS_STARTED, PROGRESS_FASTBOOT, PROGRESS_KERNEL, PROGRESS_POWEROFF };
+enum { PROGRESS_NONE, PROGRESS_STARTED, PROGRESS_FASTBOOT, PROGRESS_KERNEL, PROGRESS_POWEROFF, PROGRESS_EMU };
 
 struct trace_state {
 	unsigned int magic, try_pending, progress, seq;
@@ -175,6 +176,7 @@ void boot_trace_storage_up(void)
 	dprintf(CRITICAL, "[TRACE] boot %u: the boot before got to %s%s\n", s_state.seq,
 		s_prev_progress == PROGRESS_KERNEL ? "the kernel" :
 		s_prev_progress == PROGRESS_POWEROFF ? "a power off by the LK" :
+		s_prev_progress == PROGRESS_EMU ? "GammaOS Pico" :
 		s_prev_progress == PROGRESS_FASTBOOT ? "fastboot" :
 		s_prev_progress == PROGRESS_STARTED ? "neither fastboot nor the kernel" : "(no record)",
 		s_is_try ? "; this boot is a boot attempt" : "");
@@ -193,7 +195,7 @@ int boot_trace_prev_failed(void)
 		return s_prev_progress == PROGRESS_STARTED;
 	if (rgu & (0x80000000u | 0x20000000u))
 		return 1;
-	return s_have_last && !(s_last_hdr.flags & (TF_FASTBOOT | TF_KERNEL | TF_POWEROFF));
+	return s_have_last && !(s_last_hdr.flags & (TF_FASTBOOT | TF_KERNEL | TF_POWEROFF | TF_EMU));
 }
 
 void boot_trace_putc(char c)
@@ -248,7 +250,9 @@ void boot_trace_mark(unsigned int flag)
 		s_hdr->flags |= flag;
 		flush_hdr();
 	}
-	if (flag & TF_POWEROFF)
+	if (flag & TF_EMU)
+		state_progress(PROGRESS_EMU);
+	else if (flag & TF_POWEROFF)
 		state_progress(PROGRESS_POWEROFF);
 	else if (flag & TF_KERNEL)
 		state_progress(PROGRESS_KERNEL);
