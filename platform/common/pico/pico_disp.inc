@@ -1754,7 +1754,11 @@ void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned in
 				ayaneo_rot8888_alpha_neon(lb, LW, LH, LW, b, W, g_rot_ccw);   /* keep the alpha: the game shows through */
 			}
 #else
-			memset(b, 0, W * H * 4u);
+			/* Here the panel scans this very buffer: a clear first would show the game through for
+			 * part of a scan (the power hold scrim flickered on every bar step). The power bar paints
+			 * every pixel (its scrim covers the screen), so it goes straight over what is there. */
+			if (paint != power_bar_paint)
+				memset(b, 0, W * H * 4u);
 			paint(b, W, W, H);
 #endif
 			arch_clean_cache_range(MENU_OVERLAY_PA, W * H * 4u);

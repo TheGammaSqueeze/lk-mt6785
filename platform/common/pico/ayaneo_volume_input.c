@@ -193,8 +193,10 @@ int ayaneo_power_hold(int menu_open, int use_overlay)
 	unsigned now = gpt4_get_current_tick();
 	int pk = pmic_detect_powerkey();
 	if (!pk) {
-		if (shown) { if (!menu_open && use_overlay) ayaneo_menu_overlay(0, 0); shown = 0; }
+		/* the bar goes first: while it is set, a close of the overlay paints the bar instead
+		 * (it borrows the layer), so closing before clearing it left the bar up for good */
 		ayaneo_power_bar(-1);
+		if (shown) { if (!menu_open && use_overlay) ayaneo_menu_overlay(0, 0); shown = 0; }
 		t0 = 0;
 		return 0;
 	}
