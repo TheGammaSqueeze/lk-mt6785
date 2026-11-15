@@ -27,6 +27,8 @@ void ayaneo_dsi_set_vfp(unsigned int vfp)
  * knob (oem dr:KHZ) for a 50 Hz PAL mode on the Konkr; 0 reads back nothing and returns 0. */
 #if defined(KONKR_KPA)
 volatile unsigned int g_dsi_dr_khz = 354000u;   /* the live MIPI rate: the stock 354 Mbps until ayaneo_dsi_retime */
+#elif defined(KONKR_BLOCK)
+volatile unsigned int g_dsi_dr_khz = 280000u;   /* the live MIPI rate: the stock 280 Mbps until a core asks */
 #else
 volatile unsigned int g_dsi_dr_khz = AYANEO_GBA_DR_KHZ;   /* the live MIPI rate (refresh scales with it) */
 #endif
@@ -41,6 +43,14 @@ unsigned int ayaneo_dsi_set_dr_khz(unsigned int khz)
 	pcw = num / 26000u;
 	tmp = ((pcw & 0xFF) << 24) | (((256u * r0 / 26000u) & 0xFF) << 16)
 	    | (((256u * r1 / 26000u) & 0xFF) << 8) | ((256u * r2 / 26000u) & 0xFF);
+#if defined(KONKR_BLOCK)
+	/* The spread spectrum runs on the Block's PLL from boot: with it, the same word lands the
+	 * average clock anywhere in a 0.04 % band from one change to the next (59.746 to 59.769 Hz
+	 * measured for the GBA's 59.7275), and switching it off for the change and on 1 ms later (the
+	 * Konkr's way) did not settle it. GammaOS runs the link without it: the rate is then exactly
+	 * the word, and the refresh exactly the core's. */
+	MIPITX_OUTREGBIT(DSI_PHY_REG[0] + MIPITX_PLL_CON2, FLD_RG_DSI_PLL_SDM_SSC_EN, 0);
+#endif
 	MIPITX_OUTREG32(DSI_PHY_REG[0] + MIPITX_PLL_CON0, tmp);
 	MIPITX_OUTREGBIT(DSI_PHY_REG[0] + MIPITX_PLL_CON1, FLD_RG_DSI_PLL_POSDIV, posdiv);
 	MIPITX_OUTREGBIT(DSI_PHY_REG[0] + MIPITX_PLL_CON1, FLD_RG_DSI_PLL_SDM_PCW_CHG, 1);
@@ -241,6 +251,14 @@ unsigned int ayaneo_dsi_vfp_for_fps(unsigned int fps_milli)
 	g_vsync_div = 1u;
 	ayaneo_dsi_set_dr_khz(dsi_dr_for_refresh(fps_milli, AYANEO_DSI_SCAN_LINES));
 	return AYANEO_DSI_SCAN_LINES - AYANEO_DSI_FIXED_LINES;
+#elif defined(KONKR_BLOCK)
+	/* a fixed scan for each family of rates, the data rate lands the refresh on the core rate:
+	 * 740 lines for the 55..65 Hz cores, 813 for the 50 Hz ones (a 50 Hz rate at 740 lines would be
+	 * below the PLL's 250 MHz band), one refresh a frame for both */
+	g_vsync_div = 1u;
+	vtotal = fps_milli < AYANEO_DSI_1X_MIN_MILLI ? AYANEO_DSI_PAL_LINES : AYANEO_DSI_SCAN_LINES;
+	ayaneo_dsi_set_dr_khz(dsi_dr_for_refresh(fps_milli, vtotal));
+	return vtotal - AYANEO_DSI_FIXED_LINES;
 #else
 	fps_milli *= (g_vsync_div ? g_vsync_div : 1u);
 	vtotal = (AYANEO_DSI_LINE_CONST + fps_milli / 2u) / fps_milli;
@@ -258,7 +276,7 @@ unsigned int ayaneo_dsi_default_vfp(void)
 {
 	/* floor the line count so the panel rests AT OR ABOVE the GBA rate (never slower than a
 	 * real GBA); the pairmini value 23 (vtotal 999) is unchanged by this. */
-#if defined(KONKR_KPA)
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 	/* the resting mode is the GBA rate, one refresh per frame (the boot rate and porch of the LCM):
 	 * a PAL session's 50 Hz and 2x must not linger */
 	return ayaneo_dsi_vfp_for_fps(59727u);

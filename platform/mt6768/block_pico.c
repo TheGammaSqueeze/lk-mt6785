@@ -256,7 +256,6 @@ void ayaneo_emu_boot_abandoned(void)
  * armpll_l at 1.8 GHz, the A55s'). A loop of dependent adds retires one a cycle on the A55, timed
  * against the 13 MHz GPT. The clock is not changed yet: the A55 rail's voltage at boot is not
  * known, and no voltage is ever changed, so a higher clock waits until it has been read. */
-static unsigned int s_cpu_mhz;
 
 static unsigned int measure_cpu_mhz(void)
 {
@@ -281,17 +280,75 @@ static unsigned int measure_cpu_mhz(void)
 	return (unsigned int)((4096ull * 32ull * 13ull) / (unsigned long long)(t1 - t0));
 }
 
-unsigned int ayaneo_get_cpu_mhz(void)
+/* ---- the CPU clock ----
+ * The LK runs on CPU0, an A55 of cluster 0, whose clock is the APMIXED PLL with CON1 at 0x1000C21C
+ * (measured: lowering that word lowers the core in step; the PLL at 0x20C is left alone). Output
+ * = 26 MHz x PCW / 2^14 / 2^POSDIV (CON1 bits 21:0 and 26:24), a new word taken on the rising edge
+ * of bit 31. Voltages are never changed: a clock asked for is held to the highest step of the
+ * cluster's table (the Block's device tree, cluster0_opp) that the A55 rail already supplies,
+ * read live from the MT6358 (VPROC11 and VPROC12 DBG0, the lower of the two: 0.5 V + 6.25 mV a
+ * code). At the 0.8 V the preloader leaves that is 1175 MHz, about where the core boots, so the
+ * cores' faster tiers run there and their slower ones save power, as on the Konkr. */
+#define BLOCK_CPU_PLL_CON1	0x1000C21Cu
+#define BLOCK_CPU_MIN_MHZ	500u
+static const struct { unsigned short mhz; unsigned int uv; } s_cpu_opp[] = {
+	{ 500, 650000 }, { 774, 675000 }, { 850, 700000 }, { 900, 718750 }, { 950, 731250 },
+	{ 999, 743750 }, { 1050, 762500 }, { 1100, 775000 }, { 1175, 800000 }, { 1275, 831250 },
+	{ 1325, 843750 }, { 1375, 856250 }, { 1450, 881250 }, { 1500, 893750 }, { 1625, 931250 },
+	{ 1800, 1006250 },
+};
+
+/* the A55 rail's live voltage in uV (0 when it cannot be read) */
+static unsigned int cpu_rail_uv(void)
 {
-	if (!s_cpu_mhz)
-		s_cpu_mhz = measure_cpu_mhz();
-	return s_cpu_mhz;
+	extern signed int pwrap_read(unsigned int adr, unsigned int *rdata);
+	unsigned int a = 0, b = 0;
+	if (pwrap_read(0x139e, &a) || pwrap_read(0x141e, &b))
+		return 0;
+	a &= 0x7fu;
+	b &= 0x7fu;
+	return 500000u + 6250u * (a < b ? a : b);
 }
 
-volatile unsigned int g_dbg_cpu_mhz_asked;	/* the last clock a core asked for (not applied yet) */
+/* the fastest clock of the table the rail supplies now */
+volatile unsigned int g_dbg_cpu_cap_mhz, g_dbg_cpu_rail_uv;
+static unsigned int cpu_cap_mhz(void)
+{
+	unsigned int uv = cpu_rail_uv(), cap = BLOCK_CPU_MIN_MHZ, i;
+	for (i = 0; i < sizeof(s_cpu_opp) / sizeof(s_cpu_opp[0]); i++)
+		if (s_cpu_opp[i].uv <= uv && s_cpu_opp[i].mhz > cap)
+			cap = s_cpu_opp[i].mhz;
+	g_dbg_cpu_rail_uv = uv;
+	g_dbg_cpu_cap_mhz = cap;
+	return cap;
+}
+
+unsigned int ayaneo_get_cpu_mhz(void)
+{
+	unsigned int con1 = *(volatile unsigned int *)BLOCK_CPU_PLL_CON1;
+	unsigned long long f = 26000000ull * (con1 & 0x3FFFFFu);
+	f >>= 14;
+	f >>= (con1 >> 24) & 7u;
+	return (unsigned int)(f / 1000000ull);
+}
+
+volatile unsigned int g_dbg_cpu_mhz_asked;	/* the last clock a core asked for */
 void ayaneo_set_cpu_mhz(unsigned int mhz)
 {
+	volatile unsigned int *con1 = (volatile unsigned int *)BLOCK_CPU_PLL_CON1;
+	unsigned int c = *con1, posdiv = (c >> 24) & 7u, cap = cpu_cap_mhz();
+	unsigned long long pcw;
+
 	g_dbg_cpu_mhz_asked = mhz;
+	if (mhz > cap) mhz = cap;
+	if (mhz < BLOCK_CPU_MIN_MHZ) mhz = BLOCK_CPU_MIN_MHZ;
+	pcw = (((unsigned long long)mhz * 1000000ull) << 14) << posdiv;
+	pcw /= 26000000ull;
+	if (pcw > 0x3FFFFFu) pcw = 0x3FFFFFu;
+	c = (c & ~0x803FFFFFu) | (unsigned int)pcw;
+	*con1 = c;
+	*con1 = c | 0x80000000u;
+	udelay(20);
 }
 
 /* ---- the battery: its level from its voltage until the MT6358 gauge is read ---- */
@@ -401,4 +458,67 @@ int block_stacktest(int on_window)
 	for (ms = 0; ms < 5000 && !s_stacktest_done; ms += 50)
 		thread_sleep(50);
 	return s_stacktest_done ? ms : -ms;
+}
+
+/* oem hz (menu_fastboot.c): the panel's real refresh in micro Hz, 0 without frame starts. RDMA0's
+ * frame start flag (INT_STATUS bit 1, which nothing else clears) is timed at every edge for 5 s
+ * at the top priority on the 13 MHz clock, a refresh whose edge was missed counted from the gap,
+ * and the period fitted by least squares over all of them. */
+static unsigned int s_hz_t[400];
+static unsigned short s_hz_k[400];
+unsigned int block_measure_hz(unsigned int *edges, unsigned int *refreshes)
+{
+	extern unsigned int ayaneo_dsi_refresh_milli(void);
+	volatile unsigned int *st = (volatile unsigned int *)(0x1400D000u + 0x004u);
+	unsigned int t0, now, n = 0, k = 0, est, i, model = ayaneo_dsi_refresh_milli();
+	double sx = 0, sy = 0, sxx = 0, sxy = 0, slope;
+
+	est = (unsigned int)(13000000000ull / (model ? model : 60000u));
+	thread_set_priority(HIGHEST_PRIORITY);		/* the emulator must not delay the timestamps */
+	*st = ~2u;
+	t0 = gpt4_get_current_tick();
+	while (((now = gpt4_get_current_tick()) - t0) < 65000000u && n < 400u) {
+		if (*st & 2u) {
+			*st = ~2u;
+			if (n)
+				k += (now - s_hz_t[n - 1u] + est / 2u) / est;
+			s_hz_t[n] = now;
+			s_hz_k[n] = (unsigned short)k;
+			n++;
+		}
+	}
+	thread_set_priority(DEFAULT_PRIORITY);
+	*edges = n;
+	*refreshes = n ? s_hz_k[n - 1u] + 1u : 0u;
+	if (n < 3u)
+		return 0;
+	for (i = 0; i < n; i++) {
+		double x = s_hz_k[i], y = (double)(s_hz_t[i] - s_hz_t[0]);
+		sx += x; sy += y; sxx += x * x; sxy += x * y;
+	}
+	slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);	/* ticks a refresh */
+	return (unsigned int)(13000000.0 * 1000000.0 / slope);
+}
+
+/* oem cpupll:REG,MHZ (menu_fastboot.c, bring-up): the clock of the core the LK runs on, measured
+ * before and after writing MHZ (at most 1100, below every rail's floor) to the APMIXED PLL whose
+ * CON1 is at REG (0x20c or 0x21c), to tell which PLL clocks it; the old word is put back. */
+void block_cpu_pll_probe(unsigned int reg, unsigned int mhz, unsigned int *before, unsigned int *during)
+{
+	volatile unsigned int *con1 = (volatile unsigned int *)(0x1000C000u + reg);
+	unsigned int old = *con1, posdiv = (old >> 24) & 7u, pcw;
+
+	*before = measure_cpu_mhz();
+	if ((reg != 0x20cu && reg != 0x21cu) || mhz < 500u || mhz > 1100u) {
+		*during = 0;
+		return;
+	}
+	pcw = (unsigned int)((((unsigned long long)mhz << 14) << posdiv) / 26u);
+	*con1 = (old & ~0x803FFFFFu) | (pcw & 0x3FFFFFu);
+	*con1 = (old & ~0x803FFFFFu) | (pcw & 0x3FFFFFu) | 0x80000000u;
+	udelay(30);
+	*during = measure_cpu_mhz();
+	*con1 = old & ~0x80000000u;
+	*con1 = old | 0x80000000u;
+	udelay(30);
 }

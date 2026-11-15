@@ -3646,17 +3646,22 @@ DDP_MODULE_DRIVER ddp_driver_dsidual = {
 
 #if defined(AYANEO_GBA_SD)
 /* GammaOS Pico on the Konkr Pocket Block: the panel timing the shared DSI helpers work from.
- * JD9168S 960x720, 4 lanes, sync pulse video mode, PLL_CLOCK 140 (280 Mbps), hsa/hbp/hfp 20/20/20
- * pixels, vsa/vbp/vfp 2/6/9 lines, 720 active: 1020 pixels and 737 lines a frame at 45104 kHz,
- * 59.9995 Hz. The rate stays the stock one (no fractional boot rate on this PHY yet), so the
- * refresh moves with the front porch: 740 lines (vfp 12) is 59.757 Hz for the GBA's 59.7275.
- * The line constant is the nominal one (45104000 / 1020 lines a second, in milli-Hz times lines);
- * it is to be measured on the device (oem palate) as the KPA's was. The porch limit is a cautious
- * guess until the panel's tolerance for a long blanking is tried (50 Hz needs vfp 156). */
-#define AYANEO_GBA_DR_KHZ      280000u
+ * JD9168S 960x720, 4 lanes, sync pulse video mode, stock PLL_CLOCK 140 (280 Mbps), vsa/vbp 2/6
+ * lines, 720 active: 728 lines besides the front porch. As on the Konkr, every core's refresh comes
+ * from the MIPI rate at a fixed scan (ayaneo_dsi_vfp_for_fps): 740 lines (porch 12) for the 55 to 65
+ * Hz cores, 813 lines (porch 85) for the 50 Hz ones, so both stay in the PLL's 250..500 MHz band.
+ * The link runs without its spread spectrum once a core sets the rate (pico_dsi.inc): with it the
+ * refresh moved by up to 0.04 % from one rate change to the next, without it the refresh is exactly
+ * proportional to the rate. Measured on the device (oem hz, every RDMA0 frame start for 5 s, least
+ * squares, repeatable to 1 uHz): 60.482268 Hz at 740 lines at 280000 kHz, 61.256441 Hz at 283584
+ * (the same ratio as the rates); the stock boot, spread spectrum on, gives 58.97 Hz at 740 lines. */
+#define AYANEO_GBA_DR_KHZ      276506u		/* 59.7275 Hz at 740 lines */
 #define AYANEO_DSI_REF_DR_KHZ  280000u
-#define AYANEO_DSI_LINE_CONST  44219608u
+#define AYANEO_DSI_LINE_CONST  44756878u	/* milli Hz x lines at the reference rate */
 #define AYANEO_DSI_FIXED_LINES 728u
+#define AYANEO_DSI_SCAN_LINES  740u		/* the 55..65 Hz cores */
+#define AYANEO_DSI_PAL_LINES   813u		/* the 50 Hz cores */
+#define AYANEO_DSI_1X_MIN_MILLI 55000u
 #define AYANEO_DSI_VFP_MAX     160u
 #define AYANEO_DSI_VFP_2X      4u
 #include "../common/pico/pico_dsi.inc"

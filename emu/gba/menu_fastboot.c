@@ -1502,6 +1502,44 @@ static void cmd_pr(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* `oem hz` on the Konkr Pocket Block: the panel's real refresh, from RDMA0's frame start flag
+ * (INT_STATUS bit 1, which nothing else clears), every edge timed for 5 s at the top priority on the
+ * 13 MHz clock and fitted by least squares (a missed edge counted from the gap), next to what the
+ * line constant says for the live porch and rate */
+static void cmd_hz(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int block_measure_hz(unsigned int *edges, unsigned int *refreshes);
+	extern unsigned int ayaneo_dsi_refresh_milli(void), ayaneo_dsi_get_vfp(void);
+	extern volatile unsigned int g_dsi_dr_khz;
+	unsigned int edges = 0, refreshes = 0, uhz;
+	(void)arg; (void)data; (void)sz;
+	uhz = block_measure_hz(&edges, &refreshes);
+	if (uhz)
+		snprintf(lbuf, sizeof lbuf, "hz: %u.%06u Hz (%u edges, %u refreshes)", uhz / 1000000u, uhz % 1000000u,
+			 edges, refreshes);
+	else
+		snprintf(lbuf, sizeof lbuf, "hz: no frame starts");
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "hz: model %u mHz, vfp %u, rate %u kHz", ayaneo_dsi_refresh_milli(),
+		 ayaneo_dsi_get_vfp(), g_dsi_dr_khz);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* `oem cpupll:REG,MHZ` on the Konkr Pocket Block: block_cpu_pll_probe (block_pico.c) */
+static void cmd_cpupll(const char *arg, void *data, unsigned sz)
+{
+	extern void block_cpu_pll_probe(unsigned int reg, unsigned int mhz, unsigned int *before, unsigned int *during);
+	unsigned int reg, mhz, before = 0, during = 0;
+	(void)data; (void)sz;
+	reg = fb_hex(&arg);
+	mhz = fb_dec(&arg);
+	block_cpu_pll_probe(reg, mhz, &before, &during);
+	snprintf(lbuf, sizeof lbuf, "cpupll %x -> %u MHz: core %u MHz before, %u during", reg, mhz, before, during);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* `oem stacktest[:w]` on the Konkr Pocket Block: block_stacktest (block_pico.c) */
 static void cmd_stacktest(const char *arg, void *data, unsigned sz)
 {
@@ -3163,7 +3201,10 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem stacktest", cmd_stacktest, 1, 0);
 	fastboot_register("oem nulltest", cmd_nulltest, 1, 0);
 	fastboot_register("oem vrate", cmd_vrate, 1, 0);
-	fastboot_register("oem pr:", cmd_pr, 1, 0);             /* PMIC registers, read only */         /* the real refresh, and RDMA0's frame ends */   /* a null read: does the abort get recorded */ /* the SNES thread's stack window under load */
+	fastboot_register("oem pr:", cmd_pr, 1, 0);             /* PMIC registers, read only */
+	fastboot_register("oem hz", cmd_hz, 1, 0);              /* the panel's real refresh */
+	fastboot_register("oem cpupll:", cmd_cpupll, 1, 0);     /* which PLL clocks the LK's core */
+	fastboot_register("oem dr:", cmd_dr, 1, 0);             /* the MIPI rate, live */         /* the real refresh, and RDMA0's frame ends */   /* a null read: does the abort get recorded */ /* the SNES thread's stack window under load */
 #endif
 #ifdef KONKR_KPA
 	fastboot_register("oem lcm", cmd_lcm, 1, 0);            /* Konkr: glass id pins + dsi state */
