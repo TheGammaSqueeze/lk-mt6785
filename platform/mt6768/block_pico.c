@@ -527,6 +527,53 @@ void block_ra_note(int core, unsigned int frames, unsigned int t0_tick)
 		g_block_ra_max[core] = us;
 }
 
+/* ---- oem pwmscope: the backlight PWM as it leaves the SoC ----
+ * DISP_PWM0 drives the backlight boost through GPIO43, and that pad's input level reads the PWM
+ * itself. Sampled in a tight loop with interrupts off for `ms` (at most 200), each rising edge timed
+ * on the 13 MHz GPT: the period, so the PWM clock and divider can be checked, and the fraction of
+ * samples high, the duty. */
+volatile unsigned int g_dbg_scope_min_ns, g_dbg_scope_max_ns;	/* rise to rise, the last scope */
+int block_pwm_scope(unsigned int ms, unsigned int *rises, unsigned int *period_ns,
+		    unsigned int *high_permille, unsigned int *samples, int irqs_on)
+{
+	extern unsigned int gpt4_get_current_tick(void);
+	volatile unsigned int *din = (volatile unsigned int *)0x10005210u;   /* GPIO 32..63 inputs */
+	unsigned int t0, now, span, prev, v, n = 0, hi = 0, nr = 0, first = 0, last = 0;
+	unsigned int dmin = ~0u, dmax = 0;
+	if (ms < 1u) ms = 1u;
+	if (ms > (irqs_on ? 2000u : 200u)) ms = irqs_on ? 2000u : 200u;
+	span = ms * 13000u;
+	if (!irqs_on)
+		enter_critical_section();
+	prev = (*din >> 11) & 1u;
+	t0 = gpt4_get_current_tick();
+	while ((now = gpt4_get_current_tick()) - t0 < span) {
+		v = (*din >> 11) & 1u;
+		n++;
+		hi += v;
+		if (v && !prev) {
+			if (!nr) first = now;
+			else {
+				unsigned int d = now - last;
+				if (d < dmin) dmin = d;
+				if (d > dmax) dmax = d;
+			}
+			last = now;
+			nr++;
+		}
+		prev = v;
+	}
+	if (!irqs_on)
+		exit_critical_section();
+	g_dbg_scope_min_ns = nr > 1u ? (unsigned int)((unsigned long long)dmin * 1000ull / 13ull) : 0u;
+	g_dbg_scope_max_ns = nr > 1u ? (unsigned int)((unsigned long long)dmax * 1000ull / 13ull) : 0u;
+	*rises = nr;
+	*period_ns = nr > 1u ? (unsigned int)(((unsigned long long)(last - first) * 1000ull) / 13ull / (nr - 1u)) : 0u;
+	*high_permille = n ? (unsigned int)((unsigned long long)hi * 1000ull / n) : 0u;
+	*samples = n;
+	return 0;
+}
+
 /* ---- the battery: the MT6358 fuel gauge (block_gauge.c) ---- */
 
 /* ---- the AUXADC, for the diagnostics (millivolts) ---- */
@@ -631,11 +678,7 @@ void ayaneo_charge_led_standby(void)
 	block_led_write(0x01, 0x02);	/* CHIPEN 0, CHGDIS 1 */
 }
 
-/* the backlight strobe (BFI): off */
-void disp_pwm_strobe_mode(int on) { (void)on; }
-void disp_pwm_strobe(unsigned int div, unsigned int duty) { (void)div; (void)duty; }
-void disp_pwm_strobe_locked(unsigned int div, unsigned int duty) { (void)div; (void)duty; }
-void disp_pwm_strobe_tick(void) { }
+/* the backlight strobe (BFI): ddp_pwm.c with platform/common/pico/pico_pwm_strobe.inc */
 
 /* the KPA's SD and display rails are on an MT6360 sub PMIC; the Block has none */
 int mt6360_ldo_config_interface(unsigned char addr, unsigned char data, unsigned char mask,

@@ -75,6 +75,30 @@ extern int ddp_enable_module_clock(DISP_MODULE_ENUM module);
 static int g_pwm_inited = 0;
 static disp_pwm_id_t g_pwm_main_id = DISP_PWM0;
 
+#if defined(KONKR_BLOCK)
+/* The Konkr Pocket Block's backlight strobe (BFI), as on the Konkr Pocket Advance: one PWM period
+ * per panel frame, restarted at each frame end by the pacer. The PWM runs from the 26 MHz clock
+ * (measured on its pad: 25391 Hz at divider 0), and every core picks its own refresh here (50 to
+ * 60.1 Hz), so the divider follows the refresh: the smallest period not shorter than a frame, so
+ * the restart always comes before the period would end and a frame never gets a second pulse. */
+extern unsigned int ayaneo_dsi_refresh_milli(void);
+static unsigned int block_bfi_div(void)
+{
+	unsigned int mhz = ayaneo_dsi_refresh_milli();
+	unsigned long long per;
+	if (mhz < 30000u || mhz > 125000u)
+		mhz = 59727u;
+	per = (26000000000ull + 1024ull * mhz - 1ull) / (1024ull * mhz);   /* clocks of 1024 counts, rounded up */
+	return per > 1024ull ? 1023u : (unsigned int)per - 1u;
+}
+#define PICO_BFI_DIV()		block_bfi_div()
+#define PICO_BFI_DIV_FOLLOWS	1
+/* the shortest pulse the Block's backlight boost lights, 1024ths of the frame (as the Advance's
+ * until measured otherwise) */
+#define PICO_BFI_MIN_PULSE	192
+#endif
+#include "../common/pico/pico_pwm_strobe.inc"
+
 void disp_pwm_init(disp_pwm_id_t id)
 {
 	struct cust_mt65xx_led *cust_led_list;
@@ -185,9 +209,19 @@ int disp_pwm_set_backlight(disp_pwm_id_t id, int level_1024)
 
 	reg_base = pwm_get_reg_base(id);
 
+#if defined(PICO_BFI_DIV)
+	s_last_level_1024 = (unsigned int)level_1024;
+#endif
 	level_1024 = disp_pwm_level_remap(id, level_1024);
+#if defined(PICO_BFI_DIV)
+	if (g_bfi && level_1024 > 0)
+		level_1024 = pico_bfi_pulse(level_1024);
+#endif
 
 	PWM_REG_SET(reg_base + DISP_PWM_COMMIT_OFF, 0);
+#if defined(PICO_BFI_DIV)
+	PWM_REG_SET(reg_base + DISP_PWM_CON_0_OFF, g_strobe_div << 16);  /* strobe divider (0 = normal dimming) */
+#endif
 	PWM_REG_SET(reg_base + DISP_PWM_CON_1_OFF, (level_1024 << 16) | 0x3ff);
 
 	if (level_1024 > 0) {

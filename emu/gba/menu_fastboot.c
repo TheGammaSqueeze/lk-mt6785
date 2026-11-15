@@ -1508,6 +1508,44 @@ static void cmd_pr(const char *arg, void *data, unsigned sz)
  * line constant says for the live porch and rate */
 /* `oem ra` on the Konkr Pocket Block: run-ahead as it runs in each core since the last read
  * (GBC, SNES, Genesis; block_ra_note), then cleared */
+/* `oem pwmscope[:ms]` on the Konkr Pocket Block: the backlight PWM's period and duty, read off its
+ * pad (block_pwm_scope) */
+static void cmd_pwmscope(const char *arg, void *data, unsigned sz)
+{
+	extern int block_pwm_scope(unsigned int ms, unsigned int *rises, unsigned int *period_ns,
+				   unsigned int *high_permille, unsigned int *samples, int irqs_on);
+	extern volatile unsigned int g_dbg_scope_min_ns, g_dbg_scope_max_ns;
+	unsigned int ms, rises, pns, hpm, n;
+	int irqs_on;
+	(void)data; (void)sz;
+	ms = fb_dec(&arg);
+	if (!ms) ms = 100u;
+	irqs_on = (*arg == ':' && arg[1] == 'i');   /* :i keeps interrupts on: the pacer's restarts run */
+	block_pwm_scope(ms, &rises, &pns, &hpm, &n, irqs_on);
+	snprintf(lbuf, sizeof lbuf, "pwm: %u rises in %u ms, period %u ns (%u.%03u Hz)", rises, ms, pns,
+		 pns ? 1000000000u / pns : 0u, pns ? (unsigned int)((1000000000000ull / pns) % 1000ull) : 0u);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "pwm: high %u.%u %%, %u samples", hpm / 10u, hpm % 10u, n);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "pwm: rise to rise %u..%u ns", g_dbg_scope_min_ns, g_dbg_scope_max_ns);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* `oem bfilevel:N` on the Konkr Pocket Block: the Strobe (BFI) setting as the menu sets it (0 off,
+ * 1..3 = 25/50/75 % dark), for testing over USB */
+static void cmd_bfilevel(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_set_strobe(int v);
+	extern int ayaneo_get_strobe(void);
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg >= '0' && *arg <= '3') ayaneo_set_strobe(*arg - '0');
+	snprintf(lbuf, sizeof lbuf, "bfi level %d", ayaneo_get_strobe());
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 static void cmd_ra(const char *arg, void *data, unsigned sz)
 {
 	extern volatile unsigned int g_block_ra_n[4], g_block_ra_frames[4], g_block_ra_us[4], g_block_ra_max[4];
@@ -3225,6 +3263,9 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem pr:", cmd_pr, 1, 0);             /* PMIC registers, read only */
 	fastboot_register("oem hz", cmd_hz, 1, 0);              /* the panel's real refresh */
 	fastboot_register("oem ra", cmd_ra, 1, 0);              /* run-ahead per core, as it runs */
+	fastboot_register("oem pwmscope", cmd_pwmscope, 1, 0);  /* the backlight PWM off its pad */
+	fastboot_register("oem bfi", cmd_bfi, 1, 0);            /* the strobe's window and state */
+	fastboot_register("oem bfilevel:", cmd_bfilevel, 1, 0); /* the Strobe setting, 0..3 */
 	fastboot_register("oem gauge", cmd_gauge, 1, 0);        /* the fuel gauge: vbat, current, the figure */
 	fastboot_register("oem cpupll:", cmd_cpupll, 1, 0);     /* which PLL clocks the LK's core */
 	fastboot_register("oem dr:", cmd_dr, 1, 0);             /* the MIPI rate, live */         /* the real refresh, and RDMA0's frame ends */   /* a null read: does the abort get recorded */ /* the SNES thread's stack window under load */
