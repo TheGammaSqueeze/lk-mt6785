@@ -399,9 +399,124 @@ static void audio_shutdown(void)
 	g_dbg_block_audio = 0;
 }
 
-/* the headphone jack (MT6358 accdet): not watched yet, the speakers play */
-static void jack_detect_init(void) { }
-static void jack_poll(void) { }
+/* ---------- the headphone jack ----------
+ * The Block's speakers hang off the MT6358's own headphone buffers (through the amplifier GPIO160
+ * switches on), so the jack is the same output with the amplifier off: headphones in, the amp goes
+ * off and the buffers are set as Android sets them for a wired headset; out, the speaker setting
+ * comes back. Every value below is the Block's own, read from its Android with headphones in and
+ * out (playing a tone each way, /work/konkrblock/audio_capture).
+ *
+ * The plug is seen by the MT6358's accessory detector, EINT0 comparator: Android sets it up and
+ * takes its interrupt; here the same set up, and the comparator's output (ACCDET_CON18 bit 14,
+ * 1 = plugged) is polled every 100 ms, two equal reads in a row to change the route. */
+#define AUDDEC_ELR_0			0x242a	/* the headphone buffers' DC trim */
+#define AUDENC_ANA_CON10		0x239c	/* mic bias 1 (set, not powered) */
+#define AUDENC_ANA_CON11		0x239e	/* the detector's comparator: thresholds, pull lows */
+#define ACCDET_CON1			0x250a	/* bit 2: EINT0 on */
+#define ACCDET_CON18			0x252c	/* bit 14: EINT0 comparator out, 1 = plugged */
+#define JACK_PLUGGED_BIT		(1u << 14)
+/* the headphone setting, as Android ran a wired headset */
+#define HP_CON0_MUX			0x0a00	/* both buffers on the DAC (bits 11:8) */
+#define HP_CON7_LO			0x0110	/* the line out stage off */
+#define HP_GAIN				0x0489
+#define HP_ZCD_CON3			0x001f
+#define HP_ZCD_CON5			0x2929
+/* This console's DC trim for each route, from the calibration Android runs at boot (offset_L 6,
+ * offset_R 0): the LK does not run that calibration, and another console's would differ a little,
+ * at worst a soft pop on the switch. */
+#define HP_ELR_0			0x1f10
+#define SPK_CON0_MUX			0x0900	/* left from the line out, right from the DAC */
+#define SPK_CON7_LO			0x011b
+#define SPK_ELR_0			0x1018
+
+static volatile int s_jack_up;			/* the detector is set up */
+static volatile int s_jack_route;		/* 0 speakers, 1 headphones */
+static int s_jack_seen = -1, s_jack_votes;
+static unsigned int s_jack_tick;
+volatile int g_jack_route, g_jack_plugged = -1;	/* oem jack */
+
+static int jack_comparator(void) { return (pmic_r(ACCDET_CON18) & JACK_PLUGGED_BIT) ? 1 : 0; }
+
+static void jack_route(int hp)
+{
+	if (hp == s_jack_route)
+		return;
+	codec_gain_ramp(ZCD_CON2, CODEC_GAIN_QUIET);		/* down before anything moves */
+	if (hp) {
+		spk_amp(0);
+		codec_gain_ramp(ZCD_CON1, CODEC_GAIN_QUIET);
+		pmic_rmw(AUDDEC_ANA_CON0, 0xf00, HP_CON0_MUX);
+		pmic_w(AUDDEC_ANA_CON7, HP_CON7_LO);
+		pmic_w(ZCD_CON3, HP_ZCD_CON3);
+		pmic_w(ZCD_CON5, HP_ZCD_CON5);
+		pmic_w(AUDDEC_ELR_0, HP_ELR_0);
+		codec_gain_ramp(ZCD_CON2, HP_GAIN);
+	} else {
+		pmic_w(AUDDEC_ELR_0, SPK_ELR_0);
+		pmic_w(ZCD_CON5, 0x2a2a);
+		pmic_w(ZCD_CON3, 0x000a);
+		pmic_w(AUDDEC_ANA_CON7, SPK_CON7_LO);
+		pmic_rmw(AUDDEC_ANA_CON0, 0xf00, SPK_CON0_MUX);
+		codec_gain_ramp(ZCD_CON1, CODEC_GAIN_LO);
+		codec_gain_ramp(ZCD_CON2, CODEC_GAIN_HP);
+		spk_amp(1);
+	}
+	s_jack_route = hp;
+	g_jack_route = hp;
+}
+
+/* the detector as Android sets it up (its values with the jack empty), EINT0 switched on last;
+ * then the route the jack calls for at start */
+static void jack_detect_init(void)
+{
+	if (!s_jack_up) {
+		pmic_w(AUDENC_ANA_CON10, 0x0064);
+		pmic_w(AUDENC_ANA_CON11, 0x0c07);
+		pmic_w(0x250c, 0x0808);		/* CON2: the comparators' PWM, EINT0's on */
+		pmic_w(0x250e, 0x04ff);		/* CON3: PWM width */
+		pmic_w(0x2510, 0x04ff);		/* CON4: PWM threshold */
+		pmic_w(0x2512, 0x81f0);		/* CON5: rise and fall delays */
+		pmic_w(0x2514, 0x0800);		/* CON6..CON10: debounce times */
+		pmic_w(0x2516, 0x0800);
+		pmic_w(0x2518, 0x0010);
+		pmic_w(0x251a, 0x0020);
+		pmic_w(0x251c, 0x0044);
+		pmic_w(0x251e, 0x4bbb);		/* CON11: the states it starts from */
+		pmic_w(0x2522, 0x700e);		/* CON13: the switches under software control */
+		pmic_w(0x2526, 0x2609);		/* CON15: EINT0 debounce and PWM */
+		pmic_w(ACCDET_CON1, 0x0004);	/* EINT0 on */
+		s_jack_up = 1;
+		mdelay(20);			/* the comparator's first decision */
+	}
+	s_jack_seen = jack_comparator();
+	s_jack_votes = 0;
+	g_jack_plugged = s_jack_seen;
+	s_jack_tick = gpt4_get_current_tick();
+	jack_route(s_jack_seen);
+}
+
+/* called from the audio submit (every frame): a read every 100 ms, a change after two in a row */
+static void jack_poll(void)
+{
+	unsigned int now = gpt4_get_current_tick();
+	int p;
+	if (!s_jack_up || now - s_jack_tick < 1300000u)
+		return;
+	s_jack_tick = now;
+	p = jack_comparator();
+	if (p == s_jack_seen) {
+		s_jack_votes = 0;
+		return;
+	}
+	if (++s_jack_votes < 2)
+		return;
+	s_jack_seen = p;
+	s_jack_votes = 0;
+	g_jack_plugged = p;
+	jack_route(p);
+}
+
+/* Android sets the detector and the route up itself */
 static void jack_teardown_for_android(void) { }
 
 #define PICO_AUD_DMA_CUR()		play_cur()

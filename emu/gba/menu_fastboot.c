@@ -3317,6 +3317,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem bfilevel:", cmd_bfilevel, 1, 0); /* the Strobe setting, 0..3 */
 	fastboot_register("oem odg:", cmd_odg, 1, 0);           /* green's rising overdrive cap */
 	fastboot_register("oem oddark:", cmd_oddark, 1, 0);     /* the rising cap from dark origins */
+	fastboot_register("oem pmicw", cmd_pmicw, 1, 0);        /* one PMIC register, read or written (hex) */
 	fastboot_register("oem gauge", cmd_gauge, 1, 0);        /* the fuel gauge: vbat, current, the figure */
 	fastboot_register("oem cpupll:", cmd_cpupll, 1, 0);     /* which PLL clocks the LK's core */
 	fastboot_register("oem dr:", cmd_dr, 1, 0);             /* the MIPI rate, live */         /* the real refresh, and RDMA0's frame ends */   /* a null read: does the abort get recorded */ /* the SNES thread's stack window under load */
