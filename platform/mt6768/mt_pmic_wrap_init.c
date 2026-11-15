@@ -418,8 +418,32 @@ static inline unsigned int wait_for_state_ready(loop_condition_fp fp,
  * Parameter :
  * Return :
  ******************************************************/
+#if defined(KONKR_BLOCK)
+/* The Konkr Pocket Block's game loop reads the PMIC (the volume up key, the headphone jack) while
+ * other threads read it too (the charger state every second, the CPU rail, USB commands). One
+ * WACS2 transaction is a command write and a wait for its answer; a thread switch between the two
+ * let another thread's command land in the middle. Seen once: the PMIC's read dummy count went
+ * from 8 to about 10 and every read came back two bits late until a reboot, most likely from such
+ * a collision. So the whole transaction now runs with interrupts off: a few microseconds, never
+ * interleaved. */
+#include <kernel/thread.h>
+static signed int pwrap_wacs2_one(unsigned int write, unsigned int adr,
+		unsigned int wdata, unsigned int *rdata);
 signed int pwrap_wacs2(unsigned int write, unsigned int adr,
 		unsigned int wdata, unsigned int *rdata)
+{
+	signed int r;
+	enter_critical_section();
+	r = pwrap_wacs2_one(write, adr, wdata, rdata);
+	exit_critical_section();
+	return r;
+}
+static signed int pwrap_wacs2_one(unsigned int write, unsigned int adr,
+		unsigned int wdata, unsigned int *rdata)
+#else
+signed int pwrap_wacs2(unsigned int write, unsigned int adr,
+		unsigned int wdata, unsigned int *rdata)
+#endif
 {
 	unsigned int reg_rdata = 0;
 	unsigned int wacs_write = 0;

@@ -10,5 +10,9 @@
 #define PICO_RSZ0_BASE		0x14015000u
 /* MT6768's resizer passes nothing while disabled: between games it stays enabled at 1:1 */
 #define PICO_RSZ_IDLE_EN	1u
+/* MT6768's display resizer scales a line of at most 736 input pixels in one pass; the pixels
+ * past that came out as a band of garbage at the right edge (SNES at 768 wide). The game is
+ * prescaled no wider than this and the resizer finishes the rest. */
+#define PICO_RSZ_MAX_IN_W	736u
 
 #endif

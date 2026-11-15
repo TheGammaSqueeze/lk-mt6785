@@ -37,6 +37,9 @@
 #endif
 #define AYANEO_SET_MAGIC	0x54455341u	/* "ASET" LE */
 #define AYANEO_SET_VER		10u	/* v10: software-overdrive strength (b+24 bits 19-22); ver<10 migrates to k=3 default */
+#if defined(KONKR_BLOCK)
+#define BLOCK_DEFAULTS_MARK	0xB1u	/* b[187]: the Konkr Pocket Block's defaults are in */
+#endif
 #define AYANEO_BL_MIN		16		/* keep the panel visible (never 0) */
 #define AYANEO_BL_MAX		255		/* mt65xx LCD level is 0-255 */
 #define AYANEO_BL_STEP		8		/* fine granularity (~30 steps) */
@@ -173,8 +176,20 @@ static void resume_fields_write(unsigned char *b)
 	b[184] = (unsigned char)(s_menu_lang + 1u);   /* 0 = never written -> English */
 	b[185] = (unsigned char)(s_tz_q + 64);         /* 0 = never written -> UTC */
 	b[186] = (unsigned char)(s_clock12 + 1u);      /* 0 = never written -> 24 hour */
+#if defined(KONKR_BLOCK)
+	b[187] = BLOCK_DEFAULTS_MARK;                  /* the Block's defaults are in (block_defaults_read) */
+#endif
 }
+#if defined(KONKR_BLOCK)
+/* The Konkr Pocket Block runs every core at 1800 MHz by default (its rail is raised to the
+ * table's voltage for it), with one frame of run-ahead. A card written before that default
+ * carries the older choices, so they are moved over once: b[187] says it has been done, and
+ * whatever is chosen afterwards stays. */
+static unsigned char s_cpu_manual[4] = { 7, 7, 7, 7 };   /* manual CPU clock per core, grid index + 1, 0 = automatic; 1800 on a new card */
+static void block_defaults_read(const unsigned char *b, int len);
+#else
 static unsigned char s_cpu_manual[4] = { 5, 5, 5, 5 };   /* manual CPU clock per core, grid index + 1, 0 = automatic; 1400 (reads 1399) on a new card */
+#endif
 static void resume_fields_read(const unsigned char *b, int len)
 {
 	unsigned i;
@@ -186,6 +201,9 @@ static void resume_fields_read(const unsigned char *b, int len)
 	if (len >= 186 && b[185] >= 16u && b[185] <= 120u) s_tz_q = (signed char)((int)b[185] - 64);
 	if (len >= 187 && (b[186] == 1u || b[186] == 2u)) s_clock12 = (unsigned char)(b[186] - 1u);
 	if (len >= 176) { s_cpu_manual[0] = b[172] & 15; s_cpu_manual[1] = b[173] & 15; s_cpu_manual[2] = b[174] & 15; s_cpu_manual[3] = b[175] & 15; }
+#if defined(KONKR_BLOCK)
+	block_defaults_read(b, len);
+#endif
 	if (len < 172) return;
 	{ unsigned int r = rd32(b + 64); if (r == 1u || r == 2u) s_resume_on_boot = (r == 2u); }
 	if (rd32(b + 68) == AYANEO_RESUME_MAGIC) {
@@ -265,6 +283,16 @@ void ayaneo_set_show_fps(int v)     { extern volatile int g_show_fps; s_show_fps
 void ayaneo_set_mute_menu(int v)    { s_mute_menu = v ? 1 : 0; }
 int ayaneo_get_preempt_frames(void)   { return s_preempt_frames; }
 void ayaneo_set_preempt_frames(int v) { s_preempt_frames = (v < 0) ? 0 : (v > 3 ? 3 : v); }
+#if defined(KONKR_BLOCK)
+/* a card from before the Block's defaults: 1800 MHz on every core, one frame of run-ahead */
+static void block_defaults_read(const unsigned char *b, int len)
+{
+	if (len >= 188 && b[187] == BLOCK_DEFAULTS_MARK)
+		return;
+	s_cpu_manual[0] = s_cpu_manual[1] = s_cpu_manual[2] = s_cpu_manual[3] = 7;
+	ayaneo_set_preempt_frames(1);
+}
+#endif
 unsigned ayaneo_get_snes_opts(void)   { return s_snes_opts; }
 void ayaneo_set_snes_opts(unsigned v) { s_snes_opts = v; }
 int  ayaneo_get_snes_slot(void)       { return s_snes_slot; }

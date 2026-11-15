@@ -2564,6 +2564,11 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 	 * 4:3 at wp=1098) are UNAFFECTED - they scale one axis and tolerate the wider input. */
 	if (ih < dh)
 		while (ph > 1u && (sw * ph * W) / dw > OVL_2L_TILE_W) ph--;
+#ifdef PICO_RSZ_MAX_IN_W
+	/* a resizer with a shorter line (<platform/pico_hw.h>): its whole input row, the padded
+	 * width wp below, stays within it in every mode */
+	while (ph > 1u && (sw * ph * W + dw / 2u) / dw > PICO_RSZ_MAX_IN_W) ph--;
+#endif
 	unsigned int iw = sw * ph;   /* prescaled (crisp) game width */
 
 	/* Padded OVL0_2L input geometry so a uniform RSZ scale to the panel reproduces (xoff,dw)

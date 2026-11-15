@@ -10,6 +10,7 @@
  */
 #include <platform/mt_typedefs.h>
 #include <kernel/thread.h>
+#include <kernel/mutex.h>
 #include <string.h>
 #include <debug.h>
 #include <printf.h>
@@ -183,6 +184,7 @@ static void block_sched_report_and_start(void)
  * the next boot (the menu again) has the last lines: oem savenow, then oem savedtrace. The
  * lines go straight to the log (_dputs): at the KPA's log level dprintf and _dprintf print nothing. */
 #include <kernel/thread.h>
+#include <kernel/mutex.h>
 #define BLOCK_WDT_MODE		0x10007000u	/* TOPRGU WDT_MODE, bit 0 = enabled */
 #define BLOCK_HANG_TICK_MS	100u	/* a look every 100 ms: a line when the launch step changes */
 #define BLOCK_HANG_BEAT_TICKS	20u	/* and one every 2 s regardless */
@@ -245,8 +247,10 @@ void ayaneo_emu_boot_abandoned(void)
 {
 	extern void ayaneo_show_deferred_logo(void);
 	extern void ayaneo_gbc_audio_shutdown(void);
+	extern void block_cpu_rail_restore(void);
 	ayaneo_show_deferred_logo();
 	ayaneo_gbc_audio_shutdown();
+	block_cpu_rail_restore();	/* the kernel starts from the rail and clock the preloader left */
 }
 
 /* ---- the CPU clock ----
@@ -284,13 +288,39 @@ static unsigned int measure_cpu_mhz(void)
  * The LK runs on CPU0, an A55 of cluster 0, whose clock is the APMIXED PLL with CON1 at 0x1000C21C
  * (measured: lowering that word lowers the core in step; the PLL at 0x20C is left alone). Output
  * = 26 MHz x PCW / 2^14 / 2^POSDIV (CON1 bits 21:0 and 26:24), a new word taken on the rising edge
- * of bit 31. Voltages are never changed: a clock asked for is held to the highest step of the
- * cluster's table (the Block's device tree, cluster0_opp) that the A55 rail already supplies,
- * read live from the MT6358 (VPROC11 and VPROC12 DBG0, the lower of the two: 0.5 V + 6.25 mV a
- * code). At the 0.8 V the preloader leaves that is 1175 MHz, about where the core boots, so the
- * cores' faster tiers run there and their slower ones save power, as on the Konkr. */
+ * of bit 31.
+ *
+ * Each clock gets the voltage the Block's own table gives it (the device tree's cluster0_opp, the
+ * table Android scales by), on the MT6358's two CPU bucks VPROC11 and VPROC12 (0.5 V + 6.25 mV a
+ * code, both set alike). The preloader leaves them at 0.8 V, which is the floor here: the rail is
+ * raised for the faster steps (up to 1.00625 V for 1800 MHz) and brought back to 0.8 V for the
+ * rest, never lower. The SRAM supplies follow by themselves: the PMIC's tracking holds each
+ * VSRAM_PROC 100 mV over its buck, between 0.85 V and 1.11875 V, as the preloader set it up.
+ *
+ * The order is the safe one: up = the voltage first, checked (both bucks reporting the new code,
+ * both SRAM supplies over it), then the clock; down = the clock first, then the voltage. Every
+ * PMIC step starts with the link's own test word (0x5AA5 at DEW_READ_TEST): if the PMIC cannot be
+ * read correctly nothing is written, and the clock stays within what the rail is known to hold. */
 #define BLOCK_CPU_PLL_CON1	0x1000C21Cu
 #define BLOCK_CPU_MIN_MHZ	500u
+#define BLOCK_CPU_MAX_MHZ	1800u
+
+#define PMIC_DEW_READ_TEST	0x040eu		/* reads 0x5AA5 while the link is sound */
+#define PMIC_VPROC11_DBG0	0x139eu		/* bits 6:0 the code the buck runs at */
+#define PMIC_VPROC11_ELR0	0x13a6u		/* bits 6:0 the code asked for */
+#define PMIC_VPROC12_DBG0	0x141eu
+#define PMIC_VPROC12_ELR0	0x1426u
+#define PMIC_VSRAM11_DBG0	0x1b60u		/* bits 14:8 the SRAM supply's code */
+#define PMIC_VSRAM11_TRACK0	0x1b64u		/* bits 1 and 2: tracking its buck while on */
+#define PMIC_VSRAM12_DBG0	0x1ba2u
+#define PMIC_VSRAM12_TRACK0	0x1b6cu
+#define VPROC_UV(code)		(500000u + 6250u * (code))
+#define VPROC_CODE_FOR(uv)	(((uv) - 500000u + 6249u) / 6250u)
+#define VPROC_BOOT_CODE		0x30u		/* 0.8 V, as the preloader leaves it */
+#define VPROC_MAX_CODE		0x52u		/* 1.0125 V: the table's top (1.00625 V) rounded up */
+#define VPROC_STEP_CODES	8u		/* 50 mV a step, each one checked */
+#define VSRAM_TRACK_OFFSET	16u		/* the SRAM supply runs this many codes over its buck */
+
 static const struct { unsigned short mhz; unsigned int uv; } s_cpu_opp[] = {
 	{ 500, 650000 }, { 774, 675000 }, { 850, 700000 }, { 900, 718750 }, { 950, 731250 },
 	{ 999, 743750 }, { 1050, 762500 }, { 1100, 775000 }, { 1175, 800000 }, { 1275, 831250 },
@@ -298,28 +328,99 @@ static const struct { unsigned short mhz; unsigned int uv; } s_cpu_opp[] = {
 	{ 1800, 1006250 },
 };
 
-/* the A55 rail's live voltage in uV (0 when it cannot be read) */
-static unsigned int cpu_rail_uv(void)
+extern signed int pwrap_read(unsigned int adr, unsigned int *rdata);
+extern signed int pwrap_write(unsigned int adr, unsigned int wdata);
+
+volatile unsigned int g_dbg_cpu_cap_mhz, g_dbg_cpu_rail_uv;	/* the clock the rail allows, the rail */
+volatile unsigned int g_dbg_cpu_vfail;				/* voltage steps refused or not taken */
+static unsigned int s_rail_code;	/* the bucks' code as last set and checked; 0 = not read yet */
+static mutex_t s_cpu_lock;
+static int s_cpu_lock_up;
+
+static int pmic_link_ok(void)
 {
-	extern signed int pwrap_read(unsigned int adr, unsigned int *rdata);
-	unsigned int a = 0, b = 0;
-	if (pwrap_read(0x139e, &a) || pwrap_read(0x141e, &b))
-		return 0;
-	a &= 0x7fu;
-	b &= 0x7fu;
-	return 500000u + 6250u * (a < b ? a : b);
+	unsigned int v = 0;
+	return pwrap_read(PMIC_DEW_READ_TEST, &v) == 0 && (v & 0xffffu) == 0x5aa5u;
 }
 
-/* the fastest clock of the table the rail supplies now */
-volatile unsigned int g_dbg_cpu_cap_mhz, g_dbg_cpu_rail_uv;
-static unsigned int cpu_cap_mhz(void)
+/* both bucks' running code (the lower of the two), or -1 when the PMIC cannot be read correctly */
+static int vproc_code_now(void)
 {
-	unsigned int uv = cpu_rail_uv(), cap = BLOCK_CPU_MIN_MHZ, i;
+	unsigned int a = 0, b = 0;
+	if (!pmic_link_ok() || pwrap_read(PMIC_VPROC11_DBG0, &a) || pwrap_read(PMIC_VPROC12_DBG0, &b) ||
+	    !pmic_link_ok())
+		return -1;
+	a &= 0x7fu;
+	b &= 0x7fu;
+	return (int)(a < b ? a : b);
+}
+
+/* is the PMIC holding both SRAM supplies over the bucks at `code` (tracking on, and there)? */
+static int vsram_follows(unsigned int code)
+{
+	unsigned int t11 = 0, t12 = 0, s11 = 0, s12 = 0, want = code + VSRAM_TRACK_OFFSET;
+	if (pwrap_read(PMIC_VSRAM11_TRACK0, &t11) || pwrap_read(PMIC_VSRAM12_TRACK0, &t12) ||
+	    pwrap_read(PMIC_VSRAM11_DBG0, &s11) || pwrap_read(PMIC_VSRAM12_DBG0, &s12))
+		return 0;
+	if ((t11 & 6u) != 6u || (t12 & 6u) != 6u)
+		return 0;
+	s11 = (s11 >> 8) & 0x7fu;
+	s12 = (s12 >> 8) & 0x7fu;
+	if (want > 0x63u) want = 0x63u;		/* the tracking's own ceiling, 1.11875 V */
+	return s11 >= want && s12 >= want;
+}
+
+/* move both bucks to `code`, one checked step at a time; returns the code they reached */
+static unsigned int vproc_move(unsigned int from, unsigned int code)
+{
+	unsigned int cur = from;
+	while (cur != code) {
+		unsigned int next = code > cur ? (code - cur > VPROC_STEP_CODES ? cur + VPROC_STEP_CODES : code)
+					       : (cur - code > VPROC_STEP_CODES ? cur - VPROC_STEP_CODES : code);
+		unsigned int e11 = 0, e12 = 0, t;
+		int now = -1;
+		if (!pmic_link_ok() || pwrap_read(PMIC_VPROC11_ELR0, &e11) || pwrap_read(PMIC_VPROC12_ELR0, &e12)) {
+			g_dbg_cpu_vfail++;
+			break;
+		}
+		pwrap_write(PMIC_VPROC11_ELR0, (e11 & 0xff80u) | next);
+		pwrap_write(PMIC_VPROC12_ELR0, (e12 & 0xff80u) | next);
+		for (t = 0; t < 100u; t++) {		/* the buck slews in tens of microseconds */
+			udelay(10);
+			now = vproc_code_now();
+			if (now == (int)next && (next < cur || vsram_follows(next)))
+				break;
+		}
+		if (now != (int)next || (next > cur && !vsram_follows(next))) {
+			g_dbg_cpu_vfail++;
+			if (now >= 0) cur = (unsigned int)now;
+			break;
+		}
+		cur = next;
+		udelay(20);				/* settle before anything leans on it */
+	}
+	g_dbg_cpu_rail_uv = VPROC_UV(cur);
+	return cur;
+}
+
+static unsigned int opp_code_for(unsigned int mhz)
+{
+	unsigned int i, uv = s_cpu_opp[sizeof(s_cpu_opp) / sizeof(s_cpu_opp[0]) - 1].uv, code;
+	for (i = 0; i < sizeof(s_cpu_opp) / sizeof(s_cpu_opp[0]); i++)
+		if (s_cpu_opp[i].mhz >= mhz) { uv = s_cpu_opp[i].uv; break; }
+	code = VPROC_CODE_FOR(uv);
+	if (code < VPROC_BOOT_CODE) code = VPROC_BOOT_CODE;
+	if (code > VPROC_MAX_CODE) code = VPROC_MAX_CODE;
+	return code;
+}
+
+/* the fastest clock of the table the rail at `code` supplies */
+static unsigned int cap_for_code(unsigned int code)
+{
+	unsigned int uv = VPROC_UV(code), cap = BLOCK_CPU_MIN_MHZ, i;
 	for (i = 0; i < sizeof(s_cpu_opp) / sizeof(s_cpu_opp[0]); i++)
 		if (s_cpu_opp[i].uv <= uv && s_cpu_opp[i].mhz > cap)
 			cap = s_cpu_opp[i].mhz;
-	g_dbg_cpu_rail_uv = uv;
-	g_dbg_cpu_cap_mhz = cap;
 	return cap;
 }
 
@@ -332,23 +433,78 @@ unsigned int ayaneo_get_cpu_mhz(void)
 	return (unsigned int)(f / 1000000ull);
 }
 
+/* the PLL to `mhz`, in steps of at most 200 MHz so the core never takes one large jump */
+static void cpu_pll_to(unsigned int mhz)
+{
+	volatile unsigned int *con1 = (volatile unsigned int *)BLOCK_CPU_PLL_CON1;
+	unsigned int cur = ayaneo_get_cpu_mhz();
+	for (;;) {
+		unsigned int c = *con1, posdiv = (c >> 24) & 7u, step;
+		unsigned long long pcw;
+		if (cur + 200u < mhz) step = cur + 200u;
+		else if (mhz + 200u < cur) step = cur - 200u;
+		else step = mhz;
+		pcw = (((unsigned long long)step * 1000000ull) << 14) << posdiv;
+		pcw /= 26000000ull;
+		if (pcw > 0x3FFFFFu) pcw = 0x3FFFFFu;
+		c = (c & ~0x803FFFFFu) | (unsigned int)pcw;
+		*con1 = c;
+		*con1 = c | 0x80000000u;
+		udelay(20);
+		if (step == mhz)
+			break;
+		cur = step;
+	}
+}
+
 volatile unsigned int g_dbg_cpu_mhz_asked;	/* the last clock a core asked for */
 void ayaneo_set_cpu_mhz(unsigned int mhz)
 {
-	volatile unsigned int *con1 = (volatile unsigned int *)BLOCK_CPU_PLL_CON1;
-	unsigned int c = *con1, posdiv = (c >> 24) & 7u, cap = cpu_cap_mhz();
-	unsigned long long pcw;
+	unsigned int want, have, cap;
+	int now;
 
+	if (!s_cpu_lock_up) {
+		enter_critical_section();
+		if (!s_cpu_lock_up) { mutex_init(&s_cpu_lock); s_cpu_lock_up = 1; }
+		exit_critical_section();
+	}
+	mutex_acquire(&s_cpu_lock);
 	g_dbg_cpu_mhz_asked = mhz;
-	if (mhz > cap) mhz = cap;
+	if (mhz > BLOCK_CPU_MAX_MHZ) mhz = BLOCK_CPU_MAX_MHZ;
 	if (mhz < BLOCK_CPU_MIN_MHZ) mhz = BLOCK_CPU_MIN_MHZ;
-	pcw = (((unsigned long long)mhz * 1000000ull) << 14) << posdiv;
-	pcw /= 26000000ull;
-	if (pcw > 0x3FFFFFu) pcw = 0x3FFFFFu;
-	c = (c & ~0x803FFFFFu) | (unsigned int)pcw;
-	*con1 = c;
-	*con1 = c | 0x80000000u;
-	udelay(20);
+
+	now = vproc_code_now();
+	if (now < 0) {
+		/* the PMIC cannot be trusted now: no voltage change, and the clock no higher than what
+		 * the rail was last known to hold (the preloader's 0.8 V before anything was set) */
+		g_dbg_cpu_vfail++;
+		have = s_rail_code ? s_rail_code : VPROC_BOOT_CODE;
+	} else {
+		have = (unsigned int)now;
+		want = opp_code_for(mhz);
+		if (want > have)
+			have = vproc_move(have, want);		/* up: the voltage before the clock */
+	}
+	s_rail_code = have;
+	cap = cap_for_code(have);
+	g_dbg_cpu_cap_mhz = cap;
+	g_dbg_cpu_rail_uv = VPROC_UV(have);
+	if (mhz > cap) mhz = cap;
+	cpu_pll_to(mhz);
+	if (now >= 0) {
+		want = opp_code_for(mhz);
+		if (want < have) {				/* down: the clock first, then the voltage */
+			s_rail_code = vproc_move(have, want);
+			g_dbg_cpu_cap_mhz = cap_for_code(s_rail_code);
+		}
+	}
+	mutex_release(&s_cpu_lock);
+}
+
+/* back to the preloader's 0.8 V and the clock it supplies, before the kernel takes the rail */
+void block_cpu_rail_restore(void)
+{
+	ayaneo_set_cpu_mhz(1175);
 }
 
 /* ---- the battery: its level from its voltage until the MT6358 gauge is read ---- */
