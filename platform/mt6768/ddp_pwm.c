@@ -79,8 +79,11 @@ static disp_pwm_id_t g_pwm_main_id = DISP_PWM0;
 /* The Konkr Pocket Block's backlight strobe (BFI), as on the Konkr Pocket Advance: one PWM period
  * per panel frame, restarted at each frame end by the pacer. The PWM runs from the 26 MHz clock
  * (measured on its pad: 25391 Hz at divider 0), and every core picks its own refresh here (50 to
- * 60.1 Hz), so the divider follows the refresh: the smallest period not shorter than a frame, so
- * the restart always comes before the period would end and a frame never gets a second pulse. */
+ * 60.1 Hz), so the divider follows the refresh: the longest period NOT longer than a frame, as the
+ * Advance's 424 is. The period then ends a hair before the frame does and the PWM itself starts each
+ * pulse at the right time; the pacer's restart, which lands up to a millisecond late, only trims
+ * the phase. A period longer than the frame (the first try) left every pulse to that late restart,
+ * so the dark gap before it changed from frame to frame: an occasional flicker. */
 extern unsigned int ayaneo_dsi_refresh_milli(void);
 static unsigned int block_bfi_div(void)
 {
@@ -88,14 +91,17 @@ static unsigned int block_bfi_div(void)
 	unsigned long long per;
 	if (mhz < 30000u || mhz > 125000u)
 		mhz = 59727u;
-	per = (26000000000ull + 1024ull * mhz - 1ull) / (1024ull * mhz);   /* clocks of 1024 counts, rounded up */
+	per = 26000000000ull / (1024ull * mhz);   /* clocks of 1024 counts, rounded down */
 	return per > 1024ull ? 1023u : (unsigned int)per - 1u;
 }
 #define PICO_BFI_DIV()		block_bfi_div()
 #define PICO_BFI_DIV_FOLLOWS	1
-/* the shortest pulse the Block's backlight boost lights, 1024ths of the frame (as the Advance's
- * until measured otherwise) */
-#define PICO_BFI_MIN_PULSE	192
+/* The Block's backlight boost does not hold a short pulse steady: lit 256/1024 of the frame (the
+ * 75 % dark level, about 4.3 ms) pulsed visibly, 288 and 320 were steady (by eye, Sonic 3,
+ * 2026-11-15). So the strongest level lights 288/1024 (72 % dark), and no brightness setting
+ * shrinks a pulse below that. */
+#define PICO_BFI_MIN_PULSE	288
+#define PICO_BFI_WIN_DARKEST	288u
 #endif
 #include "../common/pico/pico_pwm_strobe.inc"
 

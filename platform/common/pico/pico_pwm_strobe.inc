@@ -49,6 +49,9 @@ int disp_pwm_bfi_state(char *out, int n)
 			g_strobe_locked, g_strobe_div, g_bfi_window, g_bfi, g_bfi_mode, s_last_level_1024, g_pwm_inited);
 }
 #endif
+#if defined(PICO_BFI_DIV) && !defined(PICO_BFI_WIN_DARKEST)
+#define PICO_BFI_WIN_DARKEST 256u   /* the strongest level's lit window, 1024ths: 75 % dark */
+#endif
 void disp_pwm_strobe_mode(int on)
 {
 #if defined(PICO_BFI_DIV)
@@ -59,7 +62,7 @@ void disp_pwm_strobe_mode(int on)
 	{
 		int lvl = on ? ((on - 1) % 3) + 1 : 0;
 		g_bfi_mode = on ? 1 : 0;   /* one pulse per frame */
-		if (lvl) g_bfi_window = (lvl >= 3) ? 256u : (lvl == 2 ? 512u : 768u);
+		if (lvl) g_bfi_window = (lvl >= 3) ? PICO_BFI_WIN_DARKEST : (lvl == 2 ? 512u : 768u);
 		g_bfi = lvl ? 1 : 0;
 		g_strobe_div = lvl ? PICO_BFI_DIV() : 0u;
 	}
@@ -147,6 +150,9 @@ void disp_pwm_strobe_locked(unsigned int div, unsigned int duty)
 /* Called once per frame from the FRAME_DONE point in primary_display_config_input. Restart
  * the PWM counter (EN off->on) so the single pulse re-aligns to THIS frame = phase lock.
  * Cheap (2 register writes); no-op unless a locked strobe is active. */
+#if defined(PICO_BFI_DIV_FOLLOWS)
+volatile unsigned int g_dbg_bfi_skips, g_dbg_bfi_off_max, g_dbg_bfi_off_200us;
+#endif
 void disp_pwm_strobe_tick(void)
 {
 	unsigned int reg_base;
@@ -156,6 +162,23 @@ void disp_pwm_strobe_tick(void)
 	g_dbg_strobe_ticks++;
 	reg_base = pwm_get_reg_base(g_pwm_main_id);
 #if defined(PICO_BFI_DIV_FOLLOWS)
+	{	/* the restarts' timing (oem bfi): how far off a whole number of frames each landed, the
+		 * largest since the last read and the ones over 200 us, and the gaps that skipped a frame */
+		extern unsigned int gpt4_get_current_tick(void);
+		extern unsigned int ayaneo_dsi_refresh_milli(void);
+		static unsigned int last;
+		unsigned int now = gpt4_get_current_tick(), mhz = ayaneo_dsi_refresh_milli();
+		if (last && mhz) {
+			unsigned int frame = (unsigned int)(13000000000ull / mhz);   /* ticks of 13 MHz */
+			unsigned int gap = now - last, n = (gap + frame / 2u) / frame;
+			int off = (int)(gap - n * frame);
+			unsigned int a = (unsigned int)(off < 0 ? -off : off);
+			if (n >= 2u) g_dbg_bfi_skips++;
+			if (a > g_dbg_bfi_off_max) g_dbg_bfi_off_max = a;
+			if (a > 13u * 200u) g_dbg_bfi_off_200us++;
+		}
+		last = now;
+	}
 	/* a board whose refresh changes with the core: the period follows it at the next frame */
 	if (g_bfi) {
 		unsigned int d = PICO_BFI_DIV();
