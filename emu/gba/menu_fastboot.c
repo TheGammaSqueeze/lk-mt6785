@@ -3225,6 +3225,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem pr:", cmd_pr, 1, 0);             /* PMIC registers, read only */
 	fastboot_register("oem hz", cmd_hz, 1, 0);              /* the panel's real refresh */
 	fastboot_register("oem ra", cmd_ra, 1, 0);              /* run-ahead per core, as it runs */
+	fastboot_register("oem gauge", cmd_gauge, 1, 0);        /* the fuel gauge: vbat, current, the figure */
 	fastboot_register("oem cpupll:", cmd_cpupll, 1, 0);     /* which PLL clocks the LK's core */
 	fastboot_register("oem dr:", cmd_dr, 1, 0);             /* the MIPI rate, live */         /* the real refresh, and RDMA0's frame ends */   /* a null read: does the abort get recorded */ /* the SNES thread's stack window under load */
 #endif

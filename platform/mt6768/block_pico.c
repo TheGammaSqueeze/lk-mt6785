@@ -527,28 +527,7 @@ void block_ra_note(int core, unsigned int frames, unsigned int t0_tick)
 		g_block_ra_max[core] = us;
 }
 
-/* ---- the battery: its level from its voltage until the MT6358 gauge is read ---- */
-extern int get_bat_volt(int times);
-int ayaneo_gauge_pct(void)
-{
-	/* a resting Li-ion cell from 3.45 V (empty, as the stock shutdown level) to 4.35 V (the 4.4 V
-	 * charge voltage, at rest); a rough guide only, the gauge replaces it */
-	int mv = get_bat_volt(1), pct;
-	if (mv <= 0)
-		return 50;
-	pct = (mv - 3450) * 100 / (4350 - 3450);
-	if (pct < 0) pct = 0;
-	if (pct > 100) pct = 100;
-	return pct;
-}
-
-/* no time estimate without the gauge */
-int ayaneo_gauge_time_str(char *out, int n)
-{
-	if (out && n > 0)
-		out[0] = 0;
-	return 0;
-}
+/* ---- the battery: the MT6358 fuel gauge (block_gauge.c) ---- */
 
 /* ---- the AUXADC, for the diagnostics (millivolts) ---- */
 extern int IMM_GetOneChannelValue_Cali(int Channel, int *voltage);

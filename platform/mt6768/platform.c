@@ -960,6 +960,16 @@ void platform_init(void)
 
 #ifdef MTK_KERNEL_POWER_OFF_CHARGING
 	if (kernel_charging_boot() == 1) {
+#if defined(KONKR_BLOCK) && defined(AYANEO_GBA_SD)
+		/* Offline charging on the Konkr Pocket Block, as on the Konkr Pocket Advance: the
+		 * charger woke the console, so GammaOS Pico's own charging screen shows here (the
+		 * battery, the charger state, hold POWER to start), and holding POWER carries on as a
+		 * normal boot into the menu; unplugged, the console powers off. */
+		extern void ayaneo_gbc_charging_screen(void);
+		mt_disp_power(TRUE);
+		ayaneo_gbc_charging_screen();
+		g_boot_mode = NORMAL_BOOT;
+#else
 		PROFILING_START("show logo");
 #ifdef MTK_BATLOWV_NO_PANEL_ON_EARLY
 		CHARGER_TYPE CHR_Type_num = CHARGER_UNKNOWN;
@@ -983,6 +993,7 @@ void platform_init(void)
 		}
 #endif
 		PROFILING_END();
+#endif
 	}
 #endif // MTK_KERNEL_POWER_OFF_CHARGING
 

@@ -429,6 +429,8 @@ static inline unsigned int wait_for_state_ready(loop_condition_fp fp,
 #include <kernel/thread.h>
 static signed int pwrap_wacs2_one(unsigned int write, unsigned int adr,
 		unsigned int wdata, unsigned int *rdata);
+/* transactions made and failed since boot (the charging screen's hand over note, the black box) */
+volatile unsigned int g_dbg_pwrap_waits, g_dbg_pwrap_fails;
 signed int pwrap_wacs2(unsigned int write, unsigned int adr,
 		unsigned int wdata, unsigned int *rdata)
 {
@@ -436,6 +438,9 @@ signed int pwrap_wacs2(unsigned int write, unsigned int adr,
 	enter_critical_section();
 	r = pwrap_wacs2_one(write, adr, wdata, rdata);
 	exit_critical_section();
+	g_dbg_pwrap_waits++;
+	if (r != 0)
+		g_dbg_pwrap_fails++;
 	return r;
 }
 static signed int pwrap_wacs2_one(unsigned int write, unsigned int adr,

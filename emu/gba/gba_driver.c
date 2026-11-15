@@ -1376,6 +1376,14 @@ static int charger_status(void)
 	int v = ayaneo_mt6360_chg_reg(0x4A);
 	return v < 0 ? -1 : ((v >> 6) & 3);
 }
+#elif defined(KONKR_BLOCK)
+/* the RT9467's charge state (0 ready, 1 charging, 2 done, 3 fault), the same field as above */
+volatile int g_dbg_block_chg_st = -2;   /* the last state read (-2 never read) */
+static int charger_status(void)
+{
+	extern int block_rt9467_chg_stat(void);
+	return g_dbg_block_chg_st = block_rt9467_chg_stat();
+}
 #else
 static int charger_status(void) { return -1; }
 #endif
@@ -1383,8 +1391,9 @@ static int battery_read(int *charging)
 {
 	int chr = upmu_is_chr_det();
 	int pct;
-#ifdef KONKR_KPA
-	/* the fuel gauge path: pack profile, current compensation, filtered (ayaneo_gauge.c) */
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	/* the fuel gauge path: pack profile, current compensation, filtered (ayaneo_gauge.c,
+	 * block_gauge.c) */
 	extern int ayaneo_gauge_sample(void);
 	pct = ayaneo_gauge_sample();
 	if (charging)

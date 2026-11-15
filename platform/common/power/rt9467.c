@@ -787,6 +787,23 @@ int rt9467_wdt_off_early(void)
 	return v;
 }
 
+#if defined(KONKR_BLOCK)
+/* the charger's own state, for GammaOS Pico's battery reading (gba_driver.c charger_status):
+ * 0 ready, 1 charging, 2 done, 3 fault; -1 when it does not answer */
+volatile unsigned int g_dbg_block_rt_regs;	/* CHG_CTRL2 | CHG_CTRL9 << 8, as last read */
+int block_rt9467_chg_stat(void)
+{
+	enum rt9467_charging_status st;
+	u8 c2 = 0, c9 = 0;
+	if (rt9467_i2c_read_byte(&g_rt9467_info, RT9467_REG_CHG_CTRL2, &c2) == I2C_OK &&
+	    rt9467_i2c_read_byte(&g_rt9467_info, RT9467_REG_CHG_CTRL9, &c9) == I2C_OK)
+		g_dbg_block_rt_regs = (unsigned int)c2 | ((unsigned int)c9 << 8);
+	if (rt9467_get_charging_status(&g_rt9467_info, &st) != I2C_OK)
+		return -1;
+	return (int)st & 3;
+}
+#endif
+
 int rt9467_probe(void)
 {
 	int ret = 0;
@@ -795,6 +812,13 @@ int rt9467_probe(void)
 	if (rt9467_is_hw_exist(&g_rt9467_info)) {
 		ret = rt9467_reset_chip(&g_rt9467_info);
 		ret = rt9467_init_setting(&g_rt9467_info);
+#if defined(KONKR_BLOCK)
+		/* The charge ends at the end-of-charge current and the chip says done, as the Konkr
+		 * Pocket Advance's charger does: GammaOS Pico shows 100 % and the full LED from that
+		 * (it has no fuel gauge here). The chip recharges by itself when the battery drops;
+		 * Android's driver resets the chip and sets its own. */
+		rt9467_set_bit(&g_rt9467_info, RT9467_REG_CHG_CTRL2, RT9467_MASK_TE_EN);
+#endif
 		mtk_charger_set_info(&(g_rt9467_info.mchr_info));
 		dprintf(CRITICAL, "%s: %s\n", __func__, RT9467_LK_DRV_VERSION);
 	}
