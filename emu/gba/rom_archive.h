@@ -24,7 +24,8 @@ enum {
 	RA_ERR_TOOBIG = -6,      /* the game is larger than the system's ROM memory */
 	RA_ERR_HUGE = -7,        /* the archive's own tables do not fit the memory for them */
 	RA_ERR_SPLIT = -8,       /* an archive in parts (.zip.001, .z01...) */
-	RA_ERR_START = -9        /* the core would not start the game */
+	RA_ERR_START = -9,       /* the core would not start the game */
+	RA_ERR_NOBIOS = -10      /* a Famicom Disk System game, and no disksys.rom on the card */
 };
 
 /* The ROMs in an archive file (f: the archive; exts: the system's extensions, space separated,

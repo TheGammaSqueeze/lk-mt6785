@@ -44,7 +44,7 @@ if [ -e .git ] && ! git diff --quiet HEAD -- && [ -z "$RELEASE_DIRTY" ]; then
 fi
 ./build_konkr_kpa.sh
 [ -f out/lk_a_kpa_signed.img ] && [ -d out/sdcard/cores ] || { echo "!! the LK build did not produce the image and the card template" >&2; exit 1; }
-for c in armgba-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico; do
+for c in armgba-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico armnes-pico; do
 	[ -f out/sdcard/cores/$c.blob ] || { echo "!! the card template has no $c core" >&2; exit 1; }
 done
 
@@ -87,7 +87,7 @@ echo ">> SD card package"
 S="$FILES/$CARD"
 cp -r out/sdcard/. "$S/"
 python3 tools/release/demo_games.py tools/release/demo_games.json "$S" "$R/cache"
-for dir in armGBA-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico; do
+for dir in armGBA-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico armNES-pico; do
 	d="$S/licences/cores/$dir"
 	mkdir -p "$d"
 	cp cores/$dir/LICENSE "$d/LICENSE"
@@ -116,7 +116,8 @@ python3 - "$R/RELEASE_NOTES.md" tools/release/demo_games.json <<'PY'
 import json, sys
 notes, games = sys.argv[1], json.load(open(sys.argv[2]))
 names = {"gb": "Game Boy", "gbc": "Game Boy Color", "gba": "Game Boy Advance", "snes": "SNES",
-         "genesis": "Mega Drive / Genesis", "sms": "Master System", "gg": "Game Gear", "sg": "SG-1000"}
+         "genesis": "Mega Drive / Genesis", "sms": "Master System", "gg": "Game Gear", "sg": "SG-1000",
+         "nes": "NES"}
 rows = "\n".join("| %s | %s | %s | %s |" % (g["title"], names[g["system"]], g["credit"], g["licence"]) for g in games)
 text = open(notes).read().replace("@GAMES@", "| Game | System | By | Licence |\n|---|---|---|---|\n" + rows)
 open(notes, "w").write(text)

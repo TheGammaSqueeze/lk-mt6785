@@ -6,6 +6,7 @@
 static const char *const s_art_dir[] = {
 	"/roms/gb/boxart", "/roms/gbc/boxart", "/roms/gba/boxart", "/roms/snes/boxart",
 	"/roms/genesis/boxart", "/roms/sms/boxart", "/roms/gg/boxart", "/roms/sg/boxart",
+	"/roms/nes/boxart",
 };
 
 const char *gba_boxart_home_dir(int console)

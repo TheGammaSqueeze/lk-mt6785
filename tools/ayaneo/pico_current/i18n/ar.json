@@ -236,5 +236,8 @@
  "About": "حول",
  "Version %s": "الإصدار %s",
  "Build %s, %s": "البناء %s، %s",
- "Experimental software, provided as it is, with no warranty": "برنامج تجريبي يقدم كما هو دون أي ضمان"
+ "Experimental software, provided as it is, with no warranty": "برنامج تجريبي يقدم كما هو دون أي ضمان",
+ "Swap Disk Side": "تبديل وجه القرص",
+ "Disk side changed": "تم تبديل وجه القرص",
+ "Disk System games need disksys.rom in the bios folder": "تحتاج ألعاب Disk System إلى الملف disksys.rom في المجلد bios"
 }

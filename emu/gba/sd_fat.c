@@ -275,6 +275,7 @@ static const struct rom_system {
 	{ GBA_CONSOLE_SMS,     "sms mastersystem",                   ".sms" },
 	{ GBA_CONSOLE_GG,      "gg gamegear",                        ".gg" },
 	{ GBA_CONSOLE_SG,      "sg sg1000 sg-1000",                  ".sg" },
+	{ GBA_CONSOLE_NES,     "nes famicom fds",                    ".nes .unf .unif .fds" },
 };
 #define N_SYSTEMS ((int)(sizeof k_systems / sizeof k_systems[0]))
 

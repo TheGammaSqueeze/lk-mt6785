@@ -82,6 +82,12 @@ static volatile int s_gen_aspect = 0;		/* 0 Pixel, 1 Fit, 2 Stretch */
 static volatile int s_gen_filter = 0;		/* 0 Off, 1 Scanlines, 2 Grid, 3 Grid+ */
 static volatile int s_gen_region = 0;		/* 0 Auto, 1 USA, 2 Europe, 3 Japan */
 static volatile int s_gen_slot   = 0;		/* last-used Genesis manual save-state slot (0..2) */
+/* the NES (armNES): aspect and filter as the Genesis's (the same display path), region 0 Auto,
+ * 1 NTSC, 2 PAL, 3 Dendy, the manual save-state slot; kept in b[188] and b[189] */
+static volatile int s_nes_aspect = 0;
+static volatile int s_nes_filter = 0;
+static volatile int s_nes_region = 0;
+static volatile int s_nes_slot   = 0;
 static unsigned int rd32(const unsigned char *p);
 static void wr32(unsigned char *p, unsigned int v);
 /* Resume Game on Boot (default on): when a game is suspended with the power key the ROM name is
@@ -162,6 +168,7 @@ int  ayaneo_get_tz_quarters(void)    { return s_tz_q; }
 void ayaneo_set_tz_quarters(int q)   { s_tz_q = (signed char)(q < -48 ? -48 : q > 56 ? 56 : q); }
 int  ayaneo_get_clock12(void)        { return s_clock12; }
 void ayaneo_set_clock12(int on)      { s_clock12 = on ? 1 : 0; }
+static unsigned char s_cpu_manual[5];   /* defined below with its defaults */
 static void resume_fields_write(unsigned char *b)
 {
 	unsigned i;
@@ -176,6 +183,10 @@ static void resume_fields_write(unsigned char *b)
 	b[184] = (unsigned char)(s_menu_lang + 1u);   /* 0 = never written -> English */
 	b[185] = (unsigned char)(s_tz_q + 64);         /* 0 = never written -> UTC */
 	b[186] = (unsigned char)(s_clock12 + 1u);      /* 0 = never written -> 24 hour */
+	/* the NES's: bit 7 marks each byte written (0 on a card from before, which keeps the defaults) */
+	b[188] = (unsigned char)(0x80u | (unsigned)(s_nes_aspect & 7) | ((unsigned)(s_nes_filter & 7) << 3));
+	b[189] = (unsigned char)(0x80u | (unsigned)(s_nes_region & 3) | ((unsigned)(s_nes_slot & 3) << 2));
+	b[190] = (unsigned char)(0x80u | s_cpu_manual[4]);
 #if defined(KONKR_BLOCK)
 	b[187] = BLOCK_DEFAULTS_MARK;                  /* the Block's defaults are in (block_defaults_read) */
 #endif
@@ -185,10 +196,10 @@ static void resume_fields_write(unsigned char *b)
  * table's voltage for it), with one frame of run-ahead. A card written before that default
  * carries the older choices, so they are moved over once: b[187] says it has been done, and
  * whatever is chosen afterwards stays. */
-static unsigned char s_cpu_manual[4] = { 7, 7, 7, 7 };   /* manual CPU clock per core, grid index + 1, 0 = automatic; 1800 on a new card */
+static unsigned char s_cpu_manual[5] = { 7, 7, 7, 7, 7 };   /* manual CPU clock per core (GBA, GBC, SNES, Genesis, NES), grid index + 1, 0 = automatic; 1800 on a new card */
 static void block_defaults_read(const unsigned char *b, int len);
 #else
-static unsigned char s_cpu_manual[4] = { 5, 5, 5, 5 };   /* manual CPU clock per core, grid index + 1, 0 = automatic; 1400 (reads 1399) on a new card */
+static unsigned char s_cpu_manual[5] = { 5, 5, 5, 5, 5 };   /* manual CPU clock per core (GBA, GBC, SNES, Genesis, NES), grid index + 1, 0 = automatic; 1400 (reads 1399) on a new card */
 #endif
 static void resume_fields_read(const unsigned char *b, int len)
 {
@@ -201,6 +212,11 @@ static void resume_fields_read(const unsigned char *b, int len)
 	if (len >= 186 && b[185] >= 16u && b[185] <= 120u) s_tz_q = (signed char)((int)b[185] - 64);
 	if (len >= 187 && (b[186] == 1u || b[186] == 2u)) s_clock12 = (unsigned char)(b[186] - 1u);
 	if (len >= 176) { s_cpu_manual[0] = b[172] & 15; s_cpu_manual[1] = b[173] & 15; s_cpu_manual[2] = b[174] & 15; s_cpu_manual[3] = b[175] & 15; }
+	if (len >= 191) {	/* the NES's, where this card has them written */
+		if (b[188] & 0x80u) { s_nes_aspect = (b[188] & 7) > 5 ? 0 : (b[188] & 7); s_nes_filter = ((b[188] >> 3) & 7) > 5 ? 0 : ((b[188] >> 3) & 7); }
+		if (b[189] & 0x80u) { s_nes_region = b[189] & 3; s_nes_slot = ((b[189] >> 2) & 3) > 2 ? 0 : ((b[189] >> 2) & 3); }
+		if (b[190] & 0x80u) s_cpu_manual[4] = b[190] & 15;
+	}
 #if defined(KONKR_BLOCK)
 	block_defaults_read(b, len);
 #endif
@@ -289,7 +305,7 @@ static void block_defaults_read(const unsigned char *b, int len)
 {
 	if (len >= 188 && b[187] == BLOCK_DEFAULTS_MARK)
 		return;
-	s_cpu_manual[0] = s_cpu_manual[1] = s_cpu_manual[2] = s_cpu_manual[3] = 7;
+	s_cpu_manual[0] = s_cpu_manual[1] = s_cpu_manual[2] = s_cpu_manual[3] = s_cpu_manual[4] = 7;
 	ayaneo_set_preempt_frames(1);
 }
 #endif
@@ -307,6 +323,14 @@ int  ayaneo_get_gen_region(void)      { return s_gen_region; }
 void ayaneo_set_gen_region(int v)     { s_gen_region = (v < 0) ? 0 : (v > 3 ? 3 : v); }
 int  ayaneo_get_gen_slot(void)        { return s_gen_slot; }
 void ayaneo_set_gen_slot(int v)       { s_gen_slot = (v < 0) ? 0 : (v > 2 ? 2 : v); }
+int  ayaneo_get_nes_aspect(void)      { return s_nes_aspect; }
+void ayaneo_set_nes_aspect(int v)     { s_nes_aspect = (v < 0 || v > 5) ? 0 : v; }   /* as ayaneo_set_gen_aspect */
+int  ayaneo_get_nes_filter(void)      { return s_nes_filter; }
+void ayaneo_set_nes_filter(int v)     { s_nes_filter = (v < 0) ? 0 : (v > 5 ? 5 : v); }
+int  ayaneo_get_nes_region(void)      { return s_nes_region; }
+void ayaneo_set_nes_region(int v)     { s_nes_region = (v < 0) ? 0 : (v > 3 ? 3 : v); }
+int  ayaneo_get_nes_slot(void)        { return s_nes_slot; }
+void ayaneo_set_nes_slot(int v)       { s_nes_slot = (v < 0) ? 0 : (v > 2 ? 2 : v); }
 int  ayaneo_get_strobe(void)          { return s_strobe; }
 
 /* CPU clock policy. Cores: 0 GBA, 1 GBC, 2 SNES, 3 Genesis. Every core has its own ladder of
@@ -330,13 +354,13 @@ static unsigned cpu_step_up(unsigned mhz, int steps)
 }
 static int core_filter_heavy(int core)
 {
-	int f = core == 3 ? s_gen_filter : s_lcd_filter[core == 2 ? 0 : core == 0 ? 1 : 2];
+	int f = core == 4 ? s_nes_filter : core == 3 ? s_gen_filter : s_lcd_filter[core == 2 ? 0 : core == 0 ? 1 : 2];
 	return f >= 4;   /* 4 LCD1x, 5 LCD3x */
 }
-unsigned ayaneo_cpu_manual_get(int core) { return (core < 0 || core > 3 || !s_cpu_manual[core]) ? 0u : s_cpu_grid[(s_cpu_manual[core] - 1) & 7]; }
+unsigned ayaneo_cpu_manual_get(int core) { return (core < 0 || core > 4 || !s_cpu_manual[core]) ? 0u : s_cpu_grid[(s_cpu_manual[core] - 1) & 7]; }
 void ayaneo_cpu_manual_set(int core, unsigned mhz)
 {
-	if (core < 0 || core > 3) return;
+	if (core < 0 || core > 4) return;
 	s_cpu_manual[core] = mhz ? (unsigned char)(cpu_grid_idx(mhz) + 1) : 0;
 }
 unsigned ayaneo_core_clock(int core, unsigned tier_mhz, unsigned tier0_mhz)

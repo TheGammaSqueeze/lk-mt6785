@@ -232,5 +232,8 @@
  "About": "Sobre",
  "Version %s": "Versão %s",
  "Build %s, %s": "Compilação %s, %s",
- "Experimental software, provided as it is, with no warranty": "Software experimental, fornecido como está, sem garantia"
+ "Experimental software, provided as it is, with no warranty": "Software experimental, fornecido como está, sem garantia",
+ "Swap Disk Side": "Trocar lado do disco",
+ "Disk side changed": "Lado do disco trocado",
+ "Disk System games need disksys.rom in the bios folder": "Os jogos do Disk System precisam de disksys.rom na pasta bios"
 }

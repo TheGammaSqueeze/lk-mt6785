@@ -27,7 +27,7 @@ import fontsrc
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ART = os.path.join(HERE, "art")
-SYSTEMS = ["gb", "gbc", "gba", "snes", "genesis", "sms", "gg", "sg"]
+SYSTEMS = ["gb", "gbc", "gba", "snes", "genesis", "sms", "gg", "sg", "nes"]
 T_IMAGE, T_MASK, T_FONT, T_TEXT = 1, 2, 3, 4
 CHARS = [c for c in range(0x20, 0x7F)] + [c for c in range(0xA0, 0x100)] + [0x2022, 0x2026]
 

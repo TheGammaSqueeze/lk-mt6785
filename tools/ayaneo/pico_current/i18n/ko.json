@@ -229,5 +229,8 @@
  "About": "정보",
  "Version %s": "버전 %s",
  "Build %s, %s": "빌드 %s, %s",
- "Experimental software, provided as it is, with no warranty": "실험적인 소프트웨어로, 있는 그대로 제공되며 보증하지 않습니다"
+ "Experimental software, provided as it is, with no warranty": "실험적인 소프트웨어로, 있는 그대로 제공되며 보증하지 않습니다",
+ "Swap Disk Side": "디스크 면 바꾸기",
+ "Disk side changed": "디스크 면을 바꿨습니다",
+ "Disk System games need disksys.rom in the bios folder": "디스크 시스템 게임에는 bios 폴더에 disksys.rom이 필요합니다"
 }

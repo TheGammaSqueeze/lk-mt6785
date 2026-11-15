@@ -2330,6 +2330,7 @@ static int s_nrom;
 extern void gbc_sd_session(fat_vol *vol, const gba_rom_entry *rom);
 extern void snes_sd_session(fat_vol *vol, const gba_rom_entry *rom);   /* snes9x via boot_b blob */
 extern void genesis_sd_session(fat_vol *vol, const gba_rom_entry *rom); /* Genesis-Plus-GX (MD/SMS/GG/SG) blob */
+extern void nes_sd_session(fat_vol *vol, const gba_rom_entry *rom);     /* armNES (NES, Famicom, Disk System) blob */
 static int s_gpsp_dirty;
 
 /* ---- GBA core choice: armGBA-pico from the card, gpSP from boot_b ----
@@ -2503,7 +2504,7 @@ const void *gba_sd_first_genesis_rom(void)
 	int i;
 	if (!s_sd_mode) return 0;
 	for (i = 0; i < s_nrom; i++)
-		if (s_roms[i].type >= GBA_CONSOLE_GENESIS) return &s_roms[i];
+		if (s_roms[i].type >= GBA_CONSOLE_GENESIS && s_roms[i].type <= GBA_CONSOLE_SG) return &s_roms[i];
 	return 0;
 }
 /* oem romdirs: listed game i as "<type> <folder>/<name>", 0 past the end */
@@ -3326,7 +3327,12 @@ static int emu_thread(void *arg)
 						s_gpsp_dirty = 1;
 						continue;
 					}
-					if (s_roms[sel].type >= GBA_CONSOLE_GENESIS) {
+					if (s_roms[sel].type == GBA_CONSOLE_NES) {
+						nes_sd_session(&s_sd_vol, &s_roms[sel]);  /* NES, Famicom, Disk System via armNES */
+						s_gpsp_dirty = 1;
+						continue;
+					}
+					if (s_roms[sel].type >= GBA_CONSOLE_GENESIS && s_roms[sel].type <= GBA_CONSOLE_SG) {
 						genesis_sd_session(&s_sd_vol, &s_roms[sel]);  /* Sega MD/SMS/GG/SG via GPGX */
 						s_gpsp_dirty = 1;
 						continue;
@@ -3779,7 +3785,12 @@ static int emu_thread(void *arg)
 							s_gpsp_dirty = 1;
 							continue;
 						}
-						if (s_roms[sel].type >= GBA_CONSOLE_GENESIS) {
+						if (s_roms[sel].type == GBA_CONSOLE_NES) {
+							nes_sd_session(&s_sd_vol, &s_roms[sel]);
+							s_gpsp_dirty = 1;
+							continue;
+						}
+						if (s_roms[sel].type >= GBA_CONSOLE_GENESIS && s_roms[sel].type <= GBA_CONSOLE_SG) {
 							genesis_sd_session(&s_sd_vol, &s_roms[sel]);
 							s_gpsp_dirty = 1;
 							continue;

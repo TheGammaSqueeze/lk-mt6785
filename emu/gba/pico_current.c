@@ -104,7 +104,7 @@ extern void ayaneo_canvas_dims(unsigned int *cw, unsigned int *ch);
 #define CUR_COMP_MAX  0x00800000u
 #define CUR_MAGIC_Z   0x5A534E53u     /* "SNSZ", the deflate wrapper of every menu pack */
 
-#define NSYS          8               /* GBA_CONSOLE_GB .. GBA_CONSOLE_SG, the art in the same order */
+#define NSYS          9               /* GBA_CONSOLE_GB .. GBA_CONSOLE_NES, the art in the same order */
 #define NRECENT       10
 #define LIB_ROWS      7
 #define NTHEMES       8
@@ -631,7 +631,7 @@ static struct {
 
 static void art_load(void)
 {
-	static const char *sys[NSYS] = { "gb", "gbc", "gba", "snes", "genesis", "sms", "gg", "sg" };
+	static const char *sys[NSYS] = { "gb", "gbc", "gba", "snes", "genesis", "sms", "gg", "sg", "nes" };
 	static const char *rail[3] = { "games", "resume", "settings" };
 	static const char *setic[SET_N] = { "sun", "sound", "bfi", "display", "colour", "bios", "rsm", "power",
 					    "bios", "display", "mute", "rsm", "rsm", "rsm", "language", "clock",
@@ -683,7 +683,7 @@ static void art_load(void)
 /* ---- state ---------------------------------------------------------------------------------- */
 enum { TAB_GAMES, TAB_RESUME, TAB_SETTINGS };
 static const char *s_sysname[NSYS] = { "Game Boy", "Game Boy Color", "Game Boy Advance", "Super Nintendo",
-					"Mega Drive / Genesis", "Master System", "Game Gear", "SG-1000" };
+					"Mega Drive / Genesis", "Master System", "Game Gear", "SG-1000", "NES" };
 
 static struct {
 	int ready;                        /* the state below survives from one menu run to the next */
@@ -737,14 +737,19 @@ static void names_take(void)
 }
 static int roster_build(void)
 {
-	int i, t, k = 0;
+	int i, t, o, k = 0;
 	if (!s_names) s_names = (char (*)[128])pico_lib_alloc(PICO_GAMES_MAX * 128u);
 	if (!s_lib) s_lib = (unsigned short *)pico_lib_alloc(PICO_GAMES_MAX * 2u);
 	if (!s_res) s_res = (unsigned short *)pico_lib_alloc(PICO_GAMES_MAX * 2u);
 	if (!s_names || !s_lib || !s_res) return -1;
 	S.nsys = 0;
-	for (t = 0; t < NSYS; t++) {
+	for (o = 0; o < NSYS; o++) {
+		/* the systems in the carousel's order: Nintendo's by age, then Sega's (the NES's type number
+		 * came last, so the order is a table rather than the numbers) */
+		static const unsigned char k_order[NSYS] = { GBA_CONSOLE_GB, GBA_CONSOLE_GBC, GBA_CONSOLE_GBA,
+			GBA_CONSOLE_NES, GBA_CONSOLE_SNES, GBA_CONSOLE_GENESIS, GBA_CONSOLE_SMS, GBA_CONSOLE_GG, GBA_CONSOLE_SG };
 		int n = 0;
+		t = k_order[o];
 		for (i = 0; i < s_nrom; i++)
 			if (s_roms[i].type == t) s_lib[k + n++] = (unsigned short)i;
 		if (n) { S.systype[S.nsys] = t; S.syscount[S.nsys] = n; s_libofs[S.nsys] = k; S.nsys++; k += n; }
@@ -1499,7 +1504,7 @@ static const char *const k_kb[4] = { "ABCDEFGHIJ", "KLMNOPQRST", "UVWXYZ'&-.", "
 #define KB_ROWS 5                      /* four of keys, and Space / Delete / Clear */
 enum { KB_SPACE, KB_DEL, KB_CLEAR };
 static int kb_special(int c) { return c < 4 ? KB_SPACE : c < 7 ? KB_DEL : KB_CLEAR; }
-static const char *const k_short[NSYS] = { "GB", "GBC", "GBA", "SNES", "MD", "SMS", "GG", "SG" };
+static const char *const k_short[NSYS] = { "GB", "GBC", "GBA", "SNES", "MD", "SMS", "GG", "SG", "NES" };
 
 static char lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c; }
 /* where word w (n letters, lower case) is in name s, without case: -1 none, else 0 at the start,
@@ -1855,7 +1860,8 @@ static void launch_arm(void)
 }
 
 /* ---- a game that cannot start ---------------------------------------------------------------- */
-static void note_show(int err) { S.note_err = err; S.note_t = 4.5f; }
+volatile int g_dbg_launch_refused;   /* oem diag: why the menu last refused a game (RA_ERR_*) */
+static void note_show(int err) { S.note_err = err; S.note_t = 4.5f; g_dbg_launch_refused = err; }
 /* the game, or -1 with a note saying why it cannot start (its archive is looked into first) */
 static int launch_check(int rom)
 {

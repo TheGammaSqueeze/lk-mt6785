@@ -30,7 +30,8 @@ enum {
 	GBA_CONSOLE_GENESIS = 4,   /* /roms/genesis *.md/.gen/.bin/.smd - Genesis-Plus-GX (Mega Drive) */
 	GBA_CONSOLE_SMS     = 5,   /* /roms/sms     *.sms           - Genesis-Plus-GX (Master System) */
 	GBA_CONSOLE_GG      = 6,   /* /roms/gg      *.gg            - Genesis-Plus-GX (Game Gear) */
-	GBA_CONSOLE_SG      = 7    /* /roms/sg      *.sg            - Genesis-Plus-GX (SG-1000) */
+	GBA_CONSOLE_SG      = 7,   /* /roms/sg      *.sg            - Genesis-Plus-GX (SG-1000) */
+	GBA_CONSOLE_NES     = 8    /* /roms/nes     *.nes/.unf/.fds - armNES (NES, Famicom, Disk System) */
 };
 
 /* One ROM found on the card (name kept for display + save/state matching). */

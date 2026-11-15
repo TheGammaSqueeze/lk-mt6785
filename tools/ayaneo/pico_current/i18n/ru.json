@@ -233,5 +233,8 @@
  "About": "О системе",
  "Version %s": "Версия %s",
  "Build %s, %s": "Сборка %s, %s",
- "Experimental software, provided as it is, with no warranty": "Экспериментальное ПО, как есть, без гарантий"
+ "Experimental software, provided as it is, with no warranty": "Экспериментальное ПО, как есть, без гарантий",
+ "Swap Disk Side": "Сменить сторону диска",
+ "Disk side changed": "Сторона диска сменена",
+ "Disk System games need disksys.rom in the bios folder": "Для игр Disk System нужен файл disksys.rom в папке bios"
 }

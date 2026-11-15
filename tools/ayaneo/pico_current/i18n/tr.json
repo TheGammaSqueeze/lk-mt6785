@@ -229,5 +229,8 @@
  "About": "Hakkında",
  "Version %s": "Sürüm %s",
  "Build %s, %s": "Derleme %s, %s",
- "Experimental software, provided as it is, with no warranty": "Deneysel yazılım, olduğu gibi, garantisiz sunulur"
+ "Experimental software, provided as it is, with no warranty": "Deneysel yazılım, olduğu gibi, garantisiz sunulur",
+ "Swap Disk Side": "Disk yüzünü değiştir",
+ "Disk side changed": "Disk yüzü değiştirildi",
+ "Disk System games need disksys.rom in the bios folder": "Disk System oyunları bios klasöründe disksys.rom gerektirir"
 }

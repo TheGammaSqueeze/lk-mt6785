@@ -484,6 +484,8 @@ def main():
                     help="PNG registered as resource 'logo_gg' (Game Gear card badge)")
     ap.add_argument("--logo-sg", dest="logo_sg", default=None,
                     help="PNG registered as resource 'logo_sg' (SG-1000 card badge)")
+    ap.add_argument("--logo-nes", dest="logo_nes", default=None,
+                    help="PNG registered as resource 'logo_nes' (NES card badge)")
     ap.add_argument("--theme", dest="themes", action="append", default=[], metavar="NAME=DIR",
                     help="a menu theme, in list order: DIR/thumbnail.png (172x98, the Display page's "
                          "Theme row) and, except for the theme drawn by the asset tree itself, "
@@ -935,7 +937,8 @@ def main():
     for key, path in (("logo_gb", args.logo_gb), ("logo_gbc", args.logo_gbc),
                       ("logo_gba", args.logo_gba), ("logo_snes", args.logo_snes),
                       ("logo_genesis", args.logo_genesis), ("logo_sms", args.logo_sms),
-                      ("logo_gg", args.logo_gg), ("logo_sg", args.logo_sg)):
+                      ("logo_gg", args.logo_gg), ("logo_sg", args.logo_sg),
+                      ("logo_nes", args.logo_nes)):
         if path:
             lidx = add_image(path, tile=False)
             if lidx is not None:

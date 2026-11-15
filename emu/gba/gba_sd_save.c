@@ -15,7 +15,8 @@ extern void card_writer_flush(void) __attribute__((weak));
  * never found and its saves and states were keyed (and could collide) under the cut name. */
 static int is_rom_ext(const char *e)
 {
-	static const char *const known[] = { "gba", "gb", "gbc", "sfc", "smc", "md", "gen", "bin", "smd", "sms", "gg", "sg", 0 };
+	static const char *const known[] = { "gba", "gb", "gbc", "sfc", "smc", "md", "gen", "bin", "smd", "sms", "gg", "sg",
+					     "nes", "unf", "unif", "fds", 0 };
 	int i, j;
 	for (i = 0; known[i]; i++) {
 		for (j = 0; known[i][j] && e[j]; j++) {

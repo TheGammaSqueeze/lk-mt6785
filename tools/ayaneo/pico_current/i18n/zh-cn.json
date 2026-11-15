@@ -229,5 +229,8 @@
  "About": "关于",
  "Version %s": "版本 %s",
  "Build %s, %s": "构建 %s，%s",
- "Experimental software, provided as it is, with no warranty": "实验性软件，按原样提供，不提供任何担保"
+ "Experimental software, provided as it is, with no warranty": "实验性软件，按原样提供，不提供任何担保",
+ "Swap Disk Side": "切换磁盘面",
+ "Disk side changed": "已切换磁盘面",
+ "Disk System games need disksys.rom in the bios folder": "Disk System 游戏需要 bios 文件夹中的 disksys.rom"
 }

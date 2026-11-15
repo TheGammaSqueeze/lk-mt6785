@@ -10,8 +10,9 @@ packs and needs only Pillow. This step also needs NumPy and CairoSVG.
 
 <design dir> is the Current design package (fonts, platform logos, the GBA and GBC photos);
 <photos dir> holds the other hardware photos, with transparent backgrounds, as
-gb.png snes.png genesis.png mastersystem.png gamegear.png sg1000.png, and the SG-1000 mark
-as sg1000.svg (see CREDITS.md for where each comes from).
+gb.png snes.png genesis.png mastersystem.png gamegear.png sg1000.png nes.png, the SG-1000 mark
+as sg1000.svg and the NES mark as nes.svg (Slate's nes/images/logo.svg) (see CREDITS.md for
+where each comes from).
 
 Writes:
   art/hardware/<system>.png   the console photo, cropped to its pixels, at most 720 px wide
@@ -26,11 +27,11 @@ import cairosvg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ART = os.path.join(HERE, "art")
-SYSTEMS = ["gb", "gbc", "gba", "snes", "genesis", "sms", "gg", "sg"]
+SYSTEMS = ["gb", "gbc", "gba", "snes", "genesis", "sms", "gg", "sg", "nes"]
 DESIGN_LOGO = {"gb": "gb", "gbc": "gbc", "gba": "gba", "snes": "snes", "genesis": "genesis",
                "sms": "mastersystem", "gg": "gamegear"}
 PHOTO = {"gb": "gb.png", "snes": "snes.png", "genesis": "genesis.png", "sms": "mastersystem.png",
-         "gg": "gamegear.png", "sg": "sg1000.png"}
+         "gg": "gamegear.png", "sg": "sg1000.png", "nes": "nes.png"}
 
 
 def out(*p):
@@ -76,8 +77,8 @@ def mark_from_svg(svg_text, knockout_dark=False):
 
 def logos(design, photos):
     for s in SYSTEMS:
-        if s == "sg":
-            svg = open(os.path.join(photos, "sg1000.svg"), encoding="utf-8").read()
+        if s in ("sg", "nes"):
+            svg = open(os.path.join(photos, "sg1000.svg" if s == "sg" else "nes.svg"), encoding="utf-8").read()
             im = mark_from_svg(svg)
         elif s == "genesis":
             svg = open(os.path.join(design, "assets", "logos", "original", "genesis.svg"), encoding="utf-8").read()

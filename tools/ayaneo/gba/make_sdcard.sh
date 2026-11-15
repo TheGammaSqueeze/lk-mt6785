@@ -41,12 +41,13 @@ python3 tools/ayaneo/snes/pack_snes.py "$SNES_ASSETS" out/snes_pack.bin \
 	--logo-genesis tools/ayaneo/snes/logos/genesis.png \
 	--logo-sms     tools/ayaneo/snes/logos/sms.png \
 	--logo-gg      tools/ayaneo/snes/logos/gg.png \
-	--logo-sg      tools/ayaneo/snes/logos/sg.png
+	--logo-sg      tools/ayaneo/snes/logos/sg.png \
+	--logo-nes     tools/ayaneo/snes/logos/nes.png
 
 echo ">> Building the SD card template (out/sdcard)"
 CORE_ARGS=()
 for spec in armgba-pico:armGBA-pico gpsp-pico:gpsp-pico gambatte-pico:gambatte-pico \
-	    snes9x-pico:snes9x-pico genesis-plus-gx-pico:genesis-plus-gx-pico; do
+	    snes9x-pico:snes9x-pico genesis-plus-gx-pico:genesis-plus-gx-pico armnes-pico:armNES-pico; do
 	name="${spec%%:*}"; dir="${spec#*:}"
 	if [ -n "$CORE_REPOS" ]; then
 		repo="$CORE_REPOS/$dir"

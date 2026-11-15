@@ -222,6 +222,7 @@ extern int  ayaneo_get_gen_aspect(void); extern void ayaneo_set_gen_aspect(int v
 extern int  ayaneo_get_gen_filter(void); extern void ayaneo_set_gen_filter(int v);
 extern int  ayaneo_get_gen_region(void); extern void ayaneo_set_gen_region(int v);
 extern int  ayaneo_get_strobe(void);
+extern void ayaneo_set_strobe(int v);
 extern const char *ayaneo_strobe_name(int b);
 extern int  ayaneo_get_overdrive(void); extern void ayaneo_set_overdrive_level(int k);   /* software motion-trail overdrive (shared) */
 extern int  ayaneo_get_gen_slot(void);   extern void ayaneo_set_gen_slot(int v);

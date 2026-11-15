@@ -1156,6 +1156,21 @@
    "en": "Experimental software, provided as it is, with no warranty",
    "kind": "about",
    "note": "on the About page: GammaOS Pico is experimental and comes with no warranty"
+  },
+  {
+   "en": "Swap Disk Side",
+   "kind": "label",
+   "note": "in-game menu action for Famicom Disk System games: take the disk out and put the next side in"
+  },
+  {
+   "en": "Disk side changed",
+   "kind": "status",
+   "note": "short note shown after an action in the in-game menu: the other disk side is now in"
+  },
+  {
+   "en": "Disk System games need disksys.rom in the bios folder",
+   "kind": "about",
+   "note": "note shown along the bottom when a Famicom Disk System game cannot start: the BIOS file disksys.rom is not in the card's bios folder (keep disksys.rom and bios as they are)"
   }
  ]
 }

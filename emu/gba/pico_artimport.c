@@ -103,7 +103,7 @@ int pico_artimport_run(fat_vol *v, const gba_rom_entry *roms, int nrom)
 	out = work + WORK_SIZE;
 	file = out + OUT_SIZE;
 	/* the boxart folders beside the games, and GammaOS's own for each system */
-	for (i = 0; i < nrom + 8 && nd < MAX_DIRS; i++) {
+	for (i = 0; i < nrom + 9 && nd < MAX_DIRS; i++) {   /* the nine systems' home folders */
 		char dir[112];
 		if (i < nrom) gba_boxart_dir(&roms[i], dir, sizeof dir);
 		else if (gba_boxart_home_dir(i - nrom)) strcpy(dir, gba_boxart_home_dir(i - nrom));

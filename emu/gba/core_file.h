@@ -5,7 +5,7 @@
  *   u32 magic, u32 version, u32 entry (offset), u32 load_size (bytes in the file to copy),
  *   u32 total_span (load_size plus the BSS to zero).
  * The cores are built in their own repositories (armGBA-pico, gpsp-pico, gambatte-pico,
- * snes9x-pico, genesis-plus-gx-pico) and copied to /cores on the card.
+ * snes9x-pico, genesis-plus-gx-pico, armNES-pico) and copied to /cores on the card.
  */
 #ifndef CORE_FILE_H
 #define CORE_FILE_H
@@ -17,6 +17,7 @@
 #define CORE_PATH_GAMBATTE "/cores/gambatte-pico.blob"
 #define CORE_PATH_SNES9X   "/cores/snes9x-pico.blob"
 #define CORE_PATH_GENESIS  "/cores/genesis-plus-gx-pico.blob"
+#define CORE_PATH_NES      "/cores/armnes-pico.blob"
 
 enum {
 	CORE_FILE_OK = 0,

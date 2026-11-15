@@ -222,13 +222,17 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 	}
 	{
 		extern volatile unsigned int g_dbg_romload[4], g_dbg_aix[3];
-		snprintf(lbuf, sizeof lbuf, "romload: %u ms %u B arc %u err %d", g_dbg_romload[0], g_dbg_romload[1],
-			 g_dbg_romload[2], (int)g_dbg_romload[3]);
+		extern volatile int g_dbg_launch_refused;
+		snprintf(lbuf, sizeof lbuf, "romload: %u ms %u B arc %u err %d, last refused %d", g_dbg_romload[0], g_dbg_romload[1],
+			 g_dbg_romload[2], (int)g_dbg_romload[3], g_dbg_launch_refused);
 		fastboot_info(lbuf);
 		extern volatile unsigned int g_dbg_user_dirs;
 		snprintf(lbuf, sizeof lbuf, "archives: %u kept, %u read, index %u B; folders.txt %u", g_dbg_aix[0],
 			 g_dbg_aix[1], g_dbg_aix[2], g_dbg_user_dirs);
 		fastboot_info(lbuf);
+		{ extern unsigned int pico_lib_left(void);
+		  snprintf(lbuf, sizeof lbuf, "library memory: %u KB left", pico_lib_left() >> 10);
+		  fastboot_info(lbuf); }
 	}
 	{
 		extern volatile unsigned int g_dbg_artimp_ok, g_dbg_artimp_fail, g_dbg_artimp_ms;
@@ -1588,14 +1592,14 @@ static void cmd_oddark(const char *arg, void *data, unsigned sz)
 
 static void cmd_ra(const char *arg, void *data, unsigned sz)
 {
-	extern volatile unsigned int g_block_ra_n[4], g_block_ra_frames[4], g_block_ra_us[4], g_block_ra_max[4];
+	extern volatile unsigned int g_block_ra_n[5], g_block_ra_frames[5], g_block_ra_us[5], g_block_ra_max[5];
 	extern int ayaneo_get_preempt_frames(void);
-	static const char *const name[4] = { "GBA", "GBC", "SNES", "Genesis" };
+	static const char *const name[5] = { "GBA", "GBC", "SNES", "Genesis", "NES" };
 	int k;
 	(void)arg; (void)data; (void)sz;
 	snprintf(lbuf, sizeof lbuf, "ra: setting %d frame(s)", ayaneo_get_preempt_frames());
 	fastboot_info(lbuf);
-	for (k = 1; k < 4; k++) {
+	for (k = 1; k < 5; k++) {
 		unsigned int n = g_block_ra_n[k];
 		snprintf(lbuf, sizeof lbuf, "ra %s: n=%u ahead=%u avg=%uus max=%uus",
 			 name[k], n, g_block_ra_frames[k], n ? g_block_ra_us[k] / n : 0u, g_block_ra_max[k]);
@@ -1652,6 +1656,28 @@ static void cmd_stacktest(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 #endif
+
+/* `oem nes`: the NES session as it stands (nes_core_loader.c, nes_sd_run.c): the core's load from
+ * the card (core_file.h reason), the game's load, Disk System flags, frames, picture and sound */
+static void cmd_nes(const char *arg, void *data, unsigned sz)
+{
+	extern volatile unsigned g_nes_dbg_loaderr, g_nes_dbg_frames, g_nes_dbg_w, g_nes_dbg_h, g_nes_dbg_sr, g_nes_dbg_vfp;
+	extern volatile int g_nes_dbg_loadrc, g_nes_dbg_disk;
+	extern const char *core_file_error(int err);
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "nes: core %u (%s) load %d disk %d bios %d", g_nes_dbg_loaderr,
+		 core_file_error((int)g_nes_dbg_loaderr), g_nes_dbg_loadrc, g_nes_dbg_disk & 1, (g_nes_dbg_disk >> 1) & 1);
+	fastboot_info(lbuf);
+	{ extern volatile int g_nes_dbg_pf_cap;
+	  extern volatile unsigned g_nes_dbg_pf_us[3];
+	  snprintf(lbuf, sizeof lbuf, "nes: frames %u %ux%u %u Hz vfp %u ra cap %d", g_nes_dbg_frames,
+		   g_nes_dbg_w, g_nes_dbg_h, g_nes_dbg_sr, g_nes_dbg_vfp, g_nes_dbg_pf_cap);
+	  fastboot_info(lbuf);
+	  snprintf(lbuf, sizeof lbuf, "nes: ra frame %u us, ahead %u us, blit %u us",
+		   g_nes_dbg_pf_us[0], g_nes_dbg_pf_us[1], g_nes_dbg_pf_us[2]); }
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
 
 /* `oem mode`: which fastboot we are talking to. The same oem commands are registered in the
  * plain bootloader and in the emulator's USB channel, so a tool cannot tell them apart by
@@ -3283,7 +3309,8 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem shotstage", cmd_shotstage, 1, 0);   /* pack the frame for `upload` */
 	fastboot_register("upload", cmd_upload, 1, 0);              /* fastboot get_staged <file> */
 	fastboot_register("oem upstat", cmd_upstat, 1, 0);          /* dump the displayed frame (game buffer or fb), /step */
-	fastboot_register("oem mode", cmd_mode, 1, 0);          /* bootloader vs emulator channel, menu/game state */
+	fastboot_register("oem mode", cmd_mode, 1, 0);
+	fastboot_register("oem nes", cmd_nes, 1, 0);            /* the NES session: core, game, picture, sound */          /* bootloader vs emulator channel, menu/game state */
 	fastboot_register("oem vfp:", cmd_vfp, 1, 0);           /* set the DSI vertical front porch live */
 	fastboot_register("oem edges", cmd_edges, 1, 0);        /* measure display frame-end rate */
 	fastboot_register("oem latch", cmd_latch, 1, 0);        /* overlay buffer switches per second */

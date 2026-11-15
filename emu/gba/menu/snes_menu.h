@@ -217,7 +217,7 @@ typedef struct snes_menu_s {
 	/* Per-ROM console type (0=GB, 1=GBC, 2=GBA; indexed by game index) and the three
 	 * console-badge logos, drawn bottom-right of each card. gba_types=0 -> no badge. */
 	const unsigned char *gba_types;
-	const snes_img_entry *console_logo[8];   /* [GB/GBC/GBA/SNES/GENESIS/SMS/GG/SG] indexed by GBA_CONSOLE_* */
+	const snes_img_entry *console_logo[9];   /* [GB/GBC/GBA/SNES/GENESIS/SMS/GG/SG/NES] indexed by GBA_CONSOLE_* */
 	int launch;                         /* focused ROM index to launch, -1 = none */
 	int sysreset;                       /* set when "System Reset" is confirmed (-> boot OS) */
 	int pstart;                         /* prev-frame Start (edge detect for launch) */
@@ -241,7 +241,8 @@ void snes_menu_set_console_badges(snes_menu *m, const unsigned char *types,
 				  const snes_img_entry *gb, const snes_img_entry *gbc,
 				  const snes_img_entry *gba, const snes_img_entry *snes,
 				  const snes_img_entry *genesis, const snes_img_entry *sms,
-				  const snes_img_entry *gg, const snes_img_entry *sg);
+				  const snes_img_entry *gg, const snes_img_entry *sg,
+				  const snes_img_entry *nes);
 /* If A/Start launched a ROM, returns its index and clears the flag; else -1. */
 int snes_menu_take_launch(snes_menu *m);
 int snes_menu_take_sysreset(snes_menu *m);

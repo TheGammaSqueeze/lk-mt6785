@@ -233,5 +233,8 @@
  "About": "אודות",
  "Version %s": "גרסה %s",
  "Build %s, %s": "בנייה %s, %s",
- "Experimental software, provided as it is, with no warranty": "תוכנה ניסיונית, כפי שהיא, ללא אחריות"
+ "Experimental software, provided as it is, with no warranty": "תוכנה ניסיונית, כפי שהיא, ללא אחריות",
+ "Swap Disk Side": "החלפת צד דיסק",
+ "Disk side changed": "צד הדיסק הוחלף",
+ "Disk System games need disksys.rom in the bios folder": "משחקי Disk System צריכים את disksys.rom בתיקייה bios"
 }

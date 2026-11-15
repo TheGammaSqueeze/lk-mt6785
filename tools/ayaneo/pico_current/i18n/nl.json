@@ -232,5 +232,8 @@
  "About": "Over",
  "Version %s": "Versie %s",
  "Build %s, %s": "Build %s, %s",
- "Experimental software, provided as it is, with no warranty": "Experimentele software, zoals hij is, zonder garantie"
+ "Experimental software, provided as it is, with no warranty": "Experimentele software, zoals hij is, zonder garantie",
+ "Swap Disk Side": "Schijfkant wisselen",
+ "Disk side changed": "Schijfkant gewisseld",
+ "Disk System games need disksys.rom in the bios folder": "Disk System-spellen hebben disksys.rom in de map bios nodig"
 }

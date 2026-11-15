@@ -97,6 +97,7 @@ const char *rom_archive_error_text(int err)
 	case RA_ERR_TOOBIG:   return "This game is too large for this system";
 	case RA_ERR_HUGE:     return "This archive is too large to open";
 	case RA_ERR_SPLIT:    return "Archives split into parts are not supported";
+	case RA_ERR_NOBIOS:   return "Disk System games need disksys.rom in the bios folder";
 	default:              return "This game could not be started";
 	}
 }

@@ -510,15 +510,15 @@ void block_cpu_rail_restore(void)
 }
 
 /* ---- run-ahead, as it runs (oem ra) ----
- * Each core (1 GBC, 2 SNES, 3 Genesis; GBA has its own in oem diag) reports every frame that ran
+ * Each core (1 GBC, 2 SNES, 3 Genesis, 4 NES; GBA has its own in oem diag) reports every frame that ran
  * ahead: how many look-ahead frames, and the time of the save and those frames, the part run-ahead
  * adds to a frame. Read and cleared by oem ra. */
-volatile unsigned int g_block_ra_n[4], g_block_ra_frames[4], g_block_ra_us[4], g_block_ra_max[4];
+volatile unsigned int g_block_ra_n[5], g_block_ra_frames[5], g_block_ra_us[5], g_block_ra_max[5];
 void block_ra_note(int core, unsigned int frames, unsigned int t0_tick)
 {
 	extern unsigned int gpt4_get_current_tick(void);
 	unsigned int us = (gpt4_get_current_tick() - t0_tick) / 13u;
-	if (core < 0 || core > 3)
+	if (core < 0 || core > 4)
 		return;
 	g_block_ra_n[core]++;
 	g_block_ra_frames[core] += frames;

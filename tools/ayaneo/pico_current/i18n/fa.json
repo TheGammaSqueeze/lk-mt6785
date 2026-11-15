@@ -232,5 +232,8 @@
  "About": "درباره",
  "Version %s": "نسخه %s",
  "Build %s, %s": "ساخت %s، %s",
- "Experimental software, provided as it is, with no warranty": "نرم افزار آزمایشی، همان طور که هست، بدون هیچ ضمانتی"
+ "Experimental software, provided as it is, with no warranty": "نرم افزار آزمایشی، همان طور که هست، بدون هیچ ضمانتی",
+ "Swap Disk Side": "تعویض روی دیسک",
+ "Disk side changed": "روی دیسک عوض شد",
+ "Disk System games need disksys.rom in the bios folder": "بازی های Disk System به فایل disksys.rom در پوشه bios نیاز دارند"
 }

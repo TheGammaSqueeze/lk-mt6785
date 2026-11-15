@@ -13,3 +13,6 @@
 [submodule "cores/genesis-plus-gx-pico"]
 	path = cores/genesis-plus-gx-pico
 	url = ../genesis-plus-gx-pico.git
+[submodule "cores/armNES-pico"]
+	path = cores/armNES-pico
+	url = ../armNES-pico.git
