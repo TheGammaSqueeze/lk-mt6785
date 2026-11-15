@@ -1,6 +1,7 @@
 #!/bin/bash
-# Build + sign the Konkr Pocket Block LK (MT8786 on the mt6768 platform). This build boots the
-# stock Android 12 only: no GammaOS Pico flow yet.
+# Build + sign the Konkr Pocket Block LK (MT8786 on the mt6768 platform): GammaOS Pico from the
+# microSD card, and the stock Android 12 without it. The card template comes from
+# ./build_konkr_kpa.sh (one card for both consoles).
 #
 #   ./build_konkr_block.sh [clean]
 #

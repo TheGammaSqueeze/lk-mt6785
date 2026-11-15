@@ -12,7 +12,7 @@ set -e
 STOCK="$1"; LK="$2"; OUT="$3"
 [ -d "$STOCK" ] && [ -f "$LK" ] && [ -n "$OUT" ] || { sed -n 2,9p "$0"; exit 1; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SCATTER="$HERE/../release/kpa_scatter.py"
+SCATTER="$HERE/../release/lk_scatter.py"
 PRELOADER=preloader_m8695_bw01.bin
 
 sum16() { python3 -c "import sys; print('0x%04X' % (sum(open(sys.argv[1],'rb').read()) & 0xffff))" "$1"; }

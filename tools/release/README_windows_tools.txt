@@ -1,4 +1,4 @@
-GammaOS Pico for the Konkr Pocket Advance: the Windows install's tools
+GammaOS Pico for the @CONSOLE_NAME@: the Windows install's tools
 
 The GammaOS Pico bootloader is installed on Windows with SP Flash Tool v5. This package has the
 two things that needs, as MediaTek ships them, unchanged:
@@ -11,10 +11,10 @@ SP Flash Tool V6 does not work with the GammaOS Pico flash packages: use this v5
 
 1. Run "MediaTek USB driver/MTK Driver Setup.exe" once and let it install the driver. Windows
    may ask for permission; restart if it asks.
-2. Unzip the release's gammaos-pico-kpa-<version>-flash.zip as well.
+2. Unzip the release's gammaos-pico-@CONSOLE@-<version>-flash.zip as well.
 3. Open "SP Flash Tool v5.1924/flash_tool.exe" and follow the flash package's README.txt
-   (SP Flash Tool section): the Download tab, MT6785_Android_scatter.txt from spflash/gammaos/,
-   mode Download Only, only lk_a and lk_b ticked.
+   (SP Flash Tool section): the Download tab, @SCATTER@ from spflash/gammaos/,
+   mode Download Only, @TICKED@.
 
 The guides, with pictures: https://github.com/TheGammaSqueeze/GammaOSPico/wiki/Installing
 

@@ -1,8 +1,9 @@
 # GammaOS Pico
 
-GammaOS Pico is a retro handheld OS that lives in the bootloader of MediaTek MT6785 handhelds.
-It replaces only the LK bootloader and runs Game Boy, Game Boy Color, Game Boy Advance, SNES,
-Mega Drive / Genesis, Master System, Game Gear and SG-1000 games straight from a microSD card.
+GammaOS Pico is a retro handheld OS that lives in the bootloader of MediaTek handhelds (MT6785,
+MT8786). It replaces only the LK bootloader and runs Game Boy, Game Boy Color, Game Boy Advance,
+NES, Famicom Disk System, SNES, Mega Drive / Genesis, Master System, Game Gear and SG-1000 games
+straight from a microSD card.
 Take the card out and the console boots its stock Android as before.
 
 ![A game library](documentation/screenshots/library.png)
@@ -13,6 +14,10 @@ Supported consoles:
   [GammaOSPico releases page](https://github.com/TheGammaSqueeze/GammaOSPico/releases), with the
   [guides](https://github.com/TheGammaSqueeze/GammaOSPico/wiki); details in
   [documentation/konkr-pocket-advance.md](documentation/konkr-pocket-advance.md).
+- **Konkr Pocket Block** (MT8786, 960 x 720), from 1.0.2: the same system and card, built as
+  `./build_konkr_block.sh`, with its own release packages (`gammaos-pico-block-*`). It writes
+  only `lk_a`; SELECT + START + R1 at power on is its bootloader, and the side key opens the
+  in-game menu. Tilt and rumble are not driven on it yet.
 - **AYANEO Pocket Air Mini**: the original port of this LK, see
   [documentation/pocket-air-mini](documentation/pocket-air-mini/README.md).
 
@@ -194,7 +199,7 @@ X shows one system at a time; in a long carousel L / R jump from letter to lette
 
 Grab the latest [release](https://github.com/TheGammaSqueeze/GammaOSPico/releases) from GammaOSPico,
 where GammaOS Pico is published. The GammaOS Pico
-LK goes to `lk_a` and `lk_b`. **The way to install it is SP Flash Tool v5 (Windows; the release's
+LK goes to `lk_a` and `lk_b` on the Konkr Pocket Advance, `lk_a` on the Konkr Pocket Block. **The way to install it is SP Flash Tool v5 (Windows; the release's
 windows-tools package has it with MediaTek's USB driver, and V6 does not take the packages) or
 mtkclient (Linux):** both write to a stock console with a locked bootloader, and neither needs an unlock or
 wipes anything. fastboot is only for updates once GammaOS Pico is already installed, never for the
@@ -212,7 +217,8 @@ sized for the menu, and the PNG is deleted.
 git clone --recursive -b lk-gba-emu-sd-card-kpa https://github.com/TheGammaSqueeze/lk-mt6785.git
 cd lk-mt6785
 ./build_konkr_kpa.sh                    # out/lk_a_kpa_signed.img + out/sdcard/ (the card)
-tools/release/make_release_kpa.sh       # the two release zips in out/release/
+./build_konkr_block.sh                  # out/lk_a_block_signed.img (the Konkr Pocket Block)
+tools/release/make_release.sh           # both consoles' release zips in out/release/
 ```
 
 You need Linux, Python 3 with Pillow and numpy, `openssl`, and `arm-none-eabi-gcc`/`g++` for the
@@ -232,6 +238,7 @@ glue. They are submodules here under `cores/`:
 | [gambatte-pico](https://github.com/TheGammaSqueeze/gambatte-pico) | Game Boy, Game Boy Color |
 | [snes9x-pico](https://github.com/TheGammaSqueeze/snes9x-pico) | SNES |
 | [genesis-plus-gx-pico](https://github.com/TheGammaSqueeze/genesis-plus-gx-pico) | Mega Drive / Genesis, Master System, Game Gear, SG-1000 |
+| [armNES-pico](https://github.com/TheGammaSqueeze/armNES-pico) | NES, Famicom, Famicom Disk System (needs `bios/disksys.rom` for Disk System games) |
 
 ## Repository layout
 

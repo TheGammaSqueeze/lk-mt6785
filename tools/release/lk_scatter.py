@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Write an SP Flash Tool scatter for the Konkr Pocket Advance that downloads only the LK.
+"""Write an SP Flash Tool scatter for the Konkr Pocket Advance or Block that downloads only the LK.
 
-    kpa_scatter.py <stock scatter.txt|.xml> <out scatter> <lk image file name> [partition ...]
+    lk_scatter.py <stock scatter.txt|.xml> <out scatter> <lk image file name> [partition ...]
 
-From the stock BW03 scatter every partition is unticked with no file except the given LK
+From the console's stock scatter every partition is unticked with no file except the given LK
 partitions (default lk_a and lk_b), which get the LK file and are ticked. The preloader keeps its
 file name, unticked: SP Flash Tool reads its memory setup to connect, it is not written. The text
 scatter (for SP Flash Tool v5) also has a V2.2.0 config version, which v5 refuses, lowered to

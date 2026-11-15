@@ -1,9 +1,9 @@
 #!/bin/bash
-# The Windows install's tools for the Konkr Pocket Advance release, as MediaTek ships them:
+# The Windows install's tools for a console's GammaOS Pico release, as MediaTek ships them:
 # SP Flash Tool v5.1924 (the GammaOS Pico flash packages are for SP Flash Tool v5; V6 does not take
 # them) and MediaTek's USB driver installer (MediaTek SP Driver 5.23.07.02).
 #
-#   MTK_DRIVER=/path/to/MTK\ Driver\ Setup.exe tools/release/make_windows_tools_kpa.sh <out.zip>
+#   MTK_DRIVER=/path/to/MTK\ Driver\ Setup.exe tools/release/make_windows_tools.sh <kpa|block> <out.zip>
 #
 # SP Flash Tool is downloaded from spflashtool.com, the archive the tool itself names as its home,
 # and checked against a pinned sha256 before it is unpacked (the archive's password is the site's
@@ -12,7 +12,13 @@
 # (7zz) or unrar; SEVENZIP=/path/to/7zz picks one that is not on PATH.
 set -e
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-OUT="${1:?usage: MTK_DRIVER=<MTK Driver Setup.exe> $0 <out.zip>}"
+CONSOLE="${1:?usage: MTK_DRIVER=<MTK Driver Setup.exe> $0 <kpa|block> <out.zip>}"
+OUT="${2:?usage: MTK_DRIVER=<MTK Driver Setup.exe> $0 <kpa|block> <out.zip>}"
+case "$CONSOLE" in
+kpa)   NAME="Konkr Pocket Advance"; SCATTER=MT6785_Android_scatter.txt; TICKED="only lk_a and lk_b ticked" ;;
+block) NAME="Konkr Pocket Block"; SCATTER=MT6768_Android_scatter.txt; TICKED="only lk_a ticked" ;;
+*) echo "!! unknown console $CONSOLE (kpa or block)" >&2; exit 1 ;;
+esac
 case "$OUT" in /*) ;; *) OUT="$PWD/$OUT";; esac
 
 SPFT_URL=https://spflashtool.com/files/SP_Flash_Tool_v5.1924_Win.rar
@@ -39,14 +45,15 @@ fi
 if [ -n "$X" ]; then "$X" x -y -bd -p"$SPFT_PASS" -o"$W/x" "$RAR" > /dev/null
 else (mkdir -p "$W/x" && cd "$W/x" && unrar x -inul -p"$SPFT_PASS" "$RAR"); fi
 
-T="$W/gammaos-pico-kpa-windows-tools"
+T="$W/gammaos-pico-$CONSOLE-windows-tools"
 mkdir -p "$T/MediaTek USB driver"
 mv "$W/x/SP_Flash_Tool_v5.1924_Win" "$T/SP Flash Tool v5.1924"
 # the archive's Driver folder holds only links to a third-party file host; the installer itself is
 # given beside it instead
 rm -rf "$T/SP Flash Tool v5.1924/Driver"
 cp "$MTK_DRIVER" "$T/MediaTek USB driver/$DRV_NAME"
-cp "$ROOT/tools/release/README_windows_tools.txt" "$T/README.txt"
+sed "s/@CONSOLE_NAME@/$NAME/g; s/@CONSOLE@/$CONSOLE/g; s/@SCATTER@/$SCATTER/g; s/@TICKED@/$TICKED/g" \
+	"$ROOT/tools/release/README_windows_tools.txt" > "$T/README.txt"
 (cd "$T" && find . -type f ! -name SHA256SUMS | sort | sed 's|^\./||' | xargs -d '\n' sha256sum > SHA256SUMS)
 python3 "$ROOT/tools/release/det_zip.py" "$T" "$OUT"
 echo ">> $OUT ($(find "$T" -type f | wc -l) files)"
