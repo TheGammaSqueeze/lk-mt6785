@@ -44,8 +44,8 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
 #if defined(KONKR_BLOCK)
 /* Konkr Pocket Block: every button is a GPIO, active low (the board's gamepad and gpio-keys
  * nodes): A 4, B 5, X 3, Y 6, L1 14, R1 10, L2 15, R2 9, START 7, SELECT 24, the d-pad 25/27/28/26
- * (up/down/left/right), MODE 17 (the menu key here) */
-#define GPIO_AYA       17      /* return to the selector */
+ * (up/down/left/right), MODE 17; the menu key is the side key on GPIO 22 (the gpio-keys node's aya_a_key) */
+#define GPIO_AYA       22      /* return to the selector */
 #define GPIO_LB        14
 #define GPIO_RB        10
 #define GPIO_SELECT    24

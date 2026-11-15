@@ -41,8 +41,10 @@ extern void udelay(unsigned long usec);
 static unsigned int s_buttons_up_tick;
 void block_buttons_init(void)
 {
-	/* A 4, B 5, X 3, Y 6, L1 14, R1 10, START 7, SELECT 24, d-pad 25 27 28 26, MODE 17 */
-	static const unsigned char pins[] = { 4, 5, 3, 6, 14, 10, 7, 24, 25, 27, 28, 26, 17 };
+	/* A 4, B 5, X 3, Y 6, L1 14, R1 10, START 7, SELECT 24, d-pad 25 27 28 26, MODE 17, and the
+	 * gpio-keys node's four (volume down 16, back 19, the two side keys 22 and 21), which Android
+	 * sets up the same way (pull up, input) */
+	static const unsigned char pins[] = { 4, 5, 3, 6, 14, 10, 7, 24, 25, 27, 28, 26, 17, 16, 19, 22, 21 };
 	static int done;
 	unsigned int i;
 
@@ -580,9 +582,75 @@ void ayaneo_rumble_report(void (*line)(const char *))
 	if (line) line("rumble: the VMD5xx (i2c5 0x58, GPIO158) is not driven yet");
 }
 
-void ayaneo_led_enable(int mask) { (void)mask; }
-void ayaneo_charge_led(int r, int g, int b) { (void)r; (void)g; (void)b; }
-void ayaneo_charge_led_standby(void) { }
+/* ---- the power LED: an Awinic AW2023 at 0x45 on I2C5 ----
+ * The same register set as the Konkr Pocket Advance's AW2033, so the same use: the shared LED
+ * policy (gba_driver.c led_thread: charging, full, on battery, low; the latency light) calls these
+ * three. GCR1 keeps CHGDIS set, so the chip never lights red on its own from the charger pin.
+ * I2C5 also carries the rumble motor: every transfer takes the bus lock. */
+#include <platform/mt_i2c.h>
+#define BLOCK_LED_ADDR	0x45
+static mutex_t s_i2c5_mtx;
+static volatile int s_i2c5_up;
+void block_i2c5_lock(void)
+{
+	if (!s_i2c5_up) {
+		enter_critical_section();
+		if (!s_i2c5_up) { mutex_init(&s_i2c5_mtx); s_i2c5_up = 1; }
+		exit_critical_section();
+	}
+	mutex_acquire(&s_i2c5_mtx);
+}
+void block_i2c5_unlock(void) { mutex_release(&s_i2c5_mtx); }
+
+static int block_led_write(unsigned char reg, unsigned char val)
+{
+	mt_i2c i2c = {0};
+	unsigned char buf[2];
+	int r;
+	i2c.id = I2C5;
+	i2c.addr = BLOCK_LED_ADDR;
+	i2c.mode = FS_MODE;
+	i2c.speed = 400;
+	buf[0] = reg;
+	buf[1] = val;
+	block_i2c5_lock();
+	r = i2c_write(&i2c, buf, 2);
+	block_i2c5_unlock();
+	return r;
+}
+
+volatile int g_dbg_block_led_err;	/* transfers the LED did not take */
+void ayaneo_charge_led(int r, int g, int b)
+{
+	static int inited;
+	int err = 0;
+	if (!inited) {
+		err |= block_led_write(0x00, 0x55);	/* soft reset */
+		err |= block_led_write(0x01, 0x03);	/* GCR1: chip on, hardware charge indication off */
+		err |= block_led_write(0x31, 0x03);	/* channel 0 (red) current */
+		err |= block_led_write(0x32, 0x03);	/* channel 1 (green) */
+		err |= block_led_write(0x33, 0x03);	/* channel 2 (blue) */
+		inited = !err;
+	}
+	err |= block_led_write(0x34, (unsigned char)r);	/* PWM levels */
+	err |= block_led_write(0x35, (unsigned char)g);
+	err |= block_led_write(0x36, (unsigned char)b);
+	err |= block_led_write(0x30, (unsigned char)((r ? 1 : 0) | (g ? 2 : 0) | (b ? 4 : 0)));
+	if (err) g_dbg_block_led_err++;
+}
+
+/* the channel enable bits only, the levels as set before: the latency light's quick switch */
+void ayaneo_led_enable(int mask)
+{
+	if (block_led_write(0x30, (unsigned char)(mask & 7))) g_dbg_block_led_err++;
+}
+
+/* power off: dark, the chip in standby with the charge indication still off */
+void ayaneo_charge_led_standby(void)
+{
+	ayaneo_charge_led(0, 0, 0);
+	block_led_write(0x01, 0x02);	/* CHIPEN 0, CHGDIS 1 */
+}
 
 /* the backlight strobe (BFI): off */
 void disp_pwm_strobe_mode(int on) { (void)on; }

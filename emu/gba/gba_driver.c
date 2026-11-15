@@ -307,7 +307,7 @@ long gba_host_time(void)
 #if defined(KONKR_BLOCK)
 /* Konkr Pocket Block: every button is a GPIO, active low (the board's gamepad and gpio-keys
  * nodes): A 4, B 5, X 3, Y 6, L1 14, R1 10, L2 15, R2 9, START 7, SELECT 24, the d-pad 25/27/28/26
- * (up/down/left/right), MODE 17 (the menu key here). L2 and R2 toggle rewind and fast forward
+ * (up/down/left/right), MODE 17; the menu key is the side key on GPIO 22 (the gpio-keys node's aya_a_key). L2 and R2 toggle rewind and fast forward
  * (block_pico.c). */
 #define GPIO_UP		25
 #define GPIO_DOWN	27
@@ -322,7 +322,7 @@ long gba_host_time(void)
 #define GPIO_X		3	/* autofire B */
 #define GPIO_Y		6	/* autofire A */
 #define GPIO_R2		9	/* fast forward (a toggle, through ayaneo_joypad_ff_level) */
-#define GPIO_AYA	17	/* menu */
+#define GPIO_AYA	22	/* menu */
 #else
 #define GPIO_UP		89
 #define GPIO_DOWN	79
