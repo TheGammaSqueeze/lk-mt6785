@@ -1546,6 +1546,46 @@ static void cmd_bfilevel(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* `oem odg:N` on the Konkr Pocket Block: green's rising overdrive cap in 6 bit levels (odg:x = twice
+ * the 5 bit cap again) */
+static void cmd_odg(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_set_overdrive_capup_g(int g);
+	extern int ayaneo_get_overdrive_capup_g(void);
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == 'x') ayaneo_set_overdrive_capup_g(-1);
+	else if (*arg >= '0' && *arg <= '9') ayaneo_set_overdrive_capup_g((int)fb_dec(&arg));
+	snprintf(lbuf, sizeof lbuf, "odg: green rising cap %d", ayaneo_get_overdrive_capup_g());
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
+/* `oem oddark:CAP,LVL,GCAP` on the Konkr Pocket Block: the rising overdrive cap for dark origins
+ * (5 bit levels; oddark:x = off), the darkest origin level it covers, and green's own (6 bit levels,
+ * omitted = twice CAP) */
+static void cmd_oddark(const char *arg, void *data, unsigned sz)
+{
+	extern void ayaneo_set_overdrive_dark(int cap, int lvl, int gcap);
+	extern void ayaneo_get_overdrive_dark(int *cap, int *lvl, int *gcap);
+	int cap, lvl, gcap;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	ayaneo_get_overdrive_dark(&cap, &lvl, &gcap);
+	if (*arg == 'x') ayaneo_set_overdrive_dark(-1, lvl, -1);
+	else if (*arg >= '0' && *arg <= '9') {
+		cap = (int)fb_dec(&arg);
+		if (*arg == ',') lvl = (int)fb_dec(&arg);
+		gcap = -1;
+		if (*arg == ',') gcap = (int)fb_dec(&arg);
+		ayaneo_set_overdrive_dark(cap, lvl, gcap);
+	}
+	ayaneo_get_overdrive_dark(&cap, &lvl, &gcap);
+	snprintf(lbuf, sizeof lbuf, "oddark: cap %d (green %d) at origins up to %d", cap, gcap, lvl);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 static void cmd_ra(const char *arg, void *data, unsigned sz)
 {
 	extern volatile unsigned int g_block_ra_n[4], g_block_ra_frames[4], g_block_ra_us[4], g_block_ra_max[4];
@@ -3266,6 +3306,8 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem pwmscope", cmd_pwmscope, 1, 0);  /* the backlight PWM off its pad */
 	fastboot_register("oem bfi", cmd_bfi, 1, 0);            /* the strobe's window and state */
 	fastboot_register("oem bfilevel:", cmd_bfilevel, 1, 0); /* the Strobe setting, 0..3 */
+	fastboot_register("oem odg:", cmd_odg, 1, 0);           /* green's rising overdrive cap */
+	fastboot_register("oem oddark:", cmd_oddark, 1, 0);     /* the rising cap from dark origins */
 	fastboot_register("oem gauge", cmd_gauge, 1, 0);        /* the fuel gauge: vbat, current, the figure */
 	fastboot_register("oem cpupll:", cmd_cpupll, 1, 0);     /* which PLL clocks the LK's core */
 	fastboot_register("oem dr:", cmd_dr, 1, 0);             /* the MIPI rate, live */         /* the real refresh, and RDMA0's frame ends */   /* a null read: does the abort get recorded */ /* the SNES thread's stack window under load */

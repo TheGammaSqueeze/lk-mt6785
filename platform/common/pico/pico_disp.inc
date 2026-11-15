@@ -2047,6 +2047,21 @@ static volatile int   g_od_kuplo = 2; /* rising gain /16 at prev=WHITE (halo-fre
 static volatile int   g_od_gam   = 22;/* rising falloff shape: 16 linear, higher = faster collapse to kuplo */
 static volatile int   g_od_capup = 3; /* separate rising / falling caps (oem odcap); ayaneo_set_overdrive sets both */
 static volatile int   g_od_capdn = 3;
+#if defined(KONKR_BLOCK)
+/* The Konkr Pocket Block's panel sits between two whole caps on rising edges (3 smears, 4 halos):
+ * green, the 6 bit channel and most of the brightness, takes its own rising cap in its own finer
+ * levels, so it can land halfway (-1 = twice the 5 bit cap, as everywhere else) */
+static volatile int   g_od_capup_g = -1;
+/* and its slow rise is from dark: a pixel a dark object just left trails dark (the shadow behind the
+ * ? block in Super Mario World). A rise whose origin is at or under g_od_dark_lvl (5 bit levels)
+ * takes its own, larger cap: red and blue g_od_capup_dark (5 bit levels), green g_od_capup_dark_g (6
+ * bit levels; -1 = twice the 5 bit one). Brighter origins keep the caps above. Tuned by eye on the
+ * Block 2026-11-15: red and blue 5 then 7 cut the shadow with no halo (10 no better); green above 6
+ * haloed at any origin range, so green keeps its 6. */
+static volatile int   g_od_capup_dark = 7;
+static volatile int   g_od_dark_lvl = 8;
+static volatile int   g_od_capup_dark_g = 6;
+#endif
 static volatile int   g_od_head = 0;  /* rail headroom in 5-bit levels: the picture is mapped into [head, max-head]
                                        * so a transition to full black or full colour can still be overshot */
 static unsigned char  g_od_up5[32];   /* rising gain per 5-bit origin level (R/B) */
@@ -2115,6 +2130,28 @@ void ayaneo_set_overdrive_caps(int up, int dn, int head)
 	g_od_need_build = 1;   /* the per pair tables hold the caps and headroom */
 }
 void ayaneo_get_overdrive_caps(int *up, int *dn, int *head) { *up = g_od_capup; *dn = g_od_capdn; *head = g_od_head; }
+#if defined(KONKR_BLOCK)
+/* green's rising cap in 6 bit levels, -1 = twice the 5 bit one */
+void ayaneo_set_overdrive_capup_g(int g)
+{
+	if (g < -1) g = -1; else if (g > 63) g = 63;
+	g_od_capup_g = g;
+	g_od_need_build = 1;
+}
+int ayaneo_get_overdrive_capup_g(void) { return g_od_capup_g; }
+/* the rising cap from dark origins (5 bit levels, -1 off) and the darkest origin level it covers */
+void ayaneo_set_overdrive_dark(int cap, int lvl, int gcap)
+{
+	if (cap < -1) cap = -1; else if (cap > 31) cap = 31;
+	if (lvl < 0) lvl = 0; else if (lvl > 31) lvl = 31;
+	if (gcap < -1) gcap = -1; else if (gcap > 63) gcap = 63;
+	g_od_capup_dark = cap;
+	g_od_dark_lvl = lvl;
+	g_od_capup_dark_g = gcap;
+	g_od_need_build = 1;
+}
+void ayaneo_get_overdrive_dark(int *cap, int *lvl, int *gcap) { *cap = g_od_capup_dark; *lvl = g_od_dark_lvl; *gcap = g_od_capup_dark_g; }
+#endif
 
 void ayaneo_set_overdrive_curve(int kuphi, int kuplo, int gam)
 {
@@ -2131,6 +2168,11 @@ static inline int od_ch(int c, int p, int maxv, int scale, const unsigned char *
 	int ad = d < 0 ? -d : d;
 	int ov, r, k, cap, h = g_od_head * scale;
 	int cu = g_od_capup * scale, cd = g_od_capdn * scale;
+#if defined(KONKR_BLOCK)
+	if (scale == 2 && g_od_capup_g >= 0) cu = g_od_capup_g;
+	if (g_od_capup_dark >= 0 && p <= g_od_dark_lvl * scale)
+		cu = (scale == 2 && g_od_capup_dark_g >= 0) ? g_od_capup_dark_g : g_od_capup_dark * scale;
+#endif
 	k = (d > 0) ? uptab[p] : g_od_kdn;                     /* RISING gain from ORIGIN(prev); FALLING flat */
 	cap = (d > 0) ? cu : cd;
 	if (h) c = h + (c * (maxv - 2 * h) + maxv / 2) / maxv; /* headroom: the steady picture sits inside the rails */
