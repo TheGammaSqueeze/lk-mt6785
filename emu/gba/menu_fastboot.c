@@ -2866,11 +2866,13 @@ static void cmd_bfi(const char *arg, void *data, unsigned sz)
 		snprintf(lbuf, sizeof lbuf, "panel: hz=%u vdiv=%u fps=%u tmo=%u", ayaneo_dsi_refresh_milli(), g_vsync_div, g_pace_fps_milli, g_dbg_pace_timeouts);
 		fastboot_info(lbuf);
 #if defined(KONKR_BLOCK)
-		{ extern volatile unsigned int g_dbg_bfi_skips, g_dbg_bfi_off_max, g_dbg_bfi_off_200us;
-		  snprintf(lbuf, sizeof lbuf, "restarts: skipped a frame %u, worst %u us off, %u over 200 us",
-			   g_dbg_bfi_skips, g_dbg_bfi_off_max / 13u, g_dbg_bfi_off_200us);
+		{ extern volatile unsigned int g_dbg_bfi_skips, g_dbg_bfi_off_max, g_dbg_bfi_off_200us, g_dbg_bfi_left_out;
+		  snprintf(lbuf, sizeof lbuf, "restarts: worst %u us off, %u over 200 us, %u left out",
+			   g_dbg_bfi_off_max / 13u, g_dbg_bfi_off_200us, g_dbg_bfi_left_out);
 		  fastboot_info(lbuf);
-		  g_dbg_bfi_skips = g_dbg_bfi_off_max = g_dbg_bfi_off_200us = 0; }
+		  snprintf(lbuf, sizeof lbuf, "restarts: gaps over a frame %u", g_dbg_bfi_skips);
+		  fastboot_info(lbuf);
+		  g_dbg_bfi_skips = g_dbg_bfi_off_max = g_dbg_bfi_off_200us = g_dbg_bfi_left_out = 0; }
 #endif
 		{ extern volatile unsigned int g_dbg_ff_margin_us, g_dbg_ff_misses, g_dbg_ff_frames;
 		  snprintf(lbuf, sizeof lbuf, "ff: margin=%u us misses=%u frames=%u hud_fps=%d", g_dbg_ff_margin_us, g_dbg_ff_misses, g_dbg_ff_frames, g_hud_fps_read());

@@ -151,7 +151,10 @@ void disp_pwm_strobe_locked(unsigned int div, unsigned int duty)
  * the PWM counter (EN off->on) so the single pulse re-aligns to THIS frame = phase lock.
  * Cheap (2 register writes); no-op unless a locked strobe is active. */
 #if defined(PICO_BFI_DIV_FOLLOWS)
-volatile unsigned int g_dbg_bfi_skips, g_dbg_bfi_off_max, g_dbg_bfi_off_200us;
+volatile unsigned int g_dbg_bfi_skips, g_dbg_bfi_off_max, g_dbg_bfi_off_200us, g_dbg_bfi_left_out;
+#ifndef PICO_BFI_LATE_US
+#define PICO_BFI_LATE_US 150   /* a restart later than this past the frame edge is left out */
+#endif
 #endif
 void disp_pwm_strobe_tick(void)
 {
@@ -162,22 +165,34 @@ void disp_pwm_strobe_tick(void)
 	g_dbg_strobe_ticks++;
 	reg_base = pwm_get_reg_base(g_pwm_main_id);
 #if defined(PICO_BFI_DIV_FOLLOWS)
-	{	/* the restarts' timing (oem bfi): how far off a whole number of frames each landed, the
-		 * largest since the last read and the ones over 200 us, and the gaps that skipped a frame */
+	{	/* The restart is only worth making on time. The PWM period is a hair shorter than the frame,
+		 * so the PWM starts each pulse itself just before the frame ends; a restart that comes late
+		 * (the pacer saw the frame edge late: a load, a card write) cuts that pulse and starts it
+		 * again, a frame lit longer, a brighter flash (seen in Super Mario World with a restart
+		 * 1 ms late). So a restart more than PICO_BFI_LATE_US past where the frame edge falls (the
+		 * last restart made plus whole frames) is left out and the PWM runs on, drifting a few tens
+		 * of us a frame; an early one means the last was late, and is made; after 30 left out in a
+		 * row one is made whatever its timing. oem bfi reads the counts. */
 		extern unsigned int gpt4_get_current_tick(void);
 		extern unsigned int ayaneo_dsi_refresh_milli(void);
-		static unsigned int last;
+		static unsigned int ref, left_out;
 		unsigned int now = gpt4_get_current_tick(), mhz = ayaneo_dsi_refresh_milli();
-		if (last && mhz) {
+		if (ref && mhz) {
 			unsigned int frame = (unsigned int)(13000000000ull / mhz);   /* ticks of 13 MHz */
-			unsigned int gap = now - last, n = (gap + frame / 2u) / frame;
-			int off = (int)(gap - n * frame);
-			unsigned int a = (unsigned int)(off < 0 ? -off : off);
+			unsigned int gap = now - ref, n = (gap + frame / 2u) / frame;
+			int late = (int)(gap - n * frame);                          /* > 0: after the edge */
+			unsigned int a = (unsigned int)(late < 0 ? -late : late);
 			if (n >= 2u) g_dbg_bfi_skips++;
 			if (a > g_dbg_bfi_off_max) g_dbg_bfi_off_max = a;
 			if (a > 13u * 200u) g_dbg_bfi_off_200us++;
+			if (n >= 1u && late > 13 * PICO_BFI_LATE_US && left_out < 30u) {
+				left_out++;
+				g_dbg_bfi_left_out++;
+				return;                                             /* keep the pulse the PWM started */
+			}
 		}
-		last = now;
+		ref = now;
+		left_out = 0;
 	}
 	/* a board whose refresh changes with the core: the period follows it at the next frame */
 	if (g_bfi) {
