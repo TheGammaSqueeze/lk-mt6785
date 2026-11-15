@@ -323,6 +323,10 @@ long gba_host_time(void)
 #define GPIO_Y		6	/* autofire A */
 #define GPIO_R2		9	/* fast forward (a toggle, through ayaneo_joypad_ff_level) */
 #define GPIO_AYA	22	/* menu */
+/* The turbo buttons by the printed caps, as the Konkr Pocket Advance plays them: X (the upper,
+ * next to A) fires A, Y (the left, next to B) fires B. The Advance's X and Y pins are named the
+ * other way round from its caps, so there the same reads come out right with the names swapped. */
+#define TURBO_A_IS_X	1
 #else
 #define GPIO_UP		89
 #define GPIO_DOWN	79
@@ -401,8 +405,13 @@ unsigned ayaneo_gbc_pad_mask(void)
 	if (PRESSED(GPIO_DOWN))   m |= 0x80u;
 	/* X and Y are autofire B and A, at the GBA cores' rate */
 	if (((unsigned)current_time() * AUTOFIRE_HZ / 500u) & 1) {
+#if defined(TURBO_A_IS_X)
+		if (PRESSED(GPIO_Y)) m |= 0x02u;
+		if (PRESSED(GPIO_X)) m |= 0x01u;
+#else
 		if (PRESSED(GPIO_X)) m |= 0x02u;
 		if (PRESSED(GPIO_Y)) m |= 0x01u;
+#endif
 	}
 	{	/* left analog stick -> D-pad (JOY_UP=1 DOWN=2 LEFT=4 RIGHT=8) */
 		extern unsigned int ayaneo_joypad_dpad(void);
@@ -489,8 +498,13 @@ static void update_buttons(void)
 
 	af = ((unsigned)current_time() * AUTOFIRE_HZ / 500u) & 1;
 	if (af) {
+#if defined(TURBO_A_IS_X)
+		if (deb & RB_Y) m |= GB_B;	/* Y = autofire B */
+		if (deb & RB_X) m |= GB_A;	/* X = autofire A */
+#else
 		if (deb & RB_X) m |= GB_B;	/* X = autofire B */
 		if (deb & RB_Y) m |= GB_A;	/* Y = autofire A */
+#endif
 	}
 
 	/* soft-reset hotkey: Select+Start+L+R held ~0.5s restarts the current game.
