@@ -38,7 +38,8 @@
 #define AYANEO_SET_MAGIC	0x54455341u	/* "ASET" LE */
 #define AYANEO_SET_VER		10u	/* v10: software-overdrive strength (b+24 bits 19-22); ver<10 migrates to k=3 default */
 #if defined(KONKR_BLOCK)
-#define BLOCK_DEFAULTS_MARK	0xB1u	/* b[187]: the Konkr Pocket Block's defaults are in */
+#define BLOCK_DEFAULTS_CLOCK	0xB1u	/* b[187]: the Block's 1800 MHz and run-ahead defaults are in */
+#define BLOCK_DEFAULTS_MARK	0xB2u	/* b[187]: those and the BIOS intro off are in */
 #endif
 #define AYANEO_BL_MIN		16		/* keep the panel visible (never 0) */
 #define AYANEO_BL_MAX		255		/* mt65xx LCD level is 0-255 */
@@ -66,7 +67,11 @@ static volatile int s_lcd_filter[3] = { 0, 0, 0 };	/* per core [0]=SNES [1]=GBA 
 extern volatile int g_gba_aspect, g_gbc_aspect;
 static volatile int s_color_correct = 0;	/* CGB colour correction on/off */
 static volatile int s_dark_filter = 0;		/* 0-5 dark filter level */
+#if defined(KONKR_BLOCK)
+static volatile int s_skip_gba_intro = 1;	/* skip the GBA BIOS boot-logo intro (SD flow); the Block skips it by default */
+#else
 static volatile int s_skip_gba_intro = 0;	/* skip the GBA BIOS boot-logo intro (SD flow) */
+#endif
 static volatile int s_mute_bios = 0;		/* mute the LK boot chime (boot_audio_lk) */
 static volatile int s_mute_menu = 0;		/* mute the SNES menu music + SFX */
 static volatile int s_show_fps = 0;		/* in-game frame rate badge (every core) */
@@ -113,7 +118,11 @@ int  ayaneo_get_resume_on_open(void)   { return s_resume_on_open; }
 void ayaneo_set_resume_on_open(int v)  { s_resume_on_open = v ? 1 : 0; }
 /* BIOS Intro on Resume: the game Resume on Power On brings back comes after the BIOS intro, fading
  * in from the colour the intro ends on (unless Skip BIOS Intro) */
+#if defined(KONKR_BLOCK)
+static int  s_intro_on_resume = 0;   /* the Block resumes straight into the game by default */
+#else
 static int  s_intro_on_resume = 1;
+#endif
 int  ayaneo_get_intro_on_resume(void)  { return s_intro_on_resume; }
 void ayaneo_set_intro_on_resume(int v) { s_intro_on_resume = v ? 1 : 0; }
 void ayaneo_set_resume_on_boot(int v)  { s_resume_on_boot = v ? 1 : 0; }
@@ -300,13 +309,19 @@ void ayaneo_set_mute_menu(int v)    { s_mute_menu = v ? 1 : 0; }
 int ayaneo_get_preempt_frames(void)   { return s_preempt_frames; }
 void ayaneo_set_preempt_frames(int v) { s_preempt_frames = (v < 0) ? 0 : (v > 3 ? 3 : v); }
 #if defined(KONKR_BLOCK)
-/* a card from before the Block's defaults: 1800 MHz on every core, one frame of run-ahead */
+/* a card from before the Block's defaults gets each of them once, in the order they came: 1800 MHz
+ * on every core and one frame of run-ahead, then no BIOS intro on power on or before a resumed game */
 static void block_defaults_read(const unsigned char *b, int len)
 {
-	if (len >= 188 && b[187] == BLOCK_DEFAULTS_MARK)
+	unsigned char mark = len >= 188 ? b[187] : 0;
+	if (mark == BLOCK_DEFAULTS_MARK)
 		return;
-	s_cpu_manual[0] = s_cpu_manual[1] = s_cpu_manual[2] = s_cpu_manual[3] = s_cpu_manual[4] = 7;
-	ayaneo_set_preempt_frames(1);
+	if (mark != BLOCK_DEFAULTS_CLOCK) {
+		s_cpu_manual[0] = s_cpu_manual[1] = s_cpu_manual[2] = s_cpu_manual[3] = s_cpu_manual[4] = 7;
+		ayaneo_set_preempt_frames(1);
+	}
+	s_skip_gba_intro = 1;
+	s_intro_on_resume = 0;
 }
 #endif
 unsigned ayaneo_get_snes_opts(void)   { return s_snes_opts; }
