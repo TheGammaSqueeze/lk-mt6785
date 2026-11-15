@@ -19,11 +19,12 @@
 
 extern BOOT_ARGUMENT *g_boot_arg;
 
-#define REWIND_SCRATCH_END 0x63000000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
+#define REWIND_SCRATCH_END 0x63400000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
 					   * menu's box art slots (SNES_BOXART_PA, 20 MB, gba_snes_menu.c),
 					   * then the armGBA core's own window, the language pack, the card
-					   * writer's buffer, the emulator stacks, the box art import and
-					   * the game library (below); look above them all */
+					   * writer's buffer, the emulator stacks, the box art import,
+					   * the game library and the archive reader's memory (below);
+					   * look above them all */
 /* The armGBA core's heap: 128 MB of the island above the box art. The scratch's 62 MB held its ROM
  * buffer (32 MB), its recompiler's code buffer and what the recompiler notes on each block it
  * compiles, with a few MB to spare: a game that compiles a lot ran the heap out (the double speed,
@@ -54,6 +55,13 @@ extern BOOT_ARGUMENT *g_boot_arg;
  * games, which the LK heap and image could never hold. */
 #define LIBRARY_PA    0x61000000u
 #define LIBRARY_SIZE  0x02000000u
+/* The archive reader's memory (emu/gba/rom_archive.c): a ZIP's or 7z's own tables, the pieces read
+ * from the card and the LZMA model, used by the game list at power on and by every launch from an
+ * archive. A window of its own: taken from the library's memory it was there only when the list
+ * had opened an archive before the menu filled the rest, so with every archive found in the
+ * index a launch from one failed ("This archive is too large to open"). */
+#define ARCHIVE_PA    0x63000000u
+#define ARCHIVE_SIZE  0x00400000u
 #define REWIND_VA_LIMIT    0x100000000ULL /* LK is 32-bit VA (identity) - can only map phys < 4GB */
 #define REWIND_CAP         0x40000000u    /* per-block ceiling (1GB); the largest real island (mblk10
 					   * ~1022MB) sits just under it, so no block is actually capped -
@@ -219,6 +227,13 @@ void *ayaneo_library_arena(unsigned int *size)
 	static int s_state;
 	void *p = fixed_window(LIBRARY_PA, LIBRARY_SIZE, &s_state);
 	if (p && size) *size = LIBRARY_SIZE;
+	return p;
+}
+void *ayaneo_archive_arena(unsigned int *size)
+{
+	static int s_state;
+	void *p = fixed_window(ARCHIVE_PA, ARCHIVE_SIZE, &s_state);
+	if (p && size) *size = ARCHIVE_SIZE;
 	return p;
 }
 void *ayaneo_import_arena(unsigned int *size)

@@ -40,7 +40,12 @@ int ra_scratch_get(struct ra_scratch *s)
 	static uint8_t *buf;
 	if (!buf) {
 #ifdef __arm__
-		buf = (uint8_t *)pico_lib_alloc(RA_SCRATCH);
+		/* a window of its own (ayaneo_rewind.c), not the library's memory: there it was left
+		 * to whatever the menu had not taken, and a boot that opened no archive found none */
+		extern void *ayaneo_archive_arena(unsigned int *size);
+		unsigned int have = 0;
+		buf = (uint8_t *)ayaneo_archive_arena(&have);
+		if (have < RA_SCRATCH) buf = 0;
 #else
 		extern void *malloc(unsigned long);
 		buf = (uint8_t *)malloc(RA_SCRATCH);
