@@ -507,6 +507,24 @@ void block_cpu_rail_restore(void)
 	ayaneo_set_cpu_mhz(1175);
 }
 
+/* ---- run-ahead, as it runs (oem ra) ----
+ * Each core (1 GBC, 2 SNES, 3 Genesis; GBA has its own in oem diag) reports every frame that ran
+ * ahead: how many look-ahead frames, and the time of the save and those frames, the part run-ahead
+ * adds to a frame. Read and cleared by oem ra. */
+volatile unsigned int g_block_ra_n[4], g_block_ra_frames[4], g_block_ra_us[4], g_block_ra_max[4];
+void block_ra_note(int core, unsigned int frames, unsigned int t0_tick)
+{
+	extern unsigned int gpt4_get_current_tick(void);
+	unsigned int us = (gpt4_get_current_tick() - t0_tick) / 13u;
+	if (core < 0 || core > 3)
+		return;
+	g_block_ra_n[core]++;
+	g_block_ra_frames[core] += frames;
+	g_block_ra_us[core] += us;
+	if (us > g_block_ra_max[core])
+		g_block_ra_max[core] = us;
+}
+
 /* ---- the battery: its level from its voltage until the MT6358 gauge is read ---- */
 extern int get_bat_volt(int times);
 int ayaneo_gauge_pct(void)

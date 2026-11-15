@@ -1023,11 +1023,19 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 			if (pf > 0 && ahead_sz) {
 				int i;
+#if defined(KONKR_BLOCK)
+				extern unsigned int gpt4_get_current_tick(void);
+				extern void block_ra_note(int core, unsigned int frames, unsigned int t0_tick);
+				unsigned int ra_t0 = gpt4_get_current_tick();
+#endif
 				c->state_save(ahead);
 				for (i = 0; i < pf; i++) {
 					unsigned s2 = GBC_SND_MAX;
 					c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);   /* muted look-ahead */
 				}
+#if defined(KONKR_BLOCK)
+				block_ra_note(1, (unsigned int)pf, ra_t0);
+#endif
 				ayaneo_gb_show_frame(vbuf);          /* present the future frame */
 				c->state_load(ahead, ahead_sz);       /* rewind to the committed frame */
 			} else {

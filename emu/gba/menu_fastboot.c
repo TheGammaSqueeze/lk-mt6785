@@ -1506,6 +1506,27 @@ static void cmd_pr(const char *arg, void *data, unsigned sz)
  * (INT_STATUS bit 1, which nothing else clears), every edge timed for 5 s at the top priority on the
  * 13 MHz clock and fitted by least squares (a missed edge counted from the gap), next to what the
  * line constant says for the live porch and rate */
+/* `oem ra` on the Konkr Pocket Block: run-ahead as it runs in each core since the last read
+ * (GBC, SNES, Genesis; block_ra_note), then cleared */
+static void cmd_ra(const char *arg, void *data, unsigned sz)
+{
+	extern volatile unsigned int g_block_ra_n[4], g_block_ra_frames[4], g_block_ra_us[4], g_block_ra_max[4];
+	extern int ayaneo_get_preempt_frames(void);
+	static const char *const name[4] = { "GBA", "GBC", "SNES", "Genesis" };
+	int k;
+	(void)arg; (void)data; (void)sz;
+	snprintf(lbuf, sizeof lbuf, "ra: setting %d frame(s)", ayaneo_get_preempt_frames());
+	fastboot_info(lbuf);
+	for (k = 1; k < 4; k++) {
+		unsigned int n = g_block_ra_n[k];
+		snprintf(lbuf, sizeof lbuf, "ra %s: n=%u ahead=%u avg=%uus max=%uus",
+			 name[k], n, g_block_ra_frames[k], n ? g_block_ra_us[k] / n : 0u, g_block_ra_max[k]);
+		fastboot_info(lbuf);
+		g_block_ra_n[k] = g_block_ra_frames[k] = g_block_ra_us[k] = g_block_ra_max[k] = 0;
+	}
+	fastboot_okay("");
+}
+
 static void cmd_hz(const char *arg, void *data, unsigned sz)
 {
 	extern unsigned int block_measure_hz(unsigned int *edges, unsigned int *refreshes);
@@ -3203,6 +3224,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem vrate", cmd_vrate, 1, 0);
 	fastboot_register("oem pr:", cmd_pr, 1, 0);             /* PMIC registers, read only */
 	fastboot_register("oem hz", cmd_hz, 1, 0);              /* the panel's real refresh */
+	fastboot_register("oem ra", cmd_ra, 1, 0);              /* run-ahead per core, as it runs */
 	fastboot_register("oem cpupll:", cmd_cpupll, 1, 0);     /* which PLL clocks the LK's core */
 	fastboot_register("oem dr:", cmd_dr, 1, 0);             /* the MIPI rate, live */         /* the real refresh, and RDMA0's frame ends */   /* a null read: does the abort get recorded */ /* the SNES thread's stack window under load */
 #endif

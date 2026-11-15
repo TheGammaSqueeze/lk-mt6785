@@ -812,6 +812,11 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				 * do), so the next committed frame's audio is continuous. Without this the look-ahead
 				 * frames leave the blip pf frames ahead and every committed frame audibly steps =
 				 * the run-ahead crackle. Scoped to THIS pair only (the sound buffer is a single latch). */
+#if defined(KONKR_BLOCK)
+				extern unsigned int gpt4_get_current_tick(void);
+				extern void block_ra_note(int core, unsigned int frames, unsigned int t0_tick);
+				unsigned int ra_t0 = gpt4_get_current_tick();
+#endif
 				if (c->set_ra_fast) c->set_ra_fast(1);
 				if (c->state_save((void *)GEN_AHEAD_BUF, rw_payload) == 0) {
 					did_ra = 1;
@@ -820,6 +825,9 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 						c->run(&fr);
 					}
 					if (c->set_av_skip) c->set_av_skip(0, 0);
+#if defined(KONKR_BLOCK)
+					block_ra_note(3, (unsigned int)pf, ra_t0);
+#endif
 				}
 			}
 			/* present the future (or committed) frame. (Were the run-ahead save ever to fail with the

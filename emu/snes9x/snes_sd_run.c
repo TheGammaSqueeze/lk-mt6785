@@ -1033,6 +1033,11 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			int i, raw = 0;
 			void *hmark = 0;
 			if (pf > 0) {
+#if defined(KONKR_BLOCK)
+				extern unsigned int gpt4_get_current_tick(void);
+				extern void block_ra_note(int core, unsigned int frames, unsigned int t0_tick);
+				unsigned int ra_t0 = gpt4_get_current_tick();
+#endif
 				/* RAW run-ahead snapshot (state_save_ra) when the core offers it and the cart is
 				 * plain: an in-memory freeze with no big-endian byte-swap, no per-struct alloc, and
 				 * only the real SRAM extent - measured ~3-5x cheaper than the serialize. Returns 0
@@ -1054,6 +1059,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					c->run(&f);
 				}
 				if (c->set_av_skip) c->set_av_skip(0, 0);
+#if defined(KONKR_BLOCK)
+				block_ra_note(2, (unsigned int)pf, ra_t0);
+#endif
 			}
 			/* Uncapped presentation for BOTH fast-forward and Benchmark: present ~every 8th
 			 * frame and skip the blit entirely on the other 7. Benchmark previously blitted every
