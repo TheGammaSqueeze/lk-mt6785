@@ -4,9 +4,9 @@
  *
  * Here now: the L2 / R2 toggles (rewind, fast forward), the boot hooks around the emulator, the
  * CPU clock as CPU 0 really runs it, the battery level from its voltage, and the AUXADC read the
- * diagnostics use. Not yet driven, each reported as absent so the cores and menus leave it out:
- * the STK8321 accelerometer (i2c1 0x0F), the VMD5xx rumble motor (i2c5 0x58, GPIO158), the AW2023
- * LED (i2c5 0x45), the backlight strobe (BFI) and the MT6358 fuel gauge. The Block has no MT6360.
+ * diagnostics use, and the power LED. The accelerometer is block_accel.c, the rumble motor
+ * block_rumble.c, the fuel gauge block_gauge.c, the backlight strobe (BFI) ddp_pwm.c. The Block
+ * has no MT6360.
  */
 #include <platform/mt_typedefs.h>
 #include <kernel/thread.h>
@@ -585,27 +585,6 @@ int iio_read_channel_processed(int channel, int *val)
 		return -1;
 	*val = mv;
 	return 0;
-}
-
-/* ---- not driven yet: reported absent ---- */
-volatile unsigned int g_accel_flick = 900;
-volatile unsigned int g_accel_smooth = 64;
-int ayaneo_accel_start(void) { return -1; }
-void ayaneo_accel_stop(void) { }
-int ayaneo_accel_read(int v[3]) { v[0] = v[1] = v[2] = 0; return -1; }
-void ayaneo_accel_filter(int v[3]) { (void)v; }
-int ayaneo_accel_reg(unsigned reg, int val) { (void)reg; (void)val; return -1; }
-void ayaneo_accel_probe_report(void (*line)(const char *))
-{
-	if (line) line("accel: the STK8321 (i2c1 0x0F) is not driven yet");
-}
-
-void ayaneo_rumble_set(int on) { (void)on; }
-void ayaneo_rumble_stop(void) { ayaneo_rumble_set(0); }
-void ayaneo_rumble_pulse(unsigned ms) { (void)ms; }
-void ayaneo_rumble_report(void (*line)(const char *))
-{
-	if (line) line("rumble: the VMD5xx (i2c5 0x58, GPIO158) is not driven yet");
 }
 
 /* ---- the power LED: an Awinic AW2023 at 0x45 on I2C5 ----

@@ -113,8 +113,7 @@ static int acc_write(unsigned char reg, unsigned char val)
 
 /* ---- the chip ---- */
 static int s_awake;
-static long long s_lp[3];   /* ayaneo_accel_filter's average, counts << 8 */
-static int s_lp_primed;
+#include "../common/pico/pico_accel_filter.inc"
 
 /* 0 when the chip answered as an MC3416 and is now measuring */
 int ayaneo_accel_start(void)
@@ -152,40 +151,6 @@ int ayaneo_accel_read(int v[3])
 	v[1] = -rx;
 	v[2] = -rz;
 	return 0;
-}
-
-/* ---- smoothing for the cores that take the reading as a cartridge's sensor would ----
- * A reading is split in two: a slow part, an average that follows gravity as the console is
- * tilted, and a fast part, what is left (hand shake, the bump at the end of a quick tilt, a
- * flick). The fast part only passes beyond a dead zone, less the dead zone, so handling the
- * console no longer looks like a flick to a game while a deliberate flick still does. Both
- * settings can be changed live (oem accelf) while they are being tuned. */
-volatile unsigned int g_accel_smooth = 64;   /* weight of a new reading in the average, 256ths */
-volatile unsigned int g_accel_flick = 900;   /* the fast part's dead zone, counts (2048 to a g) */
-
-static int fast_part(int d)
-{
-	int z = (int)g_accel_flick;
-	if (d > z) return d - z;
-	if (d < -z) return d + z;
-	return 0;
-}
-
-void ayaneo_accel_filter(int v[3])
-{
-	unsigned a = g_accel_smooth;
-	int i;
-	if (a < 1) a = 1;
-	if (a > 256) a = 256;
-	for (i = 0; i < 3; i++) {
-		long long in = (long long)v[i] << 8;
-		int slow;
-		if (!s_lp_primed) s_lp[i] = in;
-		else s_lp[i] += (in - s_lp[i]) * (long long)a / 256;
-		slow = (int)(s_lp[i] / 256);
-		v[i] = slow + fast_part(v[i] - slow);
-	}
-	s_lp_primed = 1;
 }
 
 /* oem accel:RR[:VV] - one register of the chip, read, or written with the chip held in standby

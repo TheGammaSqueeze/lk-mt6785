@@ -619,9 +619,11 @@ OBJS += \
 	platform/common/pico/ayaneo_rewind.o \
 	platform/common/pico/ayaneo_rot_neon.o \
 	platform/common/pico/ayaneo_volume_input.o \
+	$(LOCAL_DIR)/block_accel.o \
 	$(LOCAL_DIR)/block_audio.o \
 	$(LOCAL_DIR)/block_gauge.o \
-	$(LOCAL_DIR)/block_pico.o
+	$(LOCAL_DIR)/block_pico.o \
+	$(LOCAL_DIR)/block_rumble.o
 $(BUILDDIR)/platform/common/pico/ayaneo_rot_neon.o: CFLAGS += -O2 -mfpu=neon -mfloat-abi=softfp
 include emu/pico.mk
 endif
