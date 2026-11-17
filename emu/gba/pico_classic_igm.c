@@ -186,6 +186,7 @@ int pico_classic_igm_on(void)
 	cui_use(&s_pk, s_set, &s_t);
 	ayaneo_canvas_dims(&W, &H);
 	pico_lang_load(W, H);   /* a game started straight from power on: the menu never read it */
+	cui_lang_fonts();        /* the language's letters the fonts lack */
 	return 1;
 }
 

@@ -109,6 +109,11 @@ const uint8_t *snes_img_pixels(const snes_pack *p, const snes_img_entry *im)
 	return im ? (const uint8_t *)(p->base + im->pixels) : 0;
 }
 
+const char *(*snes_text_hook)(const char *text);
+const char *(*snes_text_order)(const char *text);
+
+static const char *shown(const char *t) { return snes_text_hook && t ? snes_text_hook(t) : t; }
+
 const char *snes_text_locale(const snes_pack *p, int li, const char *key)
 {
 	const snes_str_table *t;
@@ -120,7 +125,7 @@ const char *snes_text_locale(const snes_pack *p, int li, const char *key)
 	pr = (const snes_str_pair *)(p->base + t->pairs);
 	for (i = 0; i < t->pair_count; i++)
 		if (streq(snes_str(p, pr[i].key), key))
-			return snes_str(p, pr[i].val);
+			return shown(snes_str(p, pr[i].val));
 	return key;
 }
 const char *snes_text(const snes_pack *p, const char *key)

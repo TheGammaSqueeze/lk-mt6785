@@ -25,7 +25,6 @@ extern void ayaneo_set_language(int l);
 
 #define LANG_MAGIC_Z  0x5A534E53u     /* "SNSZ" */
 #define LANG_MAGIC    0x52554350u     /* "PCUR" */
-#define LANG_COMP_MAX 0x00200000u     /* the compressed pack, staged at the arena's top */
 #define T_FONT        3
 #define T_STRINGS     5
 
@@ -76,7 +75,16 @@ static uint32_t fnv(const char *s, uint32_t h)
 	return h;
 }
 
+/* oem diag: the last load, its result and the size it asked for */
+volatile int g_dbg_lang_rc[4];
+static int lang_load(unsigned W, unsigned H);
 int pico_lang_load(unsigned W, unsigned H)
+{
+	int rc = lang_load(W, H);
+	g_dbg_lang_rc[0] = rc; g_dbg_lang_rc[1] = (int)W; g_dbg_lang_rc[2] = (int)H; g_dbg_lang_rc[3] = pico_lang();
+	return rc;
+}
+static int lang_load(unsigned W, unsigned H)
 {
 	char path[64];
 	fat_vol *v;
@@ -96,16 +104,18 @@ int pico_lang_load(unsigned W, unsigned H)
 	L.lang = -1; L.raw = 0; L.nent = 0; L.str = 0; L.nstr = 0; L.serial++;
 	arena = (uint8_t *)ayaneo_lang_arena(&size);
 	v = gba_sd_menu_vol();
-	if (!arena || size <= LANG_COMP_MAX || !v) return -1;
+	if (!arena || !v) return -1;
 	snprintf(path, sizeof path, "/gammaos/lang-%s-%ux%u.pack", k_code[lang], W, H);
 	if (fat_open(v, path, &f) != 0) return -1;
 	if (fat_read(&f, 0, hdr, 12) != 12) return -2;
 	memcpy(&rawn, hdr + 4, 4); memcpy(&compn, hdr + 8, 4);
-	if (*(const uint32_t *)hdr != LANG_MAGIC_Z || rawn < 16 || rawn > size - LANG_COMP_MAX || !compn ||
-	    compn > LANG_COMP_MAX || 12u + compn > f.size) return -2;
-	if (fat_read(&f, 12, arena + size - LANG_COMP_MAX, compn) != compn) return -3;
+	/* the pack unpacks at the arena's start from its file staged at the arena's top: the two
+	 * side by side, however the arena's room falls between them */
+	if (*(const uint32_t *)hdr != LANG_MAGIC_Z || rawn < 16 || !compn || rawn > size || compn > size - rawn ||
+	    12u + compn > f.size) return -2;
+	if (fat_read(&f, 12, arena + size - compn, compn) != compn) return -3;
 	zlen = compn;
-	if (zunzip(arena + size - LANG_COMP_MAX, &zlen, arena, (int)rawn, 0) != 0) return -4;
+	if (zunzip(arena + size - compn, &zlen, arena, (int)rawn, 0) != 0) return -4;
 	ph = (const uint32_t *)arena;
 	if (ph[0] != LANG_MAGIC || ph[1] != 1u || (ph[3] & 0xFFFFu) != W || (ph[3] >> 16) != H ||
 	    16u + ph[2] * sizeof(lang_entry) > rawn) return -5;

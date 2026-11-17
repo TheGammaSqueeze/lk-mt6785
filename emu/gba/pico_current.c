@@ -1707,6 +1707,7 @@ static void ui_compose(void)
 	static const char *hc_sr[2] = { "A", "B" }, *hl_sr[2] = { "Launch", "Keyboard" };
 	static const char *hc_lib3[4] = { "A", "Y", "LR", "B" }, *hl_lib3[4] = { "Launch", "Search", "A-Z", "Back" };
 	static const char *hc_res[2] = { "A", "LR" }, *hl_res[2] = { "Resume", "Section" };
+	static const char *hc_resx[3] = { "A", "X", "LR" }, *hl_resx[3] = { "Resume", "Link", "Section" };
 	static const char *hc_set[2] = { "A", "LR" }, *hl_set[2] = { "Select", "Section" };
 	static const char *hc_lib[3] = { "A", "Y", "B" }, *hl_lib[3] = { "Launch", "Search", "Back" };
 	static const char *hc_pick[2] = { "A", "B" }, *hl_pick[2] = { "Play this game", "Back" };
@@ -1744,7 +1745,11 @@ static void ui_compose(void)
 		} else
 #endif
 		if (S.tab == TAB_GAMES) hints(hc_games, hl_games, 3);
-		else if (S.tab == TAB_RESUME) { if (S.nrec) hints(hc_res, hl_res, 2); else hints(hc_res + 1, hl_res + 1, 1); }
+		else if (S.tab == TAB_RESUME) {
+			if (S.nrec && PICO_LINK) hints(hc_resx, hl_resx, 3);   /* X: play it together, send it */
+			else if (S.nrec) hints(hc_res, hl_res, 2);
+			else hints(hc_res + 1, hl_res + 1, 1);
+		}
 		else if (S.set_page) hints(hc_sub, hl_sub, 2);
 		else hints(hc_set, hl_set, 2);
 	}
@@ -2233,6 +2238,12 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 					if (up && S.res_sel > 0) S.res_sel--;
 					if (dn && S.res_sel < S.nrec - 1) S.res_sel++;
 					if ((ea || est) && S.nrec) rom = launch_check(S.rec[S.res_sel]);
+#if PICO_LINK
+					else if (ex && S.nrec) {	/* Link for this game, as from the library */
+						lui_open_home_game(s_roms, s_nrom, S.rec[S.res_sel]);
+						S.tab = TAB_LINK; S.dip = .6f;
+					}
+#endif
 				} else {
 					int dir = rt ? 1 : lf ? -1 : 0, it, flip = dir || ea;
 					if (up && S.set_sel > 0) S.set_sel--;

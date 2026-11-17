@@ -9,10 +9,15 @@ typedef struct { int year, mon, mday, hour, min, sec, wday; } pico_tm;   /* mon 
 
 long long pico_clock_utc(void);     /* seconds since 1970-01-01 UTC, from the RTC */
 long long pico_clock_local(void);   /* the same in the time zone set */
+/* 1 when the RTC holds a real time; 0 when it was never set or lost it (it reads earlier than
+ * this LK's build day): the time shown is then a stand-in, not to be recorded */
+int  pico_clock_is_set(void);
 int  pico_clock_zone(void);         /* the time zone, quarter hours east of UTC */
 void pico_clock_set_zone(int quarters);
 int  pico_clock_12h(void);
 void pico_clock_set_12h(int on);
+/* set the time from seconds since 1970 UTC (another console's, the network's): the RTC takes it */
+void pico_clock_set_utc(long long t);
 /* set the date and time of day in the time zone set: the RTC takes it (in UTC) */
 void pico_clock_set_local(const pico_tm *tm);
 

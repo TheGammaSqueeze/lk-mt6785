@@ -30,6 +30,8 @@
 #include "../../platform/common/pico/pico_xfer.h"
 #include "fat_ro.h"
 #include "gba_sd_save.h"
+#include "rom_archive.h"          /* RA_OK: a game's identity read */
+#include "pico_clock.h"           /* a clock that lost its time takes the other console's */
 
 /* The words: in the menus' language, or English for a theme whose fonts lack that language's
  * letters (lui_set_english) */
@@ -56,8 +58,10 @@ extern unsigned int gpt4_get_current_tick(void);
 static const gba_rom_entry *s_roms;
 static int s_nrom;
 static int s_screen = LUI_CLOSED, s_sel, s_rom = -1, s_act_rom = -1, s_act_host, s_act_system;
+static int s_same_rom = -1;		/* LUI_JOIN_CHOOSE: the host's game on this card */
 static int s_home_rom = -1;		/* Home's Play together row: that game (-1: no such row) */
 static int s_info_sent, s_bt_on;
+static int s_time_sent;			/* this link has had our time ('T') */
 static struct pico_peer s_peer[LUI_ROWS];
 static int s_npeer;
 static char s_line[160], s_sub[96], s_rowbuf[LUI_ROWS][48], s_valbuf[LUI_ROWS][64];
@@ -69,6 +73,11 @@ static int s_other_model;
 static int s_host_system = -1;
 static unsigned int s_host_size;
 static char s_host_name[128];
+/* a lockstep game's identity, its ROM's size and CRC-32 (gba_rom_identity): sent after the name in
+ * 'I' (an older console reads the name and stops at its end), so the same game is found zipped or
+ * plain, under another name, and a different version under the same name is told apart */
+static int s_my_id_ok, s_host_id_ok;
+static uint32_t s_my_usize, s_my_crc, s_host_usize, s_host_crc;
 
 const char *lui_model_name(int model)
 {
@@ -124,14 +133,16 @@ int lui_open(void) { return s_screen != LUI_CLOSED; }
 
 void lui_set_roms(const gba_rom_entry *roms, int nrom) { s_roms = roms; s_nrom = nrom; }
 
-/* the host's game crossing to a guest that lacks it (JOIN_NEED); on the guest, where it is:
- * 0 asking, 1 coming in, 2 written (the theme lists the card, then it joins) */
-static int s_host_sending, s_copy;
+/* No game is copied by itself: a console without the other's game is told to copy it with Send
+ * and Receive, which open on the notice about copying only games one owns (LUI_TERMS). */
+static int s_terms_send;		/* the notice is in front of: 1 Send, 0 Receive */
+static void receive_start(void);
 
 /* the guest's answer to the host's game ('J'): it plays, it cannot (the game is not on its card),
  * or it left (backed out of picking, closed the screen): the host then waits for another */
 enum { JOIN_PLAYS, JOIN_CANNOT, JOIN_LEFT,
-       JOIN_NEED };			/* a lockstep game this card lacks: the host sends its file first */
+       JOIN_NEED,			/* (older consoles: asked the host for its file; not sent now) */
+       JOIN_OTHER };			/* this card has another version of it under that name */
 static void join_reply(int answer, int rom);
 
 void lui_close(void)
@@ -264,14 +275,16 @@ void lui_open_send(const gba_rom_entry *roms, int nrom, int rom)
 		message(lt("Send"), lt("This game could not be read from the card."));
 		return;
 	}
-	s_screen = LUI_SEND_LIST;
-	s_sel = 0;
-	s_npeer = 0;
-	bt_on();
-	pico_link_want(3);			/* list the consoles nearby */
+	s_terms_send = 1;
+	s_screen = LUI_TERMS;			/* the notice first; A goes on to the list */
 }
 
 void lui_open_receive(void)
+{
+	s_terms_send = 0;
+	s_screen = LUI_TERMS;			/* the notice first; A starts waiting */
+}
+static void receive_start(void)
 {
 	s_screen = LUI_RECEIVE;
 	s_moved = s_kept = 0;
@@ -396,9 +409,13 @@ void lui_open_host(const gba_rom_entry *roms, int nrom, int rom)
 	s_rom = rom;
 	s_screen = LUI_HOST_WAIT;
 	s_info_sent = 0;
-	s_host_sending = 0;
 	s_game_theirs[0] = 0;			/* the guest says its game and console in its 'J' */
 	s_other_model = 0;
+	s_my_id_ok = 0;
+	if (!link_system(roms[rom].type)) {	/* both play this very game: say which, by its contents */
+		fat_vol v;
+		s_my_id_ok = gba_sd_mount(&v) == 0 && gba_rom_identity(&v, &roms[rom], &s_my_usize, &s_my_crc) == RA_OK;
+	}
 	bt_on();
 	pico_link_offer(PICO_OFFER_HOST, roms[rom].type);
 	pico_link_want(1);			/* wait for a link, advertising */
@@ -411,6 +428,7 @@ void lui_open_join(const gba_rom_entry *roms, int nrom)
 	s_sel = 0;
 	s_npeer = 0;
 	s_host_system = -1;
+	s_time_sent = 0;
 	bt_on();
 	pico_link_want(3);			/* list the consoles nearby */
 }
@@ -420,12 +438,59 @@ static int rom_named(int type, const char *name)
 {
 	int i;
 	for (i = 0; i < s_nrom; i++)
-		if (s_roms[i].type == type && !strcmp(s_roms[i].name, name))
+		if (s_roms[i].type == type && gba_sd_same_name(s_roms[i].name, name))
 			return i;
 	return -1;
 }
 
+/* this console's copy of the host's game: the one of that name when its identity agrees, else any
+ * of that system with the same identity (zipped, plain, renamed); -2 a game of that name whose
+ * contents differ (and none that agrees), -1 none. Without the host's identity, the name alone. */
+static int rom_for_host(void)
+{
+	int named = rom_named(s_host_system, s_host_name), i;
+	fat_vol v;
+	uint32_t size, crc;
+	if (!s_host_id_ok || gba_sd_mount(&v) != 0)
+		return named;
+	if (named >= 0 && gba_rom_identity(&v, &s_roms[named], &size, &crc) == RA_OK &&
+	    size == s_host_usize && crc == s_host_crc)
+		return named;
+	for (i = 0; i < s_nrom; i++) {
+		const gba_rom_entry *r = &s_roms[i];
+		if (i == named || r->type != s_host_system || (!r->arc && r->size != s_host_usize))
+			continue;
+		if (gba_rom_identity(&v, r, &size, &crc) == RA_OK && size == s_host_usize && crc == s_host_crc)
+			return i;
+	}
+	return named >= 0 ? -2 : -1;
+}
+
 void lui_set_painter(int (*paint)(const struct lui_progress *p)) { s_paint = paint; }
+
+/* The time, both ways once a link opens: 'T', seconds since 1970 UTC (8 bytes, little endian),
+ * then 1 when that clock holds a real time. A console whose clock was never set or lost its time
+ * (pico_clock_is_set) takes the other's: the delay over the link is well under a second. */
+static void time_send(void)
+{
+	unsigned char m[10];
+	unsigned long long t = (unsigned long long)pico_clock_utc();
+	unsigned int i;
+	m[0] = 'T';
+	for (i = 0; i < 8; i++) m[1 + i] = (unsigned char)(t >> (8 * i));
+	m[9] = (unsigned char)pico_clock_is_set();
+	if (pico_link_send(m, sizeof m) == 0)
+		s_time_sent = 1;
+}
+static void time_take(const unsigned char *m, int n)
+{
+	unsigned long long t = 0;
+	int i;
+	if (n < 10 || !m[9] || pico_clock_is_set())
+		return;
+	for (i = 7; i >= 0; i--) t = t << 8 | m[1 + i];
+	pico_clock_set_utc((long long)t);
+}
 
 /* a game's name as shown: the file name without its extension */
 static void shown_name(char *d, unsigned int cap, const char *name)
@@ -495,16 +560,6 @@ static int host_step(void)
 {
 	unsigned char m[200];
 	int n;
-	if (s_host_sending) {			/* the game going to the guest: the link is the transfer's */
-		const struct pico_xfer_status *st = pico_xfer_status();
-		if (pico_xfer_busy())
-			return LUI_ACT_NONE;
-		s_host_sending = 0;
-		if (st->state != XF_DONE && !(st->state == XF_FAILED && st->error == XFE_THERE)) {
-			message(lt("Play together"), xfer_why(st->error));
-			return LUI_ACT_NONE;
-		}				/* then the guest's 'J' as usual */
-	}
 	if (s_info_sent && pico_link_state() != PICO_LINK_OPEN) {
 		/* the friend left before playing (backed out, switched off): wait for the next one */
 		s_info_sent = 0;
@@ -514,16 +569,24 @@ static int host_step(void)
 	}
 	if (pico_link_state() == PICO_LINK_OPEN && !s_info_sent) {
 		const gba_rom_entry *r = &s_roms[s_rom];
+		time_send();	/* before the game: the guest moves on from its loop once it has that */
 		unsigned int k = 0;
 		m[0] = 'I';
 		m[1] = r->type;
 		put32(m + 2, r->size);
 		while (r->name[k] && k < 120u) k++;
 		memcpy(m + 6, r->name, k);
+		if (s_my_id_ok) {	/* the name's end, then the identity */
+			m[6 + k] = 0;
+			put32(m + 7 + k, s_my_usize);
+			put32(m + 11 + k, s_my_crc);
+			k += 9;
+		}
 		if (pico_link_send(m, 6 + k) == 0)
 			s_info_sent = 1;
 	}
 	while ((n = pico_link_recv(m, sizeof m)) > 0) {
+		if (m[0] == 'T') { time_take(m, n); continue; }
 		if (m[0] == 'J' && n >= 3) {
 			unsigned int k = (unsigned)n - 3u < sizeof s_game_theirs - 1 ? (unsigned)n - 3u : sizeof s_game_theirs - 1;
 			s_other_model = m[2];
@@ -536,16 +599,8 @@ static int host_step(void)
 				s_game_theirs[0] = 0;
 				continue;
 			}
-			if (m[1] == JOIN_NEED) {	/* the guest lacks the game: its file first */
-				if (!send_files(&s_roms[s_rom]) || pico_xfer_send(s_files[0]) != 0) {
-					message(lt("Play together"), lt("This game could not be read from the card."));
-					return LUI_ACT_NONE;
-				}
-				s_file_tick = gpt4_get_current_tick();
-				s_host_sending = 1;
-				return LUI_ACT_NONE;
-			}
-			message(lt("Play together"), lt("The other console does not have this game."));
+			message(lt("Play together"), m[1] == JOIN_OTHER ? lt("The other console has another version of this game.") :
+				lt("The other console does not have this game."));
 			return LUI_ACT_NONE;
 		}
 	}
@@ -556,22 +611,42 @@ static int guest_step(void)
 {
 	unsigned char m[200];
 	int n;
+	if (!s_time_sent && pico_link_state() == PICO_LINK_OPEN)
+		time_send();
 	while ((n = pico_link_recv(m, sizeof m)) > 0) {
+		if (m[0] == 'T') { time_take(m, n); continue; }
 		if (m[0] == 'I' && n >= 6 && s_host_system < 0) {
 			unsigned int k = (unsigned)n - 6u < sizeof s_host_name - 1 ? (unsigned)n - 6u : sizeof s_host_name - 1;
 			s_host_system = m[1];
 			s_host_size = get32(m + 2);
 			memcpy(s_host_name, m + 6, k);
 			s_host_name[k] = 0;
+			{	/* the identity after the name's end, when the host sent one */
+				unsigned int nl = (unsigned int)strlen(s_host_name);
+				s_host_id_ok = 6u + nl + 9u <= (unsigned int)n && m[6 + nl] == 0;
+				if (s_host_id_ok) { s_host_usize = get32(m + 7 + nl); s_host_crc = get32(m + 11 + nl); }
+			}
 			shown_name(s_game_theirs, sizeof s_game_theirs, s_host_name);
 			if (link_system(s_host_system)) {
+				/* the host's game when this card has it (the same contents), else the
+				 * guest's own game of that system from the library */
+				int rom = rom_for_host();
 				s_act_system = s_host_system;
-				return LUI_ACT_PICK;	/* the guest's own game of that system */
+				if (rom < 0) return LUI_ACT_PICK;
+				s_same_rom = rom;
+				s_sel = 0;
+				s_screen = LUI_JOIN_CHOOSE;
+				return LUI_ACT_NONE;
 			} else {
-				int rom = rom_named(s_host_system, s_host_name);
-				if (rom < 0) {		/* not on this card: offer to copy it first */
-					s_copy = 0;
-					s_screen = LUI_JOIN_COPY;
+				int rom = rom_for_host();
+				if (rom == -2) {	/* the same name, other contents: playing would part */
+					join_reply(JOIN_OTHER, -1);
+					message(lt("Join a game"), lt("This console has another version of this game."));
+					return LUI_ACT_NONE;
+				}
+				if (rom < 0) {		/* not on this card: copied by the player, if at all */
+					join_reply(JOIN_CANNOT, -1);
+					message(lt("Join a game"), lt("This game is not on this console. To play it together, copy it first: Link, Send on the other console and Link, Receive on this one."));
 					return LUI_ACT_NONE;
 				}
 				join_reply(JOIN_PLAYS, rom);
@@ -597,61 +672,6 @@ void lui_picked(int rom)
 	launch(rom, 0);
 }
 
-/* the guest without the host's lockstep game: A copies it (it stays on this card, as Send would
- * leave it), the theme lists the card again, then it joins as usual */
-static int copy_step(unsigned int e)
-{
-	const struct pico_xfer_status *st = pico_xfer_status();
-	if (e & LUI_B) {			/* no: the host is told, nothing half written */
-		if (pico_xfer_busy())
-			pico_xfer_cancel();
-		join_reply(JOIN_LEFT, -1);
-		bt_off();
-		s_screen = LUI_CLOSED;
-		return LUI_ACT_CLOSE;
-	}
-	if (s_copy == 0) {
-		if (pico_link_state() != PICO_LINK_OPEN) {
-			message(lt("Join a game"), xfer_why(XFE_GONE));
-			return LUI_ACT_NONE;
-		}
-		if (e & LUI_A) {
-			s_file_tick = gpt4_get_current_tick();
-			if (pico_xfer_receive(1) != 0) {
-				message(lt("Join a game"), xfer_why(XFE_LINK));
-				return LUI_ACT_NONE;
-			}
-			join_reply(JOIN_NEED, -1);
-			s_copy = 1;
-		}
-		return LUI_ACT_NONE;
-	}
-	if (s_copy == 1) {
-		if (pico_xfer_busy())
-			return LUI_ACT_NONE;
-		if (st->state != XF_DONE && !(st->state == XF_FAILED && st->error == XFE_THERE)) {
-			join_reply(JOIN_LEFT, -1);
-			message(lt("Join a game"), xfer_why(st->error));
-			return LUI_ACT_NONE;
-		}
-		s_copy = 2;
-		return LUI_ACT_RELIST;		/* the theme lists the card, then lui_set_roms */
-	}
-	{	/* listed again: the game is here now */
-		int rom = rom_named(s_host_system, s_host_name);
-		if (pico_link_state() != PICO_LINK_OPEN) {
-			message(lt("Join a game"), xfer_why(XFE_GONE));
-			return LUI_ACT_NONE;
-		}
-		if (rom < 0) {
-			join_reply(JOIN_CANNOT, -1);
-			message(lt("Join a game"), lt("The game was copied but is not in the library."));
-			return LUI_ACT_NONE;
-		}
-		join_reply(JOIN_PLAYS, rom);
-		return launch(rom, 0);
-	}
-}
 
 int lui_input(unsigned int e)
 {
@@ -701,6 +721,23 @@ int lui_input(unsigned int e)
 			return LUI_ACT_NONE;
 		}
 		return guest_step();
+	case LUI_JOIN_CHOOSE:	/* the same game, or another of the system from the library */
+		if (e & LUI_UP) s_sel = s_sel ? 0 : 1;
+		if (e & LUI_DOWN) s_sel = s_sel ? 0 : 1;
+		if (e & LUI_B) { join_reply(JOIN_LEFT, -1); bt_off(); s_screen = LUI_CLOSED; return LUI_ACT_CLOSE; }
+		if (pico_link_state() != PICO_LINK_OPEN) {
+			message(lt("Join a game"), lt("The other console could not be reached."));
+			return LUI_ACT_NONE;
+		}
+		if (e & LUI_A) {
+			if (s_sel == 0) {
+				join_reply(JOIN_PLAYS, s_same_rom);
+				return launch(s_same_rom, 0);
+			}
+			s_screen = LUI_JOIN_WAIT;	/* picking: lui_picked answers */
+			return LUI_ACT_PICK;
+		}
+		return LUI_ACT_NONE;
 	case LUI_SEND_LIST: {
 		struct pico_peer all[LUI_ROWS];
 		int i, n = pico_link_peers(all, LUI_ROWS);
@@ -723,8 +760,19 @@ int lui_input(unsigned int e)
 	}
 	case LUI_SEND_RUN:
 		return send_step(e);
-	case LUI_JOIN_COPY:
-		return copy_step(e);
+	case LUI_TERMS:
+		if (e & LUI_B) { s_screen = LUI_CLOSED; return LUI_ACT_CLOSE; }
+		if (e & LUI_A) {	/* accepted: on to Send or Receive */
+			if (s_terms_send) {
+				s_screen = LUI_SEND_LIST;
+				s_sel = 0;
+				s_npeer = 0;
+				bt_on();
+				pico_link_want(3);	/* list the consoles nearby */
+			} else
+				receive_start();
+		}
+		return LUI_ACT_NONE;
 	case LUI_RECEIVE:
 		return receive_step(e);
 	case LUI_MESSAGE:
@@ -769,8 +817,6 @@ void lui_view(struct lui_view *v)
 		v->subtitle = s_rom >= 0 ? s_roms[s_rom].uname : NULL;
 		v->status = pico_link_state() == PICO_LINK_OPEN ? lt("A friend joined. Starting...")
 							       : lt("Waiting for a friend to join...");
-		if (s_host_sending)
-			xfer_line(v, lt("Copying the game to the other console"));
 		v->busy = 1;
 		v->nhints = 1;
 		v->hint_code[0] = "B"; v->hint_label[0] = lt("Cancel");
@@ -798,6 +844,19 @@ void lui_view(struct lui_view *v)
 		v->busy = 1;
 		v->nhints = 1;
 		v->hint_code[0] = "B"; v->hint_label[0] = lt("Cancel");
+		break;
+	case LUI_JOIN_CHOOSE:
+		v->title = lt("Join a game");
+		v->subtitle = s_game_theirs;
+		v->rows[0] = s_roms[s_same_rom].uname[0] ? s_roms[s_same_rom].uname : s_roms[s_same_rom].name;
+		v->values[0] = lt("Same game");
+		v->rows[1] = lt("Choose another game");
+		v->nrows = 2;
+		v->sel = s_sel;
+		v->status = lt("Play the game the other console plays, or another game to link with it.");
+		v->nhints = 2;
+		v->hint_code[0] = "A"; v->hint_label[0] = lt("OK");
+		v->hint_code[1] = "B"; v->hint_label[1] = lt("Back");
 		break;
 	case LUI_SEND_LIST:
 		v->title = lt("Send");
@@ -846,24 +905,12 @@ void lui_view(struct lui_view *v)
 		v->hint_code[0] = "B"; v->hint_label[0] = lt(s_screen == LUI_SEND_RUN ? "Cancel" : "Close");
 		break;
 	}
-	case LUI_JOIN_COPY:
-		v->title = lt("Join a game");
-		v->subtitle = s_game_theirs;
-		v->busy = s_copy != 0;
-		if (s_copy == 0) {
-			char a[16];
-			size_text(a, sizeof a, s_host_size);
-			snprintf(s_line, sizeof s_line, lt("This game is not on this console. Copy it from the other one (%s)? It stays on this card."), a);
-			v->status = s_line;
-			v->nhints = 2;
-			v->hint_code[0] = "A"; v->hint_label[0] = lt("Copy");
-			v->hint_code[1] = "B"; v->hint_label[1] = lt("Cancel");
-			break;
-		}
-		if (s_copy == 1) xfer_line(v, lt("Copying the game"));
-		else v->status = lt("Starting...");
-		v->nhints = 1;
-		v->hint_code[0] = "B"; v->hint_label[0] = lt("Cancel");
+	case LUI_TERMS:
+		v->title = lt(s_terms_send ? "Send" : "Receive");
+		v->status = lt("Only copy games you own. Copying a game you do not own may be against the law where you live. You copy at your own risk.");
+		v->nhints = 2;
+		v->hint_code[0] = "A"; v->hint_label[0] = lt("Accept");
+		v->hint_code[1] = "B"; v->hint_label[1] = lt("Back");
 		break;
 	case LUI_MESSAGE:
 		v->title = s_sub;

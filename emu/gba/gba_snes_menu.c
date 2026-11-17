@@ -35,6 +35,9 @@
 #include "pico_link_ui.h"
 #include "pico_classic_igm.h"       /* the in-game menu in this theme's look */
 #include "pico_classic_set.h"       /* the menubar's pages: Link, Display, Settings, Language, System */
+#include "pico_classic_ui.h"        /* the language's letters for the menu's fonts */
+#include "pico_state_shot.h"         /* the states' pictures and times, for the Suspend Point List */
+#include "pico_clock.h"             /* when a state was made, in local time */
 #else
 #define PICO_LINK 0
 #define link_busy_now() 0
@@ -394,12 +397,18 @@ static void menu_av_draw(unsigned int *fb, unsigned int pitch, int W, int H)
  * are not read again on the way back. */
 #define SNES_BOXART_PA   0x56000000u
 #define SNES_BOXART_SLOT 0x25000u    /* bytes per tile slot (>= 224*224*3) */
-#define SNES_BOXART_CAP  128         /* 128 * 0x25000 = 0x1280000 */
+#define SNES_BOXART_CAP  126         /* 126 * 0x25000 = 0x123C000 */
 #define SNES_BOXART_MAP  0x01400000u /* the mapping: 20 MB, whole 2 MB sections */
+/* The Suspend Point List's four pictures (160 x 120 at most, RGB565 + alpha for the renderer, 57.6 KB
+ * each) and the one being read after them: two slots' room past the art, theirs alone (the deflate
+ * staging they first used is also the Link screen's backdrop, which reached over them). Read again
+ * each time the list opens. */
+#define SNES_POINTS_PA        (SNES_BOXART_PA + SNES_BOXART_CAP * SNES_BOXART_SLOT)
+#define SNES_POINTS_ROOM      (2u * SNES_BOXART_SLOT)
 /* a box art file is read here before it is spread into its slot: the rest of the mapping past the
  * slots, which nothing else uses, so the art can load while the BIOS intro runs a core */
-#define SNES_BOXART_STAGE     (SNES_BOXART_PA + SNES_BOXART_CAP * SNES_BOXART_SLOT)
-#define SNES_BOXART_STAGE_MAX (SNES_BOXART_MAP - SNES_BOXART_CAP * SNES_BOXART_SLOT)
+#define SNES_BOXART_STAGE     (SNES_POINTS_PA + SNES_POINTS_ROOM)
+#define SNES_BOXART_STAGE_MAX (SNES_BOXART_MAP - SNES_BOXART_CAP * SNES_BOXART_SLOT - SNES_POINTS_ROOM)
 #if defined(KONKR_KPA)
 /* Konkr: the active (blue) card tiles, one per console type (8 x 320*360*4 = 0x384000), sit
  * above the 3:2 warped wallpaper cache (1800 x 640 x 4 at the 0.75 native scale ends at
@@ -449,6 +458,7 @@ static unsigned short *s_vmap;
 static unsigned short *s_vorder;    /* the menu's order array */
 static int            s_vn;                 /* games in the current view */
 static int            s_sysfilter = -1;     /* -1 = All, else a GBA_CONSOLE_* value */
+static void classic_points(snes_menu *m, int vi);   /* the Suspend Point List's cards */
 /* Box art of every game: where its .ART is on the card (found once a power on by art_index, so
  * reading one is a run of clusters, no folder walk), and the slot holding it, if any. */
 struct art_loc { uint32_t clus, size; uint8_t nofat, state; uint16_t slot; };
@@ -464,9 +474,15 @@ static int            s_art_budget = 1;     /* art reads allowed in this frame (
 static int            s_art_pending;        /* a menu asked for art past the budget: draw again */
 volatile unsigned int g_dbg_boxart_ms;      /* oem diag: the last box art load, ms */
 static snes_pack      s_boxart_full_pk;
+static int            s_boxart_mapped;      /* the art slots' memory (and the pictures') is mapped */
 static int            s_have_boxart;
 static const snes_img_entry *s_cart_img;    /* placeholder cart tile, for the roster re-set */
 static char           s_note[64];
+#if PICO_LINK
+/* a text of the pack's English tables as shown in a language the pack has no table of: GammaOS's
+ * translation where there is one, in drawing order */
+static const char *classic_text(const char *en) { return cui_order(tr(en)); }
+#endif
 /* a text in the language in use where the menu's m font has its letters, else in English */
 static const char *say_m(const char *en)
 {
@@ -549,15 +565,27 @@ static int theme_id(const char *id, const char *pfx, int *nn, const char **name)
 	*name = id + 3;
 	return 1;
 }
-/* Whether the game being opened carries on from its suspend point (each core asks once as it loads
- * it): always when Resume on Power On brought it back, else as Resume on Game Open says. Holding B
- * at the launch still starts it fresh (the cores check that themselves). */
+/* Whether the game being opened carries on from a state, and which (each core asks once as it loads
+ * it): the card picked in the Suspend Point List, else its suspend point when Resume on Power On
+ * brought it back or as Resume on Game Open says. Holding B at the launch still starts it fresh (the
+ * cores check that themselves). A netplay launch never does. ext (4 bytes) gets the state's file
+ * extension: "sus" the suspend point, "st0".."st2" a save slot. 1 carry on, 0 start fresh. */
 static int s_launch_resumes;
-int gba_launch_continues(void)
+static char s_launch_ext[4];   /* the card picked in the Suspend Point List, "" none */
+int gba_launch_state(char *ext)
 {
 	extern int ayaneo_get_resume_on_open(void);
-	int r = s_launch_resumes || ayaneo_get_resume_on_open();
+	int r = s_launch_ext[0] || s_launch_resumes || ayaneo_get_resume_on_open();
+	memcpy(ext, s_launch_ext[0] ? s_launch_ext : "sus", 4);
 	s_launch_resumes = 0;
+	s_launch_ext[0] = 0;
+#if PICO_LINK
+	{	/* a game played together starts from the game itself (its battery save), not from where
+		 * either player last left it */
+		extern int pico_np_is_armed(void);
+		if (pico_np_is_armed()) r = 0;
+	}
+#endif
 	return r;
 }
 /* The menu theme in use: the hash of its name, as saved. Nothing saved yet (0) is the Current
@@ -959,7 +987,6 @@ static const gba_rom_entry *s_art_roms;
  * for it here). Returns the games that have art. Shared by every menu theme. */
 int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom)
 {
-	static int s_boxart_mapped;
 	fat_vol *vol = gba_sd_menu_vol();
 	unsigned int t0 = gpt4_get_current_tick(), sig;
 	int i, any = 0;
@@ -1290,6 +1317,64 @@ static void apply_filter(int full_n)
 		snes_menu_set_gba_boxart(&s_menu, s_vboxart, &s_boxart_full_pk);
 		s_menu.gba_art_get = classic_art;
 	}
+	s_menu.points_get = classic_points;
+}
+
+/* ---- the Suspend Point List: the focused game's states, their pictures and when they were made ----
+ * The pictures live at SNES_POINTS_PA (beside the box art slots). */
+#define SNES_POINT_BYTES (PSHOT_W * PSHOT_H * 3u)
+#if SNES_POINT_BYTES * 4u + PSHOT_W * PSHOT_H * 2u > SNES_POINTS_ROOM
+#error the pictures of the Suspend Point List outgrow their room
+#endif
+static const gba_rom_entry *s_pt_roms;	/* the games gba_snes_menu_run lists */
+static snes_img_entry s_pt_img[4];
+static snes_pack s_pt_pk;
+static const char *const k_point_ext[4] = { "sus", "st0", "st1", "st2" };   /* the cards' states */
+static void classic_points(snes_menu *m, int vi)
+{
+	extern const char *gba_state_dir_of(int system);
+	uint8_t *base = (uint8_t *)SNES_POINTS_PA;
+	uint16_t *pix = (uint16_t *)(void *)(base + 4u * SNES_POINT_BYTES);
+	fat_vol *v = gba_sd_menu_vol();
+	const gba_rom_entry *r;
+	const char *dir;
+	int k;
+	if (vi < 0 || vi >= s_vn || !v || !s_pt_roms) return;
+	if (!s_boxart_mapped) return;	/* their memory is not there: the cards show no pictures */
+	r = &s_pt_roms[s_vmap[vi]];
+	dir = gba_state_dir_of(r->type);
+	s_pt_pk.base = base;
+	for (k = 0; k < 4; k++) {
+		struct snes_point *p = &m->point[k];
+		unsigned char probe[16];
+		long long utc;
+		int w, h, i;
+		if (!gba_sd_read_named(v, dir, r->name, k_point_ext[k], probe, sizeof probe)) continue;
+		p->used = 1;
+		if (!pico_shot_load(v, dir, r->name, k_point_ext[k], pix, &w, &h, &utc)) continue;
+		{	/* RGB565 with an opaque alpha after each pixel: the renderer's 565A8 */
+			uint8_t *o = base + (unsigned)k * SNES_POINT_BYTES;
+			for (i = 0; i < w * h; i++) {
+				o[3 * i] = (uint8_t)pix[i];
+				o[3 * i + 1] = (uint8_t)(pix[i] >> 8);
+				o[3 * i + 2] = 255;
+			}
+		}
+		s_pt_img[k].w = (uint16_t)w;
+		s_pt_img[k].h = (uint16_t)h;
+		s_pt_img[k].flags = SNES_IMG_RGB565;
+		s_pt_img[k].pad = 0;
+		s_pt_img[k].pixels = (uint32_t)k * SNES_POINT_BYTES;
+		p->img = &s_pt_img[k];
+		p->pk = &s_pt_pk;
+		if (utc >= 1577836800LL) {	/* from 2020 on: a clock that was set */
+			long long local = utc + (long long)pico_clock_zone() * 900;
+			char d[24], t[24];
+			pico_clock_date_text(local, d, sizeof d);
+			pico_clock_time_text(local, t, sizeof t);
+			snprintf(p->when, sizeof p->when, "%s %s", d, t);
+		}
+	}
 }
 
 /* X advances the filter to All or the next system that actually has ROMs (skips empty ones). */
@@ -1370,16 +1455,63 @@ static const char *link_fit(char *buf, int cap, const char *s, uint32_t font)
 	return buf;
 }
 
+/* the Link screen in the menubar pages' shape (pico_classic_ui.h cui_sheet): 1 drawn, 0 the pack
+ * lacks the frame's parts */
+static int link_sheet(snes_target *t)
+{
+	static char fold[4 + 2 * SNES_PANEL_ROWS + 4][128];
+	struct lui_view v;
+	struct cui_sheet sh;
+	snes_target pt = *t;	/* as the menubar's pages: the identity view over the whole screen */
+	float top;
+	int i, k = 0;
+	snes_target_view(&pt, 1.0f, 1.0f, 0.0f, 0.0f);
+	pt.offy = 0;
+	if (!pico_classic_set_use(&pt, &top)) return 0;
+	lui_view(&v);
+	memset(&sh, 0, sizeof sh);
+	sh.icon = KS_IC_LINK;
+	sh.title = link_fit(fold[k], 128, v.title, cui_font(CF_L)); k++;
+	sh.subtitle = link_fit(fold[k], 128, v.subtitle, cui_font(CF_M)); k++;
+	sh.status = link_fit(fold[k], 128, v.status, cui_font(CF_M)); k++;
+	sh.nrows = v.nrows < 8 ? v.nrows : 8;
+	sh.sel = v.sel;
+	for (i = 0; i < sh.nrows; i++) {
+		sh.rows[i] = link_fit(fold[k], 128, v.rows[i], cui_font(CF_M)); k++;
+		sh.values[i] = link_fit(fold[k], 128, v.values[i], cui_font(CF_M)); k++;
+	}
+	sh.busy = v.busy;
+	sh.done = v.done;
+	sh.total = v.total;
+	sh.nhints = v.nhints < 4 ? v.nhints : 4;
+	for (i = 0; i < sh.nhints; i++) {
+		sh.hint_btn[i] = v.hint_code[i] ? v.hint_code[i][0] : 'A';
+		/* A beside the pad's "Select" says OK, as on the menubar's pages */
+		if (sh.hint_btn[i] == 'A' && sh.nrows > 1 && v.hint_label[i] && !strcmp(v.hint_label[i], tr("Select")))
+			sh.hint_label[i] = cui_say(CF_S, "OK");
+		else sh.hint_label[i] = link_fit(fold[k], 128, v.hint_label[i], cui_font(CF_S));
+		k++;
+	}
+	sh.clock = s_menu.clock;
+	cui_sheet(top, &sh);
+	return 1;
+}
+
 /* the Link screen as lui_view() describes it; compact: the strip shown while picking */
 static void link_draw(snes_target *t)
 {
+	if (link_sheet(t)) return;
 	static char fold[4 + 2 * SNES_PANEL_ROWS + 4][128];
 	struct lui_view v;
 	snes_panel p;
 	int i, k = 0;
 	lui_view(&v);
 	memset(&p, 0, sizeof p);
-	p.title = link_fit(fold[k], 128, v.title, s_menu.f_title); k++;
+	/* the panel draws a title its own font lacks letters for in the large font, which carries a
+	 * language's added letters */
+	p.title = v.title && snes_font_covers(&s_pk, snes_res_font(&s_pk, s_menu.f_l), v.title) ? v.title
+		  : link_fit(fold[k], 128, v.title, s_menu.f_title);
+	k++;
 	p.subtitle = link_fit(fold[k], 128, v.subtitle, s_menu.f_l); k++;
 	p.status = link_fit(fold[k], 128, v.status, s_menu.f_l); k++;
 	p.nrows = v.nrows < SNES_PANEL_ROWS ? v.nrows : SNES_PANEL_ROWS;
@@ -1477,6 +1609,62 @@ static void link_line(unsigned int *fb, unsigned int pitch, int x, int y, int sc
 	if (n > fit && fit > 3) { a[fit - 3] = a[fit - 2] = a[fit - 1] = '.'; a[fit] = 0; }
 	ayaneo_text(fb, pitch, x, y, scale, argb, a);
 }
+static snes_pack s_kit_pk;   /* the in-game kit's pack, for the start of a session */
+/* a text in one of the kit's fonts: as it is when the font has its letters, else folded */
+static const char *kit_fit(char *buf, int cap, const char *s, int f)
+{
+	if (!s) return "";
+	if (snes_font_covers(&s_kit_pk, snes_res_font(&s_kit_pk, cui_font(f)), s)) return s;
+	pico_fold_ascii(s, buf, cap);
+	return buf;
+}
+/* the start of a session as one of the menubar's pages (cui_sheet), with the kit the game's start
+ * left (the menu's pack is the game's memory by now): 0 when there is no kit */
+static int classic_link_sheet(const struct lui_progress *p, unsigned int *fb, unsigned int pitch,
+			      unsigned int W, unsigned int H)
+{
+	const struct cui_set *set;
+	struct cui_sheet sh;
+	snes_target lt;
+	char games[200], title[128], sub[200], step[200], with[200], prog[160], a[24], b[24];
+	float top;
+	if (!cui_kit_open(&s_kit_pk, &set)) return 0;
+	pico_lang_load(W, H);   /* the language's texts and letters (read already: kept) */
+	cui_lang_fonts();
+	snes_target_fit(&lt, fb, (int)pitch, (int)W, (int)H);
+	lt.offy = 0;	/* as the menubar's pages: laid out over the whole screen */
+	cui_use(&s_kit_pk, set, &lt);
+	ayaneo_fill(fb, pitch, 0, 0, (int)W, (int)H, 0xFF000000u);
+	top = ((float)lt.H / snes_target_base(&lt) - 720.0f) / 2.0f + 36.0f;
+	memset(&sh, 0, sizeof sh);
+	sh.icon = KS_IC_LINK;
+	sh.title = kit_fit(title, sizeof title, p->title, CF_L);
+	if (p->theirs) snprintf(games, sizeof games, "%s + %s", p->mine, p->theirs);
+	else snprintf(games, sizeof games, "%s", p->mine ? p->mine : "");
+	sh.subtitle = kit_fit(sub, sizeof sub, games, CF_M);
+	{	/* what goes on now, and with which console */
+		char w[160];
+		snprintf(w, sizeof w, tr("With %s"), p->other ? p->other : "");
+		snprintf(with, sizeof with, "%s\n%s", p->step ? p->step : "", w);
+		sh.status = kit_fit(step, sizeof step, with, CF_M);
+	}
+	if (p->total) {
+		sh.done = p->done;
+		sh.total = p->total;
+		link_bytes(a, sizeof a, p->done);
+		link_bytes(b, sizeof b, p->total);
+		if (p->kbs && p->secs_left) snprintf(prog, sizeof prog, tr("%s of %s, %u KB/s, %u s left"), a, b, p->kbs, p->secs_left);
+		else snprintf(prog, sizeof prog, tr("%s of %s"), a, b);
+		sh.progress = prog;
+	}
+	sh.busy = 1;
+	sh.nhints = 1;
+	sh.hint_btn[0] = 'B';
+	sh.hint_label[0] = tr("Cancel");
+	sh.clock = (float)(gpt4_get_current_tick() / 13000u) / 1000.0f;
+	cui_sheet(top, &sh);
+	return 1;
+}
 static int classic_link_paint(const struct lui_progress *p)
 {
 	static int prev_b = 1;
@@ -1490,6 +1678,10 @@ static int classic_link_paint(const struct lui_progress *p)
 	prev_b = in.b;
 	fb = ayaneo_canvas_back(&pitch, &W, &H);
 	if (!fb) return cancel;
+	if (classic_link_sheet(p, fb, pitch, W, H)) {
+		ayaneo_canvas_present();
+		return cancel;
+	}
 	pw = (int)W - 120 < 660 ? (int)W - 120 : 660;
 	px = ((int)W - pw) / 2; py = ((int)H - ph) / 2; tw = pw - 56;
 	ayaneo_fill(fb, pitch, 0, 0, (int)W, (int)H, 0xFF000000u);
@@ -1532,6 +1724,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	const snes_img_entry *cart;
 	unsigned int saved_mhz;
 	int lang_start;		/* the Language page's selection as the menu opened */
+	s_pt_roms = roms;
 #if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 	{ extern void ayaneo_joypad_kpa_reset_toggles(void); ayaneo_joypad_kpa_reset_toggles(); }   /* L2/R2 toggles never carry across sessions */
 #endif
@@ -1579,7 +1772,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 #if PICO_LINK
 	lui_set_roms(roms, nrom);   /* a Link screen in the middle of something carries on over this listing */
 	/* this menu's fonts have the letters of its own eight languages (its Language page) only */
-	lui_set_english(pico_lang() >= 8);
+	lui_set_english(0);   /* the language packs carry the letters the Classic fonts lack */
 	if (lui_open() && !lui_busy_screen())
 		lui_close();        /* the Current theme's Link Home, left open behind its tab, is its own */
 	lui_menu_enter();   /* Bluetooth off unless a Link screen still needs it (zero cost) */
@@ -1639,6 +1832,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		ayaneo_canvas_back(&lp, &lw, &lh);
 		pico_lang_load(lw, lh);
 		if (lang >= 0 && lang < 8) snes_pack_set_locale(&s_pk, k_lang_locale[lang]);
+#if PICO_LINK
+		cui_lang_fonts();                        /* the language's letters the fonts lack */
+		snes_text_order = cui_order;             /* right-to-left letters in drawing order */
+		snes_text_hook = lang >= 8 ? classic_text : 0;   /* the pack has no table of it: its English, translated */
+#endif
 	}
 	theme_apply();   /* the saved theme's atlas, before the menu builds its caches from it */
 
@@ -2018,6 +2216,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 		}
 #endif
 		launch = snes_menu_take_launch(&s_menu);
+		{	/* a card of the Suspend Point List: the game starts from its state */
+			int pt = snes_menu_take_launch_point(&s_menu);
+			if (launch >= 0 && pt >= 0 && pt < 4) memcpy(s_launch_ext, k_point_ext[pt], 4);
+			else s_launch_ext[0] = 0;
+		}
 		/* the menu returns a VIEW index (current filter); map it back to the full roms[] index */
 		if (launch >= 0 && launch < s_vn) launch = (int)s_vmap[launch]; else launch = -1;
 #if PICO_LINK
@@ -2026,11 +2229,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			launch = lui_action_rom();
 			s_link_pick = -1;
 		}
-		if (link_launch >= 0) { launch = link_launch; link_launch = -1; }
+		if (link_launch >= 0) { launch = link_launch; link_launch = -1; s_launch_ext[0] = 0; }
 #endif
 		if (launch >= 0 && launch < nrom) {	/* a game that cannot start says why and stays */
 			int why = gba_rom_check(gba_sd_menu_vol(), &roms[launch]);
-			if (why != RA_OK) { note_show(why); launch = -1; }
+			if (why != RA_OK) { note_show(why); launch = -1; s_launch_ext[0] = 0; }
 		}
 		if (launch >= 0 && launch < nrom) {
 			/* Punch-hole launch: instead of fading the menu to black, CAPTURE the

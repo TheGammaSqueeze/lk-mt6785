@@ -406,6 +406,7 @@ void snes_menu_set_rcache(snes_menu *m, uint32_t *buf) { m->rcache = buf; m->rca
  * exactly (same pitch/offx/offy/view) with fb = rcache, tf[5] forced to 0 (settled),
  * and records the covered fb-row range. The caller must have already set the panel's
  * emptymode/hud/explanation-off states (as for the live render). */
+static void points_draw(snes_menu *m, snes_target *t);
 static void build_rcache(snes_menu *m, snes_target *t)
 {
 	snes_target ct = *t;
@@ -417,6 +418,7 @@ static void build_rcache(snes_menu *m, snes_target *t)
 	for (i = 0; i < n; i++) m->rcache[i] = 0;      /* transparent */
 	m->resume->tf[5] = 0.0f;
 	snes_render_node(&ct, &m->home, m->resume);
+	points_draw(m, &ct);
 	m->resume->tf[5] = save_y;
 	{
 		int op0 = t->H, op1 = 0;
@@ -1278,6 +1280,13 @@ int snes_menu_take_launch(snes_menu *m)
 	return r;
 }
 
+int snes_menu_take_launch_point(snes_menu *m)
+{
+	int r = m->launch_point;
+	m->launch_point = -1;
+	return r;
+}
+
 int snes_menu_take_sysreset(snes_menu *m)
 {
 	int r = m->sysreset;
@@ -1499,9 +1508,9 @@ static void draw_filmstrip(snes_menu *m, snes_target *t)
  * localized label, laid left-to-right and centred at cx. Icons are 12/32-px
  * atlas sprites scaled x3. */
 typedef struct { int sx, sy, sw, sh; const char *key; } snes_hint;
-static void draw_hint_row(snes_menu *m, snes_target *t, const snes_hint *H, int n, float cx, float sc)
+static void draw_hint_row_at(snes_menu *m, snes_target *t, const snes_hint *H, int n, float cx, float y, float sc)
 {
-	const float gap = 6.0f, vgap = 26.0f, y = 604.0f;
+	const float gap = 6.0f, vgap = 26.0f;
 	const char *lab[6];
 	float iw[6], lw[6], total = 0, x;
 	int i;
@@ -1524,8 +1533,16 @@ static void draw_hint_row(snes_menu *m, snes_target *t, const snes_hint *H, int 
 		x += iw[i] + gap + lw[i] + vgap;
 	}
 }
+static void draw_hint_row(snes_menu *m, snes_target *t, const snes_hint *H, int n, float cx, float sc)
+{
+	draw_hint_row_at(m, t, H, n, cx, 604.0f, sc);
+}
+/* a text in drawing order (snes_text_order: right-to-left letters), as the LK has set it */
+#define ORD(s) (snes_text_order ? snes_text_order(s) : (s))
 /* draw `text` word-wrapped to wrapw px starting at (x,*y), advancing *y by lineh
- * per line (left/top anchored). Ports the copyright body's greedy wrap. */
+ * per line (left/top anchored). Ports the copyright body's greedy wrap.
+ * Words are taken in reading order; each line is measured and drawn in drawing order, so a
+ * right-to-left line joins and turns as a whole. */
 static void draw_wrapped(snes_menu *m, snes_target *t, uint32_t font, float x, float *y,
 			 float sc, uint32_t argb, float wrapw, float lineh, const char *text)
 {
@@ -1544,9 +1561,9 @@ static void draw_wrapped(snes_menu *m, snes_target *t, uint32_t font, float x, f
 		if (ll) { __builtin_memcpy(trial, line, ll); trial[ll] = ' '; __builtin_memcpy(trial + ll + 1, ws, wl); }
 		else __builtin_memcpy(trial, ws, wl);
 		trial[tl] = 0;
-		if (ll && snes_text_width(m->pk, font, sc, trial) > wrapw) {
+		if (ll && snes_text_width(m->pk, font, sc, ORD(trial)) > wrapw) {
 			line[ll] = 0;
-			snes_draw_text(t, m->pk, font, x, *y, sc, argb, 0, line);
+			snes_draw_text(t, m->pk, font, x, *y, sc, argb, 0, ORD(line));
 			*y += lineh;
 			__builtin_memcpy(line, ws, wl); ll = wl; line[ll] = 0;
 		} else {
@@ -1554,7 +1571,7 @@ static void draw_wrapped(snes_menu *m, snes_target *t, uint32_t font, float x, f
 		}
 		while (*p == ' ') p++;
 	}
-	if (ll) { line[ll] = 0; snes_draw_text(t, m->pk, font, x, *y, sc, argb, 0, line); *y += lineh; }
+	if (ll) { line[ll] = 0; snes_draw_text(t, m->pk, font, x, *y, sc, argb, 0, ORD(line)); *y += lineh; }
 }
 /* The IP-Notice body as a flat one-line-per-entry list (ports _legalIPTexts): the
  * deduped game copyrights ordered by (sort_publisher, release, sort_title), then a
@@ -1688,25 +1705,115 @@ static void draw_copyright_list(snes_menu *m, snes_target *t)
 			       lines[idx]);
 	}
 }
-/* Suspend Point List (resume) hint: a single centred "[B] Back". The web renders
- * resumemenu/hud in the 'bottom' aspect group; in 4:3 it lands at screen y~916,
- * below the content-zoomed panel. hud_empty is a horizontal-flow layout of the B
- * icon + "Back" label centred at x640 (refreshHud). Drawn in identity view. */
+/* Suspend Point List (resume) hints, centred along the bottom: "[B] Back" alone while no card holds
+ * a state, else Select / Start Game / Back. The web renders resumemenu/hud in the 'bottom' aspect
+ * group; in 4:3 it lands at screen y~916, below the content-zoomed panel. Drawn in identity view. */
 static void draw_resume_hint(snes_menu *m, snes_target *t)
 {
+	static const snes_hint H[3] = {
+		{ 71, 881, 12, 12, "sys_resume_hud_Select" },     /* dpad lateral */
+		{ 1, 881, 12, 12, "sys_resume_hud_GameStart" },   /* A */
+		{ 15, 881, 12, 12, "sys_resume_hud_Return" },     /* B */
+	};
 	/* bottom-pinned: 916 on the 960 panel, the same distance from the bottom edge elsewhere */
-	const float sc = 0.85f, gap = 6.0f, y = 916.0f - (float)(960 - asp_h(m));
-	const char *lab = snes_text(m->pk, "sys_resume_hud_Return");
-	float iw = 12.0f * 3.0f, lw, total, x;
-	snes_spr_entry ic;
-	if (!m->card_act) return;
-	lw = snes_text_width(m->pk, m->f_s, sc, lab);
-	total = iw + gap + lw;
-	x = 640.0f - total / 2.0f;
-	ic = (snes_spr_entry){ m->card_act->img, 15, 881, 12, 12, 6, 6 };
-	snes_blit_spr(t, m->pk, &ic, x + iw / 2.0f, y, 3.0f, 1.0f);
-	snes_draw_text(t, m->pk, m->f_s, x + iw + gap, y - 10.0f, sc, 0xFFF2F2F2u, 0, lab);
+	const float y = 916.0f - (float)(960 - asp_h(m));
+	if (m->point_sel >= 0) draw_hint_row_at(m, t, H, 3, 640.0f, y, 0.85f);
+	else draw_hint_row_at(m, t, H + 2, 1, 640.0f, y, 0.85f);
 }
+
+/* ---- the Suspend Point List's cards (m->point) ----
+ * The scene's four cards (resumemenu/elements/cardlist/elements/sys_resume_card1..4, left to right)
+ * each have an empty face (the slot, its number, "No Data") and a saved one (saved_card: the card,
+ * its blue active face, a 160 x 120 screen, and the original's lock, battery save mark and play
+ * time, which GammaOS has no use for). A card with a state shows its saved face, the state's
+ * picture in the screen and when it was made where the play time was. */
+static snes_rnode *point_card(snes_menu *m, int k)
+{
+	static const char *const nm[4] = { "sys_resume_card1", "sys_resume_card2", "sys_resume_card3", "sys_resume_card4" };
+	snes_rnode *n = m->resume ? child_named(m->pk, m->resume, "elements") : 0;
+	if (n) n = child_named(m->pk, n, "cardlist");
+	if (n) n = child_named(m->pk, n, "elements");
+	return n ? child_named(m->pk, n, nm[k]) : 0;
+}
+static snes_rnode *point_face(snes_menu *m, int k)   /* the card's saved_card */
+{
+	snes_rnode *n = point_card(m, k);
+	if (n) n = child_named(m->pk, n, "card");
+	if (n) n = child_named(m->pk, n, "saved");
+	return n ? child_named(m->pk, n, "saved_card") : 0;
+}
+/* each card's face as its state says, the focused one blue; the panel's cache made again */
+static void points_show(snes_menu *m)
+{
+	int k;
+	for (k = 0; k < 4; k++) {
+		snes_rnode *c = point_card(m, k), *body = c ? child_named(m->pk, c, "card") : 0, *n, *sv;
+		int used = m->point[k].used;
+		if (!body) continue;
+		if ((n = child_named(m->pk, body, "empty"))) n->enabled = !used;
+		if ((sv = child_named(m->pk, body, "saved"))) sv->enabled = used;
+		if (!(n = point_face(m, k))) continue;
+		n->enabled = used;
+		for (n = n->child; n; n = n->sib) {
+			const char *name = snes_str(m->pk, n->def->name);
+			if (!name) continue;
+			if (!strcmp(name, "card")) n->enabled = 1;
+			else if (!strcmp(name, "card_active")) n->enabled = (k == m->point_sel);
+			else n->enabled = 0;   /* the screen and the time are drawn by points_draw */
+		}
+	}
+	m->rcache_ready = 0;
+}
+/* the pictures and the times of the cards that hold a state (in the content view, after the panel) */
+static void points_draw(snes_menu *m, snes_target *t)
+{
+	const snes_font_entry *fe = snes_res_font(m->pk, m->f_s);
+	float lh = fe ? (float)fe->line_height : 32.0f;
+	int k;
+	for (k = 0; k < 4; k++) {
+		const struct snes_point *p = &m->point[k];
+		snes_rnode *face = p->used ? point_face(m, k) : 0, *scr, *pt;
+		float w[6], cx, cy;
+		if (!face || !(scr = child_named(m->pk, face, "screen"))) continue;
+		snes_node_world(scr, w);
+		cx = 640.0f + w[2];
+		cy = 360.0f - w[5];
+		snes_fill_quad(t, cx, cy, 160.0f, 120.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+		if (p->img && p->pk && p->img->w)
+			snes_blit_tex(t, p->pk, p->img, cx, cy, (float)p->img->w, (float)p->img->h, 1.0f);
+		if (p->when[0] && (pt = child_named(m->pk, face, "playtime"))) {
+			/* centred on the card (the play time's node sits right of its middle) */
+			const char *s = ORD(p->when);
+			float sc = 0.8f, tw = snes_text_width(m->pk, m->f_s, sc, s);
+			if (tw > 176.0f) sc *= 176.0f / tw;
+			snes_node_world(pt, w);
+			snes_draw_text(t, m->pk, m->f_s, cx, 360.0f - w[5] - lh * sc / 2.0f, sc, 0xFF20304Au, 1, s);   /* dark, on the light card */
+		}
+	}
+}
+/* the theme's cyan box round the focused card, once the list has come to rest */
+static void points_cursor(snes_menu *m, snes_target *t)
+{
+	static const uint16_t sxa[10] = {0, 69,131, 69,137,156,171, 88,137,103};
+	static const uint16_t sya[10] = {0,847,987,945,941,895,941,895,847,847};
+	snes_rnode *c;
+	float w[6];
+	if (m->point_sel < 0 || !m->card_act || m->closing || m->open_y != 0.0f) return;
+	if (!(c = point_card(m, m->point_sel))) return;
+	snes_node_world(c, w);
+	draw_cursor_9slice(m, t, 640.0f + w[2], 360.0f - w[5], 210.0f, 186.0f, sxa, sya, 1.0f, 1.0f, m->card_act->img);
+}
+/* the list opens on game gidx: its cards from the caller, the first with a state in focus */
+static void points_open(snes_menu *m, int gidx)
+{
+	int k;
+	for (k = 0; k < 4; k++) { m->point[k].used = 0; m->point[k].img = 0; m->point[k].when[0] = 0; }
+	if (m->points_get && gidx >= 0) m->points_get(m, gidx);
+	m->point_sel = -1;
+	for (k = 0; k < 4 && m->point_sel < 0; k++) if (m->point[k].used) m->point_sel = k;
+	points_show(m);
+}
+
 /* home carousel hints: Menu / Suspend Point List / Sort / Start Game */
 static void draw_hints(snes_menu *m, snes_target *t)
 {
@@ -1761,7 +1868,7 @@ static void draw_note(snes_menu *m, snes_target *t)
 	round_rect(t, cx, cy, w * s, h * s, 6.0f * s, 1.0f, 1.0f, 1.0f, a);
 	if (s * h > 6.0f) round_rect(t, cx, cy, (w - 6.0f) * s, (h - 6.0f) * s, 5.0f * s, 0.0f, 0.0f, 0.0f, a);
 	snes_draw_text(t, m->pk, fh, cx, cy - (fe ? fe->line_height : 31) * tsc * s * 0.42f, tsc * s,
-		       ((uint32_t)(a * 255.0f) << 24) | 0xF4F4F4u, 1, m->note);
+		       ((uint32_t)(a * 255.0f) << 24) | 0xF4F4F4u, 1, snes_text_order ? snes_text_order(m->note) : m->note);
 	set_view(m, t, VIEW_CONTENT);
 }
 /* The focused menubar icon's caption bubble ("Display"/"Option"/...). The
@@ -1967,19 +2074,22 @@ void snes_menu_draw_panel(snes_menu *m, snes_target *t, const snes_panel *p)
 	round_rect(t, cx, cy, pw, ph, 8.0f, 0.0f, 0.0f, 0.0f, 1.0f);
 	y = top + 34.0f;
 	if (p->title) {
-		snes_draw_text(t, m->pk, m->f_title, left + 48.0f, y, st, 0xFFF2F2F2u, 0, p->title);
+		/* the title font where it has the title's letters, else the large one (a language's
+		 * added letters are the large, middle and small fonts') */
+		uint32_t tf = snes_font_covers(m->pk, snes_res_font(m->pk, m->f_title), p->title) ? m->f_title : m->f_l;
+		snes_draw_text(t, m->pk, tf, left + 48.0f, y, st, 0xFFF2F2F2u, 0, ORD(p->title));
 		if (p->busy) {	/* three dots after it, one lit at a time, in the cursor's cyan */
-			float dx = left + 48.0f + snes_text_width(m->pk, m->f_title, st, p->title) + 22.0f;
-			float dy = y + font_lh(m, m->f_title, st) * 0.62f;
+			float dx = left + 48.0f + snes_text_width(m->pk, tf, st, p->title) + 22.0f;
+			float dy = y + font_lh(m, tf, st) * 0.62f;
 			int lit = (int)(m->clock * 3.0f) % 3, k;
 			for (k = 0; k < 3; k++)
 				snes_fill_quad(t, dx + 18.0f * (float)k, dy, 8.0f, 8.0f,
 					       k == lit ? 0.25f : 0.35f, k == lit ? 0.75f : 0.35f, k == lit ? 1.0f : 0.35f, 1.0f);
 		}
-		y += font_lh(m, m->f_title, st) + 4.0f;
+		y += font_lh(m, tf, st) + 4.0f;
 	}
 	if (p->subtitle) {
-		snes_draw_text(t, m->pk, m->f_l, left + 48.0f, y, ss, 0xFFB4B4B4u, 0, p->subtitle);
+		snes_draw_text(t, m->pk, m->f_l, left + 48.0f, y, ss, 0xFFB4B4B4u, 0, ORD(p->subtitle));
 		y += font_lh(m, m->f_l, ss);
 	}
 	y += 24.0f;			/* the list (or the status) a little below the title */
@@ -1995,9 +2105,9 @@ void snes_menu_draw_panel(snes_menu *m, snes_target *t, const snes_panel *p)
 			if (w > room) sc = sl * room / w;
 			if (sc < 0.6f) sc = 0.6f;
 			if (p->rows[i])
-				snes_draw_text(t, m->pk, m->f_l, left + 52.0f, rc - lh * sc / sl / 2.0f, sc, 0xFFF2F2F2u, 0, p->rows[i]);
+				snes_draw_text(t, m->pk, m->f_l, left + 52.0f, rc - lh * sc / sl / 2.0f, sc, 0xFFF2F2F2u, 0, ORD(p->rows[i]));
 			if (p->values[i])
-				snes_draw_text(t, m->pk, m->f_l, right - 52.0f, rc - lh * sc / sl / 2.0f, sc, 0xFFB4B4B4u, 2, p->values[i]);
+				snes_draw_text(t, m->pk, m->f_l, right - 52.0f, rc - lh * sc / sl / 2.0f, sc, 0xFFB4B4B4u, 2, ORD(p->values[i]));
 		}
 	}
 	if (p->status) {	/* wrapped inside the dialog */
@@ -2021,7 +2131,7 @@ void snes_menu_draw_panel(snes_menu *m, snes_target *t, const snes_panel *p)
 			float lw = snes_text_width(m->pk, m->f_s, ss, lab), iw = 12.0f * iscale;
 			snes_spr_entry ic = { m->card_act->img, (uint16_t)(p->hint_btn[i] == 'B' ? 15 : 1), 881, 12, 12, 6, 6 };
 			x -= lw;
-			snes_draw_text(t, m->pk, m->f_s, x, hy - 10.0f, ss, 0xFFF2F2F2u, 0, lab);
+			snes_draw_text(t, m->pk, m->f_s, x, hy - 10.0f, ss, 0xFFF2F2F2u, 0, ORD(lab));
 			x -= gap + iw;
 			snes_blit_spr(t, m->pk, &ic, x + iw / 2.0f, hy, iscale, 1.0f);
 			x -= vgap;
@@ -2070,7 +2180,8 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	m->rep_t = 0.0f; m->rep_dir = 0; m->rep_primed = 0;
 	m->jmp_t = 0.0f; m->jmp_dir = 0;
 	m->car_tween = CAR_REPEAT_DELAY;
-	m->resume_expl_t = 3.5f;   /* notice starts hidden until the list is opened */
+	m->points_get = 0; m->point_sel = -1; m->launch_point = -1;
+	{ int pk; for (pk = 0; pk < 4; pk++) { m->point[pk].used = 0; m->point[pk].img = 0; m->point[pk].when[0] = 0; } }
 
 	(void)i;
 	/* the real home menu (carousel + menubar) is defaultscene.scn, not the
@@ -2199,8 +2310,8 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 	if (m->resume) {
 		disable_all_named(pk, m->resume, "changemode");
 		/* emptymode (the "When you reset a game..." hint + an overlapping card
-		 * template) is hidden by default; the 4:3 resume render re-enables just the
-		 * hint (it sits below the 720 fold in 16:9, so only 4:3 shows it). */
+		 * template) is not shown: GammaOS makes suspend points on the way out of a game
+		 * and from the in-game menu, not on a reset. */
 		disable_all_named(pk, m->resume, "emptymode");
 		/* the resume hud stacks 4 sub-huds (empty/change/locked/float) at x=0; the
 		 * empty state shows only hud_empty ("Back") - hide the others so they do not
@@ -2881,7 +2992,11 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			/* the panel slides UP from off-bottom into place, easing out (world
 			 * -y = screen down); reuse the open_y ease (toward 0). */
 			m->open_y = -RESUME_SLIDE;
-			m->resume_expl_t = 0.0f;    /* re-arm the "When you reset..." notice hold+fade */
+			{	/* the focused game's states on the cards */
+				int n = m->ngames;
+				points_open(m, (m->gba_mode && n > 0) ? m->order[((m->focus % n) + n) % n] : -1);
+			}
+			m->launch_point = -1;
 			m->state = 3; push_snd(m, m->sfx_decide);
 		}
 		/* A or Start launches the focused ROM (GBA); SNES build keeps it stubbed */
@@ -2890,6 +3005,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			if (m->gba_mode) {
 				int n = m->ngames, f = ((m->focus % n) + n) % n;
 				m->launch = m->order[f];
+				m->launch_point = -1;   /* the usual start, not a card of the Suspend Point List */
 			}
 		}
 		if (m->gba_mode && in->select && !m->ps) {   /* toggle name sort A-Z <-> Z-A */
@@ -3108,6 +3224,17 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			push_snd(m, m->sfx_cancel);
 		}
 	} else {                                   /* ---- resume menu ---- */
+		if (!m->closing && m->open_y == 0.0f && m->point_sel >= 0 && (el || er)) {
+			int d = er ? 1 : -1, j;   /* the next card along that holds a state */
+			for (j = m->point_sel + d; j >= 0 && j < 4; j += d)
+				if (m->point[j].used) { m->point_sel = j; points_show(m); push_snd(m, m->sfx_move); break; }
+		}
+		if (ea && !m->closing && m->open_y == 0.0f && m->point_sel >= 0 && m->gba_mode && m->ngames > 0) {
+			int n = m->ngames;   /* the game, from the state on that card */
+			m->launch = m->order[((m->focus % n) + n) % n];
+			m->launch_point = m->point_sel;
+			push_snd(m, m->sfx_decide);
+		}
 		if ((eb || eu) && !m->closing) {
 			/* slide the resume panel back down/off before hiding */
 			m->closing = 1; m->close_target = -RESUME_SLIDE; m->close_t = 0.0f;
@@ -3174,8 +3301,6 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 		if (on) { m->resume_dim += step; if (m->resume_dim > 1.0f) m->resume_dim = 1.0f; }
 		else    { m->resume_dim -= step; if (m->resume_dim < 0.0f) m->resume_dim = 0.0f; }
 	}
-	/* empty-list explanation notice: hold 2s then fade over 1s (showExplanation) */
-	if (m->state == 3 && !m->closing && m->resume_expl_t < 3.5f) m->resume_expl_t += dt;
 	/* filmstrip smooth index follow */
 	k = dt * 12.0f; if (k > 1.0f) k = 1.0f;
 	m->car_x += ((float)m->focus - m->car_x) * k;
@@ -3562,25 +3687,12 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 		if (rbg && (rtail = child_named(m->pk, rbg, "resumebg_tail")))
 			rtail->tf[2] = m->sel_world;
 		if (m->aspect) {
-			/* the 960 panel has room for the empty-state hint ("When you reset a
-			 * game...") that is below the 720 fold in 16:9: enable just the hint box
-			 * (emptymode/explanation), keeping the overlapping card template hidden. */
-			snes_rnode *em = desc(m->pk, m->resume, "emptymode"), *expl = 0, *eel;
-			if (em) {
-				em->enabled = 1;
-				expl = child_named(m->pk, em, "explanation");
-				if ((eel = child_named(m->pk, em, "elements"))) eel->enabled = 0;
-			}
 			/* resumemenu is 'content' (panel + slot list zoom with the rest) except
 			 * its hud hint bar, which pins to the bottom edge like the home bars. */
 			{
 			snes_rnode *rhud = child_named(m->pk, m->resume, "hud");
 			int e_rhud = rhud ? rhud->enabled : 0;
 			if (rhud) rhud->enabled = 0;
-			/* render the panel + slots first with the hint hidden, then paint its
-			 * opaque black backing (the wdw/base is an empty-sprite quad the renderer
-			 * skips), then the hint frame + text on top - so it covers the slots. */
-			if (expl) expl->enabled = 0;
 			set_view(m, t, VIEW_CONTENT);
 			/* Panel: once slid in (open_y settled ~0) it is static, so cache it and
 			 * composite the overlay each frame instead of re-walking the subtree
@@ -3592,7 +3704,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			 * (chevron/sel move); during the slide reuse the cache (the selection can't
 			 * change mid-slide, and re-checking sel_world while the carousel is still
 			 * easing thrashed the rebuild). Build once on the first slide frame so the
-			 * slide has a cache to shift. */
+			 * slide has a cache to shift. The cards' pictures and times are in it. */
 			if (m->rcache) {
 				int rsettled = (m->open_y > -0.5f && m->open_y < 0.5f);
 				if (rsettled) {
@@ -3605,29 +3717,9 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 						  m->rcache_op0, m->rcache_op1, (int)m->open_y);
 			} else {
 				snes_render_node(t, &m->home, m->resume);
+				points_draw(m, t);
 			}
-			/* the notice holds fully opaque for 2s, then fades to 0 over 1s and
-			 * disappears (sys_resume_emptymode.showExplanation). */
-			{
-				float ea = 1.0f;
-				if (m->resume_expl_t > 2.0f) ea = 1.0f - (m->resume_expl_t - 2.0f);
-				if (ea < 0.0f) ea = 0.0f;
-				if (expl && ea > 0.003f) {
-					float w[6], oc = expl->col[3];
-					snes_rnode *base = child_named(m->pk, desc(m->pk, expl, "wdw"), "base");
-					expl->enabled = 1;
-					expl->col[3] = oc * ea;
-					if (base) {
-						snes_node_world(base, w);
-						snes_fill_quad(t, 640.0f + w[2], 360.0f - w[5], 800.0f, 48.0f,
-							       0.0f, 0.0f, 0.0f, ea);
-					}
-					snes_render_node(t, &m->home, expl);
-					expl->col[3] = oc;
-				} else if (expl) {
-					expl->enabled = 0;
-				}
-			}
+			points_cursor(m, t);
 			/* the scene hud lays its Back hint out via refreshHud (unavailable
 			 * here) and inherits the panel world transform, so it does not land
 			 * correctly; draw the "[B] Back" hint manually at the bottom edge. */
@@ -3641,6 +3733,8 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 			}
 		} else {
 			snes_render_node(t, &m->home, m->resume);
+			points_draw(m, t);
+			points_cursor(m, t);
 		}
 	}
 	PERF_END(4);

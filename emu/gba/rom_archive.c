@@ -103,6 +103,7 @@ const char *rom_archive_error_text(int err)
 	case RA_ERR_HUGE:     return "This archive is too large to open";
 	case RA_ERR_SPLIT:    return "Archives split into parts are not supported";
 	case RA_ERR_NOBIOS:   return "Disk System games need disksys.rom in the bios folder";
+	case RA_ERR_LINKGAME: return "Both consoles need both games to play linked. Copy them first with Link, Send and Receive.";
 	default:              return "This game could not be started";
 	}
 }
@@ -307,8 +308,9 @@ static int unpack(int kind, fat_file *f, const char *exts, unsigned member, uint
 	if (kind == RA_7Z) rc = rom_7z_open(f, exts, member, dst, cap, size, mode, each, ctx);
 	else if (kind != RA_ZIP) rc = RA_ERR_DAMAGED;
 	else if ((rc = zip_find(f, exts, member, &sc, &z, mode == 3 ? each : 0, ctx, size)) == RA_OK && mode != 3) {
-		if (mode == 0) *size = z.usize > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)z.usize;
-		else rc = zip_unpack(f, &sc, &z, dst, cap, mode == 2, size);
+		if (mode == 0 || mode == 4) *size = z.usize > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)z.usize;
+		if (mode == 4) *(uint32_t *)(void *)dst = z.crc;   /* as its directory keeps it */
+		else if (mode != 0) rc = zip_unpack(f, &sc, &z, dst, cap, mode == 2, size);
 	}
 	ra_unlock();
 	return rc;
@@ -320,6 +322,8 @@ int rom_archive_load(int kind, fat_file *f, const char *exts, unsigned member, u
 { return unpack(kind, f, exts, member, dst, cap, size, 1, 0, 0); }
 int rom_archive_head(int kind, fat_file *f, const char *exts, unsigned member, uint8_t *dst, uint32_t cap, uint32_t *size)
 { return unpack(kind, f, exts, member, dst, cap, size, 2, 0, 0); }
+int rom_archive_crc(int kind, fat_file *f, const char *exts, unsigned member, uint32_t *size, uint32_t *crc)
+{ return unpack(kind, f, exts, member, (uint8_t *)crc, 0, size, 4, 0, 0); }
 int rom_archive_list(int kind, fat_file *f, const char *exts, void (*each)(void *ctx, const char *name), void *ctx)
 {
 	uint32_t n = 0;

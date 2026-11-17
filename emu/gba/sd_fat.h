@@ -63,6 +63,12 @@ int gba_sd_list_roms(fat_vol *v, gba_rom_entry *out, int max, int *total);
 
 /* The folder a listed ROM is in ("/roms/gba", "/ROMs/snes", ...), from the last listing. */
 const char *gba_sd_rom_dir(const gba_rom_entry *r);
+/* two file names the card holds as the same file: the case of their letters does not count (a
+ * card's own short names are in capitals: SONIC3C.GEN on one card is Sonic3C.gen on another) */
+int gba_sd_same_name(const char *a, const char *b);
+/* a game's identity, the same whether it is zipped or plain: its ROM's size and CRC-32 (from an
+ * archive's directory, else read from the file). RA_OK or an RA_ERR_* code (rom_archive.h) */
+int gba_rom_identity(fat_vol *v, const gba_rom_entry *r, uint32_t *size, uint32_t *crc);
 
 /* Create the /roms/gb, /roms/gbc and /roms/gba folders on the card if missing
  * (idempotent). Returns 0 if all three exist or were created, negative if any

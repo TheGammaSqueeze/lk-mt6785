@@ -25,7 +25,8 @@ enum {
 	RA_ERR_HUGE = -7,        /* the archive's own tables do not fit the memory for them */
 	RA_ERR_SPLIT = -8,       /* an archive in parts (.zip.001, .z01...) */
 	RA_ERR_START = -9,       /* the core would not start the game */
-	RA_ERR_NOBIOS = -10      /* a Famicom Disk System game, and no disksys.rom on the card */
+	RA_ERR_NOBIOS = -10,     /* a Famicom Disk System game, and no disksys.rom on the card */
+	RA_ERR_LINKGAME = -11    /* linked play: a console lacks the other's game (none is sent) */
 };
 
 /* The ROMs in an archive file (f: the archive; exts: the system's extensions, space separated,
@@ -36,6 +37,8 @@ enum {
 int rom_archive_probe(int kind, fat_file *f, const char *exts, unsigned member, uint32_t *size);
 int rom_archive_load(int kind, fat_file *f, const char *exts, unsigned member, uint8_t *dst, uint32_t cap, uint32_t *size);
 int rom_archive_head(int kind, fat_file *f, const char *exts, unsigned member, uint8_t *dst, uint32_t cap, uint32_t *size);
+/* The ROM's size and CRC-32 as the archive's own directory keeps them, nothing unpacked */
+int rom_archive_crc(int kind, fat_file *f, const char *exts, unsigned member, uint32_t *size, uint32_t *crc);
 /* Every ROM in the archive, in order: each(ctx, its name inside in UTF-8, folders and all).
  * Returns how many, or an RA_ERR_* code (the archive could not be read). */
 int rom_archive_list(int kind, fat_file *f, const char *exts, void (*each)(void *ctx, const char *name), void *ctx);

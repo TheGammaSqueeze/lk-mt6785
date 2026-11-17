@@ -6,6 +6,8 @@
 #include "pico_fold.h"     /* the order of the games' names */
 #include "gba_sd_save.h"   /* the games' older file names */
 #include <string.h>   /* memcpy: the sector cache */
+#include <malloc.h>   /* a game's identity: read through a small buffer */
+#include <lib/zlib.h> /* crc32 */
 
 /* LK MMC block-read: reads blkcnt 512B sectors at LBA blknr from mmc device
  * dev_num, partition part_id, into dst. Returns blkcnt on success. Declared here
@@ -258,6 +260,7 @@ int gba_sd_load_bios(fat_vol *v, unsigned char *dst)
 static char lc(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
 static int name_ci_cmp(const char *a, const char *b)
 { while (*a && *b) { char x = lc(*a), y = lc(*b); if (x != y) return x - y; a++; b++; } return lc(*a) - lc(*b); }
+int gba_sd_same_name(const char *a, const char *b) { return name_ci_cmp(a, b) == 0; }
 
 /* The systems and the folder names a card may give them. /roms/<first name> is GammaOS's own
  * layout (gba_sd_make_rom_dirs makes it); the others are the names ES-DE, RetroArch playlists
@@ -812,6 +815,29 @@ static void rom_file(fat_vol *v, const gba_rom_entry *r, fat_file *f)
 	 * reader follows the FAT, which holds nothing for a contiguous file, and stops after the
 	 * first cluster (a GB/GBC game then ran 32 KB of ROM and the rest of the buffer's old data) */
 	f->v = v; f->first_clus = r->first_clus; f->size = r->size; f->ex_nofat = r->ex_nofat;
+}
+
+/* a game's identity: its ROM's size and CRC-32. An archive's own directory keeps both (nothing is
+ * unpacked); a plain file is read once through a 32 KB buffer. The same ROM zipped on one card and
+ * plain on another has the same identity. */
+int gba_rom_identity(fat_vol *v, const gba_rom_entry *r, uint32_t *size, uint32_t *crc)
+{
+	fat_file f;
+	uint8_t *b;
+	uint32_t off = 0, c = 0;
+	if (!v || !r) return RA_ERR_READ;
+	rom_file(v, r, &f);
+	if (r->arc) return rom_archive_crc(r->arc, &f, gba_sd_rom_exts(r->type), r->member, size, crc);
+	if (!(b = malloc(32768))) return RA_ERR_HUGE;
+	while (off < r->size) {
+		uint32_t n = r->size - off < 32768u ? r->size - off : 32768u;
+		if (fat_read(&f, off, b, n) != n) { free(b); return RA_ERR_READ; }
+		c = (uint32_t)crc32(c, b, n);
+		off += n;
+	}
+	free(b);
+	*size = r->size; *crc = c;
+	return RA_OK;
 }
 
 /* can the game start: a ROM that fits its system, an archive that holds one we can unpack */

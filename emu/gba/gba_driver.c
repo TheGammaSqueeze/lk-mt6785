@@ -592,7 +592,7 @@ volatile unsigned int g_dbg_legacy_refused;   /* oem mode: partition state / sav
 #ifdef AYANEO_GBA_SD
 static int  sd_mode_on(void);            /* defined after the SD globals below */
 static int  sd_state_write(unsigned char *scratch);
-static int  sd_state_read(unsigned char *scratch);
+static int  sd_state_read(unsigned char *scratch, const char *ext);
 static int  sd_manual_write(unsigned char *scratch);
 static int  sd_manual_read(unsigned char *scratch);
 static void sd_sav_write(void);
@@ -644,7 +644,7 @@ static int state_read(unsigned char *scratch)
 #ifdef AYANEO_GBA_SD
 	/* states live on the card only: the SD build reads and writes nothing on the eMMC */
 	(void)hdr; (void)magic; (void)sz;
-	return sd_mode_on() ? sd_state_read(scratch) : 0;
+	return sd_mode_on() ? sd_state_read(scratch, "sus") : 0;
 #else
 	if (partition_read(GBA_PART, GBA_STATE_OFF, hdr, 8) != 8)
 		return 0;
@@ -658,6 +658,16 @@ static int state_read(unsigned char *scratch)
 	gba_core_state_load(scratch);
 	return 1;
 #endif
+}
+
+/* the state a launch opens (gba_launch_state): "sus" the suspend point, "st0".."st2" a slot */
+static int state_read_open(unsigned char *scratch, const char *ext)
+{
+#ifdef AYANEO_GBA_SD
+	if (sd_mode_on()) return sd_state_read(scratch, ext);
+#endif
+	(void)ext;
+	return state_read(scratch);
 }
 
 /* Manual Save/Load wrappers (menu): SD uses the selected slot st0..2; the legacy partition path
@@ -748,7 +758,7 @@ static void try_load_state(unsigned char *scratch)
 
 #ifdef AYANEO_GBA_SD
 static const char *gba_sd_current_name(void);   /* the ROM running from the card, or NULL */
-extern int gba_launch_continues(void);           /* the game opening carries on from its suspend point (gba_snes_menu.c) */
+extern int gba_launch_state(char *ext);          /* the game opening carries on from a state, and which (gba_snes_menu.c) */
 #endif
 /* The suspend save of the power key, timed per step (oem suspendtest: [0] state, [1] battery save,
  * [2] settings, ms; [4] state write result; [3] is left 0) */
@@ -1982,7 +1992,13 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 		g_dbg_savestate_ms[1] = (gpt4_get_current_tick() - t0) / 13000u;
 		g_dbg_savestate_ms[2]++;
 		if (!ok) mi_puts(status, "Save failed"); } changed = 0; break;
-	case MI_RESET:    if (act && s_gba_np) { mi_puts(status, "Not during netplay"); changed = 0; break; }
+	case MI_RESET:    if (act && s_gba_np) {	/* the host's, on both consoles at the same frame */
+				extern int pico_np_is_host(void);
+				extern void pico_np_ask_reset(void);
+				if (!pico_np_is_host()) { mi_puts(status, "Only the host can reset the game"); changed = 0; break; }
+				pico_np_ask_reset();
+				return 1;
+			  }
 			  if (act) { s_reset_req = 1; return 1; } changed = 0; break;
 	case MI_CLOSE:    if (act) { s_close_req = 1; return 1; } changed = 0; break;
 	default: changed = 0; break;
@@ -2338,6 +2354,7 @@ void ayaneo_gba_fault_screen(const char *msg, unsigned pc, unsigned addr, unsign
 #include "rom_archive.h"     /* RA_ERR_START: a game the core would not start */
 #include "fat_wr.h"
 #include "gba_sd_save.h"
+#include "pico_state_shot.h"   /* each state's picture and time, for the Suspend Point List */
 #include "core_file.h"
 extern const struct gba_core_exports *gba_core_load_file(fat_vol *v, const char *path);	/* gba_core_loader.c: from the card */
 extern volatile int g_gba_core_err;	/* gba_core_loader.c: why the last load failed (core_file.h) */
@@ -2477,6 +2494,23 @@ static int gba_want_armgba(void)
 	if (!s_have_bios) return 1;
 	if (g_dbg_core_force) return g_dbg_core_force == 1;
 	return s_sdcore_present > 0 && s_core_pref == 0;
+}
+/* The folder a game's states are in, for the menu's Suspend Point List: a GBA game's that of the core
+ * its next launch would use (armGBA and gpSP states do not mix), the others' their core's own. */
+const char *gba_state_dir_of(int system)
+{
+	switch (system) {
+	case GBA_CONSOLE_GBA:
+		if (!s_corecfg_loaded) corecfg_load();
+		if (s_sdcore_present < 0) { fat_file f; s_sdcore_present = (fat_open(&s_sd_vol, SDCORE_PATH, &f) == 0) ? 1 : 0; }
+		if (!gba_want_armgba()) return "/states/gba";
+		return (g_core && s_core_is_sd && g_core->version >= GBA_CORE_ABI_V3 && g_core->state_dir)
+			? g_core->state_dir : "/states/armgba";
+	case GBA_CONSOLE_GB: case GBA_CONSOLE_GBC: return "/states/gba";
+	case GBA_CONSOLE_SNES: return "/states/snes";
+	case GBA_CONSOLE_NES: return "/states/nes";
+	default: return "/states/genesis";   /* Mega Drive, Master System, Game Gear, SG-1000 */
+	}
 }
 /* The core's heap: the armGBA core gets a window of its own in high DRAM (ayaneo_gba_high_arena,
  * 128 MB) when it maps, else, like gpSP, the scratch arena below the LK's state scratch. */
@@ -2685,25 +2719,35 @@ static int sd_state_write(unsigned char *scratch)
 	unsigned sz = gba_core_state_size();
 	if (!sz) return 0;
 	gba_core_state_save(scratch);   /* raw gpSP state (no boot_b header needed) */
-	return gba_sd_write_named(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, "sus", scratch, sz) == 0;
+	if (gba_sd_write_named(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, "sus", scratch, sz) != 0) return 0;
+	pico_shot_save(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, "sus", 0);
+	return 1;
 }
 
-static int sd_state_read(unsigned char *scratch)
+static int sd_state_read(unsigned char *scratch, const char *ext)
 {
 	unsigned sz = gba_core_state_size();
-	uint32_t n = gba_sd_read_named(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, "sus", scratch, GBA_STATE_MAX);
+	uint32_t n = gba_sd_read_named(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, ext, scratch, GBA_STATE_MAX);
 	if (!sz || n != sz) return 0;   /* absent or size mismatch (version guard) */
 	gba_core_state_load(scratch);
 	return 1;
 }
 
 /* MANUAL state (Pico menu Save/Load State): the user-selected slot st0..st2. */
+static const char *gba_slot_ext(void)
+{
+	static char e[4];
+	e[0] = 's'; e[1] = 't'; e[2] = (char)('0' + s_gba_slot % 10); e[3] = 0;
+	return e;
+}
 static int sd_manual_write(unsigned char *scratch)
 {
 	unsigned sz = gba_core_state_size();
 	if (!sz) return 0;
 	gba_core_state_save(scratch);
-	return gba_sd_write_state(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, sz) == 0;
+	if (gba_sd_write_state(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, sz) != 0) return 0;
+	pico_shot_save(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, gba_slot_ext(), 0);
+	return 1;
 }
 
 /* the same, to the card from the writer's thread; status gets the note once it is there */
@@ -2712,8 +2756,10 @@ static int sd_manual_write_bg(unsigned char *scratch, char *status)
 	unsigned sz = gba_core_state_size();
 	if (!sz) return 0;
 	gba_core_state_save(scratch);
-	return gba_sd_write_state_bg(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, sz,
-				     status, 48, "State saved", "Save failed") == 0;
+	if (gba_sd_write_state_bg(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, sz,
+				  status, 48, "State saved", "Save failed") != 0) return 0;
+	pico_shot_save(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, gba_slot_ext(), 1);
+	return 1;
 }
 
 static int sd_manual_read(unsigned char *scratch)
@@ -3084,7 +3130,7 @@ static int gba_np_find_rom(const char *name, unsigned int size, unsigned int crc
 	int i;
 	for (i = 0; i < s_nrom; i++) {
 		uint32_t n;
-		if (s_roms[i].type != GBA_CONSOLE_GBA || strcmp(s_roms[i].name, name))
+		if (s_roms[i].type != GBA_CONSOLE_GBA || !gba_sd_same_name(s_roms[i].name, name))
 			continue;
 		n = gba_sd_load_rom(&s_sd_vol, &s_roms[i], (unsigned char *)dst, cap);
 		return n == size && pico_np_crc(dst, n) == crc ? 0 : -1;
@@ -3148,6 +3194,10 @@ static void gba_np_begin(const gba_rom_entry *rom, unsigned int romsz)
 		 * the in-game menu's Close; the other console simply not coming lets the game play alone */
 		if (g_np_begin_rc == -11 || g_np_begin_rc == -8)
 			s_close_req = 1;
+		if (g_np_begin_rc == -12) {	/* a console lacks the other's game: back to the menu, saying so */
+			gba_rom_set_error(RA_ERR_LINKGAME);
+			s_close_req = 1;
+		}
 		return;
 	}
 	s_gba_np = 1;
@@ -3183,9 +3233,14 @@ static void gba_np_frame(void)
 	extern void pico_np_hash(unsigned int frame, unsigned int crc);
 	extern volatile int g_np_dump;
 	unsigned int p1 = 0, p2 = 0, fno, hsz;
+	extern int pico_np_take_reset(unsigned int *p1);
 	if (pico_np_frame(s_keys & 0x3FFu, &p1, &p2) != 0) {
 		gba_np_end();
 		return;
+	}
+	if (pico_np_take_reset(&p1)) {	/* the host's reset, here at the same frame: both machines */
+		reset_gba();
+		s_cpu_restart_req = 1;	/* the CPU thread, parked, starts its loop again as it wakes */
 	}
 	g_core->pair_keys(p1, p2);
 	fno = pico_np_frame_no() - 1u;
@@ -3558,8 +3613,10 @@ static int emu_thread(void *arg)
 				s_game_live = 1;
 				gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
 						(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
-				if (!PRESSED(GPIO_B) && gba_launch_continues())
-					state_read(scratch);
+				{	char ext[4];   /* the state picked in the Suspend Point List, or the suspend point */
+					if (!PRESSED(GPIO_B) && gba_launch_state(ext))
+						state_read_open(scratch, ext);
+				}
 				gba_np_begin(&s_roms[s_sel_rom], romsz);	/* an armed launch: netplay */
 				/* Do NOT blank here: it blacks the live frozen-menu snapshot = a black
 				 * flash before the opening punch. The punch composites the full frame
@@ -4012,8 +4069,10 @@ static int emu_thread(void *arg)
 					gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
 							(unsigned char *)gba_core_backup_ptr(),
 							gba_core_backup_size());
-					if (!PRESSED(GPIO_B) && gba_launch_continues())
-						state_read(scratch);
+					{	char ext[4];   /* the state picked in the Suspend Point List, or the suspend point */
+						if (!PRESSED(GPIO_B) && gba_launch_state(ext))
+							state_read_open(scratch, ext);
+					}
 					gba_np_begin(&s_roms[s_sel_rom], (unsigned) rsz);	/* an armed launch: netplay */
 					gba_rewind_arm();	/* fresh game -> fresh rewind timeline */
 					/* no blank: keep the frozen menu on screen for the seamless

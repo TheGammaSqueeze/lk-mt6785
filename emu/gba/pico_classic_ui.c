@@ -48,6 +48,31 @@ static const float k_font_lh[3] = { 47.0f, 31.0f, 24.0f };
 
 uint32_t cui_font(int f) { return snes_hash(k_font[f < 0 || f > 2 ? 1 : f]); }
 
+void cui_lang_fonts(void)
+{
+	static const char *const name[3] = { "c_l", "c_m", "c_s" };
+	int i;
+	for (i = 0; i < 3; i++) {
+		uint32_t len = 0;
+		const uint8_t *e = pico_lang_entry(name[i], 3, &len);
+		const uint16_t *h = (const uint16_t *)e;
+		if (e && len >= 16 && 16u + h[3] * (uint32_t)sizeof(snes_glyph) + (uint32_t)h[4] * h[5] <= len)
+			snes_font_more(i, cui_font(i), (const snes_glyph *)(e + 16), h[3],
+				       e + 16 + h[3] * sizeof(snes_glyph), h[4], h[5]);
+		else
+			snes_font_more(i, 0, 0, 0, 0, 0, 0);
+	}
+}
+
+const char *cui_order(const char *s)
+{
+	static char buf[4][256];
+	static int k;
+	if (!s) return s;
+	k = (k + 1) & 3;
+	return pico_bidi(s, buf[k], sizeof buf[k]);
+}
+
 /* one pixel of a source image as 0xAARRGGBB */
 static uint32_t src_px(const snes_pack *pk, const snes_img_entry *im, int x, int y)
 {
@@ -316,7 +341,8 @@ float cui_text(int f, float x, float cy, float sc, uint32_t argb, int align, con
 {
 	uint32_t al = (uint32_t)((float)((argb >> 24) & 255) * cui_clamp01(a));
 	if (al)
-		snes_draw_text(u_t, u_pk, cui_font(f), x, cy - k_font_lh[f] * sc * 0.5f, sc, (argb & 0xFFFFFFu) | al << 24, align, s);
+		snes_draw_text(u_t, u_pk, cui_font(f), x, cy - k_font_lh[f] * sc * 0.5f, sc, (argb & 0xFFFFFFu) | al << 24, align,
+			       cui_order(s));
 	return cui_text_w(f, sc, s);
 }
 const char *cui_fit(int f, float sc, const char *s, float maxw, char *out, unsigned cap)
@@ -374,8 +400,110 @@ float cui_hints(float x_right, float y, int n, const int *icons, const char *con
 	x = left = x_right - total - 41 * (n - 1);
 	for (i = 0; i < n; i++) {
 		cui_spr_x(icons[i], x + iw[i] / 2, y, 2.55f, 1);
-		snes_draw_text(u_t, u_pk, cui_font(CF_S), x + iw[i] + 6, y - 10, .9f, 0xFFF2F2F2u, 0, labels[i]);
+		snes_draw_text(u_t, u_pk, cui_font(CF_S), x + iw[i] + 6, y - 10, .9f, 0xFFF2F2F2u, 0, cui_order(labels[i]));
 		x += iw[i] + 6 + lw[i] + 41;
 	}
 	return left;
+}
+
+/* ==== a sheet: the menubar pages' shape for screens of the LK's own (the Link screens) ============ */
+#define SHEET_ROW  60.0f
+#define SHEET_ROWS 6
+
+/* words of s from reading order, as many lines as fit maxw across, each drawn in drawing order;
+ * the y of the line after */
+static float sheet_wrap(int f, float x, float y, float sc, float pitch, float maxw, uint32_t argb, const char *s)
+{
+	char line[200], trial[200];
+	int ll = 0;
+	while (s && *s) {
+		const char *w = s;
+		int wl, tl;
+		while (*s && *s != ' ' && *s != '\n') s++;
+		wl = (int)(s - w);
+		if (wl > 120) wl = 120;
+		tl = ll ? ll + 1 + wl : wl;
+		if (tl >= (int)sizeof trial) tl = (int)sizeof trial - 1;
+		if (ll) { memcpy(trial, line, (unsigned)ll); trial[ll] = ' '; memcpy(trial + ll + 1, w, (unsigned)(tl - ll - 1)); }
+		else memcpy(trial, w, (unsigned)tl);
+		trial[tl] = 0;
+		if (ll && cui_text_w(f, sc, cui_order(trial)) > maxw) {	/* a full line: out, the word starts the next */
+			line[ll] = 0;
+			cui_text(f, x, y, sc, argb, 0, line, 1);
+			y += pitch;
+			memcpy(line, w, (unsigned)wl); ll = wl;
+		} else {
+			memcpy(line, trial, (unsigned)tl); ll = tl;
+		}
+		if (*s == '\n' && ll) {	/* a line ends here */
+			line[ll] = 0;
+			cui_text(f, x, y, sc, argb, 0, line, 1);
+			y += pitch;
+			ll = 0;
+		}
+		while (*s == ' ' || *s == '\n') s++;
+	}
+	if (ll) { line[ll] = 0; cui_text(f, x, y, sc, argb, 0, line, 1); y += pitch; }
+	return y;
+}
+
+void cui_sheet(float top, const struct cui_sheet *s)
+{
+	static const int ic_of[3] = { KS_BTN_A, KS_BTN_B, KS_DPAD };
+	const float bottom = top + 648.0f;
+	int icons[5], i, k, n = 0, first;
+	const char *labels[5];
+	char fb[160];
+	float room, y, tw;
+	cui_frame(64, top, 1216, bottom);
+	/* the header: the icon and the title at the left, the buttons at the right */
+	/* in the pages' order: Select, then Back, then the rest (OK) */
+	if (s->nrows > 1) { icons[n] = KS_DPAD; labels[n++] = cui_say(CF_S, "Select"); }
+	for (k = 0; k < 2; k++)
+		for (i = 0; i < s->nhints && n < 5; i++) {
+			if ((s->hint_btn[i] == 'B') != !k) continue;
+			icons[n] = ic_of[s->hint_btn[i] == 'B' ? 1 : s->hint_btn[i] == 'A' ? 0 : 2];
+			labels[n++] = s->hint_label[i] ? s->hint_label[i] : "";
+		}
+	room = (n ? cui_hints(1180, top + 38, n, icons, labels) : 1180) - 32 - 176;
+	cui_spr(s->icon, 128, top + 39, 72, 72, 1, 1, 1, 1);
+	if (s->busy) room -= 72;
+	tw = cui_text(CF_L, 176, top + 38, 1, 0xFFF4F4F4u, 0, cui_fit(CF_L, 1, s->title ? s->title : "", room, fb, sizeof fb), 1);
+	if (s->busy) {	/* three dots after the title, one lit at a time in the cursor's cyan */
+		int lit = (int)(s->clock * 3.0f) % 3;
+		for (k = 0; k < 3; k++)
+			cui_quad(176 + tw + 20 + 18 * (float)k, top + 46, 9, 9, k == lit ? 0xFF40C0FFu : 0xFF5A5A5Au, 1);
+	}
+	cui_spr(KS_LINE, 640, top + 72, 1134, 12, 1, 1, 1, 1);
+	y = top + 118;
+	if (s->subtitle && s->subtitle[0]) {	/* the game or the console it is about */
+		cui_text(CF_M, 160, y, .95f, 0xFFB4B4B4u, 0, cui_fit(CF_M, .95f, s->subtitle, 960, fb, sizeof fb), 1);
+		y += 58;
+	} else y += 14;
+	/* the list: the blue bar under the focused row, the value at the right */
+	first = s->sel >= SHEET_ROWS ? s->sel - SHEET_ROWS + 1 : 0;
+	for (i = first; i < s->nrows && i < first + SHEET_ROWS; i++, y += SHEET_ROW) {
+		float vw = 0;
+		if (i == s->sel) cui_spr(KS_BAR, 640, y, 1040, SHEET_ROW - 4, 1, 1, 1, 1);
+		if (s->values[i] && s->values[i][0]) {
+			const char *v = cui_fit(CF_M, 1, s->values[i], 420, fb, sizeof fb);
+			vw = cui_text(CF_M, 1112, y, 1, 0xFFB4B4B4u, 2, v, 1);
+		}
+		if (s->rows[i])
+			cui_text(CF_M, 160, y, 1, 0xFFF4F4F4u, 0, cui_fit(CF_M, 1, s->rows[i], 952 - (vw > 0 ? vw + 40 : 0), fb, sizeof fb), 1);
+	}
+	if (s->nrows > first + SHEET_ROWS) cui_spr_x(KS_DOWN, 1182, y - SHEET_ROW + 6, 1.5f, 1);
+	if (first > 0) cui_spr_x(KS_UP, 1182, top + 104, 1.5f, 1);
+	if (s->nrows) y += 10;
+	/* what goes on, or why: wrapped across the page */
+	if (s->status && s->status[0]) y = sheet_wrap(CF_M, 160, y, .9f, 44, 960, 0xFFD8D8D8u, s->status) + 8;
+	/* how far: the cursor's cyan on a dark track, and the line under it */
+	if (s->total) {
+		unsigned int d = s->done < s->total ? s->done : s->total;
+		float f = (float)d / (float)s->total;
+		if (y > bottom - 110) y = bottom - 110;
+		cui_quad(160, y, 960, 12, 0xFF2C3440u, 1);
+		if (f > 0) cui_quad(160, y, 960 * f, 12, 0xFF40C0FFu, 1);
+		if (s->progress && s->progress[0]) cui_text(CF_S, 160, y + 40, .9f, 0xFFB4B4B4u, 0, s->progress, 1);
+	}
 }

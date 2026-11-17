@@ -40,6 +40,12 @@ int ayaneo_game_picture(const unsigned short **pix, unsigned int *sw, unsigned i
 	return 1;
 }
 /* a game ends: its frame memory is not its own any more */
-void ayaneo_game_picture_forget(void) { s_pic.pix = 0; }
+/* (the picture kept first for a suspend point saved after this: pico_state_shot.c, card builds) */
+extern void pico_shot_keep(void) __attribute__((weak));
+void ayaneo_game_picture_forget(void)
+{
+	if (s_pic.pix && pico_shot_keep) pico_shot_keep();
+	s_pic.pix = 0;
+}
 volatile unsigned int g_dbg_launch_t0, g_dbg_launch_us[4];   /* the opening's end, then the game's own marks */
 volatile unsigned int g_dbg_launch_a, g_dbg_launch_pre_us[6];   /* from the launch press: the core's loads, then the opening */

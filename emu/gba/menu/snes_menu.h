@@ -188,7 +188,6 @@ typedef struct snes_menu_s {
 	int   prev_focus;             /* card focused before the last nav (blue-frame crossfade) */
 	float xfade_t;                /* seconds left in the 0.2s blue-frame crossfade */
 	float resume_dim;             /* 0..1 fade of the resume card-darken (non-focused cards -> 0.5) */
-	float resume_expl_t;          /* seconds since the empty resume list opened (explanation hold+fade) */
 
 	/* authored game-card frame (from sys_game_card.scn): the cartridge-display
 	 * sprite drawn around each boxart. active = focused, norm = unfocused. */
@@ -234,6 +233,19 @@ typedef struct snes_menu_s {
 	const unsigned char *gba_types;
 	const snes_img_entry *console_logo[9];   /* [GB/GBC/GBA/SNES/GENESIS/SMS/GG/SG/NES] indexed by GBA_CONSOLE_* */
 	int launch;                         /* focused ROM index to launch, -1 = none */
+	/* The Suspend Point List's four cards: 0 the game's suspend point, 1..3 its save slots. The
+	 * caller fills them for game gidx (a view index) each time the list opens (points_get); a
+	 * card with a state shows its picture (none for a state from before pictures) and when it
+	 * was made. A on one launches the game from it: launch_point says which (-1 the usual). */
+	struct snes_point {
+		int used;
+		const snes_pack *pk;            /* the picture's pixels are in it (img->pixels) */
+		const snes_img_entry *img;      /* RGB565, at most 160 x 120; 0 none */
+		char when[48];                  /* "Thu 13 Nov 14:32", "" not known */
+	} point[4];
+	void (*points_get)(struct snes_menu_s *m, int gidx);
+	int point_sel;                      /* the card in focus, -1 when none has a state */
+	int launch_point;
 	int sysreset;                       /* set when "System Reset" is confirmed (-> boot OS) */
 	int pstart;                         /* prev-frame Start (edge detect for launch) */
 } snes_menu;
@@ -273,6 +285,9 @@ void snes_menu_sfx(snes_menu *m, int kind);
 void snes_menu_note(snes_menu *m, const char *text, float secs, int pos);
 /* If A/Start launched a ROM, returns its index and clears the flag; else -1. */
 int snes_menu_take_launch(snes_menu *m);
+/* with a launch: the Suspend Point List card it starts from (0 the suspend point, 1..3 a save slot),
+ * -1 the usual start */
+int snes_menu_take_launch_point(snes_menu *m);
 int snes_menu_take_sysreset(snes_menu *m);
 /* The Theme row: n thumbnails (172x98, any may be 0) and the theme in use. */
 void snes_menu_set_themes(snes_menu *m, int n, const snes_img_entry *const *thumbs, int applied);

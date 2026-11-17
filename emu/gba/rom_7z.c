@@ -416,7 +416,14 @@ int rom_7z_open(fat_file *f, const char *exts, unsigned member, uint8_t *dst, ui
 			for (k = sub_first; k < stream; k++) off += st.sub_size[k];
 			if (st.fold[fi].method == SZ_AES) return RA_ERR_PASSWORD;
 			if (st.fold[fi].method == SZ_OTHER) return RA_ERR_METHOD;
-			if (mode == 0) { *size = rsize > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)rsize; return RA_OK; }
+			if (mode == 0 || mode == 4) {	/* its size; with mode 4 its CRC-32 too, as the archive keeps it */
+				*size = rsize > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)rsize;
+				if (mode == 4) {
+					if (!st.sub_has_crc[stream]) return RA_ERR_DAMAGED;
+					*(uint32_t *)(void *)dst = st.sub_crc[stream];
+				}
+				return RA_OK;
+			}
 			if (mode == 1 && off + rsize > cap) return RA_ERR_TOOBIG;
 			if (mode == 2) {
 				if (off >= cap) return RA_ERR_TOOBIG;

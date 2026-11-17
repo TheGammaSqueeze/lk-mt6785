@@ -17,7 +17,8 @@ enum { LUI_CLOSED, LUI_HOME, LUI_HOST_WAIT, LUI_JOIN_LIST, LUI_JOIN_WAIT, LUI_ME
        LUI_SEND_LIST,		/* Send: the consoles nearby ready to receive */
        LUI_SEND_RUN,		/* Send: the game and its save going over */
        LUI_RECEIVE,		/* Receive: waiting for a console to send, then the files coming in */
-       LUI_JOIN_COPY };		/* Join: the host's game is not on this card: copy it first? */
+       LUI_TERMS,		/* Send, Receive: the notice about copying only games one owns, first */
+       LUI_JOIN_CHOOSE };	/* Join, a link cable system: the host's game on this card, or another */
 
 /* buttons, as edges this frame (lui_input) */
 enum { LUI_UP = 1, LUI_DOWN = 2, LUI_LEFT = 4, LUI_RIGHT = 8, LUI_A = 16, LUI_B = 32 };

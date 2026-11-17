@@ -1208,11 +1208,6 @@
    "note": "button hint: A joins the console picked"
   },
   {
-   "en": "Copy",
-   "kind": "hint",
-   "note": "button hint: A copies the game to this console"
-  },
-  {
    "en": "Cancel",
    "kind": "hint",
    "note": "button hint: B stops what is going on"
@@ -1246,16 +1241,6 @@
    "en": "Connecting...",
    "kind": "status",
    "note": "status"
-  },
-  {
-   "en": "Copying the game",
-   "kind": "status",
-   "note": "status while a game crosses to this console"
-  },
-  {
-   "en": "Copying the game to the other console",
-   "kind": "about",
-   "note": "status on the host while its game crosses to the other console"
   },
   {
    "en": "It arrived damaged and was not kept.",
@@ -1298,11 +1283,6 @@
    "note": "the memory card could not store the file"
   },
   {
-   "en": "The game was copied but is not in the library.",
-   "kind": "about",
-   "note": "error after copying a game"
-  },
-  {
    "en": "The link to the other console was lost.",
    "kind": "about",
    "note": "error"
@@ -1316,6 +1296,16 @@
    "en": "The other console does not have this game.",
    "kind": "about",
    "note": "error"
+  },
+  {
+   "en": "The other console has another version of this game.",
+   "kind": "about",
+   "note": "error: the other console has a game of that name whose contents differ, so playing together would not stay in step"
+  },
+  {
+   "en": "This console has another version of this game.",
+   "kind": "about",
+   "note": "error: this console has a game of that name whose contents differ from the other console's"
   },
   {
    "en": "The other console has no room for it.",
@@ -1336,11 +1326,6 @@
    "en": "This game could not be read from the card.",
    "kind": "about",
    "note": "error"
-  },
-  {
-   "en": "This game is not on this console. Copy it from the other one (%s)? It stays on this card.",
-   "kind": "about",
-   "note": "question before joining; %s is the game's size"
   },
   {
    "en": "To play a game together or send it: X on it in the library.",
@@ -1402,6 +1387,111 @@
    "en": "Ready. On the other console: a game, Link, Send.",
    "kind": "about",
    "note": "status while waiting to receive: what to do on the other console (Link and Send are its button and row)"
+  },
+  {
+   "en": "Only the host can reset the game",
+   "kind": "status",
+   "note": "short note in the in-game menu: during a game played together, only the console that hosts it resets it (on both consoles)"
+  },
+  {
+   "en": "Menu",
+   "kind": "hint",
+   "note": "classic theme hint: the menu bar"
+  },
+  {
+   "en": "Suspend Point List",
+   "kind": "heading",
+   "note": "classic theme hint and screen title: the list of suspend points (saved moments a game can carry on from)"
+  },
+  {
+   "en": "Sort",
+   "kind": "hint",
+   "note": "classic theme hint: change the order of the games"
+  },
+  {
+   "en": "Start Game",
+   "kind": "hint",
+   "note": "classic theme hint: start the game in focus"
+  },
+  {
+   "en": "Game List",
+   "kind": "hint",
+   "note": "classic theme hint: back to the list of games"
+  },
+  {
+   "en": "Lock/Unlock",
+   "kind": "hint",
+   "note": "classic theme hint on the suspend point list: lock or unlock a suspend point"
+  },
+  {
+   "en": "Move/Delete",
+   "kind": "hint",
+   "note": "classic theme hint on the suspend point list: move or delete a suspend point"
+  },
+  {
+   "en": "Save",
+   "kind": "hint",
+   "note": "classic theme hint on the suspend point list: save a suspend point"
+  },
+  {
+   "en": "Press and Hold",
+   "kind": "hint",
+   "note": "classic theme hint: hold the button down"
+  },
+  {
+   "en": "No Data",
+   "kind": "value",
+   "note": "classic theme: an empty suspend point slot"
+  },
+  {
+   "en": "If you continue from this suspend point, your game's save data will be overwritten.",
+   "kind": "about",
+   "note": "classic theme note on the suspend point list"
+  },
+  {
+   "en": "When you reset a game, you can create a suspend point.",
+   "kind": "about",
+   "note": "classic theme note when the suspend point list is empty"
+  },
+  {
+   "en": "This will delete the selected\nsuspend point data.\nDeleted data cannot be recovered.\nDo you want to continue? ",
+   "kind": "about",
+   "note": "classic theme question before a suspend point is deleted; keep the line breaks where the language needs them"
+  },
+  {
+   "en": "This game is not on this console. To play it together, copy it first: Link, Send on the other console and Link, Receive on this one.",
+   "kind": "about",
+   "note": "note on the Join screen: the host's game is not on this console; Link, Send and Receive are the names of the tab and its rows"
+  },
+  {
+   "en": "Only copy games you own. Copying a game you do not own may be against the law where you live. You copy at your own risk.",
+   "kind": "about",
+   "note": "notice shown before Send and Receive: copy only games you own, at your own risk"
+  },
+  {
+   "en": "Accept",
+   "kind": "hint",
+   "note": "button hint: A accepts the notice and goes on"
+  },
+  {
+   "en": "Both consoles need both games to play linked. Copy them first with Link, Send and Receive.",
+   "kind": "about",
+   "note": "note when a game played with the link cable cannot start: each console needs both games on its card; Link, Send and Receive are names in the menus"
+  },
+  {
+   "en": "Same game",
+   "kind": "value",
+   "note": "Link, Join: next to the game on this console that is the same as the other console's; short"
+  },
+  {
+   "en": "Choose another game",
+   "kind": "row",
+   "note": "Link, Join: pick another game of the same system from the library to link with"
+  },
+  {
+   "en": "Play the game the other console plays, or another game to link with it.",
+   "kind": "about",
+   "note": "status, wrapped; Link, Join: the two choices of a guest on a link cable system"
   }
  ]
 }

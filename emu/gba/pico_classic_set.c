@@ -345,6 +345,14 @@ static void page_draw(int slot, snes_target *t, float slide)
 	}
 }
 
+int pico_classic_set_use(snes_target *t, float *top)
+{
+	if (!s_ok) return 0;
+	cui_use(s_pk, &s_set, t);
+	*top = ((float)t->H / snes_target_base(t) - 720.0f) / 2.0f + 36.0f;   /* as page_draw */
+	return 1;
+}
+
 void pico_classic_set_begin(snes_menu *m, const snes_pack *pk, const struct pico_classic_themes *th)
 {
 	static const char *const icon[5] = { "btn_link.png", "btn_display.png", "btn_option.png", "btn_language.png",

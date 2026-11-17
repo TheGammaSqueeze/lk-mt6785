@@ -61,6 +61,12 @@ const snes_scene_entry*snes_res_scene(const snes_pack *p, uint32_t hash);
 /* image pixel base + whether rgb565 */
 const uint8_t *snes_img_pixels(const snes_pack *p, const snes_img_entry *im);
 
+/* A text from the pack's tables as it is shown: snes_text_hook, when set, takes the table's text
+ * (the English, for a language the pack has no table of) and gives what to show (its translation,
+ * in drawing order). snes_text_order puts any text the menu shows in drawing order (right-to-left
+ * letters); 0 leaves texts as they are. The LK sets both (gba_snes_menu.c). */
+extern const char *(*snes_text_hook)(const char *text);
+extern const char *(*snes_text_order)(const char *text);
 /* localized string lookup by key (default/first locale). Returns the key if absent. */
 const char *snes_text(const snes_pack *p, const char *key);
 const char *snes_text_locale(const snes_pack *p, int locale_idx, const char *key);

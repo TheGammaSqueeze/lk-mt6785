@@ -25,6 +25,14 @@ struct pico_np_pair {
 	unsigned int *their_rom_flags;
 };
 
+/* A reset of the game during a session: the host's menu asks (pico_np_ask_reset; only the host
+ * may), the flag travels in the host's pad, and each runner, after pico_np_frame, takes it out of
+ * player one's pad (pico_np_take_reset, 1 when set) and resets the game before that frame, on
+ * both consoles at the same frame. */
+#define PICO_NP_RESET 0x8000u
+int  pico_np_is_host(void);
+void pico_np_ask_reset(void);
+int  pico_np_take_reset(unsigned int *p1);
 /* the steps of a session's start, as its progress shows them (pico_np_progress) */
 enum { PICO_NP_IDLE, PICO_NP_WAITING, PICO_NP_SEND_GAME, PICO_NP_RECV_GAME, PICO_NP_SEND_STATE,
        PICO_NP_RECV_STATE, PICO_NP_STARTING };

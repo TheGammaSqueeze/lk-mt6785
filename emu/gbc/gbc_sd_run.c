@@ -20,6 +20,8 @@
 #include "../gba/pico_igm.h"
 #include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #include "../gba/gba_sd_save.h"
+#include "../gba/pico_state_shot.h"   /* each state's picture and time, for the Suspend Point List */
+#include "../gba/card_writer.h"
 #include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
 #include <kernel/event.h>
@@ -56,7 +58,7 @@ static void gbc_motion_frame(const struct gbc_core_exports *c)
 	g_dbg_gbc_motion_v[0] = v[0]; g_dbg_gbc_motion_v[1] = v[1]; g_dbg_gbc_motion_v[2] = v[2];
 }
 extern void     ayaneo_gbc_audio_pause(int on);
-extern int      gba_launch_continues(void);   /* the game opening carries on from its suspend point (gba_snes_menu.c) */
+extern int      gba_launch_state(char *ext);   /* the game opening carries on from a state, and which (gba_snes_menu.c) */
 extern void     ayaneo_display_prepare(void);
 extern unsigned gpt4_get_current_tick(void);
 extern void     mtk_wdt_restart(void);
@@ -361,6 +363,12 @@ extern volatile int g_gbc_aspect;
  * Auto-resume (load-on-boot / exit) uses a separate ".sus" file so it never clobbers a slot. */
 #define GBC_SLOT_COUNT 3
 static int s_gbc_slot;
+/* GB and GBC states, the suspend point and the slots, whichever GBA core is in use. The slots went
+ * to the GBA core's folder before (the GBA folder until an armGBA game ran, armGBA's after), so a
+ * slot not found here is looked for there too. */
+#define GBC_STATE_DIR "/states/gba"
+extern const char *g_gba_state_dir;
+static void gbc_slot_ext(char *e) { e[0] = 's'; e[1] = 't'; e[2] = (char)('0' + s_gbc_slot); e[3] = 0; }
 #define GBC_NP_HALF	0x00400000u	/* each console's state in the start's exchange (4 MB) */
 #define GBC_NP_ROM	(GBC_ROM_BUF + 0x00400000u)	/* the other console's cartridge, up to 4 MB */
 #define GBC_NP_ROM_CAP	0x00400000u
@@ -482,18 +490,32 @@ static int gm_change(int i, int dir, int act)
 			   if (dir || act) ayaneo_set_show_fps(!ayaneo_get_show_fps()); else changed = 0; } break;
 	case GM_BATTERY: changed = 0; break;
 	case GM_SLOT:    if (dir) s_gbc_slot = (s_gbc_slot + dir + GBC_SLOT_COUNT) % GBC_SLOT_COUNT; changed = 0; break;
-	case GM_SAVE:    if (act && s_menu_ahead_sz) { s_menu_c->state_save(s_menu_ahead);
+	case GM_SAVE:    if (act && s_menu_ahead_sz) { char ext[4], nm[288];
+			     s_menu_c->state_save(s_menu_ahead);
+			     gbc_slot_ext(ext);
 			     /* on the card from the writer's thread: the game and its sound go on (the note once it is there) */
-			     gba_sd_write_state_bg(s_menu_vol, s_menu_rom->name, s_gbc_slot, s_menu_ahead, s_menu_ahead_sz,
-						   s_mstat, sizeof s_mstat, "State saved", "Save failed"); }
+			     gba_sd_state_name(s_menu_rom->name, ext, nm, sizeof nm);
+			     card_writer_put(s_menu_vol, GBC_STATE_DIR, nm, s_menu_ahead, s_menu_ahead_sz,
+					     s_mstat, sizeof s_mstat, "State saved", "Save failed");
+			     pico_shot_save(s_menu_vol, GBC_STATE_DIR, s_menu_rom->name, ext, 1); }
 			 changed = 0; break;
 	case GM_LOAD:    if (act && s_gbc_np) { *mput(s_mstat, "Not during netplay") = 0; return 1; }
-			 if (act && s_menu_ahead_sz) { unsigned n = gba_sd_load_state(s_menu_vol, s_menu_rom->name, s_gbc_slot, s_menu_ahead, 0x00A00000u);
+			 if (act && s_menu_ahead_sz) { char ext[4]; unsigned n;
+			     gbc_slot_ext(ext);
+			     n = gba_sd_read_named(s_menu_vol, GBC_STATE_DIR, s_menu_rom->name, ext, s_menu_ahead, 0x00A00000u);
+			     if (!n && strcmp(g_gba_state_dir, GBC_STATE_DIR))
+				     n = gba_sd_read_named(s_menu_vol, g_gba_state_dir, s_menu_rom->name, ext, s_menu_ahead, 0x00A00000u);
 			     int ok = (n && s_menu_c->state_load(s_menu_ahead, n) == 0);
 			     if (ok) ayaneo_rewind_reset(s_menu_ahead_sz);   /* loaded state breaks the rewind timeline */
 			     mput(s_mstat, ok ? "State loaded" : "No save state"); }
 			 changed = 0; break;
-	case GM_RESET:   if (act && s_gbc_np) { *mput(s_mstat, "Not during netplay") = 0; return 1; }
+	case GM_RESET:   if (act && s_gbc_np) {	/* the host's, on both consoles at the same frame */
+			     extern int pico_np_is_host(void);
+			     extern void pico_np_ask_reset(void);
+			     if (!pico_np_is_host()) { *mput(s_mstat, "Only the host can reset the game") = 0; return 0; }
+			     pico_np_ask_reset();
+			     return 1;
+			 }
 			 if (act) { s_menu_c->reset(); ayaneo_rewind_reset(s_menu_ahead_sz); return 1; } changed = 0; break;
 	case GM_CLOSE:   if (act) return 2; changed = 0; break;
 	default: changed = 0; break;
@@ -690,8 +712,11 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * resumes where it was left, unless B is held (start fresh). Mirrors the GBA
 	 * flow. The state file is keyed by the ROM name; gambatte validates it against
 	 * the loaded ROM and no-ops on a mismatch. */
-	if (GBC_SUSPEND && !PRESSED(GPIO_B) && gba_launch_continues()) {
-		unsigned n = gba_sd_read_named(vol, "/states/gba", rom->name, "sus", ahead, 0x00A00000u);
+	char open_ext[4];   /* the state picked in the Suspend Point List, or the suspend point */
+	if (GBC_SUSPEND && !PRESSED(GPIO_B) && gba_launch_state(open_ext)) {
+		unsigned n = gba_sd_read_named(vol, GBC_STATE_DIR, rom->name, open_ext, ahead, 0x00A00000u);
+		if (!n && open_ext[0] == 's' && open_ext[1] == 't' && strcmp(g_gba_state_dir, GBC_STATE_DIR))
+			n = gba_sd_read_named(vol, g_gba_state_dir, rom->name, open_ext, ahead, 0x00A00000u);
 		if (n)
 			c->state_load(ahead, n);
 	}
@@ -765,8 +790,10 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				ok = ok && c->state_load(host ? theirs : mine, host ? got : msz) == 0;
 			}
 			if (!ok) {
+				extern volatile int g_np_begin_rc;
 				pico_np_stop();
-				gba_rom_set_error(RA_ERR_START);
+				/* a console lacks the other's game (none is sent), or the start failed */
+				gba_rom_set_error(g_np_begin_rc == -12 ? RA_ERR_LINKGAME : RA_ERR_START);
 				ayaneo_menu_audio_silence();
 				return;
 			}
@@ -874,7 +901,8 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				gbc_rtc_save(vol, rom, c);
 				if (GBC_SUSPEND && ahead_sz) {
 					c->state_save(ahead);
-					gba_sd_write_named(vol, "/states/gba", rom->name, "sus", ahead, ahead_sz);
+					gba_sd_write_named(vol, GBC_STATE_DIR, rom->name, "sus", ahead, ahead_sz);
+					pico_shot_save(vol, GBC_STATE_DIR, rom->name, "sus", 0);
 				}
 				gbc_prefs_save(vol);
 				if (is_dmg) gbc_pal_save(vol, rom->name, pal_idx);
@@ -942,8 +970,15 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			extern void pico_np_hash(unsigned int frame, unsigned int crc);
 			extern unsigned ayaneo_gbc_pad_mask(void);
 			unsigned int p1 = 0, p2 = 0, fno, hsz;
+			extern int pico_np_take_reset(unsigned int *p1);
 			if (pico_np_frame(ayaneo_gbc_pad_mask(), &p1, &p2) != 0)
 				break;   /* the other console left or the link is gone: back to the menu */
+			if (pico_np_take_reset(&p1)) {	/* the host's reset: both linked machines, at the same frame */
+				unsigned int sel = c->link_stat(7);
+				c->link_select(0); c->reset();
+				c->link_select(1); c->reset();
+				c->link_select(sel);
+			}
 			pico_np_set_pads(p1, p2);
 			{ extern void pico_np_cable_note(unsigned int a, unsigned int b); pico_np_cable_note(c->link_stat(0), c->link_stat(1)); }
 			{	/* oem npstat: what each machine read, which one is watched */
@@ -1244,7 +1279,8 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	}
 	if (GBC_SUSPEND && ahead_sz) {
 		c->state_save(ahead);
-		gba_sd_write_named(vol, "/states/gba", rom->name, "sus", ahead, ahead_sz);
+		gba_sd_write_named(vol, GBC_STATE_DIR, rom->name, "sus", ahead, ahead_sz);
+		pico_shot_save(vol, GBC_STATE_DIR, rom->name, "sus", 0);
 	}
 	gbc_prefs_save(vol);                            /* persist CGB colour prefs */
 	if (is_dmg) gbc_pal_save(vol, rom->name, pal_idx);   /* persist this game's palette */

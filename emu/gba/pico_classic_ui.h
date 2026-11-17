@@ -62,5 +62,30 @@ void  cui_frame(float x0, float y0, float x1, float y1);
  * they start */
 float cui_hints(float x_right, float y, int n, const int *icons, const char *const *labels);
 uint32_t cui_font(int f);   /* the font's hash */
+/* the language pack's added letters for the l, m and s fonts (c_l, c_m, c_s), for the letters the
+ * fonts lack; again after another pack is read (none: the fonts as they are) */
+void  cui_lang_fonts(void);
+/* a text in drawing order (right-to-left letters turned), in one of a few rotating buffers */
+const char *cui_order(const char *s);
+
+/* A screen of the LK's own in the menubar pages' shape (the Link screens): the frame, the icon and
+ * the title with the button hints at the right, a line, the subtitle, a list with the blue bar under
+ * the focused row and each row's value at the right, a status wrapped across the page, and a bar of
+ * how far something has come (the cursor's cyan). Texts are UTF-8 in the language in use (the
+ * caller folds what the fonts lack); top is the frame's top in design units (648 tall). */
+struct cui_sheet {
+	int icon;                       /* KS_* */
+	const char *title, *subtitle, *status;
+	int nrows, sel;
+	const char *rows[8], *values[8];
+	int busy;                       /* something goes on: dots after the title, one lit at a time */
+	unsigned int done, total;       /* the bar (total 0: none) */
+	const char *progress;           /* the line under the bar ("1.2 MB of 4 MB") */
+	int nhints;
+	char hint_btn[4];               /* 'A', 'B' (anything else: the direction pad) */
+	const char *hint_label[4];
+	float clock;                    /* seconds, for what moves */
+};
+void  cui_sheet(float top, const struct cui_sheet *s);
 
 #endif

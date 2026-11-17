@@ -91,6 +91,10 @@ void snes_blit_raw_pa(snes_target *t, const uint32_t *pix, int pitch, int w, int
 void snes_composite(snes_target *t, const uint32_t *ov, int y0, int y1);
 void snes_fill_quad(snes_target *t, float cx, float cy, float w, float h,
 		    float r, float g, float b, float a);
+/* A font's added letters, for the letters it lacks: slot (0..7) holds the set for the font of that
+ * name hash, g (n glyphs sorted by code point, their places in the alpha-only page a8, w x h);
+ * n 0 empties the slot. The text calls below fall back to it (a language pack keeps them). */
+void snes_font_more(int slot, uint32_t font_hash, const snes_glyph *g, int n, const uint8_t *a8, int w, int h);
 /* draw text with a pack font (by font-name hash); align 0 left/1 centre/2 right. */
 int snes_font_covers(const snes_pack *pk, const snes_font_entry *fe, const char *s);
 void snes_draw_text(snes_target *t, const snes_pack *pk, uint32_t font_hash,

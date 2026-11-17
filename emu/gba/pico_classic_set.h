@@ -23,5 +23,8 @@ void pico_classic_set_begin(snes_menu *m, const snes_pack *pk, const struct pico
 /* what a page asked for (and clears it): a theme to switch to, a language to use; -1 none */
 int  pico_classic_set_take_theme(void);
 int  pico_classic_set_take_lang(void);
+/* draw with the menu's frame parts into t from now on (pico_classic_ui.h); the top of a page there,
+ * in design units. 0 when the pack lacks them (nothing is set). */
+int  pico_classic_set_use(snes_target *t, float *top);
 
 #endif

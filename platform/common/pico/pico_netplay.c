@@ -16,6 +16,9 @@
  *                                  (the last few again in each message, so one late radio
  *                                  event costs no wait)
  *   'Q'                            the session ends
+ * A pad's top bit (PICO_NP_RESET, the right stick's click, which no core reads) set in the
+ * host's pad is a reset of the game: both consoles reset it before the frame that pad is for,
+ * so they stay in step (pico_np_ask_reset).
  *   'H' frame(4) crc32(4)          the sender's whole emulator state, hashed before that frame
  *                                  (every 2 s): the two must match, else the games have parted
  * and before the first frame (pico_np_begin):
@@ -83,6 +86,7 @@ struct np_session {
 };
 static void np_hash_compare(void);
 static struct np_session s_np;
+static int s_np_reset_ask;		/* the host's menu asked for a reset: it goes in the next pad */
 
 static void np_put32(unsigned char *p, unsigned int v)
 {
@@ -175,6 +179,14 @@ void pico_np_stop(void)
 }
 
 int pico_np_active(void) { return s_np.on; }
+int pico_np_is_host(void) { return s_np.on && s_np.host; }
+void pico_np_ask_reset(void) { if (s_np.on && s_np.host) s_np_reset_ask = 1; }
+int pico_np_take_reset(unsigned int *p1)
+{
+	int r = !!(*p1 & PICO_NP_RESET);
+	*p1 &= ~PICO_NP_RESET;
+	return r;
+}
 
 /* the other console went quiet or left: the session ends here, the frame clock is ours again */
 static void np_lost(void)
@@ -236,6 +248,9 @@ int pico_np_frame(unsigned int local, unsigned int *p1, unsigned int *p2)
 		local |= s_np.test_pad;
 		s_np.test_frames--;
 	}
+	local &= ~PICO_NP_RESET;		/* only the host's own ask sets it */
+	if (s_np_reset_ask && s_np.host) local |= PICO_NP_RESET;
+	s_np_reset_ask = 0;
 	/* this console's pad, for the frame delay frames ahead, with the last few again */
 	s_np.mine[use % NP_RING] = (unsigned short)local;
 	first = use + 1u > NP_RESEND ? use + 1u - NP_RESEND : 0u;
@@ -644,12 +659,14 @@ static int np_begin(int host, unsigned int delay, void *state, unsigned int size
 
 /* ---- the start of a linked session (GB/GBC link cable) ----
  * Both consoles run both Game Boys, so each needs the other's machine: each sends its own state
- * (its cartridge save in it) and receives the other's, and when the two play different games
- * (Pokemon Red and Blue) each sends its cartridge too. The guest's 'G' carries its state size,
- * its cartridge's CRC-32, size and load flags; the host answers 'Y' with whether the cartridges
- * travel and its own flags. Then the guest's cartridge (if they travel) and state go to the host,
- * the host's cartridge and state to the guest, and the host's clock ('W': the seconds the
- * cartridges' clocks start from, so both see the same time); then both say ready. */
+ * (its cartridge save in it) and receives the other's. When the two play different games (Pokemon
+ * Red and Blue) each console must have the other's game on its own card: no cartridge travels;
+ * when either lacks it, both stop (-12) and the player copies it, if at all, with Send and
+ * Receive. The guest's 'G' carries its state size, its cartridge's CRC-32, size and load flags;
+ * the host answers 'Y' with whether the games differ, whether it has the guest's, and its own
+ * flags; the guest answers 'Z' whether it has the host's. Then the guest's state goes to the host,
+ * the host's state to the guest, and the host's clock ('W': the seconds the cartridges' clocks
+ * start from, so both see the same time); then both say ready. */
 static long s_np_clock0;		/* the session's clock start (the host's), seconds */
 static long s_np_guest_clock0;		/* the guest's own clock when it said 'G' */
 static long s_np_host_at_g;		/* the host's clock when that 'G' came in */
@@ -709,12 +726,6 @@ static int np_begin_pair(int host, unsigned int delay, const struct pico_np_pair
 		np_get_rom(s_np_msg + 13, their_name, &their_size, &their_crc);
 		trade = their_crc != id || their_size != pp->rom_size;	/* different games */
 		i_have = trade && np_rom_here(pp, their_name, their_size, their_crc);
-		if (trade && !i_have && (their_size > pp->rom_cap || !their_size)) {
-			g_np_begin_info = their_size;
-			m[0] = 'X';
-			np_send(m, 1);
-			return -9;			/* no room for the other cartridge */
-		}
 		m[0] = 'Y';
 		np_put32(m + 1, trade);
 		np_put32(m + 5, pp->rom_flags);
@@ -725,19 +736,11 @@ static int np_begin_pair(int host, unsigned int delay, const struct pico_np_pair
 		if (!np_wait_kind('Z', 60000000u))	/* the guest looked on its card */
 			return -7;
 		they_have = s_np_msg[1];
-		if (trade && !i_have) {
-			np_phase(PICO_NP_RECV_GAME, their_size);
-			if ((rc = np_blob_recv((unsigned char *)pp->their_rom, pp->rom_cap, pp->their_rom_size)) != 0)
-				return rc;
-		}
+		if (trade && (!i_have || !they_have))
+			return -12;			/* a game missing on a card: none is sent */
 		np_phase(PICO_NP_RECV_STATE, pp->msize);
 		if ((rc = np_blob_recv((unsigned char *)pp->theirs, pp->cap, pp->got)) != 0)
 			return rc;
-		if (trade && !they_have) {
-			np_phase(PICO_NP_SEND_GAME, pp->rom_size);
-			if ((rc = np_blob_send((const unsigned char *)pp->rom, pp->rom_size)) != 0)
-				return rc;
-		}
 		np_phase(PICO_NP_SEND_STATE, pp->msize);
 		if ((rc = np_blob_send((const unsigned char *)pp->mine, pp->msize)) != 0)
 			return rc;
@@ -767,19 +770,11 @@ static int np_begin_pair(int host, unsigned int delay, const struct pico_np_pair
 		m[1] = (unsigned char)i_have;
 		if (np_send(m, 2) != 0)
 			return -2;
-		if (trade && !they_have) {
-			np_phase(PICO_NP_SEND_GAME, pp->rom_size);
-			if ((rc = np_blob_send((const unsigned char *)pp->rom, pp->rom_size)) != 0)
-				return rc;
-		}
+		if (trade && (!i_have || !they_have))
+			return -12;			/* a game missing on a card: none is sent */
 		np_phase(PICO_NP_SEND_STATE, pp->msize);
 		if ((rc = np_blob_send((const unsigned char *)pp->mine, pp->msize)) != 0)
 			return rc;
-		if (trade && !i_have) {
-			np_phase(PICO_NP_RECV_GAME, their_size);
-			if ((rc = np_blob_recv((unsigned char *)pp->their_rom, pp->rom_cap, pp->their_rom_size)) != 0)
-				return rc;
-		}
 		np_phase(PICO_NP_RECV_STATE, pp->msize);
 		if ((rc = np_blob_recv((unsigned char *)pp->theirs, pp->cap, pp->got)) != 0)
 			return rc;

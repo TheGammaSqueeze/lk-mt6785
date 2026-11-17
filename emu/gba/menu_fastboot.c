@@ -196,6 +196,10 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			  snprintf(lbuf, sizeof lbuf, "igm: open=%uus at %u %u glass=%uus", g_dbg_igm_open_us, g_dbg_igm_open_part[0],
 				   g_dbg_igm_open_part[1], g_dbg_igm_glass_us);
 			  fastboot_info(lbuf);
+			  { extern volatile int g_dbg_lang_rc[4]; extern unsigned int pico_lang_serial(void);
+			    snprintf(lbuf, sizeof lbuf, "lang: last load rc=%d %dx%d lang %d, serial %u", g_dbg_lang_rc[0],
+				     g_dbg_lang_rc[1], g_dbg_lang_rc[2], g_dbg_lang_rc[3], pico_lang_serial());
+			    fastboot_info(lbuf); }
 			  snprintf(lbuf, sizeof lbuf, "cigm: full=%uus worst=%u dim=%u sheet=%u hash=%u part=%u", g_dbg_cigm_us[0],
 				   g_dbg_cigm_us[1], g_dbg_cigm_us[2], g_dbg_cigm_us[3], g_dbg_cigm_us[4], g_dbg_cigm_us[5]);
 			  fastboot_info(lbuf);
@@ -1197,6 +1201,7 @@ static void cmd_corebench(const char *arg, void *data, unsigned sz)
 }
 
 #include "pico_clock.h"
+#include <platform/mt_rtc.h>
 /* oem clock - the RTC (UTC), the time zone and local time; oem clock:<UTC seconds> sets it */
 static void cmd_clock(const char *arg, void *data, unsigned sz)
 {
@@ -1216,6 +1221,14 @@ static void cmd_clock(const char *arg, void *data, unsigned sz)
 	pico_clock_time_text(now, t, sizeof t);
 	snprintf(lbuf, sizeof lbuf, "clock: utc=%lld zone=%d q, %s %s", pico_clock_utc(), pico_clock_zone(), d, t);
 	fastboot_info(lbuf);
+	{	/* what the RTC itself holds (an unset or lost one reads before 2020: the menus show 2026) */
+		extern void rtc_get_time(struct rtc_time *tm);
+		struct rtc_time r;
+		rtc_get_time(&r);
+		snprintf(lbuf, sizeof lbuf, "rtc: %04d-%02d-%02d %02d:%02d:%02d", r.tm_year, r.tm_mon, r.tm_mday,
+			 r.tm_hour, r.tm_min, r.tm_sec);
+		fastboot_info(lbuf);
+	}
 	fastboot_okay("");
 }
 

@@ -106,8 +106,11 @@ fi
 echo ">> Building the names glyph pack"
 python3 tools/ayaneo/pico_current/build_names.py out/sdcard/gammaos/names.pack || exit 1
 # The menus' languages: a pack per language and screen, its words and the glyphs the fonts lack
-# (tools/ayaneo/pico_current/i18n). Any theme reads them; English needs none.
+# (tools/ayaneo/pico_current/i18n). Any theme reads them; English needs none. The Classic themes'
+# letters go only to the Konkr screens: the Pocket Air Mini's LK has no Classic themes (emu/pico.mk).
 echo ">> Building the language packs"
 for size in 960x640 960x720 1280x960; do
-	python3 tools/ayaneo/pico_current/build_lang.py "$size" out/sdcard/gammaos || exit 1
+	classic=
+	[ "$size" = 1280x960 ] && classic=--no-classic
+	python3 tools/ayaneo/pico_current/build_lang.py "$size" out/sdcard/gammaos $classic || exit 1
 done

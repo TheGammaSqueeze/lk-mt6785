@@ -17,6 +17,12 @@ A pack is a menu pack (build_pack.Pack) with:
   "f_<role>" type 3: for every menu font (build_pack.FONTS), the glyphs of this language that the
              font in the theme's packs lacks, sorted by code point, laid out as a font entry
              without kerning.
+  "c_<font>" type 3: for the Classic themes' fonts l, m and s (tools/ayaneo/snes/assets/fonts),
+             the glyphs this language's texts and the languages' own names need that the font
+             lacks, drawn at the size where their H matches the font's: u16 line height, base,
+             pixel size, count, atlas width, height, 0, 0; then count glyphs as the menu engine
+             keeps them (u32 code point, u16 x y w h, s16 x offset, y offset from the line's top,
+             advance, 0), sorted by code point; then the atlas, a byte of alpha a pixel.
 
 The texts are checked: their placeholders (%d, %s, %02d) as the English has them, no dashes but
 the hyphen, every letter drawable, and the ones in tight places measured against their room.
@@ -142,11 +148,47 @@ def font_extra(pack, role, px, weight, codes, face):
     pack.add("f_" + role, bp.T_FONT, aw, ah, bytes(blob))
 
 
+CLASSIC_DIR = os.path.join(os.path.dirname(fontsrc.HERE), "snes", "assets", "fonts")
+CLASSIC_FONTS = ("l", "m", "s")
+CLASSIC_WEIGHT = "Medium"
+
+
+def classic_font(name):
+    """The letters a Classic font has, its line height and base, and the size to draw added ones."""
+    j = json.load(open(os.path.join(CLASSIC_DIR, name + ".font.json"), encoding="utf-8"))
+    have = {int(k) for k in j["chars"]}
+    lh, base = j["common"]["lineHeight"], j["common"]["base"]
+    cap = j["chars"].get("72")
+    want = (cap["h"] - 2) if cap else lh // 2      # its H, less the dark edge round the letter
+    px = next(p for p in range(6, 128) if fontsrc.glyph(ord("H"), CLASSIC_WEIGHT, p, None)[4] >= want)
+    return have, lh, base, px
+
+
+def classic_extra(pack, name, codes, face):
+    have, lh, base, px = classic_font(name)
+    glyphs = []
+    for c in sorted(c for c in codes if c not in have and c > 0x20):
+        g = fontsrc.glyph(c, CLASSIC_WEIGHT, px, face)
+        if not g:
+            raise SystemExit("no font has U+%04X (%s): run subset_fonts.py" % (c, chr(c)))
+        glyphs.append(g)
+    atlas = fontsrc.shelf_pack(glyphs)
+    aw, ah = atlas.size
+    blob = bytearray(struct.pack("<HHHHHHHH", lh, base, px, len(glyphs), aw, ah, 0, 0))
+    for c, xo, yo, w, h, adv, im, gx, gy in glyphs:
+        blob += struct.pack("<IHHHHhhhh", c, gx, gy, w, h, xo, base + yo, round(adv / 64.0), 0)
+    blob += atlas.tobytes()
+    pack.add("c_" + name, bp.T_FONT, aw, ah, bytes(blob))
+    return len(glyphs)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("size")
     ap.add_argument("out")
     ap.add_argument("--only", nargs="*")
+    ap.add_argument("--no-classic", action="store_true",
+                    help="leave out the Classic themes' letters (a screen whose LK has no Classic themes)")
     a = ap.parse_args()
     W, H = (int(v) for v in a.size.lower().split("x"))
     s = H / 720.0
@@ -177,11 +219,21 @@ def main():
         pack.add("strings", T_STRINGS, 0, 0, strings_entry(texts))
         for role, size, weight in bp.FONTS:
             font_extra(pack, role, max(1, round(size * s)), weight, codes, face)
+        # the Classic themes' fonts: every letter of the texts and of the languages' names (the
+        # Language page lists each in its own script) that they lack, at their design size
+        nc = ["-"]
+        if not a.no_classic:
+            ccodes = set()
+            for _, text, _, _ in texts:
+                ccodes |= {ord(c) for c in text if ord(c) > 0x20}
+            for name, _ in fontsrc.native_names():
+                ccodes |= {ord(c) for c in name if ord(c) > 0x20}
+            nc = [classic_extra(pack, f, ccodes, face) for f in CLASSIC_FONTS]
         out = os.path.join(a.out, "lang-%s-%dx%d.pack" % (code, W, H))
         raw, z = pack.write(out, (W, H))
-        print("lang %s %dx%d: %d texts, %d extra glyphs, %d bytes (%d raw)" % (code, W, H, len(texts), len(codes), z, raw))
-        if raw > 0x00600000 or z > 0x00200000:
-            raise SystemExit("%s: the pack outgrows the LK's room for it (6 MB raw, 2 MB packed)" % code)
+        print("lang %s %dx%d: %d texts, %d extra glyphs, Classic %s, %d bytes (%d raw)" % (code, W, H, len(texts), len(codes), "/".join(map(str, nc)), z, raw))
+        if raw + z > 0x00800000:	# unpacked beside its file in the LK's 8 MB (pico_i18n.c)
+            raise SystemExit("%s: the pack outgrows the LK's room for it (8 MB, unpacked and packed together)" % code)
     for w in warnings:
         print("warning:", w, file=sys.stderr)
 

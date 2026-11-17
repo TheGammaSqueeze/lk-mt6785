@@ -18,6 +18,7 @@
 #include "../gba/card_writer.h"   /* in-game saves go to the card off the game's thread */
 #include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #include "../gba/gba_sd_save.h"
+#include "../gba/pico_state_shot.h"   /* each state's picture and time, for the Suspend Point List */
 #include "../ayaneo_rewind.h"
 #include <kernel/thread.h>
 #include <kernel/event.h>
@@ -30,7 +31,7 @@ extern void     ayaneo_genesis_show_frame(const unsigned short *pix, unsigned sw
 extern void     ayaneo_snes_audio_submit(const short *interleaved, unsigned frames, unsigned src_hz);
 extern void     ayaneo_menu_audio_silence(void);
 extern void     ayaneo_gbc_audio_pause(int on);
-extern int      gba_launch_continues(void);   /* the game opening carries on from its suspend point (gba_snes_menu.c) */
+extern int      gba_launch_state(char *ext);   /* the game opening carries on from a state, and which (gba_snes_menu.c) */
 extern void     ayaneo_display_prepare(void);
 extern unsigned gpt4_get_current_tick(void);
 extern void     mtk_wdt_restart(void);
@@ -389,7 +390,15 @@ static int gm_change(int i, int dir, int act)
 	s_mstat[0] = 0;
 	/* netplay: loading a state or resetting would change the game on this console only and the two
 	 * would part; the disk swap is fine (it goes to both consoles as a pad press) */
-	if (s_nes_np && act && (i == GM_LOAD || i == GM_RESET)) {
+	if (s_nes_np && act && i == GM_RESET) {	/* the host's, on both consoles at the same frame */
+		extern int pico_np_is_host(void);
+		extern void pico_np_ask_reset(void);
+		memset(s_mstat, 0, sizeof s_mstat);
+		if (!pico_np_is_host()) { mput(s_mstat, "Only the host can reset the game"); return 0; }
+		pico_np_ask_reset();
+		return 1;
+	}
+	if (s_nes_np && act && i == GM_LOAD) {
 		memset(s_mstat, 0, sizeof s_mstat);
 		mput(s_mstat, "Not during netplay");
 		return 0;
@@ -432,6 +441,7 @@ static int gm_change(int i, int dir, int act)
 			char nm[288];
 			gba_sd_state_name(s_menu_rom->name, ext, nm, sizeof nm);
 			card_writer_put(s_menu_vol, "/states/nes", nm, st, ssz, s_mstat, sizeof s_mstat, "State saved", "Save failed");
+			pico_shot_save(s_menu_vol, "/states/nes", s_menu_rom->name, ext, 1);
 		} else mput(s_mstat, "Save failed"); } break;
 	case GM_LOAD: if (act) {
 		unsigned char *st = (unsigned char *)NES_STATE_BUF; char ext[4]; unsigned n; int ok;
@@ -543,9 +553,11 @@ static void nes_power_check(void)
 		if (c->sram_ptr() && c->sram_size())
 			gba_sd_write_sav(s_menu_vol, s_menu_rom->name, c->sram_ptr(), c->sram_size());
 		ssz = c->state_size();
-		if (ssz && ssz <= NES_STATE_CAP && c->state_save((void *)NES_STATE_BUF, ssz) == 0)
+		if (ssz && ssz <= NES_STATE_CAP && c->state_save((void *)NES_STATE_BUF, ssz) == 0) {
 			gba_sd_write_named(s_menu_vol, "/states/nes", s_menu_rom->name, "sus",
 					   (const unsigned char *)NES_STATE_BUF, ssz);
+			pico_shot_save(s_menu_vol, "/states/nes", s_menu_rom->name, "sus", 0);
+		}
 	}
 	{ extern void ayaneo_resume_mark(const char *name); ayaneo_resume_mark(s_menu_rom->name); s_nes_settings_dirty = 1; }
 	nes_settings_flush();
@@ -622,10 +634,11 @@ static void nes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	/* suspend-resume: reload the auto-saved state unless B is held at launch (fresh start) or
 	 * Resume on Game Open is off */
-	if (!PRESSED(GPIO_B) && gba_launch_continues()) {
+	char open_ext[4];   /* the state picked in the Suspend Point List, or the suspend point */
+	if (!PRESSED(GPIO_B) && gba_launch_state(open_ext)) {
 		ssz = c->state_size();
 		if (ssz && ssz <= NES_STATE_CAP) {
-			unsigned n = gba_sd_read_named(vol, "/states/nes", rom->name, "sus",
+			unsigned n = gba_sd_read_named(vol, "/states/nes", rom->name, open_ext,
 						       (unsigned char *)NES_STATE_BUF, NES_STATE_CAP);
 			if (n) c->state_load((const void *)NES_STATE_BUF, n);
 		}
@@ -817,8 +830,10 @@ static void nes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				extern int pico_np_frame(unsigned int local, unsigned int *p1, unsigned int *p2);
 				extern void pico_np_set_pads(unsigned int p1, unsigned int p2);
 				unsigned int p1 = 0, p2 = 0;
+				extern int pico_np_take_reset(unsigned int *p1);
 				if (pico_np_frame(nes_local_pad(), &p1, &p2) != 0)
 					break;   /* the other console left or the link is gone: back to the menu */
+				if (pico_np_take_reset(&p1)) c->reset();   /* the host's reset, here at the same frame */
 				pico_np_set_pads(p1, p2);
 				{	/* every 120 frames: this console's whole state, hashed before the frame,
 					 * compared with the other's (run ahead is off, its buffer is free) */
@@ -1053,9 +1068,11 @@ static void nes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		if (c->sram_ptr() && c->sram_size())
 			gba_sd_write_sav(vol, rom->name, c->sram_ptr(), c->sram_size());
 		ssz = c->state_size();
-		if (ssz && ssz <= NES_STATE_CAP && c->state_save((void *)NES_STATE_BUF, ssz) == 0)
+		if (ssz && ssz <= NES_STATE_CAP && c->state_save((void *)NES_STATE_BUF, ssz) == 0) {
 			gba_sd_write_named(vol, "/states/nes", rom->name, "sus",
 					   (const unsigned char *)NES_STATE_BUF, ssz);
+			pico_shot_save(vol, "/states/nes", rom->name, "sus", 0);
+		}
 	}
 	s_nes_np = s_nes_np_guest = 0;
 	pico_coreopt_end();
