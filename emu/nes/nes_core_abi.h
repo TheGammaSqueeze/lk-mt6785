@@ -17,9 +17,25 @@
 #define NES_CORE_ABI_H
 
 #define NES_CORE_ABI_MAGIC   0x3153454Eu   /* "NES1" */
-#define NES_CORE_ABI_VERSION 1u
+#define NES_CORE_ABI_VERSION 2u   /* 2: opt_count / opt_info (the core's own option list) */
 
 /* Services the LK gives the core (core -> LK). */
+/* One of the core's own options, as the core declares it (libretro core options v2), for the
+ * frontend's Core Settings page. values are what set_option takes, labels what is shown. Shared
+ * with the Genesis and SNES ABIs. */
+#ifndef PICO_CORE_OPTION_DEFINED
+#define PICO_CORE_OPTION_DEFINED
+struct pico_core_option {
+	const char *key;                 /* set_option's key, and the key the frontend saves it under */
+	const char *label;               /* the option's name */
+	const char *category;            /* its group's name, or 0 */
+	const char *const *values;       /* set_option values */
+	const char *const *labels;       /* what each value is called */
+	int nvalues;
+	int def;                         /* the core's default (an index) */
+};
+#endif
+
 struct nes_core_imports {
 	unsigned (*read_buttons)(unsigned port);   /* pad state as RETRO_DEVICE_ID_JOYPAD_* bits, port 0..3 */
 	long     (*host_time)(void);               /* wall clock seconds (for a cart's clock chip, if any) */
@@ -84,6 +100,12 @@ struct nes_core_exports {
 	/* debug: the emulated 6502's program counter, and a counter of the glue's by index */
 	unsigned (*dbg_pc)(void);
 	unsigned (*dbg_get)(unsigned idx);
+
+	/* 2: the options the core declared, less the ones the LK sets itself (region, aspect) and the
+	 * ones that cannot be used here (cheat codes, the stick and motion inputs, expansion devices).
+	 * Changed with set_option; they take effect at the end of the next frame. */
+	int (*opt_count)(void);
+	const struct pico_core_option *(*opt_info)(int index);
 };
 
 typedef const struct nes_core_exports *(*nes_core_blob_init_fn)(const struct nes_core_imports *imp);

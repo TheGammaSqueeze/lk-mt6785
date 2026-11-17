@@ -14,8 +14,10 @@ enum { IGM_TOP, IGM_DISPLAY, IGM_SOUND, IGM_PLAY, IGM_SYSTEM, IGM_CORE, IGM_NPAG
  * a figure only shown, or a link to a page (its item is the page) */
 enum { IGM_VALUE, IGM_ACTION, IGM_INFO, IGM_LINK };
 
-/* the keys a core hands over each frame (held, not edges) */
-enum { IGM_K_UP = 1, IGM_K_DOWN = 2, IGM_K_LEFT = 4, IGM_K_RIGHT = 8, IGM_K_A = 16, IGM_K_B = 32 };
+/* the keys a core hands over each frame (held, not edges); L and R step through the pages where
+ * the menu shows them as tabs */
+enum { IGM_K_UP = 1, IGM_K_DOWN = 2, IGM_K_LEFT = 4, IGM_K_RIGHT = 8, IGM_K_A = 16, IGM_K_B = 32,
+       IGM_K_L = 64, IGM_K_R = 128 };
 
 struct igm_row { short item; unsigned char page, kind; };
 

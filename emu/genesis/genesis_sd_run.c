@@ -13,6 +13,7 @@
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
+#include "../gba/pico_coreopt.h"
 #include "../gba/card_writer.h"   /* in-game saves go to the card off the game's thread */
 #include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #include "../gba/gba_sd_save.h"
@@ -274,7 +275,7 @@ static void genesis_apply_clock(void)
 extern int  ayaneo_get_preempt_frames(void);
 extern void ayaneo_set_preempt_frames(int v);
 
-enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_REWIND, GM_CPU, GM_REFRESH, GM_STROBE, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
+enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_REWIND, GM_CPU, GM_REFRESH, GM_STROBE, GM_SHOWFPS, GM_CORE, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
 /* Overdrive is On/Off: On applies the tuned halo-free profile (ayaneo_set_overdrive_level). The exact
  * kup/kdn/thr/cap are still pokeable live via `oem od:` for tuning. */
 #define OD_MENU_MAX 1
@@ -337,6 +338,7 @@ static const char *gm_label(int i) { switch (i) {
 	case GM_RUNAHEAD: return "Run-Ahead"; case GM_REWIND: return "Rewind"; case GM_CPU: return "CPU Clock";
 	case GM_STROBE: return "BFI"; case GM_RESUME: return "Resume on Power On";
 	case GM_SHOWFPS: return "Show FPS"; case GM_BATTERY: return "Battery";
+	case GM_CORE: return "Core Settings";
 	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
 	case GM_RESET: return "Reset Game"; case GM_EXIT: return "Exit Game"; } return ""; }
 
@@ -360,6 +362,7 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 	case GM_RUNAHEAD: p = mput(p, gen_ra_name(ayaneo_get_preempt_frames())); break;
 	case GM_CPU:    p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
 	case GM_SLOT:   p = mputu(p, (unsigned)s_save_slot); break;
+	case GM_CORE:   p = mput(p, pico_coreopt_n() ? ">" : "None"); break;
 	case GM_SAVE: case GM_LOAD: case GM_RESET: case GM_EXIT: p = mput(p, "[A]"); break;
 	} *p = 0; return buf; }
 
@@ -401,6 +404,7 @@ static int gm_change(int i, int dir, int act)
 	case GM_SHOWFPS: if (dir || act) { extern int ayaneo_get_show_fps(void); extern void ayaneo_set_show_fps(int v);
 			ayaneo_set_show_fps(!ayaneo_get_show_fps()); genesis_settings_touch(); } break;
 	case GM_BATTERY: break;   /* read-only */
+	case GM_CORE: if (act || dir > 0) pico_coreopt_page_open(); break;   /* the core's own options */
 	case GM_RESUME: if (dir) { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
 			ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); genesis_settings_touch(); } break;
 	case GM_RUNAHEAD: if (dir) { int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
@@ -445,14 +449,15 @@ static const struct igm_row k_gen_igm_rows[] = {
 	{ GM_SHOWFPS, IGM_DISPLAY, IGM_VALUE },
 	{ GM_VOLUME, IGM_SOUND, IGM_VALUE },
 	{ GM_CPU, IGM_PLAY, IGM_VALUE }, { GM_RUNAHEAD, IGM_PLAY, IGM_VALUE }, { GM_REWIND, IGM_PLAY, IGM_VALUE },
-	{ GM_REGION, IGM_PLAY, IGM_VALUE }, { GM_REFRESH, IGM_PLAY, IGM_INFO },
+	{ GM_REGION, IGM_PLAY, IGM_VALUE }, { GM_REFRESH, IGM_PLAY, IGM_INFO }, { IGM_CORE, IGM_PLAY, IGM_LINK },
 	{ GM_RESUME, IGM_SYSTEM, IGM_VALUE }, { GM_BATTERY, IGM_SYSTEM, IGM_INFO },
 };
 static struct igm_core s_gen_igm = {
 	k_gen_igm_rows, (int)(sizeof k_gen_igm_rows / sizeof k_gen_igm_rows[0]),
 	GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT,
 	gm_label, gm_value, gm_change, s_mstat,
-	0, 0, 0, 0, GBA_CONSOLE_GENESIS, 0,
+	pico_coreopt_n, pico_coreopt_label, pico_coreopt_value, pico_coreopt_change,	/* the core's own */
+	GBA_CONSOLE_GENESIS, 0,
 };
 static int s_gen_igm_on;   /* this game's menu is the Current theme's */
 
@@ -464,6 +469,7 @@ void genesis_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, u
 	int vis, top;
 	int rowH = 38, panelW = 520, panelH = 60 + GM_COUNT * rowH + 34;
 	int px, py, x, y, i;
+	if (pico_coreopt_page_is_open()) { pico_coreopt_page_paint(buf, pitch, W, H); return; }
 	/* Fit the panel to the screen (ayaneo_pico_layout): 38 px rows when everything fits, down to
 	 * 32 px on the Konkr's 640 px height, and the list scrolls beyond that. */
 	{ static int s_top; vis = ayaneo_pico_layout(GM_COUNT, (int)H, s_msel, &s_top, &rowH, &panelH); top = s_top; }
@@ -545,6 +551,14 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	c->heap_init((void *)GEN_HEAP_BASE, GEN_HEAP_SZ);
 	c->init();
+	/* the core's own options (it declared them in init): the choices saved for this system, read
+	 * by the core while the game loads */
+	if (c->version >= 5 && c->opt_count && c->opt_info && c->set_option) {
+		static struct pico_coreopt_core copt;
+		copt.count = c->opt_count; copt.info = c->opt_info; copt.set = c->set_option;
+		pico_coreopt_begin(vol, "genesis", &copt);
+	} else
+		pico_coreopt_begin(vol, "genesis", 0);
 
 	romsz = gba_sd_load_rom(vol, rom, (unsigned char *)GEN_ROM_BUF, GEN_ROM_CAP);
 	g_gen_dbg_loadrc = -2;
@@ -934,6 +948,8 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (PRESSED(GPIO_RIGHT) || (jd & 0x08u)) k |= IGM_K_RIGHT;
 			if (PRESSED(GPIO_A)) k |= IGM_K_A;
 			if (PRESSED(GPIO_B)) k |= IGM_K_B;
+			if (PRESSED(GPIO_LB)) k |= IGM_K_L;
+			if (PRESSED(GPIO_RB)) k |= IGM_K_R;
 			r = pico_igm_frame(k);
 			if (r >= 0) { g_genesis_menu_open = 0; genesis_settings_flush(); }
 			reset_hold = 0;
@@ -941,6 +957,12 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
 			int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
 			int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);
+			{	/* a key oem nav injects (testing the panel over USB) */
+				extern unsigned pico_dbg_take_key(void);
+				unsigned dk = pico_dbg_take_key();
+				lt |= !!(dk & 1u); rt |= !!(dk & 2u); up |= !!(dk & 4u); dn |= !!(dk & 8u);
+				a |= !!(dk & 16u); b |= !!(dk & 32u);
+			}
 			unsigned int jd = ayaneo_joypad_dpad();   /* left analog stick also drives nav */
 			up |= !!(jd & 0x01u); dn |= !!(jd & 0x02u); lt |= !!(jd & 0x04u); rt |= !!(jd & 0x08u);
 			#define NAV_DELAY 22
@@ -951,15 +973,25 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if ((up && FIRE(up_h)) || (dn && FIRE(dn_h)) || (lt && FIRE(lt_h)) || (rt && FIRE(rt_h)) ||
 			    (a && !a_p) || (b && !b_p))
 				ayaneo_menu_overlay_mark_dirty();
-			if (up && FIRE(up_h)) s_msel = (s_msel + GM_COUNT - 1) % GM_COUNT;
-			if (dn && FIRE(dn_h)) s_msel = (s_msel + 1) % GM_COUNT;
-			if (lt && FIRE(lt_h)) gm_change(s_msel, -1, 0);
-			if (rt && FIRE(rt_h)) gm_change(s_msel, +1, 0);
+			if (pico_coreopt_page_is_open()) {	/* the core's own options: B back to the list */
+				unsigned ck = 0;
+				if (up && FIRE(up_h)) ck |= PICO_COREOPT_K_UP;
+				if (dn && FIRE(dn_h)) ck |= PICO_COREOPT_K_DOWN;
+				if (lt && FIRE(lt_h)) ck |= PICO_COREOPT_K_LEFT;
+				if (rt && FIRE(rt_h)) ck |= PICO_COREOPT_K_RIGHT;
+				if (b && !b_p) ck |= PICO_COREOPT_K_B;
+				pico_coreopt_page_input(ck);
+			} else {
+				if (up && FIRE(up_h)) s_msel = (s_msel + GM_COUNT - 1) % GM_COUNT;
+				if (dn && FIRE(dn_h)) s_msel = (s_msel + 1) % GM_COUNT;
+				if (lt && FIRE(lt_h)) gm_change(s_msel, -1, 0);
+				if (rt && FIRE(rt_h)) gm_change(s_msel, +1, 0);
+				if (a && !a_p) { if (gm_change(s_msel, 0, 1)) { g_genesis_menu_open = 0; genesis_settings_flush(); } }
+				if (b && !b_p) { g_genesis_menu_open = 0; genesis_settings_flush(); }
+			}
 			#undef NAV_DELAY
 			#undef NAV_REP
 			#undef FIRE
-			if (a && !a_p) { if (gm_change(s_msel, 0, 1)) { g_genesis_menu_open = 0; genesis_settings_flush(); } }
-			if (b && !b_p) { g_genesis_menu_open = 0; genesis_settings_flush(); }
 			up_p = up; dn_p = dn; lt_p = lt; rt_p = rt; a_p = a; b_p = b;
 			reset_hold = 0;
 		} else {
@@ -1001,6 +1033,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					   (const unsigned char *)GEN_STATE_BUF, ssz);
 	}
 	s_gen_np = s_gen_np_guest = 0;
+	pico_coreopt_end();
 	c->unload();
 	ayaneo_menu_audio_silence();
 }

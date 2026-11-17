@@ -44,10 +44,21 @@ OBJS += emu/gba/menu/snes_pack.o emu/gba/menu/snes_scene.o emu/gba/menu/snes_ren
 OBJS += emu/gba/menu/snes_menu.o emu/gba/gba_snes_menu.o
 # the Current menu theme (its own layout, drawn in software from its card pack)
 OBJS += emu/gba/pico_current.o emu/gba/pico_i18n.o
+# the settings every theme offers
+OBJS += emu/gba/pico_settings.o
+$(BUILDDIR)/emu/gba/pico_settings.o:    CFLAGS += -Os
+# a core's own options (the Core Settings page for NES, SNES, Genesis/SMS/GG)
+OBJS += emu/gba/pico_coreopt.o
+$(BUILDDIR)/emu/gba/pico_coreopt.o:     CFLAGS += -Os
 # playing together over Bluetooth, the flow every theme shares (the consoles with the link)
 ifneq ($(filter yes,$(KONKR_KPA) $(KONKR_BLOCK)),)
 OBJS += emu/gba/pico_link_ui.o
 $(BUILDDIR)/emu/gba/pico_link_ui.o:     CFLAGS += -Os
+# the Classic themes' in-game menu (its kit is kept where only these consoles have room)
+OBJS += emu/gba/pico_classic_igm.o emu/gba/pico_classic_ui.o emu/gba/pico_classic_set.o
+$(BUILDDIR)/emu/gba/pico_classic_igm.o: CFLAGS += -mfpu=neon -mfloat-abi=softfp -ffast-math -Os
+$(BUILDDIR)/emu/gba/pico_classic_ui.o:  CFLAGS += -mfpu=neon -mfloat-abi=softfp -ffast-math -Os
+$(BUILDDIR)/emu/gba/pico_classic_set.o: CFLAGS += -mfpu=neon -mfloat-abi=softfp -ffast-math -Os
 endif
 GBA_MENU_FP := -mfpu=neon -mfloat-abi=softfp -ffast-math
 # perf-critical BLITTER: -O2 + NEON for full 60fps. This is the dominant per-frame

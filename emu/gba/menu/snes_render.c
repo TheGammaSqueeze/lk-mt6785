@@ -10,9 +10,17 @@
 #endif
 
 /* ---- pixel helpers (source is RGB565+A8 or RGBA8888; fb is 0xAARRGGBB) ---- */
-static inline void src_rgba(const uint8_t *px, int rgb565, int *r, int *g, int *b, int *a)
+/* the image's pixel layout: 0 RGBA8888, 1 RGB565 + A8, 2 grey + alpha (SNES_IMG_LA88) */
+static inline int img_fmt(unsigned flags)
 {
-	if (rgb565) {
+	return (flags & SNES_IMG_LA88) ? 2 : (flags & SNES_IMG_RGB565) ? 1 : 0;
+}
+static inline void src_rgba(const uint8_t *px, int fmt, int *r, int *g, int *b, int *a)
+{
+	if (fmt == 2) {
+		*r = *g = *b = px[0];
+		*a = px[1];
+	} else if (fmt == 1) {
 		unsigned v = px[0] | (px[1] << 8);
 		*r = ((v >> 11) & 0x1f) << 3; *r |= *r >> 5;
 		*g = ((v >> 5) & 0x3f) << 2;  *g |= *g >> 6;
@@ -24,10 +32,12 @@ static inline void src_rgba(const uint8_t *px, int rgb565, int *r, int *g, int *
 }
 
 typedef struct {
-	const uint8_t *pix; int rgb565; int img_w, img_h;
+	const uint8_t *pix; int fmt; int img_w, img_h;   /* fmt: img_fmt() */
 	int sx, sy, sw, sh;          /* atlas frame */
 	float dw, dh, px, py;        /* dest size + pivot (native px) */
 	int hflip, vflip, tile, additive, is_quad;
+	int smooth;                  /* sampled between texels (text): no letter loses or doubles a
+	                              * stroke when the design is drawn at another size */
 	float uvx, uvy, uvrx, uvry;  /* wallpaper uv offset/repeat */
 	float tr, tg, tb, ta;        /* tint 0..1 */
 } snes_draw;
@@ -82,14 +92,81 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 	/* Integer tint (0..256) and source stride, hoisted out of the pixel loop. */
 	int tr = (int)(d->tr * 256.0f), tg = (int)(d->tg * 256.0f);
 	int tb = (int)(d->tb * 256.0f), ta = (int)(d->ta * 256.0f);
-	int bpp = d->rgb565 ? 3 : 4;
+	int bpp = d->fmt == 2 ? 2 : d->fmt == 1 ? 3 : 4;
 	/* the common card frame / box art blit is opaque and untinted; skip the four
 	 * per-pixel tint multiplies in that case (source colour passes straight). */
 	int plain = (tr == 256 && tg == 256 && tb == 256 && ta == 256 && !d->additive);
 	int axis = (b == 0.0f && c == 0.0f && a != 0.0f && dd != 0.0f);
 	float inv_a = axis ? 1.0f / a : 0, inv_d = axis ? 1.0f / dd : 0;
 	float du = axis ? inv_a / d->dw : 0;   /* u increment per X (no per-pixel divide) */
-	if (axis && !d->is_quad && !d->tile) {
+	if (axis && d->smooth && !d->is_quad && !d->tile) {
+		/* Text: each pixel blends the four texels around where it falls (alpha weighted, the
+		 * glyph's own frame as the edge, never its neighbour's on the page). Nearest sampling at
+		 * 0.75 drops some strokes and doubles others: letters came out uneven. */
+		int gx0 = d->sx, gx1 = d->sx + d->sw - 1, gy0 = d->sy, gy1 = d->sy + d->sh - 1;
+		for (Y = y0; Y < y1; Y++) {
+			uint32_t *row = t->fb + (unsigned)(t->offy + Y) * t->pitch + t->offx;
+			float fy = (float)Y + 0.5f - f, vv = (fy * inv_d + d->py) / d->dh, sv, u;
+			const uint8_t *ra, *rb;
+			int iy, wy, ya, yb;
+			if (d->vflip) vv = 1.0f - vv;
+			if (vv < 0.0f || vv >= 1.0f) continue;
+			sv = (float)d->sy + vv * (float)d->sh - 0.5f;
+			iy = ifloor(sv); wy = (int)((sv - (float)iy) * 256.0f);
+			ya = iy < gy0 ? gy0 : iy > gy1 ? gy1 : iy;
+			yb = iy + 1 < gy0 ? gy0 : iy + 1 > gy1 ? gy1 : iy + 1;
+			ra = d->pix + (unsigned)ya * d->img_w * bpp;
+			rb = d->pix + (unsigned)yb * d->img_w * bpp;
+			u = (((float)x0 + 0.5f - e) * inv_a + d->px) / d->dw;
+			for (X = x0; X < x1; X++, u += du) {
+				float uu = d->hflip ? 1.0f - u : u, su;
+				int ix, wx, xa, xb, k, sr, sg, sb, sa;
+				unsigned w[4], A = 0, PR = 0, PG = 0, PB = 0, af, cr, cg, cb, dst, ia, dr, dg, db;
+				const uint8_t *p[4];
+				if (uu < 0.0f || uu >= 1.0f) continue;
+				su = (float)d->sx + uu * (float)d->sw - 0.5f;
+				ix = ifloor(su); wx = (int)((su - (float)ix) * 256.0f);
+				xa = ix < gx0 ? gx0 : ix > gx1 ? gx1 : ix;
+				xb = ix + 1 < gx0 ? gx0 : ix + 1 > gx1 ? gx1 : ix + 1;
+				p[0] = ra + (unsigned)xa * bpp; p[1] = ra + (unsigned)xb * bpp;
+				p[2] = rb + (unsigned)xa * bpp; p[3] = rb + (unsigned)xb * bpp;
+				w[0] = (unsigned)((256 - wx) * (256 - wy)); w[1] = (unsigned)(wx * (256 - wy));
+				w[2] = (unsigned)((256 - wx) * wy);         w[3] = (unsigned)(wx * wy);
+				if (d->fmt == 2) {	/* grey and alpha (the fonts): one channel for all three */
+					unsigned a0 = p[0][1], a1 = p[1][1], a2 = p[2][1], a3 = p[3][1];
+					if (!(a0 | a1 | a2 | a3)) continue;
+					A = w[0] * a0 + w[1] * a1 + w[2] * a2 + w[3] * a3;
+					PR = PG = PB = (w[0] >> 8) * a0 * p[0][0] + (w[1] >> 8) * a1 * p[1][0] +
+						       (w[2] >> 8) * a2 * p[2][0] + (w[3] >> 8) * a3 * p[3][0];
+				} else
+				for (k = 0; k < 4; k++) {
+					src_rgba(p[k], d->fmt, &sr, &sg, &sb, &sa);
+					if (!sa || !w[k]) continue;
+					A += w[k] * (unsigned)sa;
+					PR += (w[k] >> 8) * (unsigned)(sa * sr);
+					PG += (w[k] >> 8) * (unsigned)(sa * sg);
+					PB += (w[k] >> 8) * (unsigned)(sa * sb);
+				}
+				A >>= 16;
+				if (!A) continue;
+				af = (A * (unsigned)ta) >> 8; if (af > 255) af = 255;
+				if (!af) continue;
+				/* the colour times its alpha (0..65025), tinted */
+				cr = ((((PR >> 8) * (unsigned)tr) >> 8) * (unsigned)ta) >> 8;
+				cg = ((((PG >> 8) * (unsigned)tg) >> 8) * (unsigned)ta) >> 8;
+				cb = ((((PB >> 8) * (unsigned)tb) >> 8) * (unsigned)ta) >> 8;
+				dst = row[X]; ia = 255 - af;
+				if (d->additive) { dr = ((dst >> 16) & 255) + cr / 255; dg = ((dst >> 8) & 255) + cg / 255; db = (dst & 255) + cb / 255; }
+				else {
+					dr = (cr + ((dst >> 16) & 255) * ia + 127) / 255;
+					dg = (cg + ((dst >> 8) & 255) * ia + 127) / 255;
+					db = (cb + (dst & 255) * ia + 127) / 255;
+				}
+				if (dr > 255) dr = 255; if (dg > 255) dg = 255; if (db > 255) db = 255;
+				row[X] = 0xff000000u | (dr << 16) | (dg << 8) | db;
+			}
+		}
+	} else if (axis && !d->is_quad && !d->tile) {
 		/* Fast axis-aligned path (every sprite/texture blit in the menu). v is
 		 * constant per row, so iy + the source row pointer hoist out of the pixel
 		 * loop; the source x advances by a fixed 16.16 step - no per-pixel float
@@ -116,7 +193,7 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 			 * process 8 destination pixels at once - gather 8 source texels,
 			 * unpack 565->8888 8-wide, store. Edge/transparent blocks fall back
 			 * to scalar. Pixel-identical to the scalar path (qemu-validated). */
-			if (plain && d->rgb565 && sustep > 0) {
+			if (plain && d->fmt == 1 && sustep > 0) {
 				const uint16x8_t m3f = vdupq_n_u16(0x3f), m1f = vdupq_n_u16(0x1f);
 				const uint32x4_t A = vdupq_n_u32(0xff000000u);
 				X = x0;
@@ -193,7 +270,7 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 				if (su < sxlo || su >= sxhi) continue;
 				ix = su >> 16; if (ix >= d->img_w) ix = d->img_w - 1;
 				sp = srow + (unsigned)ix * bpp;
-				src_rgba(sp, d->rgb565, &sr, &sg, &sb, &sa);
+				src_rgba(sp, d->fmt, &sr, &sg, &sb, &sa);
 				if (sa == 0) continue;
 				if (plain) {
 					if (sa == 255) {   /* opaque + untinted: straight store */
@@ -283,7 +360,7 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 				if (iy < 0) iy = 0; if (iy >= d->img_h) iy = d->img_h - 1;
 				{
 					const uint8_t *sp = d->pix + ((unsigned)iy * d->img_w + ix) * bpp;
-					src_rgba(sp, d->rgb565, &sr, &sg, &sb, &sa);
+					src_rgba(sp, d->fmt, &sr, &sg, &sb, &sa);
 				}
 			}
 			if (sa == 0) continue;
@@ -356,12 +433,12 @@ static int resolve_visual(snes_scene *s, const snes_comp *c, snes_rnode *n,
 		d->py = (d->py) * (d->dh / sh);
 	}
 	d->pix = snes_img_pixels(pk, im);
-	d->rgb565 = (im->flags & SNES_IMG_RGB565) ? 1 : 0;
+	d->fmt = img_fmt(im->flags);
 	d->img_w = im->w; d->img_h = im->h;
 	d->hflip = (c->flags & SNES_COMP_HFLIP) ? 1 : 0;
 	d->vflip = (c->flags & SNES_COMP_VFLIP) ? 1 : 0;
 	d->additive = (c->blend == 1);
-	d->is_quad = 0;
+	d->is_quad = d->smooth = 0;
 	d->tile = (im->flags & SNES_IMG_TILE) && (c->flags & SNES_COMP_HAS_SIZE) &&
 		  (d->dw > d->sw + 1 || d->dh > d->sh + 1);
 	if (d->tile) {
@@ -440,7 +517,7 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 		text = snes_text_locale(pk, pk->locale, key);
 	}
 	const char *p;
-	int pgw, pgh, rgb565;
+	int pgw, pgh, fmt;
 	float lcol[4];
 	if (!fe || !text || !text[0]) return;
 	/* fold the label component's own tint into the node colour chain (web
@@ -452,7 +529,7 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 	col = lcol;
 	page = &pk->img[fe->page];
 	pgpix = snes_img_pixels(pk, page); pgw = page->w; pgh = page->h;
-	rgb565 = (page->flags & SNES_IMG_RGB565) ? 1 : 0;
+	fmt = img_fmt(page->flags);
 	glyphs = (const snes_glyph *)(pk->base + fe->glyphs);
 	screen_matrix(m, S);
 	scale = S[0] < 0 ? -S[0] : S[0];         /* uniform-ish scale for text */
@@ -490,10 +567,11 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 				if (g->w > 0) {
 					snes_draw d;
 					float gm[6];
-					d.pix = pgpix; d.rgb565 = rgb565; d.img_w = pgw; d.img_h = pgh;
+					d.pix = pgpix; d.fmt = fmt; d.img_w = pgw; d.img_h = pgh;
 					d.sx = g->x; d.sy = g->y; d.sw = g->w; d.sh = g->h;
 					d.dw = g->w * scale; d.dh = g->h * scale; d.px = 0; d.py = 0;
 					d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+					d.smooth = 1;
 					d.tr = col[0]; d.tg = col[1]; d.tb = col[2]; d.ta = col[3];
 					gm[0] = 1; gm[1] = 0; gm[2] = 0; gm[3] = 1;
 					gm[4] = penx + g->xo * scale; gm[5] = peny + g->yo * scale;
@@ -533,11 +611,11 @@ void snes_draw_text(snes_target *t, const snes_pack *pk, uint32_t font_hash,
 	const uint8_t *pgpix;
 	const char *p;
 	float col[4], penx, wpx = 0;
-	int pgw, pgh, rgb565;
+	int pgw, pgh, fmt;
 	if (!fe || !text) return;
 	page = &pk->img[fe->page];
 	pgpix = snes_img_pixels(pk, page); pgw = page->w; pgh = page->h;
-	rgb565 = (page->flags & SNES_IMG_RGB565) ? 1 : 0;
+	fmt = img_fmt(page->flags);
 	glyphs = (const snes_glyph *)(pk->base + fe->glyphs);
 	col[0] = ((argb >> 16) & 0xff) / 255.0f; col[1] = ((argb >> 8) & 0xff) / 255.0f;
 	col[2] = (argb & 0xff) / 255.0f; col[3] = ((argb >> 24) & 0xff) / 255.0f;
@@ -553,10 +631,11 @@ void snes_draw_text(snes_target *t, const snes_pack *pk, uint32_t font_hash,
 		if (!g) continue;   /* missing glyphs drop to zero width (web parity) */
 		if (g->w > 0) {
 			snes_draw d; float gm[6];
-			d.pix = pgpix; d.rgb565 = rgb565; d.img_w = pgw; d.img_h = pgh;
+			d.pix = pgpix; d.fmt = fmt; d.img_w = pgw; d.img_h = pgh;
 			d.sx = g->x; d.sy = g->y; d.sw = g->w; d.sh = g->h;
 			d.dw = g->w * scale; d.dh = g->h * scale; d.px = 0; d.py = 0;
 			d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+			d.smooth = 1;
 			d.tr = col[0]; d.tg = col[1]; d.tb = col[2]; d.ta = col[3];
 			gm[0] = 1; gm[1] = 0; gm[2] = 0; gm[3] = 1;
 			gm[4] = penx + g->xo * scale; gm[5] = y + g->yo * scale;
@@ -976,10 +1055,10 @@ void snes_blit_tex(snes_target *t, const snes_pack *pk, const snes_img_entry *im
 {
 	snes_draw d; float S[6];
 	if (!im) return;
-	d.pix = snes_img_pixels(pk, im); d.rgb565 = (im->flags & SNES_IMG_RGB565) ? 1 : 0;
+	d.pix = snes_img_pixels(pk, im); d.fmt = img_fmt(im->flags);
 	d.img_w = im->w; d.img_h = im->h; d.sx = 0; d.sy = 0; d.sw = im->w; d.sh = im->h;
 	d.dw = w; d.dh = h; d.px = w / 2; d.py = h / 2;
-	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = d.smooth = 0;
 	d.tr = d.tg = d.tb = 1; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -990,10 +1069,10 @@ void snes_blit_tex_tint(snes_target *t, const snes_pack *pk, const snes_img_entr
 {
 	snes_draw d; float S[6];
 	if (!im) return;
-	d.pix = snes_img_pixels(pk, im); d.rgb565 = (im->flags & SNES_IMG_RGB565) ? 1 : 0;
+	d.pix = snes_img_pixels(pk, im); d.fmt = img_fmt(im->flags);
 	d.img_w = im->w; d.img_h = im->h; d.sx = 0; d.sy = 0; d.sw = im->w; d.sh = im->h;
 	d.dw = w; d.dh = h; d.px = w / 2; d.py = h / 2;
-	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = d.smooth = 0;
 	d.tr = tr; d.tg = tg; d.tb = tb; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -1004,12 +1083,12 @@ void snes_blit_spr(snes_target *t, const snes_pack *pk, const snes_spr_entry *sp
 	snes_draw d; float S[6];
 	if (!sp) return;
 	d.pix = snes_img_pixels(pk, &pk->img[sp->img]);
-	d.rgb565 = (pk->img[sp->img].flags & SNES_IMG_RGB565) ? 1 : 0;
+	d.fmt = img_fmt(pk->img[sp->img].flags);
 	d.img_w = pk->img[sp->img].w; d.img_h = pk->img[sp->img].h;
 	d.sx = sp->sx; d.sy = sp->sy; d.sw = sp->sw; d.sh = sp->sh;
 	d.dw = sp->sw * scale; d.dh = sp->sh * scale;
 	d.px = sp->sw * scale / 2; d.py = sp->sh * scale / 2;
-	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = d.smooth = 0;
 	d.tr = d.tg = d.tb = 1; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -1021,12 +1100,12 @@ void snes_blit_spr_tint(snes_target *t, const snes_pack *pk, const snes_spr_entr
 	snes_draw d; float S[6];
 	if (!sp) return;
 	d.pix = snes_img_pixels(pk, &pk->img[sp->img]);
-	d.rgb565 = (pk->img[sp->img].flags & SNES_IMG_RGB565) ? 1 : 0;
+	d.fmt = img_fmt(pk->img[sp->img].flags);
 	d.img_w = pk->img[sp->img].w; d.img_h = pk->img[sp->img].h;
 	d.sx = sp->sx; d.sy = sp->sy; d.sw = sp->sw; d.sh = sp->sh;
 	d.dw = sp->sw * scale; d.dh = sp->sh * scale;
 	d.px = sp->sw * scale / 2; d.py = sp->sh * scale / 2;
-	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = d.smooth = 0;
 	d.tr = tr; d.tg = tg; d.tb = tb; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -1038,12 +1117,12 @@ void snes_blit_spr_wh_tint(snes_target *t, const snes_pack *pk, const snes_spr_e
 	snes_draw d; float S[6];
 	if (!sp) return;
 	d.pix = snes_img_pixels(pk, &pk->img[sp->img]);
-	d.rgb565 = (pk->img[sp->img].flags & SNES_IMG_RGB565) ? 1 : 0;
+	d.fmt = img_fmt(pk->img[sp->img].flags);
 	d.img_w = pk->img[sp->img].w; d.img_h = pk->img[sp->img].h;
 	d.sx = sp->sx; d.sy = sp->sy; d.sw = sp->sw; d.sh = sp->sh;
 	d.dw = dw; d.dh = dh;
 	d.px = dw / 2.0f; d.py = dh / 2.0f;
-	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = 0;
+	d.hflip = d.vflip = d.tile = d.additive = d.is_quad = d.smooth = 0;
 	d.tr = tr; d.tg = tg; d.tb = tb; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -1055,13 +1134,13 @@ void snes_blit_spr_tint_flip(snes_target *t, const snes_pack *pk, const snes_spr
 	snes_draw d; float S[6];
 	if (!sp) return;
 	d.pix = snes_img_pixels(pk, &pk->img[sp->img]);
-	d.rgb565 = (pk->img[sp->img].flags & SNES_IMG_RGB565) ? 1 : 0;
+	d.fmt = img_fmt(pk->img[sp->img].flags);
 	d.img_w = pk->img[sp->img].w; d.img_h = pk->img[sp->img].h;
 	d.sx = sp->sx; d.sy = sp->sy; d.sw = sp->sw; d.sh = sp->sh;
 	d.dw = sp->sw * scale; d.dh = sp->sh * scale;
 	d.px = sp->sw * scale / 2; d.py = sp->sh * scale / 2;
 	d.hflip = hflip ? 1 : 0; d.vflip = vflip ? 1 : 0;
-	d.tile = d.additive = d.is_quad = 0;
+	d.tile = d.additive = d.is_quad = d.smooth = 0;
 	d.tr = tr; d.tg = tg; d.tb = tb; d.ta = alpha;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
 	blit(t, S, &d);
@@ -1070,7 +1149,7 @@ void snes_fill_quad(snes_target *t, float cx, float cy, float w, float h,
 		    float r, float g, float b, float a)
 {
 	snes_draw d; float S[6];
-	d.is_quad = 1; d.dw = w; d.dh = h; d.px = w / 2; d.py = h / 2;
+	d.is_quad = 1; d.smooth = 0; d.dw = w; d.dh = h; d.px = w / 2; d.py = h / 2;
 	d.hflip = d.vflip = d.tile = d.additive = 0;
 	d.tr = r; d.tg = g; d.tb = b; d.ta = a;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = cx; S[5] = cy;
@@ -1085,7 +1164,7 @@ static void quad(snes_target *t, float x, float y, float w, float h, float r, fl
 {
 	float S[6]; snes_draw d;
 	S[0] = 1; S[1] = 0; S[2] = 0; S[3] = 1; S[4] = x; S[5] = y;
-	d.is_quad = 1; d.dw = w; d.dh = h; d.px = 0; d.py = 0;
+	d.is_quad = 1; d.smooth = 0; d.dw = w; d.dh = h; d.px = 0; d.py = 0;
 	d.hflip = d.vflip = d.tile = d.additive = 0;
 	d.tr = r; d.tg = g; d.tb = b; d.ta = 1;
 	blit(t, S, &d);

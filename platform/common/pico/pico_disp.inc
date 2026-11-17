@@ -2570,11 +2570,12 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 		g_dbg_launch_t0 = 0;
 	}
 	if (g_dbg_filt_ovr >= 0 && g_dbg_filt_ovr <= 5) filt = g_dbg_filt_ovr;
-	if (g_test_fill_argb && sw <= 512u && sh <= 512u) {
+	if (g_test_fill_argb && sw <= 320u && sh <= 240u) {
 		/* oem gray: replace the game picture, at its native size and before the overdrive, with a
 		 * flat gray and four outlined boxes (red, green, blue, yellow) sweeping side to side in
 		 * step, so the trails and the overdrive halos are judged on the real pipeline */
-		static unsigned short s_test_px[512 * 512];
+		static unsigned short s_test_px[320 * 240];   /* every core's usual picture (the KPA's
+								 * boot heap is what static data leaves) */
 		unsigned int c = g_test_fill_argb, x, y, i;
 		unsigned int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
 		unsigned short bg = (unsigned short)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));

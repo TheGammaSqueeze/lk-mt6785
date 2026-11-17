@@ -129,7 +129,8 @@ In a game:
 | X / Y | autofire B / A |
 | Power (hold 1.2 s) | save and switch off |
 
-In the Classic theme's game list, START plays, SELECT sorts and X switches between systems. During
+In the Classic theme's game list, START plays, SELECT sorts, X plays together or sends the game in
+focus (Link) and Y switches between systems. During
 the boot logo, hold B to skip it; the volume wheel works there too.
 
 ## The menus
@@ -188,12 +189,11 @@ A, B, A+B; Region Auto, USA, Europe, Japan.
 
 ### Classic theme (beta)
 
-The SNES Classic style carousel, with its own pages from the top bar: Display (CRT filter, 4:3 or
-pixel perfect, and the Theme row), Options (Mute BIOS Audio, Mute Menu Audio, burn-in reduction,
-Boot to Android),
-Language (English, French, German, Spanish, Italian, Dutch, Portuguese, Russian; the others leave
-it in English), Legal notices and the manual. Suspend points are made when you reset a game.
-X shows one system at a time; in a long carousel L / R jump from letter to letter.
+The SNES Classic style carousel, its top bar holding the same settings as the Current theme, in the
+Classic look: Link (play together, send and receive), Display (Brightness, Black Frame Insertion,
+Theme), Settings (Volume, Mute Menu Audio, BIOS boot, Game resume, Boot to Android), Language and
+System (Date & Time, About). Suspend points are made when you reset a game. X opens Link for the game
+in focus, Y shows one system at a time; in a long carousel L / R jump from letter to letter.
 
 ## Install
 

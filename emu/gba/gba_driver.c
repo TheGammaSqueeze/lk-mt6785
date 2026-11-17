@@ -2141,6 +2141,8 @@ static void gba_igm_tick(unsigned char *state)
 	if (PRESSED(GPIO_RIGHT)) k |= IGM_K_RIGHT;
 	if (PRESSED(GPIO_A))     k |= IGM_K_A;
 	if (PRESSED(GPIO_B))     k |= IGM_K_B;
+	if (PRESSED(GPIO_LB))    k |= IGM_K_L;
+	if (PRESSED(GPIO_RB))    k |= IGM_K_R;
 	{ extern unsigned int ayaneo_joypad_dpad(void); k |= ayaneo_joypad_dpad() & (IGM_K_UP | IGM_K_DOWN | IGM_K_LEFT | IGM_K_RIGHT); }
 	s_igm_state = state;
 	battery_poll(BATTERY_MENU_FRAMES);

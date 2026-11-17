@@ -25,6 +25,7 @@
 #include <platform/mt_typedefs.h>
 #include <kernel/thread.h>
 #include <string.h>
+#include <malloc.h>
 #include <printf.h>
 #include "../../../emu/gba/fat_ro.h"
 #include "../../../emu/gba/fat_wr.h"
@@ -55,7 +56,9 @@ static struct pico_xfer_status s_xs;
 static volatile int s_xf_cancel;
 static thread_t *s_xf_thread;
 static char s_xf_path[XFER_PATH_MAX];
-static unsigned char s_chunk[4096];
+/* the sender's read buffer, on the heap while it sends: the KPA LK's static data must stay small */
+#define XF_CHUNK_SZ 4096u
+static unsigned char *s_chunk;
 
 const struct pico_xfer_status *pico_xfer_status(void) { return &s_xs; }
 int pico_xfer_busy(void) { return s_xf_thread != 0; }
@@ -138,6 +141,8 @@ static int xf_sender(void *arg)
 	(void)arg;
 
 	crc_init();
+	s_chunk = malloc(XF_CHUNK_SZ);
+	if (!s_chunk) { xf_fail(XFE_READ); goto out; }
 	{	/* the sender as the link's central: the peripheral sends at a third of the speed */
 		extern int pico_link_lead(void);
 		pico_link_lead();
@@ -148,7 +153,7 @@ static int xf_sender(void *arg)
 	}
 	s_xs.size = f.size;
 	for (pos = 0; pos < f.size; ) {		/* the checksum first: the offer carries it */
-		unsigned int k = f.size - pos > sizeof s_chunk ? sizeof s_chunk : f.size - pos;
+		unsigned int k = f.size - pos > XF_CHUNK_SZ ? XF_CHUNK_SZ : f.size - pos;
 		if (fat_read(&f, pos, s_chunk, k) != k) { xf_fail(2); goto out; }
 		crc = crc_more(crc, s_chunk, k);
 		pos += k;
@@ -179,7 +184,7 @@ static int xf_sender(void *arg)
 			else if (n >= 1 && m[0] == 'Z') { xf_fail(7); goto out; }
 			else if (n == 0) { xf_fail(6); goto out; }
 		}
-		k = f.size - pos > sizeof s_chunk ? sizeof s_chunk : f.size - pos;
+		k = f.size - pos > XF_CHUNK_SZ ? XF_CHUNK_SZ : f.size - pos;
 		if (k > XFER_WINDOW - (pos - acked)) k = XFER_WINDOW - (pos - acked);
 		if (fat_read(&f, pos, s_chunk, k) != k) { xf_fail(2); goto out; }
 		for (i = 0; i < k; i += XFER_CHUNK) {
@@ -207,6 +212,8 @@ static int xf_sender(void *arg)
 	if (m[1] != 0) { xf_fail(10 + m[1]); goto out; }
 	s_xs.state = XF_DONE;
 out:
+	free(s_chunk);
+	s_chunk = 0;
 	s_xf_thread = 0;
 	return 0;
 }

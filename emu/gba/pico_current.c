@@ -43,6 +43,7 @@
 #include "pico_libmem.h"        /* the library's tables: thousands of games */
 #include "rom_archive.h"        /* why a game did not start */
 #include "pico_version.h"       /* the About row */
+#include "pico_settings.h"      /* the settings every theme offers */
 #include <kernel/thread.h>       /* thread_sleep: a pack read tried again */
 
 extern unsigned int gpt4_get_current_tick(void);
@@ -608,6 +609,9 @@ enum { SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_BIOS, SET_RES
        SET_LANGUAGE, SET_CLOCK, SET_YEAR, SET_MONTH, SET_DAY, SET_HOUR, SET_MINUTE, SET_ZONE, SET_CLOCK12,
        SET_ABOUT, SET_N };
 enum { SPAGE_MAIN, SPAGE_BIOS, SPAGE_RESUME, SPAGE_CLOCK, SPAGE_N };
+/* the rows are the shared settings' (pico_settings.h), in its order */
+typedef char set_ids_are_shared[(SET_BRIGHT == PS_BRIGHT && SET_BOOT_OS == PS_BOOT_OS && SET_LANGUAGE == PS_LANGUAGE &&
+				 SET_CLOCK12 == PS_CLOCK12 && SET_ABOUT == PS_ABOUT) ? 1 : -1];
 #define SET_ROWS 12                   /* rows in a settings list, at most, with its end */
 static const signed char k_set_page[SPAGE_N][SET_ROWS] = {
 	{ SET_BRIGHT, SET_VOLUME, SET_BFI, SET_THEME, SET_COLOUR, SET_LANGUAGE, SET_CLOCK, SET_BIOS, SET_RESUME,
@@ -1384,54 +1388,20 @@ static void home_resume(void)
 }
 /* the saved form of theme i: 0 for the first, the hash of its name for the others */
 static unsigned int theme_hash(int i) { return snes_hash(A.theme_id[i < 0 ? 0 : i]); }
-static const char *const k_set_name[SET_N] = { "Brightness", "Volume", "Black Frame Insertion", "Theme", "Colour",
-	"BIOS Boot", "Game Resume", "Boot to Android",
-	"Skip BIOS Intro", "BIOS Intro Background", "Mute BIOS Audio", "BIOS Intro on Resume",
-	"Resume on Power On", "Resume on Game Open", "Language", "Date & Time", "Year", "Month", "Day",
-	"Hour", "Minute", "Time zone", "24-hour clock", "About" };
-/* the line under a setting on the left, where it says more than its value */
-static const char *const k_set_about[SET_N] = { 0, 0, 0, 0, 0,
-	"The Game Boy Advance start-up screen", "Where games carry on from", "Restart into Android",
-	"Start games without the logo screen", "Behind the logo at start-up", "The start-up chime",
-	"The logo first, then the resumed game fades in",
-	"Power on straight back into the game you left", "Games carry on where you left them (B: fresh)",
-	"The language of the menus", "The clock the games and the menus keep", 0, 0, 0, 0, 0,
-	"Hours from UTC, as the Android clock is kept", 0, 0 };
+/* a row's value: the theme's own picks here, the rest as every theme shows them (pico_settings.c) */
 static void set_value(int i, char *buf, int n, int *num)
 {
 	*num = -1;
 	switch (i) {
-	case SET_BRIGHT: *num = ayaneo_brightness_pct(); snprintf(buf, n, "%d%%", *num); break;
-	case SET_VOLUME: *num = ayaneo_gbc_audio_get_volume(); snprintf(buf, n, "%d%%", *num); break;
-	case SET_BFI:    snprintf(buf, n, "%s", tr(ayaneo_strobe_name(ayaneo_get_strobe()))); break;
 	case SET_THEME:
 		if (S.theme_pick >= A.nthemes) buf[0] = 0;
 		else if (A.theme_beta[S.theme_pick]) snprintf(buf, n, tr("%s (Beta)"), tr(A.theme_label[S.theme_pick]));
 		else snprintf(buf, n, "%s", tr(A.theme_label[S.theme_pick]));
 		break;
-	case SET_COLOUR: snprintf(buf, n, "%s", tr(k_colour[g_colour].name)); break;
-	case SET_BIOS: case SET_RESUME: buf[0] = 0; break;   /* a subsection: its chevron */
-	case SET_SKIP_INTRO:  snprintf(buf, n, "%s", tr(ayaneo_get_skip_gba_intro() ? "On" : "Off")); break;
-	case SET_INTRO_BG:    snprintf(buf, n, "%s", tr(ayaneo_get_intro_black() ? "Black" : "White")); break;
-	case SET_MUTE_BIOS:   snprintf(buf, n, "%s", tr(ayaneo_get_mute_bios() ? "On" : "Off")); break;
-	case SET_INTRO_RESUME: snprintf(buf, n, "%s", tr(ayaneo_get_intro_on_resume() ? "On" : "Off")); break;
-	case SET_RESUME_BOOT: snprintf(buf, n, "%s", tr(ayaneo_get_resume_on_boot() ? "On" : "Off")); break;
-	case SET_RESUME_OPEN:   snprintf(buf, n, "%s", tr(ayaneo_get_resume_on_open() ? "On" : "Off")); break;
-	case SET_LANGUAGE:    snprintf(buf, n, "%s", pico_lang_name(S.lang_pick)); break;
-	case SET_CLOCK:       buf[0] = 0; break;   /* a subsection: its chevron */
-	case SET_YEAR: case SET_MONTH: case SET_DAY: case SET_HOUR: case SET_MINUTE: {
-		pico_tm tm;
-		pico_clock_split(pico_clock_local(), &tm);
-		if (i == SET_YEAR) snprintf(buf, n, "%d", tm.year);
-		else if (i == SET_MONTH) snprintf(buf, n, "%s", pico_clock_month_name(tm.mon));
-		else if (i == SET_DAY) snprintf(buf, n, "%d", tm.mday);
-		else if (i == SET_HOUR) snprintf(buf, n, "%02d", tm.hour);
-		else snprintf(buf, n, "%02d", tm.min);
-		break; }
-	case SET_ZONE:        pico_clock_zone_text(pico_clock_zone(), buf, n); break;
-	case SET_CLOCK12:     snprintf(buf, n, "%s", tr(pico_clock_12h() ? "Off" : "On")); break;
-	case SET_ABOUT:       snprintf(buf, n, "%s", pico_version()); break;
-	default: snprintf(buf, n, "%s", tr("Open")); break;
+	case SET_COLOUR:   snprintf(buf, n, "%s", tr(k_colour[g_colour].name)); break;
+	case SET_LANGUAGE: snprintf(buf, n, "%s", pico_lang_name(S.lang_pick)); break;
+	case SET_BOOT_OS:  snprintf(buf, n, "%s", tr("Open")); break;
+	default:           pico_set_value(i, buf, n, num); break;
 	}
 }
 static int set_count(int page) { int n = 0; while (n < SET_ROWS && k_set_page[page][n] >= 0) n++; return n; }
@@ -1448,7 +1418,7 @@ static void home_settings(void)
 	if (pitch > 57.6f) pitch = 57.6f;
 	for (i = 0; i < n; i++) {
 		int k = k_set_page[S.set_page][i];
-		names[i] = tr(k_set_name[k]);
+		names[i] = tr(pico_set_name(k));
 		set_value(k, vals[i], sizeof vals[i], &num); vp[i] = vals[i];
 	}
 	if (S.set_page) text(&A.tag13, U(xx + 16), U(top - 22), tr(k_set_page_name[S.set_page]), C_MUTED, 256, 0, U(2), 1);
@@ -1462,7 +1432,7 @@ static void home_settings(void)
 	/* the focused setting, large on the left */
 	if (sw > 270) sw = 270;
 	draw_mask(&A.ic_set[it], U(s_p), U(mid), C_ACCENT, 256);
-	text_fit(&A.dname, U(s_p), U(mid + 93), tr(k_set_name[it]), C_INK, 256, U(xx - s_p - 20));
+	text_fit(&A.dname, U(s_p), U(mid + 93), tr(pico_set_name(it)), C_INK, 256, U(xx - s_p - 20));
 	set_value(it, vals[0], sizeof vals[0], &num);
 	if (num >= 0) {
 		char t[8];
@@ -1490,14 +1460,14 @@ static void home_settings(void)
 		text_wrap2(&A.info, U(s_p), U(mid + 240), U(21), tr("Experimental software, provided as it is, with no warranty"),
 			   C_MUTED, 256, U(xx - s_p - 20));
 	} else if (it == SET_BOOT_OS || it == SET_BIOS || it == SET_RESUME) {
-		text_wrap2(&A.lib, U(s_p), U(mid + 141), U(27), tr(k_set_about[it]), C_MUTED, 256, U(xx - s_p - 20));
+		text_wrap2(&A.lib, U(s_p), U(mid + 141), U(27), tr(pico_set_about(it)), C_MUTED, 256, U(xx - s_p - 20));
 	} else {
 		text_fit(&A.dname, U(s_p), U(mid + 141), vals[0], C_INK, 256, U(xx - s_p - 20));
 		if ((it == SET_THEME && A.nthemes && theme_hash(S.theme_pick) != gba_menu_theme()) ||
 		    (it == SET_LANGUAGE && S.lang_pick != pico_lang()))
 			text_wrap2(&A.lib, U(s_p), U(mid + 178), U(27), tr("Press A to apply"), C_MUTED, 256, U(xx - s_p - 20));
-		else if (k_set_about[it])
-			text_wrap2(&A.lib, U(s_p), U(mid + 178), U(27), tr(k_set_about[it]), C_MUTED, 256, U(xx - s_p - 20));
+		else if (pico_set_about(it))
+			text_wrap2(&A.lib, U(s_p), U(mid + 178), U(27), tr(pico_set_about(it)), C_MUTED, 256, U(xx - s_p - 20));
 	}
 }
 #if PICO_LINK
@@ -2274,22 +2244,8 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 					} else if (page_of_row(it) > 0 && (ea || rt)) {
 						S.set_page = page_of_row(it); S.set_sel = 0; S.dip = .45f;
 					}
-					if (it == SET_BRIGHT && dir) { ayaneo_brightness_step(dir); ayaneo_menu_settings_persist(); }
-					if (it == SET_VOLUME && dir) {
-						int v = ayaneo_gbc_audio_get_volume() + dir * 5;
-						ayaneo_gbc_audio_set_volume(v < 0 ? 0 : v > 100 ? 100 : v);
-						ayaneo_menu_settings_persist();
-					}
-					if (it == SET_MUTE_BIOS && flip) { ayaneo_set_mute_bios(!ayaneo_get_mute_bios()); ayaneo_menu_settings_persist(); }
-					if (it == SET_SKIP_INTRO && flip) { ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); ayaneo_menu_settings_persist(); }
-					if (it == SET_INTRO_BG && flip) { ayaneo_set_intro_black(!ayaneo_get_intro_black()); ayaneo_menu_settings_persist(); }
-					if (it == SET_INTRO_RESUME && flip) { ayaneo_set_intro_on_resume(!ayaneo_get_intro_on_resume()); ayaneo_menu_settings_persist(); }
-					if (it == SET_RESUME_BOOT && flip) { ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); ayaneo_menu_settings_persist(); }
-					if (it == SET_RESUME_OPEN && flip) { ayaneo_set_resume_on_open(!ayaneo_get_resume_on_open()); ayaneo_menu_settings_persist(); }
-					if (it == SET_BFI && flip) {
-						ayaneo_set_strobe((ayaneo_get_strobe() + (dir ? dir : 1) + 4) % 4);
-						ayaneo_menu_settings_persist();
-					}
+					if (pico_set_kind(it) == PSK_STEP || pico_set_kind(it) == PSK_SWITCH)
+						pico_set_change(it, dir, ea);   /* as every theme does it */
 					if (it == SET_THEME && dir && A.nthemes) S.theme_pick = (S.theme_pick + dir + A.nthemes) % A.nthemes;
 					if (it == SET_COLOUR && flip) {	/* live: the backdrop is made again */
 						colour_set(colour_step(g_colour, dir ? dir : 1));
@@ -2306,26 +2262,6 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 							return -3;
 						}
 					}
-					if (it >= SET_YEAR && it <= SET_MINUTE && dir) {	/* the clock: the RTC takes it at once */
-						pico_tm tm;
-						int days;
-						pico_clock_split(pico_clock_local(), &tm);
-						if (it == SET_YEAR) tm.year = tm.year + dir < 2024 ? 2095 : tm.year + dir > 2095 ? 2024 : tm.year + dir;   /* the RTC holds 1968..2095 */
-						if (it == SET_MONTH) tm.mon = (tm.mon - 1 + dir + 12) % 12 + 1;
-						days = pico_clock_days_in(tm.year, tm.mon);
-						if (it == SET_DAY) tm.mday = (tm.mday - 1 + dir + days) % days + 1;
-						if (tm.mday > days) tm.mday = days;
-						if (it == SET_HOUR) tm.hour = (tm.hour + dir + 24) % 24;
-						if (it == SET_MINUTE) tm.min = (tm.min + dir + 60) % 60;
-						tm.sec = 0;
-						pico_clock_set_local(&tm);
-					}
-					if (it == SET_ZONE && dir) {	/* quarter hours, as the world's zones go */
-						int q = pico_clock_zone() + dir;
-						pico_clock_set_zone(q < -48 ? 56 : q > 56 ? -48 : q);
-						ayaneo_menu_settings_persist();
-					}
-					if (it == SET_CLOCK12 && flip) { pico_clock_set_12h(!pico_clock_12h()); ayaneo_menu_settings_persist(); }
 					if (it == SET_LANGUAGE && dir) S.lang_pick = (S.lang_pick + dir + LANG_N) % LANG_N;
 					if (it == SET_LANGUAGE && ea && S.lang_pick != pico_lang()) {
 						/* the words and glyphs of the new language, then the fonts take them up */
@@ -2335,7 +2271,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 						art_load();
 						S.dip = .45f;
 					}
-					if (it == SET_BOOT_OS && ea) ayaneo_boot_to_os();   /* never returns */
+					if (it == SET_BOOT_OS && ea) pico_set_change(it, 0, 1);   /* never returns */
 				}
 			}
 		}
@@ -2431,6 +2367,20 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
  * enough for its sound to stutter); on the pairmini that memory is the opening's, so each game
  * reads it at its first opening. */
 #include "pico_igm.h"
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+/* the Classic themes have an in-game menu of their own on these consoles: the calls below hand
+ * over to it while one is in use (pico_classic_igm.c) */
+#include "pico_classic_igm.h"
+static int s_igm_classic;
+#define CLASSIC_IGM s_igm_classic
+#else
+#define CLASSIC_IGM 0
+#define pico_classic_igm_on() 0
+#define pico_classic_igm_open(c) ((void)(c))
+#define pico_classic_igm_dismiss() ((void)0)
+#define pico_classic_igm_frame(k) ((void)(k), 0)
+#define pico_classic_igm_overlay(o) ((void)(o))
+#endif
 #if defined(KONKR_KPA)
 #define IGM_PACK_PA  0x54258000u      /* between the opening's snapshot and its menu layer copy */
 #define IGM_PACK_MAX 0x000A8000u      /* 0.6 MB at 960 x 640 */
@@ -2454,7 +2404,10 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 #define IGM_BG_MAX   0x00280000u      /* up to the live layer's second buffer (0x54400000) */
 #define IGM_KEEP     0
 #endif
-#define IGM_ROWS 40                   /* rows in a page, at most */
+#define IGM_ROWS 96                   /* rows in a page, at most (a core's own options: armNES has 91) */
+#define IGM_FIG  32                   /* rows whose figures are cached (battery, refresh): the usual
+                                       * pages only; 96 bytes each in the static data, where the KPA's
+                                       * boot heap has little to spare */
 #define IGM_Y0   180.f                /* the first row, units */
 #define IGM_RP   44.f                 /* the row pitch, units */
 
@@ -2492,7 +2445,7 @@ static struct {
 	int ext_prev;                /* the width the last picture covered, px */
 	int batt, chg;               /* read at the opening and every 20 s (the gauge is slow to ask) */
 	unsigned int batt_tick;
-	char fig[IGM_ROWS][96];      /* the figures rows (battery, refresh): read once a second */
+	char fig[IGM_FIG][96];      /* the figures rows (battery, refresh): read once a second */
 	unsigned int lang_serial;    /* the language pack the fonts' extra glyphs come from */
 	unsigned int fig_tick;
 	int fig_page;
@@ -2563,7 +2516,17 @@ static void igm_forget(void)
 int pico_igm_on(void)
 {
 	unsigned int W, H;
-	if (gba_menu_theme() != snes_hash("current")) return 0;
+	if (gba_menu_theme() != snes_hash("current")) {
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+		s_igm_classic = pico_classic_igm_on();
+		return s_igm_classic;
+#else
+		return 0;
+#endif
+	}
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	s_igm_classic = 0;
+#endif
 	if (!igm_valid() && (G.failed || igm_read() != 0)) return 0;
 	ayaneo_canvas_dims(&W, &H);
 	pico_lang_load(W, H);   /* a game started straight from power on: the menu never read it */
@@ -2625,7 +2588,7 @@ static const char *igm_value(int page, const igm_line *l, char *buf)
 	if (l->kind == IGM_ACTION) return 0;
 	if (l->kind == IGM_INFO && l->label) {	/* a figure: at most once a second (it may ask the gauge) */
 		int r = (int)(l - s_igm_ln);
-		if (r >= 0 && r < IGM_ROWS) {
+		if (r >= 0 && r < IGM_FIG) {
 			if (!G.fig[r][0] || G.fig_page != page) c->value(l->item, G.fig[r]);
 			return tr(G.fig[r]);
 		}
@@ -2638,6 +2601,7 @@ void pico_igm_open(const struct igm_core *c)
 {
 	unsigned int W, H;
 	unsigned int t_open = gpt4_get_current_tick();
+	if (CLASSIC_IGM) { pico_classic_igm_open(c); return; }
 	if (!G.loaded) return;
 	ayaneo_canvas_dims(&W, &H);
 	g_W = (int)W; g_H = (int)H; g_s = (float)H / 720.0f;
@@ -2686,6 +2650,7 @@ void pico_igm_open(const struct igm_core *c)
 volatile unsigned int g_dbg_igm_open_us, g_dbg_igm_open_part[2], g_dbg_igm_glass_us;   /* oem diag: the last opening's setup, the glass */
 void pico_igm_dismiss(void)
 {
+	if (CLASSIC_IGM) { pico_classic_igm_dismiss(); return; }
 	if (G.up && !G.closing) { G.closing = 1; G.latch = 0; G.dirty = 1; }
 }
 static void igm_toast(const char *t)
@@ -2714,6 +2679,7 @@ int pico_igm_frame(unsigned int keys)
 	unsigned int now = gpt4_get_current_tick();
 	float dt = (float)(now - G.tick) / 13000000.0f;
 	int n, sel, up, dn, lt, rt, a, b, nv;
+	if (CLASSIC_IGM) return pico_classic_igm_frame(keys);
 	G.tick = now;
 	if (dt > .05f) dt = .05f;
 	if (!G.up) return 0;
@@ -2742,10 +2708,13 @@ int pico_igm_frame(unsigned int keys)
 	if (G.sel[G.page] >= n) G.sel[G.page] = n ? n - 1 : 0;
 	sel = G.sel[G.page];
 	{	/* the list follows the focus; the wash glides to it (both settle in about a tenth of a second) */
-		float k = dt * 18, f = k / (1 + k + k * k * .5f) * (1 + k * .5f), want = G.top[G.page];
-		if (sel < (int)(want + .5f)) want = (float)sel;
-		if (sel > (int)(want + .5f) + nv - 1) want = (float)(sel - nv + 1);
-		if (want < 0) want = 0;
+		/* the list's goal is a whole row: taken from where it is now rounded, so a press while it
+		 * still glides cannot leave it stopped between rows (with the focus out of sight) */
+		float k = dt * 18, f = k / (1 + k + k * k * .5f) * (1 + k * .5f), want;
+		int w = (int)(G.top[G.page] + .5f);
+		if (sel < w) w = sel;
+		if (sel > w + nv - 1) w = sel - nv + 1;
+		want = (float)(w < 0 ? 0 : w);
 		G.top[G.page] += (want - G.top[G.page]) * f;
 		if (G.top[G.page] - want < .01f && want - G.top[G.page] < .01f) G.top[G.page] = want;
 		{
@@ -3073,7 +3042,7 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 	G.dirty = 0; G.last_paint = now;
 	if (now - G.fig_tick > 13000000u || G.fig_page != G.page) {	/* the figures: once a second */
 		int i;
-		for (i = 0; i < IGM_ROWS; i++) G.fig[i][0] = 0;
+		for (i = 0; i < IGM_FIG; i++) G.fig[i][0] = 0;
 		G.fig_tick = now; G.fig_page = G.page;
 	}
 	if (now - G.batt_tick > 13000000u * 20) { G.batt = gba_battery_last(&G.chg); G.batt_tick = now; }
@@ -3276,5 +3245,6 @@ static int link_paint(const struct lui_progress *p)
 
 void pico_igm_overlay(int open)
 {
+	if (CLASSIC_IGM) { pico_classic_igm_overlay(open); return; }
 	ayaneo_overlay_live(igm_paint, open && G.loaded);
 }

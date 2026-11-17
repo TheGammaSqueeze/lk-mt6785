@@ -1070,6 +1070,8 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (PRESSED(GPIO_RIGHT) || (jd & 0x08u)) k |= IGM_K_RIGHT;
 				if (PRESSED(GPIO_A)) k |= IGM_K_A;
 				if (PRESSED(GPIO_B)) k |= IGM_K_B;
+				if (PRESSED(GPIO_LB)) k |= IGM_K_L;
+				if (PRESSED(GPIO_RB)) k |= IGM_K_R;
 				r = pico_igm_frame(k);
 				if (s_gbc_igm_exit) {   /* Exit game */
 					extern void gbc_menu_arm_reverse(const unsigned short *frame);

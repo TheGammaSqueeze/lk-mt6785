@@ -135,7 +135,8 @@ int main(int argc, char **argv)
 			const char *force = getenv("GBA_BADGE_FORCE");
 			for (k = 0; k < gn && k < 128; k++)
 				types[k] = force ? (unsigned char)atoi(force) : (unsigned char)(k % 8);
-			snes_menu_set_console_badges(&menu, types, lg, lgc, lga, lgs, lgn, lms, lgg, lsg);
+			snes_menu_set_console_badges(&menu, types, lg, lgc, lga, lgs, lgn, lms, lgg, lsg,
+						     snes_res_img(&pk, snes_hash("logo_nes")));
 			if (!lg || !lgc || !lga || !lgs) fprintf(stderr, "WARN a console logo image is not in pack\n");
 		}
 

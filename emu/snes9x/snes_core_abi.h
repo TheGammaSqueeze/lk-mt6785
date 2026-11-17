@@ -11,8 +11,25 @@
 #define SNES_CORE_ABI_H
 
 #define SNES_CORE_ABI_MAGIC   0x31534E53u   /* "SNS1" */
-#define SNES_CORE_ABI_VERSION 3u   /* v2: + fps_milli (core frame rate for dynamic per-core panel refresh)
-				    * v3: + set_pad_reader (both controller ports, for netplay) */
+#define SNES_CORE_ABI_VERSION 4u   /* v2: + fps_milli (core frame rate for dynamic per-core panel refresh)
+				    * v3: + set_pad_reader (both controller ports, for netplay)
+				    * v4: + opt_count / opt_info (the core's own option list) */
+
+/* One of the core's own options, as the core declares it (libretro core options v2), for the
+ * frontend's Core Settings page. values are what set_option takes, labels what is shown. Shared
+ * with the Genesis and NES ABIs. */
+#ifndef PICO_CORE_OPTION_DEFINED
+#define PICO_CORE_OPTION_DEFINED
+struct pico_core_option {
+	const char *key;                 /* set_option's key, and the key the frontend saves it under */
+	const char *label;               /* the option's name */
+	const char *category;            /* its group's name, or 0 */
+	const char *const *values;       /* set_option values */
+	const char *const *labels;       /* what each value is called */
+	int nvalues;
+	int def;                         /* the core's default (an index) */
+};
+#endif
 
 /* Services LK provides to the core (core -> LK). */
 struct snes_core_imports {
@@ -105,6 +122,11 @@ struct snes_core_exports {
 	 * (RETRO_DEVICE_ID_JOYPAD_* bits); without one (an older frontend never sets it) it reads
 	 * imports.read_buttons for port 0 only, as before. NULL clears it. */
 	void (*set_pad_reader)(unsigned (*reader)(unsigned port));
+
+	/* v4: the options the core declared, less the ones the LK's own rows set (aspect, overscan,
+	 * audio interpolation, hi-res blending) and the light gun ones. Changed with set_option. */
+	int (*opt_count)(void);
+	const struct pico_core_option *(*opt_info)(int index);
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);

@@ -99,6 +99,21 @@ typedef struct snes_menu_s {
 	int ngames;
 	int sort_rule;                /* 0 title, 1 publisher, 2 players, 3 release */
 	float sort_label_t;           /* seconds remaining to show the sort-name label */
+	/* a note in the menubar caption's look (white rounded box, black inside, the m font): the
+	 * sort, the system shown, why a game did not start. note_pos 0 under the menubar, 1 above
+	 * the bottom hints */
+	char note[96];
+	float note_t, note_len;
+	int note_pos;
+	/* menubar slots the LK runs itself (snes_menu_own_slot): own_page bit = a page it draws in
+	 * place of the authored one, sliding as they do; own_act bit = an action on A (taken with
+	 * snes_menu_take_action) instead of a page */
+	unsigned own_page, own_act;
+	void (*page_open)(int slot);
+	int  (*page_input)(int slot, const snes_input *in, unsigned edges, float dt);   /* 1: close it */
+	void (*page_draw)(int slot, snes_target *t, float slide);   /* slide: design units above its place */
+	int act_req;                       /* the slot whose action was asked for, -1 none */
+	const char *mb_caption_text[5];    /* a slot's caption from the LK, 0 = the authored one */
 	uint32_t *wp;                 /* wallpaper cache, WP_W*WP_H u32 (caller-provided) */
 	int wp_ready;
 	/* 4:3 fast-path: the ASP_WALL_S-warped wallpaper pre-rendered so draw_wp_43 is a
@@ -243,6 +258,19 @@ void snes_menu_set_console_badges(snes_menu *m, const unsigned char *types,
 				  const snes_img_entry *genesis, const snes_img_entry *sms,
 				  const snes_img_entry *gg, const snes_img_entry *sg,
 				  const snes_img_entry *nes);
+/* page_input's edges: the keys pressed this frame */
+enum { SNES_E_LEFT = 1, SNES_E_RIGHT = 2, SNES_E_UP = 4, SNES_E_DOWN = 8, SNES_E_A = 16, SNES_E_B = 32 };
+/* menubar slot `slot` is the LK's: its icon the atlas sprite icon_id ("btn_option.png"; 0 keeps
+ * the authored one), its caption (already translated), and page 1 = a page drawn by the hooks,
+ * 0 = an action on A */
+void snes_menu_own_slot(snes_menu *m, int slot, const char *icon_id, const char *caption, int page);
+/* the slot whose action A asked for (and clears it), -1 none */
+int  snes_menu_take_action(snes_menu *m);
+/* the menu's own sounds for the LK's pages: 0 move, 1 decide, 2 cancel */
+void snes_menu_sfx(snes_menu *m, int kind);
+/* show a note for secs (pos 0 under the menubar, 1 above the bottom hints): the caller's text,
+ * already in the language in use (English where the fonts lack its letters) */
+void snes_menu_note(snes_menu *m, const char *text, float secs, int pos);
 /* If A/Start launched a ROM, returns its index and clears the flag; else -1. */
 int snes_menu_take_launch(snes_menu *m);
 int snes_menu_take_sysreset(snes_menu *m);

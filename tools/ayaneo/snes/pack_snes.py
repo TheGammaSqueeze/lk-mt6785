@@ -887,6 +887,11 @@ def main():
         if os.path.exists(os.path.join(tdir, "beta")):
             # a theme still being finished: the Display page tags it Beta
             res_map["theme_beta_" + key] = (RES_TEXTURE, tix)
+        # its name as the menus show it (label.txt, else its folder's name in words): the id
+        # carries it, 'theme_label_NN_<Label>'
+        lpath = os.path.join(tdir, "label.txt")
+        label = open(lpath).read().strip() if os.path.exists(lpath) else name.replace("-", " ").title()
+        res_map["theme_label_%02d_%s" % (n, label)] = (RES_TEXTURE, tix)
         atlas = os.path.join(tdir, "packed.png")
         if os.path.exists(os.path.join(tdir, "layout")):
             # a theme with a menu of its own (its own card pack): only its thumbnail here, and a

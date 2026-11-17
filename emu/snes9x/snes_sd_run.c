@@ -17,6 +17,7 @@
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
+#include "../gba/pico_coreopt.h"
 #include "../gba/card_writer.h"   /* in-game saves go to the card off the game's thread */
 #include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #include "../gba/gba_sd_save.h"
@@ -405,7 +406,7 @@ static void snes_slot_check(void)
 	s_slot_known[s_save_slot] = (signed char)s_slot_used;
 }
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
-       SM_CPU, SM_RUNAHEAD, SM_REWIND, SM_TURBO, SM_BENCH, SM_SHOWFPS, SM_BATTERY, SM_PANEL, SM_STROBE, SM_RESUME,
+       SM_CPU, SM_RUNAHEAD, SM_REWIND, SM_TURBO, SM_BENCH, SM_SHOWFPS, SM_CORE, SM_BATTERY, SM_PANEL, SM_STROBE, SM_RESUME,
        SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
 #define SNES_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -459,6 +460,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_TURBO:  return "Turbo (auto-fire)";
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
 	case SM_SHOWFPS: return "Show FPS"; case SM_BATTERY: return "Battery";
+	case SM_CORE:   return "Core Settings";
 	case SM_STROBE: return "BFI"; case SM_RESUME: return "Resume on Power On";
 	case SM_SLOT:   return "Save Slot";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
@@ -496,6 +498,7 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 	case SM_RESUME: { extern int ayaneo_get_resume_on_boot(void); p = smput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case SM_SLOT: p = smputu(p, (unsigned)s_save_slot); p = smput(p, s_slot_used ? " used" : " empty"); break;
 	case SM_SAVE: case SM_LOAD: case SM_RESET: case SM_CLOSE: p = smput(p, "[A]"); break;
+	case SM_CORE: p = smput(p, pico_coreopt_n() ? ">" : "None"); break;
 	default: break; } *p = 0; return buf; }
 
 int snes_menu_open(void) { return g_snes_menu_open; }
@@ -508,6 +511,7 @@ void snes_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsi
 	int vis, top;
 	int rowH = 38, panelW = 520, panelH = 60 + SM_COUNT * rowH + 34;
 	int px, py, x, y, i;
+	if (pico_coreopt_page_is_open()) { pico_coreopt_page_paint(buf, pitch, W, H); return; }
 	/* Fit the panel to the screen (ayaneo_pico_layout): 38 px rows when everything fits, down to
 	 * 32 px on the Konkr's 640 px height, and the list scrolls beyond that. */
 	{ static int s_top; vis = ayaneo_pico_layout(SM_COUNT, (int)H, s_msel, &s_top, &rowH, &panelH); top = s_top; }
@@ -577,6 +581,7 @@ static int sm_change(int i, int dir, int act)
 			ayaneo_set_show_fps(!ayaneo_get_show_fps()); snes_settings_touch(); } break;
 	case SM_BATTERY: break;   /* read-only */
 	case SM_PANEL:  break;   /* read-only */
+	case SM_CORE: if (act || dir > 0) pico_coreopt_page_open(); break;   /* the core's own options */
 	case SM_STROBE: if (dir) { ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); snes_settings_touch(); } break;
 	case SM_REWIND: if (dir || act) { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
 			ayaneo_set_rewind(!ayaneo_get_rewind()); snes_settings_touch(); } break;
@@ -624,14 +629,15 @@ static const struct igm_row k_snes_igm_rows[] = {
 	{ SM_VOLUME, IGM_SOUND, IGM_VALUE }, { SM_AUDIO, IGM_SOUND, IGM_VALUE },
 	{ SM_CPU, IGM_PLAY, IGM_VALUE }, { SM_RUNAHEAD, IGM_PLAY, IGM_VALUE },
 	{ SM_REWIND, IGM_PLAY, IGM_VALUE }, { SM_TURBO, IGM_PLAY, IGM_VALUE },
-	{ SM_BENCH, IGM_PLAY, IGM_VALUE }, { SM_PANEL, IGM_PLAY, IGM_INFO },
+	{ SM_BENCH, IGM_PLAY, IGM_VALUE }, { SM_PANEL, IGM_PLAY, IGM_INFO }, { IGM_CORE, IGM_PLAY, IGM_LINK },
 	{ SM_RESUME, IGM_SYSTEM, IGM_VALUE }, { SM_BATTERY, IGM_SYSTEM, IGM_INFO },
 };
 static struct igm_core s_snes_igm = {
 	k_snes_igm_rows, (int)(sizeof k_snes_igm_rows / sizeof k_snes_igm_rows[0]),
 	SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE,
 	sm_label, sm_value, sm_change, s_mstat,
-	0, 0, 0, 0, GBA_CONSOLE_SNES, 0,
+	pico_coreopt_n, pico_coreopt_label, pico_coreopt_value, pico_coreopt_change,	/* the core's own */
+	GBA_CONSOLE_SNES, 0,
 };
 static int s_snes_igm_on;   /* this game's menu is the Current theme's */
 
@@ -677,6 +683,14 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	c->heap_init((void *)SNES_HEAP_BASE, SNES_HEAP_SZ);
 	c->init();
+	/* the core's own options (it declared them in init): the choices saved for this system, read
+	 * by the core while the game loads */
+	if (c->version >= 4 && c->opt_count && c->opt_info && c->set_option) {
+		static struct pico_coreopt_core copt;
+		copt.count = c->opt_count; copt.info = c->opt_info; copt.set = c->set_option;
+		pico_coreopt_begin(vol, "snes", &copt);
+	} else
+		pico_coreopt_begin(vol, "snes", 0);
 	g_snes_dbg_stage = 4;
 	SNES_PRE_MARK(2);
 	g_snes_dbg_loadrc = (unsigned)c->load(rombuf, romsz);
@@ -1244,6 +1258,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (PRESSED(GPIO_RIGHT) || (jd & 0x08u)) k |= IGM_K_RIGHT;
 			if (PRESSED(GPIO_A)) k |= IGM_K_A;
 			if (PRESSED(GPIO_B)) k |= IGM_K_B;
+			if (PRESSED(GPIO_LB)) k |= IGM_K_L;
+			if (PRESSED(GPIO_RB)) k |= IGM_K_R;
 			r = pico_igm_frame(k);
 			if (r >= 0) { g_snes_menu_open = 0; g_snes_ab_latch |= r; snes_settings_flush(); }
 			reset_hold = 0;
@@ -1251,6 +1267,12 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
 			int lt = PRESSED(GPIO_LEFT), rt = PRESSED(GPIO_RIGHT);
 			int a = PRESSED(GPIO_A), b = PRESSED(GPIO_B);
+			{	/* a key oem nav injects (testing the panel over USB) */
+				extern unsigned pico_dbg_take_key(void);
+				unsigned dk = pico_dbg_take_key();
+				lt |= !!(dk & 1u); rt |= !!(dk & 2u); up |= !!(dk & 4u); dn |= !!(dk & 8u);
+				a |= !!(dk & 16u); b |= !!(dk & 32u);
+			}
 			/* left analog stick also drives menu nav (cache from ayaneo_joypad_poll; deadzoned) */
 			{ extern unsigned int ayaneo_joypad_dpad(void); unsigned int jd = ayaneo_joypad_dpad();
 			  up |= !!(jd & 0x01u); dn |= !!(jd & 0x02u); lt |= !!(jd & 0x04u); rt |= !!(jd & 0x08u); }
@@ -1267,15 +1289,25 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if ((up && FIRE(up_h)) || (dn && FIRE(dn_h)) || (lt && FIRE(lt_h)) || (rt && FIRE(rt_h)) ||
 			    (a && !a_p) || (b && !b_p))
 				ayaneo_menu_overlay_mark_dirty();   /* content changes -> repaint the static overlay */
-			if (up && FIRE(up_h)) s_msel = (s_msel + SM_COUNT - 1) % SM_COUNT;
-			if (dn && FIRE(dn_h)) s_msel = (s_msel + 1) % SM_COUNT;
-			if (lt && FIRE(lt_h)) sm_change(s_msel, -1, 0);
-			if (rt && FIRE(rt_h)) sm_change(s_msel, +1, 0);
+			if (pico_coreopt_page_is_open()) {	/* the core's own options: B back to the list */
+				unsigned ck = 0;
+				if (up && FIRE(up_h)) ck |= PICO_COREOPT_K_UP;
+				if (dn && FIRE(dn_h)) ck |= PICO_COREOPT_K_DOWN;
+				if (lt && FIRE(lt_h)) ck |= PICO_COREOPT_K_LEFT;
+				if (rt && FIRE(rt_h)) ck |= PICO_COREOPT_K_RIGHT;
+				if (b && !b_p) ck |= PICO_COREOPT_K_B;
+				pico_coreopt_page_input(ck);
+			} else {
+				if (up && FIRE(up_h)) s_msel = (s_msel + SM_COUNT - 1) % SM_COUNT;
+				if (dn && FIRE(dn_h)) s_msel = (s_msel + 1) % SM_COUNT;
+				if (lt && FIRE(lt_h)) sm_change(s_msel, -1, 0);
+				if (rt && FIRE(rt_h)) sm_change(s_msel, +1, 0);
+				if (a  && !a_p)  { if (sm_change(s_msel, 0, 1)) { g_snes_menu_open = 0; g_snes_ab_latch |= 1; snes_settings_flush(); } }
+				if (b  && !b_p)  { g_snes_menu_open = 0; g_snes_ab_latch |= 2; snes_settings_flush(); }
+			}
 			#undef NAV_DELAY
 			#undef NAV_REP
 			#undef FIRE
-			if (a  && !a_p)  { if (sm_change(s_msel, 0, 1)) { g_snes_menu_open = 0; g_snes_ab_latch |= 1; snes_settings_flush(); } }
-			if (b  && !b_p)  { g_snes_menu_open = 0; g_snes_ab_latch |= 2; snes_settings_flush(); }
 			up_p = up; dn_p = dn; lt_p = lt; rt_p = rt; a_p = a; b_p = b;
 			reset_hold = 0;
 		} else {
@@ -1469,6 +1501,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			gba_sd_write_named(vol, "/saves/snes", rom->name, "srm", p, sz);
 	}
 	s_snes_np = s_snes_np_guest = 0;
+	pico_coreopt_end();
 	c->unload();
 	ayaneo_menu_audio_silence();
 }

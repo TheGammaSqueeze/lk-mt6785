@@ -253,6 +253,37 @@ static void push_snd(snes_menu *m, uint32_t h)
 	m->sndq[m->sndt & 7] = h;
 	m->sndt++;
 }
+void snes_menu_sfx(snes_menu *m, int kind)
+{
+	push_snd(m, kind == 0 ? m->sfx_move : kind == 1 ? m->sfx_decide : m->sfx_cancel);
+}
+void snes_menu_own_slot(snes_menu *m, int slot, const char *icon_id, const char *caption, int page)
+{
+	if (slot < 0 || slot >= 5) return;
+	if (icon_id && m->mb_icon[slot]) {	/* the icon: the slot's sprite points at another of the atlas */
+		char id[96];
+		unsigned i, k = 0;
+		const char *g = "ff9fb46c-ad68-46f6-9e87-7108e2080773.";
+		while (*g && k < sizeof id - 1) id[k++] = *g++;
+		while (*icon_id && k < sizeof id - 1) id[k++] = *icon_id++;
+		id[k] = 0;
+		if (snes_res_spr(m->pk, snes_hash(id)))
+			for (i = 0; i < m->mb_icon[slot]->def->comp_count; i++) {
+				snes_comp_visual *cv = (snes_comp_visual *)snes_node_comp(&m->home, m->mb_icon[slot]->def, i);
+				if (cv->c.type == COMP_SPRITE) cv->res_hash = snes_hash(id);   /* the pack is in RAM, read again each run */
+			}
+	}
+	m->mb_caption_text[slot] = caption;
+	if (page) { m->own_page |= 1u << slot; m->own_act &= ~(1u << slot); }
+	else { m->own_act |= 1u << slot; m->own_page &= ~(1u << slot); }
+	m->chrome_ready = 0;   /* the menubar is in the chrome cache: drawn again with the new icon */
+}
+int snes_menu_take_action(snes_menu *m)
+{
+	int r = m->act_req;
+	m->act_req = -1;
+	return r;
+}
 uint32_t snes_menu_next_sound(snes_menu *m)
 {
 	if (m->sndh == m->sndt) return 0;
@@ -1710,6 +1741,29 @@ static void round_rect(snes_target *t, float cx, float cy, float w, float h, flo
 	snes_fill_quad(t, cx, cy, w, h - 2.0f * r, R, G, B, A);
 	snes_fill_quad(t, cx, cy, w - 2.0f * r, h, R, G, B, A);
 }
+/* the note (snes_menu_note): the caption bubble's box sized to its text, growing in with the
+ * caption's outExpo and fading at its end; under the menubar (where its caption hangs: the two
+ * never show together), or above the bottom hints */
+static float ease_outexpo(float t);
+static void draw_note(snes_menu *m, snes_target *t)
+{
+	uint32_t fh = snes_hash("m.font");
+	const snes_font_entry *fe = snes_res_font(m->pk, fh);
+	float s = ease_outexpo(m->note_t / 0.25f), a = 1.0f, tsc = 0.8f, tw, w, h = 44.0f, cx = 640.0f, cy;
+	float left = m->note_len - m->note_t;
+	if (left < 0.3f) a = left / 0.3f;
+	if (a <= 0.0f || s <= 0.001f) return;
+	tw = snes_text_width(m->pk, fh, tsc, m->note);
+	if (tw > 900.0f) { tsc *= 900.0f / tw; tw = 900.0f; }
+	w = tw + 48.0f;
+	if (m->note_pos) { set_view(m, t, VIEW_BOTTOM); cy = 572.0f; }
+	else { set_view(m, t, VIEW_TOP); cy = 135.0f; }   /* where the menubar's caption hangs */
+	round_rect(t, cx, cy, w * s, h * s, 6.0f * s, 1.0f, 1.0f, 1.0f, a);
+	if (s * h > 6.0f) round_rect(t, cx, cy, (w - 6.0f) * s, (h - 6.0f) * s, 5.0f * s, 0.0f, 0.0f, 0.0f, a);
+	snes_draw_text(t, m->pk, fh, cx, cy - (fe ? fe->line_height : 31) * tsc * s * 0.42f, tsc * s,
+		       ((uint32_t)(a * 255.0f) << 24) | 0xF4F4F4u, 1, m->note);
+	set_view(m, t, VIEW_CONTENT);
+}
 /* The focused menubar icon's caption bubble ("Display"/"Option"/...). The
  * authored box auto-sizes/positions at runtime (our static render placed it
  * low+mis-sized), so we hid the authored box+label in init and draw it here to
@@ -1739,6 +1793,7 @@ static void draw_menubar_caption(snes_menu *m, snes_target *t)
 	cx = 640.0f + w[2];
 	txt = snes_str(m->pk, cl->text);
 	if (txt[0] == '@') txt = snes_text(m->pk, txt + 1);
+	if (m->mb_caption_text[b]) txt = m->mb_caption_text[b];   /* the LK's slot */
 	/* caption draw-in (sys_menubar_cm.lua): the caption node starts at scale 0
 	 * and, after MENUBAR_CAPTION_DELAY, scales uniformly to 1 (Ease.outExpo). The
 	 * box (161x44 white border + black fill), the label, and the arrow all scale
@@ -2262,6 +2317,10 @@ int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		disable_all_named(pk, m->overlay[3], "hud_item3_back");
 	}
 	m->state = 0; m->mb_focus = 0; m->open = -1;
+	m->own_page = m->own_act = 0; m->act_req = -1;
+	m->page_open = 0; m->page_input = 0; m->page_draw = 0;
+	{ int b; for (b = 0; b < 5; b++) m->mb_caption_text[b] = 0; }
+	m->note[0] = 0; m->note_t = m->note_len = 0;
 	m->cur_slide_t = CUR_SLIDE_DUR;   /* cursor slide idle at boot */
 	m->open_y = 0.0f; m->closing = 0; m->close_t = 0.0f; m->close_target = 0.0f; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f;
 	/* roster order (title sort by default) */
@@ -2703,6 +2762,23 @@ static void legal_set_tab(snes_menu *m, int tab)
 	legal_scrollbar(m);
 }
 
+/* the sort just picked, as a note */
+static void sort_note(snes_menu *m)
+{
+	static const char *nm[4] = { "Sort: Title", "Sort: Publisher", "Sort: Players", "Sort: Release" };
+	static const char *gbanm[2] = { "Sort A to Z", "Sort Z to A" };
+	const char *lbl = m->gba_mode ? gbanm[m->sort_rule & 1] : nm[m->sort_rule & 3];
+	if (snes_font_covers(m->pk, snes_res_font(m->pk, snes_hash("m.font")), tr(lbl))) lbl = tr(lbl);   /* the font may lack the language's letters */
+	snes_menu_note(m, lbl, 1.5f, 0);
+}
+void snes_menu_note(snes_menu *m, const char *text, float secs, int pos)
+{
+	int i;
+	for (i = 0; text && text[i] && i < (int)sizeof m->note - 1; i++) m->note[i] = text[i];
+	m->note[i] = 0;
+	m->note_t = 0; m->note_len = secs; m->note_pos = pos;
+}
+
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 {
 	float k;
@@ -2834,7 +2910,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 					for (k = 0; k < m->ctile_cap; k++) m->ctile_gi[k] = -1;
 			}
 			m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
-			m->sort_label_t = 1.5f;
+			sort_note(m);
 			push_snd(m, m->sfx_decide);
 		}
 		if (!m->gba_mode && in->select && !m->ps) {   /* cycle roster sort */
@@ -2848,14 +2924,22 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 					if (game(m, k) == cur) { m->focus = k; m->car_x = k; break; }
 			}
 			m->sel_world = CAR_SLOT_X; m->cont_shift = 0;
-			m->sort_label_t = 1.5f;
+			sort_note(m);
 			push_snd(m, m->sfx_decide);
 		}
 	} else if (m->state == 1) {                /* ---- menubar row ---- */
 		if (el) { m->mb_focus = (m->mb_focus + 4) % 5; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; push_snd(m, m->sfx_move); }
 		if (er) { m->mb_focus = (m->mb_focus + 1) % 5; m->cap_t = 0.0f; m->cap_s = 0.0f; m->hl_s = 0.0f; push_snd(m, m->sfx_move); }
 		if (ed || eb) { m->state = 0; m->cur_slide_t = 0.0f; push_snd(m, m->sfx_cancel); }
-		if (ea && m->overlay[m->mb_focus]) {
+		if (ea && ((m->own_act >> m->mb_focus) & 1u)) {	/* the LK's action (Link) */
+			m->act_req = m->mb_focus;
+			push_snd(m, m->sfx_decide);
+		} else if (ea && ((m->own_page >> m->mb_focus) & 1u)) {	/* the LK's own page */
+			m->open = m->mb_focus;
+			if (m->page_open) m->page_open(m->open);
+			m->open_y = OPEN_SLIDE;
+			m->state = 2; push_snd(m, m->sfx_decide);
+		} else if (ea && m->overlay[m->mb_focus]) {
 			m->open = m->mb_focus;
 			m->overlay[m->open]->enabled = 1;
 			m->overlay[m->open]->tf[2] = 0;
@@ -2885,6 +2969,13 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 			 * in snes_menu_update brings it to 0. World +y = screen up. */
 			m->open_y = OPEN_SLIDE;
 			m->state = 2; push_snd(m, m->sfx_decide);
+		}
+	} else if (m->state == 2 && m->open >= 0 && ((m->own_page >> m->open) & 1u)) {	/* ---- the LK's page ---- */
+		unsigned e = (el ? SNES_E_LEFT : 0) | (er ? SNES_E_RIGHT : 0) | (eu ? SNES_E_UP : 0) |
+			     (ed ? SNES_E_DOWN : 0) | (ea ? SNES_E_A : 0) | (eb ? SNES_E_B : 0);
+		if (!m->closing && m->page_input && m->page_input(m->open, in, e, dt)) {
+			m->closing = 1; m->close_target = OPEN_SLIDE; m->close_t = 0.0f;
+			push_snd(m, m->sfx_cancel);
 		}
 	} else if (m->state == 2) {                /* ---- open submenu ---- */
 		/* Display screen (cm1): two zones - the screen-mode radio line and the Theme
@@ -3026,6 +3117,7 @@ void snes_menu_update(snes_menu *m, const snes_input *in, float dt)
 	m->pl = in->left; m->pr = in->right; m->pu = in->up; m->pd = in->down;
 	m->pa = in->a; m->pb = in->b; m->ps = in->select; m->pstart = in->start;
 	if (m->sort_label_t > 0) m->sort_label_t -= dt;
+	if (m->note_t < m->note_len) m->note_t += dt;
 
 	/* menubar: cyan highlight + focus-scale (1.2x) only on the focused icon */
 	{
@@ -3230,6 +3322,29 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	 * entirely. This was ~the whole frame's cost (the carousel even rendered
 	 * twice), and starving the single-threaded audio ring feed made SFX loop in
 	 * every non-home menu. Just paint the scrim + the panel. */
+	if (m->state == 2 && m->open >= 0 && ((m->own_page >> m->open) & 1u) && m->page_draw) {
+		/* the LK's page: the home behind (the bars, the menubar with the cursor on the slot that
+		 * opened it), a black band where the panel lies, sliding with it, and the page on it */
+		float uh = (float)t->H / snes_target_base(t), band = (uh - 720.0f) / 2.0f;
+		if (m->aspect) {
+			draw_wp(m, t, (int)m->scroll);
+			if (!m->homemenu) snes_render_scene(t, &m->home);
+			else              draw_chrome(m, t);
+			if (m->card_act && m->mb_focus >= 0 && m->mb_focus < 5) {
+				set_view(m, t, VIEW_TOP);
+				draw_menubar_cursor(m, t, 448.0f + 96.0f * (float)m->mb_focus, 64.0f, 1.0f, m->card_act->img);
+			}
+		} else band = 0;
+		snes_target_view(t, 1.0f, 1.0f, 0.0f, 0.0f);
+		{
+			int oy = t->offy;
+			t->offy = 0;   /* the page lays itself out over the whole screen */
+			snes_fill_quad(t, 640.0f, band + 360.0f - m->open_y, SNES_VW, 720.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+			m->page_draw(m->open, t, m->open_y);
+			t->offy = oy;
+		}
+		return;
+	}
 	if (m->state == 2 && m->open >= 0 && m->overlay[m->open]) {
 		/* 4:3: the submenu panel is the 'contain' view group - kept at native 720
 		 * and centred in the 960 panel (never zoomed/cropped), so the top/bottom SNES
@@ -3428,16 +3543,7 @@ void snes_menu_render(snes_menu *m, snes_target *t)
 	}
 
 	/* sort-rule label, briefly shown after a Select press */
-	if (m->sort_label_t > 0) {
-		static const char *nm[4] = { "Sort: Title", "Sort: Publisher",
-			"Sort: Players", "Sort: Release" };
-		/* the SNES title font has no ':' glyph, so use words the font can render */
-		static const char *gbanm[2] = { "Sort A to Z", "Sort Z to A" };
-		const char *lbl = m->gba_mode ? gbanm[m->sort_rule & 1] : nm[m->sort_rule & 3];
-		if (snes_font_covers(m->pk, snes_res_font(m->pk, m->f_s), tr(lbl))) lbl = tr(lbl);   /* its font may lack the language's letters */
-		snes_fill_quad(t, 640, 210, 360, 40, 0.06f, 0.08f, 0.10f, 0.85f);
-		snes_draw_text(t, m->pk, m->f_s, 640, 202, 1.0f, 0xFFE0E8F0u, 1, lbl);
-	}
+	if (m->note_t < m->note_len && m->note[0]) draw_note(m, t);
 
 
 	/* (state 2 / submenu is handled by the early-return at the top of render) */

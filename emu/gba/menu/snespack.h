@@ -51,6 +51,7 @@ typedef struct {
 /* ---- images (decoded) ---- */
 #define SNES_IMG_TILE   0x1u   /* wallpaper: wrap-tile when drawn larger than source */
 #define SNES_IMG_RGB565 0x2u
+#define SNES_IMG_LA88   0x4u   /* grey + alpha, 2 bytes a pixel (the in-game kit's font pages) */
 typedef struct {
 	uint16_t w, h;
 	uint16_t flags;

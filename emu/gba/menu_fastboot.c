@@ -34,6 +34,9 @@ extern void fastboot_info(const char *reason);
 #include "fat_wr.h"       /* fat_wr_delete (oem sd-rm) */
 #include "pico_i18n.h"     /* LANG_N (oem showlang) */
 #include <string.h>
+/* the Classic in-game sheet's last full paint, the worst, its dim, sheet and hash parts, the last
+ * partial paint, us (pico_classic_igm.c; read by oem diag) */
+volatile unsigned int g_dbg_cigm_us[6];
 extern void fastboot_okay(const char *info);
 extern void fastboot_fail(const char *reason);
 extern int  snprintf(char *str, unsigned long size, const char *fmt, ...);
@@ -187,11 +190,16 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 				fastboot_info(lbuf);
 			  } }
 			{ extern volatile unsigned int g_dbg_game_presents, g_dbg_game_long;
+			  extern volatile unsigned int g_dbg_cigm_us[6];
 			  extern volatile int g_dbg_aud_low; extern volatile unsigned int g_dbg_aud_short, g_dbg_igm_open_us, g_dbg_igm_open_part[2];
 			  extern volatile unsigned int g_dbg_igm_glass_us;
 			  snprintf(lbuf, sizeof lbuf, "igm: open=%uus at %u %u glass=%uus", g_dbg_igm_open_us, g_dbg_igm_open_part[0],
 				   g_dbg_igm_open_part[1], g_dbg_igm_glass_us);
 			  fastboot_info(lbuf);
+			  snprintf(lbuf, sizeof lbuf, "cigm: full=%uus worst=%u dim=%u sheet=%u hash=%u part=%u", g_dbg_cigm_us[0],
+				   g_dbg_cigm_us[1], g_dbg_cigm_us[2], g_dbg_cigm_us[3], g_dbg_cigm_us[4], g_dbg_cigm_us[5]);
+			  fastboot_info(lbuf);
+			  g_dbg_cigm_us[1] = 0;
 			  snprintf(lbuf, sizeof lbuf, "game: presents=%u gaps=%u aud low=%d short=%u", g_dbg_game_presents,
 				   g_dbg_game_long, g_dbg_aud_low, g_dbg_aud_short);
 			  fastboot_info(lbuf);
@@ -2276,6 +2284,32 @@ static void cmd_showlang(const char *arg, void *data, unsigned sz)
 	g_dbg_lang = neg || n >= LANG_N ? -1 : n;
 	fastboot_okay("");
 }
+/* oem copt[:N:+|-] - the running core's own options (pico_coreopt.h): each one's number, name
+ * and value; with N and a direction, that option changed (and saved) first */
+static void cmd_coreopt(const char *arg, void *data, unsigned sz)
+{
+	extern int pico_coreopt_n(void);
+	extern const char *pico_coreopt_label(int i);
+	extern const char *pico_coreopt_value(int i, char *buf);
+	extern void pico_coreopt_change(int i, int dir);
+	char val[96];
+	int i, n = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg >= '0' && *arg <= '9') {
+		while (*arg >= '0' && *arg <= '9') n = n * 10 + (*arg++ - '0');
+		if (*arg == ':') arg++;
+		if (*arg == '+' || *arg == '-') pico_coreopt_change(n, *arg == '-' ? -1 : 1);
+	}
+	n = pico_coreopt_n();
+	snprintf(lbuf, sizeof lbuf, "coreopt: %d options", n);
+	fastboot_info(lbuf);
+	for (i = 0; i < n; i++) {
+		snprintf(lbuf, sizeof lbuf, "%2d %.34s = %.16s", i, pico_coreopt_label(i), pico_coreopt_value(i, val));
+		fastboot_info(lbuf);
+	}
+	fastboot_okay("");
+}
 /* oem animslow:N - the Current menu's screen cascades N times slower (1 normal), to look at them */
 static void cmd_animslow(const char *arg, void *data, unsigned sz)
 {
@@ -3390,6 +3424,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem sd-check", cmd_sd_check, 1, 0);
 	fastboot_register("oem showcolour", cmd_showcolour, 1, 0);
 	fastboot_register("oem showlang", cmd_showlang, 1, 0);
+	fastboot_register("oem copt", cmd_coreopt, 1, 0);	/* not "coreopt": "oem core" would take it */
 	fastboot_register("oem animslow", cmd_animslow, 1, 0);
 	fastboot_register("oem sd-get:", cmd_sd_get, 1, 0);
 	fastboot_register("oem sd-getn", cmd_sd_getn, 1, 0);

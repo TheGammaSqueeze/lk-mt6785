@@ -15,7 +15,23 @@
 #define GENESIS_CORE_ABI_H
 
 #define GENESIS_CORE_ABI_MAGIC   0x31474553u   /* "SEG1" */
-#define GENESIS_CORE_ABI_VERSION 4u   /* v4: set_av_skip video 2 = sprites only; v3: + fps_milli (core frame rate for dynamic per-core panel refresh; v2 was set_ra_fast, sound_rebase) */
+#define GENESIS_CORE_ABI_VERSION 5u   /* v5: opt_count / opt_info (the core's own option list); v4: set_av_skip video 2 = sprites only; v3: + fps_milli (core frame rate for dynamic per-core panel refresh; v2 was set_ra_fast, sound_rebase) */
+
+/* One of the core's own options, as the core declares it (libretro core options v2), for the
+ * frontend's Core Settings page. values are what set_option takes, labels what is shown (the same
+ * array when the core gives no labels). Shared with the NES and SNES ABIs. */
+#ifndef PICO_CORE_OPTION_DEFINED
+#define PICO_CORE_OPTION_DEFINED
+struct pico_core_option {
+	const char *key;                 /* set_option's key, and the key the frontend saves it under */
+	const char *label;               /* the option's name */
+	const char *category;            /* its group's name, or 0 */
+	const char *const *values;       /* set_option values */
+	const char *const *labels;       /* what each value is called */
+	int nvalues;
+	int def;                         /* the core's default (an index) */
+};
+#endif
 
 /* System hint passed to load() so the core forces the right machine for ambiguous files
  * (.bin/.sg can be MD or SMS or SG). 0 = auto-detect from the ROM header. */
@@ -113,6 +129,12 @@ struct genesis_core_exports {
 	 * but NEVER fires SET_SYSTEM_AV_INFO, so LK must POLL this after the region option takes effect
 	 * and retune the panel vfp. */
 	unsigned (*fps_milli)(void);
+
+	/* v5: the options the core declared, less the ones that cannot work here (CD, light gun, boot
+	 * ROMs, frameskip: the LK paces) and the ones the LK sets itself (region, aspect). Changed with
+	 * set_option; most take effect on the next frame. */
+	int (*opt_count)(void);
+	const struct pico_core_option *(*opt_info)(int index);
 };
 
 typedef const struct genesis_core_exports *(*genesis_core_blob_init_fn)(const struct genesis_core_imports *imp);
