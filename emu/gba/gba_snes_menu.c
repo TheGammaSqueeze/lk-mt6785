@@ -30,6 +30,13 @@
 #include "pico_artimport.h"         /* pico_artimport_run */
 #include "rom_archive.h"            /* why a game did not start */
 #include "pico_i18n.h"              /* the menus' languages */
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+#define PICO_LINK 1                 /* the consoles with Bluetooth: Y opens Link (pico_link_ui.h) */
+#include "pico_link_ui.h"
+#else
+#define PICO_LINK 0
+#define link_busy_now() 0
+#endif
 #include <arch/arm/mmu.h>           /* arch_mmu_map: the box art slots (SNES_BOXART_PA) */
 #include <kernel/thread.h>          /* thread_sleep */
 #include <kernel/mutex.h>           /* the box art loader is shared with the listing thread */
@@ -246,6 +253,7 @@ volatile unsigned int g_dbg_boxart_tot;    /* ROMs the boxart preload attempted 
 volatile int          g_dbg_force_launch;   /* fastboot `oem launch`: force-launch focused ROM */
 volatile int          g_dbg_snes_launch;    /* fastboot `oem snes-launch`: launch the first SNES ROM */
 char                  g_dbg_snes_name[32];   /* ... whose name contains this (case insensitive), if set */
+volatile int          g_dbg_launch_type;    /* ... of this console (GBA_CONSOLE_* + 1), 0 = SNES (oem launch) */
 const char           *g_dbg_snes_chosen;      /* the ROM name that matched (for the oem reply) */
 static int dbg_name_match(const char *name, const char *sub)
 {
@@ -1285,6 +1293,224 @@ static void cycle_filter(int full_n)
 	s_filter_label_hold = 96;   /* ~1.6s at 60fps */
 }
 
+#if PICO_LINK
+/* ---- Link in this menu (pico_link_ui.h): Y on the carousel opens it over the menu, for the game
+ * in focus (Play together) or to join one; a guest of a link cable system picks its own game on
+ * the carousel showing only that system (A plays it, B backs out). The panel is drawn in this
+ * menu's look (snes_menu_draw_panel); the start of a session, when the pack's memory is the
+ * game's, in the look of this theme's in-game menu (the LK's font, the blue-topped panel). ---- */
+static int s_link_pick = -1;		/* picking the guest's game: its system; -1 not picking */
+static int s_link_pick_from, s_link_pick_focus;	/* the filter and focus to go back to */
+static unsigned int s_link_prev;	/* last frame's buttons (LUI_* and LINK_Y): edges */
+static int s_link_swallow;		/* A / B / Y held from the panel: kept from the menu until up */
+#define LINK_Y 64u
+#define link_busy_now() (lui_open() || s_link_pick >= 0)
+
+/* the game in focus on the carousel (a roms[] index), or -1 */
+static int link_focused_rom(void)
+{
+	int n = s_menu.ngames, v;
+	if (!s_menu.gba_mode || n <= 0) return -1;
+	v = s_menu.order[((s_menu.focus % n) + n) % n];
+	return v >= 0 && v < s_vn ? (int)s_vmap[v] : -1;
+}
+
+static void link_pick_start(int sys, int nrom)
+{
+	int i;
+	for (i = 0; i < nrom && i < PICO_GAMES_MAX; i++)
+		if ((int)s_types[i] == sys) break;
+	if (i >= nrom || i >= PICO_GAMES_MAX) {	/* no game of that system on this card */
+		lui_picked(-1);
+		return;
+	}
+	s_link_pick_from = s_sysfilter;
+	s_link_pick_focus = s_menu.focus;
+	s_sysfilter = sys;
+	apply_filter(nrom);
+	s_link_pick = sys;
+}
+
+static void link_pick_end(int nrom)
+{
+	s_sysfilter = s_link_pick_from;
+	apply_filter(nrom);
+	if (s_link_pick_focus >= 0 && s_link_pick_focus < s_vn) s_menu.focus = s_link_pick_focus;
+	s_link_pick = -1;
+}
+
+/* a string in one of the pack's fonts: as it is when the font has every glyph, else folded */
+static const char *link_fit(char *buf, int cap, const char *s, uint32_t font)
+{
+	if (!s) return 0;
+	if (snes_font_covers(&s_pk, snes_res_font(&s_pk, font), s)) return s;
+	pico_fold_ascii(s, buf, cap);
+	return buf;
+}
+
+/* the Link screen as lui_view() describes it; compact: the strip shown while picking */
+static void link_draw(snes_target *t)
+{
+	static char fold[4 + 2 * SNES_PANEL_ROWS + 4][128];
+	struct lui_view v;
+	snes_panel p;
+	int i, k = 0;
+	lui_view(&v);
+	memset(&p, 0, sizeof p);
+	p.title = link_fit(fold[k], 128, v.title, s_menu.f_title); k++;
+	p.subtitle = link_fit(fold[k], 128, v.subtitle, s_menu.f_l); k++;
+	p.status = link_fit(fold[k], 128, v.status, s_menu.f_l); k++;
+	p.nrows = v.nrows < SNES_PANEL_ROWS ? v.nrows : SNES_PANEL_ROWS;
+	p.sel = v.sel;
+	for (i = 0; i < p.nrows; i++) {
+		p.rows[i] = link_fit(fold[k], 128, v.rows[i], s_menu.f_l); k++;
+		p.values[i] = link_fit(fold[k], 128, v.values[i], s_menu.f_l); k++;
+	}
+	p.busy = v.busy;
+	p.done = v.done;
+	p.total = v.total;
+	p.nhints = v.nhints < 4 ? v.nhints : 4;
+	for (i = 0; i < p.nhints; i++) {
+		p.hint_btn[i] = v.hint_code[i] ? v.hint_code[i][0] : 'A';
+		p.hint_label[i] = link_fit(fold[k], 128, v.hint_label[i], s_menu.f_s); k++;
+	}
+	snes_menu_draw_panel(&s_menu, t, &p);
+}
+
+/* The panel over a still menu: the menu is rendered once, dimmed, and kept (the backdrop); the
+ * backdrop with the panel on it is made again only when what the panel shows changes (its words,
+ * the selection, a bar's step, the busy dots), and every other frame is one copy. Rendering the
+ * whole menu and the panel each frame through the blitter took the menu far below 60 frames a
+ * second, and its buttons with it. The two images live in the deflate staging, which the menu's
+ * own panel caches share: those are made again after (rcache_ready / sub_ready cleared). */
+static int s_lp_ready;			/* the backdrop holds this panel's menu */
+static unsigned int s_lp_key;		/* what the composed image shows */
+static int s_lp_comp;			/* there is room for the composed image as well */
+
+static unsigned int link_key(void)
+{
+	struct lui_view v;
+	unsigned int h = 2166136261u, i;
+	const char *ss[4 + 2 * LUI_ROWS];
+	int n = 0, k;
+	lui_view(&v);
+	ss[n++] = v.title; ss[n++] = v.subtitle; ss[n++] = v.status;
+	for (k = 0; k < v.nrows && k < LUI_ROWS; k++) { ss[n++] = v.rows[k]; ss[n++] = v.values[k]; }
+	for (k = 0; k < n; k++) {
+		const char *p = ss[k] ? ss[k] : "";
+		while (*p) h = (h ^ (unsigned char)*p++) * 16777619u;
+		h = (h ^ 0xFFu) * 16777619u;
+	}
+	i = (unsigned int)v.sel | (unsigned int)v.nrows << 8 | (unsigned int)v.screen << 16;
+	h = (h ^ i) * 16777619u;
+	if (v.total) h = (h ^ (unsigned int)((unsigned long long)v.done * 256u / v.total)) * 16777619u;
+	if (v.busy) h = (h ^ ((unsigned int)(s_menu.clock * 3.0f) % 3u + 1u)) * 16777619u;
+	return h;
+}
+
+/* fb holds the menu rendered this frame when !s_lp_ready; afterwards it is filled from the cache */
+static void link_present(snes_target *t, unsigned int *fb, unsigned int pitch, int W, int H)
+{
+	unsigned int bytes = pitch * (unsigned int)H * 4u;
+	uint32_t *back = (uint32_t *)SNES_COMP_PA, *comp = (uint32_t *)(SNES_COMP_PA + bytes);
+	unsigned int key;
+	if (!s_lp_ready) {
+		ayaneo_fill_blend(fb, pitch, 0, 0, W, H, 0xFF000000u, 158);	/* the menu, dimmed */
+		memcpy(back, fb, bytes);
+		s_menu.rcache_ready = 0;	/* the menu's own caches in that memory: made again */
+		s_menu.sub_ready = 0;
+		s_lp_comp = 2u * bytes <= 8u * 1024u * 1024u;
+		s_lp_ready = 1;
+		s_lp_key = 0;
+	}
+	if (!s_lp_comp) {			/* no room for both: the panel every frame */
+		memcpy(fb, back, bytes);
+		link_draw(t);
+		return;
+	}
+	key = link_key();
+	if (key != s_lp_key || !key) {
+		snes_target tc = *t;
+		tc.fb = comp;
+		memcpy(comp, back, bytes);
+		link_draw(&tc);
+		s_lp_key = key;
+	}
+	memcpy(fb, comp, bytes);
+}
+
+/* while the guest picks its game: what to do, along the bottom of the screen in the note's place */
+static void link_draw_pick(unsigned int *fb, unsigned int pitch, int W, int H)
+{
+	static const char msg[] = "Pick your game to play together.   B: back";
+	int w = (int)(sizeof msg - 1) * 16, x = (W - w) / 2;
+	if (x < 8) x = 8;
+	ayaneo_fill_blend(fb, pitch, x - 12, H - 76, w + 24, 44, 0xFF000000u, 150);
+	ayaneo_text(fb, pitch, x + 2, H - 64, 2, 0xFF000000u, msg);   /* shadow */
+	ayaneo_text(fb, pitch, x, H - 66, 2, 0xFFFFFFFFu, msg);
+}
+
+/* The start of a session in this theme (lui_set_painter): its in-game menu's panel, the LK's own
+ * font (the pack's memory is the game's by now). B cancels. */
+static void link_bytes(char *d, unsigned int cap, unsigned int b)
+{
+	if (b >= 1024u * 1024u) snprintf(d, cap, "%u.%u MB", b / (1024u * 1024u), (b % (1024u * 1024u)) * 10u / (1024u * 1024u));
+	else snprintf(d, cap, "%u KB", (b + 1023u) / 1024u);
+}
+static void link_line(unsigned int *fb, unsigned int pitch, int x, int y, int scale, unsigned int argb,
+		      const char *utf8, int maxw)
+{
+	char a[160];
+	int n = pico_fold_ascii(utf8 ? utf8 : "", a, sizeof a), fit = maxw / (8 * scale);
+	if (n > fit && fit > 3) { a[fit - 3] = a[fit - 2] = a[fit - 1] = '.'; a[fit] = 0; }
+	ayaneo_text(fb, pitch, x, y, scale, argb, a);
+}
+static int classic_link_paint(const struct lui_progress *p)
+{
+	static int prev_b = 1;
+	unsigned int pitch, W, H, *fb;
+	snes_input in;
+	int cancel = 0, pw, ph = 300, px, py, tw;
+	char t[200], a[24], b[24];
+	memset(&in, 0, sizeof in);
+	gba_menu_read_input(&in);
+	if (in.b && !prev_b) cancel = 1;	/* B pressed now (not still held from before) */
+	prev_b = in.b;
+	fb = ayaneo_canvas_back(&pitch, &W, &H);
+	if (!fb) return cancel;
+	pw = (int)W - 120 < 660 ? (int)W - 120 : 660;
+	px = ((int)W - pw) / 2; py = ((int)H - ph) / 2; tw = pw - 56;
+	ayaneo_fill(fb, pitch, 0, 0, (int)W, (int)H, 0xFF000000u);
+	ayaneo_fill(fb, pitch, px, py, pw, ph, 0xFF10141Cu);
+	ayaneo_fill(fb, pitch, px, py, pw, 6, 0xFF5090F0u);
+	link_line(fb, pitch, px + 28, py + 24, 3, 0xFFFFFFFFu, p->title_en, tw);
+	if (p->theirs) snprintf(t, sizeof t, "%s + %s", p->mine, p->theirs);
+	else snprintf(t, sizeof t, "%s", p->mine);
+	link_line(fb, pitch, px + 28, py + 84, 2, 0xFFC8D0E0u, t, tw);
+	snprintf(t, sizeof t, "With %s", p->other);
+	link_line(fb, pitch, px + 28, py + 110, 1, 0xFF8890A0u, t, tw);
+	link_line(fb, pitch, px + 28, py + 160, 2, 0xFFFFFFFFu, p->step_en, tw);
+	ayaneo_fill(fb, pitch, px + 28, py + 192, tw, 8, 0xFF303848u);
+	if (p->total) {
+		unsigned int d = p->done < p->total ? p->done : p->total;
+		ayaneo_fill(fb, pitch, px + 28, py + 192, (int)((unsigned long long)tw * d / p->total), 8, 0xFF5090F0u);
+		link_bytes(a, sizeof a, p->done);
+		link_bytes(b, sizeof b, p->total);
+		if (p->kbs && p->secs_left)
+			snprintf(t, sizeof t, "%s of %s, %u KB/s, %u s left", a, b, p->kbs, p->secs_left);
+		else
+			snprintf(t, sizeof t, "%s of %s", a, b);
+		link_line(fb, pitch, px + 28, py + 212, 1, 0xFF8890A0u, t, tw);
+	} else {	/* waiting: a short stretch that moves along */
+		int span = tw / 5, ph100 = (int)((gpt4_get_current_tick() / 130000u) % 100u);
+		ayaneo_fill(fb, pitch, px + 28 + (tw - span) * ph100 / 100, py + 192, span, 8, 0xFF5090F0u);
+	}
+	ayaneo_text(fb, pitch, px + 28, py + ph - 26, 1, 0xFF8890A0u, "B Cancel");
+	ayaneo_canvas_present();
+	return cancel;
+}
+#endif
+
 /*
  * Run the SNES-style ROM selector. Returns the chosen ROM index, or -2 if the
  * SNES pack is missing (caller falls back to the plain list).
@@ -1293,6 +1519,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 {
 	const snes_img_entry *cart;
 	unsigned int saved_mhz;
+	int lang_start;		/* the Language page's selection as the menu opened */
 #if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 	{ extern void ayaneo_joypad_kpa_reset_toggles(void); ayaneo_joypad_kpa_reset_toggles(); }   /* L2/R2 toggles never carry across sessions */
 #endif
@@ -1337,6 +1564,18 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			if (r != -2) return r;
 		}
 	}
+#if PICO_LINK
+	lui_set_roms(roms, nrom);   /* a Link screen in the middle of something carries on over this listing */
+	/* this menu's fonts have the letters of its own eight languages (its Language page) only */
+	lui_set_english(pico_lang() >= 8);
+	if (lui_open() && !lui_busy_screen())
+		lui_close();        /* the Current theme's Link Home, left open behind its tab, is its own */
+	lui_menu_enter();   /* Bluetooth off unless a Link screen still needs it (zero cost) */
+	lui_set_painter(classic_link_paint);   /* the start of a session, in this theme's look */
+	s_link_pick = -1;
+	s_link_prev = ~0u;   /* buttons held on entry are not presses */
+	s_link_swallow = 1;
+#endif
 	int fade_in = 18;   /* fade the menu in from WHITE on entry over 0.3s (the boot-logo
 			     * animation ends on a whiteout, so a white->menu fade is a seamless
 			     * handover; was black). matching
@@ -1450,6 +1689,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	relabel_row(0, "Mute BIOS Audio", "Mute BIOS");
 	relabel_row(1, "Mute Menu Audio", "Mute Menu");
 	snes_menu_set_language(&s_menu, lang_grid_of(pico_lang()));
+	lang_start = s_menu.lang_sel;	/* a pick on the Language page is a change from this */
 	s_menu.opt_on = (s_menu.opt_on & ~3u)
 		| (ayaneo_get_mute_bios() ? 1u : 0u)
 		| (ayaneo_get_mute_menu() ? 2u : 0u);
@@ -1501,6 +1741,10 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	 * once. (Tighter input debounce made the close land a frame sooner, so the
 	 * button is more often still down on entry - this fixes it for any debounce.) */
 	int launch_gate = 1;
+#if PICO_LINK
+	int link_launch = -1;	/* a game the Link screen launches (armed for a session) */
+	int link_relist = 0;	/* games arrived over the link: the card is listed again */
+#endif
 	for (;;) {
 		unsigned int pitch, W, H;
 		unsigned int *fb = ayaneo_canvas_back(&pitch, &W, &H);
@@ -1540,6 +1784,39 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 
 		g_menu_live = 1;
 		menu_av_poll();   /* volume / brightness keys (+ deferred persist) */
+#if PICO_LINK
+		{	/* Link: Y opens it over the carousel; while it is open the menu stands still */
+			unsigned int now = (in.up ? LUI_UP : 0u) | (in.down ? LUI_DOWN : 0u) | (in.left ? LUI_LEFT : 0u) |
+					   (in.right ? LUI_RIGHT : 0u) | (in.a ? LUI_A : 0u) | (in.b ? LUI_B : 0u) |
+					   (in.y ? LINK_Y : 0u);
+			unsigned int e = now & ~s_link_prev;
+			int start_held = in.start;
+			s_link_prev = now;
+			if (lui_open() && s_link_pick < 0) {	/* (picking: the carousel is in front) */
+				int act = lui_input(e & (LINK_Y - 1u));
+				if (act == LUI_ACT_LAUNCH) link_launch = lui_action_rom();
+				else if (act == LUI_ACT_RELIST) link_relist = 1;
+				else if (act == LUI_ACT_PICK) link_pick_start(lui_action_system(), nrom);
+				memset(&in, 0, sizeof in);
+				s_link_swallow = 1;
+			} else if (s_link_pick >= 0 && (e & LUI_B)) {
+				link_pick_end(nrom);	/* backed out: the host is told, nobody plays */
+				lui_picked(-1);
+				s_link_swallow = 1;
+			} else if ((e & LINK_Y) && s_link_pick < 0 && s_menu.state == 0 && s_menu.open < 0) {
+				lui_open_home_game(roms, nrom, link_focused_rom());
+				memset(&in, 0, sizeof in);
+				s_link_swallow = 1;
+			}
+			if (s_link_swallow) {	/* what closed or opened the panel stays out of the menu
+						 * until it is let go (read from the buttons themselves:
+						 * the panel clears the menu's input while it is open) */
+				if ((now & (LUI_A | LUI_B | LINK_Y)) || start_held) { in.a = in.b = in.start = in.y = 0; }
+				else s_link_swallow = 0;
+			}
+			if (s_link_pick >= 0) in.select = 0;	/* no re-sorting under the pick */
+		}
+#endif
 
 		/* X cycles the system filter (All -> each present system -> All). Edge-detected with a
 		 * short cooldown so contact bounce cannot skip a system within one press. */
@@ -1547,7 +1824,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			static int px_last, x_cd;
 			int xnow = PRESSED(K_X);
 			if (x_cd > 0) x_cd--;
-			if (xnow && !px_last && x_cd == 0) { cycle_filter(nrom); x_cd = 8; }
+			if (xnow && !px_last && x_cd == 0 && !link_busy_now()) { cycle_filter(nrom); x_cd = 8; }
 			px_last = xnow;
 		}
 
@@ -1594,6 +1871,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			static unsigned int last_t, peak_us, peak_hold;
 			unsigned int r0 = gpt4_get_current_tick();
 			unsigned int rus, lus, fps, now;
+#if PICO_LINK
+			if (!(lui_open() && s_link_pick < 0 && s_lp_ready))	/* a still menu under the panel: kept */
+#endif
 			snes_menu_render(&s_menu, &t);
 			now = gpt4_get_current_tick();
 			rus = (now - r0) / 13u;
@@ -1629,6 +1909,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 					  (fade_in * 255) / 18);
 			fade_in--;
 		}
+#if PICO_LINK
+		if (s_link_pick >= 0) link_draw_pick(fb, pitch, (int)W, (int)H);
+		else if (lui_open()) link_present(&t, fb, pitch, (int)W, (int)H);
+		if (!lui_open() || s_link_pick >= 0) s_lp_ready = 0;	/* the next panel starts over */
+#endif
 		menu_av_draw(fb, pitch, (int)W, (int)H);   /* volume/brightness OSD bar */
 		if (s_note_hold > 0) {   /* why a game did not start: along the bottom, in the toast's font */
 			int w = (int)strlen(s_note) * 16, x = ((int)W - w) / 2;
@@ -1667,7 +1952,9 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			int i;
 			g_dbg_snes_launch = 0;
 			for (i = 0; i < s_vn; i++)   /* search the current view (index space the menu uses) */
-				if (s_vtypes[i] == GBA_CONSOLE_SNES && dbg_name_match(s_vnameptr[i], g_dbg_snes_name)) { s_menu.launch = i; g_dbg_snes_chosen = s_vnameptr[i]; break; }
+				if ((int)s_vtypes[i] == (g_dbg_launch_type ? g_dbg_launch_type - 1 : GBA_CONSOLE_SNES) &&
+				    dbg_name_match(s_vnameptr[i], g_dbg_snes_name)) { s_menu.launch = i; g_dbg_snes_chosen = s_vnameptr[i]; break; }
+			g_dbg_launch_type = 0;
 		}
 		/* Display > Theme picked another theme: save it (written before the card is read again)
 		 * and hand back -3, the caller runs the menu again, which loads the pack in the new theme */
@@ -1689,7 +1976,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			}
 		}
 		/* Language picked on its page: save it, and run the menu again in it, as for a theme */
-		if (s_menu.lang_sel >= 0 && s_menu.lang_sel < 8 && k_lang_grid[s_menu.lang_sel] != pico_lang()) {
+		if (s_menu.lang_sel >= 0 && s_menu.lang_sel < 8 && s_menu.lang_sel != lang_start &&
+		    k_lang_grid[s_menu.lang_sel] != pico_lang()) {
 			extern void ayaneo_settings_persist_flush(void);
 			pico_lang_set(k_lang_grid[s_menu.lang_sel]);
 			ayaneo_menu_settings_persist();
@@ -1700,9 +1988,26 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			ayaneo_set_cpu_mhz(saved_mhz);
 			return -3;
 		}
+#if PICO_LINK
+		if (link_relist) {	/* back to the driver, which lists the card and runs the menu again */
+			s_keep_focus = s_menu.focus;
+			snes_audio_init(&s_mix);
+			ayaneo_menu_audio_silence();
+			ayaneo_set_cpu_mhz(saved_mhz);
+			return -4;
+		}
+#endif
 		launch = snes_menu_take_launch(&s_menu);
 		/* the menu returns a VIEW index (current filter); map it back to the full roms[] index */
 		if (launch >= 0 && launch < s_vn) launch = (int)s_vmap[launch]; else launch = -1;
+#if PICO_LINK
+		if (s_link_pick >= 0 && launch >= 0) {	/* the guest's own game: the link answers */
+			lui_picked(launch);
+			launch = lui_action_rom();
+			s_link_pick = -1;
+		}
+		if (link_launch >= 0) { launch = link_launch; link_launch = -1; }
+#endif
 		if (launch >= 0 && launch < nrom) {	/* a game that cannot start says why and stays */
 			int why = gba_rom_check(gba_sd_menu_vol(), &roms[launch]);
 			if (why != RA_OK) { note_show(why); launch = -1; }

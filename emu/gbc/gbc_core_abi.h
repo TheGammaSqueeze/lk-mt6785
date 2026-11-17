@@ -17,7 +17,8 @@
 #define GBC_CORE_ABI_MAGIC   0x31434247u   /* "GBC1" */
 #define GBC_CORE_ABI_VERSION 1u   /* the oldest export table the LK accepts */
 #define GBC_CORE_ABI_V2      2u   /* + motion_wanted, set_motion, rumble */
-#define GBC_CORE_ABI_MAX     GBC_CORE_ABI_V2
+#define GBC_CORE_ABI_V3      3u   /* + set_pad_reader and the link cable (two linked machines) */
+#define GBC_CORE_ABI_MAX     GBC_CORE_ABI_V3
 
 /* Services LK provides to the core (core -> LK calls). */
 struct gbc_core_imports {
@@ -85,6 +86,28 @@ struct gbc_core_exports {
 	/* Rumble: the cartridge's motor now (MBC5 rumble carts), 0 off, else on; the LK asks once a
 	 * frame and drives the console's vibration motor with it. */
 	int  (*rumble)(void);
+
+	/* ---- V3 (the LK reads these only when version >= GBC_CORE_ABI_V3) ----
+	 * Netplay: the buttons of each controller port come from fn(port) (port 0 the first
+	 * machine, 1 the linked one) instead of read_buttons; 0 puts read_buttons back. */
+	void (*set_pad_reader)(unsigned (*fn)(unsigned port));
+	/* The link cable: a second machine with this cartridge, wired to the first (0 linked; once
+	 * per loaded core). Both run on every console, stepped the same way; run() hands out the
+	 * picture and sound of the one link_view picked; link_select picks which machine the
+	 * per-machine calls (saves, states, palettes, reset) reach. link_stat: 0/1 bytes machine
+	 * 0/1 clocked out, 2/3 a byte waiting at machine 0/1. The link state is both machines,
+	 * the cable and their distance, for the netplay start and its checks. */
+	int      (*link_open)(const void *rom, unsigned size, unsigned flags);
+	int      (*link_on)(void);
+	void     (*link_view)(unsigned m);
+	void     (*link_select)(unsigned m);
+	unsigned (*link_stat)(unsigned what);
+	unsigned (*link_state_size)(void);
+	void     (*link_state_save)(void *buf);
+	int      (*link_state_load)(const void *buf, unsigned size);
+	/* The cartridge clock of machine m runs offset seconds from the clock host_time gives
+	 * (each machine keeps its own console's time during a session). */
+	void     (*link_clock)(unsigned m, long offset);
 };
 
 typedef const struct gbc_core_exports *(*gbc_core_blob_init_fn)(const struct gbc_core_imports *imp);

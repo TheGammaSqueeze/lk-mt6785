@@ -621,6 +621,9 @@ OBJS += \
 	platform/common/pico/ayaneo_volume_input.o \
 	$(LOCAL_DIR)/block_accel.o \
 	$(LOCAL_DIR)/block_audio.o \
+	$(LOCAL_DIR)/block_bt.o \
+	platform/common/pico/pico_xfer.o \
+	platform/common/pico/pico_netplay.o \
 	$(LOCAL_DIR)/block_gauge.o \
 	$(LOCAL_DIR)/block_pico.o \
 	$(LOCAL_DIR)/block_rumble.o

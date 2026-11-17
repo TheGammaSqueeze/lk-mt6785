@@ -39,7 +39,9 @@ extern int _dprintf(const char *fmt, ...);
  * DRAM at boot and hands back this export table. The macros below keep every existing
  * call site unchanged by routing it through the table, so gba_core_state_save(x) etc.
  * become g_core->state_save(x), and the three shared flags become pointer derefs. */
+#include <string.h>
 #include "gba_core_abi.h"
+#include "../../platform/common/pico/pico_netplay.h"
 #include "pico_igm.h"
 #if defined(AYANEO_GBA_SD)
 #include "pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
@@ -49,6 +51,7 @@ extern int _dprintf(const char *fmt, ...);
 #include "../ayaneo_rewind.h"
 
 static const struct gba_core_exports *g_core;
+static int s_gba_np;	/* a netplay session runs (see gba_np_begin) */
 
 #define gba_core_init(...)          g_core->core_init(__VA_ARGS__)
 #define gba_core_start(...)         g_core->core_start(__VA_ARGS__)
@@ -296,6 +299,9 @@ int gbc_menu_is_open(void) { return s_menu_open; }
 long gba_host_time(void)
 {
 	extern long long pico_clock_local(void) __attribute__((weak));
+	extern long pico_np_clock(void) __attribute__((weak));
+	long np = pico_np_clock ? pico_np_clock() : 0;
+	if (np) return np;		/* a netplay session: the same clock on both consoles */
 	if (pico_clock_local) return (long)pico_clock_local();
 	return 1722470400L + (long)(current_time() / 1000);
 }
@@ -515,7 +521,7 @@ static void update_buttons(void)
 		unsigned combo = GB_SEL | GB_START | GB_L | GB_R;
 		if ((deb & combo) == combo) {
 			m &= ~combo;
-			if (++rc_hold >= 30 && !rc_fired) { s_reset_req = 1; rc_fired = 1; }
+			if (++rc_hold >= 30 && !rc_fired && !s_gba_np) { s_reset_req = 1; rc_fired = 1; }
 		} else {
 			rc_hold = 0; rc_fired = 0;
 		}
@@ -529,6 +535,13 @@ static void update_buttons(void)
 	if (!PRESSED(GPIO_A)) s_ab_latch &= ~GB_A;
 	if (!PRESSED(GPIO_B)) s_ab_latch &= ~GB_B;
 	m &= ~s_ab_latch;
+	{	/* oem gbakey: GBA keys ORed into the game's for a number of frames (tests, screenshots) */
+		extern volatile unsigned int g_dbg_gba_keys, g_dbg_gba_key_frames;
+		if (g_dbg_gba_key_frames && !s_menu_open) {
+			m |= g_dbg_gba_keys;
+			g_dbg_gba_key_frames--;
+		}
+	}
 	s_keys = m;
 	gba_core_set_keys(m);
 }
@@ -742,6 +755,26 @@ extern int gba_launch_continues(void);           /* the game opening carries on 
 volatile unsigned int g_dbg_suspend_ms[5];
 volatile int g_dbg_suspend_test;
 static int s_game_live;   /* a game (not the bare BIOS) runs: only then is there anything to save */
+
+/* Netplay with the link cable (pico_netplay.c, armGBA-pico's pico_pair.c): both consoles run both
+ * players' machines in lockstep, joined by a cable inside the core, and only the buttons travel.
+ * Set from the session's start (gba_np_begin, before emu_thread) to its end. */
+static int s_gba_np_host;
+#define GBA_NP_MINE	0x50000000u	/* this console's machine state at the start (the SD core */
+#define GBA_NP_THEIRS	0x50100000u	/* keeps its heap high, the old arena is free) */
+#define GBA_NP_PAIR	0x50200000u	/* both machines and the cable, for the checks (2 MiB) */
+#define GBA_NP_HALF	0x00100000u
+#define GBA_NP_PAIR_CAP	0x00200000u
+static void gba_np_frame(void);
+/* oem npstat: the pair's cable, 0/1 transfers machine 0/1 clocked, 2/3 words delivered, 4 on */
+unsigned gba_np_stat(unsigned what)
+{
+	if (!s_gba_np)
+		return 0;
+	if (what == 4)
+		return 1;
+	return g_core && g_core->pair_stat ? g_core->pair_stat(what) : 0u;
+}
 static void save_for_suspend(unsigned char *scratch)
 {
 	unsigned t0 = gpt4_get_current_tick(), t1, t2, t3;
@@ -903,6 +936,8 @@ static void run_one_frame(void)
 {
 	static unsigned int win0, cnt;
 	unsigned int t0 = gpt4_get_current_tick(), t1;
+	if (s_gba_np)
+		gba_np_frame();		/* netplay: both players' buttons, from both consoles */
 	gba_core_pre_frame();		/* latch input */
 	event_signal(&ev_cpu, false);
 	event_wait(&ev_main);
@@ -1051,7 +1086,7 @@ static void cskip_account(unsigned int us)
 
 static int preempt_effective_depth(void)
 {
-	int cfg = ayaneo_get_preempt_frames();
+	int cfg = s_gba_np ? 0 : ayaneo_get_preempt_frames();	/* netplay: no run ahead */
 	if (cfg <= 0)
 		return 0;
 	return s_pf_cap < cfg ? s_pf_cap : cfg;
@@ -1577,6 +1612,9 @@ void ayaneo_power_off_now(void)
 	ayaneo_gbc_audio_shutdown();
 	{ extern void ayaneo_accel_stop(void); ayaneo_accel_stop(); }   /* the accelerometer to standby */
 	{ extern void ayaneo_rumble_stop(void); ayaneo_rumble_stop(); }   /* the motor off */
+#if defined(KONKR_BLOCK) || defined(KONKR_KPA)
+	{ extern void pico_bt_power_off_if_on(void); pico_bt_power_off_if_on(); }   /* Bluetooth off */
+#endif
 	ayaneo_leds_off_for_poweroff();
 	for (;;) {
 		mt_power_off();
@@ -1921,7 +1959,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 		break;
 	case MI_ASPECT:   if (dir) g_gba_aspect = (g_gba_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
 	case MI_SLOT:     if (dir) s_gba_slot = (s_gba_slot + dir + GBA_SLOT_COUNT) % GBA_SLOT_COUNT; changed = 0; break;
-	case MI_LOADSTATE: if (act) { int ok = manual_state_read(state); if (ok) gba_rewind_arm(); mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
+	case MI_LOADSTATE: if (act && s_gba_np) { mi_puts(status, "Not during netplay"); } else if (act) { int ok = manual_state_read(state); if (ok) gba_rewind_arm(); mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
 	case MI_SAVESTATE: if (act) {
 		/* the state and the battery save go to the card from the writer's thread, so the game and
 		 * its sound go on; the note comes once the state is there. oem persist: the time the game
@@ -1944,7 +1982,8 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 		g_dbg_savestate_ms[1] = (gpt4_get_current_tick() - t0) / 13000u;
 		g_dbg_savestate_ms[2]++;
 		if (!ok) mi_puts(status, "Save failed"); } changed = 0; break;
-	case MI_RESET:    if (act) { s_reset_req = 1; return 1; } changed = 0; break;
+	case MI_RESET:    if (act && s_gba_np) { mi_puts(status, "Not during netplay"); changed = 0; break; }
+			  if (act) { s_reset_req = 1; return 1; } changed = 0; break;
 	case MI_CLOSE:    if (act) { s_close_req = 1; return 1; } changed = 0; break;
 	default: changed = 0; break;
 	}
@@ -2458,6 +2497,16 @@ static unsigned char *gba_core_for_launch(void)
 	if (!s_corecfg_loaded) corecfg_load();
 	if (s_sdcore_present < 0) { fat_file f; s_sdcore_present = (fat_open(&s_sd_vol, SDCORE_PATH, &f) == 0) ? 1 : 0; }
 	want_armgba = gba_want_armgba();
+#if defined(KONKR_BLOCK) || defined(KONKR_KPA)
+	{	/* A netplay launch starts from a core loaded afresh: armGBA keeps some state of its own
+		 * across games (its globals), and a session before left it a little different on the
+		 * two consoles, which then parted from the second session on (11-17). Loaded again,
+		 * its data and BSS are the same on both, as after a boot. */
+		extern int pico_np_is_armed(void);
+		if (pico_np_is_armed() && want_armgba)
+			g_core = 0;
+	}
+#endif
 	if (!g_core || want_armgba != s_core_is_sd) {
 		int got = 0;
 		g_core = gba_core_load_pref(want_armgba, &got);
@@ -2522,6 +2571,7 @@ static int s_sel_rom = -1;          /* chosen ROM index (for save/state paths) *
  * B/AYA has no effect (there is nothing to go back to). Returns the chosen index. */
 extern int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel);
 
+static void cart_header_refresh(void);   /* after a listing (defined below) */
 static int gba_sd_rom_select(void)
 {
 	unsigned pitch, W, H;
@@ -2562,8 +2612,17 @@ static int gba_sd_rom_select(void)
 			}
 		}
 		r = gba_snes_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
-		while (r == -3)   /* a theme was picked on the Display page: the menu again, in that theme */
+		/* -3: a theme was picked on the Display page: the menu again, in that theme; -4: games
+		 * arrived over the link (Receive): the card listed again first */
+		while (r == -3 || r == -4) {
+			if (r == -4) {
+				int total = 0;
+				s_nrom = gba_sd_list_roms(&s_sd_vol, s_roms, s_roms_cap, &total);
+				cart_header_refresh();
+				if (s_sel_rom >= s_nrom) s_sel_rom = 0;
+			}
 			r = gba_snes_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
+		}
 		if (r >= 0) { pico_stats_begin(s_roms[r].type, s_roms[r].name); return r; }
 	}
 	for (;;) {
@@ -3014,6 +3073,143 @@ int gba_motion_info(int out[6])
 	return g_core->motion_wanted ? g_core->motion_wanted() : 0;
 }
 
+#if defined(KONKR_BLOCK) || defined(KONKR_KPA)
+extern unsigned int pico_np_crc(const void *p, unsigned int n);
+/* the other console's game from this card: the same name in the game list, the same size and
+ * CRC-32 (0 found, in dst) */
+static int gba_np_find_rom(const char *name, unsigned int size, unsigned int crc, void *dst, unsigned int cap)
+{
+	int i;
+	for (i = 0; i < s_nrom; i++) {
+		uint32_t n;
+		if (s_roms[i].type != GBA_CONSOLE_GBA || strcmp(s_roms[i].name, name))
+			continue;
+		n = gba_sd_load_rom(&s_sd_vol, &s_roms[i], (unsigned char *)dst, cap);
+		return n == size && pico_np_crc(dst, n) == crc ? 0 : -1;
+	}
+	return -1;
+}
+#endif
+
+/* An armed launch: both consoles send each other their own machine (the save and the resume in
+ * it) and, when the games differ and the other card lacks it, the cartridge; then the core pairs
+ * the two machines (the host's game first) and both start from the same point. When the other
+ * console never comes, or this core cannot pair, the game plays alone. */
+static void gba_np_begin(const gba_rom_entry *rom, unsigned int romsz)
+{
+#if defined(KONKR_BLOCK) || defined(KONKR_KPA)
+	extern int pico_np_armed(unsigned int *delay);
+	extern void pico_np_stop(void);
+	extern volatile int g_np_begin_rc;
+	unsigned int delay = 2, got = 0, msz, trom = 0, tflags = 0;
+	struct pico_np_pair pp;
+	int host = pico_np_armed(&delay), ok;
+	s_gba_np = 0;
+	if (host < 0)
+		return;
+	ok = g_core && s_core_is_sd && g_core->version >= GBA_CORE_ABI_V5 && g_core->pair_open;
+	msz = ok ? gba_core_state_size() : 0;
+	ok = ok && msz && msz <= GBA_NP_HALF && g_core->pair_rom_ptr();
+	if (!ok) {
+		g_np_begin_rc = -10;		/* this core cannot pair two machines */
+		return;
+	}
+	gba_core_state_save((void *)GBA_NP_MINE);
+	memset(&pp, 0, sizeof pp);
+	pp.mine = (const void *)GBA_NP_MINE; pp.msize = msz;
+	pp.theirs = (void *)GBA_NP_THEIRS; pp.cap = GBA_NP_HALF; pp.got = &got;
+	pp.rom = gba_core_rom_ptr(); pp.rom_size = romsz; pp.rom_flags = 0; pp.rom_name = rom->name;
+	pp.their_rom = g_core->pair_rom_ptr(); pp.rom_cap = gba_core_rom_capacity();
+	pp.their_rom_size = &trom; pp.their_rom_flags = &tflags;
+	pp.find_rom = gba_np_find_rom;
+	ok = pico_np_begin_pair(host, delay, &pp) == 0;
+	if (ok && !trom) {			/* the same game: the second machine has its own copy */
+		memcpy(g_core->pair_rom_ptr(), gba_core_rom_ptr(), romsz);
+		trom = romsz;
+	}
+	if (ok) {			/* oem npstat's start rc: -20 - the pair's refusal, -30 a load */
+		int rc = g_core->pair_open(host ? 0 : 1, trom);
+		if (rc) { g_np_begin_rc = -20 + rc; ok = 0; }
+	}
+	if (ok && (g_core->pair_load_machine(0, (const void *)(host ? GBA_NP_MINE : GBA_NP_THEIRS)) ||
+		   g_core->pair_load_machine(1, (const void *)(host ? GBA_NP_THEIRS : GBA_NP_MINE)))) {
+		g_np_begin_rc = -30;
+		ok = 0;
+	}
+	if (!ok) {
+		if (g_core->pair_close)
+			g_core->pair_close();
+		pico_np_stop();
+		/* the pair makes this console's machine afresh: its game goes back in from the start's copy */
+		gba_core_state_load((void *)GBA_NP_MINE);
+		/* cancelled (B on the start's screen, here or on the other console): back to the menu, as
+		 * the in-game menu's Close; the other console simply not coming lets the game play alone */
+		if (g_np_begin_rc == -11 || g_np_begin_rc == -8)
+			s_close_req = 1;
+		return;
+	}
+	s_gba_np = 1;
+	s_gba_np_host = host;
+#else
+	(void)rom; (void)romsz;
+#endif
+}
+
+/* The session ends: the other console is told, this console's machine plays on alone. Only where
+ * the CPU thread is parked (between frames). */
+static void gba_np_end(void)
+{
+#if defined(KONKR_BLOCK) || defined(KONKR_KPA)
+	extern void pico_np_stop(void);
+	if (!s_gba_np)
+		return;
+	pico_np_stop();
+	if (g_core && g_core->pair_close)
+		g_core->pair_close();
+	s_gba_np = 0;
+#endif
+}
+
+/* Before each frame of a session (run_one_frame, the CPU thread parked): this console's buttons
+ * out, both players' in for the pair; every 120 frames both machines and the cable hashed and
+ * compared with the other console. The other console gone: the game plays on alone. */
+static void gba_np_frame(void)
+{
+#if defined(KONKR_BLOCK) || defined(KONKR_KPA)
+	extern int pico_np_frame(unsigned int local, unsigned int *p1, unsigned int *p2);
+	extern unsigned int pico_np_frame_no(void);
+	extern void pico_np_hash(unsigned int frame, unsigned int crc);
+	extern volatile int g_np_dump;
+	unsigned int p1 = 0, p2 = 0, fno, hsz;
+	if (pico_np_frame(s_keys & 0x3FFu, &p1, &p2) != 0) {
+		gba_np_end();
+		return;
+	}
+	g_core->pair_keys(p1, p2);
+	fno = pico_np_frame_no() - 1u;
+	/* Every 600 frames (frame 0 too: the start itself is compared). The pair state is 1.6 MB:
+	 * saved and hashed every 120 frames it was a hitch every 2 s on the KPA's A55 (11-17); a
+	 * word at a time FNV-1a, the same on both consoles, and five times rarer. */
+	if (fno % 600u == 0) {
+		hsz = g_core->pair_state_size();
+		if (hsz && hsz <= GBA_NP_PAIR_CAP) {
+			const unsigned int *w = (const unsigned int *)GBA_NP_PAIR;
+			unsigned int h = 2166136261u, i;
+			memset((void *)GBA_NP_PAIR, 0, (hsz + 3u) & ~3u);
+			g_core->pair_state_save((void *)GBA_NP_PAIR);
+			for (i = 0; i < (hsz + 3u) / 4u; i++)
+				h = (h ^ w[i]) * 16777619u;
+			pico_np_hash(fno, h);
+			if (g_np_dump) {	/* oem npdump: this state on the card, once */
+				g_np_dump = 0;
+				gba_sd_write_named(&s_sd_vol, "/states/gba", "np_dump", "bin",
+						   (const unsigned char *)GBA_NP_PAIR, hsz);
+			}
+		}
+	}
+#endif
+}
+
 static int emu_thread(void *arg)
 {
 	unsigned char *scratch = (unsigned char *)(GBA_ARENA_PA + GBA_ARENA_SZ - GBA_DRV_RESERVE);
@@ -3362,6 +3558,7 @@ static int emu_thread(void *arg)
 						(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
 				if (!PRESSED(GPIO_B) && gba_launch_continues())
 					state_read(scratch);
+				gba_np_begin(&s_roms[s_sel_rom], romsz);	/* an armed launch: netplay */
 				/* Do NOT blank here: it blacks the live frozen-menu snapshot = a black
 				 * flash before the opening punch. The punch composites the full frame
 				 * (menu snapshot + game) then clears the letterbox, so the frozen menu
@@ -3495,7 +3692,7 @@ static int emu_thread(void *arg)
 				extern void ayaneo_gba_rw_capture_begin(void);
 				extern unsigned ayaneo_gba_rw_capture_end(const short **buf);
 				static short s_gba_audrev[4096 * 2];   /* reversed+decimated audio scratch */
-				int rw = (!s_menu_open) ? ayaneo_joypad_rewind_level() : 0;
+				int rw = (!s_menu_open && !s_gba_np) ? ayaneo_joypad_rewind_level() : 0;
 				if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
 					int spd = 256 + (rw * (GBA_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(6x) */
 					unsigned sz; const void *st; int k, steps, rendered = 0;
@@ -3581,7 +3778,7 @@ static int emu_thread(void *arg)
 			/* Rewind capture: snapshot this committed frame (and each FF frame below), so FF'd frames
 			 * can be rewound. Not the run-ahead look-ahead frames (rewound anyway). Skipped in-menu. */
 			{ unsigned ts0 = gpt4_get_current_tick();
-			if (!s_menu_open && !s_benchmark) gba_rewind_snap();
+			if (!s_menu_open && !s_benchmark && !s_gba_np) gba_rewind_snap();
 			  g_dbg_snap_us = (gpt4_get_current_tick() - ts0) / 13u; }
 			lp_mark(3);   /* benchmark measures emulation: no 640 KB snapshot per frame */
 			/* Variable fast-forward (right analog trigger): after the committed frame, run extra
@@ -3599,7 +3796,7 @@ static int emu_thread(void *arg)
 				 * up). We deliberately do NOT use the old s_fast_forward present-every-8th path - it
 				 * frame-skips, PAUSES audio, and was slower than this. Keep s_fast_forward off. */
 				s_fast_forward = 0;
-				s_ff_active = (s_ff_level > 0 && !s_menu_open);
+				s_ff_active = (s_ff_level > 0 && !s_menu_open && !s_gba_np);
 				if (s_ff_active) {
 					/* Adaptive cap: run only as many extra frames as fit ~one vsync so the panel
 					 * stays a smooth 60fps instead of overrunning at a fixed 10x. Every GBA FF frame
@@ -3774,6 +3971,7 @@ static int emu_thread(void *arg)
 					ayaneo_menu_audio_silence();
 					{ extern void ayaneo_accel_stop(void); ayaneo_accel_stop(); }   /* the accelerometer to standby */
 					{ extern void ayaneo_rumble_stop(void); ayaneo_rumble_stop(); }   /* the motor off */
+					gba_np_end();			/* a netplay session ends with the game */
 					state_write(scratch);		/* persist the current game */
 					sav_save(scratch);
 					gba_menu_arm_reverse(gba_core_screen());  /* freeze frame for reverse */
@@ -3814,6 +4012,7 @@ static int emu_thread(void *arg)
 							gba_core_backup_size());
 					if (!PRESSED(GPIO_B) && gba_launch_continues())
 						state_read(scratch);
+					gba_np_begin(&s_roms[s_sel_rom], (unsigned) rsz);	/* an armed launch: netplay */
 					gba_rewind_arm();	/* fresh game -> fresh rewind timeline */
 					/* no blank: keep the frozen menu on screen for the seamless
 					 * growing-circle opening (the punch composites the full frame). */

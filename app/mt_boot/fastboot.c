@@ -318,6 +318,10 @@ oops:
 	return -1;
 }
 
+/* set when a reply line found no host reading it: the rest of that reply's INFO lines are not
+ * sent (each would wait the whole timeout again); cleared when the next command arrives */
+static int s_reply_dropped;
+
 int usb_write_with_timeout(void *buf, unsigned len, time_t timeout)
 {
 	int r;
@@ -336,9 +340,13 @@ int usb_write_with_timeout(void *buf, unsigned len, time_t timeout)
 	}
 	ret = event_wait_timeout(&txn_done, timeout);
 	if (ret != NO_ERROR) {
-		/* host stopped reading: drop the transfer so it is not delivered to the next host */
+		/* host stopped reading: drop the transfer (the FIFO is flushed) so it is not delivered
+		 * to the next host, and drop the rest of this reply's INFO lines; the session itself
+		 * stays up, so the next command is read as usual instead of the loop ending until the
+		 * cable is plugged again */
 		udc_request_cancel(in, req);
-		goto oops;
+		s_reply_dropped = 1;
+		return -1;
 	}
 	if (txn_status < 0) {
 		dprintf(INFO, "usb_write() transaction failed\n");
@@ -378,6 +386,9 @@ void fastboot_info(const char *reason)
 
 	memset(response, 0, sizeof(response));
 
+	if (s_reply_dropped)
+		return;
+
 	snprintf(response, MAX_RSP_SIZE, "INFO%s", reason);
 
 	usb_write_with_timeout(response, strlen(response), USB_CMD_TIMEOUT);
@@ -397,6 +408,14 @@ void fastboot_okay(const char *info)
 /* A command that gave up on a bulk transfer (the request was cancelled) can keep the session
  * instead of dropping to STATE_ERROR, which ends the command loop until the host re-enumerates
  * the device: the host already failed its command and will send the next one. */
+/* A command that answers nothing at all (oem echo:...:skip): the host reads a reply it left
+ * queued earlier as this command's answer, which brings host and LK back in step. */
+void fastboot_no_reply(void)
+{
+	if (fastboot_state == STATE_COMMAND)
+		fastboot_state = STATE_COMPLETE;
+}
+
 void fastboot_session_recover(void)
 {
 	if (fastboot_state == STATE_ERROR)
@@ -415,6 +434,7 @@ again:
 		r = usb_read(buffer, MAX_RSP_SIZE);
 		if (r < 0) break; //no input command
 		buffer[r] = 0;
+		s_reply_dropped = 0;		/* a new command: its reply goes out in full */
 		dprintf(ALWAYS,"[fastboot: command buf]-[%s]-[len=%d]\n", buffer, r);
 		dprintf(ALWAYS,"[fastboot]-[download_base:0x%x]-[download_size:0x%x]\n",(unsigned int)download_base,(unsigned int)download_size);
 

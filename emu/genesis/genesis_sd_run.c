@@ -8,6 +8,7 @@
  *
  * Only one core runs at a time, so we reuse the gpSP/gambatte/snes9x arena at 0x50000000.
  */
+#include <string.h>
 #include "genesis_core_abi.h"
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
@@ -126,10 +127,21 @@ volatile int g_genesis_filter;            /* LCD filter: 0=off 1=scanlines 2/3=g
 /* physical pad -> RETRO_DEVICE_ID_JOYPAD_* bits. GPGX maps retro -> Genesis internally:
  * Genesis B=retro B, C=retro A, A=retro Y, Start=retro Start; 6-button X=retro L, Y=retro X,
  * Z=retro R, Mode=retro Select. So the device face buttons land on sensible Genesis buttons. */
+static int s_gen_np;         /* this session is a netplay one (pico_netplay.c): both players' pads from it */
+static int s_gen_np_guest;   /* the guest plays the host's game: it keeps no save of it */
+static unsigned gen_local_pad(void);
 unsigned ayaneo_genesis_pad_mask(unsigned port)
 {
+	extern unsigned int pico_np_pad(unsigned int port);
+	if (s_gen_np) return pico_np_pad(port);   /* player one and two, the same on both consoles */
+	return port == 0 ? gen_local_pad() : 0u;
+}
+
+/* this console's pad, nothing while the in-game menu is open */
+static unsigned gen_local_pad(void)
+{
 	unsigned m = 0, d;
-	if (port != 0 || g_genesis_menu_open) return 0;
+	if (g_genesis_menu_open) return 0;
 	if (PRESSED(GPIO_B))      m |= 1u << RJ_B;
 	if (PRESSED(GPIO_A))      m |= 1u << RJ_A;
 	if (PRESSED(GPIO_Y))      m |= 1u << RJ_Y;
@@ -356,6 +368,13 @@ static void genesis_slot_ext(char *e) { e[0] = 's'; e[1] = 't'; e[2] = (char)('0
 /* returns 1 to close the menu (Reset/Exit) */
 static int gm_change(int i, int dir, int act)
 {
+	/* netplay: loading a state or resetting would change the game on this console only and the two
+	 * would part */
+	if (s_gen_np && act && (i == GM_LOAD || i == GM_RESET)) {
+		memset(s_mstat, 0, sizeof s_mstat);
+		mput(s_mstat, "Not during netplay");
+		return 0;
+	}
 	s_mstat[0] = 0;
 	switch (i) {
 	case GM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); genesis_settings_touch(); } break;
@@ -496,7 +515,8 @@ static void genesis_power_check(void)
 	extern int ayaneo_power_hold(int menu_open, int use_overlay);
 	if (!ayaneo_power_hold(g_genesis_menu_open, 1)) return;
 	ayaneo_gbc_audio_pause(1);   /* silent through the card writes and the power off */
-	if (s_menu_c && s_menu_vol && s_menu_rom) {
+	{ extern void pico_np_stop(void); if (s_gen_np) pico_np_stop(); }   /* tell the other console */
+	if (s_menu_c && s_menu_vol && s_menu_rom && !s_gen_np_guest) {
 		const struct genesis_core_exports *c = s_menu_c;
 		unsigned ssz;
 		if (c->sram_ptr() && c->sram_size())
@@ -546,6 +566,30 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			unsigned n = gba_sd_read_named(vol, "/states/genesis", rom->name, "sus",
 						       (unsigned char *)GEN_STATE_BUF, GEN_STATE_CAP);
 			if (n) c->state_load((const void *)GEN_STATE_BUF, n);
+		}
+	}
+
+	/* A netplay session: both consoles start from the host's state (its battery RAM and any resume
+	 * with it), the guest's replaced by it; then the first frame runs on both together. */
+	s_gen_np = s_gen_np_guest = 0;
+	{
+		extern int pico_np_armed(unsigned int *delay);
+		extern int pico_np_begin(int host, unsigned int delay, void *state, unsigned int size,
+					 unsigned int cap, unsigned int *got);
+		unsigned int delay = 2, got = 0;
+		int host = pico_np_armed(&delay);
+		if (host >= 0) {
+			ssz = c->state_size();
+			if (ssz && ssz <= GEN_STATE_CAP && (!host || c->state_save((void *)GEN_STATE_BUF, ssz) == 0) &&
+			    pico_np_begin(host, delay, (void *)GEN_STATE_BUF, ssz, GEN_STATE_CAP, &got) == 0 &&
+			    (host || c->state_load((const void *)GEN_STATE_BUF, got) == 0)) {
+				s_gen_np = 1;
+				s_gen_np_guest = !host;
+			} else {
+				gba_rom_set_error(RA_ERR_START);   /* the other console did not join: no game */
+				ayaneo_menu_audio_silence();
+				return;
+			}
 		}
 	}
 
@@ -652,7 +696,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * frame's audio is reversed + decimated by `steps` and submitted (game plays backwards). On
 		 * release the ring commits the rewound point as the new head. Mirrors the snes rewind block.
 		 * Gated off while the menu is open. */
-		rw = g_genesis_menu_open ? 0 : ayaneo_joypad_rewind_level();
+		rw = (g_genesis_menu_open || s_gen_np) ? 0 : ayaneo_joypad_rewind_level();   /* netplay: no rewind */
 		if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
 			extern int priamry_display_wait_for_vsync(void);
 			int spd = 256 + (rw * (GEN_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(6x) */
@@ -720,8 +764,26 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * about a third of a frame. Decided before the frame from the menu and from last frame's fast
 		 * forward: a fast forward starting now ends in a drawn frame of its own. */
 		{
-			int unshown = g_gen_commit_unshown && !g_genesis_menu_open && !ff_prev && rw_payload &&
+			int unshown = g_gen_commit_unshown && !g_genesis_menu_open && !ff_prev && rw_payload && !s_gen_np &&
 			              ayaneo_get_preempt_frames() > 0;
+			if (s_gen_np) {	/* netplay: this frame's pads for both players, from both consoles */
+				extern int pico_np_frame(unsigned int local, unsigned int *p1, unsigned int *p2);
+				extern void pico_np_set_pads(unsigned int p1, unsigned int p2);
+				extern unsigned int pico_np_frame_no(void);
+				extern unsigned int pico_np_crc(const void *p, unsigned int n);
+				extern void pico_np_hash(unsigned int frame, unsigned int crc);
+				unsigned int p1 = 0, p2 = 0, fno;
+				if (pico_np_frame(gen_local_pad(), &p1, &p2) != 0)
+					break;   /* the other console left or the link is gone: back to the menu */
+				pico_np_set_pads(p1, p2);
+				/* every 120 frames: this console's whole state, hashed before the frame, compared
+				 * with the other's (run ahead is off, its buffer is free) */
+				fno = pico_np_frame_no() - 1u;
+				if (fno && fno % 120u == 0 && rw_payload &&
+				    (memset((void *)GEN_AHEAD_BUF, 0, rw_payload), 1) &&
+				    c->state_save((void *)GEN_AHEAD_BUF, rw_payload) == 0)
+					pico_np_hash(fno, pico_np_crc((const void *)GEN_AHEAD_BUF, rw_payload));
+			}
 			if (unshown && c->set_av_skip) c->set_av_skip(2, 0);
 			em0 = gpt4_get_current_tick();
 			c->run(&fr);                                 /* committed frame */
@@ -752,7 +814,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * panel stays a smooth 60fps (mirrors the GBA/GBC/SNES adaptive cap). GPGX renders every FF
 		 * frame, so the committed-frame cost is the per-frame cost; reserve the present blit; 2x floor.
 		 * Audio of every frame is submitted (so the sound speeds up). Only the LAST frame is presented. */
-		ff = g_genesis_menu_open ? 0 : ayaneo_joypad_ff_level();
+		ff = (g_genesis_menu_open || s_gen_np) ? 0 : ayaneo_joypad_ff_level();   /* netplay: no fast forward */
 		ff_prev = ff > 0;
 		if (ff > 0) {
 			/* no multiplier and no cap: render-skipped frames while one still fits before this
@@ -798,7 +860,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * menu. GPGX has no raw snapshot, so state_save/load (fast + deterministic per the host
 		 * test); the look-ahead frames skip render (all but the last) and audio (all) via set_av_skip. */
 		{
-			int pf = (ff || g_genesis_menu_open || !rw_payload) ? 0 : ayaneo_get_preempt_frames();
+			int pf = (ff || g_genesis_menu_open || !rw_payload || s_gen_np) ? 0 : ayaneo_get_preempt_frames();
 			int did_ra = 0, i;
 			if (pf > 3) pf = 3;
 			/* Only run the look-ahead if the committed state was actually saved. Pass the EXACT
@@ -927,13 +989,18 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	ayaneo_set_cpu_mhz(saved_mhz);   /* restore the menu's idle clock */
 	genesis_settings_flush();   /* write any pending volume/brightness change before leaving */
 
-	/* persist SRAM + a suspend state so the next launch resumes */
-	if (c->sram_ptr() && c->sram_size())
-		gba_sd_write_sav(vol, rom->name, c->sram_ptr(), c->sram_size());
-	ssz = c->state_size();
-	if (ssz && ssz <= GEN_STATE_CAP && c->state_save((void *)GEN_STATE_BUF, ssz) == 0)
-		gba_sd_write_named(vol, "/states/genesis", rom->name, "sus",
-				   (const unsigned char *)GEN_STATE_BUF, ssz);
+	{ extern void pico_np_stop(void); if (s_gen_np) pico_np_stop(); }   /* tell the other console */
+	/* persist SRAM + a suspend state so the next launch resumes; a netplay guest played the
+	 * host's game and keeps its own saves as they were */
+	if (!s_gen_np_guest) {
+		if (c->sram_ptr() && c->sram_size())
+			gba_sd_write_sav(vol, rom->name, c->sram_ptr(), c->sram_size());
+		ssz = c->state_size();
+		if (ssz && ssz <= GEN_STATE_CAP && c->state_save((void *)GEN_STATE_BUF, ssz) == 0)
+			gba_sd_write_named(vol, "/states/genesis", rom->name, "sus",
+					   (const unsigned char *)GEN_STATE_BUF, ssz);
+	}
+	s_gen_np = s_gen_np_guest = 0;
 	c->unload();
 	ayaneo_menu_audio_silence();
 }

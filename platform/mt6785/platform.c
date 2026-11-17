@@ -1102,6 +1102,13 @@ void platform_init(void)
 
 void platform_uninit(void)
 {
+#if defined(KONKR_KPA) && defined(AYANEO_GBA_SD)
+	{	/* Bluetooth, if a Pico screen left it on: off before the kernel, whose own driver
+		 * expects CONNSYS powered down (kpa_bt.c) */
+		extern void pico_bt_power_off_if_on(void);
+		pico_bt_power_off_if_on();
+	}
+#endif
 #ifndef MACH_FPGA
 	leds_deinit();
 	platform_clear_all_on_mux();

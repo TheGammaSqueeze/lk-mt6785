@@ -29,6 +29,12 @@
 #include "gba_sd_save.h"           /* gba_sd_legacy_own */
 #include "pico_fold.h"             /* names' letters without their accents */
 #include "sd_fat.h"                 /* gba_rom_entry, GBA_CONSOLE_* */
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+#define PICO_LINK 1                 /* the consoles with Bluetooth: the Link tab (pico_link_ui.h) */
+#include "pico_link_ui.h"
+#else
+#define PICO_LINK 0
+#endif
 #include "fat_ro.h"
 #include "fat_wr.h"
 #include "pico_i18n.h"          /* tr(): the menus' languages */
@@ -681,13 +687,15 @@ static void art_load(void)
 }
 
 /* ---- state ---------------------------------------------------------------------------------- */
-enum { TAB_GAMES, TAB_RESUME, TAB_SETTINGS };
+enum { TAB_GAMES, TAB_RESUME, TAB_SETTINGS, TAB_LINK };
+#define NTABS (PICO_LINK ? 4 : 3)        /* the Link tab only where there is Bluetooth */
 static const char *s_sysname[NSYS] = { "Game Boy", "Game Boy Color", "Game Boy Advance", "Super Nintendo",
 					"Mega Drive / Genesis", "Master System", "Game Gear", "SG-1000", "NES" };
 
 static struct {
 	int ready;                        /* the state below survives from one menu run to the next */
 	int tab, lib;                     /* the rail's tab; 1 while a system's library is open */
+	int pick;                         /* the library is open for the Link screen to pick a game */
 	int nsys, sys, sys_from;          /* the systems on the card (in console order) and the focus */
 	int systype[NSYS], syscount[NSYS];
 	float sys_t;                      /* 0..1, the console and the current moving to the new system */
@@ -1158,13 +1166,18 @@ static void hints(const char *const *codes, const char *const *labels, int n)
 }
 static void rail(void)
 {
-	static const char *label[3] = { "Games", "Resume", "Settings" };
+	static const char *label[4] = { "Games", "Resume", "Settings", "Link" };
 	float pitch = s_uw * .116f < 148 ? s_uw * .116f : 148, yy = 119, x = s_p;
 	int i;
-	for (i = 0; i < 3; i++) {
+	for (i = 0; i < NTABS; i++) {
 		int f = i == S.tab;
 		float need = 42 + (float)text_w(&A.railf_t, tr(label[i]), 0, 0) / g_s + 22;   /* a long word pushes the next tab on */
 		if (f) draw_mask(&A.glow, U(x + 20) - A.glow.w / 2, U(yy + 15) - A.glow.h / 2, C_ACCENT, 256);
+		if (i == TAB_LINK) {	/* no picture of its own in the pack: two links of a chain, of the hint ring */
+			int ry = U(yy + 15) - A.ring.h / 2 + (f ? 0 : U(2.5f));
+			draw_mask(&A.ring, U(x + 2), ry, f ? C_INK : C_MUTED, 256);
+			draw_mask(&A.ring, U(x + 2) + A.ring.w * 2 / 3, ry, f ? C_INK : C_MUTED, 256);
+		} else
 		draw_mask(f ? &A.railf[i] : &A.rail[i], U(x), U(yy) + (f ? 0 : U(2.5f)), f ? C_INK : C_MUTED, 256);
 		text(f ? &A.railf_t : &A.rail_t, U(x + 42), U(yy + 23), tr(label[i]), f ? C_INK : C_MUTED, 256, 0, 0, 0);
 		if (f) fill(U(x), U(yy + 41) - 1, U(77), U(1.8f) > 1 ? U(1.8f) : 2, C_ACCENT, 256);
@@ -1487,6 +1500,33 @@ static void home_settings(void)
 			text_wrap2(&A.lib, U(s_p), U(mid + 178), U(27), tr(k_set_about[it]), C_MUTED, 256, U(xx - s_p - 20));
 	}
 }
+#if PICO_LINK
+static int link_paint(const struct lui_progress *p);   /* the start of a session (below) */
+/* The Link tab: what the shared flow (pico_link_ui.c) shows, in this theme's look: the screen's
+ * name large on the left with the game or console under it and what is going on, its list on the
+ * right as the settings' rows. */
+static void home_link(void)
+{
+	struct lui_view v;
+	float top = 720 * .315f, xx = s_uw * .46f, lw = s_uw - s_p - xx, mid = top + 35, pitch = 57.6f, lx;
+	int ly;
+	lui_view(&v);
+	if (v.screen == LUI_CLOSED) return;
+	lx = xx - s_p - 20;
+	ly = U(mid + 20) - A.ring.h / 2;
+	draw_mask(&A.ring, U(s_p), ly, C_ACCENT, 256);
+	draw_mask(&A.ring, U(s_p) + A.ring.w * 2 / 3, ly, C_ACCENT, 256);
+	text_fit(&A.dname, U(s_p), U(mid + 93), v.title ? v.title : "", C_INK, 256, U(lx));
+	if (v.subtitle) text_fit(&A.lib, U(s_p), U(mid + 135), v.subtitle, C_INK, 256, U(lx));
+	if (v.status) text_wrap2(&A.lib, U(s_p), U(mid + (v.subtitle ? 178 : 141)), U(27), v.status, C_MUTED, 256, U(lx));
+	if (v.total) {	/* how far a file is, as the start's bar */
+		int by = U(mid + (v.subtitle ? 178 : 141) + 2 * 27 + 12), bw = U(lx);
+		fill(U(s_p), by, bw, U(4), C_MUTED, 64);
+		fill(U(s_p), by, (int)((unsigned long long)bw * (v.done < v.total ? v.done : v.total) / v.total), U(4), C_ACCENT, 256);
+	}
+	if (v.nrows) rows(xx, top, lw, pitch, v.rows, v.values, v.nrows, v.sel, &A.srow, &A.srowf, &A.sval);
+}
+#endif
 static void library(void)
 {
 	int s = S.sys, t = S.systype[s];
@@ -1699,6 +1739,8 @@ static void ui_compose(void)
 	static const char *hc_res[2] = { "A", "LR" }, *hl_res[2] = { "Resume", "Section" };
 	static const char *hc_set[2] = { "A", "LR" }, *hl_set[2] = { "Select", "Section" };
 	static const char *hc_lib[3] = { "A", "Y", "B" }, *hl_lib[3] = { "Launch", "Search", "Back" };
+	static const char *hc_pick[2] = { "A", "B" }, *hl_pick[2] = { "Play this game", "Back" };
+	static const char *hc_libx[4] = { "A", "X", "Y", "B" }, *hl_libx[4] = { "Launch", "Link", "Search", "Back" };
 	static const char *hc_sub[2] = { "A", "B" }, *hl_sub[2] = { "Select", "Back" };
 	g_fb = (uint32_t *)CUR_UI_PA;
 	ui_clear();
@@ -1712,12 +1754,25 @@ static void ui_compose(void)
 	} else if (S.lib) {
 		library();
 		header("Game library");
-		if (S.syscount[S.sys] > 3 * LIB_ROWS) hints(hc_lib3, hl_lib3, 4);
+		if (S.pick) hints(hc_pick, hl_pick, 2);
+		else if (PICO_LINK) hints(hc_libx, hl_libx, 4);
+		else if (S.syscount[S.sys] > 3 * LIB_ROWS) hints(hc_lib3, hl_lib3, 4);
 		else hints(hc_lib, hl_lib, 3);
 	} else {
 		rail();
-		if (S.tab == TAB_GAMES) home_games(); else if (S.tab == TAB_RESUME) home_resume(); else home_settings();
-		header(S.tab == TAB_SETTINGS ? "Settings" : "Home");
+		if (S.tab == TAB_GAMES) home_games(); else if (S.tab == TAB_RESUME) home_resume();
+#if PICO_LINK
+		else if (S.tab == TAB_LINK) home_link();
+#endif
+		else home_settings();
+		header(S.tab == TAB_SETTINGS ? "Settings" : S.tab == TAB_LINK ? "Link" : "Home");
+#if PICO_LINK
+		if (S.tab == TAB_LINK) {
+			struct lui_view v;
+			lui_view(&v);
+			hints(v.hint_code, v.hint_label, v.nhints);
+		} else
+#endif
 		if (S.tab == TAB_GAMES) hints(hc_games, hl_games, 3);
 		else if (S.tab == TAB_RESUME) { if (S.nrec) hints(hc_res, hl_res, 2); else hints(hc_res + 1, hl_res + 1, 1); }
 		else if (S.set_page) hints(hc_sub, hl_sub, 2);
@@ -2043,6 +2098,12 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 	gba_menu_boxart_load(roms, nrom);
 	CUR_MARK(5);
 	g_menu_live = 1;
+#if PICO_LINK
+	lui_set_roms(s_roms, s_nrom);   /* a Link screen carries on over this listing */
+	lui_set_english(0);             /* this theme's fonts have every language's letters */
+	lui_menu_enter();   /* Bluetooth off unless a Link screen still needs it (zero cost) */
+	lui_set_painter(link_paint);   /* the start of a session, drawn in this theme's look */
+#endif
 
 	if (do_reverse) {	/* back from a game: it crossfades into the backdrop, the menu zooming in */
 		S.dip = 0;
@@ -2138,12 +2199,31 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 					if (n > 3 * LIB_ROWS) list_letter(ix, n, &S.lib_sel[s], &S.lib_top[s], rb ? 1 : -1);
 					else list_move(ix, n, &S.lib_sel[s], &S.lib_top[s], rb ? LIB_ROWS : -LIB_ROWS);
 				}
+#if PICO_LINK
+				if (S.pick) {	/* the guest's game for the Link screen: it launches it, armed */
+					if (eb) { S.pick = 0; S.lib = 0; S.tab = TAB_LINK; S.dip = .6f; lui_picked(-1); }
+					else if ((ea || est) && n) {
+						S.pick = 0; S.lib = 0; S.tab = TAB_LINK;
+						lui_picked(LIB(s)[S.lib_sel[s]]);
+						if (lui_action_rom() >= 0) rom = launch_check(lui_action_rom());
+					}
+				} else if (ex && n) {	/* Link for this game: play it together, send it */
+					lui_open_home_game(s_roms, s_nrom, LIB(s)[S.lib_sel[s]]);
+					S.lib = 0; S.tab = TAB_LINK; S.dip = .6f;
+				} else
+#endif
 				if (ey) { search_open(s, 1); S.lib = 0; }
 				else if (eb) { S.lib = 0; S.dip = .6f; }
 				else if (ea || est) rom = launch_check(LIB(s)[S.lib_sel[s]]);
 			} else {
-				if (lb && S.tab > 0) { S.tab--; S.dip = .45f; }
-				if (rb && S.tab < 2) { S.tab++; S.dip = .45f; }
+				/* a Link screen in the middle of something (waiting, joining) keeps the tab */
+#if PICO_LINK
+				int link_busy = S.tab == TAB_LINK && lui_busy_screen();
+#else
+				int link_busy = 0;
+#endif
+				if (lb && S.tab > 0 && !link_busy) { S.tab--; S.dip = .45f; }
+				if (rb && S.tab < NTABS - 1 && !link_busy) { S.tab++; S.dip = .45f; }
 				if (S.tab == TAB_GAMES) {
 					int to = S.sys;
 					if (lf && S.sys > 0) to = S.sys - 1;
@@ -2157,7 +2237,29 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 					}
 					if (ea || est) { S.lib = 1; S.dip = .6f; S.sys_from = S.sys; S.sys_t = 1; }
 					else if (ey) { S.sys_from = S.sys; S.sys_t = 1; search_open(-1, 0); }
-				} else if (S.tab == TAB_RESUME) {
+				}
+#if PICO_LINK
+				else if (S.tab == TAB_LINK) {
+					unsigned int e = (up ? LUI_UP : 0) | (dn ? LUI_DOWN : 0) | (lf ? LUI_LEFT : 0) |
+							 (rt ? LUI_RIGHT : 0) | (ea || est ? LUI_A : 0) | (eb ? LUI_B : 0);
+					int act;
+					if (!lui_open()) lui_open_home(s_roms, s_nrom);
+					act = lui_input(e);
+					if (act == LUI_ACT_CLOSE && !lui_open()) lui_open_home(s_roms, s_nrom);
+					if (act == LUI_ACT_LAUNCH) rom = launch_check(lui_action_rom());
+					if (act == LUI_ACT_RELIST) {	/* games arrived: the card listed again */
+						ayaneo_set_cpu_mhz(saved_mhz);
+						return -4;
+					}
+					if (act == LUI_ACT_PICK && sys_of(lui_action_system()) >= 0) {
+						S.sys = S.sys_from = sys_of(lui_action_system()); S.sys_t = 1;
+						S.lib = 1; S.pick = 1; S.dip = .6f;
+					} else if (act == LUI_ACT_PICK)
+						lui_picked(-1);	/* no game of that system here */
+					dirty = 1;	/* what it shows moves on by itself (waiting, the consoles heard) */
+				}
+#endif
+				else if (S.tab == TAB_RESUME) {
 					if (up && S.res_sel > 0) S.res_sel--;
 					if (dn && S.res_sel < S.nrec - 1) S.res_sel++;
 					if ((ea || est) && S.nrec) rom = launch_check(S.rec[S.res_sel]);
@@ -2281,6 +2383,29 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 			if (r0 - t_peak > 26000000u) { g_dbg_peak_us = peak; peak = 0; t_peak = r0; }
 			frames++;
 			if (r0 - t_fps >= 13000000u) { g_dbg_fps = frames; frames = 0; t_fps = r0; }
+		}
+		/* fastboot oem launch / snes-launch: a game picked by console and name, as if chosen here */
+		{
+			extern volatile int g_dbg_snes_launch, g_dbg_launch_type;
+			extern char g_dbg_snes_name[32];
+			if (g_dbg_snes_launch && rom < 0) {
+				int want = g_dbg_launch_type ? g_dbg_launch_type - 1 : GBA_CONSOLE_SNES, k, a, b;
+				g_dbg_snes_launch = 0;
+				g_dbg_launch_type = 0;
+				for (k = 0; k < s_nrom && rom < 0; k++) {
+					const char *nm = s_roms[k].name, *sub = g_dbg_snes_name;
+					if ((int)s_roms[k].type != want) continue;
+					for (a = 0; nm[a] && rom < 0; a++) {
+						for (b = 0; sub[b]; b++) {
+							char x = nm[a + b], y = sub[b];
+							if (x >= 'A' && x <= 'Z') x += 32;
+							if (y >= 'A' && y <= 'Z') y += 32;
+							if (x != y) break;
+						}
+						if (!sub[b]) rom = launch_check(k);
+					}
+				}
+			}
 		}
 		if (rom >= 0) {	/* launch: remember it, then the game crossfades in over the backdrop */
 			recent_add(rom);
@@ -3054,6 +3179,101 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 	}
 	return 1;
 }
+#if PICO_LINK
+/* ---- the start of a session, in this theme's look (pico_link_ui.h lui_set_painter) ----
+ * While the states (and maybe the cartridges) cross, the game is loading: the menu's pack is
+ * gone (its memory is the game's), so the screen is drawn with the in-game menu's own pack, kept
+ * where no game writes, straight onto the canvas: the header, "Playing together" large, the
+ * games and the other console, the step, a bar with how far it is, and B to cancel. */
+static void prog_bytes(char *d, unsigned int cap, unsigned int b)
+{
+	if (b >= 1024u * 1024u) snprintf(d, cap, "%u.%u MB", b / (1024u * 1024u), (b % (1024u * 1024u)) * 10u / (1024u * 1024u));
+	else snprintf(d, cap, "%u KB", (b + 1023u) / 1024u);
+}
+static int link_paint(const struct lui_progress *p)
+{
+	unsigned int pitch, W, H, y;
+	unsigned int *fb;
+	snes_input in;
+	static int prev_b = 1;
+	int cancel = 0;
+	char t[160], a[24], b[24];
+	float x = s_p, top = 720 * .34f;
+	memset(&in, 0, sizeof in);
+	gba_menu_read_input(&in);
+	if (in.b && !prev_b) cancel = 1;	/* B pressed now (not still held from before) */
+	prev_b = in.b;
+	if (!igm_valid() && igm_read() != 0)
+		return cancel;			/* no pack to draw with: the start goes on unseen */
+	fb = ayaneo_canvas_back(&pitch, &W, &H);
+	if (!fb) return cancel;
+	g_fb = fb; g_W = (int)pitch; g_H = (int)H; g_track = 0;
+	/* a deep wash of the theme's colour, darker at the bottom. So dark a slope has only a few
+	 * dozen levels per channel over the whole height, each channel stepping on its own rows: as
+	 * plain rows that showed as bands. Each channel is worked out finer (1/65536 of a level) and
+	 * an ordered 4x4 pattern decides, pixel by pixel, between the two levels around it. */
+	for (y = 0; y < H; y++) {
+		static const unsigned char bayer[4][4] = {
+			{ 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+		unsigned int *r = fb + y * pitch, k, c[4];
+		int wt = 34 * 256 - (int)(y * 26u * 256u / H), ch, j;	/* the accent's share, in 1/65536 */
+		for (j = 0; j < 4; j++) {
+			c[j] = 0xFF000000u;
+			for (ch = 0; ch < 24; ch += 8) {
+				int lo = (int)((0x050507u >> ch) & 0xFFu), hi = (int)((C_ACCENT >> ch) & 0xFFu);
+				int v = (lo * 65536 + (hi - lo) * wt + bayer[y & 3][j] * 4096) >> 16;
+				c[j] |= (unsigned int)(v < 0 ? 0 : v > 255 ? 255 : v) << ch;
+			}
+		}
+		for (k = 0; k < W; k++) r[k] = c[k & 3];
+	}
+	{	/* the header, as the menu's */
+		int hx = U(x), w;
+		draw_mask(&G.gamma, hx, U(28), C_INK, 256);
+		w = text(&G.brand, hx + U(31), U(47), "GammaOS", C_INK, 256, 0, 0, 0);
+		w = hx + U(31) + w + U(8);
+		w += text(&G.sub, w, U(47), "Pico", C_MUTED, 256, 0, 0, 0);
+		fill(w + U(14), U(31), 1, U(17), C_MUTED, 115);
+		text(&G.realm, w + U(32), U(46), tr("Link"), C_MUTED, 256, 0, 0, 0);
+	}
+	draw_mask(&G.ring, U(x), U(top - 70), C_ACCENT, 256);
+	draw_mask(&G.ring, U(x) + G.ring.w * 2 / 3, U(top - 70), C_ACCENT, 256);
+	text_fit(&G.dname, U(x), U(top), p->title, C_INK, 256, U(s_uw - 2 * x));
+	if (p->theirs) snprintf(t, sizeof t, "%s  +  %s", p->mine, p->theirs);
+	else snprintf(t, sizeof t, "%s", p->mine);
+	text_fit(&G.srowf, U(x), U(top + 46), t, C_INK, 256, U(s_uw - 2 * x));
+	snprintf(t, sizeof t, tr("With %s"), p->other);
+	text_fit(&G.info, U(x), U(top + 78), t, C_MUTED, 256, U(s_uw - 2 * x));
+	text_fit(&G.srow, U(x), U(top + 150), p->step, C_INK, 256, U(s_uw - 2 * x));
+	{	/* the bar, and how far, how fast, how long */
+		int bx = U(x), bw = U(s_uw - 2 * x), by = U(top + 172), fillw = 0;
+		fill(bx, by, bw, U(4), C_MUTED, 64);
+		if (p->total) {
+			fillw = (int)((unsigned long long)bw * (p->done < p->total ? p->done : p->total) / p->total);
+			fill(bx, by, fillw, U(4), C_ACCENT, 256);
+			prog_bytes(a, sizeof a, p->done);
+			prog_bytes(b, sizeof b, p->total);
+			if (p->kbs && p->secs_left)
+				snprintf(t, sizeof t, tr("%s of %s, %u KB/s, %u s left"), a, b, p->kbs, p->secs_left);
+			else
+				snprintf(t, sizeof t, tr("%s of %s"), a, b);
+			text_fit(&G.info, bx, U(top + 208), t, C_MUTED, 256, bw);
+		} else {	/* waiting: a short stretch that moves along */
+			int span = bw / 5, ph = (int)((gpt4_get_current_tick() / 130000u) % 100u);
+			fill(bx + (bw - span) * ph / 100, by, span, U(4), C_ACCENT, 256);
+		}
+	}
+	{	/* B to cancel, as the menu's hints */
+		int cy = U(720 - 27), rad = U(8.3f), hx = U(x);
+		draw_mask(&G.ring, hx, cy - G.ring.h / 2, C_MUTED, 256);
+		text(&G.hintc, hx + rad, U(720 - 22.9f), "B", C_INK, 256, 1, 0, 0);
+		text(&G.hint, hx + 2 * rad + U(8), U(720 - 22), tr("Cancel"), C_MUTED, 256, 0, 0, 0);
+	}
+	ayaneo_canvas_present();
+	return cancel;
+}
+#endif
+
 void pico_igm_overlay(int open)
 {
 	ayaneo_overlay_live(igm_paint, open && G.loaded);

@@ -227,6 +227,21 @@ static void blit(snes_target *t, const float M[6], const snes_draw *d)
 				}
 			}
 		}
+	} else if (axis && d->is_quad && !d->additive && !d->hflip && !d->vflip && ta >= 256) {
+		/* An opaque axis-aligned quad (a panel's backing, a bar): one colour written over the
+		 * pixels the general loop below would cover, u and v stepped as it steps them, without
+		 * its per-pixel tint and blend work. */
+		uint32_t col = 0xff000000u | ((unsigned)((255 * tr) >> 8) << 16) |
+			       ((unsigned)((255 * tg) >> 8) << 8) | (unsigned)((255 * tb) >> 8);
+		for (Y = y0; Y < y1; Y++) {
+			uint32_t *row = t->fb + (unsigned)(t->offy + Y) * t->pitch + t->offx;
+			float fy = (float)Y + 0.5f - f;
+			float v = (fy * inv_d + d->py) / d->dh;
+			float u = (((float)x0 + 0.5f - e) * inv_a + d->px) / d->dw;
+			if (v < 0 || v >= 1) continue;
+			for (X = x0; X < x1; X++, u += du)
+				if (u >= 0 && u < 1) row[X] = col;
+		}
 	} else
 	for (Y = y0; Y < y1; Y++) {
 		uint32_t *row = t->fb + (unsigned)(t->offy + Y) * t->pitch + t->offx;

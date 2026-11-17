@@ -59,7 +59,12 @@ static struct {
 
 const char *pico_lang_code(int lang) { return k_code[lang >= 0 && lang < LANG_N ? lang : 0]; }
 const char *pico_lang_name(int lang) { return k_name[lang >= 0 && lang < LANG_N ? lang : 0]; }
-int  pico_lang(void) { int l = ayaneo_get_language(); return l >= 0 && l < LANG_N ? l : LANG_EN; }
+volatile int g_dbg_lang = -1;		/* oem showlang: a language until power off, the setting kept */
+int  pico_lang(void)
+{
+	int l = g_dbg_lang >= 0 ? g_dbg_lang : ayaneo_get_language();
+	return l >= 0 && l < LANG_N ? l : LANG_EN;
+}
 void pico_lang_set(int lang) { ayaneo_set_language(lang >= 0 && lang < LANG_N ? lang : LANG_EN); }
 unsigned int pico_lang_serial(void) { return L.serial; }
 void pico_tr_igm_scope(int on) { L.igm_scope = on; }

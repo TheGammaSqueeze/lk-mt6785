@@ -1886,6 +1886,94 @@ static void draw_reset_dialog(snes_menu *m, snes_target *t)
 	snes_render_node(t, &m->home, dl);
 }
 
+/* ---- a panel of the caller's own (snes_menu_draw_panel) ---- */
+static float font_lh(const snes_menu *m, uint32_t font, float sc)
+{
+	const snes_font_entry *fe = snes_res_font(m->pk, font);
+	return (fe ? (float)fe->line_height : 32.0f) * sc;
+}
+
+void snes_menu_draw_panel(snes_menu *m, snes_target *t, const snes_panel *p)
+{
+	/* the cyan selection box: the menubar cursor's 9-slice (as the Display page's theme row) */
+	static const uint16_t sxa[10] = {0, 69,131, 69,137,156,171, 88,137,103};
+	static const uint16_t sya[10] = {0,847,987,945,941,895,941,895,847,847};
+	const float pw = 860.0f, ph = 470.0f, cx = 640.0f, cy = 360.0f;
+	const float left = cx - pw / 2.0f, right = cx + pw / 2.0f, top = cy - ph / 2.0f, bottom = cy + ph / 2.0f;
+	const float st = 0.85f, sl = 1.0f, ss = 0.9f, rowh = 62.0f;
+	float y, lh;
+	int i;
+	if (!p) return;
+	if (m->aspect) t->offy = 0;	/* as snes_menu_render: the caller may not render the menu */
+	/* (the menu behind is dimmed by the caller, once: it is still while the panel is up) */
+	set_view(m, t, VIEW_CONTAIN);
+	/* the dialog: black in a thin light frame, as the menubar's caption bubble */
+	round_rect(t, cx, cy, pw + 4.0f, ph + 4.0f, 10.0f, 0.86f, 0.86f, 0.86f, 1.0f);
+	round_rect(t, cx, cy, pw, ph, 8.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+	y = top + 34.0f;
+	if (p->title) {
+		snes_draw_text(t, m->pk, m->f_title, left + 48.0f, y, st, 0xFFF2F2F2u, 0, p->title);
+		if (p->busy) {	/* three dots after it, one lit at a time, in the cursor's cyan */
+			float dx = left + 48.0f + snes_text_width(m->pk, m->f_title, st, p->title) + 22.0f;
+			float dy = y + font_lh(m, m->f_title, st) * 0.62f;
+			int lit = (int)(m->clock * 3.0f) % 3, k;
+			for (k = 0; k < 3; k++)
+				snes_fill_quad(t, dx + 18.0f * (float)k, dy, 8.0f, 8.0f,
+					       k == lit ? 0.25f : 0.35f, k == lit ? 0.75f : 0.35f, k == lit ? 1.0f : 0.35f, 1.0f);
+		}
+		y += font_lh(m, m->f_title, st) + 4.0f;
+	}
+	if (p->subtitle) {
+		snes_draw_text(t, m->pk, m->f_l, left + 48.0f, y, ss, 0xFFB4B4B4u, 0, p->subtitle);
+		y += font_lh(m, m->f_l, ss);
+	}
+	y += 24.0f;			/* the list (or the status) a little below the title */
+	lh = font_lh(m, m->f_l, sl);
+	for (i = 0; i < p->nrows && i < SNES_PANEL_ROWS; i++, y += rowh) {
+		float rc = y + rowh / 2.0f;
+		if (i == p->sel && m->card_act)
+			draw_cursor_9slice(m, t, cx, rc, pw - 56.0f, rowh - 2.0f, sxa, sya, 1.0f, 1.0f, m->card_act->img);
+		{	/* the name left, its value right; both smaller when together they do not fit */
+			float room = pw - 104.0f - 36.0f, sc = sl;
+			float w = (p->rows[i] ? snes_text_width(m->pk, m->f_l, sl, p->rows[i]) : 0.0f) +
+				  (p->values[i] ? snes_text_width(m->pk, m->f_l, sl, p->values[i]) : 0.0f);
+			if (w > room) sc = sl * room / w;
+			if (sc < 0.6f) sc = 0.6f;
+			if (p->rows[i])
+				snes_draw_text(t, m->pk, m->f_l, left + 52.0f, rc - lh * sc / sl / 2.0f, sc, 0xFFF2F2F2u, 0, p->rows[i]);
+			if (p->values[i])
+				snes_draw_text(t, m->pk, m->f_l, right - 52.0f, rc - lh * sc / sl / 2.0f, sc, 0xFFB4B4B4u, 2, p->values[i]);
+		}
+	}
+	if (p->status) {	/* wrapped inside the dialog */
+		float sy = p->nrows ? y + 14.0f : y;
+		draw_wrapped(m, t, m->f_l, left + 52.0f, &sy, ss, 0xFFB4B4B4u, pw - 104.0f,
+			     font_lh(m, m->f_l, ss), p->status);
+		y = sy + font_lh(m, m->f_l, ss);
+	}
+	if (p->total) {	/* how far: a cyan bar on a dark one, as the menubar's cursor colour */
+		float bw = pw - 104.0f, f = (float)(p->done < p->total ? p->done : p->total) / (float)p->total;
+		snes_fill_quad(t, cx, y + 16.0f, bw, 8.0f, 0.22f, 0.24f, 0.28f, 1.0f);
+		if (f > 0.0f)
+			snes_fill_quad(t, left + 52.0f + bw * f / 2.0f, y + 16.0f, bw * f, 8.0f, 0.25f, 0.75f, 1.0f, 1.0f);
+	}
+	/* the hints, right-aligned along the bottom: the pack's A / B icons and the words */
+	if (m->card_act && p->nhints > 0) {
+		const float iscale = 2.55f, gap = 6.0f, vgap = 30.0f, hy = bottom - 34.0f;
+		float x = right - 40.0f;
+		for (i = p->nhints - 1; i >= 0; i--) {
+			const char *lab = p->hint_label[i] ? p->hint_label[i] : "";
+			float lw = snes_text_width(m->pk, m->f_s, ss, lab), iw = 12.0f * iscale;
+			snes_spr_entry ic = { m->card_act->img, (uint16_t)(p->hint_btn[i] == 'B' ? 15 : 1), 881, 12, 12, 6, 6 };
+			x -= lw;
+			snes_draw_text(t, m->pk, m->f_s, x, hy - 10.0f, ss, 0xFFF2F2F2u, 0, lab);
+			x -= gap + iw;
+			snes_blit_spr(t, m->pk, &ic, x + iw / 2.0f, hy, iscale, 1.0f);
+			x -= vgap;
+		}
+	}
+}
+
 /* ---- public ---- */
 int snes_menu_init(snes_menu *m, const snes_pack *pk,
 		   snes_rnode *home_pool, unsigned home_cap,

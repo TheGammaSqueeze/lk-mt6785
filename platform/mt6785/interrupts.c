@@ -118,6 +118,12 @@ enum handler_return platform_irq(struct arm_iframe *frame)
 	else if (irq == MT_UFS_IRQ_ID)
 		ufshcd_irq_handler(irq);
 #endif
+#if defined(KONKR_KPA) && defined(AYANEO_GBA_SD)
+	else if (irq == 170) {		/* the Bluetooth byte pipe (pico_bt.inc) */
+		extern void pico_bt_irq(void);
+		pico_bt_irq();
+	}
+#endif
 	if (dummy_ap_irq_handler)
 		dummy_ap_irq_handler(irq);
 

@@ -298,6 +298,9 @@ OBJS += $(LOCAL_DIR)/ayaneo_joypad_kpa.o
 OBJS += $(LOCAL_DIR)/ayaneo_aw88166.o
 OBJS += $(LOCAL_DIR)/ayaneo_accel.o
 OBJS += $(LOCAL_DIR)/ayaneo_rumble.o
+OBJS += platform/common/pico/pico_xfer.o	# file transfer over the Bluetooth link
+OBJS += platform/common/pico/pico_netplay.o	# lockstep netplay over the Bluetooth link
+OBJS += $(LOCAL_DIR)/kpa_bt.o		# Bluetooth (CONNSYS), only when a Pico screen asks for it
 else
 OBJS += $(LOCAL_DIR)/ayaneo_joypad.o
 endif

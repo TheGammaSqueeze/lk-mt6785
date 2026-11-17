@@ -32,6 +32,7 @@ extern void fastboot_info(const char *reason);
 #include "fat_ro.h"
 #include "sd_fat.h"
 #include "fat_wr.h"       /* fat_wr_delete (oem sd-rm) */
+#include "pico_i18n.h"     /* LANG_N (oem showlang) */
 #include <string.h>
 extern void fastboot_okay(const char *info);
 extern void fastboot_fail(const char *reason);
@@ -431,6 +432,37 @@ static void cmd_gen_rw(const char *arg, void *data, unsigned sz)
  * via the menu thread (arena-safe), and report the result. Safe way to validate the SNES
  * path over USB without navigating or risking a wrong non-SNES force-launch. Read the
  * outcome on the next `oem diag` (frames/dim/nz/changed). */
+/* oem launch:KIND:NAME - launch the first game of that console (nes, snes, gen, sms, gg, gba,
+ * gbc, gb) whose name contains NAME (case insensitive)
+ * from the menu, as if picked there, and return at once (the game keeps running) */
+static void cmd_launch(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_snes_launch, g_dbg_launch_type;
+	extern char g_dbg_snes_name[32];
+	unsigned k = 0;
+	(void)data; (void)sz;
+	static const struct { const char *key; int type; } kinds[] = {
+		{ "nes:", GBA_CONSOLE_NES }, { "snes:", GBA_CONSOLE_SNES }, { "gen:", GBA_CONSOLE_GENESIS },
+		{ "sms:", GBA_CONSOLE_SMS }, { "gg:", GBA_CONSOLE_GG }, { "gba:", GBA_CONSOLE_GBA },
+		{ "gbc:", GBA_CONSOLE_GBC }, { "gb:", GBA_CONSOLE_GB },
+	};
+	unsigned i;
+	int type = -1;
+	while (*arg == ' ' || *arg == ':') arg++;
+	for (i = 0; i < sizeof kinds / sizeof kinds[0]; i++)
+		if (!strncmp(arg, kinds[i].key, strlen(kinds[i].key))) {
+			type = kinds[i].type;
+			arg += strlen(kinds[i].key);
+			break;
+		}
+	if (type < 0) { fastboot_fail("launch:nes|snes|gen|sms|gg|gba|gbc|gb:NAME"); return; }
+	while (*arg && k + 1 < sizeof g_dbg_snes_name) g_dbg_snes_name[k++] = *arg++;
+	g_dbg_snes_name[k] = 0;
+	g_dbg_launch_type = type + 1;	/* 0 means the default (SNES), and GB is type 0 */
+	g_dbg_snes_launch = 1;
+	fastboot_okay("");
+}
+
 static void cmd_snes_launch(const char *arg, void *data, unsigned sz)
 {
 	extern volatile int g_dbg_snes_launch;
@@ -1679,6 +1711,25 @@ static void cmd_nes(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem echo:TOKEN - the token back. A host tool sends a fresh token and repeats until it reads
+ * that token: any replies a host before it left unread (a reader that quit, a killed fastboot)
+ * are consumed by the repeats, so the command after it gets its own reply. */
+static void cmd_echo(const char *arg, void *data, unsigned sz)
+{
+	extern void fastboot_no_reply(void);	/* app/mt_boot/fastboot.c */
+	size_t n = strlen(arg);
+	(void)data; (void)sz;
+	/* TOKEN:skip - no reply at all: sent by the host only when it knows a reply of its own is
+	 * still queued (an echo came back with its previous token), which this call then reads */
+	if (n >= 5 && !strcmp(arg + n - 5, ":skip")) {
+		fastboot_no_reply();
+		return;
+	}
+	snprintf(lbuf, sizeof lbuf, "echo %s", arg);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* `oem mode`: which fastboot we are talking to. The same oem commands are registered in the
  * plain bootloader and in the emulator's USB channel, so a tool cannot tell them apart by
  * probing commands; this answers directly: boot_mode (FASTBOOT = plain bootloader, flashing
@@ -1816,13 +1867,11 @@ static void cmd_gamefile(const char *arg, void *data, unsigned sz)
 
 /* oem sd-get:/path - stage a file from the card for `fastboot get_staged <file>` (menu mode, on
  * the menu's own volume) */
-static void cmd_sd_get(const char *arg, void *data, unsigned sz)
+static void sd_get_path(const char *arg)
 {
 	extern void *gba_sd_menu_vol(void);
 	fat_vol *v = (fat_vol *)gba_sd_menu_vol();
 	fat_file f;
-	(void)data; (void)sz;
-	while (*arg == ' ' || *arg == ':') arg++;
 	if (!v) { fastboot_fail("sd-get: no card in use"); return; }
 	if (fat_open(v, arg, &f) != 0) { fastboot_fail("sd-get: not there"); return; }
 	if (f.size > SHOT_STAGE_MAX) { fastboot_fail("sd-get: too large"); return; }
@@ -1830,6 +1879,88 @@ static void cmd_sd_get(const char *arg, void *data, unsigned sz)
 	s_stage_len = f.size;
 	snprintf(lbuf, sizeof lbuf, "staged %u bytes (fastboot get_staged <file>)", f.size);
 	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+static void cmd_sd_get(const char *arg, void *data, unsigned sz)
+{
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	sd_get_path(arg);
+}
+/* oem sd-getn - the same, the path staged first ("path\0", fastboot stage <file>): a fastboot
+ * command holds 64 bytes, and one longer (a long save name) leaves the USB session out of step */
+static void cmd_sd_getn(const char *arg, void *data, unsigned sz)
+{
+	static char path[256];
+	const char *d = (const char *)data;
+	unsigned i;
+	(void)arg;
+	for (i = 0; d && i < sz && i < sizeof path - 1 && d[i]; i++) path[i] = d[i];
+	if (!d || i == 0 || i >= sz || i >= sizeof path - 1) { fastboot_fail("sd-getn: stage path, 0 first"); return; }
+	path[i] = 0;
+	sd_get_path(path);
+}
+
+/* oem stage-crc[:CHUNK] - CRC-32 of each CHUNK bytes (hex, default 0x1000) of what sd-get staged,
+ * six to a line; and oem stage-hex:OFF:LEN (hex) - those bytes, 24 to a line (an INFO line holds
+ * about 60 characters). For comparing two
+ * consoles' files where an upload is not available (the Block's USB). */
+static unsigned stage_hexarg(const char **a)
+{
+	unsigned v = 0;
+	while (**a == ':' || **a == ' ') (*a)++;
+	for (;; (*a)++) {
+		char ch = **a;
+		if (ch >= '0' && ch <= '9') v = v * 16u + (unsigned)(ch - '0');
+		else if (ch >= 'a' && ch <= 'f') v = v * 16u + (unsigned)(ch - 'a' + 10);
+		else if (ch >= 'A' && ch <= 'F') v = v * 16u + (unsigned)(ch - 'A' + 10);
+		else break;
+	}
+	return v;
+}
+/* oem gbakey:HEX:FRAMES - GBA keys (A 1, B 2, Select 4, Start 8, Right 10, Left 20, Up 40, Down 80,
+ * R 100, L 200) held in the running GBA game for FRAMES frames */
+volatile unsigned int g_dbg_gba_keys, g_dbg_gba_key_frames;
+static void cmd_gbakey(const char *arg, void *data, unsigned sz)
+{
+	unsigned keys = stage_hexarg(&arg), frames = stage_hexarg(&arg);
+	(void)data; (void)sz;
+	g_dbg_gba_keys = keys & 0x3FFu;
+	g_dbg_gba_key_frames = frames ? frames : 6u;
+	fastboot_okay("");
+}
+
+static void cmd_stage_crc(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int pico_np_crc(const void *p, unsigned int n);
+	unsigned chunk = stage_hexarg(&arg), off, k = 0, len;
+	char *p = lbuf;
+	(void)data; (void)sz;
+	if (!chunk) chunk = 0x1000u;
+	for (off = 0; off < s_stage_len; off += chunk) {
+		len = s_stage_len - off < chunk ? s_stage_len - off : chunk;
+		p += snprintf(p, sizeof lbuf - (unsigned)(p - lbuf), "%08x ",
+			      pico_np_crc((const void *)(SHOT_STAGE_PA + off), len));
+		if (++k % 6u == 0) { fastboot_info(lbuf); p = lbuf; }
+	}
+	if (p != lbuf) fastboot_info(lbuf);
+	fastboot_okay("");
+}
+static void cmd_stage_hex(const char *arg, void *data, unsigned sz)
+{
+	unsigned off = stage_hexarg(&arg), len = stage_hexarg(&arg), i;
+	const unsigned char *b = (const unsigned char *)SHOT_STAGE_PA;
+	(void)data; (void)sz;
+	if (off > s_stage_len) off = s_stage_len;
+	if (len > s_stage_len - off) len = s_stage_len - off;
+	while (len) {
+		unsigned n = len < 24u ? len : 24u;
+		char *p = lbuf + snprintf(lbuf, sizeof lbuf, "%06x:", off);
+		for (i = 0; i < n; i++)
+			p += snprintf(p, 4, "%02x", b[off + i]);
+		fastboot_info(lbuf);
+		off += n; len -= n;
+	}
 	fastboot_okay("");
 }
 
@@ -2132,6 +2263,19 @@ static void cmd_showcolour(const char *arg, void *data, unsigned sz)
 	g_dbg_colour = neg || n > 12 ? -1 : n;   /* NCOLOURS - 1 in pico_current.c */
 	fastboot_okay("");
 }
+/* oem showlang:N - the menus in language N (pico_i18n.h LANG_*) from their next opening, for
+ * screenshots; the saved setting is not touched. -1 back to the setting. */
+static void cmd_showlang(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_lang;
+	int n = 0, neg = 0;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg == '-') { neg = 1; arg++; }
+	while (*arg >= '0' && *arg <= '9') n = n * 10 + (*arg++ - '0');
+	g_dbg_lang = neg || n >= LANG_N ? -1 : n;
+	fastboot_okay("");
+}
 /* oem animslow:N - the Current menu's screen cascades N times slower (1 normal), to look at them */
 static void cmd_animslow(const char *arg, void *data, unsigned sz)
 {
@@ -2405,6 +2549,13 @@ static void cmd_upload(const char *arg, void *data, unsigned sz)
 	unsigned off = 0;
 	(void)arg; (void)data; (void)sz;
 	s_up_step = 1; s_up_sent = 0; s_up_rc = 0;
+#if defined(KONKR_BLOCK)
+	/* The Block's USB does not carry an upload: the bulk writes fail and the session falls out of
+	 * step with the host until a restart. One short answer instead keeps it in step. */
+	s_up_step = 9;
+	fastboot_fail("no upload on this console: oem stage-hex / stage-crc");
+	return;
+#endif
 	if (!s_stage_len) { s_up_step = 9; fastboot_fail("nothing staged (oem shotstage first)"); return; }
 	snprintf(rsp, sizeof rsp, "DATA%08x", s_stage_len);
 	s_up_rc = usb_write_with_timeout(rsp, 12, 2000);
@@ -3238,8 +3389,13 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem sd-ls", cmd_sd_ls, 1, 0);
 	fastboot_register("oem sd-check", cmd_sd_check, 1, 0);
 	fastboot_register("oem showcolour", cmd_showcolour, 1, 0);
+	fastboot_register("oem showlang", cmd_showlang, 1, 0);
 	fastboot_register("oem animslow", cmd_animslow, 1, 0);
 	fastboot_register("oem sd-get:", cmd_sd_get, 1, 0);
+	fastboot_register("oem sd-getn", cmd_sd_getn, 1, 0);
+	fastboot_register("oem stage-crc", cmd_stage_crc, 1, 0);
+	fastboot_register("oem gbakey:", cmd_gbakey, 1, 0);
+	fastboot_register("oem stage-hex:", cmd_stage_hex, 1, 0);
 	fastboot_register("oem part-read:", cmd_part_read, 1, 0);
 	fastboot_register("oem accel", cmd_accel, 1, 0);
 	fastboot_register("oem motion", cmd_motion, 1, 0);
@@ -3310,13 +3466,19 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("upload", cmd_upload, 1, 0);              /* fastboot get_staged <file> */
 	fastboot_register("oem upstat", cmd_upstat, 1, 0);          /* dump the displayed frame (game buffer or fb), /step */
 	fastboot_register("oem mode", cmd_mode, 1, 0);
+	fastboot_register("oem echo:", cmd_echo, 1, 0);         /* host resync: the token back */
+	fastboot_register("oem launch:", cmd_launch, 1, 0);     /* a game by console and name */
 	fastboot_register("oem nes", cmd_nes, 1, 0);            /* the NES session: core, game, picture, sound */          /* bootloader vs emulator channel, menu/game state */
 	fastboot_register("oem vfp:", cmd_vfp, 1, 0);           /* set the DSI vertical front porch live */
 	fastboot_register("oem edges", cmd_edges, 1, 0);        /* measure display frame-end rate */
 	fastboot_register("oem latch", cmd_latch, 1, 0);        /* overlay buffer switches per second */
 	fastboot_register("oem clk", cmd_clk, 1, 0);            /* gpt4 rate vs the ARM architected timer */
 	fastboot_register("oem vdiv:", cmd_vdiv, 1, 0);         /* vsync divider (panel = N x core rate) */
+#if defined(KONKR_KPA)
+	{ extern void kpa_bt_register_cmds(void); kpa_bt_register_cmds(); }       /* kpa_bt.c: Bluetooth */
+#endif
 #if defined(KONKR_BLOCK)
+	{ extern void block_bt_register_cmds(void); block_bt_register_cmds(); }   /* block_bt.c: Bluetooth */
 	/* the board neutral ones of the KPA's set, and the pin reader */
 	fastboot_register("oem persist", cmd_persist, 1, 0);
 	fastboot_register("oem env:", cmd_env, 1, 0);

@@ -116,6 +116,12 @@ enum handler_return platform_irq(struct arm_iframe *frame)
 	else if (irq == MT_MSDC0_IRQ_ID || irq == MT_MSDC1_IRQ_ID)
 		lk_msdc_irq_handler(irq);
 
+#if defined(KONKR_BLOCK) && defined(AYANEO_GBA_SD)
+	else if (irq == 165) {		/* the Bluetooth byte pipe (pico_bt.inc) */
+		extern void pico_bt_irq(void);
+		pico_bt_irq();
+	}
+#endif
 	if (dummy_ap_irq_handler)
 		dummy_ap_irq_handler(irq);
 

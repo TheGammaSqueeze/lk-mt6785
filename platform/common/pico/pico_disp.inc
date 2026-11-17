@@ -297,6 +297,35 @@ volatile int g_pace_late_us = -1;
 volatile unsigned int g_dbg_pace_late, g_dbg_pace_edges, g_dbg_pace_win_us;
 static unsigned int s_pace_win;            /* ticks after the edge a frame may still be handed over */
 static int s_fd_resync;                    /* this frame aims at the edge itself, to measure it */
+/* Netplay: frames the next present stays back by, so two consoles' frame clocks can be brought
+ * into step (pico_netplay.c). Taken by rot_pace: a time paced core moves its deadline, a whole
+ * refresh core waits that many more refreshes. */
+volatile unsigned int g_pace_hold;
+void ayaneo_pace_hold(void) { g_pace_hold = 1u; }
+/* Netplay: a time paced core (the deadline pacing below, PAL on the KPA) can follow the other
+ * console's frame clock smoothly instead: its frame period is stretched or shortened by this many
+ * parts per million. Whole refresh pacing ignores it (its rate is the panel's). */
+volatile int g_pace_trim_ppm;
+/* A whole refresh core's rate is the panel's, set by the MIPI data rate: the same trim moves the
+ * PLL word (live, a few ppm per kHz) around the rate the core asked for, which is put back at 0. */
+static unsigned int s_trim_base_khz;
+void ayaneo_pace_trim(int ppm)
+{
+	extern volatile unsigned int g_dsi_dr_khz;
+	extern unsigned int ayaneo_dsi_set_dr_khz(unsigned int khz);
+	g_pace_trim_ppm = ppm;
+	if (!ppm) {
+		if (s_trim_base_khz)
+			ayaneo_dsi_set_dr_khz(s_trim_base_khz);
+		s_trim_base_khz = 0;
+		return;
+	}
+	if (!s_trim_base_khz)
+		s_trim_base_khz = g_dsi_dr_khz;
+	/* longer frames (ppm above 0) are a slower clock */
+	ayaneo_dsi_set_dr_khz((unsigned int)((long long)s_trim_base_khz -
+					     (long long)s_trim_base_khz * ppm / 1000000));
+}
 static unsigned int s_fd_count;
 volatile unsigned int g_dbg_fd_us, g_dbg_fd_work_us, g_dbg_fd_misses, g_dbg_fd_off, g_dbg_fd_margin_us;
 /* totals since oem fdelay last read them: frames, delay and work (us), worst work (us) */
@@ -457,6 +486,12 @@ static void rot_pace(void)
 		g_dbg_pace_win_us = s_pace_win / 13u;
 		s_fd_period = P;
 		E = s_pace_edge + P;
+		if (g_pace_hold) {	/* netplay: this frame stays back whole refreshes */
+			E += P * g_pace_hold;
+			s_pace_edge += P * g_pace_hold;
+			g_pace_hold = 0;
+			s_pace_win = 0;
+		}
 		if (s_pace_win && (int)(now - E) >= 0 && (int)(now - E) < (int)s_pace_win &&
 		    (ayaneo_rdma_int_status() & 4u) && (ayaneo_dsi_scan() & 1u)) {
 			ayaneo_rdma_int_clear(4u);
@@ -475,7 +510,10 @@ static void rot_pace(void)
 		now = gpt4_get_current_tick();
 		if (s_pace_next == 0u || (int)(now - s_pace_next) > (int)(2u * frame) || (int)(s_pace_next - now) > (int)(2u * frame))
 			s_pace_next = now;
-		s_pace_next += frame;
+		if (g_pace_trim_ppm)	/* netplay: follow the other console's clock */
+			frame = (unsigned int)((long long)frame + (long long)frame * g_pace_trim_ppm / 1000000);
+		s_pace_next += frame * (1u + g_pace_hold);   /* a netplay hold moves the deadline */
+		g_pace_hold = 0;
 		target = s_pace_next - period / 2u;   /* the first edge at or after this is the one */
 		ayaneo_idle_until(target);
 	}

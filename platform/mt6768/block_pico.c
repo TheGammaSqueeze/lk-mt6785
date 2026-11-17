@@ -460,6 +460,18 @@ static void cpu_pll_to(unsigned int mhz)
 }
 
 volatile unsigned int g_dbg_cpu_mhz_asked;	/* the last clock a core asked for */
+/* A netplay session (pico_netplay.c, user 11-16: "in multiplayer mode, we set the clock on the
+ * system to the highest"): the CPU at its top clock for the whole session, whatever a core asks;
+ * what it asks is kept and comes back when the session ends. */
+static int s_cpu_netplay;
+void ayaneo_set_cpu_mhz(unsigned int mhz);
+void pico_cpu_netplay(int on)
+{
+	unsigned int asked = g_dbg_cpu_mhz_asked;
+	s_cpu_netplay = on;
+	ayaneo_set_cpu_mhz(on ? BLOCK_CPU_MAX_MHZ : (asked ? asked : BLOCK_CPU_MAX_MHZ));
+	g_dbg_cpu_mhz_asked = asked;			/* the core's own choice, for the end */
+}
 void ayaneo_set_cpu_mhz(unsigned int mhz)
 {
 	unsigned int want, have, cap;
@@ -472,6 +484,7 @@ void ayaneo_set_cpu_mhz(unsigned int mhz)
 	}
 	mutex_acquire(&s_cpu_lock);
 	g_dbg_cpu_mhz_asked = mhz;
+	if (s_cpu_netplay) mhz = BLOCK_CPU_MAX_MHZ;	/* netplay: the top clock throughout */
 	if (mhz > BLOCK_CPU_MAX_MHZ) mhz = BLOCK_CPU_MAX_MHZ;
 	if (mhz < BLOCK_CPU_MIN_MHZ) mhz = BLOCK_CPU_MIN_MHZ;
 

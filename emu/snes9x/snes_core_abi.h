@@ -11,7 +11,8 @@
 #define SNES_CORE_ABI_H
 
 #define SNES_CORE_ABI_MAGIC   0x31534E53u   /* "SNS1" */
-#define SNES_CORE_ABI_VERSION 2u   /* v2: + fps_milli (core frame rate for dynamic per-core panel refresh) */
+#define SNES_CORE_ABI_VERSION 3u   /* v2: + fps_milli (core frame rate for dynamic per-core panel refresh)
+				    * v3: + set_pad_reader (both controller ports, for netplay) */
 
 /* Services LK provides to the core (core -> LK). */
 struct snes_core_imports {
@@ -100,6 +101,10 @@ struct snes_core_exports {
 	 * from retro av.timing.fps * 1000. Region is decided at load (ROM auto-detect / snes9x_region),
 	 * so this is valid post-load and re-poll-able. LK derives the panel vfp from it. */
 	unsigned (*fps_milli)(void);
+	/* v3: both controller ports. With a reader set the core asks it for port 0 and port 1
+	 * (RETRO_DEVICE_ID_JOYPAD_* bits); without one (an older frontend never sets it) it reads
+	 * imports.read_buttons for port 0 only, as before. NULL clears it. */
+	void (*set_pad_reader)(unsigned (*reader)(unsigned port));
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);

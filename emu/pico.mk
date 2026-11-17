@@ -44,6 +44,11 @@ OBJS += emu/gba/menu/snes_pack.o emu/gba/menu/snes_scene.o emu/gba/menu/snes_ren
 OBJS += emu/gba/menu/snes_menu.o emu/gba/gba_snes_menu.o
 # the Current menu theme (its own layout, drawn in software from its card pack)
 OBJS += emu/gba/pico_current.o emu/gba/pico_i18n.o
+# playing together over Bluetooth, the flow every theme shares (the consoles with the link)
+ifneq ($(filter yes,$(KONKR_KPA) $(KONKR_BLOCK)),)
+OBJS += emu/gba/pico_link_ui.o
+$(BUILDDIR)/emu/gba/pico_link_ui.o:     CFLAGS += -Os
+endif
 GBA_MENU_FP := -mfpu=neon -mfloat-abi=softfp -ffast-math
 # perf-critical BLITTER: -O2 + NEON for full 60fps. This is the dominant per-frame
 # cost (wallpaper + card + text blits); -Os here drops below 60fps and the double

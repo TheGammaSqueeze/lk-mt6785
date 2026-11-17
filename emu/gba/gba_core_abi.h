@@ -42,7 +42,8 @@
 #define GBA_CORE_ABI_VERSION 2u   /* 2: skip_next_frame (the gpSP blob in boot_b) */
 #define GBA_CORE_ABI_V3      3u   /* 3: name, audio rate, state folder, options (armGBA-pico from the SD card) */
 #define GBA_CORE_ABI_V4      4u   /* 4: motion for tilt and gyro cartridges, and rumble */
-#define GBA_CORE_ABI_MAX     GBA_CORE_ABI_V4
+#define GBA_CORE_ABI_V5      5u   /* 5: two linked machines for netplay (the link cable) */
+#define GBA_CORE_ABI_MAX     GBA_CORE_ABI_V5
 
 /* A core option the LK can show in the Core Settings submenu (version 3). The LK persists the
  * chosen index per key and hands it back with opt_set before the next game starts. */
@@ -142,6 +143,23 @@ struct gba_core_exports {
 	/* diagnostics: a halfword of the GBA's work RAM (0x02 and 0x03 regions only, 0 elsewhere) */
 	unsigned (*peek16)(unsigned address);
 	int  (*rumble)(void);                  /* the cartridge's rumble motor now: 0 off, else on */
+	/* version 5: netplay's two machines, joined by a cable inside the core (machine 0 the host's
+	 * game and the cable's parent, machine 1 the guest's). Both consoles run both and only the
+	 * buttons travel. pair_rom_ptr: where the other console's game goes (32 MiB). pair_open: the
+	 * running machine (this console's game) takes slot self, a new one the other slot with the
+	 * other game (other_size bytes); 0 paired. pair_keys: both machines' buttons for the next
+	 * frame. The single machine state calls, screen, sound and saves stay this console's. The pair
+	 * state is both machines and the cable; pair_load_machine puts one machine's state into slot m.
+	 * pair_stat: 0/1 transfers machine 0/1 clocked, 2/3 words delivered to machine 0/1. */
+	unsigned char *(*pair_rom_ptr)(void);
+	int  (*pair_open)(int self, unsigned other_size);
+	void (*pair_close)(void);
+	void (*pair_keys)(unsigned k0, unsigned k1);
+	unsigned (*pair_state_size)(void);
+	void (*pair_state_save)(void *buf);
+	int  (*pair_state_load)(const void *buf, unsigned size);
+	int  (*pair_load_machine)(int m, const void *state);
+	unsigned (*pair_stat)(unsigned what);
 };
 
 /* The blob's single fixed entry symbol. The loader resolves it at a known offset (e.g.

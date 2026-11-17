@@ -12,6 +12,7 @@
  *
  * First bring-up: video + input. Audio and the in-game menu/run-ahead come next.
  */
+#include <string.h>
 #include "snes_core_abi.h"
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
@@ -280,6 +281,15 @@ static unsigned snes_hash_frame(const struct snes_frame *fr)
 	return h ? h : 1u;   /* never collide with the "no video" sentinel 0 */
 }
 
+/* netplay (pico_netplay.c): a v3 core asks this reader for both controller ports */
+static int s_snes_np;         /* this session is a netplay one: both players' pads from it */
+static int s_snes_np_guest;   /* the guest plays the host's game: it keeps no save of it */
+static unsigned snes_np_reader(unsigned port)
+{
+	extern unsigned int pico_np_pad(unsigned int port);
+	return pico_np_pad(port);
+}
+
 unsigned ayaneo_snes_pad_mask(void)
 {
 	/* Turbo (auto-fire): g_snes_turbo bit0 = A, bit1 = B. When set and the button is held,
@@ -522,6 +532,13 @@ void snes_menu_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsi
 /* returns 1 to close the menu (Reset/Close), else 0 */
 static int sm_change(int i, int dir, int act)
 {
+	/* netplay: loading a state or resetting would change the game on this console only and the
+	 * two would part */
+	if (s_snes_np && act && (i == SM_LOAD || i == SM_RESET)) {
+		memset(s_mstat, 0, sizeof s_mstat);
+		smput(s_mstat, "Not during netplay");
+		return 0;
+	}
 	s_mstat[0] = 0;
 	switch (i) {
 	case SM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); snes_settings_touch(); } break;
@@ -689,6 +706,41 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		if (n) c->state_load(st, n);
 	}
 
+	/* A netplay session: both consoles start from the host's state (its battery RAM and any resume
+	 * with it), the guest's replaced by it; then the first frame runs on both together. Only a v3
+	 * core takes the second controller port. */
+	s_snes_np = s_snes_np_guest = 0;
+	{
+		extern int pico_np_armed(unsigned int *delay);
+		extern int pico_np_begin(int host, unsigned int delay, void *state, unsigned int size,
+					 unsigned int cap, unsigned int *got);
+		unsigned int delay = 2, got = 0, ssz;
+		int host = pico_np_armed(&delay), ok;
+		if (host >= 0) {
+			ssz = c->state_size();
+			ok = c->version >= 3u && c->set_pad_reader && ssz && ssz <= SNES_STATE_CAP;
+			if (ok && host) {	/* the save's temporaries given back to the arena */
+				void *hm = c->heap_mark ? c->heap_mark() : 0;
+				ok = c->state_save((void *)SNES_STATE_BUF, ssz) == 0;
+				if (hm && c->heap_reset) c->heap_reset(hm);
+			}
+			ok = ok && pico_np_begin(host, delay, (void *)SNES_STATE_BUF, ssz, SNES_STATE_CAP, &got) == 0;
+			/* the guest's load is not bracketed: what it allocates stays in use (rolling the
+			 * arena back after it hands that memory out again and the game breaks) */
+			ok = ok && (host || c->state_load((const void *)SNES_STATE_BUF, got) == 0);
+			if (ok) {
+				s_snes_np = 1;
+				s_snes_np_guest = !host;
+				c->set_pad_reader(snes_np_reader);
+			} else {
+				gba_rom_set_error(RA_ERR_START);   /* the other console did not join: no game */
+				c->unload();
+				ayaneo_menu_audio_silence();
+				return;
+			}
+		}
+	}
+
 	/* snes9x mainline is accuracy-first (full 65816 + SPC700 + PPU + DSP each frame), which
 	 * is heavy on the A55; the menu/other cores idle around 1200 MHz. Raise the ARM PLL to
 	 * at least 1400 MHz for the SNES session so plain-mapper games hit full speed, but never
@@ -833,14 +885,15 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			extern void mt_power_off(void); extern int ayaneo_power_hold(int menu_open, int use_overlay);
 			if (ayaneo_power_hold(g_snes_menu_open, 1)) {
 				unsigned char *st = (unsigned char *)SNES_STATE_BUF;
-				unsigned ssz = c->state_size(), sz; void *p;
+				unsigned ssz = s_snes_np_guest ? 0u : c->state_size(), sz; void *p;
+				{ extern void pico_np_stop(void); if (s_snes_np) pico_np_stop(); }   /* tell the other console */
 				ayaneo_gbc_audio_pause(1);   /* silent through the card writes and the power off */
 				{ extern void ayaneo_resume_mark(const char *name); ayaneo_resume_mark(rom->name); s_settings_dirty = 1; }
 				snes_settings_flush();
 				{ extern void ayaneo_settings_persist_flush(void); ayaneo_settings_persist_flush(); }
 				if (ssz && ssz <= SNES_STATE_CAP && c->state_save(st, ssz) == 0)
 					gba_sd_write_named(vol, "/states/snes", rom->name, "sus", st, ssz);
-				sz = c->sram_size(); p = c->sram_ptr();
+				sz = s_snes_np_guest ? 0u : c->sram_size(); p = c->sram_ptr();
 				if (p && sz && sz <= 0x20000u)
 					gba_sd_write_named(vol, "/saves/snes", rom->name, "srm", p, sz);
 				{ extern void ayaneo_power_off_now(void); ayaneo_power_off_now(); }   /* no return */
@@ -866,7 +919,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			extern void ayaneo_audio_reverse_flip(void);
 			extern void ayaneo_hud_set(int mode, int speed_x10);
 			static short s_snes_audrev[2048 * 2];   /* reversed+decimated audio scratch */
-			int rw = (!g_snes_menu_open && !g_snes_test_limit) ? ayaneo_joypad_rewind_level() : 0;
+			int rw = (!g_snes_menu_open && !g_snes_test_limit && !s_snes_np) ? ayaneo_joypad_rewind_level() : 0;
 			if (rw > 0 && ayaneo_rewind_ready() && ayaneo_rewind_count() > 0) {
 				int spd = 256 + (rw * (SNES_REWIND_MAX_SPD - 256)) / 255;   /* 256(1x)..MAX_SPD(6x) */
 				unsigned sz; const void *st; int k, steps;
@@ -919,12 +972,12 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * committed audio, so keep that). The headless test keeps video so frame validation works. */
 		int ff_lvl;
 		{ extern int ayaneo_joypad_ff_level(void); ff_lvl = ayaneo_joypad_ff_level(); }  /* RT, cached */
-		int ff = ff_lvl > 0 && !g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit;
+		int ff = ff_lvl > 0 && !g_snes_menu_open && !g_snes_benchmark && !g_snes_test_limit && !s_snes_np;
 		ff_prev = ff;   /* FF audio stays continuous (speeds up); no ring clear on entry */
 		int pf = 0;
 		{
 			extern volatile int g_snes_dbg_ra;   /* oem snes-ra:N forces run-ahead depth in the test */
-			if (!ff && !g_snes_menu_open && ra_ssz && (!g_snes_benchmark || g_snes_test_limit))
+			if (!ff && !g_snes_menu_open && ra_ssz && !s_snes_np && (!g_snes_benchmark || g_snes_test_limit))
 				pf = g_snes_test_limit ? g_snes_dbg_ra : ayaneo_get_preempt_frames();
 		}
 
@@ -932,6 +985,40 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * independent hardware overlay). Run-ahead and fast-forward are already gated off
 			 * while the menu is open (pf=0, ff=0 above), so this is a single committed frame; the
 			 * game visibly keeps running under the menu and setting changes preview live. */
+			if (c->dbg_get) {	/* oem npstat: the core's arena, now and at its peak */
+				extern void pico_np_note(unsigned int now, unsigned int peak);
+				static unsigned int s_np_heap_peak;
+				unsigned int hu = c->dbg_get(0);
+				if (hu > s_np_heap_peak) s_np_heap_peak = hu;
+				pico_np_note(hu, s_np_heap_peak);
+			}
+			if (s_snes_np) {	/* netplay: this frame's pads for both players, from both consoles */
+				extern int pico_np_frame(unsigned int local, unsigned int *p1, unsigned int *p2);
+				extern void pico_np_set_pads(unsigned int p1, unsigned int p2);
+				extern unsigned int pico_np_frame_no(void);
+				extern unsigned int pico_np_crc(const void *p, unsigned int n);
+				extern void pico_np_hash(unsigned int frame, unsigned int crc);
+				unsigned int p1 = 0, p2 = 0, fno, hsz;
+				if (pico_np_frame(ayaneo_snes_pad_mask(), &p1, &p2) != 0)
+					break;   /* the other console left or the link is gone: back to the menu */
+				pico_np_set_pads(p1, p2);
+				/* every 120 frames: this console's whole state, hashed before the frame, compared
+				 * with the other's (run ahead is off, its buffer is free) */
+				fno = pico_np_frame_no() - 1u;
+				if (fno && fno % 120u == 0) {
+					/* snes9x's serializer (and its size, measured by a dry run) takes temporary
+					 * buffers from its arena and never gives them back: both bracketed, and only
+					 * when a hash is due, or the arena runs out within seconds */
+					void *hm = c->heap_mark ? c->heap_mark() : 0;
+					hsz = c->state_size();
+					if (hsz && hsz <= SNES_AHEAD_CAP) {
+						memset((void *)SNES_AHEAD_BUF, 0, hsz);
+						if (c->state_save((void *)SNES_AHEAD_BUF, hsz) == 0)
+							pico_np_hash(fno, pico_np_crc((const void *)SNES_AHEAD_BUF, hsz));
+					}
+					if (hm && c->heap_reset) c->heap_reset(hm);
+				}
+			}
 			if (c->set_av_skip) c->set_av_skip(((pf > 0 || ff) && !g_snes_test_limit) ? 1 : 0, 0);
 			{ extern unsigned int gpt4_get_current_tick(void); unsigned int _t = gpt4_get_current_tick();
 			  ff_t0 = _t;
@@ -1358,22 +1445,30 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		if (g_snes_rsz) ayaneo_snes_rsz_restore();
 	}
 
+	/* netplay over: the other console told, the core back to one controller */
+	if (s_snes_np) {
+		extern void pico_np_stop(void);
+		pico_np_stop();
+		if (c->set_pad_reader) c->set_pad_reader(0);
+	}
 	/* Suspend: write the AUTO save STATE ("sus" slot) so the next launch resumes here. Kept
-	 * separate from the manual "st0" slot so exiting never overwrites a manual Save State. */
-	{
+	 * separate from the manual "st0" slot so exiting never overwrites a manual Save State. A
+	 * netplay guest played the host's game and keeps its own saves as they were. */
+	if (!s_snes_np_guest) {
 		unsigned char *st = (unsigned char *)SNES_STATE_BUF;
 		unsigned ssz = c->state_size();
 		if (ssz && ssz <= SNES_STATE_CAP && c->state_save(st, ssz) == 0)
 			gba_sd_write_named(vol, "/states/snes", rom->name, "sus", st, ssz);
 	}
 
-	/* persist SRAM on exit */
-	{
+	/* persist SRAM on exit (not a netplay guest's: the host's game) */
+	if (!s_snes_np_guest) {
 		unsigned sz = c->sram_size();
 		void *p = c->sram_ptr();
 		if (p && sz && sz <= 0x20000u)
 			gba_sd_write_named(vol, "/saves/snes", rom->name, "srm", p, sz);
 	}
+	s_snes_np = s_snes_np_guest = 0;
 	c->unload();
 	ayaneo_menu_audio_silence();
 }

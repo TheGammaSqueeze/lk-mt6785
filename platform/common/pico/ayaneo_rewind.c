@@ -16,6 +16,9 @@
 #include <arch/arm/mmu.h>
 #include <string.h>
 #include <printf.h>
+#if defined(KONKR_BLOCK) || defined(KONKR_KPA)
+#include <platform/pico_bt.h>
+#endif
 
 extern BOOT_ARGUMENT *g_boot_arg;
 
@@ -133,6 +136,39 @@ unsigned int ayaneo_rewind_map(void)
 		s_seg_size[n] = (unsigned int)avail;
 		n++;
 	}
+#if defined(KONKR_BLOCK) || defined(KONKR_KPA)
+	/* the console's Bluetooth firmware window (pico_bt.h) is not rewind's: an island
+	 * that holds it is split around it, each part kept if it is still worth mapping */
+	{
+		unsigned int hole = BT_EMI_PA, hole_end = BT_EMI_PA + BT_EMI_SIZE, cnt = n;
+		for (i = 0; i < cnt; i++) {
+			unsigned int a = s_seg_phys[i], e = s_seg_phys[i] + s_seg_size[i];
+			if (e <= hole || a >= hole_end)
+				continue;
+			s_seg_size[i] = 0;
+			if (hole > a && hole - a >= REWIND_MIN)
+				s_seg_size[i] = hole - a;
+			if (e > hole_end && e - hole_end >= REWIND_MIN) {
+				if (!s_seg_size[i]) {
+					s_seg_phys[i] = hole_end;
+					s_seg_size[i] = e - hole_end;
+				} else if (n < REWIND_MAX_SEGS) {
+					s_seg_phys[n] = hole_end;
+					s_seg_size[n] = e - hole_end;
+					n++;
+				}
+			}
+		}
+		for (i = 0, cnt = 0; i < n; i++) {		/* drop the islands left empty */
+			if (!s_seg_size[i])
+				continue;
+			s_seg_phys[cnt] = s_seg_phys[i];
+			s_seg_size[cnt] = s_seg_size[i];
+			cnt++;
+		}
+		n = cnt;
+	}
+#endif
 	if (!n)
 		return 0;
 	/* put the LARGEST island at index 0 so segment 0 always has room for the header */

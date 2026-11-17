@@ -137,6 +137,21 @@ unsigned int ayaneo_get_cpu_mhz(void)
  * relock can briefly disturb the CPU; it is intentionally NOT persisted, so a
  * bad value is cleared by a power cycle. Clamped to a sane range.
  */
+/* A netplay session (pico_netplay.c, user 11-16: "in multiplayer mode, we set the clock on the
+ * system to the highest"): the CPU at the top clock the LK uses (the menu's 2000 MHz) for the whole
+ * session, whatever a core asks; what it asks is kept and comes back when the session ends. */
+#define KPA_CPU_TOP_MHZ	2000u
+static int s_cpu_netplay;
+static unsigned int s_cpu_asked;
+void ayaneo_set_cpu_mhz(unsigned int mhz);
+void pico_cpu_netplay(int on)
+{
+	unsigned int asked = s_cpu_asked;
+	s_cpu_netplay = on;
+	ayaneo_set_cpu_mhz(on ? KPA_CPU_TOP_MHZ : (asked ? asked : KPA_CPU_TOP_MHZ));
+	s_cpu_asked = asked;				/* the core's own choice, for the end */
+}
+
 void ayaneo_set_cpu_mhz(unsigned int mhz)
 {
 	volatile unsigned int *con1 = (volatile unsigned int *)(0x1000C000u + 0x204u);
@@ -144,6 +159,9 @@ void ayaneo_set_cpu_mhz(unsigned int mhz)
 	unsigned int c = *con1;
 	unsigned int posdiv = (c >> 24) & 0x7;
 	unsigned long long pcw;
+
+	s_cpu_asked = mhz;
+	if (s_cpu_netplay) mhz = KPA_CPU_TOP_MHZ;	/* netplay: the top clock throughout */
 
 	if (mhz < 400) mhz = 400;
 	if (mhz > 2100) mhz = 2100;

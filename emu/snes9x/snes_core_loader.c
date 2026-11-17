@@ -31,12 +31,12 @@ const struct snes_core_exports *snes_core_load(fat_vol *v)
 
 	init = (snes_core_blob_init_fn)core_file_load(v, CORE_PATH_SNES9X, CORE_SLOT_VMA,
 						      CORE_SLOT_END - CORE_SLOT_VMA,
-						      SNES_CORE_ABI_MAGIC, SNES_CORE_ABI_VERSION, SNES_CORE_ABI_VERSION, &err);
+						      SNES_CORE_ABI_MAGIC, 2u, SNES_CORE_ABI_VERSION, &err);   /* v2 cores: no netplay */
 	g_snes_dbg_loaderr = (unsigned)err;
 	if (!init)
 		return 0;
 	ex = init(&s_imports);
-	if (!ex || ex->magic != SNES_CORE_ABI_MAGIC || ex->version != SNES_CORE_ABI_VERSION) {
+	if (!ex || ex->magic != SNES_CORE_ABI_MAGIC || ex->version < 2u || ex->version > SNES_CORE_ABI_VERSION) {
 		g_snes_dbg_loaderr = CORE_FILE_REJECTED;
 		return 0;
 	}

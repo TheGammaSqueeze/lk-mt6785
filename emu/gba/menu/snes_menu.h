@@ -302,6 +302,24 @@ void snes_menu_set_fct(snes_menu *m, uint32_t *buf, int cap);
 void snes_menu_update(snes_menu *m, const snes_input *in, float dt);
 void snes_menu_render(snes_menu *m, snes_target *t);
 
+/* A panel of the caller's own over the rendered menu (GammaOS Pico's Link screens), in this
+ * menu's look (the caller dims the menu behind it): a black dialog in a light frame, the title, a list with the cyan
+ * selection box, a status line and the button hints with the pack's icons. Strings are UTF-8 and
+ * drawn with the pack's fonts (a glyph a font lacks is left out: the caller folds what they do not
+ * cover, snes_font_covers). */
+#define SNES_PANEL_ROWS 8
+typedef struct {
+	const char *title, *subtitle, *status;
+	int nrows, sel;
+	const char *rows[SNES_PANEL_ROWS], *values[SNES_PANEL_ROWS];
+	int busy;			/* something goes on: three dots move after the title */
+	unsigned int done, total;	/* a bar under the status: how far (total 0: none) */
+	int nhints;
+	char hint_btn[4];		/* 'A' or 'B' */
+	const char *hint_label[4];
+} snes_panel;
+void snes_menu_draw_panel(snes_menu *m, snes_target *t, const snes_panel *p);
+
 /* Drain one queued sound (res hash) to play, or 0 if none. */
 uint32_t snes_menu_next_sound(snes_menu *m);
 

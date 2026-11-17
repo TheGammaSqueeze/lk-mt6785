@@ -1171,6 +1171,237 @@
    "en": "Disk System games need disksys.rom in the bios folder",
    "kind": "about",
    "note": "note shown along the bottom when a Famicom Disk System game cannot start: the BIOS file disksys.rom is not in the card's bios folder (keep disksys.rom and bios as they are)"
+  },
+  {
+   "en": "Link",
+   "kind": "rail",
+   "note": "home rail tab and button hint: playing together and sharing games with a console nearby over Bluetooth; one short word"
+  },
+  {
+   "en": "Play together",
+   "kind": "label",
+   "note": "row: this console hosts the game for a friend's console nearby"
+  },
+  {
+   "en": "Playing together",
+   "kind": "label",
+   "note": "title of the screen shown while two consoles start a game together"
+  },
+  {
+   "en": "Join a game",
+   "kind": "label",
+   "note": "row: join a game a console nearby hosts"
+  },
+  {
+   "en": "Receive",
+   "kind": "label",
+   "note": "row and title: wait for a console nearby to send games to this one"
+  },
+  {
+   "en": "Send",
+   "kind": "label",
+   "note": "row, title and button hint: send this game to a console nearby"
+  },
+  {
+   "en": "Join",
+   "kind": "hint",
+   "note": "button hint: A joins the console picked"
+  },
+  {
+   "en": "Copy",
+   "kind": "hint",
+   "note": "button hint: A copies the game to this console"
+  },
+  {
+   "en": "Cancel",
+   "kind": "hint",
+   "note": "button hint: B stops what is going on"
+  },
+  {
+   "en": "OK",
+   "kind": "hint",
+   "note": "button hint: A closes the note"
+  },
+  {
+   "en": "With %s",
+   "kind": "status",
+   "note": "%s is the other console's name"
+  },
+  {
+   "en": "%s of %s",
+   "kind": "value",
+   "note": "how far a transfer is: an amount of a total, like 1.2 MB of 8.0 MB"
+  },
+  {
+   "en": "%s of %s, %u KB/s, %u s left",
+   "kind": "about",
+   "note": "an amount of a total, the speed in kilobytes a second, the seconds left (%u numbers)"
+  },
+  {
+   "en": "A friend joined. Starting...",
+   "kind": "about",
+   "note": "status while hosting"
+  },
+  {
+   "en": "Connecting...",
+   "kind": "status",
+   "note": "status"
+  },
+  {
+   "en": "Copying the game",
+   "kind": "status",
+   "note": "status while a game crosses to this console"
+  },
+  {
+   "en": "Copying the game to the other console",
+   "kind": "about",
+   "note": "status on the host while its game crosses to the other console"
+  },
+  {
+   "en": "It arrived damaged and was not kept.",
+   "kind": "about",
+   "note": "a file sent over Bluetooth failed its check"
+  },
+  {
+   "en": "It was cancelled.",
+   "kind": "about",
+   "note": "a transfer was stopped"
+  },
+  {
+   "en": "Looking for consoles hosting a game...",
+   "kind": "about",
+   "note": "status while listing consoles nearby"
+  },
+  {
+   "en": "Looking for consoles ready to receive. On the other one: Link, Receive.",
+   "kind": "about",
+   "note": "status; Link and Receive are the names of the tab and row on the other console"
+  },
+  {
+   "en": "Pick your game.",
+   "kind": "status",
+   "note": "the guest picks its own game to play with the host"
+  },
+  {
+   "en": "Starting",
+   "kind": "status",
+   "note": "step of starting a game together"
+  },
+  {
+   "en": "Starting...",
+   "kind": "status",
+   "note": "status"
+  },
+  {
+   "en": "The card could not take it.",
+   "kind": "about",
+   "note": "the memory card could not store the file"
+  },
+  {
+   "en": "The game was copied but is not in the library.",
+   "kind": "about",
+   "note": "error after copying a game"
+  },
+  {
+   "en": "The link to the other console was lost.",
+   "kind": "about",
+   "note": "error"
+  },
+  {
+   "en": "The other console could not be reached.",
+   "kind": "about",
+   "note": "error"
+  },
+  {
+   "en": "The other console does not have this game.",
+   "kind": "about",
+   "note": "error"
+  },
+  {
+   "en": "The other console has no room for it.",
+   "kind": "about",
+   "note": "error"
+  },
+  {
+   "en": "The other console has this game already.",
+   "kind": "about",
+   "note": "note after sending: nothing was copied, nothing overwritten"
+  },
+  {
+   "en": "This console has these files already.",
+   "kind": "about",
+   "note": "note after receiving: nothing was copied, nothing overwritten"
+  },
+  {
+   "en": "This game could not be read from the card.",
+   "kind": "about",
+   "note": "error"
+  },
+  {
+   "en": "This game is not on this console. Copy it from the other one (%s)? It stays on this card.",
+   "kind": "about",
+   "note": "question before joining; %s is the game's size"
+  },
+  {
+   "en": "To play a game together or send it: X on it in the library.",
+   "kind": "about",
+   "note": "how to host or send: press the X button on a game in the game library"
+  },
+  {
+   "en": "Waiting for a friend to join...",
+   "kind": "about",
+   "note": "status while hosting"
+  },
+  {
+   "en": "Waiting for the other console",
+   "kind": "status",
+   "note": "step of starting a game together"
+  },
+  {
+   "en": "Waiting for the other console...",
+   "kind": "about",
+   "note": "status while sending"
+  },
+  {
+   "en": "Sending your game",
+   "kind": "status",
+   "note": "step of starting a game together"
+  },
+  {
+   "en": "Receiving the other game",
+   "kind": "status",
+   "note": "step of starting a game together"
+  },
+  {
+   "en": "Sending your save",
+   "kind": "status",
+   "note": "step of starting a game together: the game's current state"
+  },
+  {
+   "en": "Receiving the other save",
+   "kind": "status",
+   "note": "step of starting a game together: the other game's current state"
+  },
+  {
+   "en": "%d files copied.",
+   "kind": "about",
+   "note": "note after sending or receiving; %d is the number of files",
+   "one": "%d file copied."
+  },
+  {
+   "en": "Copied: %d. Kept as they were: %d.",
+   "kind": "about",
+   "note": "files copied, then files the other card had already and kept"
+  },
+  {
+   "en": "A console is sending...",
+   "kind": "about",
+   "note": "status while receiving"
+  },
+  {
+   "en": "Ready. On the other console: a game, Link, Send.",
+   "kind": "about",
+   "note": "status while waiting to receive: what to do on the other console (Link and Send are its button and row)"
   }
  ]
 }
