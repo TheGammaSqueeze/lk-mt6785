@@ -56,6 +56,12 @@ $(BUILDDIR)/emu/gba/pico_coreopt.o:     CFLAGS += -Os
 ifneq ($(filter yes,$(KONKR_KPA) $(KONKR_BLOCK)),)
 OBJS += emu/gba/pico_link_ui.o
 $(BUILDDIR)/emu/gba/pico_link_ui.o:     CFLAGS += -Os
+OBJS += emu/gba/pico_net_ui.o emu/gba/pico_scrape.o	# the Network tab: Wi-Fi, box art
+$(BUILDDIR)/emu/gba/pico_net_ui.o:      CFLAGS += -Os
+$(BUILDDIR)/emu/gba/pico_scrape.o:      CFLAGS += -Os
+ifneq ($(wildcard emu/gba/pico_ss_creds.gen.h),)
+$(BUILDDIR)/emu/gba/pico_scrape.o:      CFLAGS += -DPICO_SS_CREDS	# the generated (never committed) credentials
+endif
 # the Classic themes' in-game menu (its kit is kept where only these consoles have room)
 OBJS += emu/gba/pico_classic_igm.o emu/gba/pico_classic_ui.o emu/gba/pico_classic_set.o
 $(BUILDDIR)/emu/gba/pico_classic_igm.o: CFLAGS += -mfpu=neon -mfloat-abi=softfp -ffast-math -Os

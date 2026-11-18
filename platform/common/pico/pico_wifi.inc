@@ -112,6 +112,27 @@
 static int s_wf_up;			/* the RAM code runs */
 static int s_wf_station;		/* our station network is on (wf_station_on) */
 static int s_wf_linked;			/* joined: open, or WPA2 with the keys in */
+static int s_wf_coop;			/* the network service drives the radio: waits sleep, not spin */
+#include <kernel/mutex.h>
+static mutex_t s_ns_info;		/* the network service's state (pico_netsvc.h, below) */
+static long long s_ns_time;		/* the network's time for the menu to set (0 none), as of s_ns_time_tick */
+static unsigned int s_ns_time_tick;
+/* the time as the menu thread last read it (0 not known), as of s_now_tick: other threads use it
+ * with the time since, so only the menu thread ever talks to the RTC (behind the PMIC wrapper,
+ * which two threads at once can wedge: both consoles hung that way on 11-18) */
+static long long s_now_utc;
+static unsigned int s_now_tick;
+static long long wf_time_now(void)
+{
+	long long t;
+	unsigned int tick;
+	mutex_acquire(&s_ns_info);
+	t = s_now_utc;
+	tick = s_now_tick;
+	mutex_release(&s_ns_info);
+	return t ? t + (long long)(GPT_US(gpt4_get_current_tick() - tick) / 1000000u) : 0;
+}
+static int s_wf_join_dbm;		/* the joined AP's signal when it was joined */
 static unsigned long long s_wf_tx_busy;	/* ring 0 entries the radio may still read (wf_tx_freed) */
 static unsigned int s_wf_tx_reused;	/* entries reused with no report (should stay 0) */
 static int s_wf_link_protect;		/* frames out are encrypted */
@@ -317,6 +338,8 @@ static int wf_answer(unsigned char *out, unsigned int cap, unsigned int timeout_
 	while (!(d[1] & WF_DESC_DONE)) {
 		if (GPT_US(gpt4_get_current_tick() - t0) > timeout_us)
 			return -1;
+		if (s_wf_coop && timeout_us >= 1000)
+			thread_sleep(1);		/* the service thread waits asleep: the menu and games run */
 	}
 	len = (d[1] >> 16) & 0x3fffu;
 	wf_copy_in(out, (const unsigned char *)(addr_t)(WIFI_DMA_PA + WF_RX1_BUFS + WF_BUF * i), len < cap ? len : cap);
@@ -497,6 +520,8 @@ static int wf_load_ram_code(void)
 
 /* Wi-Fi from nothing to the RAM code running: CONNSYS up (Bluetooth's bring-up when it is not),
  * the bus ours, the rings, the RAM code, the ready bits. 0 when it runs. */
+static void wf_roots_load(void);	/* the trusted roots, read at every start (below) */
+
 static int pico_wifi_up(void)
 {
 	int rc;
@@ -520,6 +545,7 @@ static int pico_wifi_up(void)
 	bt_log("wifi dma on: cfg %08x", R32(WF_DMA_CFG));
 	if ((rc = wf_load_ram_code()) != 0)
 		return -10 + rc;
+	wf_roots_load();
 	if (bt_wait(WF_READY_REG, WF_READY_BITS, WF_READY_BITS, 2000000) != 0) {
 		bt_log("wifi not ready: %08x", R32(WF_READY_REG));
 		return -20;
@@ -1114,10 +1140,10 @@ static unsigned int s_wf_nonce_count;
 /* the PMK for ssid from the passphrase, worked out once per network */
 static int wf_pmk_for(const struct wf_seen *ap)
 {
+	if (s_wf_pmk_ok && !strcmp(s_wf_pmk_ssid, ap->ssid))
+		return 0;				/* worked out already, or a saved network's */
 	if (!s_wf_pass_len)
 		return -1;
-	if (s_wf_pmk_ok && !strcmp(s_wf_pmk_ssid, ap->ssid))
-		return 0;
 	pico_pbkdf2_sha1(s_wf_pass, s_wf_pass_len, ap->ssid, ap->ssid_len, 4096, s_wf_pmk, sizeof s_wf_pmk);
 	memcpy(s_wf_pmk_ssid, ap->ssid, sizeof s_wf_pmk_ssid);
 	s_wf_pmk_ok = 1;
@@ -1748,49 +1774,69 @@ static void wf_say(const char *l) { fastboot_info(l); }
 /* oem wifijoin:SSID - scan, then join the strongest network of that name as far as we can:
  * authentication and association; for a secured one, then watches for the AP's first key
  * message */
-static void cmd_wifijoin(const char *arg, void *data, unsigned sz)
+/* Joins the strongest network named ssid (the passphrase or PMK already set for it): scan (twice
+ * when the first misses it), authentication, association, the key handshake. say (may be 0)
+ * hears each step. 0 linked; else -1 with *why. */
+static int wf_connect(const char *ssid, void (*say)(const char *), const char **why)
 {
 	char l[96];
 	unsigned int i, ms, tries;
 	struct wf_seen *best = 0;
-	const char *why = "";
 
-	while (*arg == ':' || *arg == ' ') arg++;
-	if (!s_wf_up || !s_bt_up) { fastboot_fail("wifi is off (oem wifiup)"); return; }
-	if (!*arg || strlen(arg) > 32) { fastboot_fail("wifijoin:SSID"); return; }
+	*why = "";
+	if (!s_wf_up || !s_bt_up) { *why = "Wi-Fi is off"; return -1; }
+	if (!*ssid || strlen(ssid) > 32) { *why = "no network name"; return -1; }
 	for (tries = 0; tries < 2 && !best; tries++) {	/* one scan can miss a quiet AP: a second look */
-		if (wf_scan(&ms) < 0) { fastboot_fail("wifijoin: the scan failed"); return; }
+		if (wf_scan(&ms) < 0) { *why = "the scan failed"; return -1; }
 		for (i = 0; i < s_wf_nseen; i++)
-			if (!strcmp(s_wf_seen[i].ssid, arg) && (!best || s_wf_seen[i].dbm > best->dbm))
+			if (!strcmp(s_wf_seen[i].ssid, ssid) && (!best || s_wf_seen[i].dbm > best->dbm))
 				best = &s_wf_seen[i];
 	}
-	if (!best) { fastboot_fail("wifijoin: not heard"); return; }
-	snprintf(l, sizeof l, "joining %s: %02x:%02x:%02x:%02x:%02x:%02x ch %u %d dBm", best->ssid, best->bssid[0],
-		 best->bssid[1], best->bssid[2], best->bssid[3], best->bssid[4], best->bssid[5], best->channel, best->dbm);
-	fastboot_info(l);
+	if (!best) { *why = "the network is not in range"; return -1; }
+	if (say) {
+		snprintf(l, sizeof l, "joining %s: %02x:%02x:%02x:%02x:%02x:%02x ch %u %d dBm", best->ssid, best->bssid[0],
+			 best->bssid[1], best->bssid[2], best->bssid[3], best->bssid[4], best->bssid[5], best->channel, best->dbm);
+		say(l);
+	}
 	s_wf_linked = 0;
 	pico_net_stop();
 	s_wf_frame_sink = wf_join_frame;
-	if (wf_join_ap(best, wf_say, &why) != 0) {
+	if (wf_join_ap(best, say, why) != 0) {
 		s_wf_frame_sink = 0;
-		snprintf(l, sizeof l, "not joined: %s", why);
-		fastboot_info(l);
-		fastboot_okay("");
-		return;
+		return -1;
 	}
 	if (s_wf_join_ie_len) {
 		wf_join_wait(3000000, 0);		/* the AP's key handshake */
-		if (s_wf_keys_in)
+		if (!s_wf_keys_in) {
+			*why = s_wf_key_why ? s_wf_key_why : s_wf_join_eapol ? "the key handshake did not finish" :
+			       "the network never started the key handshake";
+			wf_channel(best, 1);
+			s_wf_frame_sink = 0;
+			return -1;
+		}
+		if (say) {
 			snprintf(l, sizeof l, "connected: keys in (%s)", s_wf_join_ie[13] == 2 ? "TKIP" : "CCMP");
-		else
-			snprintf(l, sizeof l, "key handshake: %s", s_wf_key_why ? s_wf_key_why :
-				 s_wf_join_eapol ? "no third message" : "the AP never started it");
-		fastboot_info(l);
+			say(l);
+		}
 	}
-	s_wf_linked = !s_wf_join_ie_len || s_wf_keys_in;
+	s_wf_linked = 1;
 	s_wf_link_protect = s_wf_join_ie_len != 0;
+	s_wf_join_dbm = best->dbm;
 	wf_channel(best, 1);
 	s_wf_frame_sink = 0;
+	return 0;
+}
+
+static void cmd_wifijoin(const char *arg, void *data, unsigned sz)
+{
+	char l[96];
+	const char *why;
+	while (*arg == ':' || *arg == ' ') arg++;
+	if (wf_connect(arg, wf_say, &why) != 0) {
+		if (!s_wf_up) { fastboot_fail("wifi is off (oem wifiup)"); return; }
+		snprintf(l, sizeof l, "not joined: %s", why);
+		fastboot_info(l);
+	}
 	fastboot_okay("");
 }
 
@@ -1893,18 +1939,28 @@ static void wf_link_frame(const unsigned char *b, int len)
 
 /* runs the link for up to us microseconds, or until done() says so: frames in, the stack's timers */
 /* one turn of the link: frames in, acknowledgements out, events, the stack's timers */
+/* where the radio's work stands, read without any lock by oem netsvc:crumb: [0] the step
+ * (NSC_*), [1] link pumps run, [2] bytes of the transfer received, [3] the millisecond of the last
+ * pump. A console that stops answering leaves these as its last word. */
+enum { NSC_IDLE, NSC_WAIT, NSC_SCAN, NSC_JOIN, NSC_PUMP, NSC_DNS = 10, NSC_CONNECT, NSC_TLS, NSC_SEND, NSC_RECV,
+       NSC_PARSE, NSC_DONE };
+volatile unsigned int g_ns_crumb[4];
+
 static void wf_link_pump(void)
 {
 	static unsigned char fr[WF_BUF];
 	unsigned int n;
 	int got, k = 0;
+	g_ns_crumb[1]++;
+	g_ns_crumb[3] = gpt4_get_current_tick() / 13000u;
 	while ((got = wf_frame(fr, sizeof fr)) >= 0) {
 		wf_link_frame(fr, got < (int)sizeof fr ? got : (int)sizeof fr);
 		k++;
 	}
 	if (k > (int)s_wf_rx_peak) s_wf_rx_peak = (unsigned)k;	/* frames found at once (ring: WF_RX0N) */
 	if (k) pico_net_flush();
-	wf_fw_event(0xFF, s_wf_evt, sizeof s_wf_evt, &n, k ? 20 : 500);	/* short while data flows */
+	/* short while data flows; idle, the service thread sleeps a millisecond (a fastboot command spins) */
+	wf_fw_event(0xFF, s_wf_evt, sizeof s_wf_evt, &n, k ? 20 : s_wf_coop ? 1000 : 500);
 	if (s_wf_key_pending)
 		wf_key_step();
 	pico_net_poll();
@@ -2015,31 +2071,33 @@ static int wf_time_done(void) { return pico_net_time_result(0) != 0; }
 
 #define WF_TIME_SERVER		"pool.ntp.org"
 
+/* the time from the network only (the RTC untouched): 0 and *t, or -1 */
+static int wf_net_time(long long *t)
+{
+	unsigned int ip;
+	if (pico_net_dns(WF_TIME_SERVER) != 0) return -1;
+	wf_link_run(6000000, wf_dns_done);
+	if (pico_net_dns_result(&ip) != 1 || pico_net_time(ip) != 0) return -1;
+	wf_link_run(7000000, wf_time_done);
+	return pico_net_time_result(t) == 1 ? 0 : -1;
+}
+
 /* the time from the network: the RTC takes it when it was unset or is more than 2 s off. A line
  * for the fastboot answer into l (cap bytes). 1 set, 0 already right, -1 no answer. */
 static int wf_set_clock(char *l, unsigned int cap)
 {
-	unsigned int ip;
-	long long t, had;
+	long long t;
 	pico_tm tm;
-	if (pico_net_dns(WF_TIME_SERVER) != 0)
-		return -1;
-	wf_link_run(6000000, wf_dns_done);
-	if (pico_net_dns_result(&ip) != 1) { snprintf(l, cap, "time: %s not found", WF_TIME_SERVER); return -1; }
-	if (pico_net_time(ip) != 0)
-		return -1;
-	wf_link_run(7000000, wf_time_done);
-	if (pico_net_time_result(&t) != 1) { snprintf(l, cap, "time: no answer from %s", WF_TIME_SERVER); return -1; }
-	had = pico_clock_is_set() ? pico_clock_utc() : 0;
+	if (wf_net_time(&t) != 0) { snprintf(l, cap, "time: no answer from %s", WF_TIME_SERVER); return -1; }
 	pico_clock_split(t, &tm);
-	if (had && had - t <= 2 && t - had <= 2) {
-		snprintf(l, cap, "time: the clock is right (%04d-%02d-%02d %02d:%02d:%02d UTC)", tm.year, tm.mon, tm.mday,
-			 tm.hour, tm.min, tm.sec);
-		return 0;
-	}
-	pico_clock_set_utc(t);
-	snprintf(l, cap, "time: clock set to %04d-%02d-%02d %02d:%02d:%02d UTC (was %s)", tm.year, tm.mon, tm.mday,
-		 tm.hour, tm.min, tm.sec, had ? "off" : "unset");
+	/* the menu thread sets the RTC (netsvc_clock_apply): it reads it through the same PMIC
+	 * wrapper, and two threads at once could wedge it */
+	mutex_acquire(&s_ns_info);
+	s_ns_time = t;
+	s_ns_time_tick = gpt4_get_current_tick();
+	mutex_release(&s_ns_info);
+	snprintf(l, cap, "time: the network says %04d-%02d-%02d %02d:%02d:%02d UTC (the menu sets the clock)", tm.year,
+		 tm.mon, tm.mday, tm.hour, tm.min, tm.sec);
 	return 1;
 }
 
@@ -2082,6 +2140,7 @@ static void cmd_wifidns(const char *arg, void *data, unsigned sz)
 static int s_wf_get_h = -1;
 static unsigned int s_wf_get_len, s_wf_get_total;	/* bytes kept, bytes received */
 static int s_wf_get_secure;				/* the download runs over TLS */
+static char s_wf_user_agent[96];			/* the HTTP user agent ("" GammaOS-Pico) */
 static struct pico_tls s_wf_tls;
 
 /* TLS over our TCP connection s_wf_get_h: a send waits (the link running) until TCP took it all */
@@ -2100,6 +2159,12 @@ static int wf_tls_send(void *ctx, const uint8_t *d, unsigned int n)
 	}
 	return (int)n;
 }
+/* plain TCP: len bytes out, the link running until TCP took them all */
+static int wf_tcp_send_all(const unsigned char *d, unsigned int n)
+{
+	return wf_tls_send(0, d, n);
+}
+
 static int wf_tls_recv(void *ctx, uint8_t *b, unsigned int cap)
 {
 	(void)ctx;
@@ -2107,22 +2172,26 @@ static int wf_tls_recv(void *ctx, uint8_t *b, unsigned int cap)
 }
 static int wf_tls_ready(void) { return pico_tls_step(&s_wf_tls) != PICO_TLS_HANDSHAKE; }
 
-/* the trusted roots for HTTPS: /bios/certs/roots.der on the card (tools/ayaneo/pico_current/
- * make_roots.py), read once. Their length, 0 when the card has none (HTTPS then checks nothing
- * about the server and says so). */
 static unsigned int s_wf_roots_len;
-static int s_wf_roots_tried;
+/* the trusted roots (/bios/certs/roots.der, make_roots.py) into their stretch of the Wi-Fi memory,
+ * at every start (the start clears that memory). On the caller's thread through the menu's own
+ * card volume, like the firmware: the network service never touches the card. */
+static void wf_roots_load(void)
+{
+	fat_vol *v = gba_sd_menu_vol();
+	unsigned int n = 0;
+	if (v)
+		n = gba_sd_read_named(v, "/bios/certs", "roots", "der", (unsigned char *)(addr_t)(WIFI_DMA_PA + WF_ROOTS_AREA),
+				      WF_ROOTS_AREA_LEN);
+	if (n >= WF_ROOTS_AREA_LEN) n = 0;	/* cut short: not trusted at all */
+	s_wf_roots_len = n;
+	bt_log("wifi roots: %u bytes", n);
+}
+
+/* the trusted roots' length (wf_roots_load), 0 when the card has none (HTTPS then checks nothing
+ * about the server and says so) */
 static unsigned int wf_roots(void)
 {
-	static fat_vol v;
-	if (!s_wf_roots_tried) {
-		s_wf_roots_tried = 1;
-		if (gba_sd_mount(&v) == 0)
-			s_wf_roots_len = gba_sd_read_named(&v, "/bios/certs", "roots", "der",
-							   (unsigned char *)(addr_t)(WIFI_DMA_PA + WF_ROOTS_AREA), WF_ROOTS_AREA_LEN);
-		if (s_wf_roots_len >= WF_ROOTS_AREA_LEN) s_wf_roots_len = 0;	/* cut: not trusted at all */
-		bt_log("wifi roots: %u bytes", s_wf_roots_len);
-	}
 	return s_wf_roots_len;
 }
 
@@ -2160,6 +2229,7 @@ static int wf_get_more(void)
 			break;
 		if (s_wf_get_len < WF_GET_CAP) s_wf_get_len += (unsigned)n;
 		s_wf_get_total += (unsigned)n;
+		g_ns_crumb[2] = s_wf_get_total;
 	}
 	return n < 0;					/* done: the server closed */
 }
@@ -2217,14 +2287,29 @@ static unsigned int s_wf_dns_ip;
 
 /* HTTP GET http://host/path (path already encoded): *status, the body at *body (*blen bytes) in
  * the download buffer. 0 an answer came (any status), -1 none (*why says what failed). */
+static int wf_http(const char *host, const char *path, int secure, const unsigned char *post, unsigned int post_len,
+		   unsigned int *status, unsigned char **body, unsigned int *blen, const char **why);
+
+/* HTTP(S) GET of host/path (path encoded): see wf_http */
 static int wf_http_get(const char *host, const char *path, int secure, unsigned int *status, unsigned char **body,
 		       unsigned int *blen, const char **why)
 {
-	static char req[700];
+	return wf_http(host, path, secure, 0, 0, status, body, blen, why);
+}
+
+/* HTTP(S) to host/path: a GET, or a POST of post (post_len bytes, a form) when post is given.
+ * *status, the body at *body (*blen bytes) in the download buffer. 0 an answer came (any
+ * status), -1 none (*why says what failed). */
+static int wf_http(const char *host, const char *path, int secure, const unsigned char *post, unsigned int post_len,
+		   unsigned int *status, unsigned char **body, unsigned int *blen, const char **why)
+{
+	static char req[1024];
 	unsigned char *buf = (unsigned char *)(addr_t)WF_GET_BUF;
 	unsigned int ip, hl = 0, i;
 	const char *v;
 	*status = 0; *body = buf; *blen = 0;
+	g_ns_crumb[0] = NSC_DNS;
+	g_ns_crumb[2] = 0;
 	if (strcmp(host, s_wf_dns_host) || !s_wf_dns_ip) {	/* the last name looked up is kept */
 		if (strlen(host) >= sizeof s_wf_dns_host || pico_net_dns(host) != 0) { *why = "bad name"; return -1; }
 		wf_link_run(8000000, wf_dns_done);
@@ -2232,7 +2317,8 @@ static int wf_http_get(const char *host, const char *path, int secure, unsigned 
 		strcpy(s_wf_dns_host, host);
 		s_wf_dns_ip = ip;
 	}
-	if (strlen(path) + strlen(host) + 120 > sizeof req) { *why = "path too long"; return -1; }
+	if (strlen(path) + strlen(host) + 300 > sizeof req) { *why = "path too long"; return -1; }
+	g_ns_crumb[0] = NSC_CONNECT;
 	s_wf_get_h = pico_tcp_connect(s_wf_dns_ip, secure ? 443 : 80);
 	s_wf_get_secure = secure;
 	if (s_wf_get_h < 0) { *why = "no connection slot"; return -1; }
@@ -2253,7 +2339,8 @@ static int wf_http_get(const char *host, const char *path, int secure, unsigned 
 		wf_entropy(ent);
 		trust.roots = (const uint8_t *)(addr_t)(WIFI_DMA_PA + WF_ROOTS_AREA);
 		trust.roots_len = wf_roots();
-		trust.now = pico_clock_is_set() ? pico_clock_utc() : 0;
+		trust.now = wf_time_now();	/* never the RTC here: this may be the service's thread */
+		g_ns_crumb[0] = NSC_TLS;
 		if (!trust.roots_len) trust.roots = 0;
 		pico_tls_start(&s_wf_tls, &io, host, ent, &trust);
 		pico_wipe(ent, sizeof ent);
@@ -2264,16 +2351,30 @@ static int wf_http_get(const char *host, const char *path, int secure, unsigned 
 			return -1;
 		}
 	}
-	snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: GammaOS-Pico\r\nConnection: close\r\n\r\n",
-		 path, host);
-	if (secure) pico_tls_send(&s_wf_tls, req, (unsigned)strlen(req));
-	else pico_tcp_send(s_wf_get_h, req, (unsigned)strlen(req));
+	g_ns_crumb[0] = NSC_SEND;
+	if (post)
+		snprintf(req, sizeof req, "POST %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: close\r\n"
+			 "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %u\r\n\r\n",
+			 path, host, s_wf_user_agent[0] ? s_wf_user_agent : "GammaOS-Pico", post_len);
+	else
+		snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: close\r\n\r\n",
+			 path, host, s_wf_user_agent[0] ? s_wf_user_agent : "GammaOS-Pico");
+	if (secure) {
+		pico_tls_send(&s_wf_tls, req, (unsigned)strlen(req));
+		if (post && post_len) pico_tls_send(&s_wf_tls, post, post_len);
+	} else {
+		pico_tcp_send(s_wf_get_h, req, (unsigned)strlen(req));
+		if (post && post_len) wf_tcp_send_all(post, post_len);
+	}
 	s_wf_get_len = s_wf_get_total = 0;
+	g_ns_crumb[0] = NSC_RECV;
 	wf_link_run(60000000, wf_get_more);
+	g_ns_crumb[0] = NSC_PARSE;
 	if (secure) pico_tls_close(&s_wf_tls);
 	pico_tcp_close(s_wf_get_h);
 	for (i = 0; i + 3 < s_wf_get_len; i++)
 		if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') { hl = i + 4; break; }
+	if (s_wf_get_len < WF_GET_CAP) buf[s_wf_get_len] = 0;	/* a text answer ends in a 0 for its readers */
 	if (!hl || s_wf_get_len < 12 || memcmp(buf, "HTTP/1.", 7)) { *why = "no HTTP answer"; return -1; }
 	*status = (unsigned)(buf[9] - '0') * 100u + (unsigned)(buf[10] - '0') * 10u + (unsigned)(buf[11] - '0');
 	*body = buf + hl;
@@ -2290,6 +2391,7 @@ static int wf_http_get(const char *host, const char *path, int secure, unsigned 
 		if (cl > *blen) { *why = "cut short"; return -1; }
 		*blen = cl;
 	}
+	(*body)[*blen] = 0;					/* (room: the body never fills the buffer to its end) */
 	return 0;
 }
 
@@ -2380,7 +2482,7 @@ static unsigned int wf_url_add(char *out, unsigned int at, unsigned int cap, con
  * after the game goes into its boxart folder as a PNG, then into the menu's own form */
 static void cmd_wifiart(const char *arg, void *data, unsigned sz)
 {
-	static fat_vol v;
+	fat_vol *v = gba_sd_menu_vol();	/* the menu's own volume: never a second mount */
 	static char path[640];
 	static unsigned char probe[16];
 	gba_rom_entry *roms = (gba_rom_entry *)(addr_t)WF_LIST_BUF;
@@ -2388,8 +2490,8 @@ static void cmd_wifiart(const char *arg, void *data, unsigned sz)
 	char dir[112], l[160];
 	(void)arg; (void)data; (void)sz;
 	if (!pico_net_up(0)) { fastboot_fail("no address (oem wifidhcp)"); return; }
-	if (gba_sd_mount(&v) != 0) { fastboot_fail("wifiart: no card"); return; }
-	nrom = gba_sd_list_roms(&v, roms, (int)(WF_LIST_CAP / sizeof *roms), &total);
+	if (!v) { fastboot_fail("wifiart: no card"); return; }
+	nrom = gba_sd_list_roms(v, roms, (int)(WF_LIST_CAP / sizeof *roms), &total);
 	for (i = 0; i < nrom; i++) {
 		const gba_rom_entry *r = &roms[i];
 		const char *sys = wf_art_system((int)r->type), *home = gba_boxart_home_dir((int)r->type), *why = "";
@@ -2398,9 +2500,9 @@ static void cmd_wifiart(const char *arg, void *data, unsigned sz)
 		int rc = 0;
 		if (!sys) continue;
 		gba_boxart_dir(r, dir, sizeof dir);
-		if (gba_sd_read_named(&v, dir, r->name, "ART", probe, sizeof probe) >= 12 ||
-		    (home && gba_sd_read_named(&v, home, r->name, "ART", probe, sizeof probe) >= 12) ||
-		    gba_sd_read_named(&v, dir, r->name, "png", probe, sizeof probe) >= 8) {
+		if (gba_sd_read_named(v, dir, r->name, "ART", probe, sizeof probe) >= 12 ||
+		    (home && gba_sd_read_named(v, home, r->name, "ART", probe, sizeof probe) >= 12) ||
+		    gba_sd_read_named(v, dir, r->name, "png", probe, sizeof probe) >= 8) {
 			had++;
 			continue;
 		}
@@ -2438,7 +2540,7 @@ static void cmd_wifiart(const char *arg, void *data, unsigned sz)
 			failed++;
 			snprintf(l, sizeof l, "%s: %s", r->uname, why);
 		} else if (status == 200 && blen > 8 && body[0] == 0x89 && body[1] == 'P' && body[2] == 'N' && body[3] == 'G') {
-			if (gba_sd_write_named(&v, dir, r->name, "png", body, blen) == 0) { got++; snprintf(l, sizeof l, "%s: %u KB", r->uname, blen >> 10); }
+			if (gba_sd_write_named(v, dir, r->name, "png", body, blen) == 0) { got++; snprintf(l, sizeof l, "%s: %u KB", r->uname, blen >> 10); }
 			else { failed++; snprintf(l, sizeof l, "%s: the card write failed", r->uname); }
 		} else {
 			none++;
@@ -2446,7 +2548,7 @@ static void cmd_wifiart(const char *arg, void *data, unsigned sz)
 		}
 		if (shown++ < 40) fastboot_info(l);
 	}
-	made = got ? pico_artimport_run(&v, roms, nrom) : 0;
+	made = got ? pico_artimport_run(v, roms, nrom) : 0;
 	snprintf(l, sizeof l, "box art: %d new (%d made for the menu), %d had art, %d not on the server, %d failed%s",
 		 got, made, had, none, failed, total > nrom ? " (game list cut)" : "");
 	fastboot_info(l);
@@ -2477,19 +2579,594 @@ static void cmd_wifiurl(const char *arg, void *data, unsigned sz)
 	wf_get_say(u, secure);
 }
 
+
+/* ======================= the network service (pico_netsvc.h) ======================= */
+#include "pico_netsvc.h"
+#include <kernel/mutex.h>
+#include <kernel/event.h>
+
+static mutex_t s_wf_radio;		/* whoever drives the radio: the service, a fastboot command */
+static event_t s_ns_wake;
+static thread_t *s_ns_thread;
+static struct netsvc_status s_ns_st;
+static struct netsvc_ap s_ns_aps[WF_SCAN_MAX];
+static int s_ns_naps;
+static enum { NS_NONE, NS_SCAN, NS_JOIN, NS_LEAVE, NS_OFF } s_ns_cmd;
+static char s_ns_join_ssid[33], s_ns_join_pass[64];
+static int s_ns_join_saved;		/* the join uses a saved network's PMK */
+static int s_ns_auto;			/* after the next scan: join the strongest saved network */
+
+/* the saved networks: name and PMK (never the passphrase) */
+#define NS_SAVED_MAX	16
+static struct { char ssid[33]; unsigned char pmk[32]; } s_ns_saved[NS_SAVED_MAX];
+static int s_ns_nsaved;
+
+/* an HTTP request handed to the service */
+static enum { NSH_IDLE, NSH_QUEUED, NSH_RUNNING, NSH_DONE, NSH_FAILED } s_nsh_state;
+static char s_nsh_host[96], s_nsh_path[640];
+static int s_nsh_secure;
+static unsigned char s_nsh_post[4096];
+static unsigned int s_nsh_post_len, s_nsh_status, s_nsh_len;
+static const unsigned char *s_nsh_body;
+static const char *s_nsh_why;
+
+static int pico_wifi_in_use(void) { return s_wf_up; }
+
+static void ns_set_state(int state, const char *why)
+{
+	mutex_acquire(&s_ns_info);
+	s_ns_st.state = state;
+	if (why) s_ns_st.why = why;
+	mutex_release(&s_ns_info);
+}
+
+static int ns_saved_find(const char *ssid)
+{
+	int i;
+	for (i = 0; i < s_ns_nsaved; i++)
+		if (!strcmp(s_ns_saved[i].ssid, ssid)) return i;
+	return -1;
+}
+
+/* the last scan into the menu's list: usable kinds marked, saved ones marked, strongest first */
+static void ns_take_scan(void)
+{
+	int i, j, n = 0;
+	mutex_acquire(&s_ns_info);
+	for (i = 0; i < (int)s_wf_nseen && n < WF_SCAN_MAX; i++) {
+		const struct wf_seen *e = &s_wf_seen[i];
+		struct netsvc_ap a;
+		unsigned char k, en;
+		const char *why;
+		if (!e->ssid_len || !e->ssid[0]) continue;	/* hidden networks are not listed */
+		for (j = 0; j < n; j++)			/* one row per name: the strongest AP */
+			if (!strcmp(s_ns_aps[j].ssid, e->ssid)) break;
+		if (j < n) { if (e->dbm > s_ns_aps[j].dbm) { s_ns_aps[j].dbm = e->dbm; s_ns_aps[j].channel = e->channel; } continue; }
+		memset(&a, 0, sizeof a);
+		memcpy(a.ssid, e->ssid, sizeof a.ssid);
+		a.dbm = e->dbm;
+		a.channel = e->channel;
+		a.secured = e->secured;
+		a.usable = wf_pick_security(e, &k, &en, &why) == 0;
+		a.saved = ns_saved_find(e->ssid) >= 0;
+		s_ns_aps[n++] = a;
+	}
+	for (i = 1; i < n; i++)				/* strongest first */
+		for (j = i; j > 0 && s_ns_aps[j].dbm > s_ns_aps[j - 1].dbm; j--) {
+			struct netsvc_ap t = s_ns_aps[j]; s_ns_aps[j] = s_ns_aps[j - 1]; s_ns_aps[j - 1] = t;
+		}
+	s_ns_naps = n;
+	s_ns_st.scan_gen++;
+	mutex_release(&s_ns_info);
+}
+
+static int wf_have_address(void);
+
+/* join (the service thread, the radio held): the network, an address, the clock */
+static void ns_join(void)
+{
+	const char *why = "";
+	char l[96];
+	struct pico_net_conf c;
+	int k;
+	mutex_acquire(&s_ns_info);
+	memcpy(s_ns_st.ssid, s_ns_join_ssid, sizeof s_ns_st.ssid);
+	s_ns_st.state = NETSVC_JOINING;
+	s_ns_st.why = "";
+	mutex_release(&s_ns_info);
+	if (s_wf_linked) { pico_net_stop(); s_wf_linked = 0; }
+	/* the key: a saved network's PMK, or the passphrase given */
+	pico_wipe(s_wf_pmk, sizeof s_wf_pmk);
+	s_wf_pmk_ok = 0;
+	pico_wipe(s_wf_pass, sizeof s_wf_pass);
+	s_wf_pass_len = 0;
+	k = ns_saved_find(s_ns_join_ssid);
+	if (s_ns_join_saved && k >= 0) {
+		memcpy(s_wf_pmk, s_ns_saved[k].pmk, 32);
+		memcpy(s_wf_pmk_ssid, s_ns_join_ssid, sizeof s_wf_pmk_ssid);
+		s_wf_pmk_ok = 1;
+	} else {
+		s_wf_pass_len = (unsigned)strlen(s_ns_join_pass);
+		memcpy(s_wf_pass, s_ns_join_pass, s_wf_pass_len);
+	}
+	pico_wipe(s_ns_join_pass, sizeof s_ns_join_pass);
+	if (wf_connect(s_ns_join_ssid, 0, &why) != 0) {
+		ns_set_state(NETSVC_READY, why);
+		return;
+	}
+	wf_link_start();
+	pico_net_dhcp("GammaOS-Pico");
+	wf_link_run(15000000, wf_have_address);
+	if (!pico_net_up(&c)) {
+		ns_set_state(NETSVC_READY, "no address from the network (DHCP)");
+		return;
+	}
+	/* a joined secured network is saved (its PMK) */
+	if (s_wf_pmk_ok && s_ns_join_saved == 0) {
+		mutex_acquire(&s_ns_info);
+		k = ns_saved_find(s_ns_join_ssid);
+		if (k < 0 && s_ns_nsaved < NS_SAVED_MAX) k = s_ns_nsaved++;
+		if (k < 0) k = NS_SAVED_MAX - 1;
+		memcpy(s_ns_saved[k].ssid, s_ns_join_ssid, sizeof s_ns_saved[k].ssid);
+		memcpy(s_ns_saved[k].pmk, s_wf_pmk, 32);
+		s_ns_st.saved_gen++;
+		mutex_release(&s_ns_info);
+	}
+	/* the network's time, for the menu thread to set the clock with (netsvc_clock_apply): the
+	 * RTC sits behind the PMIC wrapper the menu reads it through, so only one thread touches it */
+	{
+		long long t;
+		if (wf_net_time(&t) == 0) {
+			mutex_acquire(&s_ns_info);
+			s_ns_time = t;
+			s_ns_time_tick = gpt4_get_current_tick();
+			mutex_release(&s_ns_info);
+		}
+	}
+	mutex_acquire(&s_ns_info);
+	s_ns_st.state = NETSVC_ONLINE;
+	s_ns_st.dbm = s_wf_join_dbm;
+	s_ns_st.ip = c.ip;
+	s_ns_st.gateway = c.gateway;
+	s_ns_st.dns = c.dns[0];
+	mutex_release(&s_ns_info);
+}
+
+/* the strongest saved network the last scan heard: its index in the list, -1 none */
+static int ns_auto_pick(void)
+{
+	int i;
+	for (i = 0; i < s_ns_naps; i++)		/* strongest first */
+		if (s_ns_aps[i].saved && s_ns_aps[i].usable) return i;
+	return -1;
+}
+
+static void ns_http(void)
+{
+	unsigned int status = 0, len = 0;
+	unsigned char *body = 0;
+	const char *why = "";
+	int rc;
+	mutex_acquire(&s_ns_info);
+	s_nsh_state = NSH_RUNNING;
+	mutex_release(&s_ns_info);
+	/* a transfer runs flat out (it takes turns with the menu): asleep between frames it would
+	 * lose a timer tick on every round trip */
+	s_wf_coop = 0;
+	rc = wf_http(s_nsh_host, s_nsh_path, s_nsh_secure, s_nsh_post_len ? s_nsh_post : 0, s_nsh_post_len, &status, &body,
+		     &len, &why);
+	s_wf_coop = 1;
+	mutex_acquire(&s_ns_info);
+	s_nsh_status = status;
+	s_nsh_body = body;
+	s_nsh_len = len;
+	s_nsh_why = why;
+	s_nsh_state = rc == 0 ? NSH_DONE : NSH_FAILED;
+	mutex_release(&s_ns_info);
+}
+
+static int ns_thread(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		int cmd, online;
+		g_ns_crumb[0] = NSC_WAIT;
+		event_wait_timeout(&s_ns_wake, s_ns_st.state == NETSVC_ONLINE ? 10 : 100);
+		mutex_acquire(&s_ns_info);
+		cmd = s_ns_cmd;
+		s_ns_cmd = NS_NONE;
+		mutex_release(&s_ns_info);
+		mutex_acquire(&s_wf_radio);
+		s_wf_coop = 1;
+		if (!s_wf_up) {
+			if (s_ns_st.state != NETSVC_OFF && s_ns_st.state != NETSVC_STARTING && s_ns_st.state != NETSVC_FAILED)
+				ns_set_state(NETSVC_OFF, 0);
+			s_wf_coop = 0;
+			mutex_release(&s_wf_radio);
+			continue;
+		}
+		if (cmd == NS_SCAN && s_ns_st.state != NETSVC_ONLINE) {
+			unsigned int ms;
+			ns_set_state(NETSVC_SCANNING, 0);
+			g_ns_crumb[0] = NSC_SCAN;
+			if (wf_scan(&ms) == 0) ns_take_scan();
+			ns_set_state(NETSVC_READY, 0);
+			if (s_ns_auto) {
+				int i = ns_auto_pick();
+				s_ns_auto = 0;
+				if (i >= 0) {
+					memcpy(s_ns_join_ssid, s_ns_aps[i].ssid, sizeof s_ns_join_ssid);
+					s_ns_join_saved = 1;
+					cmd = NS_JOIN;
+				}
+			}
+		}
+		if (cmd == NS_JOIN) { g_ns_crumb[0] = NSC_JOIN; ns_join(); }
+		if (cmd == NS_LEAVE && s_wf_linked) {
+			pico_net_stop();
+			s_wf_linked = 0;
+			ns_set_state(NETSVC_READY, "");
+		}
+		online = s_ns_st.state == NETSVC_ONLINE;
+		if (online && s_nsh_state == NSH_QUEUED) {
+			ns_http();
+			g_ns_crumb[0] = NSC_DONE;
+		} else if (online) {
+			int i;
+			g_ns_crumb[0] = NSC_PUMP;
+			for (i = 0; i < 4; i++) wf_link_pump();	/* ARP answers, DHCP renewals, new group keys */
+		}
+		s_wf_coop = 0;
+		mutex_release(&s_wf_radio);
+	}
+	return 0;
+}
+
+static void ns_wake(void) { event_signal(&s_ns_wake, false); }
+
+void netsvc_wifi(int on)
+{
+	if (on) {
+		if (s_wf_up) return;
+		ns_set_state(NETSVC_STARTING, "");
+		mutex_acquire(&s_wf_radio);		/* the start reads the card: the caller's thread */
+		if (pico_wifi_up() != 0) {
+			mutex_release(&s_wf_radio);
+			ns_set_state(NETSVC_FAILED, "Wi-Fi did not start (its firmware in /bios/connsys?)");
+			return;
+		}
+		mutex_release(&s_wf_radio);
+		ns_set_state(NETSVC_READY, "");
+		mutex_acquire(&s_ns_info);
+		s_ns_cmd = NS_SCAN;
+		s_ns_auto = 1;				/* a saved network in range is joined */
+		mutex_release(&s_ns_info);
+		if (!s_ns_thread) {
+			/* the menu's priority: it takes turns with the menu (which hardly sleeps) and waits
+			 * asleep, so it costs nothing while it has nothing to do */
+			s_ns_thread = thread_create("pico_net", ns_thread, 0, DEFAULT_PRIORITY, 16384);
+			if (s_ns_thread) thread_resume(s_ns_thread);
+		}
+		ns_wake();
+		return;
+	}
+	mutex_acquire(&s_wf_radio);
+	if (s_wf_up) {
+		pico_net_stop();
+		s_wf_linked = 0;
+		s_wf_up = 0;
+		s_wf_station = 0;
+		if (s_svc_state == SVC_OFF || s_svc_state == SVC_FAILED)	/* the Bluetooth link not using CONNSYS */
+			pico_bt_off();
+	}
+	mutex_release(&s_wf_radio);
+	ns_set_state(NETSVC_OFF, "");
+}
+
+void netsvc_scan(void)
+{
+	mutex_acquire(&s_ns_info);
+	s_ns_cmd = NS_SCAN;
+	mutex_release(&s_ns_info);
+	ns_wake();
+}
+
+int netsvc_aps(struct netsvc_ap *out, int max)
+{
+	int n;
+	mutex_acquire(&s_ns_info);
+	n = s_ns_naps < max ? s_ns_naps : max;
+	memcpy(out, s_ns_aps, sizeof *out * (unsigned)n);
+	mutex_release(&s_ns_info);
+	return n;
+}
+
+void netsvc_join(const char *ssid, const char *pass)
+{
+	mutex_acquire(&s_ns_info);
+	strncpy(s_ns_join_ssid, ssid, sizeof s_ns_join_ssid - 1);
+	s_ns_join_ssid[sizeof s_ns_join_ssid - 1] = 0;
+	s_ns_join_saved = pass == 0;
+	pico_wipe(s_ns_join_pass, sizeof s_ns_join_pass);
+	if (pass) strncpy(s_ns_join_pass, pass, sizeof s_ns_join_pass - 1);
+	s_ns_cmd = NS_JOIN;
+	s_ns_st.state = NETSVC_JOINING;
+	memcpy(s_ns_st.ssid, s_ns_join_ssid, sizeof s_ns_st.ssid);
+	mutex_release(&s_ns_info);
+	ns_wake();
+}
+
+void netsvc_leave(void)
+{
+	mutex_acquire(&s_ns_info);
+	s_ns_cmd = NS_LEAVE;
+	mutex_release(&s_ns_info);
+	ns_wake();
+}
+
+void netsvc_get(struct netsvc_status *st)
+{
+	mutex_acquire(&s_ns_info);
+	*st = s_ns_st;
+	if (!st->why) st->why = "";
+	mutex_release(&s_ns_info);
+}
+
+int netsvc_saved_names(char names[][33], int max)
+{
+	int i, n;
+	mutex_acquire(&s_ns_info);
+	n = s_ns_nsaved < max ? s_ns_nsaved : max;
+	for (i = 0; i < n; i++) memcpy(names[i], s_ns_saved[i].ssid, 33);
+	mutex_release(&s_ns_info);
+	return n;
+}
+
+void netsvc_forget(const char *ssid)
+{
+	int k;
+	mutex_acquire(&s_ns_info);
+	k = ns_saved_find(ssid);
+	if (k >= 0) {
+		pico_wipe(&s_ns_saved[k], sizeof s_ns_saved[k]);
+		memmove(&s_ns_saved[k], &s_ns_saved[k + 1], sizeof s_ns_saved[0] * (unsigned)(s_ns_nsaved - k - 1));
+		s_ns_nsaved--;
+		s_ns_st.saved_gen++;
+	}
+	for (k = 0; k < s_ns_naps; k++)
+		if (!strcmp(s_ns_aps[k].ssid, ssid)) s_ns_aps[k].saved = 0;
+	mutex_release(&s_ns_info);
+}
+
+/* The saved networks' file, /gammaos/net/wifi.dat: "GPWN", version 1, the count, then per
+ * network its name (33 bytes) and PMK (32), the whole after the head masked with a keystream
+ * from this console's serial (SHA-256 in counter mode), so a card read elsewhere shows no keys. */
+#define NS_SAVED_DIR	"/gammaos/net"
+static void ns_mask(unsigned char *p, unsigned int len)
+{
+	unsigned char block[32];
+	unsigned int i, ctr = 0;
+	for (i = 0; i < len; i++) {
+		if (!(i % 32)) {
+			struct pico_sha256 h;
+			pico_sha256_start(&h);
+			pico_sha256_add(&h, "pico wifi saved", 15);
+			pico_sha256_add(&h, sn_buf, strlen(sn_buf));
+			pico_sha256_add(&h, &ctr, sizeof ctr);
+			pico_sha256_end(&h, block);
+			ctr++;
+		}
+		p[i] ^= block[i % 32];
+	}
+	pico_wipe(block, sizeof block);
+}
+
+void netsvc_saved_load(void *vol)
+{
+	static unsigned char f[8 + NS_SAVED_MAX * 65];
+	unsigned int n, i, cnt;
+	if (!vol) return;
+	n = gba_sd_read_named((fat_vol *)vol, NS_SAVED_DIR, "wifi", "dat", f, sizeof f);
+	if (n < 8 || memcmp(f, "GPWN", 4) || f[4] != 1) return;
+	ns_mask(f + 8, n - 8);
+	cnt = f[5];
+	mutex_acquire(&s_ns_info);
+	s_ns_nsaved = 0;
+	for (i = 0; i < cnt && i < NS_SAVED_MAX && 8 + (i + 1) * 65 <= n; i++) {
+		memcpy(s_ns_saved[i].ssid, f + 8 + i * 65, 33);
+		s_ns_saved[i].ssid[32] = 0;
+		memcpy(s_ns_saved[i].pmk, f + 8 + i * 65 + 33, 32);
+		s_ns_nsaved++;
+	}
+	mutex_release(&s_ns_info);
+	pico_wipe(f, sizeof f);
+}
+
+void netsvc_saved_store(void *vol)
+{
+	static unsigned char f[8 + NS_SAVED_MAX * 65];
+	unsigned int i, len;
+	if (!vol) return;
+	memset(f, 0, sizeof f);
+	memcpy(f, "GPWN", 4);
+	f[4] = 1;
+	mutex_acquire(&s_ns_info);
+	f[5] = (unsigned char)s_ns_nsaved;
+	for (i = 0; i < (unsigned)s_ns_nsaved; i++) {
+		memcpy(f + 8 + i * 65, s_ns_saved[i].ssid, 33);
+		memcpy(f + 8 + i * 65 + 33, s_ns_saved[i].pmk, 32);
+	}
+	len = 8 + (unsigned)s_ns_nsaved * 65;
+	mutex_release(&s_ns_info);
+	ns_mask(f + 8, len - 8);
+	gba_sd_write_named((fat_vol *)vol, NS_SAVED_DIR, "wifi", "dat", f, len);
+	pico_wipe(f, sizeof f);
+}
+
+int netsvc_http_begin(const char *host, const char *path, int secure, const void *post, unsigned int post_len)
+{
+	int ok = 0;
+	mutex_acquire(&s_ns_info);
+	if (s_ns_st.state == NETSVC_ONLINE && s_nsh_state == NSH_IDLE && strlen(host) < sizeof s_nsh_host &&
+	    strlen(path) < sizeof s_nsh_path && post_len <= sizeof s_nsh_post) {
+		strcpy(s_nsh_host, host);
+		strcpy(s_nsh_path, path);
+		s_nsh_secure = secure;
+		s_nsh_post_len = post ? post_len : 0;
+		if (post && post_len) memcpy(s_nsh_post, post, post_len);
+		s_nsh_state = NSH_QUEUED;
+		ok = 1;
+	}
+	mutex_release(&s_ns_info);
+	if (ok) ns_wake();
+	return ok ? 0 : -1;
+}
+
+int netsvc_http_poll(unsigned int *status, const unsigned char **body, unsigned int *len, const char **why)
+{
+	int r;
+	mutex_acquire(&s_ns_info);
+	r = s_nsh_state == NSH_DONE ? 1 : s_nsh_state == NSH_FAILED ? -1 : s_nsh_state == NSH_IDLE ? -2 : 0;
+	if (r == 1) { *status = s_nsh_status; *body = s_nsh_body; *len = s_nsh_len; }
+	if (r == -1 && why) *why = s_nsh_why;
+	mutex_release(&s_ns_info);
+	return r;
+}
+
+void netsvc_http_release(void)
+{
+	mutex_acquire(&s_ns_info);
+	s_nsh_state = NSH_IDLE;
+	mutex_release(&s_ns_info);
+}
+
+void netsvc_time_hint(void)
+{
+	long long t = pico_clock_is_set() ? pico_clock_utc() : 0;
+	mutex_acquire(&s_ns_info);
+	s_now_utc = t;
+	s_now_tick = gpt4_get_current_tick();
+	mutex_release(&s_ns_info);
+}
+
+int netsvc_clock_apply(void)
+{
+	long long t, had;
+	unsigned int tick;
+	mutex_acquire(&s_ns_info);
+	t = s_ns_time;
+	tick = s_ns_time_tick;
+	s_ns_time = 0;
+	mutex_release(&s_ns_info);
+	if (!t) return 0;
+	t += (long long)(GPT_US(gpt4_get_current_tick() - tick) / 1000000u);
+	had = pico_clock_is_set() ? pico_clock_utc() : 0;
+	if (had && had - t <= 2 && t - had <= 2) return 0;
+	pico_clock_set_utc(t);
+	return 1;
+}
+
+void netsvc_user_agent(const char *ua)
+{
+	strncpy(s_wf_user_agent, ua, sizeof s_wf_user_agent - 1);
+}
+
+/* oem netsvc:on|off|scan|st|join:SSID (the passphrase from oem wifipass)|get:HOST/PATH - the
+ * service from the bootloader channel, for tests */
+static void cmd_netsvc(const char *arg, void *data, unsigned sz)
+{
+	char l[96], t[16];
+	struct netsvc_status st;
+	while (*arg == ':' || *arg == ' ') arg++;
+	if (!strncmp(arg, "on", 2)) netsvc_wifi(1);
+	else if (!strncmp(arg, "off", 3)) netsvc_wifi(0);
+	else if (!strncmp(arg, "scan", 4)) netsvc_scan();
+	else if (!strncmp(arg, "join:", 5)) {
+		char pass[64];
+		memcpy(pass, s_wf_pass, sizeof pass);
+		pass[s_wf_pass_len < 63 ? s_wf_pass_len : 63] = 0;
+		netsvc_join(arg + 5, ns_saved_find(arg + 5) >= 0 && !s_wf_pass_len ? 0 : pass);
+		pico_wipe(pass, sizeof pass);
+	} else if (!strncmp(arg, "get:", 4)) {
+		const char *slash = strchr(arg + 4, '/');
+		char host[96];
+		unsigned int n = slash ? (unsigned)(slash - (arg + 4)) : (unsigned)strlen(arg + 4);
+		if (n >= sizeof host) n = sizeof host - 1;
+		memcpy(host, arg + 4, n);
+		host[n] = 0;
+		snprintf(l, sizeof l, "queued: %d", netsvc_http_begin(host, slash ? slash : "/", 1, 0, 0));
+		fastboot_info(l);
+	} else if (!strncmp(arg, "crumb", 5)) {
+		/* no lock taken: this must answer even when the service or the menu is stuck */
+		extern volatile unsigned int g_dbg_present_cnt, g_scrape_crumb;
+		snprintf(l, sizeof l, "crumb: step %u pumps %u bytes %u pump@%u now %u frames %u scrape %08x",
+			 g_ns_crumb[0], g_ns_crumb[1], g_ns_crumb[2], g_ns_crumb[3], gpt4_get_current_tick() / 13000u,
+			 g_dbg_present_cnt, g_scrape_crumb);
+		fastboot_info(l);
+		fastboot_okay("");
+		return;
+	} else if (!strncmp(arg, "art", 3)) {
+		extern volatile int g_dbg_nui_art;
+		g_dbg_nui_art = 1;
+	} else if (!strncmp(arg, "http", 4)) {
+		unsigned int status, len;
+		const unsigned char *body;
+		const char *why = "";
+		int r = netsvc_http_poll(&status, &body, &len, &why);
+		snprintf(l, sizeof l, "http: %d status %u len %u %s", r, r == 1 ? status : 0, r == 1 ? len : 0, r < 0 ? why : "");
+		fastboot_info(l);
+		if (r == 1 || r == -1) netsvc_http_release();
+	}
+	netsvc_get(&st);
+	pico_net_ip_text(st.ip, t);
+	snprintf(l, sizeof l, "[%.8s] state %d ssid %s ip %s scans %u saved %u why %s", arg, st.state, st.ssid, t,
+		 st.scan_gen, st.saved_gen, st.why);
+	fastboot_info(l);
+	if (!strncmp(arg, "aps", 3)) {
+		static struct netsvc_ap a[WF_SCAN_MAX];
+		int i, n = netsvc_aps(a, WF_SCAN_MAX);
+		for (i = 0; i < n && i < 12; i++) {
+			snprintf(l, sizeof l, "%4d dBm ch %3u %s%s%s %s", a[i].dbm, a[i].channel, a[i].secured ? "lock" : "open",
+				 a[i].usable ? "" : " (no)", a[i].saved ? " saved" : "", a[i].ssid);
+			fastboot_info(l);
+		}
+	}
+	fastboot_okay("");
+}
+
+/* the fastboot commands drive the radio themselves: one at a time with the service */
+#define WF_LOCKED(fn) static void fn##_locked(const char *a, void *d, unsigned z) \
+	{ mutex_acquire(&s_wf_radio); fn(a, d, z); mutex_release(&s_wf_radio); }
+WF_LOCKED(cmd_wifiup)
+WF_LOCKED(cmd_wificap)
+WF_LOCKED(cmd_wifiscan)
+WF_LOCKED(cmd_wifijoin)
+WF_LOCKED(cmd_wifidhcp)
+WF_LOCKED(cmd_wifiping)
+WF_LOCKED(cmd_wifidns)
+WF_LOCKED(cmd_wifintp)
+WF_LOCKED(cmd_wifiget)
+WF_LOCKED(cmd_wifihttps)
+WF_LOCKED(cmd_wifiurl)
+WF_LOCKED(cmd_wifiart)
+
 static void pico_wifi_register_cmds(void)
 {
-	fastboot_register("oem wifiurl", cmd_wifiurl, 1, 0);
-	fastboot_register("oem wificap", cmd_wificap, 1, 0);
-	fastboot_register("oem wifiscan", cmd_wifiscan, 1, 0);
-	fastboot_register("oem wifijoin", cmd_wifijoin, 1, 0);
+	mutex_init(&s_wf_radio);
+	mutex_init(&s_ns_info);
+	event_init(&s_ns_wake, false, EVENT_FLAG_AUTOUNSIGNAL);
+	fastboot_register("oem wifiurl", cmd_wifiurl_locked, 1, 0);
+	fastboot_register("oem wificap", cmd_wificap_locked, 1, 0);
+	fastboot_register("oem wifiscan", cmd_wifiscan_locked, 1, 0);
+	fastboot_register("oem wifijoin", cmd_wifijoin_locked, 1, 0);
 	fastboot_register("oem wifipass", cmd_wifipass, 1, 0);
-	fastboot_register("oem wifidhcp", cmd_wifidhcp, 1, 0);
-	fastboot_register("oem wifiping", cmd_wifiping, 1, 0);
-	fastboot_register("oem wifidns", cmd_wifidns, 1, 0);
-	fastboot_register("oem wifintp", cmd_wifintp, 1, 0);
-	fastboot_register("oem wifiget", cmd_wifiget, 1, 0);
-	fastboot_register("oem wifihttps", cmd_wifihttps, 1, 0);
-	fastboot_register("oem wifiart", cmd_wifiart, 1, 0);
-	fastboot_register("oem wifiup", cmd_wifiup, 1, 0);
+	fastboot_register("oem wifidhcp", cmd_wifidhcp_locked, 1, 0);
+	fastboot_register("oem wifiping", cmd_wifiping_locked, 1, 0);
+	fastboot_register("oem wifidns", cmd_wifidns_locked, 1, 0);
+	fastboot_register("oem wifintp", cmd_wifintp_locked, 1, 0);
+	fastboot_register("oem wifiget", cmd_wifiget_locked, 1, 0);
+	fastboot_register("oem wifihttps", cmd_wifihttps_locked, 1, 0);
+	fastboot_register("oem wifiart", cmd_wifiart_locked, 1, 0);
+	fastboot_register("oem wifiup", cmd_wifiup_locked, 1, 0);
+	fastboot_register("oem netsvc", cmd_netsvc, 1, 0);
 }

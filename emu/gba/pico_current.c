@@ -32,6 +32,7 @@
 #if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 #define PICO_LINK 1                 /* the consoles with Bluetooth: the Link tab (pico_link_ui.h) */
 #include "pico_link_ui.h"
+#include "pico_net_ui.h"            /* and Wi-Fi: the Network tab */
 #else
 #define PICO_LINK 0
 #endif
@@ -691,8 +692,8 @@ static void art_load(void)
 }
 
 /* ---- state ---------------------------------------------------------------------------------- */
-enum { TAB_GAMES, TAB_RESUME, TAB_SETTINGS, TAB_LINK };
-#define NTABS (PICO_LINK ? 4 : 3)        /* the Link tab only where there is Bluetooth */
+enum { TAB_GAMES, TAB_RESUME, TAB_SETTINGS, TAB_LINK, TAB_NET };
+#define NTABS (PICO_LINK ? 5 : 3)        /* the Link and Network tabs only where there is Bluetooth and Wi-Fi */
 static const char *s_sysname[NSYS] = { "Game Boy", "Game Boy Color", "Game Boy Advance", "Super Nintendo",
 					"Mega Drive / Genesis", "Master System", "Game Gear", "SG-1000", "NES" };
 
@@ -1170,7 +1171,7 @@ static void hints(const char *const *codes, const char *const *labels, int n)
 }
 static void rail(void)
 {
-	static const char *label[4] = { "Games", "Resume", "Settings", "Link" };
+	static const char *label[5] = { "Games", "Resume", "Settings", "Link", "Network" };
 	float pitch = s_uw * .116f < 148 ? s_uw * .116f : 148, yy = 119, x = s_p;
 	int i;
 	for (i = 0; i < NTABS; i++) {
@@ -1181,6 +1182,12 @@ static void rail(void)
 			int ry = U(yy + 15) - A.ring.h / 2 + (f ? 0 : U(2.5f));
 			draw_mask(&A.ring, U(x + 2), ry, f ? C_INK : C_MUTED, 256);
 			draw_mask(&A.ring, U(x + 2) + A.ring.w * 2 / 3, ry, f ? C_INK : C_MUTED, 256);
+		} else if (i == TAB_NET) {	/* none either: four signal bars rising */
+			int b, base = U(yy + 26) + (f ? 0 : U(2.5f));
+			for (b = 0; b < 4; b++) {
+				int h = U(6 + 5.5f * b);
+				fill(U(x + 4 + 7.5f * b), base - h, U(4.5f), h, f ? C_INK : C_MUTED, 256);
+			}
 		} else
 		draw_mask(f ? &A.railf[i] : &A.rail[i], U(x), U(yy) + (f ? 0 : U(2.5f)), f ? C_INK : C_MUTED, 256);
 		text(f ? &A.railf_t : &A.rail_t, U(x + 42), U(yy + 23), tr(label[i]), f ? C_INK : C_MUTED, 256, 0, 0, 0);
@@ -1497,6 +1504,72 @@ static void home_link(void)
 	if (v.nrows) rows(xx, top, lw, pitch, v.rows, v.values, v.nrows, v.sel, &A.srow, &A.srowf, &A.sval);
 }
 #endif
+#if PICO_LINK
+/* The Network tab: what the shared flow (pico_net_ui.c) shows, as the Link tab does; its keyboard
+ * as the search's, with the field on top. */
+static void net_keyboard(const struct nui_view *v)
+{
+	const struct nui_kb *k = &v->kb;
+	float kx = s_p, kw = s_uw - 2 * s_p, kp = kw / 10, fy = 206, ky = 300;	/* below the tabs */
+	int r, c;
+	text(&A.tag13, U(kx), U(186), k->field ? k->field : "", C_MUTED, 256, 0, U(2), 1);
+	pill_fill(U(kx), U(fy), U(kw), U(50), C_INK, 30);
+	{
+		int w = text(&A.row, U(kx + 24), U(fy + 33), k->shown, C_INK, 256, 0, 0, 0);
+		fill(U(kx + 24) + w + U(3), U(fy + 12), U(2) > 1 ? U(2) : 2, U(26), C_ACCENT, 256);
+	}
+	if (k->note) text(&A.hint, U(kx), U(fy + 78), k->note, C_MUTED, 256, 0, 0, 0);
+	for (r = 0; r < 5; r++)
+		for (c = 0; c < 10; c++) {
+			const char *lab;
+			char one[2];
+			float x = kx + c * kp, y = ky + r * 52, w = kp - 6;
+			int f, i;
+			if (r == 4) {	/* the wide keys, drawn from their first column */
+				for (i = 0; i < 5 && k->wide[i].col != c; i++) ;
+				if (i == 5) continue;
+				w = k->wide[i].span * kp - 6;
+				lab = k->wide[i].label;
+				f = k->r == 4 && k->c == c;
+			} else {
+				one[0] = k->keys[r][c]; one[1] = 0; lab = one;
+				f = k->r == r && k->c == c;
+			}
+			fill(U(x), U(y), U(w), U(46), f ? C_ACCENT : C_SHADE, f ? 70 : 110);
+			fill(U(x), U(y), U(w), 1, f ? C_ACCENT : C_MUTED, f ? 256 : 60);
+			fill(U(x), U(y + 46) - 1, U(w), 1, f ? C_ACCENT : C_MUTED, f ? 256 : 60);
+			fill(U(x), U(y), 1, U(46), f ? C_ACCENT : C_MUTED, f ? 256 : 60);
+			fill(U(x + w) - 1, U(y), 1, U(46), f ? C_ACCENT : C_MUTED, f ? 256 : 60);
+			if (r == 4) text_fit(&A.hint, U(x + w / 2) - text_w(&A.hint, lab, 0, 0) / 2, U(y + 28), lab, f ? C_INK : C_MUTED, 256, U(w - 8));
+			else text(f ? &A.rowf : &A.row, U(x + w / 2), U(y + 31), lab, f ? C_INK : C_MUTED, 256, 1, 0, 0);
+		}
+}
+static void home_net(void)
+{
+	struct nui_view v;
+	float top = 720 * .315f, xx = s_uw * .40f, lw = s_uw - s_p - xx, mid = top + 35, pitch = 51.2f, lx;
+	int b;
+	nui_view(&v);
+	if (v.screen == NUI_CLOSED) return;
+	if (v.screen == NUI_KEYBOARD) { net_keyboard(&v); return; }
+	lx = xx - s_p - 20;
+	for (b = 0; b < 4; b++) {	/* the tab's signal bars, large */
+		int h = U(14 + 13 * b);
+		fill(U(s_p + 17 * b), U(mid + 40) - h, U(10), h, C_ACCENT, 256);
+	}
+	text_fit(&A.dname, U(s_p), U(mid + 93), v.title ? v.title : "", C_INK, 256, U(lx));
+	if (v.subtitle) text_fit(&A.lib, U(s_p), U(mid + 135), v.subtitle, C_INK, 256, U(lx));
+	if (v.status) text_wrap2(&A.lib, U(s_p), U(mid + (v.subtitle ? 178 : 141)), U(27), v.status, C_MUTED, 256, U(lx));
+	if (v.total) {
+		int by = U(mid + (v.subtitle ? 178 : 141) + 2 * 27 + 12), bw = U(lx);
+		fill(U(s_p), by, bw, U(4), C_MUTED, 64);
+		fill(U(s_p), by, (int)((unsigned long long)bw * (v.done < v.total ? v.done : v.total) / v.total), U(4), C_ACCENT, 256);
+	}
+	if (v.nrows) rows(xx, top, lw, pitch, v.rows, v.values, v.nrows, v.sel, &A.srow, &A.srowf, &A.sval);
+	if (v.more_up) text(&A.hint, U(xx + lw / 2), U(top - 10), "^", C_MUTED, 256, 1, 0, 0);
+	if (v.more_down) text(&A.hint, U(xx + lw / 2), U(top + v.nrows * pitch + 18), "v", C_MUTED, 256, 1, 0, 0);
+}
+#endif
 static void library(void)
 {
 	int s = S.sys, t = S.systype[s];
@@ -1734,13 +1807,18 @@ static void ui_compose(void)
 		if (S.tab == TAB_GAMES) home_games(); else if (S.tab == TAB_RESUME) home_resume();
 #if PICO_LINK
 		else if (S.tab == TAB_LINK) home_link();
+		else if (S.tab == TAB_NET) home_net();
 #endif
 		else home_settings();
-		header(S.tab == TAB_SETTINGS ? "Settings" : S.tab == TAB_LINK ? "Link" : "Home");
+		header(S.tab == TAB_SETTINGS ? "Settings" : S.tab == TAB_LINK ? "Link" : S.tab == TAB_NET ? "Network" : "Home");
 #if PICO_LINK
 		if (S.tab == TAB_LINK) {
 			struct lui_view v;
 			lui_view(&v);
+			hints(v.hint_code, v.hint_label, v.nhints);
+		} else if (S.tab == TAB_NET) {
+			struct nui_view v;
+			nui_view(&v);
 			hints(v.hint_code, v.hint_label, v.nhints);
 		} else
 #endif
@@ -2078,6 +2156,7 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 	lui_set_english(0);             /* this theme's fonts have every language's letters */
 	lui_menu_enter();   /* Bluetooth off unless a Link screen still needs it (zero cost) */
 	lui_set_painter(link_paint);   /* the start of a session, drawn in this theme's look */
+	nui_set_roms(gba_sd_menu_vol(), s_roms, s_nrom);   /* the Network tab: the card, its games */
 #endif
 
 	if (do_reverse) {	/* back from a game: it crossfades into the backdrop, the menu zooming in */
@@ -2111,6 +2190,16 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 		prev = now;
 		if (dt < .004f) dt = .004f; else if (dt > .1f) dt = .1f;
 		if (now - S.batt_tick > 13000000u * 20) { S.batt = gba_battery_pct(&S.chg); S.batt_tick = now; dirty = 1; }
+#if PICO_LINK
+		{	/* the network: its news every frame; the Network tab drawn again as it moves on */
+			static unsigned int net_frame;
+			if (nui_tick() == NUI_ACT_ART) {	/* box art arrived: the card and its art listed again */
+				ayaneo_set_cpu_mhz(saved_mhz);
+				return -4;
+			}
+			if (S.tab == TAB_NET && !S.lib && ++net_frame % 6 == 0) dirty = 1;
+		}
+#endif
 		{	/* the clock in the header turns over: the menu is drawn again */
 			static long long shown_min = -1;
 			long long m = pico_clock_local() / 60;
@@ -2193,7 +2282,11 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 			} else {
 				/* a Link screen in the middle of something (waiting, joining) keeps the tab */
 #if PICO_LINK
+				struct nui_view nv;
 				int link_busy = S.tab == TAB_LINK && lui_busy_screen();
+				nv.screen = NUI_CLOSED;
+				if (S.tab == TAB_NET) nui_view(&nv);
+				if (nv.screen == NUI_KEYBOARD) link_busy = 1;	/* the keyboard keeps the tab */
 #else
 				int link_busy = 0;
 #endif
@@ -2232,6 +2325,14 @@ int pico_current_run(const gba_rom_entry *roms, int nrom, int start_sel, int do_
 					} else if (act == LUI_ACT_PICK)
 						lui_picked(-1);	/* no game of that system here */
 					dirty = 1;	/* what it shows moves on by itself (waiting, the consoles heard) */
+				}
+				else if (S.tab == TAB_NET) {
+					unsigned int e = (up ? NUI_UP : 0) | (dn ? NUI_DOWN : 0) | (lf ? NUI_LEFT : 0) |
+							 (rt ? NUI_RIGHT : 0) | (ea || est ? NUI_A : 0) | (eb ? NUI_B : 0) |
+							 (ex ? NUI_X : 0) | (ey ? NUI_Y : 0);
+					if (!nui_is_open()) nui_open();
+					if (nui_input(e) == NUI_ACT_CLOSE) nui_open();	/* the tab stays on its home */
+					dirty = 1;
 				}
 #endif
 				else if (S.tab == TAB_RESUME) {

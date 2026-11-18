@@ -1775,12 +1775,15 @@ static void svc_step(void)
 	}
 }
 
+/* Wi-Fi shares CONNSYS (pico_wifi.inc): while it runs, the link's end leaves the power on */
+static int pico_wifi_in_use(void);
+
 static int svc_thread(void *arg)
 {
 	(void)arg;
 	if (pico_bt_up() != 0 || link_prepare() != 0) {
 		s_svc_state = SVC_FAILED;
-		pico_bt_off();
+		if (!pico_wifi_in_use()) pico_bt_off();
 		s_svc_thread = 0;
 		return -1;
 	}
@@ -1814,7 +1817,7 @@ static int svc_thread(void *arg)
 	if (s_link_state == LINK_FINDING) svc_scan(0);
 	if (s_link_state == LINK_OPEN) link_close();
 	s_link_state = LINK_NONE;
-	pico_bt_off();
+	if (!pico_wifi_in_use()) pico_bt_off();
 	s_svc_state = SVC_OFF;
 	s_svc_thread = 0;
 	return 0;
