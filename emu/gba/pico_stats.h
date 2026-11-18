@@ -15,5 +15,6 @@ void pico_stats_abort(void);
 void pico_stats_tick(void);
 /* a game's play time (seconds) and when it was last started (UTC seconds, 0 never); 0 if unknown */
 int  pico_stats_get(int type, const char *name, unsigned int *secs, long long *last);
+int  pico_stats_playing(unsigned int *secs);
 
 #endif

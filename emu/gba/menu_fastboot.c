@@ -238,6 +238,14 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 		extern volatile unsigned int g_dbg_boxart_ok, g_dbg_boxart_tot, g_dbg_boxart_ms;
 		snprintf(lbuf, sizeof lbuf, "boxart: %u of %u games, last load %u ms", g_dbg_boxart_ok, g_dbg_boxart_tot, g_dbg_boxart_ms);
 		fastboot_info(lbuf);
+		{	/* the first games' art as the cache has it: state/slot/width x height */
+			extern int gba_menu_boxart_probe(int i, int *state, int *slot, int *w, int *h);
+			int gi, st, sl, aw, ah, at = snprintf(lbuf, sizeof lbuf, "art:");
+			for (gi = 0; gi < 5 && at < (int)sizeof lbuf - 16; gi++)
+				if (gba_menu_boxart_probe(gi, &st, &sl, &aw, &ah) == 0)
+					at += snprintf(lbuf + at, sizeof lbuf - (unsigned)at, " %d/%d/%dx%d", st, sl, aw, ah);
+		}
+		fastboot_info(lbuf);
 	}
 	{
 		extern volatile unsigned int g_dbg_romload[4], g_dbg_aix[3];

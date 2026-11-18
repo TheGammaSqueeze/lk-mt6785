@@ -73,7 +73,8 @@ struct pico_ra_card {
 	unsigned alpha;			/* 0..255: it fades in and out */
 	int pct;			/* PROGRESS: how far, 0..100 */
 	int hardcore;			/* GAME: the session counts in hardcore */
-	char chip[24];			/* BOARD: the score, on the chip at the right ("" none: the points if any) */
+	char chip[24];			/* the chip at the right: a leaderboard's score, the mode ("" none: the points if any) */
+	char note[64];			/* MASTERED: the player and the time played, under the line ("" none) */
 };
 int  pico_ra_card_now(struct pico_ra_card *c);
 /* the leaderboards' trackers on screen now (their running values): how many, up to max, into out */
@@ -101,6 +102,11 @@ const char *pico_ra_short(void);		/* "12/40", for the menu's Achievements row */
 /* the page's account and settings rows come first: a switch row (-1 none, else on 1 / off 0) flips
  * with Left, Right or A (1 changed); the page is there for a game of a system RA knows */
 int  pico_ra_row_switch(int i);
+/* row i is a group's heading ("Locked", its count as the value): drawn as a heading, never focused */
+int  pico_ra_row_head(int i);
+/* row i's value in a colour of its own: 0 as the others, 1 amber (waiting to sync), 2 gold (an
+ * active challenge) */
+int  pico_ra_row_tone(int i);
 int  pico_ra_row_change(int i);
 int  pico_ra_igm_page(void);
 /* an achievement row's detail (the in-game menu's full page): 0 filled, -1 not an achievement */

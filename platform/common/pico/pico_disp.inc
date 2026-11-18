@@ -1048,6 +1048,7 @@ extern int priamry_display_wait_for_vsync(void);   /* primary_display.c (name ha
 void ayaneo_snes_rsz_restore(void);   /* defined with the SNES RSZ path below */
 /* Shared hardware-RSZ present + its state, used by the GBA/GBC show_frame paths above their
  * definitions further down (SNES/GBA/GBC all route Fit/Stretch through this). */
+static unsigned short *s_test_px;	/* oem gray's picture (below), from the heap when first used */
 void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int sh, unsigned int spitch_px,
 			unsigned int dw, unsigned int dh, unsigned int xoff, unsigned int yoff,
 			int filt, int wait_vsync, const unsigned short *cc_lut);
@@ -2653,12 +2654,12 @@ void ayaneo_rsz_present(const unsigned short *pix, unsigned int sw, unsigned int
 		g_dbg_launch_t0 = 0;
 	}
 	if (g_dbg_filt_ovr >= 0 && g_dbg_filt_ovr <= 5) filt = g_dbg_filt_ovr;
-	if (g_test_fill_argb && sw <= 320u && sh <= 240u) {
+	if (g_test_fill_argb && sw <= 320u && sh <= 240u && (s_test_px || (s_test_px = malloc(320u * 240u * 2u)) != 0)) {
 		/* oem gray: replace the game picture, at its native size and before the overdrive, with a
 		 * flat gray and four outlined boxes (red, green, blue, yellow) sweeping side to side in
-		 * step, so the trails and the overdrive halos are judged on the real pipeline */
-		static unsigned short s_test_px[320 * 240];   /* every core's usual picture (the KPA's
-								 * boot heap is what static data leaves) */
+		 * step, so the trails and the overdrive halos are judged on the real pipeline. Its picture
+		 * (every core's usual size) comes from the heap the first time it is asked for: as static
+		 * data it took 150 KB from the KPA's boot heap, which is what static data leaves */
 		unsigned int c = g_test_fill_argb, x, y, i;
 		unsigned int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
 		unsigned short bg = (unsigned short)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));

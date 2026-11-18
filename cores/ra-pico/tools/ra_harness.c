@@ -158,9 +158,14 @@ static int server(const char *post, char *body, unsigned cap)
 		return 200;
 	}
 	if (!strcmp(r, "startsession")) {
-		at += (unsigned)snprintf(body + at, cap - at, "{\"Success\":true,\"HardcoreUnlocks\":[],\"Unlocks\":[");
+		/* the real server gives its warning entry as unlocked (seen 11-18 on Iridion 3D: "1 of 32" with
+		 * nothing unlocked): the counts must leave it out */
+		at += (unsigned)snprintf(body + at, cap - at, "{\"Success\":true,\"HardcoreUnlocks\":[%s],\"Unlocks\":[%s",
+					 srv_warn ? "{\"ID\":101000001,\"When\":1700000000}" : "",
+					 srv_warn ? "{\"ID\":101000001,\"When\":1700000000}" : "");
 		for (i = 0; i < srv_n; i++)
-			at += (unsigned)snprintf(body + at, cap - at, "%s{\"ID\":%u,\"When\":1700000000}", i ? "," : "", srv_unlocked[i]);
+			at += (unsigned)snprintf(body + at, cap - at, "%s{\"ID\":%u,\"When\":1700000000}", i || srv_warn ? "," : "",
+						 srv_unlocked[i]);
 		snprintf(body + at, cap - at, "],\"ServerNow\":1700000000}");
 		return 200;
 	}

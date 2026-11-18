@@ -2583,6 +2583,10 @@ extern const char *pico_ra_short(void) __attribute__((weak));
 extern void pico_ra_paused(void) __attribute__((weak));
 extern int pico_ra_row_change(int i) __attribute__((weak));
 extern int pico_ra_row_switch(int i) __attribute__((weak));
+extern int pico_ra_row_head(int i) __attribute__((weak));
+extern int pico_ra_row_tone(int i) __attribute__((weak));
+/* the Achievements page's row i is a group's heading (never focused) */
+static int igm_row_head(int page, const igm_line *l) { return page == IGM_ACH && pico_ra_row_head && pico_ra_row_head(l->item); }
 extern const char *pico_ra_row_text(int i) __attribute__((weak));
 extern int pico_ra_igm_page(void) __attribute__((weak));
 /* the Achievements page: any game of a system RetroAchievements knows (the account and settings,
@@ -2945,7 +2949,12 @@ int pico_igm_frame(unsigned int keys)
 	if (!n) { if (b) igm_go(IGM_TOP, -1); return -1; }
 	if (up) { G.sel[G.page] = (sel + n - 1) % n; G.dirty = 1; }
 	if (dn) { G.sel[G.page] = (sel + 1) % n; G.dirty = 1; }
-	if (up || dn) return -1;
+	if (up || dn) {	/* past the group headings */
+		int tries;
+		for (tries = 0; tries < n && igm_row_head(G.page, &ln[G.sel[G.page]]); tries++)
+			G.sel[G.page] = (G.sel[G.page] + (up ? n - 1 : 1)) % n;
+		return -1;
+	}
 	{
 		igm_line *l = &ln[sel];
 		const struct igm_core *c = G.c;
@@ -3023,6 +3032,12 @@ static void igm_rows(int page, float dx, int op, int wash)
 		}
 		yy = U(ry);
 		lx = IX(rx + rdx) + U(14);
+		if (igm_row_head(page, &ln[i])) {	/* a group's heading: its name in small capitals, its count */
+			const char *cnt = pico_ra_row_value ? pico_ra_row_value(ln[i].item) : "";
+			text(&G.tag13, lx, yy + (int)(ph * .66f), tr(ln[i].label), C_MUTED, rop, 0, U(2), 1);
+			if (cnt && cnt[0]) text(&G.tag13, IX(rx + rw + rdx) - U(14), yy + (int)(ph * .66f), cnt, C_MUTED, rop, 2, 0, 0);
+			continue;
+		}
 		if (ln[i].icon >= 0) {
 			const cimg *m = &G.ic[ln[i].icon];
 			draw_mask(m, lx, yy + (ph - m->h) / 2, f ? C_ACCENT : C_MUTED, rop);
@@ -3032,7 +3047,7 @@ static void igm_rows(int page, float dx, int op, int wash)
 		/* a link shows no value, except Achievements' count ("12/40", Sign in, Off) */
 		v = ln[i].kind == IGM_LINK && ln[i].item != IGM_ACH ? 0 : igm_value(page, &ln[i], vb);
 		{	/* the value takes at most 55 % of the row (cut with an ellipsis), the name what is left */
-			int arrows = f && v && v[0] && (ln[i].kind == IGM_VALUE || ((ln[i].item == G.c->save_item ||
+			int arrows = f && v && v[0] && (ln[i].kind == IGM_VALUE || (page != IGM_ACH && (ln[i].item == G.c->save_item ||
 				     ln[i].item == G.c->load_item) && G.c->slot_item >= 0));
 			int room = ln[i].kind == IGM_LINK ? G.chev.w + U(16) : U(40);
 			if (v && v[0]) {
@@ -3068,14 +3083,18 @@ static void igm_rows(int page, float dx, int op, int wash)
 				float e = igm_ease(G.nudge_t);
 				nudge = (int)((1 - e) * U(12)) * G.nudge_dir; vop = (int)(rop * (.35f + .65f * e));
 			}
-			if (f && (ln[i].kind == IGM_VALUE || ((ln[i].item == G.c->save_item || ln[i].item == G.c->load_item)
+			if (f && (ln[i].kind == IGM_VALUE || (page != IGM_ACH && (ln[i].item == G.c->save_item || ln[i].item == G.c->load_item)
 								&& G.c->slot_item >= 0))) {	/* Left / Right change it */
 				draw_mask(&G.chev, vx - G.chev.w, yy + (ph - G.chev.h) / 2, C_INK, rop);
 				vx -= G.chev.w + U(6);
 			}
 			w = text_w(&G.sval, v, 0, 0);
-			text(&G.sval, vx + nudge, yy + (int)(ph * .61f), v, f ? C_INK : C_MUTED, vop, 2, 0, 0);
-			if (f && (ln[i].kind == IGM_VALUE || ((ln[i].item == G.c->save_item || ln[i].item == G.c->load_item)
+			{	/* an achievement waiting to sync in amber, an active challenge in gold (melonds-nano's) */
+				int tone = page == IGM_ACH && pico_ra_row_tone ? pico_ra_row_tone(ln[i].item) : 0;
+				uint32_t vc = tone == 1 ? 0xFFC870u : tone == 2 ? 0xFFD36Bu : f ? C_INK : C_MUTED;
+				text(&G.sval, vx + nudge, yy + (int)(ph * .61f), v, vc, vop, 2, 0, 0);
+			}
+			if (f && (ln[i].kind == IGM_VALUE || (page != IGM_ACH && (ln[i].item == G.c->save_item || ln[i].item == G.c->load_item)
 								&& G.c->slot_item >= 0)))
 				draw_mask(&G.back, vx - w - U(6) - G.back.w, yy + (ph - G.back.h) / 2, C_INK, rop);
 			if (len >= 2 && v[len - 1] == '%' && v[0] >= '0' && v[0] <= '9') {	/* a level: its bar */
@@ -3642,13 +3661,36 @@ static void ra_pic(int x, int y, int size, const unsigned short *px, uint32_t ac
 }
 /* the badge as the cards draw it, into another picture (the Classic in-game menu's detail): fb W x H,
  * size px at x, y; badge "" or not in yet: the trophy in accent */
-void pico_ra_badge_paint(uint32_t *fb, int W, int H, int x, int y, int size, const char *badge, uint32_t accent)
+/* a badge drawn at x, y (size px) turned grey and darker: a locked achievement's look (the server's
+ * locked badges are the same picture so), a failed challenge's */
+static void ra_grey(int x, int y, int size)
+{
+	int i, j;
+	for (j = 0; j < size; j++) {
+		uint32_t *d;
+		if (y + j < 0 || y + j >= g_H) continue;
+		d = g_fb + (y + j) * g_W + x;
+		for (i = 0; i < size; i++) {
+			uint32_t v, l;
+			if (x + i < 0 || x + i >= g_W) continue;
+			v = d[i]; l = (((v >> 16) & 255) * 77 + ((v >> 8) & 255) * 150 + (v & 255) * 29) >> 8;
+			l = l * 3 / 4;
+			d[i] = (v & 0xFF000000u) | l << 16 | l << 8 | l;
+		}
+	}
+}
+/* (grey: a locked achievement's, when its picture is in) */
+void pico_ra_badge_paint(uint32_t *fb, int W, int H, int x, int y, int size, const char *badge, uint32_t accent, int grey)
 {
 	uint32_t *ofb = g_fb;
 	int oW = g_W, oH = g_H, otr = g_track, ocx0 = g_cx0, ocx1 = g_cx1;
 	float os = g_s;
 	g_fb = fb; g_W = W; g_H = H; g_s = (float)H / 720.0f; g_track = 0; g_cx0 = g_cx1 = 0;
-	ra_pic(x, y, size, badge && badge[0] ? pico_ra_badge(badge) : 0, accent);
+	{
+		const unsigned short *px = badge && badge[0] ? pico_ra_badge(badge) : 0;
+		ra_pic(x, y, size, px, accent);
+		if (grey && px) ra_grey(x, y, size);
+	}
 	g_fb = ofb; g_W = oW; g_H = oH; g_s = os; g_track = otr; g_cx0 = ocx0; g_cx1 = ocx1;
 }
 /* the cards' times: when the card in hand came (its title's ticker starts there) */
@@ -3721,9 +3763,10 @@ static void rf_wrap2(int r, int x, int y, int lh, const char *s, uint32_t rgb, i
 static void ra_card(const struct pico_ra_card *c, int *r, float t)
 {
 	int big = c->kind == PICO_RA_CARD_MASTERED, P = U(big ? 92 : 72), x0, right = U(16), pad = U(big ? 16 : 13);
-	int W, H, colW, x, y, chipw = 0, hb, tb, lb = 0, rad = U(big ? 16 : 13), lines = 0, sp = s_rf_classic ? 0 : U(1.2f);
+	int W, H, colW, x, y, chipw = 0, hb, tb, lb = 0, nb = 0, rad = U(big ? 16 : 13), lines = 0, sp = s_rf_classic ? 0 : U(1.2f);
 	uint32_t acc = c->kind == PICO_RA_CARD_UNLOCK || big ? RA_GOLD : c->kind == PICO_RA_CARD_GAME ?
-		       (c->hardcore ? RA_GOLD : C_ACCENT) : c->kind == PICO_RA_CARD_NOTE ? RA_AMBER :
+		       (c->hardcore ? RA_GOLD : C_ACCENT) :
+		       c->kind == PICO_RA_CARD_NOTE ? (c->pct < 0 ? RA_RED : c->pct == 1 ? RA_GREEN : RA_AMBER) :
 		       c->kind == PICO_RA_CARD_BOARD ? (c->pct < 0 ? RA_RED : C_ACCENT) : C_ACCENT;
 	char chip[32], hb_s[64];
 	const unsigned short *pic = c->badge[0] ? pico_ra_badge(c->badge) : 0;
@@ -3736,8 +3779,10 @@ static void ra_card(const struct pico_ra_card *c, int *r, float t)
 	{
 		int need = rf_w(RF_HEAD, hb_s, sp, 1) + (chipw ? chipw + U(12) : 0), tw = rf_w(RF_TITLE, c->title, 0, 0);
 		int lw = c->line[0] ? rf_w(RF_BODY, c->line, 0, 0) : 0, maxW = U(500), minW = U(big ? 400 : 320);
+		int nw = c->note[0] ? rf_w(RF_BODY, c->note, 0, 0) : 0;
 		if (tw > need) need = tw;
 		if (lw > need) need = lw;
+		if (nw > need) need = nw;
 		need += x0 + right;
 		if (maxW > g_W * 62 / 100) maxW = g_W * 62 / 100;
 		W = need < maxW ? need : maxW;
@@ -3751,6 +3796,10 @@ static void ra_card(const struct pico_ra_card *c, int *r, float t)
 		lb = y + U(4) + rf_asc(RF_BODY);
 		lines = rf_w(RF_BODY, c->line, 0, 0) > colW && !s_rf_classic ? 2 : 1;
 		y = lb + (lines - 1) * (rf_px(RF_BODY) + U(2)) + (rf_px(RF_BODY) - rf_asc(RF_BODY));
+	}
+	if (c->note[0]) {	/* the player and the time played (the mastery card) */
+		nb = y + U(4) + rf_asc(RF_BODY);
+		y = nb + (rf_px(RF_BODY) - rf_asc(RF_BODY));
 	}
 	H = y + pad;
 	if (H < P + U(34)) H = P + U(34);
@@ -3775,6 +3824,7 @@ static void ra_card(const struct pico_ra_card *c, int *r, float t)
 		if (lines > 1) rf_wrap2(RF_BODY, x + x0, y + lb, rf_px(RF_BODY) + U(2), c->line, C_INK, colW);
 		else { char cut[192]; rf_text(RF_BODY, x + x0, y + lb, rf_fit(RF_BODY, c->line, colW, cut, sizeof cut), C_INK, 0, 0, 0); }
 	}
+	if (c->note[0]) { char cut[96]; rf_text(RF_BODY, x + x0, y + nb, rf_fit(RF_BODY, c->note, colW, cut, sizeof cut), C_MUTED, 0, 0, 0); }
 }
 
 /* the progress pill at the top right: the badge, "23/50", a bar */
@@ -3836,16 +3886,7 @@ static void ra_challenge(const struct pico_ra_chal *c, int k, int *r)
 	ra_ground(x, y, S, S, U(11), 0, 0);
 	rrect_fill(x + U(3), y + U(3), S - U(6), S - U(6), (float)U(9), tone, 77);
 	ra_pic(x + U(9), y + U(9), B, c->badge[0] ? pico_ra_badge(c->badge) : 0, RA_GOLD);
-	if (c->outcome < 0)		/* failed: the badge in grey */
-		for (j = 0; j < B; j++) {
-			uint32_t *d = g_fb + (y + U(9) + j) * g_W + x + U(9);
-			if (y + U(9) + j < 0 || y + U(9) + j >= g_H) continue;
-			for (i = 0; i < B; i++) {
-				uint32_t v = d[i], l = (((v >> 16) & 255) * 77 + ((v >> 8) & 255) * 150 + (v & 255) * 29) >> 8;
-				l = l * 3 / 4;
-				d[i] = (v & 0xFF000000u) | l << 16 | l << 8 | l;
-			}
-		}
+	if (c->outcome < 0) ra_grey(x + U(9), y + U(9), B);	/* failed: the badge in grey */
 	if (c->outcome) {
 		float cx = (float)(x + S - U(13)), cy = (float)(y + S - U(13)), q = (float)U(5), w = U(1.6f) > 1 ? (float)U(1.6f) : 1.0f;
 		disc(cx, cy, (float)U(10.5f), tone, 256);
@@ -3930,7 +3971,11 @@ static void igm_detail_paint(void)
 	case PICO_RA_ALMOST: tag = "Almost there"; tone = C_ACCENT; break;
 	default: tag = "Locked"; tone = C_MUTED; break;
 	}
-	ra_pic(bx + pad, by + pad, B, d.badge[0] ? pico_ra_badge(d.badge) : 0, tone == C_MUTED ? C_ACCENT : tone);
+	{	/* the badge; locked (not unlocked) in grey, as the server's locked badge is */
+		const unsigned short *px = d.badge[0] ? pico_ra_badge(d.badge) : 0;
+		ra_pic(bx + pad, by + pad, B, px, tone == C_MUTED ? C_ACCENT : tone);
+		if (px && d.state != PICO_RA_UNLOCKED) ra_grey(bx + pad, by + pad, B);
+	}
 	y = by + pad;
 	{	/* the state's chip */
 		int cw = text_w(&G.tag11, tr(tag), U(1), 1) + U(16), ch = U(19);
@@ -4024,6 +4069,7 @@ static unsigned card_sig(int *ticks)
 		for (p = s_cd.line; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
 		for (p = s_cd.head; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
 		for (p = s_cd.chip; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+		for (p = s_cd.note; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
 		h = (h ^ (unsigned)(s_cd.badge[0] && pico_ra_badge(s_cd.badge) != 0)) * 16777619u;
 		h = (h ^ (unsigned)s_cd.pct) * 16777619u;
 		*ticks = !CLASSIC_IGM && s_cd.kind != PICO_RA_CARD_PROGRESS && s_cd_tick_long;

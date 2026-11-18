@@ -189,6 +189,15 @@ int pico_stats_debug(int i, char *buf, int cap)
 	unlock();
 	return n;
 }
+/* the game in play: its time played, this session's included; 0 when none is in play */
+int pico_stats_playing(unsigned int *secs)
+{
+	int ok = 0;
+	lock();
+	if (s_cur >= 0) { *secs = s_g[s_cur].secs + ((unsigned int)current_time() - s_saved_ms) / 1000u; ok = 1; }
+	unlock();
+	return ok;
+}
 int pico_stats_get(int type, const char *name, unsigned int *secs, long long *last)
 {
 	int i, ok = 0;

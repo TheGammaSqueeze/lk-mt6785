@@ -661,10 +661,31 @@ static void theme_apply(void)
  * font also lacks '(' ')' ',' glyphs, so these would render as gaps). Trailing
  * spaces are trimmed. dst holds up to 128 chars. */
 /* Build the display-name table from the SD roster (cleaned titles). */
+/* The tables are taken by whoever asks first: the listing's thread (its box art, during the intro)
+ * or a menu. Both may ask at once, so one takes them under a lock and the other waits for it:
+ * unguarded, the listing's thread (low priority, often halfway when the menu came) went on to take
+ * a second set after the menu had indexed its art into the first, and every game's art read as
+ * missing from then on. */
+static int tables_take(void);
+static mutex_t s_tables_mtx;
+static volatile int s_tables_mtx_up;
 static int tables_alloc(void)
 {
-	static int s_ok = -1;
+	static volatile int s_ok = -1;
+	int ok;
 	if (s_ok >= 0) return s_ok;
+	enter_critical_section();
+	if (!s_tables_mtx_up) { mutex_init(&s_tables_mtx); s_tables_mtx_up = 1; }
+	exit_critical_section();
+	mutex_acquire(&s_tables_mtx);
+	if (s_ok < 0) s_ok = tables_take();
+	ok = s_ok;
+	mutex_release(&s_tables_mtx);
+	return ok;
+}
+/* (tables_alloc, once, under its lock) */
+static int tables_take(void)
+{
 	s_names = (char (*)[128])pico_lib_alloc(PICO_GAMES_MAX * 128u);
 	s_nameptr = (const char **)pico_lib_alloc(PICO_GAMES_MAX * (unsigned)sizeof(char *));
 	s_types = (unsigned char *)pico_lib_alloc(PICO_GAMES_MAX);
@@ -675,9 +696,8 @@ static int tables_alloc(void)
 	s_vorder = (unsigned short *)pico_lib_alloc(PICO_GAMES_MAX * 2u);
 	s_art = (struct art_loc *)pico_lib_alloc(PICO_GAMES_MAX * (unsigned)sizeof(struct art_loc));
 	s_boxart_full = (snes_img_entry *)pico_lib_alloc(PICO_GAMES_MAX * (unsigned)sizeof(snes_img_entry));
-	s_ok = s_names && s_nameptr && s_types && s_vnameptr && s_vtypes && s_vboxart && s_vmap && s_vorder &&
+	return s_names && s_nameptr && s_types && s_vnameptr && s_vtypes && s_vboxart && s_vmap && s_vorder &&
 	       s_art && s_boxart_full;
-	return s_ok;
 }
 /* the names as these themes' fonts can show them: ASCII, a Latin letter with an accent as the
  * letter, any other character outside ASCII as '_' (pico_fold_ascii) */
@@ -1087,6 +1107,15 @@ const unsigned char *gba_menu_boxart(int i, unsigned int *w, unsigned int *h)
 	if (w) *w = e->w;
 	if (h) *h = e->h;
 	return (const unsigned char *)SNES_BOXART_PA + e->pixels;
+}
+/* oem diag: game i's art as the cache has it (state 0 not looked for, 1 none, 2 on the card; the
+ * slot it is read into, -1 none; its size); -1 when there is no such game */
+int gba_menu_boxart_probe(int i, int *state, int *slot, int *w, int *h)
+{
+	if (!s_art || i < 0 || i >= s_art_n) return -1;
+	*state = s_art[i].state; *slot = s_art[i].slot == ART_NO_SLOT ? -1 : s_art[i].slot;
+	*w = s_boxart_full[i].w; *h = s_boxart_full[i].h;
+	return 0;
 }
 /* does game i have art on the card (read or not) */
 int gba_menu_boxart_has(int i)

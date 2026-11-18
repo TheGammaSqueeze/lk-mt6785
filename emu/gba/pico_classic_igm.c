@@ -59,6 +59,10 @@ extern int pico_ra_row_switch(int i) __attribute__((weak));
 extern int pico_ra_row_change(int i) __attribute__((weak));
 extern int pico_ra_igm_page(void) __attribute__((weak));
 extern const char *pico_ra_row_text(int i) __attribute__((weak));
+extern int pico_ra_row_head(int i) __attribute__((weak));
+extern int pico_ra_row_tone(int i) __attribute__((weak));
+/* the Achievements page's row is a group's heading (never focused) */
+static int row_head(int page, int item) { return page == IGM_ACH && pico_ra_row_head && pico_ra_row_head(item); }
 /* the Achievements tab: any game of a system RetroAchievements knows (the account and settings,
  * then the game's set when it loaded) */
 static int ra_on(void) { return pico_ra_igm_page && pico_ra_igm_page(); }
@@ -66,7 +70,7 @@ static int ra_on(void) { return pico_ra_igm_page && pico_ra_igm_page(); }
 #include "pico_ra.h"
 #include "pico_clock.h"
 extern int pico_ui_ticker_shift(int excess, float speed, float t);
-extern void pico_ra_badge_paint(uint32_t *fb, int W, int H, int x, int y, int size, const char *badge, uint32_t accent);
+extern void pico_ra_badge_paint(uint32_t *fb, int W, int H, int x, int y, int size, const char *badge, uint32_t accent, int grey);
 #define RA_DETAIL 1
 #else
 #define RA_DETAIL 0
@@ -385,7 +389,12 @@ int pico_classic_igm_frame(unsigned int keys)
 	if (!n) { if (b) go(IGM_TOP, -1); return -1; }
 	if (up) { C.sel[C.page] = (sel + n - 1) % n; C.dirty = 1; }
 	if (dn) { C.sel[C.page] = (sel + 1) % n; C.dirty = 1; }
-	if (up || dn) return -1;
+	if (up || dn) {	/* past the group headings */
+		int tries;
+		for (tries = 0; tries < n && row_head(C.page, ln[C.sel[C.page]].item); tries++)
+			C.sel[C.page] = (C.sel[C.page] + (up ? n - 1 : 1)) % n;
+		return -1;
+	}
 	{
 		cline *l = &ln[sel];
 		const struct igm_core *c = C.c;
@@ -489,6 +498,17 @@ static void rows(int page, float y0, float dx, float op, int bar)
 		int sw, f = i == sel;
 		float last = y0 + (nv_of(page) - 1) * ROW_P, ro = op;
 		if (s_only_row >= 0 && i != s_only_row) continue;
+		if (row_head(page, l->item)) {	/* a group's heading: its name and count, small and grey */
+			const char *cnt = pico_ra_row_value ? pico_ra_row_value(l->item) : "";
+			float ho = op;
+			if (cy < y0) ho *= cui_clamp01(1 - (y0 - cy) / 40);
+			if (cy > last) ho *= cui_clamp01(1 - (cy - last) / 40);
+			if (ho > 0) {
+				cui_text(CF_S, 160 + dx, cy + 6, 1, 0xFF8C8C8Cu, 0, cui_say(CF_S, l->label), ho);
+				if (cnt && cnt[0]) cui_text(CF_S, 1112 + dx, cy + 6, 1, 0xFF8C8C8Cu, 2, cnt, ho);
+			}
+			continue;
+		}
 		/* a row gliding past either end of the list fades as it goes */
 		if (cy < y0) ro *= cui_clamp01(1 - (y0 - cy) / 40);
 		if (cy > last) ro *= cui_clamp01(1 - (cy - last) / 40);
@@ -502,7 +522,8 @@ static void rows(int page, float y0, float dx, float op, int bar)
 			cui_spr_x(sw ? KS_SW_ON : KS_SW_OFF, 1082 + dx, cy, 3, ro);
 		else if (v && v[0]) {
 			const char *t = cui_fit(CF_M, 1, cui_say(CF_M, v), 420, fb, sizeof fb);
-			uint32_t col = l->kind == IGM_INFO ? 0xFFB4B4B4u : 0xFFF4F4F4u;
+			int tone = page == IGM_ACH && pico_ra_row_tone ? pico_ra_row_tone(l->item) : 0;	/* waiting amber, challenge gold */
+			uint32_t col = tone == 1 ? 0xFFFFC870u : tone == 2 ? 0xFFFFD36Bu : l->kind == IGM_INFO ? 0xFFB4B4B4u : 0xFFF4F4F4u;
 			vw = cui_text_w(CF_M, 1, t);
 			if (f && l->kind != IGM_INFO) {	/* the arrows either side, nudged too */
 				float bump = C.nudge_t < 1 ? 6.0f * (1 - cui_out_expo(C.nudge_t)) : 0;
@@ -690,7 +711,8 @@ static void detail(void)
 	if (B > (y1 - yb) * .34f) B = (y1 - yb) * .34f;
 	if (c >= .5f)	/* the badge (or the trophy while it comes), straight into the picture */
 		pico_ra_badge_paint(s_t.fb, s_t.W, s_t.H, (int)(L * bs + .5f) + s_t.offx, (int)(yb * bs + .5f) + s_t.offy,
-				    (int)(B * bs + .5f), d.badge, tone == 0xFF8C8C8Cu ? (s_set->line_core & 0xFFFFFFu) : (tone & 0xFFFFFFu));
+				    (int)(B * bs + .5f), d.badge, tone == 0xFF8C8C8Cu ? (s_set->line_core & 0xFFFFFFu) : (tone & 0xFFFFFFu),
+				    d.state != PICO_RA_UNLOCKED);	/* (locked: grey, as the server's locked badge is) */
 	tx = L + B + 40; tw = R - tx;
 	y = yb + 4;
 	{	/* the state's chip */

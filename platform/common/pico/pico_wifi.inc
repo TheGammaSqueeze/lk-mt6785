@@ -1586,7 +1586,20 @@ static int wf_channel(const struct wf_seen *ap, int release)
 	if (release)
 		return 0;
 	at = wf_fw_event(WF_EVT_CHANNEL, s_wf_evt, sizeof s_wf_evt, &n, 1000000);
-	return at >= 0 && s_wf_evt[at + 2] == 0 ? 0 : -1;
+	if (at >= 0 && s_wf_evt[at + 2] == 0)
+		return 0;
+	bt_log("wifi channel %u: %s %d", ap->channel, at >= 0 ? "refused, status" : "no answer", at >= 0 ? s_wf_evt[at + 2] : -1);
+	return -1;
+}
+/* the channel for a join: a refusal right after the last try gave it back (the firmware may still
+ * be letting it go) is asked for once more, the channel given back first and a moment later */
+static int wf_channel_take(const struct wf_seen *ap)
+{
+	if (wf_channel(ap, 0) == 0)
+		return 0;
+	wf_channel(ap, 1);
+	thread_sleep(150);
+	return wf_channel(ap, 0);
 }
 
 /* HT with this AP: it has HT and WMM (20 MHz). On 5 GHz only where the console's file allows it:
@@ -1802,7 +1815,7 @@ static int wf_join_ap(const struct wf_seen *ap, void (*say)(const char *), const
 	s_wf_eapol_len = 0;
 	if (wf_stay_awake() != 0) { *why = "the power profile did not go"; return -1; }
 	if (wf_rx_filter(WF_RX_TO_US | WF_RX_GROUP | WF_RX_BROADCAST) != 0) { *why = "the receive filter did not go"; return -1; }
-	if (wf_channel(ap, 0) != 0) { *why = "the radio did not get its channel"; return -1; }
+	if (wf_channel_take(ap) != 0) { *why = "the radio did not get its channel"; return -1; }
 	if (wf_ap_record(ap, WF_STATE_NONE, 0, 1) != 0) { *why = "the AP's record was not made"; goto out; }
 	if (wf_net_info(ap, 0, kind, enc) != 0) { *why = "our network's settings did not go"; goto out; }
 	s_wf_join_band5 = band5;
@@ -1899,6 +1912,11 @@ static int wf_connect(const char *ssid, void (*say)(const char *), const char **
 			rc = wf_connect_to(cand[k], say, why);
 		}
 		if (rc == 0) return 0;
+		if (say && rc == -1 && *why && **why) {	/* (a handshake failure has said its own) */
+			char l[96];
+			snprintf(l, sizeof l, "failed: %s", *why);
+			say(l);
+		}
 		if (say && k + 1 < n) say("trying the next access point of that name");
 	}
 	return -1;
@@ -2779,6 +2797,9 @@ static int s_ns_join_saved;		/* the join uses a saved network's PMK */
 static int s_ns_auto;			/* after the next scan: join the strongest saved network */
 static int s_ns_auto_left;		/* scans still to make for one when the last heard none */
 static unsigned int s_ns_auto_tick;	/* when the last of those was */
+static int s_ns_join_auto;		/* the join under way is one of those (not the player's) */
+static int s_ns_auto_tries;		/* failed automatic joins that may still be tried again (each Wi-Fi start) */
+#define NS_AUTO_TRIES 4			/* (a minute of them: a missed key handshake is not the end) */
 
 /* the saved networks: name and PMK (never the passphrase) */
 #define NS_SAVED_MAX	16
@@ -2852,6 +2873,17 @@ static int wf_have_address(void);
  * made from the menu can be read back afterwards */
 static void ns_join_say(const char *line) { bt_log("join: %s", line); }
 
+/* an automatic join that failed (the key handshake missed, no address): another look and try in
+ * 15 s, a few times a Wi-Fi start; the player's own join is not tried again */
+static void ns_auto_again(void)
+{
+	if (!s_ns_join_auto || s_ns_auto_tries <= 0) return;
+	s_ns_auto_tries--;
+	s_ns_auto_left = 1;
+	s_ns_auto_tick = gpt4_get_current_tick();
+	bt_log("join: again in 15 s (%d more after that)", s_ns_auto_tries);
+}
+
 static void ns_join(void)
 {
 	const char *why = "";
@@ -2882,6 +2914,7 @@ static void ns_join(void)
 	if (wf_connect(s_ns_join_ssid, ns_join_say, &why) != 0) {
 		bt_log("join: failed: %s", why);
 		ns_set_state(NETSVC_READY, why);
+		ns_auto_again();
 		return;
 	}
 	wf_link_start();
@@ -2889,6 +2922,7 @@ static void ns_join(void)
 	wf_link_run(15000000, wf_have_address);
 	if (!pico_net_up(&c)) {
 		ns_set_state(NETSVC_READY, "no address from the network (DHCP)");
+		ns_auto_again();
 		return;
 	}
 	/* a joined secured network is saved (its PMK) */
@@ -3035,6 +3069,7 @@ static int ns_thread(void *arg)
 				if (i >= 0) {
 					memcpy(s_ns_join_ssid, s_ns_aps[i].ssid, sizeof s_ns_join_ssid);
 					s_ns_join_saved = 1;
+					s_ns_join_auto = 1;
 					s_ns_auto_left = 0;
 					cmd = NS_JOIN;
 				} else {	/* a weak saved network a scan can miss: looked for again shortly */
@@ -3056,6 +3091,7 @@ static int ns_thread(void *arg)
 				if (i >= 0) {
 					memcpy(s_ns_join_ssid, s_ns_aps[i].ssid, sizeof s_ns_join_ssid);
 					s_ns_join_saved = 1;
+					s_ns_join_auto = 1;
 					s_ns_auto_left = 0;
 					cmd = NS_JOIN;
 				}
@@ -3104,6 +3140,7 @@ void netsvc_wifi(int on)
 		s_ns_cmd = NS_SCAN;
 		s_ns_auto = 1;				/* a saved network in range is joined */
 		s_ns_auto_left = 6;			/* looked for again for a minute and a half when missed */
+		s_ns_auto_tries = NS_AUTO_TRIES;
 		mutex_release(&s_ns_info);
 		if (!s_ns_thread) {
 			/* the menu's priority: it takes turns with the menu (which hardly sleeps) and waits
@@ -3155,6 +3192,7 @@ void netsvc_join(const char *ssid, const char *pass)
 	strncpy(s_ns_join_ssid, ssid, sizeof s_ns_join_ssid - 1);
 	s_ns_join_ssid[sizeof s_ns_join_ssid - 1] = 0;
 	s_ns_join_saved = pass == 0;
+	s_ns_join_auto = 0;			/* the player's own: tried once, as asked */
 	pico_wipe(s_ns_join_pass, sizeof s_ns_join_pass);
 	if (pass) strncpy(s_ns_join_pass, pass, sizeof s_ns_join_pass - 1);
 	s_ns_cmd = NS_JOIN;

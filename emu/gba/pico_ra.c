@@ -29,6 +29,7 @@
 #include "gba_core_abi.h"
 #include "core_file.h"
 #include "card_writer.h"
+#include "pico_stats.h"	/* the time played, for the mastery card */
 #include "gba_sd_save.h"
 #include "../../platform/common/pico/pico_netsvc.h"
 #include "pico_png.h"
@@ -69,7 +70,7 @@ struct ra_req {
 #define S_REQ	((struct ra_req *)RA_IO_PA)
 #define S_QUEUE	((struct ra_queued *)(RA_IO_PA + 0x4000u))
 #define S_FBUF	((unsigned char *)(RA_IO_PA + RA_FBUF_OFF))
-struct ra_row { char title[96], value[32], text[160]; int unlocked, sw, pref, ach; };	/* ach: the achievement (-1 none) */	/* sw: -1 none, 0/1 a switch */
+struct ra_row { char title[96], value[32], text[160]; int unlocked, sw, pref, ach, head, tone; };	/* ach: the achievement (-1 none) */	/* sw: -1 none, 0/1 a switch */
 #define S_LIST	((struct ra_row *)(RA_IO_PA + RA_LIST_OFF))
 
 static fat_vol *s_vol;
@@ -85,6 +86,7 @@ static unsigned s_sign_in_at;			/* ms of the kept account's last try (0 never) *
 static int s_login_refused;			/* the server said no to the last sign in */
 
 static int s_fake, s_fake_login;		/* the test server (pico_ra_debug) */
+static volatile int s_dbg_cards;		/* oem cheevos:cards - the made-up events below, on the game's thread */
 static int s_card_hold;				/* oem cheevos:hold:1 - the card up stays (screenshots); cheevos:next moves on */
 static unsigned s_lb_ev[5];			/* oem cheevos: leaderboard events seen (started, failed, submitted, rank, tracker) */
 static int s_fake_hc;				/* oem cheevos:fakehc:1 - hardcore with the test server, in memory only
@@ -711,6 +713,12 @@ int pico_ra_challenges(struct pico_ra_chal *out, int max)
 	return n;
 }
 
+/* what the session told already: that it went offline, the server's errors (each once) */
+#define TOLD_ERRORS 4
+static int s_told_offline;
+static char s_told_err[TOLD_ERRORS][96];
+static unsigned s_told_n;
+
 /* ---- the leaderboards' scores sent: each waits a little for its rank, else its own card ---- */
 #define LB_SENT 4
 static struct { unsigned id, at; int on; char title[96], score[24]; } s_lb_sent[LB_SENT];
@@ -762,12 +770,12 @@ static void lb_sent_check(void)
 	}
 }
 
-static void events(int playing)
+/* one of rcheevos' events, as it comes (events) or made up for the console's own checks */
+static void event_one(const struct ra_event *pe, int playing)
 {
-	struct ra_event e;
+	struct ra_event e = *pe;
 	struct pico_ra_card *c;
-	if (!X) return;
-	while (X->next_event(&e)) {
+	{
 		switch (e.kind) {
 		case RA_EV_LOGIN:
 			if (e.ok) {
@@ -847,11 +855,44 @@ static void events(int playing)
 			c->points = e.value;
 			s_points += (unsigned)(e.value > 0 ? e.value : 0);
 			break;
-		case RA_EV_MASTERED:
+		case RA_EV_MASTERED: {	/* melonds-nano's: mastered in hardcore, completed in softcore; the
+					 * player and the time played, as RetroAchievements asks of the card */
+			struct ra_summary sm;
+			char pts[16];
+			unsigned secs = 0;
+			int hc = hc_now();
+			X->summary(&sm);
 			c = card_new(PICO_RA_CARD_MASTERED);
-			copy_n(c->head, sizeof c->head, "Set mastered");
+			copy_n(c->head, sizeof c->head, hc ? "Game mastered" : "Game completed");
 			copy_n(c->title, sizeof c->title, e.title);
-			snprintf(c->line, sizeof c->line, "Every achievement, %d points", e.value);
+			thousands((unsigned)(e.value > 0 ? e.value : 0), pts, sizeof pts);
+			snprintf(c->line, sizeof c->line, sm.total == 1 ? "%u achievement, %s points" : "%u achievements, %s points",
+				 sm.total, pts);
+			copy_n(c->chip, sizeof c->chip, hc ? "Hardcore" : "Softcore");
+			copy_n(c->badge, sizeof c->badge, e.badge);
+			if (pico_stats_playing(&secs) && secs) {
+				unsigned h = secs / 3600u, m = secs / 60u % 60u;
+				if (h) snprintf(c->note, sizeof c->note, "%s, %u h %u min", s_user, h, m);
+				else snprintf(c->note, sizeof c->note, "%s, %u min", s_user, m ? m : 1u);
+			} else copy_n(c->note, sizeof c->note, s_user);
+			break;
+		}
+		case RA_EV_DISCONNECTED:	/* rcheevos could not reach the server: said once, until it is back */
+			if (!s_live_net || s_told_offline) break;
+			s_told_offline = 1;
+			c = card_new(PICO_RA_CARD_NOTE);
+			copy_n(c->head, sizeof c->head, "Offline");
+			copy_n(c->title, sizeof c->title, "Offline softcore");
+			copy_n(c->line, sizeof c->line, "No connection: unlocks are kept and sent later");
+			break;
+		case RA_EV_RECONNECTED:
+			if (!s_told_offline) break;
+			s_told_offline = 0;
+			c = card_new(PICO_RA_CARD_NOTE);
+			copy_n(c->head, sizeof c->head, "Back online");
+			copy_n(c->title, sizeof c->title, "Connected to RetroAchievements");
+			copy_n(c->line, sizeof c->line, "What was kept offline is sent now");
+			c->pct = 1;			/* (green) */
 			break;
 		case RA_EV_PROGRESS: {
 			/* a progress card only when the last card has gone: progress moves every frame */
@@ -915,13 +956,30 @@ static void events(int playing)
 				queue_store(playing);
 			}
 			break;
-		case RA_EV_SERVER_ERROR:
+		case RA_EV_SERVER_ERROR: {	/* a card for each error not told yet this session */
+			int k, told = 0;
 			note(e.text);
+			for (k = 0; k < TOLD_ERRORS; k++) if (!strcmp(s_told_err[k], e.text)) told = 1;
+			if (told || !e.text[0]) break;
+			copy_n(s_told_err[s_told_n++ % TOLD_ERRORS], sizeof s_told_err[0], e.text);
+			c = card_new(PICO_RA_CARD_NOTE);
+			copy_n(c->head, sizeof c->head, "RetroAchievements");
+			copy_n(c->title, sizeof c->title, "Server error");
+			copy_n(c->line, sizeof c->line, e.text);
+			c->pct = -1;			/* (red) */
 			break;
+		}
 		default:
 			break;
 		}
 	}
+}
+
+static void events(int playing)
+{
+	struct ra_event e;
+	if (!X) return;
+	while (X->next_event(&e)) event_one(&e, playing);
 	lb_sent_check();
 }
 
@@ -1230,7 +1288,8 @@ void pico_ra_menu_tick(void)
 /* oem cheevos:fake:1|0, oem cheevos:login (with the test server) */
 void pico_ra_debug(const char *arg)
 {
-	if (!strncmp(arg, "hold:", 5)) s_card_hold = arg[5] == '1';
+	if (!strcmp(arg, "cards")) s_dbg_cards = 1;
+	else if (!strncmp(arg, "hold:", 5)) s_card_hold = arg[5] == '1';
 	else if (!strcmp(arg, "next")) { if (s_card_head != s_card_tail) { s_card_head++; s_card_t0 = now_ms() - 300u; } }
 	else if (!strncmp(arg, "fakehc:", 7)) s_fake_hc = arg[7] == '1';
 	else if (!strncmp(arg, "fake:", 5)) s_fake = arg[5] == '1';
@@ -1320,6 +1379,21 @@ void pico_ra_frame(void)
 	int i;
 	if (!X || !s_game_on) return;
 	s_frame_n++;
+	if (s_dbg_cards) {	/* the session's other cards, through the same code as rcheevos' own events */
+		static const int kinds[4] = { RA_EV_DISCONNECTED, RA_EV_RECONNECTED, RA_EV_SERVER_ERROR, RA_EV_MASTERED };
+		struct ra_event e;
+		int k, was = s_live_net;
+		s_dbg_cards = 0;
+		s_live_net = 1;
+		for (k = 0; k < 4; k++) {
+			memset(&e, 0, sizeof e);
+			e.kind = kinds[k];
+			if (e.kind == RA_EV_SERVER_ERROR) copy_n(e.text, sizeof e.text, "The server answered 503: try again later");
+			if (e.kind == RA_EV_MASTERED) { copy_n(e.title, sizeof e.title, "Pico test"); e.value = 26; }
+			event_one(&e, 1);
+		}
+		s_live_net = was;
+	}
 	if (s_dbg_card) {
 		struct pico_ra_card *c = card_new(PICO_RA_CARD_UNLOCK);
 		s_dbg_card = 0;
@@ -1399,6 +1473,7 @@ void pico_ra_game_end(void)
 	s_live_net = 0;
 	memset(s_trk, 0, sizeof s_trk);
 	memset(s_chal, 0, sizeof s_chal);
+	s_told_offline = 0; memset(s_told_err, 0, sizeof s_told_err);	/* (the next session tells afresh) */
 	if (X) ua_set(0);			/* the menu's calls are no game's */
 	netsvc_quiet(0);			/* the menu: the network as it was */
 	s_card_head = s_card_tail;
@@ -1491,6 +1566,8 @@ static struct ra_row *row_add(const char *title, const char *value, const char *
 	r->sw = -1;
 	r->pref = -1;
 	r->ach = -1;
+	r->head = 0;
+	r->tone = 0;
 	return r;
 }
 
@@ -1510,6 +1587,21 @@ static const char *status_text(void)
 			      s_session_online ? "Softcore" : "Offline softcore";
 	if (!s_pref[PREF_ON]) return "Off";
 	return "No set for this game";
+}
+
+/* an achievement's group on the in-game page (melonds-nano's order) */
+enum { ACH_WAITING, ACH_CHALLENGE, ACH_ALMOST, ACH_LOCKED, ACH_UNLOCKED, ACH_UNSUPPORTED, ACH_GROUPS };
+static int ach_group(const struct ra_achievement *a)
+{
+	int k;
+	if (a->state == RA_ACH_UNLOCKED) {
+		for (k = 0; k < s_nq; k++) if (S_QUEUE[k].id == a->id) return ACH_WAITING;
+		return ACH_UNLOCKED;
+	}
+	if (a->state == RA_ACH_UNSUPPORTED) return ACH_UNSUPPORTED;
+	for (k = 0; k < PICO_RA_CHALLENGES; k++)
+		if (s_chal[k].on && !s_chal[k].ended && s_chal[k].id == a->id) return ACH_CHALLENGE;
+	return a->state == RA_ACH_ALMOST ? ACH_ALMOST : ACH_LOCKED;
 }
 
 int pico_ra_list(void)
@@ -1552,21 +1644,42 @@ int pico_ra_list(void)
 		snprintf(v, sizeof v, "%u of %u", sm.points_unlocked, sm.points_total);
 		row_add("Points", v, "");
 	}
+	/* the set in melonds-nano's groups, each under its heading with its count: waiting to sync (unlocked
+	 * here, not on the server yet), active challenges, almost there, locked, unlocked, unsupported */
 	n = X->achievement_count();
-	for (i = 0; i < n && s_list_n < RA_LIST_MAX; i++) {
-		struct ra_achievement a;
-		struct ra_row *r;
-		if (X->achievement(i, &a) != 0) continue;
-		r = row_add(a.title, "", a.text);
-		r->ach = i;
-		r->unlocked = a.state == RA_ACH_UNLOCKED;
-		if (r->unlocked) copy_n(r->value, sizeof r->value, "Unlocked");
-		else if (a.state == RA_ACH_UNSUPPORTED) copy_n(r->value, sizeof r->value, "Unsupported");
-		else if (a.measured[0]) snprintf(r->value, sizeof r->value, "%s", a.measured);
-		else snprintf(r->value, sizeof r->value, "%u points", a.points);
+	{
+		static const char *const k_group[ACH_GROUPS] = { "Waiting to sync", "Active challenges", "Almost there",
+								  "Locked", "Unlocked", "Unsupported" };
+		int g;
+		for (g = 0; g < ACH_GROUPS; g++) {
+			int count = 0, head = -1;
+			for (i = 0; i < n && s_list_n < RA_LIST_MAX; i++) {
+				struct ra_achievement a;
+				struct ra_row *r;
+				if (X->achievement(i, &a) != 0 || ach_group(&a) != g) continue;
+				if (head < 0) {			/* the heading, its count filled in below */
+					head = s_list_n;
+					row_add(k_group[g], "", "")->head = 1;
+					if (s_list_n >= RA_LIST_MAX) break;
+				}
+				count++;
+				r = row_add(a.title, "", a.text);
+				r->ach = i;
+				r->unlocked = a.state == RA_ACH_UNLOCKED;
+				r->tone = g == ACH_WAITING ? 1 : g == ACH_CHALLENGE ? 2 : 0;
+				if (a.measured[0] && !r->unlocked)
+					snprintf(r->value, sizeof r->value, a.points == 1 ? "%s, %u pt" : "%s, %u pts", a.measured, a.points);
+				else
+					snprintf(r->value, sizeof r->value, a.points == 1 ? "%u pt" : "%u pts", a.points);
+			}
+			if (head >= 0) snprintf(S_LIST[head].value, sizeof S_LIST[head].value, "%d", count);
+		}
 	}
 	return s_list_n;
 }
+
+int pico_ra_row_head(int i) { return i >= 0 && i < s_list_n && S_LIST[i].head; }
+int pico_ra_row_tone(int i) { return i >= 0 && i < s_list_n ? S_LIST[i].tone : 0; }
 
 /* row i's achievement, for the in-game menu's detail page: 0 filled, -1 not an achievement */
 int pico_ra_detail(int i, struct pico_ra_detail *d)

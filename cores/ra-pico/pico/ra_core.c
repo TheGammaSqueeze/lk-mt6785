@@ -43,6 +43,7 @@ static rc_client_t *g_client;
 #define WARNING_ID 101000001u
 static int g_verdict = -1;		/* ra_summary.verdict, for the set loaded last */
 static unsigned g_warn_n, g_warn_points;	/* warning entries in that set (taken out of the counts) */
+static unsigned g_warn_unlocked, g_warn_unlocked_points;	/* those the server counts as unlocked (taken out too) */
 
 /* ---- helpers ------------------------------------------------------------------------------------ */
 
@@ -523,7 +524,7 @@ static void verdict_read(void)
 	rc_client_achievement_list_t *l;
 	unsigned b, i, real = 0;
 	g_verdict = -1;
-	g_warn_n = g_warn_points = 0;
+	g_warn_n = g_warn_points = g_warn_unlocked = g_warn_unlocked_points = 0;
 	if (!g_client || !rc_client_is_game_loaded(g_client)) return;
 	l = rc_client_create_achievement_list(g_client, RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE,
 					      RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
@@ -531,7 +532,10 @@ static void verdict_read(void)
 	for (b = 0; b < l->num_buckets; b++)
 		for (i = 0; i < l->buckets[b].num_achievements; i++) {
 			const rc_client_achievement_t *a = l->buckets[b].achievements[i];
-			if (a->id >= WARNING_ID) { g_warn_n++; g_warn_points += a->points; }
+			if (a->id >= WARNING_ID) {
+				g_warn_n++; g_warn_points += a->points;
+				if (a->unlocked) { g_warn_unlocked++; g_warn_unlocked_points += a->points; }
+			}
 			else real++;
 		}
 	rc_client_destroy_achievement_list(l);
@@ -550,7 +554,7 @@ static void load_done(int result, const char *error_message, rc_client_t *client
 		rc_client_get_user_game_summary(g_client, &s);
 		copy_text(e->title, sizeof e->title, g ? g->title : "");
 		copy_text(e->badge, sizeof e->badge, g ? g->badge_name : "");
-		e->value = (int)s.num_unlocked_achievements;
+		e->value = (int)(s.num_unlocked_achievements > g_warn_unlocked ? s.num_unlocked_achievements - g_warn_unlocked : 0);
 		e->id = s.num_core_achievements > g_warn_n ? s.num_core_achievements - g_warn_n : 0;
 	} else {
 		copy_text(e->text, sizeof e->text, error_message ? error_message : rc_error_str(result));
@@ -653,9 +657,9 @@ static void ex_summary(struct ra_summary *out)
 		copy_text(out->game, sizeof out->game, g->title);
 		copy_text(out->hash, sizeof out->hash, g->hash);
 		rc_client_get_user_game_summary(g_client, &s);
-		out->unlocked = s.num_unlocked_achievements;
+		out->unlocked = s.num_unlocked_achievements > g_warn_unlocked ? s.num_unlocked_achievements - g_warn_unlocked : 0;
 		out->total = s.num_core_achievements > g_warn_n ? s.num_core_achievements - g_warn_n : 0;
-		out->points_unlocked = s.points_unlocked;
+		out->points_unlocked = s.points_unlocked > g_warn_unlocked_points ? s.points_unlocked - g_warn_unlocked_points : 0;
 		out->points_total = s.points_core > g_warn_points ? s.points_core - g_warn_points : 0;
 		rc_client_get_rich_presence_message(g_client, out->rich, sizeof out->rich);
 	}
