@@ -311,6 +311,9 @@ $(BUILDDIR)/platform/common/pico/pico_crypto.o: CFLAGS += -Os
 $(BUILDDIR)/platform/common/pico/pico_net.o: CFLAGS += -Os
 $(BUILDDIR)/platform/common/pico/pico_tls.o: CFLAGS += -Os
 $(BUILDDIR)/platform/common/pico/pico_pki.o: CFLAGS += -Os
+# Bluetooth and the Wi-Fi driver (pico_bt.inc, pico_wifi.inc): radio bound, built for size too. The
+# heap the KPA's boot needs has grown with its features: 490,404 bytes no longer booted (11-18)
+$(BUILDDIR)/$(LOCAL_DIR)/kpa_bt.o: CFLAGS += -Os
 else
 OBJS += $(LOCAL_DIR)/ayaneo_joypad.o
 endif

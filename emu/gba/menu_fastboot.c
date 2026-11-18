@@ -1768,6 +1768,12 @@ static void cmd_mode(const char *arg, void *data, unsigned sz)
 		 g_boot_mode, g_boot_mode == AYANEO_BM_FASTBOOT ? "BOOTLOADER(flash ok)" : "EMU(no flash)",
 		 g_menu_live, game);
 	fastboot_info(lbuf);
+	{	/* the USB channel's failed transfers it came back from (app/mt_boot/fastboot.c) */
+		extern volatile unsigned int g_fb_fail_n, g_fb_fail_status, g_fb_fail_ms, g_fb_fail_where;
+		snprintf(lbuf, sizeof lbuf, "fbfail: %u last %s status %d at %u ms", g_fb_fail_n,
+			 g_fb_fail_where == 2 ? "write" : g_fb_fail_where == 1 ? "read" : "-", (int)g_fb_fail_status, g_fb_fail_ms);
+		fastboot_info(lbuf);
+	}
 	{
 		extern volatile unsigned int g_dbg_sd_guard[2];
 		extern volatile int g_dbg_boot_step, g_dbg_set_step;

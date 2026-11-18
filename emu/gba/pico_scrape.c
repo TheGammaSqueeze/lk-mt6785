@@ -30,6 +30,7 @@ static struct {
 	struct pico_scrape_info info;
 	char dir[112];
 	int lr_try;			/* libretro: which name form / region is being tried */
+	unsigned int asked;		/* when the request in hand was made (GPT ticks) */
 	char path[768];
 } S;
 
@@ -245,12 +246,8 @@ void pico_scrape_start(fat_vol *v, const gba_rom_entry *roms, int nrom, int sour
 
 void pico_scrape_cancel(void)
 {
-	if (S.state == ST_INFO_WAIT || S.state == ST_IMAGE_WAIT || S.state == ST_LR_WAIT) {
-		unsigned int st, len;
-		const unsigned char *b;
-		const char *why;
-		if (netsvc_http_poll(&st, &b, &len, &why) != 0) netsvc_http_release();
-	}
+	if (S.state == ST_INFO_WAIT || S.state == ST_IMAGE_WAIT || S.state == ST_LR_WAIT)
+		netsvc_http_abort();		/* one still running stops now, its slot freed */
 	S.state = S.info.found ? ST_IMPORT : ST_DONE;
 	strncpy(s_why, "stopped", sizeof s_why - 1);
 	S.info.why = s_why;
@@ -264,8 +261,14 @@ void pico_scrape_get(struct pico_scrape_info *info)
 /* a request to the service: path (host apart) */
 static int ask(const char *host, int secure)
 {
+	extern unsigned int gpt4_get_current_tick(void);
+	S.asked = gpt4_get_current_tick();
 	return netsvc_http_begin(host, S.path, secure, 0, 0);
 }
+
+/* longer than the service's own limits allow (name, connection, handshake, a minute of answer):
+ * given up, so one game never holds the rest up */
+#define ANSWER_LIMIT_MS	120000u
 
 /* a transfer's answer: 1 done (*body, *len, *status), 0 not yet, -1 failed (it is released) */
 static int answer(unsigned int *status, const unsigned char **body, unsigned int *len)
@@ -274,6 +277,14 @@ static int answer(unsigned int *status, const unsigned char **body, unsigned int
 	int r = netsvc_http_poll(status, body, len, &why);
 	if (r == -1) { netsvc_http_release(); fail_game(why); return -1; }
 	if (r == -2) { fail_game("the request was lost"); return -1; }
+	if (r == 0) {
+		extern unsigned int gpt4_get_current_tick(void);
+		if ((gpt4_get_current_tick() - S.asked) / 13000u > ANSWER_LIMIT_MS) {
+			netsvc_http_abort();
+			fail_game("the server took too long");
+			return -1;
+		}
+	}
 	return r == 1 ? 1 : 0;
 }
 
@@ -389,6 +400,10 @@ int pico_scrape_step(void)
 			memcpy(host, h, (unsigned)(slash - h));
 			host[slash - h] = 0;
 			strncpy(S.path, slash, sizeof S.path - 1);
+			/* ScreenScraper's covers come full size (900 KB and more: past what a download may
+			 * hold); the menu shows them at 224, so at most twice that is asked for */
+			if (strstr(S.path, "mediaJeu.php") && strlen(S.path) + 32 < sizeof S.path)
+				strcat(S.path, "&maxwidth=448&maxheight=448");
 			r = ask(host, 1);
 			memset(S.path, 0, sizeof S.path);
 			memset(url, 0, sizeof url);

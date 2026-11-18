@@ -900,6 +900,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 	 * placeholder; SNES: the pack thumb. */
 	const snes_pack *impk = m->pk;
 	const snes_img_entry *im;
+	int own_art;
 	if (m->gba_mode) {
 		im = m->gba_cart_img;
 		/* gi is the DISPLAY position; the game (and its art) at that slot is
@@ -916,6 +917,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		im = (g && g->thumb_img != 0xFFFF) ? &m->pk->img[g->thumb_img] : 0;
 	}
 	if (cx < -280 || cx > SNES_VW + 280) return;
+	own_art = m->gba_mode && impk != m->pk && im && im->w && im->h;
 	if (frame) {
 		/* the `card` sprite is the screen BACKGROUND (blue when active, dark when
 		 * not); draw it first, then the boxart on top. The boxart is scaled
@@ -933,7 +935,16 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 			snes_blit_spr_tint(t, m->pk, m->card_act, cx, cy,
 				      (m->card_fw / (float)m->card_act->sw) * sc,
 				      blue_a > 1.0f ? 1.0f : blue_a, dim, dim, dim);
-		if (im) {
+		if (im && own_art) {
+			/* a game's own box art (scraped or put on the card): inside the frame, the whole
+			 * height of the card at the frame's own side margin, at the cover's shape (a
+			 * portrait box stays portrait), with no console strip beneath it */
+			float mrg = (m->card_fw - m->screen_w) * 0.5f;
+			float aw = m->screen_w, ah = m->card_fh - 2.0f * mrg;
+			float sf = aw / (float)im->w, sfh = ah / (float)im->h;
+			if (sfh < sf) sf = sfh;
+			snes_blit_tex_tint(t, impk, im, cx, cy, im->w * sf * sc, im->h * sf * sc, 1.0f, dim, dim, dim);
+		} else if (im) {
 			float sf = m->screen_w / (float)im->w, sfh = m->screen_w / (float)im->h;
 			float bw, bh, iy;
 			if (sfh < sf) sf = sfh;
@@ -950,7 +961,7 @@ static void draw_card(snes_menu *m, snes_target *t, int gi, float cx, float blue
 		 * card-unit box (preserving aspect) and anchor its bottom-right corner near
 		 * the card's bottom-right. Only in GBA/SD mode (SNES mode draws player_icon
 		 * here instead). */
-		if (m->gba_mode && m->gba_types && m->ngames > 0) {
+		if (m->gba_mode && m->gba_types && m->ngames > 0 && !own_art) {
 			int gidx = m->order[((gi % m->ngames) + m->ngames) % m->ngames];
 			int ty = m->gba_types[gidx];
 			const snes_img_entry *lg = (ty >= 0 && ty < 9) ? m->console_logo[ty] : 0;

@@ -30,6 +30,7 @@
 #include "card_writer.h"
 #include "gba_sd_save.h"
 #include "../../platform/common/pico/pico_netsvc.h"
+#include "pico_png.h"
 
 extern BOOT_ARGUMENT *g_boot_arg;
 extern unsigned gpt4_get_current_tick(void);
@@ -78,6 +79,7 @@ static unsigned s_sign_in_at;			/* ms of the kept account's last try (0 never) *
 static int s_login_refused;			/* the server said no to the last sign in */
 
 static int s_fake, s_fake_login;		/* the test server (pico_ra_debug) */
+
 static unsigned s_http_id;			/* the call on the network now (0 none) */
 static int s_http_award;			/* that call is a kept unlock's (S_QUEUE[0]) */
 static unsigned s_award_wait_until;		/* ms: no unlock sent before (after a failure) */
@@ -149,6 +151,96 @@ static int ra_map(void)
 	memset((void *)RA_IO_PA, 0, RA_FBUF_OFF);
 	s_mapped = 1;
 	return 0;
+}
+
+/* ---- badges ----
+ * The pictures of a game's achievements, 48 x 48 RGB565, kept on the card as one pack per game
+ * (/gammaos/ra/b/<game id>.bdg: "GPBG", version, count, then name and pixels each) and read whole at
+ * the game's start into the 512 KB below our buffers, so a card in play draws its badge with nothing
+ * read. Badges the pack lacks are fetched in the menu when there is a network (media.retroachievements
+ * .org), shrunk by pico_png and added to the pack. */
+#define RA_BADGE_PA	(RA_IO_PA - 0x80000u)
+#define BDG_PX		(PICO_RA_BADGE * PICO_RA_BADGE)
+#define BDG_MAX		100
+struct bdg { char name[8]; unsigned short px[BDG_PX]; };
+#define S_BDG	((struct bdg *)RA_BADGE_PA)
+static unsigned s_bdg_game;			/* the game the badges are of (0 none) */
+static int s_bdg_n;				/* badges in memory */
+static char s_bdg_want[BDG_MAX][8];		/* badges of that game not fetched yet */
+static int s_bdg_wantn, s_bdg_dirty;
+static int s_http_badge;			/* the call on the network is a badge's */
+
+const unsigned short *pico_ra_badge(const char *name)
+{
+	int i;
+	if (!name || !name[0] || !s_mapped) return 0;
+	for (i = 0; i < s_bdg_n; i++)
+		if (!strncmp(S_BDG[i].name, name, sizeof S_BDG[i].name)) return S_BDG[i].px;
+	return 0;
+}
+
+/* the pack back on the card (the menu's thread) */
+static void badges_store(void)
+{
+	char name[16];
+	unsigned len = 8 + (unsigned)s_bdg_n * sizeof(struct bdg);
+	if (!s_bdg_dirty || !s_bdg_game || !s_vol || len > RA_FBUF_CAP) return;
+	memcpy(S_FBUF, "GPBG", 4);
+	S_FBUF[4] = 1; S_FBUF[5] = 0;
+	S_FBUF[6] = (unsigned char)s_bdg_n; S_FBUF[7] = (unsigned char)(s_bdg_n >> 8);
+	memcpy(S_FBUF + 8, S_BDG, (unsigned)s_bdg_n * sizeof(struct bdg));
+	snprintf(name, sizeof name, "%u", s_bdg_game);
+	gba_sd_write_named(s_vol, RA_DIR "/b", name, "bdg", S_FBUF, len);
+	s_bdg_dirty = 0;
+}
+
+/* the game's pack from the card, and the badges of its set it lacks (the game is loaded) */
+static void badges_load(void)
+{
+	struct ra_summary sm;
+	char name[16];
+	unsigned n, cnt, i, k, len;
+	badges_store();			/* the last game's badges fetched so far, first */
+	X->summary(&sm);
+	s_bdg_n = s_bdg_wantn = s_bdg_dirty = 0;
+	s_bdg_game = sm.game_id;
+	if (!s_bdg_game || !s_vol) return;
+	snprintf(name, sizeof name, "%u", s_bdg_game);
+	len = gba_sd_read_named(s_vol, RA_DIR "/b", name, "bdg", S_FBUF, 8);
+	if (len == 8 && !memcmp(S_FBUF, "GPBG", 4) && S_FBUF[4] == 1) {
+		cnt = S_FBUF[6] | (unsigned)S_FBUF[7] << 8;
+		if (cnt > BDG_MAX) cnt = BDG_MAX;
+		n = gba_sd_read_named(s_vol, RA_DIR "/b", name, "bdg", S_FBUF, RA_FBUF_CAP);
+		if (n >= 8 + cnt * sizeof(struct bdg)) {
+			memcpy(S_BDG, S_FBUF + 8, cnt * sizeof(struct bdg));
+			s_bdg_n = (int)cnt;
+		}
+	}
+	/* the set's badges not in the pack: to fetch */
+	n = (unsigned)X->achievement_count();
+	for (i = 0; i < n && s_bdg_wantn < BDG_MAX; i++) {
+		struct ra_achievement a;
+		if (X->achievement((int)i, &a) != 0 || !a.badge[0] || pico_ra_badge(a.badge)) continue;
+		for (k = 0; k < (unsigned)s_bdg_wantn && strncmp(s_bdg_want[k], a.badge, 8); k++) ;
+		if (k == (unsigned)s_bdg_wantn && s_bdg_n + s_bdg_wantn < BDG_MAX)
+			copy_n(s_bdg_want[s_bdg_wantn++], sizeof s_bdg_want[0], a.badge);
+	}
+}
+
+/* a fetched badge's PNG (in the download buffer): shrunk into the pack */
+static void badge_take(const char *want, const unsigned char *png, unsigned len)
+{
+	/* the file buffer's halves: the PNG, then the shrunk picture and pico_png's work */
+	unsigned char *art = S_FBUF + RA_FBUF_CAP / 2, *work = art + 0x2000u;
+	int r;
+	if (s_bdg_n >= BDG_MAX || len < 8 || len > RA_FBUF_CAP / 2) return;
+	memcpy(S_FBUF, png, len);			/* (pico_png works on the file in place) */
+	r = pico_png_to_art(S_FBUF, len, PICO_RA_BADGE, work, RA_FBUF_CAP / 2 - 0x2000u, art, 0x2000u, 0);
+	if (r != 12 + BDG_PX * 2) return;		/* (a badge not square, or broken: left out) */
+	copy_n(S_BDG[s_bdg_n].name, sizeof S_BDG[0].name, want);
+	memcpy(S_BDG[s_bdg_n].px, art + 12, BDG_PX * 2);
+	s_bdg_n++;
+	s_bdg_dirty = 1;
 }
 
 /* ---- the card ---- */
@@ -312,7 +404,7 @@ static int ra_load(void)
 		return -1;
 	}
 	span = (hdr[4] + 63u) & ~63u;
-	heap = RA_IO_PA - (RA_MEM_PA + span);
+	heap = RA_BADGE_PA - (RA_MEM_PA + span);
 	X->heap_init((void *)(RA_MEM_PA + span), heap);
 	if (X->init() != 0) { X = 0; s_load_failed = 1; return -1; }
 	clause[0] = 0;
@@ -391,15 +483,25 @@ static void events(int playing)
 		case RA_EV_GAME:
 			s_game_seen = 1;
 			s_game_on = e.ok;
+			if (e.ok && !playing) badges_load();	/* (before play: the card may be read) */
 			if (e.ok) {
 				c = card_new(PICO_RA_CARD_GAME);
 				copy_n(c->head, sizeof c->head, "RetroAchievements");
 				copy_n(c->title, sizeof c->title, e.title);
 				snprintf(c->line, sizeof c->line, "%d of %u achievements unlocked", e.value, e.id);
+			} else if (!strstr(e.text, "Unknown game")) {
+				/* a game with a set that could not be had (no network, no copy kept yet): said once;
+				 * a game RetroAchievements does not know stays quiet */
+				c = card_new(PICO_RA_CARD_NOTE);
+				copy_n(c->head, sizeof c->head, "RetroAchievements");
+				copy_n(c->title, sizeof c->title, "Achievements are off for now");
+				snprintf(c->line, sizeof c->line, "%s", strstr(e.text, "esponse") || !e.text[0] ?
+					 "No network, and this game was never played online: connect once" : e.text);
 			}
 			break;
 		case RA_EV_UNLOCK:
 			c = card_new(PICO_RA_CARD_UNLOCK);
+			copy_n(c->badge, sizeof c->badge, e.badge);
 			copy_n(c->head, sizeof c->head, "Achievement unlocked");
 			copy_n(c->title, sizeof c->title, e.title);
 			copy_n(c->line, sizeof c->line, e.text);
@@ -488,6 +590,14 @@ static struct ra_req *req_find(unsigned id)
 static void award_done(int status, const unsigned char *body, unsigned len)
 {
 	int r = X->award_answer(status, (const char *)body, len);
+	if (r > 0 && body) {			/* the new score it gives */
+		const char *k = strstr((const char *)body, "\"SoftcoreScore\":");
+		if (k) {
+			unsigned v = 0;
+			for (k += 16; *k >= '0' && *k <= '9'; k++) v = v * 10 + (unsigned)(*k - '0');
+			s_points = v;
+		}
+	}
 	if (r != 0) {					/* the server has it, or never will: off the queue */
 		if (r < 0) note("The server refused an unlock");
 		memmove(S_QUEUE, S_QUEUE + 1, (unsigned)(s_nq - 1) * sizeof *S_QUEUE);
@@ -540,7 +650,12 @@ static void pump(int net, int card)
 		const char *why = "";
 		int r = netsvc_http_poll(&status, &body, &len, &why);
 		if (r == 0) return;
-		if (s_http_award) {
+		if (s_http_badge) {	/* a badge: kept when it came, given up when not (fetched again next game) */
+			if (r == 1 && status == 200) badge_take(s_bdg_want[0], body, len);
+			memmove(s_bdg_want, s_bdg_want + 1, (unsigned)(s_bdg_wantn - 1) * sizeof s_bdg_want[0]);
+			s_bdg_wantn--;
+			if (!s_bdg_wantn || !(s_bdg_n % 10)) badges_store();
+		} else if (s_http_award) {
 			award_done(r == 1 ? (int)status : 0, r == 1 ? body : 0, r == 1 ? len : 0);
 		} else {
 			struct ra_req *q = req_find(s_http_id);
@@ -557,6 +672,7 @@ static void pump(int net, int card)
 		if (r != -2) netsvc_http_release();
 		s_http_id = 0;
 		s_http_award = 0;
+		s_http_badge = 0;
 	}
 	if (s_fake) {	/* the test server answers everything here and now */
 		for (i = 0; i < RA_REQ_MAX; i++)
@@ -608,6 +724,15 @@ static void pump(int net, int card)
 			return;
 		s_http_id = 0xFFFFFFFFu;
 		s_http_award = 1;
+		return;
+	}
+	/* then the badges the last game lacked (the menu only, nothing else waiting) */
+	if (online && s_bdg_wantn && !s_in_game) {
+		char path[48];
+		snprintf(path, sizeof path, "/Badge/%.8s.png", s_bdg_want[0]);
+		if (netsvc_http_begin("media.retroachievements.org", path, 1, 0, 0) != 0) return;
+		s_http_id = 0xFFFFFFFEu;
+		s_http_badge = 1;
 	}
 }
 
@@ -640,6 +765,9 @@ void pico_ra_sign_in(const char *user, const char *password)
 	X->set_online(1);
 	X->login_password(user, password);
 }
+
+/* the menu asks: kept unlocks go out now, not after the minute's wait a failure leaves */
+void pico_ra_send_now(void) { s_award_wait_until = now_ms(); }
 
 void pico_ra_sign_out(void)
 {
@@ -781,6 +909,17 @@ int pico_ra_list(void)
 	int n, i;
 	s_list_n = 0;
 	if (!X || !s_game_on) return 0;
+	{	/* first how far the set has got: achievements, then points */
+		struct ra_summary sm;
+		X->summary(&sm);
+		copy_n(S_LIST[0].title, sizeof S_LIST[0].title, "Unlocked");
+		snprintf(S_LIST[0].value, sizeof S_LIST[0].value, "%u of %u", sm.unlocked, sm.total);
+		copy_n(S_LIST[1].title, sizeof S_LIST[1].title, "Points");
+		snprintf(S_LIST[1].value, sizeof S_LIST[1].value, "%u of %u", sm.points_unlocked, sm.points_total);
+		S_LIST[0].text[0] = S_LIST[1].text[0] = 0;
+		S_LIST[0].unlocked = S_LIST[1].unlocked = 0;
+		s_list_n = 2;
+	}
 	n = X->achievement_count();
 	for (i = 0; i < n && s_list_n < RA_LIST_MAX; i++) {
 		struct ra_achievement a;

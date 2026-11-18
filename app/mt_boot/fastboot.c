@@ -422,16 +422,52 @@ void fastboot_session_recover(void)
 		fastboot_state = STATE_COMMAND;
 }
 
+/* GammaOS Pico: fastboot is its debug channel while the menu and games run, the cable left in.
+ * A read or write whose transfer failed (txn_status < 0) used to end the command loop until the
+ * host enumerated the device again, which a cable left in never does: the channel was dead with
+ * the console running on. The loop now listens again after such a failure, 100 in a row at most,
+ * and counts them (oem diag: fbfail). */
+volatile unsigned int g_fb_fail_n, g_fb_fail_status, g_fb_fail_ms, g_fb_fail_where;
+
 static void fastboot_command_loop(void)
 {
 	struct fastboot_cmd *cmd;
 	int r;
+#ifdef AYANEO_GBA_SD
+	int fails_in_row = 0;
+#endif
 	dprintf(ALWAYS,"fastboot: processing commands\n");
 
 again:
+#ifdef AYANEO_GBA_SD
+	if (fastboot_state == STATE_ERROR && fails_in_row < 100) {	/* a reply's write failed */
+		extern unsigned int ayaneo_bb_uptime_ms(void);
+		fails_in_row++;
+		g_fb_fail_n++;
+		g_fb_fail_status = (unsigned)txn_status;
+		g_fb_fail_ms = ayaneo_bb_uptime_ms();
+		g_fb_fail_where = 2;			/* a write */
+		fastboot_state = STATE_COMMAND;
+		thread_sleep(50);
+	}
+#endif
 	while (fastboot_state != STATE_ERROR) {
 		memset(buffer, 0, sizeof(buffer));
 		r = usb_read(buffer, MAX_RSP_SIZE);
+#ifdef AYANEO_GBA_SD
+		if (r < 0 && fails_in_row < 100) {
+			extern unsigned int ayaneo_bb_uptime_ms(void);
+			fails_in_row++;
+			g_fb_fail_n++;
+			g_fb_fail_status = (unsigned)txn_status;
+			g_fb_fail_ms = ayaneo_bb_uptime_ms();
+			g_fb_fail_where = 1;			/* a read */
+			fastboot_state = STATE_COMMAND;		/* and listen again */
+			thread_sleep(50);
+			continue;
+		}
+		if (r >= 0) fails_in_row = 0;
+#endif
 		if (r < 0) break; //no input command
 		buffer[r] = 0;
 		s_reply_dropped = 0;		/* a new command: its reply goes out in full */

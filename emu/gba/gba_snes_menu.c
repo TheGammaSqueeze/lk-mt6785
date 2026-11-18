@@ -474,6 +474,15 @@ static int            s_art_stale;          /* new art on the card for the same 
 /* box art arrived for games already listed (the Network tab's box art): the next menu run reads
  * the card's art afresh */
 void gba_menu_art_forget(void) { s_art_stale = 1; }
+/* games of the list the art index found no art for (the Network tab's box art count); -1 before
+ * the index is made */
+int gba_menu_art_missing(void)
+{
+	int i, n = 0;
+	if (!s_art_sig) return -1;
+	for (i = 0; i < s_art_n; i++) if (s_art[i].state == ART_NONE) n++;
+	return n;
+}
 static int            s_art_budget = 1;     /* art reads allowed in this frame (gba_menu_boxart_budget) */
 static int            s_art_pending;        /* a menu asked for art past the budget: draw again */
 volatile unsigned int g_dbg_boxart_ms;      /* oem diag: the last box art load, ms */
@@ -1116,6 +1125,7 @@ void gba_menu_present(void)
 	ayaneo_canvas_present();
 #if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 	{ extern void pico_ra_menu_tick(void); pico_ra_menu_tick(); }   /* RetroAchievements: its server calls, in any theme */
+	{ extern void netsvc_stall_watch(void); netsvc_stall_watch(); }
 #endif
 	g_dbg_present_cnt++;
 	mtk_wdt_restart();
@@ -1129,6 +1139,11 @@ void gba_menu_present(void)
 		static unsigned int n;
 		if (ayaneo_settings_persist_pending() || (card_writer_pending && card_writer_pending())) thread_sleep(2);
 		else if (++n % 30u == 0) thread_sleep(1);
+		/* and every frame, the threads of the menu's own priority (the fastboot thread, the
+		 * network service) a turn: LK puts a woken or interrupted thread at the front of the
+		 * queue, so without this a ready fastboot thread could wait behind the menu for
+		 * minutes. Back at once when nobody else is ready. */
+		thread_yield();
 	}
 	if (ayaneo_power_hold(0, 0)) {
 		/* Powering off from the menu: the next boot lands on the menu, whatever record a game

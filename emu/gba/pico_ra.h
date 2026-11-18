@@ -30,6 +30,7 @@ unsigned pico_ra_waiting(void);			/* unlocks on the card not yet sent */
 /* the menu: sign in with a password (the token is kept, never the password), sign out */
 void pico_ra_sign_in(const char *user, const char *password);
 void pico_ra_sign_out(void);
+void pico_ra_send_now(void);			/* kept unlocks to the server at the next chance */
 /* every menu frame: server calls, and the unlocks waiting sent while there is a network */
 void pico_ra_menu_tick(void);
 
@@ -56,9 +57,13 @@ struct pico_ra_card {
 	char title[96];			/* the achievement or the game */
 	char line[96];			/* its description, or "12 of 40 achievements" */
 	int points;			/* -1 none */
+	char badge[16];			/* its badge's name ("" none): pico_ra_badge */
 	unsigned alpha;			/* 0..255: it fades in and out */
 };
 int  pico_ra_card_now(struct pico_ra_card *c);
+/* a badge of the game being played, 48 x 48 RGB565, or 0 (not fetched yet) */
+#define PICO_RA_BADGE 48
+const unsigned short *pico_ra_badge(const char *name);
 
 /* the achievements of the game running, for the in-game menu */
 int  pico_ra_game_loaded(void);

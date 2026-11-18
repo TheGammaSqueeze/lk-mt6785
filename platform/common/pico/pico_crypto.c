@@ -698,7 +698,7 @@ static void fe_carry(fe a)
 	int64_t c;
 	for (i = 0; i < 16; i++) {
 		c = a[i] >> 16;				/* floor, also for a negative limb */
-		a[i] -= c << 16;
+		a[i] -= c * 65536;			/* (a shift of a negative c would be undefined) */
 		if (i < 15) a[i + 1] += c;
 		else a[0] += 38 * c;
 	}

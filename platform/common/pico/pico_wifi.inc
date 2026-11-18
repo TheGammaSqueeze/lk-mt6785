@@ -113,6 +113,7 @@ static int s_wf_up;			/* the RAM code runs */
 static int s_wf_station;		/* our station network is on (wf_station_on) */
 static int s_wf_linked;			/* joined: open, or WPA2 with the keys in */
 static int s_wf_coop;			/* the network service drives the radio: waits sleep, not spin */
+static volatile int s_wf_abort;		/* the transfer running was given up (netsvc_http_abort): it ends now */
 #include <kernel/mutex.h>
 static mutex_t s_ns_info;		/* the network service's state (pico_netsvc.h, below) */
 static long long s_ns_time;		/* the network's time for the menu to set (0 none), as of s_ns_time_tick */
@@ -1774,25 +1775,44 @@ static void wf_say(const char *l) { fastboot_info(l); }
 /* oem wifijoin:SSID - scan, then join the strongest network of that name as far as we can:
  * authentication and association; for a secured one, then watches for the AP's first key
  * message */
+static int wf_connect_to(struct wf_seen *best, void (*say)(const char *), const char **why);
+
 /* Joins the strongest network named ssid (the passphrase or PMK already set for it): scan (twice
- * when the first misses it), authentication, association, the key handshake. say (may be 0)
- * hears each step. 0 linked; else -1 with *why. */
+ * when the first misses it), authentication, association, the key handshake. A name several APs
+ * or both bands carry is tried at each, strongest first (up to three), until one links: one band
+ * may not start the key handshake with us while the other does. say (may be 0) hears each step.
+ * 0 linked; else -1 with *why (the last try's). */
 static int wf_connect(const char *ssid, void (*say)(const char *), const char **why)
 {
-	char l[96];
-	unsigned int i, ms, tries;
-	struct wf_seen *best = 0;
+	struct wf_seen *cand[3];
+	unsigned int i, ms, tries, k, n = 0;
 
 	*why = "";
 	if (!s_wf_up || !s_bt_up) { *why = "Wi-Fi is off"; return -1; }
 	if (!*ssid || strlen(ssid) > 32) { *why = "no network name"; return -1; }
-	for (tries = 0; tries < 2 && !best; tries++) {	/* one scan can miss a quiet AP: a second look */
+	for (tries = 0; tries < 2 && !n; tries++) {	/* one scan can miss a quiet AP: a second look */
 		if (wf_scan(&ms) < 0) { *why = "the scan failed"; return -1; }
-		for (i = 0; i < s_wf_nseen; i++)
-			if (!strcmp(s_wf_seen[i].ssid, ssid) && (!best || s_wf_seen[i].dbm > best->dbm))
-				best = &s_wf_seen[i];
+		for (i = 0; i < s_wf_nseen; i++) {
+			struct wf_seen *c = &s_wf_seen[i];
+			if (strcmp(c->ssid, ssid)) continue;
+			/* the three best, strongest first: a weaker one than all three is left out */
+			if (n == 3 && c->dbm <= cand[2]->dbm) continue;
+			k = n < 3 ? n++ : 2;
+			for (; k > 0 && cand[k - 1]->dbm < c->dbm; k--) cand[k] = cand[k - 1];
+			cand[k] = c;
+		}
 	}
-	if (!best) { *why = "the network is not in range"; return -1; }
+	if (!n) { *why = "the network is not in range"; return -1; }
+	for (k = 0; k < n; k++) {
+		if (wf_connect_to(cand[k], say, why) == 0) return 0;
+		if (say && k + 1 < n) say("trying the next access point of that name");
+	}
+	return -1;
+}
+
+static int wf_connect_to(struct wf_seen *best, void (*say)(const char *), const char **why)
+{
+	char l[96];
 	if (say) {
 		snprintf(l, sizeof l, "joining %s: %02x:%02x:%02x:%02x:%02x:%02x ch %u %d dBm", best->ssid, best->bssid[0],
 			 best->bssid[1], best->bssid[2], best->bssid[3], best->bssid[4], best->bssid[5], best->channel, best->dbm);
@@ -1810,6 +1830,10 @@ static int wf_connect(const char *ssid, void (*say)(const char *), const char **
 		if (!s_wf_keys_in) {
 			*why = s_wf_key_why ? s_wf_key_why : s_wf_join_eapol ? "the key handshake did not finish" :
 			       "the network never started the key handshake";
+			if (say) {
+				snprintf(l, sizeof l, "keys: %s (key frames %u)", *why, s_wf_join_eapol);
+				say(l);
+			}
 			wf_channel(best, 1);
 			s_wf_frame_sink = 0;
 			return -1;
@@ -1946,14 +1970,70 @@ enum { NSC_IDLE, NSC_WAIT, NSC_SCAN, NSC_JOIN, NSC_PUMP, NSC_DNS = 10, NSC_CONNE
        NSC_PARSE, NSC_DONE };
 volatile unsigned int g_ns_crumb[4];
 
+/* A transfer step that outlives its own time limit (they are all bounded) means something is
+ * stuck, and USB may be stuck with it: the menu's thread, which keeps drawing, notes every thread's
+ * state then (thread_snapshot), and again every 20 s while it lasts, for oem netsvc:stall once the
+ * console answers again. Lock free: the service may be the stuck one. */
+static char s_ns_stall[1536];
+static unsigned int s_ns_stall_len, s_ns_stall_n;
+
+void netsvc_stall_watch(void)
+{
+	static unsigned int step, since, pumps, noted, last_pumps, pump_seen, boxed;
+	unsigned int s = g_ns_crumb[0], now = gpt4_get_current_tick() / 13000u, lim, at;
+	if (g_ns_crumb[1] != last_pumps) { last_pumps = g_ns_crumb[1]; pump_seen = now; boxed = 0; }
+	if (s != step) { step = s; since = now; pumps = g_ns_crumb[1]; noted = 0; pump_seen = now; return; }
+	if (s < NSC_DNS || s > NSC_PARSE) return;
+	/* in a transfer the link is pumped all the time: 8 s without a pump means the service is
+	 * stuck inside something. Its thread's code addresses and the fastboot thread's state go in
+	 * the black box on the card (oem blackbox, after any restart). Once per stuck spell. */
+	if (!boxed && now - pump_seen > 8000u) {
+		extern void ayaneo_bb_note(unsigned type, const char *msg, const unsigned *a, unsigned n);
+		unsigned int a[8], w[6], wq, fwq;
+		char msg[48];
+		int st = thread_code_words("pico_net", w, 6, &wq), fst;
+		unsigned int f[1];
+		fst = thread_code_words("fastboot", f, 1, &fwq);
+		memcpy(a, w, sizeof w);
+		a[6] = (unsigned)fst;
+		a[7] = fwq;
+		snprintf(msg, sizeof msg, "net stuck s%u %us st%x wq%x b%u", s, (now - pump_seen) / 1000u,
+			 (unsigned)st, wq, g_ns_crumb[2]);
+		ayaneo_bb_note(0x4E45u, msg, a, 8);
+		boxed = 1;
+	}
+	lim = s == NSC_RECV ? 65000u : s == NSC_TLS ? 18000u : 10000u;
+	if ((now - since < lim && now - pump_seen < 8000u) || (noted && now - noted < 20000u)) return;
+	noted = now;
+	s_ns_stall_n++;
+	at = (unsigned)snprintf(s_ns_stall, sizeof s_ns_stall, "#%u step %u for %u ms, pumps +%u, last pump %u ms ago\n",
+				s_ns_stall_n, s, now - since, g_ns_crumb[1] - pumps, now - g_ns_crumb[3]);
+	if (at < sizeof s_ns_stall)
+		at += thread_snapshot(s_ns_stall + at, sizeof s_ns_stall - at);
+	s_ns_stall_len = at < sizeof s_ns_stall ? at : sizeof s_ns_stall - 1;
+}
+
 static void wf_link_pump(void)
 {
 	static unsigned char fr[WF_BUF];
 	unsigned int n;
 	int got, k = 0;
+	static unsigned int given;
+	unsigned int now = gpt4_get_current_tick();
 	g_ns_crumb[1]++;
-	g_ns_crumb[3] = gpt4_get_current_tick() / 13000u;
-	while ((got = wf_frame(fr, sizeof fr)) >= 0) {
+	g_ns_crumb[3] = now / 13000u;
+	/* Running flat out (a transfer), the link gives the other threads of its priority a turn
+	 * every 2 ms. LK puts a thread taken off the CPU with time left in its turn back at the
+	 * front of the queue, and so does every wake from a sleep: the menu and this service kept
+	 * cutting in front of the fastboot thread, which sat ready for minutes (USB gone quiet,
+	 * a black box record of 11-18 showed it), and of each other (a handshake crawling for
+	 * minutes). A yield goes to the back and costs nothing when nobody else is ready. */
+	if (GPT_US(now - given) > 2000u) {
+		given = now;
+		thread_yield();
+	}
+	/* at most a ringful at a time: a busy network still lets the events and timers have their turn */
+	while (k < WF_RX0N && (got = wf_frame(fr, sizeof fr)) >= 0) {
 		wf_link_frame(fr, got < (int)sizeof fr ? got : (int)sizeof fr);
 		k++;
 	}
@@ -1969,7 +2049,7 @@ static void wf_link_pump(void)
 static void wf_link_run(unsigned int us, int (*done)(void))
 {
 	unsigned int t0 = gpt4_get_current_tick();
-	while (GPT_US(gpt4_get_current_tick() - t0) < us) {
+	while (GPT_US(gpt4_get_current_tick() - t0) < us && !s_wf_abort) {
 		if (done && done())
 			break;
 		wf_link_pump();
@@ -2595,6 +2675,8 @@ static enum { NS_NONE, NS_SCAN, NS_JOIN, NS_LEAVE, NS_OFF } s_ns_cmd;
 static char s_ns_join_ssid[33], s_ns_join_pass[64];
 static int s_ns_join_saved;		/* the join uses a saved network's PMK */
 static int s_ns_auto;			/* after the next scan: join the strongest saved network */
+static int s_ns_auto_left;		/* scans still to make for one when the last heard none */
+static unsigned int s_ns_auto_tick;	/* when the last of those was */
 
 /* the saved networks: name and PMK (never the passphrase) */
 #define NS_SAVED_MAX	16
@@ -2603,6 +2685,7 @@ static int s_ns_nsaved;
 
 /* an HTTP request handed to the service */
 static enum { NSH_IDLE, NSH_QUEUED, NSH_RUNNING, NSH_DONE, NSH_FAILED } s_nsh_state;
+static int s_nsh_drop;			/* the asker gave the running transfer up (netsvc_http_abort) */
 static char s_nsh_host[96], s_nsh_path[640];
 static int s_nsh_secure;
 static unsigned char s_nsh_post[4096];
@@ -2663,6 +2746,10 @@ static void ns_take_scan(void)
 static int wf_have_address(void);
 
 /* join (the service thread, the radio held): the network, an address, the clock */
+/* a join's steps (the AP tried, authentication, association, the keys) into oem btlog, so a join
+ * made from the menu can be read back afterwards */
+static void ns_join_say(const char *line) { bt_log("join: %s", line); }
+
 static void ns_join(void)
 {
 	const char *why = "";
@@ -2690,7 +2777,8 @@ static void ns_join(void)
 		memcpy(s_wf_pass, s_ns_join_pass, s_wf_pass_len);
 	}
 	pico_wipe(s_ns_join_pass, sizeof s_ns_join_pass);
-	if (wf_connect(s_ns_join_ssid, 0, &why) != 0) {
+	if (wf_connect(s_ns_join_ssid, ns_join_say, &why) != 0) {
+		bt_log("join: failed: %s", why);
 		ns_set_state(NETSVC_READY, why);
 		return;
 	}
@@ -2749,6 +2837,7 @@ static void ns_http(void)
 	int rc;
 	mutex_acquire(&s_ns_info);
 	s_nsh_state = NSH_RUNNING;
+	s_wf_abort = 0;
 	mutex_release(&s_ns_info);
 	/* a transfer runs flat out (it takes turns with the menu): asleep between frames it would
 	 * lose a timer tick on every round trip */
@@ -2760,15 +2849,55 @@ static void ns_http(void)
 	s_nsh_status = status;
 	s_nsh_body = body;
 	s_nsh_len = len;
-	s_nsh_why = why;
-	s_nsh_state = rc == 0 ? NSH_DONE : NSH_FAILED;
+	s_nsh_why = s_wf_abort ? "stopped" : why;
+	/* given up while it ran: nobody will read the answer, so the slot is free at once */
+	s_nsh_state = s_nsh_drop ? NSH_IDLE : rc == 0 ? NSH_DONE : NSH_FAILED;
+	s_nsh_drop = 0;
+	s_wf_abort = 0;
 	mutex_release(&s_ns_info);
 }
 
 /* a game is being played: the service sleeps (no link pumps, nothing sent), so it costs the game
  * nothing; the network stays joined and picks up where it was when the menu is back */
 static volatile int s_ns_quiet;
-void netsvc_quiet(int on) { s_ns_quiet = on; if (!on) event_signal(&s_ns_wake, false); }
+/* The service's locks and its wake event, made once, by whichever comes first: the menu (its first
+ * netsvc call can come before the fastboot commands are registered, at the same moment of the boot)
+ * or the registration. A zeroed event signalled before this sent the KPA's boot round in a loop. */
+static volatile int s_ns_inited;
+static void ns_ready(void)
+{
+	if (s_ns_inited) return;
+	enter_critical_section();
+	if (!s_ns_inited) {
+		mutex_init(&s_wf_radio);
+		mutex_init(&s_ns_info);
+		event_init(&s_ns_wake, false, EVENT_FLAG_AUTOUNSIGNAL);
+		s_ns_inited = 1;
+	}
+	exit_critical_section();
+}
+
+void netsvc_quiet(int on)
+{
+	ns_ready();
+	s_ns_quiet = on;
+	if (!on) event_signal(&s_ns_wake, false);
+}
+
+/* a transfer asked for while online, and the network gone before it ran: it fails, rather than
+ * wait for a network that may not come back (the asker would wait with it) */
+static void ns_fail_queued(int online)
+{
+	if (online) return;
+	mutex_acquire(&s_ns_info);
+	if (s_nsh_state == NSH_QUEUED) {
+		s_nsh_status = 0;
+		s_nsh_len = 0;
+		s_nsh_why = "not connected to a network";
+		s_nsh_state = NSH_FAILED;
+	}
+	mutex_release(&s_ns_info);
+}
 
 static int ns_thread(void *arg)
 {
@@ -2785,6 +2914,7 @@ static int ns_thread(void *arg)
 		mutex_acquire(&s_wf_radio);
 		s_wf_coop = 1;
 		if (!s_wf_up) {
+			ns_fail_queued(0);
 			if (s_ns_st.state != NETSVC_OFF && s_ns_st.state != NETSVC_STARTING && s_ns_st.state != NETSVC_FAILED)
 				ns_set_state(NETSVC_OFF, 0);
 			s_wf_coop = 0;
@@ -2803,17 +2933,40 @@ static int ns_thread(void *arg)
 				if (i >= 0) {
 					memcpy(s_ns_join_ssid, s_ns_aps[i].ssid, sizeof s_ns_join_ssid);
 					s_ns_join_saved = 1;
+					s_ns_auto_left = 0;
+					cmd = NS_JOIN;
+				} else {	/* a weak saved network a scan can miss: looked for again shortly */
+					s_ns_auto_tick = gpt4_get_current_tick();
+				}
+			}
+		}
+		if (cmd == NS_NONE && s_ns_auto_left > 0 && s_ns_st.state == NETSVC_READY && s_ns_nsaved &&
+		    GPT_US(gpt4_get_current_tick() - s_ns_auto_tick) > 15000000u) {
+			/* Wi-Fi on and nothing joined yet: another look for a saved network, every 15 s, a few times */
+			unsigned int ms;
+			s_ns_auto_left--;
+			s_ns_auto_tick = gpt4_get_current_tick();
+			ns_set_state(NETSVC_SCANNING, 0);
+			if (wf_scan(&ms) == 0) ns_take_scan();
+			ns_set_state(NETSVC_READY, 0);
+			{
+				int i = ns_auto_pick();
+				if (i >= 0) {
+					memcpy(s_ns_join_ssid, s_ns_aps[i].ssid, sizeof s_ns_join_ssid);
+					s_ns_join_saved = 1;
+					s_ns_auto_left = 0;
 					cmd = NS_JOIN;
 				}
 			}
 		}
-		if (cmd == NS_JOIN) { g_ns_crumb[0] = NSC_JOIN; ns_join(); }
+		if (cmd == NS_JOIN) { g_ns_crumb[0] = NSC_JOIN; s_ns_auto_left = 0; ns_join(); }
 		if (cmd == NS_LEAVE && s_wf_linked) {
 			pico_net_stop();
 			s_wf_linked = 0;
 			ns_set_state(NETSVC_READY, "");
 		}
 		online = s_ns_st.state == NETSVC_ONLINE;
+		ns_fail_queued(online);
 		if (online && s_nsh_state == NSH_QUEUED) {
 			ns_http();
 			g_ns_crumb[0] = NSC_DONE;
@@ -2832,6 +2985,7 @@ static void ns_wake(void) { event_signal(&s_ns_wake, false); }
 
 void netsvc_wifi(int on)
 {
+	ns_ready();
 	if (on) {
 		if (s_wf_up) return;
 		ns_set_state(NETSVC_STARTING, "");
@@ -2846,6 +3000,7 @@ void netsvc_wifi(int on)
 		mutex_acquire(&s_ns_info);
 		s_ns_cmd = NS_SCAN;
 		s_ns_auto = 1;				/* a saved network in range is joined */
+		s_ns_auto_left = 6;			/* looked for again for a minute and a half when missed */
 		mutex_release(&s_ns_info);
 		if (!s_ns_thread) {
 			/* the menu's priority: it takes turns with the menu (which hardly sleeps) and waits
@@ -2871,6 +3026,7 @@ void netsvc_wifi(int on)
 
 void netsvc_scan(void)
 {
+	ns_ready();
 	mutex_acquire(&s_ns_info);
 	s_ns_cmd = NS_SCAN;
 	mutex_release(&s_ns_info);
@@ -2880,6 +3036,7 @@ void netsvc_scan(void)
 int netsvc_aps(struct netsvc_ap *out, int max)
 {
 	int n;
+	ns_ready();
 	mutex_acquire(&s_ns_info);
 	n = s_ns_naps < max ? s_ns_naps : max;
 	memcpy(out, s_ns_aps, sizeof *out * (unsigned)n);
@@ -2889,6 +3046,7 @@ int netsvc_aps(struct netsvc_ap *out, int max)
 
 void netsvc_join(const char *ssid, const char *pass)
 {
+	ns_ready();
 	mutex_acquire(&s_ns_info);
 	strncpy(s_ns_join_ssid, ssid, sizeof s_ns_join_ssid - 1);
 	s_ns_join_ssid[sizeof s_ns_join_ssid - 1] = 0;
@@ -2904,6 +3062,7 @@ void netsvc_join(const char *ssid, const char *pass)
 
 void netsvc_leave(void)
 {
+	ns_ready();
 	mutex_acquire(&s_ns_info);
 	s_ns_cmd = NS_LEAVE;
 	mutex_release(&s_ns_info);
@@ -2912,6 +3071,7 @@ void netsvc_leave(void)
 
 void netsvc_get(struct netsvc_status *st)
 {
+	ns_ready();
 	mutex_acquire(&s_ns_info);
 	*st = s_ns_st;
 	if (!st->why) st->why = "";
@@ -2921,6 +3081,7 @@ void netsvc_get(struct netsvc_status *st)
 int netsvc_saved_names(char names[][33], int max)
 {
 	int i, n;
+	ns_ready();
 	mutex_acquire(&s_ns_info);
 	n = s_ns_nsaved < max ? s_ns_nsaved : max;
 	for (i = 0; i < n; i++) memcpy(names[i], s_ns_saved[i].ssid, 33);
@@ -2931,6 +3092,7 @@ int netsvc_saved_names(char names[][33], int max)
 void netsvc_forget(const char *ssid)
 {
 	int k;
+	ns_ready();
 	mutex_acquire(&s_ns_info);
 	k = ns_saved_find(ssid);
 	if (k >= 0) {
@@ -2979,6 +3141,7 @@ void netsvc_saved_load(void *vol)
 {
 	static unsigned char f[8 + NS_SAVED_MAX * 65];
 	unsigned int n, i, cnt;
+	ns_ready();
 	if (!vol) return;
 	n = gba_sd_read_named((fat_vol *)vol, NS_SAVED_DIR, "wifi", "dat", f, sizeof f);
 	if (n < 8 || memcmp(f, "GPWN", 4) || f[4] != 1) return;
@@ -3000,6 +3163,7 @@ void netsvc_saved_store(void *vol)
 {
 	static unsigned char f[8 + NS_SAVED_MAX * 65];
 	unsigned int i, len;
+	ns_ready();
 	if (!vol) return;
 	memset(f, 0, sizeof f);
 	memcpy(f, "GPWN", 4);
@@ -3020,6 +3184,7 @@ void netsvc_saved_store(void *vol)
 int netsvc_http_begin(const char *host, const char *path, int secure, const void *post, unsigned int post_len)
 {
 	int ok = 0;
+	ns_ready();
 	mutex_acquire(&s_ns_info);
 	if (s_ns_st.state == NETSVC_ONLINE && s_nsh_state == NSH_IDLE && strlen(host) < sizeof s_nsh_host &&
 	    strlen(path) < sizeof s_nsh_path && post_len <= sizeof s_nsh_post) {
@@ -3039,6 +3204,7 @@ int netsvc_http_begin(const char *host, const char *path, int secure, const void
 int netsvc_http_poll(unsigned int *status, const unsigned char **body, unsigned int *len, const char **why)
 {
 	int r;
+	ns_ready();
 	mutex_acquire(&s_ns_info);
 	r = s_nsh_state == NSH_DONE ? 1 : s_nsh_state == NSH_FAILED ? -1 : s_nsh_state == NSH_IDLE ? -2 : 0;
 	if (r == 1) { *status = s_nsh_status; *body = s_nsh_body; *len = s_nsh_len; }
@@ -3049,14 +3215,32 @@ int netsvc_http_poll(unsigned int *status, const unsigned char **body, unsigned 
 
 void netsvc_http_release(void)
 {
+	ns_ready();
 	mutex_acquire(&s_ns_info);
-	s_nsh_state = NSH_IDLE;
+	if (s_nsh_state == NSH_RUNNING)
+		s_nsh_drop = 1;		/* still running: the slot frees itself when it ends */
+	else
+		s_nsh_state = NSH_IDLE;
+	mutex_release(&s_ns_info);
+}
+
+void netsvc_http_abort(void)
+{
+	ns_ready();
+	mutex_acquire(&s_ns_info);
+	if (s_nsh_state == NSH_RUNNING) {
+		s_nsh_drop = 1;
+		s_wf_abort = 1;		/* its wait ends at the next turn of the link */
+	} else {
+		s_nsh_state = NSH_IDLE;
+	}
 	mutex_release(&s_ns_info);
 }
 
 void netsvc_time_hint(void)
 {
 	long long t = pico_clock_is_set() ? pico_clock_utc() : 0;
+	ns_ready();
 	mutex_acquire(&s_ns_info);
 	s_now_utc = t;
 	s_now_tick = gpt4_get_current_tick();
@@ -3067,6 +3251,7 @@ int netsvc_clock_apply(void)
 {
 	long long t, had;
 	unsigned int tick;
+	ns_ready();
 	mutex_acquire(&s_ns_info);
 	t = s_ns_time;
 	tick = s_ns_time_tick;
@@ -3082,6 +3267,7 @@ int netsvc_clock_apply(void)
 
 void netsvc_user_agent(const char *ua)
 {
+	ns_ready();
 	strncpy(s_wf_user_agent, ua, sizeof s_wf_user_agent - 1);
 }
 
@@ -3110,15 +3296,74 @@ static void cmd_netsvc(const char *arg, void *data, unsigned sz)
 		host[n] = 0;
 		snprintf(l, sizeof l, "queued: %d", netsvc_http_begin(host, slash ? slash : "/", 1, 0, 0));
 		fastboot_info(l);
+	} else if (!strncmp(arg, "canary", 6)) {
+		/* the Wi-Fi memory nobody of ours writes while joined: after the rings, after the answer
+		 * buffers, the game list's stretch. canary:set fills it with a pattern; canary reports what
+		 * changed (by the radio, or a stray write of ours) */
+		static const unsigned int gap[3][2] = { { 0x1800u, 0x10000u }, { 0x58000u, 0x60000u },
+							 { WF_LIST_AREA, WF_LIST_AREA + WF_LIST_AREA_LEN } };
+		unsigned int g, o;
+		for (g = 0; g < 3; g++) {
+			volatile unsigned int *w = WF_AT(gap[g][0]);
+			unsigned int nw = (gap[g][1] - gap[g][0]) / 4u, bad = 0, first = 0, last = 0;
+			for (o = 0; o < nw; o++) {
+				unsigned int want = 0xC0DE0000u ^ (gap[g][0] + o * 4u);
+				if (arg[6] == ':') { w[o] = want; continue; }
+				if (w[o] != want) { if (!bad) first = o; last = o; bad++; }
+			}
+			snprintf(l, sizeof l, "gap %05x..%05x: %u words changed, first +%x last +%x", gap[g][0], gap[g][1], bad,
+				 first * 4u, last * 4u);
+			fastboot_info(l);
+		}
+		fastboot_okay("");
+		return;
+	} else if (!strncmp(arg, "rsn:", 4)) {
+		/* a network's security element as the last scan heard it (each AP of the name), in hex */
+		unsigned int i, k;
+		for (i = 0; i < s_wf_nseen; i++) {
+			const struct wf_seen *a = &s_wf_seen[i];
+			if (strcmp(a->ssid, arg + 4)) continue;
+			snprintf(l, sizeof l, "ch %u %d dBm wpa %u rsn %u bytes:", a->channel, a->dbm, a->wpa_len, a->rsn_len);
+			fastboot_info(l);
+			for (k = 0; k < a->rsn_len; k += 24) {	/* 24 bytes a line (an info line is short) */
+				unsigned int j;
+				char *o2 = l;
+				for (j = k; j < a->rsn_len && j < k + 24; j++) o2 += snprintf(o2, 3, "%02x", a->rsn[j]);
+				fastboot_info(l);
+			}
+		}
+		fastboot_okay("");
+		return;
 	} else if (!strncmp(arg, "crumb", 5)) {
 		/* no lock taken: this must answer even when the service or the menu is stuck */
 		extern volatile unsigned int g_dbg_present_cnt, g_scrape_crumb;
-		snprintf(l, sizeof l, "crumb: step %u pumps %u bytes %u pump@%u now %u frames %u scrape %08x",
-			 g_ns_crumb[0], g_ns_crumb[1], g_ns_crumb[2], g_ns_crumb[3], gpt4_get_current_tick() / 13000u,
-			 g_dbg_present_cnt, g_scrape_crumb);
+		/* short: a fastboot info line keeps about 64 characters */
+		snprintf(l, sizeof l, "s%u p%u b%u t%u n%u f%u x%x", g_ns_crumb[0], g_ns_crumb[1], g_ns_crumb[2],
+			 g_ns_crumb[3], gpt4_get_current_tick() / 13000u, g_dbg_present_cnt, g_scrape_crumb);
 		fastboot_info(l);
 		fastboot_okay("");
 		return;
+	} else if (!strncmp(arg, "stall", 5)) {
+		/* what netsvc_stall_watch noted, a line at a time, cut to what a fastboot line holds */
+		unsigned int i = 0;
+		if (!s_ns_stall_len) fastboot_info("no stall noted");
+		while (i < s_ns_stall_len) {
+			unsigned int j = i, k = 0;
+			while (j < s_ns_stall_len && s_ns_stall[j] != '\n') j++;
+			while (i < j) {
+				k = j - i > 56 ? 56 : j - i;
+				memcpy(l, s_ns_stall + i, k);
+				l[k] = 0;
+				fastboot_info(l);
+				i += k;
+			}
+			i = j + 1;
+		}
+		fastboot_okay("");
+		return;
+	} else if (!strncmp(arg, "scrape", 6)) {
+		extern volatile int g_dbg_nui_scrape;
+		g_dbg_nui_scrape = strstr(arg, "stop") ? 2 : 1;
 	} else if (!strncmp(arg, "art", 3)) {
 		extern volatile int g_dbg_nui_art;
 		g_dbg_nui_art = 1;
@@ -3166,9 +3411,7 @@ WF_LOCKED(cmd_wifiart)
 
 static void pico_wifi_register_cmds(void)
 {
-	mutex_init(&s_wf_radio);
-	mutex_init(&s_ns_info);
-	event_init(&s_ns_wake, false, EVENT_FLAG_AUTOUNSIGNAL);
+	ns_ready();
 	fastboot_register("oem wifiurl", cmd_wifiurl_locked, 1, 0);
 	fastboot_register("oem wificap", cmd_wificap_locked, 1, 0);
 	fastboot_register("oem wifiscan", cmd_wifiscan_locked, 1, 0);

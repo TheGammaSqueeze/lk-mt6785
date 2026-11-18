@@ -111,6 +111,8 @@ void thread_sleep(time_t delay);
 
 void dump_thread(thread_t *t);
 void dump_all_threads(void);
+unsigned int thread_snapshot(char *out, unsigned int cap);
+int thread_code_words(const char *name, unsigned int *out, int n, unsigned int *wq);
 void dump_target_threads_stack(void);
 
 /* scheduler routines */

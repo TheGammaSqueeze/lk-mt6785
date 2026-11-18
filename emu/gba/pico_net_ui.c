@@ -15,6 +15,7 @@
 #include "pico_scrape.h"
 #include "../../platform/common/pico/pico_netsvc.h"
 #include "pico_ra.h"
+#include "gba_sd_save.h"
 
 #define MAX_APS		24
 #define LIST_ROWS	8		/* networks in view at once */
@@ -46,6 +47,8 @@ static struct {
 	int back;			/* the screen to go back to */
 } K;
 static char s_ra_name[64], s_ra_pass[64];	/* typed for signing in (the password only until then) */
+static int s_ra_confirm;			/* Sign out pressed once: the next A signs out */
+enum { RA_ROW_ACCOUNT, RA_ROW_POINTS, RA_ROW_WAITING, RA_ROW_SIGN_OUT, RA_IN_ROWS };
 
 static const char *const k_layouts[3][4] = {
 	{ "1234567890", "qwertyuiop", "asdfghjkl@", "zxcvbnm.-_" },
@@ -60,9 +63,31 @@ static int wide_at(int c) { int i; for (i = 4; i > 0; i--) if (c >= k_wide_col[i
 static const char *const k_regions[4] = { "wor", "us", "eu", "jp" };
 static const char *const k_region_names[4] = { "World", "USA", "Europe", "Japan" };
 
+/* Wi-Fi left on when the console was last used: /gammaos/net/wifi.on holds '1' (on) or '0'. Read
+ * when the card arrives; written by the Wi-Fi row on the menu's thread */
+static void wifi_on_store(int on)
+{
+	unsigned char b = on ? '1' : '0';
+	if (s_vol) gba_sd_write_named(s_vol, "/gammaos/net", "wifi", "on", &b, 1);
+}
+static int wifi_on_load(fat_vol *vol)
+{
+	unsigned char b = 0;
+	return gba_sd_read_named(vol, "/gammaos/net", "wifi", "on", &b, 1) == 1 && b == '1';
+}
+
 void nui_set_roms(fat_vol *vol, const gba_rom_entry *roms, int nrom)
 {
+	static int resumed;
 	if (vol != s_vol && vol) netsvc_saved_load(vol);	/* the card's saved networks, once per card */
+	/* Wi-Fi on at the last use: on again (once per power on), two seconds after the menu is up
+	 * so its start never holds the menu's first frames; a saved network in range is joined */
+	if (vol && !resumed) {
+		struct netsvc_status ns;
+		resumed = 1;
+		netsvc_get(&ns);
+		if (ns.state == NETSVC_OFF && wifi_on_load(vol)) s_start_pending = 120;
+	}
 	pico_ra_card(vol);					/* and RetroAchievements' account */
 	s_vol = vol;
 	s_roms = roms;
@@ -91,6 +116,13 @@ const char *nui_wifi_summary(void)
 	case NETSVC_ONLINE:   snprintf(b, sizeof b, "%s", s_st.ssid); return b;
 	default:              return tr("Not connected");
 	}
+}
+
+/* the games the menu found no box art for (its art index), -1 not known */
+static int art_missing(void)
+{
+	extern int gba_menu_art_missing(void);
+	return gba_menu_art_missing();
 }
 
 /* ---- the Wi-Fi screen's rows: Wi-Fi on/off, then (when on) the networks, then Search again ---- */
@@ -205,16 +237,26 @@ int nui_input(int e)
 		}
 		return NUI_ACT_NONE;
 	case NUI_RA: {
-		int in = pico_ra_state() == PICO_RA_SIGNED_IN, rows = in ? 1 : 3;
-		if (e & NUI_B) { s_screen = NUI_HOME; s_sel = 2; memset(s_ra_pass, 0, sizeof s_ra_pass); return NUI_ACT_NONE; }
+		int in = pico_ra_state() == PICO_RA_SIGNED_IN, rows = in ? RA_IN_ROWS : 3;
+		if (e & NUI_B) {
+			if (s_ra_confirm) { s_ra_confirm = 0; return NUI_ACT_NONE; }	/* B: not signing out after all */
+			s_screen = NUI_HOME; s_sel = 2; memset(s_ra_pass, 0, sizeof s_ra_pass);
+			return NUI_ACT_NONE;
+		}
+		if (e & (NUI_UP | NUI_DOWN)) s_ra_confirm = 0;
 		if (e & NUI_UP) s_sel = s_sel > 0 ? s_sel - 1 : rows - 1;
 		if (e & NUI_DOWN) s_sel = s_sel < rows - 1 ? s_sel + 1 : 0;
 		if (s_sel >= rows) s_sel = rows - 1;
 		if (!(e & NUI_A)) return NUI_ACT_NONE;
 		s_msg[0] = 0;
 		if (in) {
-			pico_ra_sign_out();
-			s_sel = 0;
+			if (s_sel == RA_ROW_WAITING && pico_ra_waiting()) {
+				if (s_st.state != NETSVC_ONLINE) snprintf(s_msg, sizeof s_msg, "%s", tr("Connect to a Wi-Fi network first"));
+				else { pico_ra_send_now(); snprintf(s_msg, sizeof s_msg, "%s", tr("Sending the unlocks...")); }
+			} else if (s_sel == RA_ROW_SIGN_OUT) {
+				if (!s_ra_confirm) s_ra_confirm = 1;	/* once more to be sure */
+				else { s_ra_confirm = 0; pico_ra_sign_out(); s_sel = 0; }
+			}
 		} else if (s_sel == 0) {
 			kb_open(KB_RA_USER, "");
 		} else if (s_sel == 1) {
@@ -246,8 +288,8 @@ int nui_input(int e)
 		if (!(e & NUI_A)) return NUI_ACT_NONE;
 		s_msg[0] = 0;
 		if (kind[s_sel] == ROW_TOGGLE) {
-			if (s_st.state == NETSVC_OFF || s_st.state == NETSVC_FAILED) s_start_pending = 2;
-			else { netsvc_wifi(0); s_naps = 0; }
+			if (s_st.state == NETSVC_OFF || s_st.state == NETSVC_FAILED) { s_start_pending = 2; wifi_on_store(1); }
+			else { netsvc_wifi(0); s_naps = 0; wifi_on_store(0); }
 		} else if (kind[s_sel] == ROW_SEARCH) {
 			netsvc_scan();
 		} else {
@@ -300,11 +342,21 @@ int nui_input(int e)
 }
 
 /* ---- every frame ---- */
+volatile int g_dbg_nui_scrape;	/* oem netsvc:scrape: 1 start, 2 stop */
 volatile int g_dbg_nui_art;	/* oem netsvc:art - the menu acts as if box art had arrived (a test) */
 int nui_tick(void)
 {
 	int act = NUI_ACT_NONE;
 	if (g_dbg_nui_art) { g_dbg_nui_art = 0; act = NUI_ACT_ART; }
+	if (g_dbg_nui_scrape) {	/* oem netsvc:scrape[:stop] - box art as the page's Find row / B does */
+		struct pico_scrape_info si;
+		pico_scrape_get(&si);
+		if (g_dbg_nui_scrape == 2 && si.running) pico_scrape_cancel();
+		else if (g_dbg_nui_scrape == 1 && !si.running && s_vol && s_roms)
+			pico_scrape_start(s_vol, s_roms, s_nrom, pico_scrape_has_screenscraper() ? SCRAPE_SCREENSCRAPER : SCRAPE_LIBRETRO,
+					  k_regions[s_art_region]), s_art_running = 1;
+		g_dbg_nui_scrape = 0;
+	}
 	if (s_start_pending && --s_start_pending == 0) netsvc_wifi(1);	/* the screen said "Starting" first */
 	netsvc_get(&s_st);
 	if (s_start_pending) s_st.state = NETSVC_STARTING;
@@ -351,7 +403,11 @@ void nui_view(struct nui_view *v)
 		v->rows[0] = tr("Wi-Fi");
 		v->values[0] = nui_wifi_summary();
 		v->rows[1] = tr("Box art");
-		v->values[1] = s_art_running ? tr("Working...") : tr("From the network");
+		if (s_art_running) v->values[1] = tr("Working...");
+		else if (art_missing() > 0) {
+			snprintf(s_val[1], sizeof s_val[1], tr("%d without art"), art_missing());
+			v->values[1] = s_val[1];
+		} else v->values[1] = art_missing() == 0 ? tr("Every game has art") : tr("From the network");
 		v->rows[2] = "RetroAchievements";
 		v->values[2] = pico_ra_state() == PICO_RA_SIGNED_IN ? pico_ra_user() :
 			       pico_ra_state() == PICO_RA_SIGNING_IN ? tr("Signing in...") : tr("Not signed in");
@@ -409,11 +465,16 @@ void nui_view(struct nui_view *v)
 		int st = pico_ra_state();
 		v->title = "RetroAchievements";
 		if (st == PICO_RA_SIGNED_IN) {
-			v->nrows = 1;
-			v->rows[0] = tr("Sign out");
-			v->values[0] = pico_ra_user();
-			snprintf(s_val[1], sizeof s_val[1], tr("%u points"), pico_ra_points());
-			v->subtitle = s_val[1];
+			v->nrows = RA_IN_ROWS;
+			v->rows[RA_ROW_ACCOUNT] = tr("Account");
+			v->values[RA_ROW_ACCOUNT] = pico_ra_user();
+			v->rows[RA_ROW_POINTS] = tr("Points");
+			snprintf(s_val[RA_ROW_POINTS], sizeof s_val[0], "%u", pico_ra_points());
+			v->values[RA_ROW_POINTS] = s_val[RA_ROW_POINTS];
+			v->rows[RA_ROW_WAITING] = tr("Unlocks waiting to be sent");
+			if (pico_ra_waiting()) snprintf(s_val[RA_ROW_WAITING], sizeof s_val[0], "%u", pico_ra_waiting());
+			v->values[RA_ROW_WAITING] = pico_ra_waiting() ? s_val[RA_ROW_WAITING] : tr("None");
+			v->rows[RA_ROW_SIGN_OUT] = s_ra_confirm ? tr("Press A again to sign out") : tr("Sign out");
 		} else {
 			v->nrows = 3;
 			v->rows[0] = tr("User name");
@@ -424,12 +485,11 @@ void nui_view(struct nui_view *v)
 			v->busy = st == PICO_RA_SIGNING_IN;
 		}
 		v->sel = s_sel;
-		if (pico_ra_waiting())
-			snprintf(s_val[2], sizeof s_val[2], tr("%u unlocks waiting to be sent"), pico_ra_waiting());
-		v->status = s_msg[0] ? s_msg : pico_ra_note()[0] ? pico_ra_note() :
-			    pico_ra_waiting() ? s_val[2] :
-			    st == PICO_RA_NO_BLOB ? tr("RetroAchievements is missing from the card (/cores)") :
-			    tr("Softcore. Unlocks made without a network are sent later.");
+		v->status = s_msg[0] ? s_msg : st == PICO_RA_NO_BLOB ? tr("RetroAchievements is missing from the card (/cores)") :
+			    st == PICO_RA_SIGNED_IN && s_sel == RA_ROW_WAITING && pico_ra_waiting() ?
+				    tr("A sends them now; they also go by themselves whenever there is a network") :
+			    st == PICO_RA_SIGNED_IN ? tr("Softcore. Unlocks made without a network are sent later.") :
+			    pico_ra_note()[0] ? pico_ra_note() : tr("Sign in with your retroachievements.org account");
 		v->nhints = 2;
 		v->hint_code[0] = "A"; v->hint_label[0] = tr("Select");
 		v->hint_code[1] = "B"; v->hint_label[1] = tr("Back");
@@ -476,7 +536,11 @@ void nui_view(struct nui_view *v)
 			break;
 		}
 		v->nrows = 3;
-		v->rows[0] = tr("Find box art for games without it");
+		if (art_missing() > 0) {
+			snprintf(s_val[0], sizeof s_val[0], art_missing() == 1 ? tr("Find box art for %d game") :
+				 tr("Find box art for %d games"), art_missing());
+			v->rows[0] = s_val[0];
+		} else v->rows[0] = art_missing() == 0 ? tr("Look again for box art") : tr("Find box art for games without it");
 		v->rows[1] = tr("Source");
 		v->values[1] = pico_scrape_has_screenscraper() && !s_art_source ? "ScreenScraper" : "libretro thumbnails";
 		v->rows[2] = tr("Region first");

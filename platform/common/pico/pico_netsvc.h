@@ -67,6 +67,8 @@ void netsvc_saved_store(void *vol);
 int  netsvc_http_begin(const char *host, const char *path, int secure, const void *post, unsigned int post_len);
 int  netsvc_http_poll(unsigned int *status, const unsigned char **body, unsigned int *len, const char **why);
 void netsvc_http_release(void);
+/* the transfer asked for is not wanted any more: a running one stops at once, its slot freed */
+void netsvc_http_abort(void);
 /* the menu thread sets the clock from the network's time when a join brought one and the RTC
  * is unset or more than 2 s off: 1 when it did (the RTC is only touched from one thread) */
 int  netsvc_clock_apply(void);
@@ -79,6 +81,8 @@ void netsvc_user_agent(const char *ua);
 
 /* 1 while a game is played: the service sleeps and costs the game nothing; 0 the menu again */
 void netsvc_quiet(int on);
+/* the menu thread, every frame: notes every thread when a transfer step outlives its limit */
+void netsvc_stall_watch(void);
 
 /* secrets kept on the card, masked for this console (label: what they are); again to unmask */
 void netsvc_mask(void *data, unsigned int len, const char *label);

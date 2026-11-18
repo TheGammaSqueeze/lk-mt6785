@@ -31,6 +31,7 @@
  * @{
  */
 #include <debug.h>
+#include <printf.h>
 #include <list.h>
 #include <malloc.h>
 #include <string.h>
@@ -668,6 +669,87 @@ void dump_all_threads(void)
 		dump_thread(t);
 	}
 	exit_critical_section();
+}
+
+/*
+ * thread_snapshot - every thread in a line of text, for a console that has stopped answering USB
+ * to tell afterwards what each thread was doing: its name, state (S suspended, R ready, U running,
+ * B blocked, Z sleeping, D dead), priority, the wait queue it is blocked on, and the words on its
+ * stack that point into the code (newest first: return addresses, and for a thread taken off the
+ * CPU by an interrupt the address it was interrupted at), for addr2line on the PC.
+ */
+/*
+ * thread_code_words - the thread named name: its state | priority << 8 (-1 when there is none),
+ * the wait queue it is blocked on in *wq, and up to n words on its stack that point into the
+ * code, newest first, in out (the rest zero). For a black box record of a stuck thread.
+ */
+int thread_code_words(const char *name, unsigned int *out, int n, unsigned int *wq)
+{
+	extern char _start[], __data_start[];
+	thread_t *t;
+	int found = -1, k = 0;
+	for (k = 0; k < n; k++) out[k] = 0;
+	k = 0;
+	*wq = 0;
+	enter_critical_section();
+	list_for_every_entry(&thread_list, t, thread_t, thread_list_node) {
+		const uint32_t *w, *top;
+		if (strncmp(t->name, name, sizeof t->name))
+			continue;
+		found = (int)t->state | t->priority << 8;
+		*wq = (unsigned int)(addr_t)t->blocking_wait_queue;
+		if (t == current_thread || !t->stack || !t->stack_size)
+			break;
+		w = (const uint32_t *)(t->arch.sp & ~3u);
+		top = (const uint32_t *)((addr_t)t->stack + t->stack_size);
+		if (w < (const uint32_t *)t->stack)
+			break;
+		for (; w < top && k < n; w++)
+			if (*w >= (uint32_t)(addr_t)_start && *w < (uint32_t)(addr_t)__data_start)
+				out[k++] = *w;
+		break;
+	}
+	exit_critical_section();
+	return found;
+}
+
+unsigned int thread_snapshot(char *out, unsigned int cap)
+{
+	extern char _start[], __data_start[];
+	static const char st[] = "SRUBZD";
+	unsigned int at = 0;
+	thread_t *t;
+
+	if (!cap)
+		return 0;
+	out[0] = 0;
+	enter_critical_section();
+	list_for_every_entry(&thread_list, t, thread_t, thread_list_node) {
+		const uint32_t *w, *top;
+		int n = 0;
+		if (at + 48 >= cap)
+			break;
+		at += snprintf(out + at, cap - at, "%.12s %c%d q%x", t->name,
+			       (unsigned)t->state < sizeof st - 1 ? st[t->state] : '?', t->priority,
+			       (unsigned)(addr_t)t->blocking_wait_queue);
+		if (t != current_thread && t->stack && t->stack_size) {
+			w = (const uint32_t *)(t->arch.sp & ~3u);
+			top = (const uint32_t *)((addr_t)t->stack + t->stack_size);
+			if (w < (const uint32_t *)t->stack)
+				w = top;		/* a saved sp outside its own stack: nothing to read */
+			for (; w < top && n < 8 && at + 12 < cap; w++)
+				if (*w >= (uint32_t)(addr_t)_start && *w < (uint32_t)(addr_t)__data_start) {
+					at += snprintf(out + at, cap - at, " %x", (unsigned)*w);
+					n++;
+				}
+		}
+		if (at + 2 < cap) {
+			out[at++] = '\n';
+			out[at] = 0;
+		}
+	}
+	exit_critical_section();
+	return at;
 }
 
 /**
