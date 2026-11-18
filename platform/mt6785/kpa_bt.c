@@ -305,6 +305,10 @@ static int pico_bt_plat_start(void)
 }
 
 #include "../common/pico/pico_bt.inc"
+#define PICO_WIFI_FW_RAM	"WIFI_RAM_CODE_soc1_0_2a_1.bin"
+#define PICO_WIFI_RXD_LEN	20		/* this CONNSYS's receive descriptor (the Block's is 16) */
+#define PICO_WIFI_HT_5GHZ	0		/* HT on 5 GHz passes no data here yet: legacy rates there */
+#include "../common/pico/pico_wifi.inc"
 
 /* power off, before the kernel and the console's own power off: nothing to do when it is off */
 void pico_bt_power_off_if_on(void)
@@ -389,4 +393,5 @@ void kpa_bt_register_cmds(void)
 	pico_bt_register_cmds();
 	fastboot_register("oem btpwr", cmd_btpwr, 1, 0);
 	fastboot_register("oem btrd:", cmd_btrd, 1, 0);
+	pico_wifi_register_cmds();
 }

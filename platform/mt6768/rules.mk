@@ -624,6 +624,10 @@ OBJS += \
 	$(LOCAL_DIR)/block_bt.o \
 	platform/common/pico/pico_xfer.o \
 	platform/common/pico/pico_netplay.o \
+	platform/common/pico/pico_crypto.o \
+	platform/common/pico/pico_net.o \
+	platform/common/pico/pico_tls.o \
+	platform/common/pico/pico_pki.o \
 	$(LOCAL_DIR)/block_gauge.o \
 	$(LOCAL_DIR)/block_pico.o \
 	$(LOCAL_DIR)/block_rumble.o

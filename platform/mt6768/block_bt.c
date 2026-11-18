@@ -311,6 +311,8 @@ static int pico_bt_plat_start(void)
 }
 
 #include "../common/pico/pico_bt.inc"
+#define PICO_WIFI_FW_RAM	"WIFI_RAM_CODE_soc1_0_1a_1.bin"
+#include "../common/pico/pico_wifi.inc"
 
 /* power off, before the kernel and the console's own power off: nothing to do when it is off */
 void pico_bt_power_off_if_on(void)
@@ -410,4 +412,5 @@ void block_bt_register_cmds(void)
 	fastboot_register("oem btxo", cmd_btxo, 1, 0);
 	fastboot_register("oem btpwr", cmd_btpwr, 1, 0);
 	fastboot_register("oem btrd:", cmd_btrd, 1, 0);
+	pico_wifi_register_cmds();
 }

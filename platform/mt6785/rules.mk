@@ -301,6 +301,16 @@ OBJS += $(LOCAL_DIR)/ayaneo_rumble.o
 OBJS += platform/common/pico/pico_xfer.o	# file transfer over the Bluetooth link
 OBJS += platform/common/pico/pico_netplay.o	# lockstep netplay over the Bluetooth link
 OBJS += $(LOCAL_DIR)/kpa_bt.o		# Bluetooth (CONNSYS), only when a Pico screen asks for it
+OBJS += platform/common/pico/pico_crypto.o	# Wi-Fi: WPA2 and TLS cryptography
+OBJS += platform/common/pico/pico_net.o		# Wi-Fi: the IPv4 stack
+OBJS += platform/common/pico/pico_tls.o		# Wi-Fi: TLS 1.3 / 1.2
+OBJS += platform/common/pico/pico_pki.o		# Wi-Fi: certificates
+# the KPA's LK has little heap to spare (stage.sh refuses under 460,000 bytes): the Wi-Fi objects
+# are built for size here (the Block keeps them at -O2)
+$(BUILDDIR)/platform/common/pico/pico_crypto.o: CFLAGS += -Os
+$(BUILDDIR)/platform/common/pico/pico_net.o: CFLAGS += -Os
+$(BUILDDIR)/platform/common/pico/pico_tls.o: CFLAGS += -Os
+$(BUILDDIR)/platform/common/pico/pico_pki.o: CFLAGS += -Os
 else
 OBJS += $(LOCAL_DIR)/ayaneo_joypad.o
 endif

@@ -3,13 +3,17 @@
  *
  * CONNSYS (the MT6785's connectivity subsystem, kpa_bt.c) reads its firmware from a window of
  * DRAM it sees through a remap register (64 KB pages on this SoC). The rewind arena
- * (platform/common/pico/ayaneo_rewind.c) leaves this window out of the memory it takes, whatever
- * the console's DRAM size.
+ * (platform/common/pico/ayaneo_rewind.c) leaves this window, and the Wi-Fi DMA memory after it,
+ * out of the memory it takes, whatever the console's DRAM size.
  */
 #ifndef PICO_BT_H
 #define PICO_BT_H
 
 #define BT_EMI_PA	0xBE000000u	/* the same place as on the Konkr Pocket Block */
 #define BT_EMI_SIZE	0x00400000u
+/* the Wi-Fi block's DMA memory (its rings and buffers, pico_wifi.inc): right after the firmware
+ * window, and left out of the rewind arena with it */
+#define WIFI_DMA_PA	(BT_EMI_PA + BT_EMI_SIZE)
+#define WIFI_DMA_SIZE	0x00200000u
 
 #endif
