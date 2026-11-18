@@ -1969,7 +1969,7 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 		break;
 	case MI_ASPECT:   if (dir) g_gba_aspect = (g_gba_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
 	case MI_SLOT:     if (dir) s_gba_slot = (s_gba_slot + dir + GBA_SLOT_COUNT) % GBA_SLOT_COUNT; changed = 0; break;
-	case MI_LOADSTATE: if (act && s_gba_np) { mi_puts(status, "Not during netplay"); } else if (act) { int ok = manual_state_read(state); if (ok) gba_rewind_arm(); mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
+	case MI_LOADSTATE: if (act && s_gba_np) { mi_puts(status, "Not during netplay"); } else if (act) { int ok = manual_state_read(state); if (ok) { gba_rewind_arm(); { extern void pico_ra_state_loaded(void) __attribute__((weak)); if (pico_ra_state_loaded) pico_ra_state_loaded(); } } mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
 	case MI_SAVESTATE: if (act) {
 		/* the state and the battery save go to the card from the writer's thread, so the game and
 		 * its sound go on; the note comes once the state is there. oem persist: the time the game
@@ -2626,6 +2626,7 @@ static int gba_sd_rom_select(void)
 		/* the game played before this menu: its time added, or, when it did not start, its start
 		 * taken back */
 		{ extern void pico_stats_abort(void); if (gba_rom_peek_error()) pico_stats_abort(); else pico_stats_end(); }
+		{ extern void pico_ra_game_end(void) __attribute__((weak)); if (pico_ra_game_end) pico_ra_game_end(); }
 		{	/* oem showcase:1 (until the next power on): the menus list only the release's demo
 			 * games, and games named in other scripts (copies of them under translated names, for
 			 * the screenshots of names in any language), for the README's screenshots; nothing on
@@ -2659,7 +2660,12 @@ static int gba_sd_rom_select(void)
 			}
 			r = gba_snes_menu_run(s_roms, s_nrom, s_sel_rom >= 0 ? s_sel_rom : 0);
 		}
-		if (r >= 0) { pico_stats_begin(s_roms[r].type, s_roms[r].name); return r; }
+		if (r >= 0) {
+			extern void pico_ra_game_begin(int type) __attribute__((weak));
+			pico_stats_begin(s_roms[r].type, s_roms[r].name);
+			if (pico_ra_game_begin) pico_ra_game_begin(s_roms[r].type);	/* RetroAchievements: its system */
+			return r;
+		}
 	}
 	for (;;) {
 		mtk_wdt_restart();   /* kick the 10s watchdog: idling on the menu must not reset the device */
@@ -3618,6 +3624,15 @@ static int emu_thread(void *arg)
 						state_read_open(scratch, ext);
 				}
 				gba_np_begin(&s_roms[s_sel_rom], romsz);	/* an armed launch: netplay */
+				{	/* RetroAchievements: the game's set, with the machine's memory (not in netplay) */
+					extern void pico_ra_core_ready(const void *rom, unsigned size, const struct pico_core_memory *mem)
+						__attribute__((weak));
+					if (pico_ra_core_ready && !s_gba_np && g_core->version >= GBA_CORE_ABI_V6 && g_core->get_memory) {
+						struct pico_core_memory mem;
+						g_core->get_memory(&mem);
+						pico_ra_core_ready(gba_core_rom_ptr(), romsz, &mem);
+					}
+				}
 				/* Do NOT blank here: it blacks the live frozen-menu snapshot = a black
 				 * flash before the opening punch. The punch composites the full frame
 				 * (menu snapshot + game) then clears the letterbox, so the frozen menu
@@ -3838,6 +3853,10 @@ static int emu_thread(void *arg)
 			 * can be rewound. Not the run-ahead look-ahead frames (rewound anyway). Skipped in-menu. */
 			{ unsigned ts0 = gpt4_get_current_tick();
 			if (!s_menu_open && !s_benchmark && !s_gba_np) gba_rewind_snap();
+			if (!s_menu_open && !s_gba_np) {	/* RetroAchievements: each committed frame */
+				extern void pico_ra_frame(void) __attribute__((weak));
+				if (pico_ra_frame) pico_ra_frame();
+			}
 			  g_dbg_snap_us = (gpt4_get_current_tick() - ts0) / 13u; }
 			lp_mark(3);   /* benchmark measures emulation: no 640 KB snapshot per frame */
 			/* Variable fast-forward (right analog trigger): after the committed frame, run extra
@@ -3903,6 +3922,7 @@ static int emu_thread(void *arg)
 						g_dbg_ff_skip_us = s_ff_skip_us; g_dbg_ff_rend_us = s_ff_rend_us;
 						{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 						gba_rewind_snap();
+						{ extern void pico_ra_frame(void) __attribute__((weak)); if (pico_ra_frame && !s_gba_np) pico_ra_frame(); }
 						n++;
 					}
 					ayaneo_hud_set(1, n * 10);

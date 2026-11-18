@@ -74,6 +74,13 @@ extern void     ayaneo_set_snes_turbo(int v);
  * reads back ~1 MHz low, i.e. 1399/1599/1799/1999). The render/audio skip on look-ahead frames
  * cut the sustained duty enough that the higher tiers are stable now (previously any run-ahead
  * was clamped to 1400 to avoid a brownout data-abort at ~100% duty). */
+/* RetroAchievements after a frame the game really ran (pico_ra.c; absent on consoles without it) */
+static void snes_ra_frame(void)
+{
+	extern void pico_ra_frame(void) __attribute__((weak));
+	if (pico_ra_frame) pico_ra_frame();
+}
+
 static const unsigned s_snes_ra_opp[4] = { 1400, 1600, 1800, 2000 };
 static const char *snes_ra_name(int pf)
 { return pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : pf == 3 ? "Max" : "Off"; }
@@ -618,6 +625,7 @@ static int sm_change(int i, int dir, int act)
 			n = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, st, SNES_STATE_CAP);
 			ok = (n && s_menu_c->state_load(st, n) == 0);
 			if (ok) ayaneo_rewind_reset(s_snes_rw_payload);   /* loaded state breaks the rewind timeline */
+			if (ok) { extern void pico_ra_state_loaded(void) __attribute__((weak)); if (pico_ra_state_loaded) pico_ra_state_loaded(); }   /* and RetroAchievements' counts */
 			smput(s_mstat, ok ? "State loaded" : "No save state");
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
 	case SM_RESET: if (act) { s_menu_c->reset(); ayaneo_rewind_reset(s_snes_rw_payload); return 1; } break;
@@ -763,6 +771,17 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				ayaneo_menu_audio_silence();
 				return;
 			}
+		}
+	}
+
+	/* RetroAchievements: the game's set, with its memory (not in netplay) */
+	{
+		extern void pico_ra_core_ready(const void *rom, unsigned size, const struct pico_core_memory *mem)
+			__attribute__((weak));
+		if (pico_ra_core_ready && !s_snes_np && c->version >= SNES_CORE_ABI_V5 && c->get_memory) {
+			struct pico_core_memory mem;
+			c->get_memory(&mem);
+			pico_ra_core_ready(rombuf, romsz, &mem);
 		}
 	}
 
@@ -1054,6 +1073,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			  c->run(&f);
 			  snes_emu_us = (gpt4_get_current_tick() - _t) / 13u; }   /* committed frame cost for the FF budget */
 			g_snes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
+			if (!s_snes_np && !g_snes_menu_open) snes_ra_frame();	/* RetroAchievements: the committed frame */
 			/* keep the display's target aspect current (cheap; refreshed periodically) - it
 			 * changes when the player switches Aspect Ratio or Overscan in the menu. */
 			if (c->aspect_x1000 && (g_snes_dbg_frames & 15u) == 0) g_snes_aspect_x1000 = c->aspect_x1000();
@@ -1129,6 +1149,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				c->run(&f);
 				if (last) s_snes_render_us = (gpt4_get_current_tick() - _t) / 13u;   /* measure final render */
 				g_snes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
+				snes_ra_frame();			/* and each fast forward frame */
 				if (f.audio && f.frames)
 					ayaneo_snes_audio_submit(f.audio, f.frames, sr ? sr : 32040u);
 				if (last && s_snes_rw_payload && ayaneo_rewind_ready()) {   /* one snapshot per shown frame */

@@ -87,7 +87,26 @@ for spec in armgba-pico:armGBA-pico gpsp-pico:gpsp-pico gambatte-pico:gambatte-p
 		echo "!! $name: no $blob (core left off the card template)" >&2
 	fi
 done
+# RetroAchievements (cores/ra-pico): in this tree, not a submodule; built from its sources each time
+# (rcheevos comes from cores/armNES-pico, fetched above)
+if (cd "$ROOT/cores/ra-pico" && ./build.sh >/dev/null 2>&1); then
+	CORE_ARGS+=(--core "ra-pico=$ROOT/cores/ra-pico/out/ra-pico.blob")
+else
+	echo "!! ra-pico: build.sh failed (run it in cores/ra-pico to see why)" >&2
+fi
 python3 tools/ayaneo/gba/build_sdcard.py out/snes_pack.bin out/sdcard "${CORE_ARGS[@]}"
+
+# HTTPS's trusted roots for the consoles with Wi-Fi (pico_tls): this PC's root bundle as DER. The LK
+# keeps at most 128 KB of them (WF_ROOTS_AREA_LEN) and trusts none from a file cut short, so a
+# bundle that has grown past that stops the template here instead of shipping a card that trusts
+# nothing.
+ROOTS_SRC=${ROOTS_SRC:-/etc/ssl/certs/ca-certificates.crt}
+mkdir -p out/sdcard/bios/certs
+python3 tools/ayaneo/pico_current/make_roots.py "$ROOTS_SRC" out/sdcard/bios/certs/roots.der
+if [ "$(stat -c %s out/sdcard/bios/certs/roots.der)" -ge 131072 ]; then
+	echo "!! roots.der is 128 KB or more: the LK would trust none of it" >&2
+	exit 1
+fi
 
 # A theme with a menu of its own (a 'layout' file in its folder) brings its card packs, one per
 # screen it was drawn for: the Current theme's are built from tools/ayaneo/pico_current. 960x640

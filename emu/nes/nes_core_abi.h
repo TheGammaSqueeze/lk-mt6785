@@ -18,6 +18,9 @@
 
 #define NES_CORE_ABI_MAGIC   0x3153454Eu   /* "NES1" */
 #define NES_CORE_ABI_VERSION 2u   /* 2: opt_count / opt_info (the core's own option list) */
+#define NES_CORE_ABI_V3      3u   /* 3: the machine's memory, for RetroAchievements */
+
+#include "pico_core_memory.h"
 
 /* Services the LK gives the core (core -> LK). */
 /* One of the core's own options, as the core declares it (libretro core options v2), for the
@@ -106,6 +109,11 @@ struct nes_core_exports {
 	 * Changed with set_option; they take effect at the end of the next frame. */
 	int (*opt_count)(void);
 	const struct pico_core_option *(*opt_info)(int index);
+
+	/* 3: the game's memory as the libretro port describes it (its system RAM, the cartridge's RAM
+	 * and the map it announces), for RetroAchievements to read in place between frames. Valid from
+	 * load until unload. */
+	void (*get_memory)(struct pico_core_memory *out);
 };
 
 typedef const struct nes_core_exports *(*nes_core_blob_init_fn)(const struct nes_core_imports *imp);

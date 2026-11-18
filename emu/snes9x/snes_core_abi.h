@@ -14,6 +14,9 @@
 #define SNES_CORE_ABI_VERSION 4u   /* v2: + fps_milli (core frame rate for dynamic per-core panel refresh)
 				    * v3: + set_pad_reader (both controller ports, for netplay)
 				    * v4: + opt_count / opt_info (the core's own option list) */
+#define SNES_CORE_ABI_V5      5u   /* v5: + get_memory (the machine's memory, for RetroAchievements) */
+
+#include "pico_core_memory.h"
 
 /* One of the core's own options, as the core declares it (libretro core options v2), for the
  * frontend's Core Settings page. values are what set_option takes, labels what is shown. Shared
@@ -127,6 +130,11 @@ struct snes_core_exports {
 	 * audio interpolation, hi-res blending) and the light gun ones. Changed with set_option. */
 	int (*opt_count)(void);
 	const struct pico_core_option *(*opt_info)(int index);
+
+	/* v5: the game's memory (the console's work RAM and the cartridge's RAM, as libretro's memory
+	 * calls give them; no map), for RetroAchievements to read in place between frames. Valid from
+	 * load until unload. */
+	void (*get_memory)(struct pico_core_memory *out);
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);

@@ -17,28 +17,44 @@
 #include "pico_settings.h"
 #include "pico_i18n.h"
 #include "pico_version.h"
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+#define CLASSIC_NET 1			/* the consoles with Wi-Fi: System > Network (pico_net_ui.h) */
+#include "pico_net_ui.h"
+#endif
 
 #define ROW_P   60.0f            /* the row pitch, as the Options page */
 #define FH      648.0f           /* the frame's height: the Options page's */
 #define NV      7                /* rows a page shows */
 #define THEME_VIS 4              /* thumbnails across */
 
-/* the pages: the four slots' and the three their rows open */
-enum { PG_DISPLAY, PG_SETTINGS, PG_LANGUAGE, PG_SYSTEM, PG_BIOS, PG_RESUME, PG_CLOCK, PG_N };
+/* the pages: the four slots' and the ones their rows open */
+enum { PG_DISPLAY, PG_SETTINGS, PG_LANGUAGE, PG_SYSTEM, PG_BIOS, PG_RESUME, PG_CLOCK, PG_NETWORK, PG_N };
+#define ROW_NET 120	/* System's Network row: a page of its own, drawn from pico_net_ui (not a setting) */
 static const signed char k_rows[PG_N][8] = {
 	{ PS_BRIGHT, PS_BFI, PS_THEME, -1 },
 	{ PS_VOLUME, PS_MUTE_MENU, PS_BIOS, PS_RESUME, PS_BOOT_OS, -1 },
 	{ -1 },
+#ifdef CLASSIC_NET
+	{ PS_CLOCK, ROW_NET, PS_ABOUT, -1 },
+#else
 	{ PS_CLOCK, PS_ABOUT, -1 },
+#endif
 	{ PS_SKIP_INTRO, PS_INTRO_BG, PS_MUTE_BIOS, PS_INTRO_RESUME, -1 },
 	{ PS_RESUME_BOOT, PS_RESUME_OPEN, -1 },
 	{ PS_YEAR, PS_MONTH, PS_DAY, PS_HOUR, PS_MINUTE, PS_ZONE, PS_CLOCK12, -1 },
+	{ -1 },
 };
 static const char *const k_page_name[PG_N] = { "Display", "Settings", "Language", "System", "BIOS boot",
-	"Game resume", "Date & Time" };
-static const signed char k_page_parent[PG_N] = { -1, -1, -1, -1, PG_SETTINGS, PG_SETTINGS, PG_SYSTEM };
+	"Game resume", "Date & Time", "Network" };
+static const signed char k_page_parent[PG_N] = { -1, -1, -1, -1, PG_SETTINGS, PG_SETTINGS, PG_SYSTEM, PG_SYSTEM };
 static const signed char k_page_icon[PG_N] = { KS_IC_DISPLAY, KS_IC_OPTION, KS_IC_LANGUAGE, KS_IC_SYSTEM,
-	KS_IC_OPTION, KS_IC_OPTION, KS_IC_SYSTEM };
+	KS_IC_OPTION, KS_IC_OPTION, KS_IC_SYSTEM, KS_IC_SYSTEM };
+
+/* a row's kind, name, switch and line along the bottom: the settings', and the Network row */
+static int row_kind(int id) { return id == ROW_NET ? PSK_PAGE : pico_set_kind(id); }
+static const char *row_name(int id) { return id == ROW_NET ? "Network" : pico_set_name(id); }
+static int row_switch(int id) { return id == ROW_NET ? -1 : pico_set_switch(id); }
+static const char *row_about(int id) { return id == ROW_NET ? "Wi-Fi, box art and RetroAchievements" : pico_set_about(id); }
 /* the languages' names in English, where a font lacks a name's own letters */
 static const char *const k_lang_en[LANG_N] = { "English", "French", "German", "Spanish", "Italian", "Dutch",
 	"Portuguese", "Russian", "Japanese", "Korean", "Chinese (Simplified)", "Chinese (Traditional)",
@@ -73,6 +89,7 @@ static int page_of_slot(int slot)
 /* the page a settings row opens */
 static int page_of_row(int id)
 {
+	if (id == ROW_NET) return PG_NETWORK;
 	switch (pico_set_page(id)) {
 	case PSP_BIOS:   return PG_BIOS;
 	case PSP_RESUME: return PG_RESUME;
@@ -87,6 +104,9 @@ int pico_classic_set_take_lang(void) { int r = P.req_lang; P.req_lang = -1; retu
 /* ---- input ---- */
 static void go(int pg, int dir)
 {
+#ifdef CLASSIC_NET
+	if (pg == PG_NETWORK && dir > 0) nui_open();	/* Network: its home */
+#endif
 	P.from = P.page; P.page = pg; P.dir = dir; P.page_t = 0;
 	if (dir > 0) { P.sel[pg] = 0; P.top[pg] = 0; }
 	P.hy = (float)P.sel[pg];
@@ -119,6 +139,24 @@ static int page_input(int slot, const snes_input *in, unsigned e, float dt)
 	int a = !!(e & SNES_E_A), b = !!(e & SNES_E_B), n = nrows(P.page), sel = P.sel[P.page], dir = lt ? -1 : rt ? 1 : 0;
 	(void)slot;
 	if (P.page_t < 1) return 0;
+#ifdef CLASSIC_NET
+	if (P.page == PG_NETWORK) {	/* the Network flow takes the buttons; B on its home goes back */
+		static int px, py;
+		int bits = (up ? NUI_UP : 0) | (dn ? NUI_DOWN : 0) | (lt ? NUI_LEFT : 0) | (rt ? NUI_RIGHT : 0) |
+			   (a ? NUI_A : 0) | (b ? NUI_B : 0) | (in->x && !px ? NUI_X : 0) | (in->y && !py ? NUI_Y : 0);
+		px = in->x; py = in->y;
+		if (!bits) return 0;
+		if (nui_input(bits) == NUI_ACT_CLOSE) {
+			int i;
+			for (i = 0; i < nrows(PG_SYSTEM); i++) if (k_rows[PG_SYSTEM][i] == ROW_NET) P.sel[PG_SYSTEM] = i;
+			go(PG_SYSTEM, -1);
+			snes_menu_sfx(s_m, 2);
+			return 0;
+		}
+		snes_menu_sfx(s_m, (bits & (NUI_A | NUI_B | NUI_X)) ? 1 : 0);
+		return 0;
+	}
+#endif
 	if (b) {
 		if (k_page_parent[P.page] >= 0) {	/* back to the row that opened it */
 			int parent = k_page_parent[P.page], i;
@@ -148,7 +186,7 @@ static int page_input(int slot, const snes_input *in, unsigned e, float dt)
 		return 0;
 	}
 	{
-		int id = k_rows[P.page][sel], kind = pico_set_kind(id);
+		int id = k_rows[P.page][sel], kind = row_kind(id);
 		if (kind == PSK_PAGE && (a || rt)) { go(page_of_row(id), 1); snes_menu_sfx(s_m, 1); return 0; }
 		if (id == PS_THEME) {
 			if (dir && s_th.n > 0) {
@@ -204,7 +242,7 @@ static void rows(int pg, float y0, float dx, float op, int bar)
 	first = (int)top - 1;
 	if (first < 0) first = 0;
 	for (i = first; i < n && i <= first + NV + 1; i++) {
-		int id = k_rows[pg][i], kind = pico_set_kind(id), f = i == sel, num, sw;
+		int id = k_rows[pg][i], kind = row_kind(id), f = i == sel, num, sw;
 		float cy = y0 + ((float)i - top) * ROW_P, ro = op, vx = 1112 + dx, vw = 0, nud = 0, na = 1;
 		if (cy < y0) ro *= cui_clamp01(1 - (y0 - cy) / 40);
 		if (cy > last) ro *= cui_clamp01(1 - (cy - last) / 40);
@@ -213,7 +251,7 @@ static void rows(int pg, float y0, float dx, float op, int bar)
 			float e = cui_out_expo(P.nudge_t);
 			nud = P.nudge_dir * 22.0f * (1 - e); na = e;
 		}
-		sw = pico_set_switch(id);
+		sw = row_switch(id);
 		if (id == PS_INTRO_BG) sw = -1;
 		if (sw >= 0) cui_spr_x(sw ? KS_SW_ON : KS_SW_OFF, 1082 + dx, cy, 3, ro);
 		else if (kind == PSK_PAGE) cui_spr_x(KS_AR_R, vx + 22, cy, 1.5f, ro * (f ? 1 : .5f));
@@ -238,7 +276,7 @@ static void rows(int pg, float y0, float dx, float op, int bar)
 		}
 		{
 			float maxw = (sw >= 0 ? 1030 : vw > 0 ? 1112 - vw - 52 : 1090) - 160;
-			cui_text(CF_M, 160 + dx, cy, 1, 0xFFF4F4F4u, 0, cui_fit(CF_M, 1, cui_say(CF_M, pico_set_name(id)), maxw, fb, sizeof fb), ro);
+			cui_text(CF_M, 160 + dx, cy, 1, 0xFFF4F4F4u, 0, cui_fit(CF_M, 1, cui_say(CF_M, row_name(id)), maxw, fb, sizeof fb), ro);
 		}
 	}
 	if (pg == P.page && op >= 1) {	/* more above, more below */
@@ -292,11 +330,85 @@ static void language_grid(float y0, float op)
 	}
 }
 
+#ifdef CLASSIC_NET
+/* the Network page as nui_view describes it: a list of rows with values, the bar on the focused one,
+ * a line under them and a progress bar; or the keyboard: the field, then four rows of ten keys and
+ * the wide keys, the focused key lit */
+static void net_keyboard(const struct nui_kb *k, float y0, float dx, float op)
+{
+	char fb[128];
+	int r, c;
+	const float kw = 96, kh = 54, gap = 8, x0 = 640 - (10 * kw + 9 * gap) / 2;
+	cui_text(CF_S, 160 + dx, y0 - 8, .9f, 0xFFB4B4B4u, 0, cui_say(CF_S, k->field ? k->field : ""), op);
+	cui_quad(160 + dx, y0 + 14, 960, 52, 0xFF1A1E28u, .9f * op);
+	cui_text(CF_M, 176 + dx, y0 + 40, 1, 0xFFF4F4F4u, 0, cui_fit(CF_M, 1, k->shown, 928, fb, sizeof fb), op);
+	for (r = 0; r < 5; r++) {
+		float y = y0 + 96 + (float)r * (kh + gap);
+		if (r < 4) {
+			for (c = 0; c < 10; c++) {
+				char key[2] = { k->keys[r] ? k->keys[r][c] : ' ', 0 };
+				float x = x0 + (float)c * (kw + gap) + dx;
+				int f = k->r == r && k->c == c;
+				cui_quad(x, y, kw, kh, f ? 0xFF2F7DE1u : 0xFF2A2F3Au, op);
+				cui_text(CF_M, x + kw / 2, y + kh / 2, 1, 0xFFF4F4F4u, 1, key, op);
+			}
+		} else {
+			for (c = 0; c < 5; c++) {
+				const struct nui_key *w = &k->wide[c];
+				float x = x0 + (float)w->col * (kw + gap) + dx, wd = (float)w->span * (kw + gap) - gap;
+				int f = k->r == 4 && k->c == w->col;
+				cui_quad(x, y, wd, kh, f ? 0xFF2F7DE1u : 0xFF3A4050u, op);
+				cui_text(CF_S, x + wd / 2, y + kh / 2, 1, 0xFFF4F4F4u, 1, cui_say(CF_S, w->label ? w->label : ""), op);
+			}
+		}
+	}
+	if (k->note) cui_text(CF_S, 640 + dx, y0 + 96 + 5 * (kh + gap) + 14, .9f, 0xFFB4B4B4u, 1, cui_say(CF_S, k->note), op);
+}
+
+static void net_page(float T, float dx, float op, int bar)
+{
+	struct nui_view v;
+	char fb[128];
+	float y0 = T + 132;
+	int i;
+	nui_view(&v);
+	if (v.screen == NUI_KEYBOARD) { net_keyboard(&v.kb, y0, dx, op); return; }
+	if (v.subtitle) {
+		cui_text(CF_S, 160 + dx, y0 - 22, .9f, 0xFFB4B4B4u, 0, cui_fit(CF_S, .9f, v.subtitle, 960, fb, sizeof fb), op);
+		y0 += 12;
+	}
+	for (i = 0; i < v.nrows && i < NV; i++) {
+		float cy = y0 + (float)i * ROW_P, vw = 0;
+		if (i == v.sel && bar) cui_spr(KS_BAR, 640, cy, 1040, ROW_P - 4, op, 1, 1, 1);
+		if (v.values[i] && v.values[i][0]) {
+			const char *t = cui_fit(CF_M, 1, cui_say(CF_M, v.values[i]), 420, fb, sizeof fb);
+			vw = cui_text_w(CF_M, 1, t);
+			cui_text(CF_M, 1112 + dx, cy, 1, 0xFFB4B4B4u, 2, t, op);
+		}
+		cui_text(CF_M, 160 + dx, cy, 1, 0xFFF4F4F4u, 0,
+			 cui_fit(CF_M, 1, cui_say(CF_M, v.rows[i] ? v.rows[i] : ""), (vw > 0 ? 1112 - vw - 52 : 1090) - 160, fb, sizeof fb), op);
+	}
+	if (op >= 1) {
+		if (v.more_up) cui_spr_x(KS_UP, 1182, y0 - 6, 1.5f, 1);
+		if (v.more_down) cui_spr_x(KS_DOWN, 1182, y0 + (NV - 1) * ROW_P + 6, 1.5f, 1);
+	}
+	if (v.total) {	/* a bar: how far the box art has got */
+		float w = 960, y = T + FH - 96, f = (float)v.done / (float)v.total;
+		if (f > 1) f = 1;
+		cui_quad(160 + dx, y, w, 14, 0xFF2A2F3Au, op);
+		cui_quad(160 + dx, y, w * f, 14, 0xFF2F7DE1u, op);
+	}
+}
+#endif
+
 /* a page's contents (rows, grid, strip, about) at its place, moved dx and faded to op */
 static void contents(int pg, float T, float dx, float op, int bar)
 {
 	float y0 = T + 132;
 	if (pg == PG_LANGUAGE) { language_grid(y0, op); return; }
+#ifdef CLASSIC_NET
+	if (pg == PG_NETWORK) { net_page(T, dx, op, bar); return; }
+#endif
 	rows(pg, y0, dx, op, bar);
 	if (pg == PG_DISPLAY && s_th.n > 0)
 		themes_strip(T + 420, op, P.page == PG_DISPLAY && k_rows[PG_DISPLAY][P.sel[PG_DISPLAY]] == PS_THEME);
@@ -330,8 +442,13 @@ static void page_draw(int slot, snes_target *t, float slide)
 			float o = j ? (P.from != P.page ? k : 1) : (P.from != P.page ? 1 - k : 0);
 			float dx = P.from == P.page ? 0 : j ? P.dir * 40 * (1 - k) : -P.dir * 40 * k;
 			if (o <= 0) continue;
+			const char *name = k_page_name[pg];
+#ifdef CLASSIC_NET
+			struct nui_view nv;
+			if (pg == PG_NETWORK) { nui_view(&nv); if (nv.title) name = nv.title; }
+#endif
 			cui_spr(k_page_icon[pg], 128 + dx, T + 39, 72, 72, o, 1, 1, 1);
-			cui_text(CF_L, 176 + dx, T + 38, 1, 0xFFF4F4F4u, 0, cui_fit(CF_L, 1, cui_say(CF_L, k_page_name[pg]), room, tb, sizeof tb), o);
+			cui_text(CF_L, 176 + dx, T + 38, 1, 0xFFF4F4F4u, 0, cui_fit(CF_L, 1, cui_say(CF_L, name), room, tb, sizeof tb), o);
 		}
 	}
 	cui_spr(KS_LINE, 640, T + 72, 1134, 12, 1, 1, 1, 1);
@@ -339,8 +456,16 @@ static void page_draw(int slot, snes_target *t, float slide)
 		contents(P.from, T, -P.dir * 40 * k, 1 - k, 0);
 		contents(P.page, T, P.dir * 40 * (1 - k), k, 1);
 	} else contents(P.page, T, 0, 1, 1);
+#ifdef CLASSIC_NET
+	if (P.page == PG_NETWORK) {	/* the flow's own line: what happened, what to do */
+		struct nui_view nv;
+		nui_view(&nv);
+		if (nv.status && nv.screen != NUI_KEYBOARD)
+			cui_text(CF_S, 640, T + FH - 34, .9f, 0xFFB4B4B4u, 1, cui_fit(CF_S, .9f, cui_say(CF_S, nv.status), 1100, tb, sizeof tb), k);
+	} else
+#endif
 	if (P.page != PG_LANGUAGE) {	/* what the focused setting is for, along the bottom */
-		const char *about_line = pico_set_about(k_rows[P.page][P.sel[P.page]]);
+		const char *about_line = row_about(k_rows[P.page][P.sel[P.page]]);
 		if (about_line) cui_text(CF_S, 640, T + FH - 34, .9f, 0xFFB4B4B4u, 1, cui_say(CF_S, about_line), k);
 	}
 }

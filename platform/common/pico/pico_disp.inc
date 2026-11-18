@@ -2396,6 +2396,33 @@ static void rot_box_push(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsi
 	rot_box_xfer(vbuf, fbpitch, iw, ih, lx, ly, lw, lh, 1);
 }
 
+#if defined(KONKR_BLOCK) || defined(KONKR_KPA)
+#include "../../../emu/gba/pico_ra.h"
+/* a RetroAchievements card (an unlock, a mastery, the game's set loaded) in a w x h box at x, y
+ * of buf: a header line with the points, then the title large, cut to the box */
+static void ra_card_paint(unsigned int *buf, unsigned int pitch_w, int x, int y, int w, int h,
+			  const struct pico_ra_card *c)
+{
+	char t[48], head[64];
+	int fit, pad = 12;
+	unsigned int accent = c->kind == PICO_RA_CARD_MASTERED ? 0xFFFFC83Cu : c->kind == PICO_RA_CARD_UNLOCK ? 0xFF3CFF78u
+			    : 0xFF46C8FFu;
+	ayaneo_fill_blend(buf, pitch_w, x, y, w, h, 0xFF0A0A0Fu, c->alpha * 220u / 255u);
+	ayaneo_fill_blend(buf, pitch_w, x, y, 4, h, accent, c->alpha);
+	if (c->alpha < 96u) return;			/* the words only once the card is there */
+	if (c->points >= 0) snprintf(head, sizeof head, "%s  +%d", c->head, c->points);
+	else snprintf(head, sizeof head, "%s", c->head);
+	fit = (w - 2 * pad) / MTK_VFW;
+	if (fit > (int)sizeof t - 1) fit = (int)sizeof t - 1;
+	snprintf(t, (unsigned)fit + 1u, "%s", head);
+	ayaneo_text(buf, pitch_w, x + pad, y + 6, 1, accent, t);
+	fit = (w - 2 * pad) / (MTK_VFW * 2);
+	if (fit > (int)sizeof t - 1) fit = (int)sizeof t - 1;
+	snprintf(t, (unsigned)fit + 1u, "%s", c->title);
+	ayaneo_text(buf, pitch_w, x + pad, y + 26, 2, 0xFFFFFFFFu, t);
+}
+#endif
+
 static void rot_hud_osd(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsigned ih)
 {
 #if PICO_TURN
@@ -2434,6 +2461,24 @@ static void rot_hud_osd(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsig
 		rot_box_push(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
 	}
 
+#if defined(KONKR_BLOCK) || defined(KONKR_KPA)
+	{	/* RetroAchievements: its card at the bottom of the game, above where the volume bar goes */
+		struct pico_ra_card c;
+		if (pico_ra_card_now(&c)) {
+			int lw = LGW - 48, lh = ROT_BOX_H, lx, ly;
+			if (lw > 560) lw = 560;
+			if (lw > ROT_BOX_W) lw = ROT_BOX_W;
+			lx = (LGW - lw) / 2;
+			ly = LGH - lh - 44;
+			if (ly < 0) ly = 0;
+			rot_box_pull(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
+			ayaneo_draw_clip((unsigned)lw, (unsigned)lh);
+			ra_card_paint(s_rot_box, (unsigned)lw, 0, 0, lw, lh, &c);
+			ayaneo_draw_clip(0, 0);
+			rot_box_push(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
+		}
+	}
+#endif
 	/* volume / brightness bar: bottom centre of the game, same look as ayaneo_draw_osd */
 	if (s_osd_kind && (int)(s_osd_until_ms - (unsigned int)current_time()) > 0) {
 		int barW = (LGW * 3) / 5, barH = 22, bx, by, fillW, x, y;

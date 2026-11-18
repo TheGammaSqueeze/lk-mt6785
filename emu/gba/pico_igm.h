@@ -8,7 +8,8 @@
 #define PICO_IGM_H
 
 /* the pages: the top list and the settings grouped under it */
-enum { IGM_TOP, IGM_DISPLAY, IGM_SOUND, IGM_PLAY, IGM_SYSTEM, IGM_CORE, IGM_NPAGES };
+enum { IGM_TOP, IGM_DISPLAY, IGM_SOUND, IGM_PLAY, IGM_SYSTEM, IGM_CORE, IGM_ACH, IGM_NPAGES };
+/* IGM_ACH: RetroAchievements, the game's set (pico_ra.h), a link under Resume while one is loaded */
 
 /* how a row behaves: a value Left/Right changes (A too, for the on/off ones), an action A runs,
  * a figure only shown, or a link to a page (its item is the page) */

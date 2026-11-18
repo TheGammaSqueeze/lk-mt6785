@@ -14,11 +14,12 @@
 #include "pico_i18n.h"
 #include "pico_scrape.h"
 #include "../../platform/common/pico/pico_netsvc.h"
+#include "pico_ra.h"
 
 #define MAX_APS		24
 #define LIST_ROWS	8		/* networks in view at once */
 
-enum { KB_WIFI_PASS };
+enum { KB_WIFI_PASS, KB_RA_USER, KB_RA_PASS };
 enum { LAYOUT_LOWER, LAYOUT_UPPER, LAYOUT_SYMBOLS };
 
 static int s_screen = NUI_CLOSED, s_sel, s_top;
@@ -42,7 +43,9 @@ static struct {
 	char text[64];
 	char ssid[33];
 	char field[64];
+	int back;			/* the screen to go back to */
 } K;
+static char s_ra_name[64], s_ra_pass[64];	/* typed for signing in (the password only until then) */
 
 static const char *const k_layouts[3][4] = {
 	{ "1234567890", "qwertyuiop", "asdfghjkl@", "zxcvbnm.-_" },
@@ -60,6 +63,7 @@ static const char *const k_region_names[4] = { "World", "USA", "Europe", "Japan"
 void nui_set_roms(fat_vol *vol, const gba_rom_entry *roms, int nrom)
 {
 	if (vol != s_vol && vol) netsvc_saved_load(vol);	/* the card's saved networks, once per card */
+	pico_ra_card(vol);					/* and RetroAchievements' account */
 	s_vol = vol;
 	s_roms = roms;
 	s_nrom = nrom;
@@ -112,8 +116,18 @@ static void kb_open(int kind, const char *ssid)
 {
 	memset(&K, 0, sizeof K);
 	K.kind = kind;
-	strncpy(K.ssid, ssid, sizeof K.ssid - 1);
-	snprintf(K.field, sizeof K.field, tr("Password for %s"), ssid);
+	K.back = s_screen;
+	if (kind == KB_WIFI_PASS) {
+		strncpy(K.ssid, ssid, sizeof K.ssid - 1);
+		snprintf(K.field, sizeof K.field, tr("Password for %s"), ssid);
+	} else {
+		snprintf(K.field, sizeof K.field, "%s", kind == KB_RA_USER ? tr("RetroAchievements user name") :
+			 tr("RetroAchievements password"));
+		if (kind == KB_RA_USER) {		/* the name typed before, to change */
+			strncpy(K.text, s_ra_name, sizeof K.text - 1);
+			K.n = (int)strlen(K.text);
+		}
+	}
 	K.r = 1;
 	s_screen = NUI_KEYBOARD;
 }
@@ -125,10 +139,14 @@ static void kb_done(void)
 		netsvc_join(K.ssid, K.text);
 		s_was_joining = 1;
 		s_msg[0] = 0;
+	} else if (K.kind == KB_RA_USER) {
+		memcpy(s_ra_name, K.text, sizeof s_ra_name);
+	} else if (K.kind == KB_RA_PASS) {
+		memcpy(s_ra_pass, K.text, sizeof s_ra_pass);
 	}
 	memset(K.text, 0, sizeof K.text);
 	K.n = 0;
-	s_screen = NUI_WIFI;
+	s_screen = K.back;
 }
 
 static void kb_press(void)
@@ -151,8 +169,8 @@ static int kb_input(int e)
 {
 	if (e & NUI_B) {
 		if (K.n) { K.text[--K.n] = 0; return NUI_ACT_NONE; }	/* B deletes, then leaves */
+		s_screen = K.back;
 		memset(&K, 0, sizeof K);
-		s_screen = NUI_WIFI;
 		return NUI_ACT_NONE;
 	}
 	if (e & NUI_Y) { K.layout = K.layout == LAYOUT_UPPER ? LAYOUT_LOWER : LAYOUT_UPPER; return NUI_ACT_NONE; }
@@ -177,15 +195,40 @@ int nui_input(int e)
 	int kind[NUI_ROWS + MAX_APS], ap[NUI_ROWS + MAX_APS], n, i;
 	switch (s_screen) {
 	case NUI_HOME:
-		if (e & NUI_UP) s_sel = s_sel > 0 ? s_sel - 1 : 1;
-		if (e & NUI_DOWN) s_sel = s_sel < 1 ? s_sel + 1 : 0;
+		if (e & NUI_UP) s_sel = s_sel > 0 ? s_sel - 1 : 2;
+		if (e & NUI_DOWN) s_sel = s_sel < 2 ? s_sel + 1 : 0;
 		if (e & NUI_B) { s_screen = NUI_CLOSED; return NUI_ACT_CLOSE; }
 		if (e & NUI_A) {
-			s_screen = s_sel == 0 ? NUI_WIFI : NUI_ART;
+			s_screen = s_sel == 0 ? NUI_WIFI : s_sel == 1 ? NUI_ART : NUI_RA;
 			s_sel = 0; s_top = 0;
 			s_msg[0] = 0;
 		}
 		return NUI_ACT_NONE;
+	case NUI_RA: {
+		int in = pico_ra_state() == PICO_RA_SIGNED_IN, rows = in ? 1 : 3;
+		if (e & NUI_B) { s_screen = NUI_HOME; s_sel = 2; memset(s_ra_pass, 0, sizeof s_ra_pass); return NUI_ACT_NONE; }
+		if (e & NUI_UP) s_sel = s_sel > 0 ? s_sel - 1 : rows - 1;
+		if (e & NUI_DOWN) s_sel = s_sel < rows - 1 ? s_sel + 1 : 0;
+		if (s_sel >= rows) s_sel = rows - 1;
+		if (!(e & NUI_A)) return NUI_ACT_NONE;
+		s_msg[0] = 0;
+		if (in) {
+			pico_ra_sign_out();
+			s_sel = 0;
+		} else if (s_sel == 0) {
+			kb_open(KB_RA_USER, "");
+		} else if (s_sel == 1) {
+			kb_open(KB_RA_PASS, "");
+		} else if (pico_ra_state() != PICO_RA_SIGNING_IN) {
+			if (s_st.state != NETSVC_ONLINE) snprintf(s_msg, sizeof s_msg, "%s", tr("Connect to a Wi-Fi network first"));
+			else if (!s_ra_name[0] || !s_ra_pass[0]) snprintf(s_msg, sizeof s_msg, "%s", tr("Type your user name and password"));
+			else {
+				pico_ra_sign_in(s_ra_name, s_ra_pass);
+				memset(s_ra_pass, 0, sizeof s_ra_pass);
+			}
+		}
+		return NUI_ACT_NONE;
+	}
 	case NUI_WIFI:
 		n = wifi_rows(kind, ap, NUI_ROWS + MAX_APS);
 		if (e & NUI_B) { s_screen = NUI_HOME; s_sel = 0; return NUI_ACT_NONE; }
@@ -285,7 +328,11 @@ int nui_tick(void)
 		s_art_running = 0;
 		pico_scrape_get(&si);
 		snprintf(s_msg, sizeof s_msg, tr("Box art: %d found, %d not found"), si.found, si.missing);
-		if (si.found) act = NUI_ACT_ART;
+		if (si.found) {
+			extern void gba_menu_art_forget(void);
+			gba_menu_art_forget();	/* the same games, new art: the menu reads it afresh */
+			act = NUI_ACT_ART;
+		}
 	}
 	return act;
 }
@@ -300,11 +347,14 @@ void nui_view(struct nui_view *v)
 	switch (s_screen) {
 	case NUI_HOME:
 		v->title = tr("Network");
-		v->nrows = 2;
+		v->nrows = 3;
 		v->rows[0] = tr("Wi-Fi");
 		v->values[0] = nui_wifi_summary();
 		v->rows[1] = tr("Box art");
 		v->values[1] = s_art_running ? tr("Working...") : tr("From the network");
+		v->rows[2] = "RetroAchievements";
+		v->values[2] = pico_ra_state() == PICO_RA_SIGNED_IN ? pico_ra_user() :
+			       pico_ra_state() == PICO_RA_SIGNING_IN ? tr("Signing in...") : tr("Not signed in");
 		v->sel = s_sel;
 		if (s_st.state == NETSVC_ONLINE) {
 			snprintf(s_val[0], sizeof s_val[0], "%u.%u.%u.%u", s_st.ip >> 24, (s_st.ip >> 16) & 255, (s_st.ip >> 8) & 255,
@@ -355,13 +405,44 @@ void nui_view(struct nui_view *v)
 		v->hint_code[1] = "X"; v->hint_label[1] = tr("Forget");
 		v->hint_code[2] = "B"; v->hint_label[2] = tr("Back");
 		break;
+	case NUI_RA: {
+		int st = pico_ra_state();
+		v->title = "RetroAchievements";
+		if (st == PICO_RA_SIGNED_IN) {
+			v->nrows = 1;
+			v->rows[0] = tr("Sign out");
+			v->values[0] = pico_ra_user();
+			snprintf(s_val[1], sizeof s_val[1], tr("%u points"), pico_ra_points());
+			v->subtitle = s_val[1];
+		} else {
+			v->nrows = 3;
+			v->rows[0] = tr("User name");
+			v->values[0] = s_ra_name[0] ? s_ra_name : tr("Not set");
+			v->rows[1] = tr("Password");
+			v->values[1] = s_ra_pass[0] ? "********" : tr("Not set");
+			v->rows[2] = st == PICO_RA_SIGNING_IN ? tr("Signing in...") : tr("Sign in");
+			v->busy = st == PICO_RA_SIGNING_IN;
+		}
+		v->sel = s_sel;
+		if (pico_ra_waiting())
+			snprintf(s_val[2], sizeof s_val[2], tr("%u unlocks waiting to be sent"), pico_ra_waiting());
+		v->status = s_msg[0] ? s_msg : pico_ra_note()[0] ? pico_ra_note() :
+			    pico_ra_waiting() ? s_val[2] :
+			    st == PICO_RA_NO_BLOB ? tr("RetroAchievements is missing from the card (/cores)") :
+			    tr("Softcore. Unlocks made without a network are sent later.");
+		v->nhints = 2;
+		v->hint_code[0] = "A"; v->hint_label[0] = tr("Select");
+		v->hint_code[1] = "B"; v->hint_label[1] = tr("Back");
+		break;
+	}
 	case NUI_KEYBOARD: {
 		struct nui_kb *k = &v->kb;
-		v->title = tr("Wi-Fi");
+		int secret = K.kind != KB_RA_USER;
+		v->title = K.kind == KB_WIFI_PASS ? tr("Wi-Fi") : "RetroAchievements";
 		k->field = K.field;
-		for (i = 0; i < K.n && i < (int)sizeof k->shown - 1; i++) k->shown[i] = '*';	/* a password: dots */
+		for (i = 0; i < K.n && i < (int)sizeof k->shown - 1; i++) k->shown[i] = secret ? '*' : K.text[i];	/* a password: dots */
 		k->shown[i] = 0;
-		if (K.n) k->shown[K.n - 1] = K.text[K.n - 1];	/* the last character typed shows */
+		if (K.n && secret) k->shown[K.n - 1] = K.text[K.n - 1];	/* the last character typed shows */
 		for (i = 0; i < 4; i++) k->keys[i] = k_layouts[K.layout][i];
 		for (i = 0; i < 5; i++) {
 			static const char *const labels[5] = { "Shift", "#+=", "Space", "Del", "OK" };
@@ -371,7 +452,7 @@ void nui_view(struct nui_view *v)
 		}
 		k->r = K.r;
 		k->c = K.r == 4 ? k_wide_col[wide_at(K.c)] : K.c;
-		k->note = s_msg[0] ? s_msg : tr("8 to 63 characters");
+		k->note = s_msg[0] ? s_msg : K.kind == KB_WIFI_PASS ? tr("8 to 63 characters") : 0;
 		v->nhints = 4;
 		v->hint_code[0] = "A"; v->hint_label[0] = tr("Type");
 		v->hint_code[1] = "Y"; v->hint_label[1] = tr("Shift");

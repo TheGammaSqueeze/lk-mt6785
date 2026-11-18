@@ -46,7 +46,16 @@ extern volatile unsigned int g_dbg_cigm_us[6];   /* oem diag: what a paint costs
 #define DIM      176              /* the game behind, darkened to (256 - DIM) / 256 */
 
 typedef struct { int kind, item; const char *label; } cline;
-static const char *const k_page[IGM_NPAGES] = { "", "Display", "Sound", "Gameplay", "System", "Core options" };
+static const char *const k_page[IGM_NPAGES] = { "", "Display", "Sound", "Gameplay", "System", "Core options",
+						 "Achievements" };
+
+/* RetroAchievements (pico_ra.c, on the consoles with Wi-Fi; absent elsewhere) */
+extern int pico_ra_game_loaded(void) __attribute__((weak));
+extern int pico_ra_list(void) __attribute__((weak));
+extern const char *pico_ra_row_title(int i) __attribute__((weak));
+extern const char *pico_ra_row_value(int i) __attribute__((weak));
+extern void pico_ra_paused(void) __attribute__((weak));
+static int ra_on(void) { return pico_ra_game_loaded && pico_ra_game_loaded(); }
 
 static snes_pack s_pk;            /* the kit's pack */
 static const struct cui_set *s_set; /* its sprites */
@@ -91,6 +100,14 @@ static int lines(int page, cline *out)
 		for (i = 0; i < k && n < ROWS; i++, n++) { out[n].kind = IGM_VALUE; out[n].item = i; out[n].label = c->opt_label(i); }
 		return n;
 	}
+	if (page == IGM_ACH) {	/* the set: each achievement, its state on the right (looked at, not changed) */
+		static unsigned int built;	/* made again at most once a second */
+		static int k;
+		unsigned int now = gpt4_get_current_tick();
+		if (!built || now - built > 13000000u) { built = now | 1u; k = ra_on() ? pico_ra_list() : 0; }
+		for (i = 0; i < k && n < ROWS; i++, n++) { out[n].kind = IGM_INFO; out[n].item = i; out[n].label = pico_ra_row_title(i); }
+		return n;
+	}
 	if (page == IGM_TOP) { out[0].kind = IGM_ACTION; out[0].item = -1; out[0].label = "Resume"; n = 1; }
 	for (i = 0; i < c->nrows && n < ROWS; i++) {
 		const struct igm_row *r = &c->rows[i];
@@ -117,6 +134,7 @@ static const char *row_value(int page, int row, const cline *l, char *buf, int *
 	*sw = -1;
 	buf[0] = 0;
 	if (page == IGM_CORE) v = c->opt_value(l->item, buf);
+	else if (page == IGM_ACH) return pico_ra_row_value ? pico_ra_row_value(l->item) : 0;
 	else if (l->kind == IGM_LINK || l->item < 0) return 0;
 	else if ((l->item == c->save_item || l->item == c->load_item) && c->slot_item >= 0) {
 		char s[96], w[32], *sp;
@@ -164,6 +182,7 @@ static void tabs_lay_out(void)
 		if (r->page == IGM_TOP && C.ntab < IGM_NPAGES) C.tab[C.ntab++] = (signed char)r->item;
 	}
 	if (core && C.ntab < IGM_NPAGES) C.tab[C.ntab++] = IGM_CORE;
+	if (ra_on() && C.ntab < IGM_NPAGES) C.tab[C.ntab++] = IGM_ACH;	/* RetroAchievements: the game's set */
 	C.tab_sc = 0.8f;
 	for (;;) {
 		total = 0;
@@ -276,8 +295,11 @@ int pico_classic_igm_frame(unsigned int keys)
 	C.tick = now;
 	if (dt > .05f) dt = .05f;
 	if (!C.up) return 0;
-	if (g_dbg_key_hold > 0 && g_dbg_key >= 0 && g_dbg_key < 6) {   /* oem nav: an injected key */
-		static const unsigned int map[6] = { IGM_K_LEFT, IGM_K_RIGHT, IGM_K_UP, IGM_K_DOWN, IGM_K_A, IGM_K_B };
+	if (pico_ra_paused) pico_ra_paused();	/* RetroAchievements while the game waits (about once a second) */
+	if (g_dbg_key_hold > 0 && g_dbg_key >= 0 && g_dbg_key < 10 && g_dbg_key != 6 && g_dbg_key != 7) {   /* oem nav: an injected key */
+		/* LRUDAB, then [ and ] as the shoulders (Select and Start are not the menu's) */
+		static const unsigned int map[10] = { IGM_K_LEFT, IGM_K_RIGHT, IGM_K_UP, IGM_K_DOWN, IGM_K_A, IGM_K_B, 0, 0,
+						      IGM_K_L, IGM_K_R };
 		keys |= map[g_dbg_key];
 		g_dbg_key_hold--;
 	}
@@ -333,6 +355,7 @@ int pico_classic_igm_frame(unsigned int keys)
 		cline *l = &ln[sel];
 		const struct igm_core *c = C.c;
 		int dir = lt ? -1 : rt ? 1 : 0;
+		if (C.page == IGM_ACH) { dir = 0; a = 0; }	/* the set is only looked at */
 		if (dir) {
 			if (C.page == IGM_CORE) c->opt_change(l->item, dir);
 			else if (l->kind == IGM_VALUE) { if (c->change(l->item, dir, 0)) { C.closing = 1; C.latch = 0; } }

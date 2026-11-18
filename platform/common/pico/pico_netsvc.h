@@ -77,4 +77,10 @@ void netsvc_time_hint(void);
 /* the user agent for HTTP requests (RetroAchievements wants its own) */
 void netsvc_user_agent(const char *ua);
 
+/* 1 while a game is played: the service sleeps and costs the game nothing; 0 the menu again */
+void netsvc_quiet(int on);
+
+/* secrets kept on the card, masked for this console (label: what they are); again to unmask */
+void netsvc_mask(void *data, unsigned int len, const char *label);
+
 #endif

@@ -72,9 +72,10 @@ case " $CONSOLES " in *" block "*)
 	./build_konkr_block.sh
 	[ -f out/lk_a_block_signed.img ] || { echo "!! the Block's LK build did not produce its image" >&2; exit 1; } ;;
 esac
-for c in armgba-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico armnes-pico; do
+for c in armgba-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico armnes-pico ra-pico; do
 	[ -f out/sdcard/cores/$c.blob ] || { echo "!! the card template has no $c core" >&2; exit 1; }
 done
+[ -f out/sdcard/bios/certs/roots.der ] || { echo "!! the card template has no HTTPS roots" >&2; exit 1; }
 
 rm -rf "$FILES" "$R"/*.zip "$R"/SHA256SUMS "$R"/RELEASE_NOTES.md
 mkdir -p "$FILES"
@@ -95,6 +96,12 @@ for dir in armGBA-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico 
 	printf 'Built from https://github.com/TheGammaSqueeze/%s at commit %s\n(the emulator upstream is its submodule, the GammaOS Pico changes are in patches/).\n' \
 		"$dir" "$(git -C cores/$dir rev-parse HEAD)" > "$d/SOURCE.txt"
 done
+# RetroAchievements (cores/ra-pico, in this tree): rcheevos' licence and what the blob is made of
+d="$CARD_SRC/licences/cores/ra-pico"
+mkdir -p "$d"
+cp cores/ra-pico/README.md "$d/README.md"
+cp cores/armNES-pico/upstream/armulators/deps/rcheevos/LICENSE "$d/LICENSE-rcheevos"
+printf 'Built from this release'"'"'s LK tree (lk-mt6785, cores/ra-pico) at commit %s.\n' "$LK_COMMIT_FULL" > "$d/SOURCE.txt"
 # the menus' fonts (Inter, Noto), whose glyphs the menu, language and names packs are drawn from
 mkdir -p "$CARD_SRC/licences/fonts"
 cp tools/ayaneo/pico_current/art/fonts/OFL.txt "$CARD_SRC/licences/fonts/Inter-OFL.txt"

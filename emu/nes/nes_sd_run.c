@@ -119,6 +119,13 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
 /* Gameplay CPU clock per run-ahead tier (index = pf: 0 Off, 1 Balanced, 2 Responsive, 3 Max). Set per
  * the user's chosen ladder - each tier steps up ~200 MHz for the extra pf+1 emulations run-ahead does.
  * ayaneo_set_cpu_mhz programs the PLL directly (no grid snapping), so these exact values are applied. */
+/* RetroAchievements after a frame the game really ran (pico_ra.c; absent on consoles without it) */
+static void nes_ra_frame(void)
+{
+	extern void pico_ra_frame(void) __attribute__((weak));
+	if (pico_ra_frame) pico_ra_frame();
+}
+
 static const unsigned s_nes_ra_opp[4] = { 999, 1199, 1399, 1599 };
 
 volatile int g_nes_menu_open;         /* gates game input + FF/rewind while the Pico menu is up */
@@ -449,6 +456,7 @@ static int gm_change(int i, int dir, int act)
 		n = gba_sd_read_named(s_menu_vol, "/states/nes", s_menu_rom->name, ext, st, NES_STATE_CAP);
 		ok = (n && s_menu_c->state_load(st, n) == 0);
 		if (ok && s_menu_rw_payload) ayaneo_rewind_reset(s_menu_rw_payload);   /* loaded state breaks the rewind timeline */
+		if (ok) { extern void pico_ra_state_loaded(void) __attribute__((weak)); if (pico_ra_state_loaded) pico_ra_state_loaded(); }   /* and RetroAchievements' counts */
 		mput(s_mstat, ok ? "State loaded" : "No save state"); } break;
 	case GM_DISK: if (act && (g_nes_dbg_disk & 1)) {
 		/* armNES takes L3 as the drive's eject: the disk out, then the next side in; held for a
@@ -669,6 +677,17 @@ static void nes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 	}
 
+	/* RetroAchievements: the game's set, with its memory (not in netplay) */
+	{
+		extern void pico_ra_core_ready(const void *rom, unsigned size, const struct pico_core_memory *mem)
+			__attribute__((weak));
+		if (pico_ra_core_ready && !s_nes_np && c->version >= NES_CORE_ABI_V3 && c->get_memory) {
+			struct pico_core_memory mem;
+			c->get_memory(&mem);
+			pico_ra_core_ready((const void *)NES_ROM_BUF, romsz, &mem);
+		}
+	}
+
 	c->av_info(0, 0, 0, 0, &sr);
 	if (!sr) sr = 44100;
 	g_nes_dbg_sr = sr;
@@ -854,6 +873,7 @@ static void nes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (unshown && c->set_av_skip) c->set_av_skip(0, 0);
 		}
 		g_nes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
+		if (!s_nes_np && !g_nes_menu_open) nes_ra_frame();	/* RetroAchievements: the committed frame */
 		if (c->aspect_x1000 && (g_nes_dbg_frames & 15u) == 0)   /* refresh the Fit target (a crop change) */
 			g_genesis_aspect_x1000 = c->aspect_x1000();
 		if (rw_payload && ayaneo_rewind_ready()) {   /* capture committed frame into the rewind ring */
@@ -894,6 +914,7 @@ static void nes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					if (s_nes_skip_us > s_nes_rend_us) s_nes_skip_us = s_nes_rend_us;
 				} else { s_nes_skip_us += ((int)us - (int)s_nes_skip_us) / 4; skipc = s_nes_skip_us; }
 				g_nes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
+				nes_ra_frame();				/* and each fast forward frame */
 				if (last && rw_payload && ayaneo_rewind_ready()) {   /* one snapshot per shown frame */
 					void *p = ayaneo_rewind_capture_begin();
 					if (p && c->state_save(p, rw_payload) == 0) ayaneo_rewind_capture_commit(rw_payload);

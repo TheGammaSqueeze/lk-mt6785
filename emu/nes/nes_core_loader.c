@@ -32,12 +32,12 @@ const struct nes_core_exports *nes_core_load(fat_vol *v)
 
 	init = (nes_core_blob_init_fn)core_file_load(v, CORE_PATH_NES, CORE_SLOT_VMA,
 						     CORE_SLOT_END - CORE_SLOT_VMA,
-						     NES_CORE_ABI_MAGIC, NES_CORE_ABI_VERSION, NES_CORE_ABI_VERSION, &err);
+						     NES_CORE_ABI_MAGIC, NES_CORE_ABI_VERSION, NES_CORE_ABI_V3, &err);
 	g_nes_dbg_loaderr = (unsigned)err;
 	if (!init)
 		return 0;
 	ex = init(&s_imports);
-	if (!ex || ex->magic != NES_CORE_ABI_MAGIC || ex->version != NES_CORE_ABI_VERSION) {
+	if (!ex || ex->magic != NES_CORE_ABI_MAGIC || ex->version < NES_CORE_ABI_VERSION || ex->version > NES_CORE_ABI_V3) {
 		g_nes_dbg_loaderr = CORE_FILE_REJECTED;
 		return 0;
 	}

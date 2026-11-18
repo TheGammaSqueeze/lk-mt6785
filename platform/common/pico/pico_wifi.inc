@@ -2765,13 +2765,19 @@ static void ns_http(void)
 	mutex_release(&s_ns_info);
 }
 
+/* a game is being played: the service sleeps (no link pumps, nothing sent), so it costs the game
+ * nothing; the network stays joined and picks up where it was when the menu is back */
+static volatile int s_ns_quiet;
+void netsvc_quiet(int on) { s_ns_quiet = on; if (!on) event_signal(&s_ns_wake, false); }
+
 static int ns_thread(void *arg)
 {
 	(void)arg;
 	for (;;) {
 		int cmd, online;
 		g_ns_crumb[0] = NSC_WAIT;
-		event_wait_timeout(&s_ns_wake, s_ns_st.state == NETSVC_ONLINE ? 10 : 100);
+		event_wait_timeout(&s_ns_wake, s_ns_quiet ? 1000 : s_ns_st.state == NETSVC_ONLINE ? 10 : 100);
+		if (s_ns_quiet) continue;
 		mutex_acquire(&s_ns_info);
 		cmd = s_ns_cmd;
 		s_ns_cmd = NS_NONE;
@@ -2942,15 +2948,18 @@ void netsvc_forget(const char *ssid)
  * network its name (33 bytes) and PMK (32), the whole after the head masked with a keystream
  * from this console's serial (SHA-256 in counter mode), so a card read elsewhere shows no keys. */
 #define NS_SAVED_DIR	"/gammaos/net"
-static void ns_mask(unsigned char *p, unsigned int len)
+/* a file's secrets on the card (the saved networks' keys, RetroAchievements' token) masked with
+ * a stream from SHA-256 of label, this console's serial and a count: unreadable on another
+ * console or to anyone who looks at the card. Applying it again unmasks. */
+void netsvc_mask(void *data, unsigned int len, const char *label)
 {
-	unsigned char block[32];
+	unsigned char block[32], *p = (unsigned char *)data;
 	unsigned int i, ctr = 0;
 	for (i = 0; i < len; i++) {
 		if (!(i % 32)) {
 			struct pico_sha256 h;
 			pico_sha256_start(&h);
-			pico_sha256_add(&h, "pico wifi saved", 15);
+			pico_sha256_add(&h, label, strlen(label));
 			pico_sha256_add(&h, sn_buf, strlen(sn_buf));
 			pico_sha256_add(&h, &ctr, sizeof ctr);
 			pico_sha256_end(&h, block);
@@ -2959,6 +2968,11 @@ static void ns_mask(unsigned char *p, unsigned int len)
 		p[i] ^= block[i % 32];
 	}
 	pico_wipe(block, sizeof block);
+}
+
+static void ns_mask(unsigned char *p, unsigned int len)
+{
+	netsvc_mask(p, len, "pico wifi saved");
 }
 
 void netsvc_saved_load(void *vol)

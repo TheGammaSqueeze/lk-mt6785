@@ -137,11 +137,11 @@ unsigned int ayaneo_rewind_map(void)
 		n++;
 	}
 #if defined(KONKR_BLOCK) || defined(KONKR_KPA)
-	/* the console's connectivity memory (pico_bt.h: the Bluetooth firmware window and the Wi-Fi
-	 * DMA memory right after it) is not rewind's: an island that holds it is split around it,
-	 * each part kept if it is still worth mapping */
+	/* the console's connectivity memory (pico_bt.h: the Bluetooth firmware window, the Wi-Fi DMA
+	 * memory right after it and RetroAchievements' memory after that) is not rewind's: an island
+	 * that holds it is split around it, each part kept if it is still worth mapping */
 	{
-		unsigned int hole = BT_EMI_PA, hole_end = WIFI_DMA_PA + WIFI_DMA_SIZE, cnt = n;
+		unsigned int hole = BT_EMI_PA, hole_end = PICO_NET_MEM_END, cnt = n;
 		for (i = 0; i < cnt; i++) {
 			unsigned int a = s_seg_phys[i], e = s_seg_phys[i] + s_seg_size[i];
 			if (e <= hole || a >= hole_end)

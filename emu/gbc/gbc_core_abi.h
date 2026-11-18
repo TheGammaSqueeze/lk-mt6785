@@ -18,7 +18,10 @@
 #define GBC_CORE_ABI_VERSION 1u   /* the oldest export table the LK accepts */
 #define GBC_CORE_ABI_V2      2u   /* + motion_wanted, set_motion, rumble */
 #define GBC_CORE_ABI_V3      3u   /* + set_pad_reader and the link cable (two linked machines) */
-#define GBC_CORE_ABI_MAX     GBC_CORE_ABI_V3
+#define GBC_CORE_ABI_V4      4u   /* + get_memory (the machine's memory, for RetroAchievements) */
+#define GBC_CORE_ABI_MAX     GBC_CORE_ABI_V4
+
+#include "pico_core_memory.h"
 
 /* Services LK provides to the core (core -> LK calls). */
 struct gbc_core_imports {
@@ -108,6 +111,13 @@ struct gbc_core_exports {
 	/* The cartridge clock of machine m runs offset seconds from the clock host_time gives
 	 * (each machine keeps its own console's time during a session). */
 	void     (*link_clock)(unsigned m, long offset);
+
+	/* ---- V4 ----
+	 * The machine's memory as the Game Boy's address map has it (work RAM at 0xC000, the high RAM
+	 * at 0xFF80, video RAM, the cartridge's RAM at 0xA000, the Color's other work RAM banks from
+	 * 0x10000), for RetroAchievements to read in place between frames. Valid from load until the
+	 * next load. */
+	void (*get_memory)(struct pico_core_memory *out);
 };
 
 typedef const struct gbc_core_exports *(*gbc_core_blob_init_fn)(const struct gbc_core_imports *imp);

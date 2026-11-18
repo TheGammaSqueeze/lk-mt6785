@@ -45,6 +45,13 @@ extern void     ayaneo_rumble_set(int on), ayaneo_rumble_stop(void);
 extern void ayaneo_accel_filter(int v[3]);
 volatile unsigned int g_dbg_gbc_motion_n;
 volatile int g_dbg_gbc_motion_v[3];
+/* RetroAchievements after a frame the game really ran (pico_ra.c; absent on consoles without it) */
+static void gbc_ra_frame(void)
+{
+	extern void pico_ra_frame(void) __attribute__((weak));
+	if (pico_ra_frame) pico_ra_frame();
+}
+
 static int s_gbc_accel_gone;   /* the sensor did not answer: not asked again until power off */
 static void gbc_motion_frame(const struct gbc_core_exports *c)
 {
@@ -507,6 +514,7 @@ static int gm_change(int i, int dir, int act)
 				     n = gba_sd_read_named(s_menu_vol, g_gba_state_dir, s_menu_rom->name, ext, s_menu_ahead, 0x00A00000u);
 			     int ok = (n && s_menu_c->state_load(s_menu_ahead, n) == 0);
 			     if (ok) ayaneo_rewind_reset(s_menu_ahead_sz);   /* loaded state breaks the rewind timeline */
+			     if (ok) { extern void pico_ra_state_loaded(void) __attribute__((weak)); if (pico_ra_state_loaded) pico_ra_state_loaded(); }   /* and RetroAchievements' counts */
 			     mput(s_mstat, ok ? "State loaded" : "No save state"); }
 			 changed = 0; break;
 	case GM_RESET:   if (act && s_gbc_np) {	/* the host's, on both consoles at the same frame */
@@ -809,6 +817,17 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		}
 	}
 
+	/* RetroAchievements: the game's set, with its memory (not in netplay) */
+	{
+		extern void pico_ra_core_ready(const void *rom, unsigned size, const struct pico_core_memory *mem)
+			__attribute__((weak));
+		if (pico_ra_core_ready && !s_gbc_np && c->version >= GBC_CORE_ABI_V4 && c->get_memory) {
+			struct pico_core_memory mem;
+			c->get_memory(&mem);
+			pico_ra_core_ready(rombuf, romsz, &mem);
+		}
+	}
+
 	/* Drop from the menu's 2000 MHz to the run-ahead-tier emulation clock (Off = 600,
 	 * escalating with pf so the (pf+1) emulations per frame still fit the 16.7 ms budget). */
 	{
@@ -1018,6 +1037,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 		if (r >= 0) {                       /* a video frame completed */
 			int combo, pf, aya, ff = 0;
+			if (!g_gbc_menu_open && !s_gbc_np) gbc_ra_frame();	/* RetroAchievements: the committed frame */
 			/* Rewind capture: snapshot EVERY committed emulated frame - this one plus each
 			 * fast-forward frame below - so FF'd frames can be rewound (NOT the run-ahead
 			 * look-ahead frames, which get rewound anyway). Skipped while the menu is open. Cheap
@@ -1051,6 +1071,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 						int more;
 						c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);
 						{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
+						gbc_ra_frame();			/* and each fast forward frame */
 						ayaneo_gbc_audio_submit(snd, s2);
 						n++;
 						more = (n < 120 && ayaneo_ff_fits(ff_t0, blit, fe, 0));

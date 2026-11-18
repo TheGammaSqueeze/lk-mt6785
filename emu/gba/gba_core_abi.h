@@ -43,7 +43,10 @@
 #define GBA_CORE_ABI_V3      3u   /* 3: name, audio rate, state folder, options (armGBA-pico from the SD card) */
 #define GBA_CORE_ABI_V4      4u   /* 4: motion for tilt and gyro cartridges, and rumble */
 #define GBA_CORE_ABI_V5      5u   /* 5: two linked machines for netplay (the link cable) */
-#define GBA_CORE_ABI_MAX     GBA_CORE_ABI_V5
+#define GBA_CORE_ABI_V6      6u   /* 6: the machine's memory, for RetroAchievements */
+#define GBA_CORE_ABI_MAX     GBA_CORE_ABI_V6
+
+#include "pico_core_memory.h"
 
 /* A core option the LK can show in the Core Settings submenu (version 3). The LK persists the
  * chosen index per key and hands it back with opt_set before the next game starts. */
@@ -160,6 +163,11 @@ struct gba_core_exports {
 	int  (*pair_state_load)(const void *buf, unsigned size);
 	int  (*pair_load_machine)(int m, const void *state);
 	unsigned (*pair_stat)(unsigned what);
+
+	/* version 6: the running machine's memory as libretro describes it (IWRAM at 0x03000000, EWRAM
+	 * at 0x02000000, the cartridge's save at 0x0E000000), for RetroAchievements to read in place
+	 * between frames. Valid from core_start until the next game; a version 5 core has none. */
+	void (*get_memory)(struct pico_core_memory *out);
 };
 
 /* The blob's single fixed entry symbol. The loader resolves it at a known offset (e.g.

@@ -470,6 +470,10 @@ static int            s_slot_game[SNES_BOXART_CAP];   /* the game each slot hold
 static unsigned int   s_slot_stamp[SNES_BOXART_CAP], s_art_clock;
 static int            s_art_n;              /* the games the tables describe */
 static unsigned int   s_art_sig;            /* and the list they were made for */
+static int            s_art_stale;          /* new art on the card for the same list: index it again */
+/* box art arrived for games already listed (the Network tab's box art): the next menu run reads
+ * the card's art afresh */
+void gba_menu_art_forget(void) { s_art_stale = 1; }
 static int            s_art_budget = 1;     /* art reads allowed in this frame (gba_menu_boxart_budget) */
 static int            s_art_pending;        /* a menu asked for art past the budget: draw again */
 volatile unsigned int g_dbg_boxart_ms;      /* oem diag: the last box art load, ms */
@@ -1004,9 +1008,10 @@ int gba_menu_boxart_load(const gba_rom_entry *roms, int nrom)
 	s_boxart_full_pk.base = (unsigned char *)SNES_BOXART_PA;
 	sig = list_sig(roms, nrom);
 	s_art_roms = roms;
-	if (sig != s_art_sig && vol && s_boxart_mapped) {	/* a new list: index it, fill the slots */
+	if ((sig != s_art_sig || s_art_stale) && vol && s_boxart_mapped) {	/* a new list (or new art): index it, fill the slots */
 		int ty, got;
 		s_art_sig = sig;
+		s_art_stale = 0;
 		s_art_n = nrom;
 		for (i = 0; i < SNES_BOXART_CAP; i++) s_slot_game[i] = -1;
 		for (i = 0; i < nrom; i++) {
@@ -1109,6 +1114,9 @@ void gba_menu_present(void)
 	unsigned int *bb = ayaneo_canvas_back(&bp, &bw, &bh);
 	ayaneo_power_bar_draw(bb, bp, bw, bh);   /* power hold: the bar goes into this frame */
 	ayaneo_canvas_present();
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ extern void pico_ra_menu_tick(void); pico_ra_menu_tick(); }   /* RetroAchievements: its server calls, in any theme */
+#endif
 	g_dbg_present_cnt++;
 	mtk_wdt_restart();
 	{	/* LK runs the highest priority thread that is ready, and the menus draw every refresh
@@ -1727,6 +1735,11 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	s_pt_roms = roms;
 #if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 	{ extern void ayaneo_joypad_kpa_reset_toggles(void); ayaneo_joypad_kpa_reset_toggles(); }   /* L2/R2 toggles never carry across sessions */
+	{ extern void pico_ra_card(fat_vol *v); pico_ra_card(gba_sd_menu_vol()); }   /* RetroAchievements' account */
+	{	/* System > Network: the card, its games (box art) */
+		extern void nui_set_roms(fat_vol *vol, const gba_rom_entry *roms, int nrom);
+		nui_set_roms(gba_sd_menu_vol(), roms, nrom);
+	}
 #endif
 	int do_reverse = g_reverse_punch;	/* consume now so a failed re-entry (pack missing)
 						 * cannot leave a stale reverse armed for next time */
@@ -2040,7 +2053,8 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 			static int py_last, y_cd;
 			int ynow = PRESSED(K_Y);
 			if (y_cd > 0) y_cd--;
-			if (ynow && !py_last && y_cd == 0 && !link_busy_now()) { cycle_filter(nrom); y_cd = 8; }
+			/* (not under a menubar page: Y is the keyboard's Shift on Network) */
+			if (ynow && !py_last && y_cd == 0 && !link_busy_now() && s_menu.open < 0) { cycle_filter(nrom); y_cd = 8; }
 			py_last = ynow;
 		}
 
@@ -2054,6 +2068,10 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 
 		snes_menu_update(&s_menu, &in, dt);
 #if PICO_LINK
+		{	/* the network's news every frame (System > Network); new box art: the card listed again */
+			extern int nui_tick(void);
+			if (nui_tick() == 2 /* NUI_ACT_ART */) link_relist = 1;
+		}
 		if (snes_menu_take_action(&s_menu) == CSLOT_LINK && !link_busy_now()) {	/* the menubar's Link */
 			lui_open_home_game(roms, nrom, link_focused_rom());
 			s_link_swallow = 1;

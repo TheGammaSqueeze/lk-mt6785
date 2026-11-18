@@ -16,6 +16,9 @@
 
 #define GENESIS_CORE_ABI_MAGIC   0x31474553u   /* "SEG1" */
 #define GENESIS_CORE_ABI_VERSION 5u   /* v5: opt_count / opt_info (the core's own option list); v4: set_av_skip video 2 = sprites only; v3: + fps_milli (core frame rate for dynamic per-core panel refresh; v2 was set_ra_fast, sound_rebase) */
+#define GENESIS_CORE_ABI_V6      6u   /* v6: the machine's memory, for RetroAchievements */
+
+#include "pico_core_memory.h"
 
 /* One of the core's own options, as the core declares it (libretro core options v2), for the
  * frontend's Core Settings page. values are what set_option takes, labels what is shown (the same
@@ -135,6 +138,11 @@ struct genesis_core_exports {
 	 * set_option; most take effect on the next frame. */
 	int (*opt_count)(void);
 	const struct pico_core_option *(*opt_info)(int index);
+
+	/* v6: the game's memory as the libretro port describes it (its system RAM, the cartridge's
+	 * RAM and the map it announces), for RetroAchievements to read in place between frames. Valid
+	 * from load until unload. */
+	void (*get_memory)(struct pico_core_memory *out);
 };
 
 typedef const struct genesis_core_exports *(*genesis_core_blob_init_fn)(const struct genesis_core_imports *imp);

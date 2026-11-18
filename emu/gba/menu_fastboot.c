@@ -2882,6 +2882,21 @@ static void cmd_core(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem cheevos - RetroAchievements: the state, the last outcome and rcheevos' last messages (no secrets) */
+static void cmd_cheevos(const char *arg, void *data, unsigned sz)
+{
+	extern int pico_ra_debug_line(int i, char *buf, unsigned cap) __attribute__((weak));
+	extern void pico_ra_debug(const char *arg) __attribute__((weak));
+	char l[96];
+	int i;
+	(void)data; (void)sz;
+	if (!pico_ra_debug_line) { fastboot_info("ra: not in this build"); fastboot_okay(""); return; }
+	while (*arg == ':' || *arg == ' ') arg++;
+	if (*arg && pico_ra_debug) pico_ra_debug(arg);	/* fake:1|0, login (the test server, menu thread) */
+	for (i = 0; i < 12 && pico_ra_debug_line(i, l, sizeof l); i++) fastboot_info(l);
+	fastboot_okay("");
+}
+
 /* oem blackbox[:clear] - the event records kept on the card (faults, charging screen hand overs) */
 static void cmd_blackbox(const char *arg, void *data, unsigned sz)
 {
@@ -3494,6 +3509,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem gauge", cmd_gauge, 1, 0);
 	fastboot_register("oem serialinfo", cmd_serialinfo, 1, 0);
 	fastboot_register("oem blackbox", cmd_blackbox, 1, 0);
+	fastboot_register("oem cheevos", cmd_cheevos, 1, 0);
 	fastboot_register("oem core", cmd_core, 1, 0);
 	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);
 	fastboot_register("oem bbram", cmd_bbram, 1, 0);
@@ -3532,6 +3548,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem env:", cmd_env, 1, 0);
 	fastboot_register("oem serialinfo", cmd_serialinfo, 1, 0);
 	fastboot_register("oem blackbox", cmd_blackbox, 1, 0);
+	fastboot_register("oem cheevos", cmd_cheevos, 1, 0);
 	fastboot_register("oem core", cmd_core, 1, 0);
 	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);
 	fastboot_register("oem bbram", cmd_bbram, 1, 0);

@@ -56,9 +56,10 @@ $(BUILDDIR)/emu/gba/pico_coreopt.o:     CFLAGS += -Os
 ifneq ($(filter yes,$(KONKR_KPA) $(KONKR_BLOCK)),)
 OBJS += emu/gba/pico_link_ui.o
 $(BUILDDIR)/emu/gba/pico_link_ui.o:     CFLAGS += -Os
-OBJS += emu/gba/pico_net_ui.o emu/gba/pico_scrape.o	# the Network tab: Wi-Fi, box art
+OBJS += emu/gba/pico_net_ui.o emu/gba/pico_scrape.o emu/gba/pico_ra.o	# the Network tab: Wi-Fi, box art, RetroAchievements
 $(BUILDDIR)/emu/gba/pico_net_ui.o:      CFLAGS += -Os
 $(BUILDDIR)/emu/gba/pico_scrape.o:      CFLAGS += -Os
+$(BUILDDIR)/emu/gba/pico_ra.o:          CFLAGS += -Os
 ifneq ($(wildcard emu/gba/pico_ss_creds.gen.h),)
 $(BUILDDIR)/emu/gba/pico_scrape.o:      CFLAGS += -DPICO_SS_CREDS	# the generated (never committed) credentials
 endif

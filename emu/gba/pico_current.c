@@ -2527,8 +2527,19 @@ extern void ayaneo_overlay_live(int (*paint)(unsigned int *, unsigned int, unsig
 extern volatile int g_dbg_key, g_dbg_key_hold;
 typedef struct { int kind, item, icon; const char *label; } igm_line;
 enum { IC_PLAY, IC_SAVE, IC_LOAD, IC_DISPLAY, IC_SOUND, IC_SPEED, IC_SYSTEM, IC_RESET, IC_EXIT, IC_N, IC_NONE = -1 };
-static const char *const k_igm_page[IGM_NPAGES] = { "", "Display", "Sound", "Gameplay", "System", "Core options" };
-static const signed char k_igm_page_ic[IGM_NPAGES] = { IC_NONE, IC_DISPLAY, IC_SOUND, IC_SPEED, IC_SYSTEM, IC_SYSTEM };
+static const char *const k_igm_page[IGM_NPAGES] = { "", "Display", "Sound", "Gameplay", "System", "Core options",
+						   "Achievements" };
+static const signed char k_igm_page_ic[IGM_NPAGES] = { IC_NONE, IC_DISPLAY, IC_SOUND, IC_SPEED, IC_SYSTEM, IC_SYSTEM,
+							IC_PLAY };
+
+/* RetroAchievements (pico_ra.c, on the consoles with Wi-Fi; absent elsewhere) */
+extern int pico_ra_game_loaded(void) __attribute__((weak));
+extern int pico_ra_list(void) __attribute__((weak));
+extern const char *pico_ra_row_title(int i) __attribute__((weak));
+extern const char *pico_ra_row_value(int i) __attribute__((weak));
+extern const char *pico_ra_short(void) __attribute__((weak));
+extern void pico_ra_paused(void) __attribute__((weak));
+static int igm_ra_on(void) { return pico_ra_game_loaded && pico_ra_game_loaded(); }
 
 static struct {
 	int loaded, failed;          /* the pack is in memory / could not be read */
@@ -2659,7 +2670,22 @@ static int igm_lines(int page, igm_line *out)
 		}
 		return n;
 	}
+	if (page == IGM_ACH) {	/* the set: each achievement, its state on the right (looked at, not changed) */
+		static unsigned int built;	/* the list is made again at most once a second */
+		static int k;
+		unsigned int now = gpt4_get_current_tick();
+		if (!built || now - built > 13000000u) { built = now | 1u; k = igm_ra_on() ? pico_ra_list() : 0; }
+		for (i = 0; i < k && n < IGM_ROWS; i++, n++) {
+			out[n].kind = IGM_INFO; out[n].item = i; out[n].icon = IC_NONE; out[n].label = pico_ra_row_title(i);
+		}
+		return n;
+	}
 	if (page == IGM_TOP) { out[0].kind = IGM_ACTION; out[0].item = -1; out[0].icon = IC_PLAY; out[0].label = tr("Resume"); n = 1; }
+	if (page == IGM_TOP && igm_ra_on()) {	/* RetroAchievements: the game's set, under Resume */
+		out[n].kind = IGM_LINK; out[n].item = IGM_ACH; out[n].icon = k_igm_page_ic[IGM_ACH];
+		out[n].label = k_igm_page[IGM_ACH];
+		n++;
+	}
 	for (i = 0; i < c->nrows && n < IGM_ROWS; i++) {
 		const struct igm_row *r = &c->rows[i];
 		igm_line *l = &out[n];
@@ -2685,6 +2711,8 @@ static const char *igm_value(int page, const igm_line *l, char *buf)
 	const struct igm_core *c = G.c;
 	buf[0] = 0;
 	if (page == IGM_CORE) return tr(c->opt_value(l->item, buf));
+	if (page == IGM_ACH) return pico_ra_row_value ? pico_ra_row_value(l->item) : 0;
+	if (l->kind == IGM_LINK && l->item == IGM_ACH) return pico_ra_short ? pico_ra_short() : 0;
 	if (l->kind == IGM_LINK || l->item < 0) return 0;
 	if ((l->item == c->save_item || l->item == c->load_item) && c->slot_item >= 0) {
 		char v[96], w[32], *sp;
@@ -2795,8 +2823,11 @@ int pico_igm_frame(unsigned int keys)
 	G.tick = now;
 	if (dt > .05f) dt = .05f;
 	if (!G.up) return 0;
-	if (g_dbg_key_hold > 0 && g_dbg_key >= 0 && g_dbg_key < 6) {   /* oem nav: an injected key */
-		static const unsigned int map[6] = { IGM_K_LEFT, IGM_K_RIGHT, IGM_K_UP, IGM_K_DOWN, IGM_K_A, IGM_K_B };
+	if (pico_ra_paused) pico_ra_paused();	/* RetroAchievements while the game waits (about once a second) */
+	if (g_dbg_key_hold > 0 && g_dbg_key >= 0 && g_dbg_key < 10 && g_dbg_key != 6 && g_dbg_key != 7) {   /* oem nav: an injected key */
+		/* LRUDAB, then [ and ] as the shoulders (Select and Start are not the menu's) */
+		static const unsigned int map[10] = { IGM_K_LEFT, IGM_K_RIGHT, IGM_K_UP, IGM_K_DOWN, IGM_K_A, IGM_K_B, 0, 0,
+						      IGM_K_L, IGM_K_R };
 		keys |= map[g_dbg_key];
 		g_dbg_key_hold--;
 	}
@@ -2852,6 +2883,7 @@ int pico_igm_frame(unsigned int keys)
 		igm_line *l = &ln[sel];
 		const struct igm_core *c = G.c;
 		int dir = lt ? -1 : rt ? 1 : 0;
+		if (G.page == IGM_ACH) { dir = 0; a = 0; }	/* the set is only looked at */
 		if (dir) {
 			if (G.page == IGM_CORE) c->opt_change(l->item, dir);
 			else if (l->kind == IGM_VALUE) { if (c->change(l->item, dir, 0)) { G.closing = 1; G.latch = 0; } }

@@ -4,7 +4,8 @@
  * CONNSYS (the MT6768's connectivity subsystem, block_bt.c) reads its firmware from a window of
  * DRAM it sees through a remap register, 16 MB page granular. The rewind arena
  * (platform/common/pico/ayaneo_rewind.c) leaves this window, and the Wi-Fi DMA memory after it,
- * out of the memory it takes, whatever the console's DRAM size.
+ * out of the memory it takes, whatever the console's DRAM size, and RetroAchievements' memory after
+ * that.
  */
 #ifndef PICO_BT_H
 #define PICO_BT_H
@@ -15,5 +16,10 @@
  * window, and left out of the rewind arena with it */
 #define WIFI_DMA_PA	(BT_EMI_PA + BT_EMI_SIZE)
 #define WIFI_DMA_SIZE	0x00200000u
+/* RetroAchievements (cores/ra-pico, emu/gba/pico_ra.c): the blob, its heap and the LK's buffers for
+ * it, after the Wi-Fi memory and left out of the rewind arena too */
+#define RA_MEM_PA	(WIFI_DMA_PA + WIFI_DMA_SIZE)
+#define RA_MEM_SIZE	0x00400000u
+#define PICO_NET_MEM_END	(RA_MEM_PA + RA_MEM_SIZE)	/* the end of all of it */
 
 #endif
