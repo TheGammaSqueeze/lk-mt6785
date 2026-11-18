@@ -27,7 +27,7 @@
 #define RA_CORE_ABI_H
 
 #define RA_CORE_ABI_MAGIC   0x31414152u   /* "RAA1" */
-#define RA_CORE_ABI_VERSION 2u            /* blob.ld's header carries it too: change both together */
+#define RA_CORE_ABI_VERSION 3u            /* blob.ld's header carries it too: change both together */
 
 /* the slot: right after the Wi-Fi DMA memory (pico_bt.h), kept out of the rewind arena with it;
  * the image at its start, the heap the LK hands to heap_init after it */
@@ -51,8 +51,14 @@ enum {
 	RA_EV_QUEUED,         /* an unlock to keep on the card: id, hash, when; ok 1 earned in hardcore */
 	RA_EV_DISCONNECTED,   /* rcheevos could not reach the server for a while */
 	RA_EV_RECONNECTED,
-	RA_EV_RESET           /* hardcore came on: the game must start again from its power on (the
+	RA_EV_RESET,          /* hardcore came on: the game must start again from its power on (the
 	                       * LK resets the core, then calls reset()) */
+	/* version 3: leaderboards (rcheevos runs them in hardcore) */
+	RA_EV_LB_STARTED,     /* id, title, text: its description */
+	RA_EV_LB_FAILED,      /* id, title */
+	RA_EV_LB_SUBMITTED,   /* id, title, text: the score sent */
+	RA_EV_LB_RANK,        /* id, title, text: the best score; value: the rank, when: the entries */
+	RA_EV_TRACKER         /* id (the tracker's), ok: 1 shown or changed, 0 gone; text: what it shows */
 };
 
 struct ra_event {

@@ -62,6 +62,22 @@ extern const char *pico_ra_row_text(int i) __attribute__((weak));
 /* the Achievements tab: any game of a system RetroAchievements knows (the account and settings,
  * then the game's set when it loaded) */
 static int ra_on(void) { return pico_ra_igm_page && pico_ra_igm_page(); }
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+#include "pico_ra.h"
+#include "pico_clock.h"
+extern int pico_ui_ticker_shift(int excess, float speed, float t);
+extern void pico_ra_badge_paint(uint32_t *fb, int W, int H, int x, int y, int size, const char *badge, uint32_t accent);
+#define RA_DETAIL 1
+#else
+#define RA_DETAIL 0
+#endif
+/* an achievement's detail over the whole screen (RA_DETAIL): how far open 0..1, wanted open, its row */
+static float s_dt;
+static int s_tick_want;		/* the focused row's ticker moved: that row again next frame (it alone) */
+static int s_only_row = -1;		/* rows(): draw this row only (the ticker's frames) */
+static int s_dt_on, s_dt_row = -1;
+static int detail_keys(int up, int dn, int a, int b);
+static void detail(void);
 
 static snes_pack s_pk;            /* the kit's pack */
 static const struct cui_set *s_set; /* its sprites */
@@ -230,6 +246,7 @@ void pico_classic_igm_open(const struct igm_core *c)
 	int i;
 	char clean[128];
 	C.c = c;
+	s_dt = 0; s_dt_on = 0;	/* no detail open from the last time */
 	ayaneo_canvas_dims(&W, &H);
 	s_uh = (float)H * 1280.0f / (float)W;
 	{	/* the rows a page shows: the sheet as tall as the screen allows */
@@ -323,6 +340,8 @@ int pico_classic_igm_frame(unsigned int keys)
 	if (C.page_t < 1) { C.page_t += dt / .26f; if (C.page_t > 1) C.page_t = 1; }
 	if (C.nudge_t < 1) { C.nudge_t += dt / .18f; if (C.nudge_t > 1) C.nudge_t = 1; }
 	if (C.toast_t < 9) C.toast_t += dt;
+	if (s_dt_on && s_dt < 1) { s_dt += dt / .30f; if (s_dt > 1) s_dt = 1; C.dirty = 1; }
+	if (!s_dt_on && s_dt > 0) { s_dt -= dt / .22f; if (s_dt < 0) s_dt = 0; C.dirty = 1; }
 	if (C.c->status && C.c->status[0]) {
 		pico_tr_igm_scope(1);
 		snprintf(C.toast, sizeof C.toast, "%s", cui_say(CF_M, C.c->status));
@@ -359,6 +378,10 @@ int pico_classic_igm_frame(unsigned int keys)
 		C.prev_keys = (int)keys;
 		if (tl || tr_) { tab_step(tl ? -1 : 1); return -1; }
 	}
+	if (s_dt > 0 || s_dt_on) {	/* the detail holds the keys while it is up */
+		detail_keys(up, dn, a, b);
+		return -1;
+	}
 	if (!n) { if (b) go(IGM_TOP, -1); return -1; }
 	if (up) { C.sel[C.page] = (sel + n - 1) % n; C.dirty = 1; }
 	if (dn) { C.sel[C.page] = (sel + 1) % n; C.dirty = 1; }
@@ -367,7 +390,11 @@ int pico_classic_igm_frame(unsigned int keys)
 		cline *l = &ln[sel];
 		const struct igm_core *c = C.c;
 		int dir = lt ? -1 : rt ? 1 : 0;
-		if (C.page == IGM_ACH) {	/* the settings' switches flip; the set is only looked at */
+		if (C.page == IGM_ACH) {	/* the settings' switches flip; A on an achievement opens its detail */
+#if RA_DETAIL
+			struct pico_ra_detail dd;
+			if (a && pico_ra_detail(l->item, &dd) == 0) { s_dt_on = 1; s_dt_row = l->item; C.dirty = 1; return -1; }
+#endif
 			if ((dir || a) && pico_ra_row_change && pico_ra_row_change(l->item)) {
 				C.nudge_row = sel; C.nudge_dir = dir ? dir : 1; C.nudge_t = 0; C.dirty = 1;
 			}
@@ -404,6 +431,47 @@ int pico_classic_igm_frame(unsigned int keys)
 }
 
 /* ---- the picture ---- */
+/* The focused row's name on the bounce ticker (the Current theme's, melonds-nano's): drawn through a
+ * target cut to its box (the kit clips to the target), its hidden sides fading over 16 units: each
+ * column there has the blue bar (all that lies under the focused name) drawn again and the name over
+ * it, fainter the nearer the edge. bar_cy: where the bar is now (it glides). */
+static void cut_to(const snes_target *keep, int c0, int c1, float bs)
+{
+	s_t.fb = keep->fb + c0; s_t.W = c1 - c0; s_t.offx = 0;
+	s_t.vdx = keep->vdx - (float)(c0 - keep->offx) / bs;
+}
+static void row_ticker(float x, float cy, float box_w, const char *s, int sel, float a, float bar_cy)
+{
+	static int tk_sel = -1;
+	static unsigned tk_t0;
+	unsigned now = gpt4_get_current_tick();
+	float bs = snes_target_base(&s_t), w = cui_text_w(CF_M, 1, s), tx;
+	int px0 = (int)(x * bs + .5f) + s_t.offx, px1 = (int)((x + box_w) * bs + .5f) + s_t.offx, ex, sh, fl, fr, fade, X, k;
+	snes_target keep = s_t;
+	if (tk_sel != sel) { tk_sel = sel; tk_t0 = now; }
+	ex = (int)((w - box_w) * bs + .5f);
+	sh = pico_ui_ticker_shift(ex, 30.0f * bs, (float)((now - tk_t0) / 13000u) / 1000.0f);
+	if (!(s_dt_on && s_dt >= 1)) s_tick_want = 1;	/* it moves: its row again next frame (not under the detail) */
+	if (px0 < 0) px0 = 0;
+	if (px1 > s_t.W) px1 = s_t.W;
+	fade = (int)(16 * bs + .5f);
+	if (px1 - px0 < 4 * fade) return;
+	fl = sh < fade ? sh : fade;
+	fr = ex - sh < fade ? ex - sh : fade;
+	tx = x - sh / bs;
+	cut_to(&keep, px0 + fl, px1 - fr, bs);
+	cui_text(CF_M, tx, cy, 1, 0xFFF4F4F4u, 0, s, a);
+	for (k = 0; k < 2; k++) {
+		int n = k ? fr : fl;
+		for (X = 0; X < n; X++) {
+			int col = k ? px1 - 1 - X : px0 + X;
+			cut_to(&keep, col, col + 1, bs);
+			cui_spr(KS_BAR, 640, bar_cy, FW - 112, ROW_P - 4, 1, 1, 1, 1);
+			if (X) cui_text(CF_M, tx, cy, 1, 0xFFF4F4F4u, 0, s, a * (float)X / (float)n);
+		}
+	}
+	s_t = keep;
+}
 static void rows(int page, float y0, float dx, float op, int bar)
 {
 	cline ln[ROWS];
@@ -420,6 +488,7 @@ static void rows(int page, float y0, float dx, float op, int bar)
 		const char *v;
 		int sw, f = i == sel;
 		float last = y0 + (nv_of(page) - 1) * ROW_P, ro = op;
+		if (s_only_row >= 0 && i != s_only_row) continue;
 		/* a row gliding past either end of the list fades as it goes */
 		if (cy < y0) ro *= cui_clamp01(1 - (y0 - cy) / 40);
 		if (cy > last) ro *= cui_clamp01(1 - (cy - last) / 40);
@@ -445,10 +514,14 @@ static void rows(int page, float y0, float dx, float op, int bar)
 			cui_spr_x(KS_AR_R, vx + 22, cy, 1.5f, ro * (f ? 1 : .5f));
 		{
 			float maxw = (sw >= 0 ? 1030 : vw > 0 ? 1112 - vw - 52 : 1090) - 160;
-			cui_text(CF_M, 160 + dx, cy, 1, 0xFFF4F4F4u, 0, cui_fit(CF_M, 1, cui_say(CF_M, l->label), maxw, fb, sizeof fb), ro);
+			const char *lab = cui_say(CF_M, l->label);
+			if (f && page == IGM_ACH && page == C.page && op >= 1 && cui_text_w(CF_M, 1, lab) > maxw)
+				row_ticker(160 + dx, cy, maxw, lab, sel, ro, y0 + (C.hy - top) * ROW_P);	/* the focused name, too long: on the ticker */
+			else
+				cui_text(CF_M, 160 + dx, cy, 1, 0xFFF4F4F4u, 0, cui_fit(CF_M, 1, lab, maxw, fb, sizeof fb), ro);
 		}
 	}
-	if (page == C.page && op >= 1) {	/* more above, more below */
+	if (page == C.page && op >= 1 && s_only_row < 0) {	/* more above, more below */
 		if (top > .01f) cui_spr_x(KS_UP, 1182, y0 - 6, 1.5f, 1);
 		if ((int)(top + .5f) + nv_of(page) < n) cui_spr_x(KS_DOWN, 1182, y0 + (nv_of(page) - 1) * ROW_P + 6, 1.5f, 1);
 	}
@@ -547,6 +620,142 @@ list:
 	}
 }
 
+/* ---- an achievement's detail ----
+ * A on an achievement row: the sheet's frame grows to the whole screen and holds the achievement,
+ * its badge large, its state, title, points and description, and its progress with a bar while it
+ * counts (when it was unlocked once it is). Up and Down go to the one before or after, A or B back. */
+#if RA_DETAIL
+/* s in lines of at most max_w units (words whole where they fit), up to max, the last cut short */
+static int wrap(int f, const char *s, float max_w, char (*out)[160], int max)
+{
+	int n = 0;
+	while (*s && n < max) {
+		int len, cut = 0, sp = 0, i;
+		while (*s == ' ') s++;
+		len = (int)strlen(s);
+		if (!len) break;
+		for (i = 1; i <= len && i < 159; i++) {
+			if (i < len && ((unsigned char)s[i] & 0xC0) == 0x80) continue;
+			memcpy(out[n], s, (size_t)i); out[n][i] = 0;
+			if (cui_text_w(f, 1, out[n]) > max_w) break;
+			cut = i;
+			if (s[i] == ' ' || !s[i]) sp = i;
+		}
+		if (!cut) break;
+		if (cut < len && sp > 0) cut = sp;
+		if (n == max - 1 && cut < len) {
+			char t[160];
+			const char *c = cui_fit(f, 1, s, max_w, t, sizeof t);
+			snprintf(out[n], 160, "%s", c);
+			return n + 1;
+		}
+		memcpy(out[n], s, (size_t)cut); out[n][cut] = 0;
+		n++;
+		s += cut;
+	}
+	return n;
+}
+static void detail(void)
+{
+	struct pico_ra_detail d;
+	float fh, T = sheet_top(&fh), k = s_dt_on ? cui_out_expo(s_dt) : cui_smooth(s_dt), c, bs = snes_target_base(&s_t);
+	float x0 = 64 + (16 - 64) * k, y0 = T + (16 - T) * k, x1 = 1216 + (1264 - 1216) * k, y1 = T + fh + (s_uh - 16 - T - fh) * k;
+	float L, R, yb, B = 200, tx, tw, y;
+	char ln[6][160], tb[160];
+	const char *tag;
+	uint32_t tone;
+	int n, i;
+	if (s_dt <= 0) return;
+	if (pico_ra_detail(s_dt_row, &d) != 0) { s_dt_on = 0; return; }
+	cui_frame(x0, y0, x1, y1);
+	c = cui_clamp01((k - .4f) / .6f);
+	if (c <= 0) return;
+	L = x0 + 64; R = x1 - 64;
+	{	/* the header, as the sheet's: the icon, the page's name, the hints, a line */
+		static const int ic[2] = { KS_DPAD, KS_BTN_B };
+		const char *lab[2];
+		lab[0] = cui_say(CF_S, "Before / after"); lab[1] = cui_say(CF_S, "Back");
+		cui_spr(KS_IC_OPTION, x0 + 64, y0 + 39, 72, 72, c, 1, 1, 1);
+		cui_text(CF_L, x0 + 112, y0 + 38, 1, 0xFFF4F4F4u, 0, cui_say(CF_L, "Achievements"), c);
+		if (c >= 1) cui_hints(x1 - 36, y0 + 38, 2, ic, lab);
+		cui_spr(KS_LINE, (x0 + x1) / 2, y0 + 72, x1 - x0 - 82, 12, c, 1, 1, 1);
+	}
+	switch (d.state) {
+	case PICO_RA_UNLOCKED: tag = d.waiting ? "Waiting to sync" : "Unlocked"; tone = d.waiting ? 0xFFFFC870u : 0xFF8FE3B0u; break;
+	case PICO_RA_UNSUPPORTED: tag = "Unsupported"; tone = 0xFFFF9C9Cu; break;
+	case PICO_RA_ALMOST: tag = "Almost there"; tone = s_set->line_core | 0xFF000000u; break;
+	default: tag = "Locked"; tone = 0xFF8C8C8Cu; break;
+	}
+	yb = y0 + 122;
+	if (B > (y1 - yb) * .34f) B = (y1 - yb) * .34f;
+	if (c >= .5f)	/* the badge (or the trophy while it comes), straight into the picture */
+		pico_ra_badge_paint(s_t.fb, s_t.W, s_t.H, (int)(L * bs + .5f) + s_t.offx, (int)(yb * bs + .5f) + s_t.offy,
+				    (int)(B * bs + .5f), d.badge, tone == 0xFF8C8C8Cu ? (s_set->line_core & 0xFFFFFFu) : (tone & 0xFFFFFFu));
+	tx = L + B + 40; tw = R - tx;
+	y = yb + 4;
+	{	/* the state's chip */
+		const char *t = cui_say(CF_S, tag);
+		float cw = cui_text_w(CF_S, 1, t) + 28;
+		cui_quad(tx, y, cw, 34, tone, .22f * c);
+		cui_quad(tx, y, 3, 34, tone, c);
+		cui_text(CF_S, tx + 16, y + 17, 1, tone, 0, t, c);
+		y += 34 + 34;
+	}
+	n = wrap(CF_L, d.title, tw, ln, 2);
+	for (i = 0; i < n; i++) cui_text(CF_L, tx, y + i * 50, 1, 0xFFF4F4F4u, 0, ln[i], c);
+	y += (n > 1 ? 50 : 0) + 50;
+	snprintf(tb, sizeof tb, d.points == 1 ? tr("%u point") : tr("%u points"), d.points);
+	cui_text(CF_M, tx, y, 1, 0xFFB4B4B4u, 0, tb, c);
+	y += 30;
+	{	/* the footer (the progress while it counts, when it was unlocked), the words between */
+		float foot = y1 - 52, bottom = foot - 30, dy;
+		if (d.percent >= 0 && d.state != PICO_RA_UNLOCKED && d.measured[0]) {
+			float bar = foot - 26, pw = R - L, pc = (float)(d.percent > 100 ? 100 : d.percent) / 100.0f;
+			cui_text(CF_S, L, bar - 30, 1, 0xFF8C8C8Cu, 0, cui_say(CF_S, "Progress"), c);
+			cui_text(CF_M, R, bar - 30, 1, 0xFFF4F4F4u, 2, d.measured, c);
+			cui_quad(L, bar, pw, 10, 0xFF3A3A40u, c);
+			if (pc > 0) cui_quad(L, bar, pw * pc, 10, s_set->line_core | 0xFF000000u, c);
+			bottom = bar - 64;
+		} else if (d.state == PICO_RA_UNLOCKED) {
+			if (d.waiting) snprintf(tb, sizeof tb, "%s", cui_say(CF_S, "Unlocked here, waiting to reach RetroAchievements"));
+			else if (d.when > 0) {
+				char ds[48];
+				long long off = pico_clock_is_set() ? pico_clock_local() - pico_clock_utc() : 0;
+				pico_clock_date_text(d.when + off, ds, sizeof ds);
+				snprintf(tb, sizeof tb, tr("Unlocked %s"), ds);
+			} else tb[0] = 0;
+			if (tb[0]) cui_text(CF_S, L, foot, 1, 0xFF8C8C8Cu, 0, tb, c);
+		}
+		dy = yb + B + 50;
+		if (dy < y + 20) dy = y + 20;
+		n = (int)((bottom - dy) / 40) + 1;
+		if (n > 6) n = 6;
+		if (n > 0) {
+			n = wrap(CF_M, d.text, R - L, ln, n);
+			for (i = 0; i < n; i++) cui_text(CF_M, L, dy + i * 40, 1, 0xFFDCDCDCu, 0, ln[i], c);
+		}
+	}
+}
+static int detail_keys(int up, int dn, int a, int b)
+{
+	struct pico_ra_detail d;
+	if (!s_dt_on) return 0;
+	if (a || b) { s_dt_on = 0; C.dirty = 1; return 1; }
+	if (up || dn) {
+		int r = s_dt_row, step = up ? -1 : 1, tries;
+		for (tries = 0; tries < 256; tries++) {
+			r += step;
+			if (r < 0 || r > 255) break;
+			if (pico_ra_detail(r, &d) == 0) { s_dt_row = r; C.sel[IGM_ACH] = r; C.hy = (float)r; C.dirty = 1; break; }
+		}
+	}
+	return 1;
+}
+#else
+static void detail(void) { }
+static int detail_keys(int up, int dn, int a, int b) { (void)up; (void)dn; (void)a; (void)b; s_dt_on = 0; s_dt = 0; return 0; }
+#endif
+
 /* a row of the picture hashed in four lanes (one chain of multiplies per pixel was most of a paint) */
 static uint32_t row_hash(const uint32_t *r, unsigned int w)
 {
@@ -565,6 +774,7 @@ static int paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned
 	unsigned int now = gpt4_get_current_tick(), y, x, t1, t2;
 	int still, y0 = -1, y1 = -1, list_only, sliding;
 	uint32_t dim;
+	if (s_dt_on && s_dt >= 1 && !C.dirty) return 0;	/* the detail at rest: nothing moves */
 	still = C.show >= 1 && !C.closing && C.page_t >= 1 && C.nudge_t >= 1 && C.toast_t > 2.2f &&
 		C.hy == (float)C.sel[C.page] && C.top[C.page] == (float)(int)C.top[C.page] &&
 		C.box_x == C.tab_cx[tab_of(C.page)] && C.box_w == C.tab_w[tab_of(C.page)];
@@ -572,10 +782,32 @@ static int paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned
 		for (x = 0; x < FIGS; x++) C.fig[x][0] = 0;
 		C.fig_tick = now; C.fig_page = C.page; C.dirty = 1;
 	}
+	if (still && !C.dirty && s_settled && s_dt <= 0 && s_tick_want && now - C.last_paint < 13000000u / 12u) {
+		/* only the ticker moved: its row alone, the rest of the picture as it is (a whole list a
+		 * frame cost the game under the sheet 8 frames a second) */
+		float fh, T = sheet_top(&fh), sc = (float)W / 1280.0f;
+		float cy = T + 212 + ((float)C.sel[C.page] - C.top[C.page]) * ROW_P;
+		snes_target_fit(&s_t, buf, (int)pitch, (int)W, (int)H);
+		s_t.offx = s_t.offy = 0;
+		s_tick_want = 0;
+		cui_fill(76, cy - ROW_P / 2, 1128, ROW_P, 0xFF000000u);
+		s_only_row = C.sel[C.page];
+		pico_tr_igm_scope(1);
+		rows(C.page, T + 212, 0, 1, 1);
+		pico_tr_igm_scope(0);
+		s_only_row = -1;
+		y0 = (int)((cy - ROW_P / 2) * sc) - 1; y1 = (int)((cy + ROW_P / 2) * sc) + 2;
+		if (y0 < 0) y0 = 0;
+		if (y1 > (int)H) y1 = (int)H;
+		for (y = (unsigned)y0; y < (unsigned)y1 && y < 1024; y++) s_rowh[y] = row_hash(buf + y * pitch, W);
+		box[0] = 0; box[1] = y0; box[2] = (int)W; box[3] = y1;
+		g_dbg_cigm_us[5] = (gpt4_get_current_tick() - now) / 13u;
+		return 1;
+	}
 	if (still && !C.dirty && now - C.last_paint < 13000000u / 12u) return 0;
 	snes_target_fit(&s_t, buf, (int)pitch, (int)W, (int)H);
 	s_t.offx = s_t.offy = 0;
-	if (still && !C.dirty && s_settled) {	/* only the box's glow: the tab strip again, nothing else */
+	if (still && !C.dirty && s_settled && s_dt <= 0) {	/* only the box's glow: the tab strip again, nothing else */
 		float fh, T = sheet_top(&fh), sc = (float)W / 1280.0f;
 		C.last_paint = now;
 		cui_fill(76, T + 79, 1128, 70, 0xFF000000u);
@@ -593,9 +825,9 @@ static int paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned
 	sliding = C.show < 1 || C.closing;
 	if (sliding && s_rowh_ok == 0 && (s_slide_skip ^= 1))
 		return 0;   /* sliding: every other frame (each one is the whole screen, the game's time) */
-	C.dirty = 0; C.last_paint = now;
+	C.dirty = 0; C.last_paint = now; s_tick_want = 0;	/* (the rows below ask again if the ticker runs) */
 	/* the header and the tabs as they were: only the list (focus, scroll, values, a note) */
-	list_only = s_settled && C.show >= 1 && !C.closing && C.page_t >= 1 &&
+	list_only = s_settled && s_dt <= 0 && C.show >= 1 && !C.closing && C.page_t >= 1 &&
 		    C.box_x == C.tab_cx[tab_of(C.page)] && C.box_w == C.tab_w[tab_of(C.page)];
 	if (!s_settled || C.show < 1 || C.closing) {	/* the game behind, darkened as the sheet comes */
 		float d = C.closing ? cui_clamp01(C.show / .7f) : cui_clamp01(C.show / .5f);
@@ -605,9 +837,10 @@ static int paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned
 	t1 = gpt4_get_current_tick();
 	pico_tr_igm_scope(1);   /* the cores' rows come out in the language in use */
 	sheet(list_only);
+	detail();
 	pico_tr_igm_scope(0);
 	t2 = gpt4_get_current_tick();
-	s_settled = C.show >= 1 && !C.closing;
+	s_settled = C.show >= 1 && !C.closing && s_dt <= 0;	/* (after the detail, all of it again: the dim round the sheet) */
 	if (sliding) {	/* all of it moved: no rows to compare, the whole picture goes */
 		s_rowh_ok = 0;
 		g_dbg_cigm_us[0] = (gpt4_get_current_tick() - now) / 13u;
@@ -643,6 +876,27 @@ static int paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned
 void pico_classic_igm_overlay(int open)
 {
 	ayaneo_overlay_live(paint, open && s_set);
+}
+
+/* ---- RetroAchievements' cards over the game: the Classic fonts for them -----------------------------
+ * The cards are melonds-nano's in both themes (pico_current.c draws them); in a Classic theme their
+ * words are in its fonts, through these, in panel pixels (a baseline, not the kit's line middle). */
+static float s_ra_base = 1;
+static const float k_font_lh[3] = { 47.0f, 31.0f, 24.0f };	/* (the kit's line heights: pico_classic_ui.c) */
+int pico_classic_igm_card_ok(void) { return s_set != 0; }
+void pico_classic_ra_target(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H)
+{
+	snes_target_fit(&s_t, buf, (int)pitch, (int)W, (int)H);
+	s_t.offx = s_t.offy = 0;
+	s_ra_base = snes_target_base(&s_t);
+}
+int pico_classic_ra_px(int f, float sc) { return (int)(k_font_lh[f < 0 || f > 2 ? 1 : f] * sc * s_ra_base + .5f); }
+int pico_classic_ra_asc(int f, float sc) { return pico_classic_ra_px(f, sc) * 78 / 100; }
+int pico_classic_ra_text_w(int f, float sc, const char *s) { return (int)(cui_text_w(f, sc, s) * s_ra_base + .5f); }
+void pico_classic_ra_text(int f, float sc, int x, int baseline, const char *s, uint32_t rgb, int anchor)
+{
+	float lh = k_font_lh[f < 0 || f > 2 ? 1 : f] * sc, top = (baseline - pico_classic_ra_asc(f, sc)) / s_ra_base;
+	cui_text(f, x / s_ra_base, top + lh * .5f, sc, 0xFF000000u | rgb, anchor, s, 1);
 }
 
 #else	/* no room kept for a kit on this console: the older panel */

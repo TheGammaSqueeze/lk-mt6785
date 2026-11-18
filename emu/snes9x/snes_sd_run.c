@@ -75,6 +75,12 @@ extern void     ayaneo_set_snes_turbo(int v);
  * cut the sustained duty enough that the higher tiers are stable now (previously any run-ahead
  * was clamped to 1400 to avoid a brownout data-abort at ~100% duty). */
 /* RetroAchievements after a frame the game really ran (pico_ra.c; absent on consoles without it) */
+/* a RetroAchievements card wants the theme's layer while no menu is open (pico_current.c) */
+static int ra_card_wanted(void)
+{
+	extern int pico_igm_card_wanted(void) __attribute__((weak));
+	return pico_igm_card_wanted && pico_igm_card_wanted();
+}
 /* RetroAchievements' hardcore limits how often the menu may pause the game (pico_ra.c) */
 static int ra_may_pause(void)
 {
@@ -975,7 +981,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		 * on the frame it toggles. Reflects the previous frame's selection (1-frame lag, imperceptible). */
 		{
 			extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
-			if (s_snes_igm_on) pico_igm_overlay(g_snes_menu_open);
+			if (s_snes_igm_on || (!g_snes_menu_open && ra_card_wanted())) pico_igm_overlay(g_snes_menu_open);	/* or a RetroAchievements card on its layer */
 			else ayaneo_menu_overlay(snes_menu_paint, g_snes_menu_open);
 		}
 

@@ -2489,9 +2489,15 @@ static void rot_hud_osd(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsig
 	}
 
 #if defined(KONKR_BLOCK) || defined(KONKR_KPA)
-	{	/* RetroAchievements: its card at the bottom of the game, above where the volume bar goes */
+	{	/* RetroAchievements: its card at the bottom of the game, above where the volume bar goes; only
+		 * when the theme's own card is not on the menu's layer (pico_current.c: no theme loaded) */
+		extern volatile int g_ra_card_on_layer __attribute__((weak)), g_ra_theme_cards __attribute__((weak));
 		struct pico_ra_card c;
-		if (pico_ra_card_now(&c)) {
+		/* (not while the theme's layer is up, its menu's or its card's, nor once a theme has drawn
+		 * the cards: the menu open over a card must not bring this one out) */
+		int themed = (&g_ra_card_on_layer && g_ra_card_on_layer) || (&g_ra_theme_cards && g_ra_theme_cards) ||
+			     ayaneo_overlay_live_up();
+		if (!themed && pico_ra_card_now(&c)) {
 			int lw = LGW - 48, h = ra_card_height(&c), lx, ly, part;
 			if (lw > 560) lw = 560;
 			if (lw > ROT_BOX_W) lw = ROT_BOX_W;

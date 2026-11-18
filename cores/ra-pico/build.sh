@@ -61,7 +61,7 @@ python3 - "$OUT/ra-pico.blob" "$VERSION" <<'PY'
 import struct, sys, hashlib
 d = open(sys.argv[1], 'rb').read()
 magic, ver, entry, load, span = struct.unpack_from('<5I', d)
-assert magic == 0x31414152 and ver == 2, "bad header"
+assert magic == 0x31414152 and ver == 3, "bad header"
 assert load == len(d), "load size %d != file %d" % (load, len(d))
 assert entry < load, "entry outside the image"
 assert span <= 0x100000, "span %d is over the first MiB of the slot" % span

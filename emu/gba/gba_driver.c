@@ -4147,7 +4147,9 @@ static int emu_thread(void *arg)
 			 * visible underneath and no pause. Done each frame before the present dispatch. */
 			{
 				extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
-				if (s_gba_igm_on) pico_igm_overlay(s_menu_open);
+				extern int pico_igm_card_wanted(void) __attribute__((weak));
+				/* the theme's menu, or a RetroAchievements card on its layer while no menu is open */
+				if (s_gba_igm_on || (!s_menu_open && pico_igm_card_wanted && pico_igm_card_wanted())) pico_igm_overlay(s_menu_open);
 				else ayaneo_menu_overlay(gbc_menu_draw_overlay, s_menu_open);
 			}
 

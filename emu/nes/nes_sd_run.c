@@ -120,6 +120,12 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
  * the user's chosen ladder - each tier steps up ~200 MHz for the extra pf+1 emulations run-ahead does.
  * ayaneo_set_cpu_mhz programs the PLL directly (no grid snapping), so these exact values are applied. */
 /* RetroAchievements after a frame the game really ran (pico_ra.c; absent on consoles without it) */
+/* a RetroAchievements card wants the theme's layer while no menu is open (pico_current.c) */
+static int ra_card_wanted(void)
+{
+	extern int pico_igm_card_wanted(void) __attribute__((weak));
+	return pico_igm_card_wanted && pico_igm_card_wanted();
+}
 /* RetroAchievements' hardcore limits how often the menu may pause the game (pico_ra.c) */
 static int ra_may_pause(void)
 {
@@ -800,7 +806,7 @@ static void nes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 		/* Refresh the Pico menu as a hardware overlay (OVL0 L0) over the running game, or disable it
 		 * when closed - the game keeps running underneath so settings preview live (mirrors snes). */
-		if (s_nes_igm_on) pico_igm_overlay(g_nes_menu_open);
+		if (s_nes_igm_on || (!g_nes_menu_open && ra_card_wanted())) pico_igm_overlay(g_nes_menu_open);	/* or a RetroAchievements card on its layer */
 		else ayaneo_menu_overlay(nes_menu_paint, g_nes_menu_open);
 
 		/* Rewind (left trigger): walk the delta ring backward and re-render instead of advancing.

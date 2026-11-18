@@ -42,6 +42,11 @@ extern long long pico_clock_utc(void);
 
 #define RA_BLOB_PATH	"/cores/ra-pico.blob"
 #define RA_DIR		"/gammaos/ra"
+/* Hardcore is built but not offered for now (user 11-18): no Hardcore or verdict rows, every session
+ * softcore (offline softcore without a network), none of hardcore's limits. 1 brings it back. */
+#ifndef PICO_RA_HARDCORE
+#define PICO_RA_HARDCORE 0
+#endif
 #define RA_COPY_DIR	"/gammaos/ra/c"
 #define RA_UA		"GammaOS-Pico/1.0.0"
 
@@ -64,7 +69,7 @@ struct ra_req {
 #define S_REQ	((struct ra_req *)RA_IO_PA)
 #define S_QUEUE	((struct ra_queued *)(RA_IO_PA + 0x4000u))
 #define S_FBUF	((unsigned char *)(RA_IO_PA + RA_FBUF_OFF))
-struct ra_row { char title[96], value[32], text[160]; int unlocked, sw, pref; };	/* sw: -1 none, 0/1 a switch */
+struct ra_row { char title[96], value[32], text[160]; int unlocked, sw, pref, ach; };	/* ach: the achievement (-1 none) */	/* sw: -1 none, 0/1 a switch */
 #define S_LIST	((struct ra_row *)(RA_IO_PA + RA_LIST_OFF))
 
 static fat_vol *s_vol;
@@ -80,7 +85,12 @@ static unsigned s_sign_in_at;			/* ms of the kept account's last try (0 never) *
 static int s_login_refused;			/* the server said no to the last sign in */
 
 static int s_fake, s_fake_login;		/* the test server (pico_ra_debug) */
+static int s_card_hold;				/* oem cheevos:hold:1 - the card up stays (screenshots); cheevos:next moves on */
+static unsigned s_lb_ev[5];			/* oem cheevos: leaderboard events seen (started, failed, submitted, rank, tracker) */
+static int s_fake_hc;				/* oem cheevos:fakehc:1 - hardcore with the test server, in memory only
+						 * (rcheevos runs leaderboards only in hardcore; the saved setting stays) */
 static volatile int s_dbg_in;			/* oem cheevos:in: a sign in waiting for the menu */
+static volatile int s_dbg_card;			/* oem cheevos:card: a test card (its cost on a game) */
 static char s_dbg_user[64], s_dbg_pass[64];
 
 static unsigned s_http_id;			/* the call on the network now (0 none) */
@@ -92,6 +102,12 @@ static int s_ra_system;				/* the game picked is of a system RetroAchievements k
 static int s_in_game;				/* from the game's pick to the menu again */
 static int s_game_on;				/* the game's set is loaded and counting */
 static int s_game_seen;				/* RA_EV_GAME came for the game loading */
+/* The game started with a network: rcheevos stays online while it is played, so its pings (rich
+ * presence) and the unlocks go out as they come, the network service sharing the CPU with the
+ * game (it yields to it every 2 ms). Started without one: everything is answered here and kept. */
+static int s_live_net;
+static unsigned s_live_sent;			/* calls sent during play (oem cheevos) */
+static volatile unsigned s_frame_n;		/* game frames rcheevos saw (oem cheevos: frames a second) */
 static long long s_utc0;			/* the time at the game's start, for the blob's clock */
 static unsigned s_utc0_ms;
 
@@ -164,6 +180,9 @@ static int ra_map(void)
  * read. Badges the pack lacks are fetched in the menu when there is a network (media.retroachievements
  * .org), shrunk by pico_png and added to the pack. */
 #define RA_BADGE_PA	(RA_IO_PA - 0x80000u)
+/* below the badges, 512 KB the theme keeps a card's picture in while it fades (pico_current.c): the
+ * blob's heap ends there (rcheevos uses a small part of what is left) */
+#define RA_CARDPIC_PA	(RA_BADGE_PA - 0x80000u)
 #define BDG_PX		(PICO_RA_BADGE * PICO_RA_BADGE)
 #define BDG_MAX		100
 struct bdg { char name[8]; unsigned short px[BDG_PX]; };
@@ -347,6 +366,8 @@ static void verdict_store(void)
 /* hardcore as the player wants it now (before the network's say for this session) */
 static int hc_wanted(void)
 {
+	if (s_fake && s_fake_hc) return 1;	/* (the test server's own check, in memory only) */
+	if (!PICO_RA_HARDCORE) return 0;	/* hardcore is not offered (yet): softcore, or offline softcore */
 	return s_pref[PREF_HARDCORE] == HC_ON || (s_pref[PREF_HARDCORE] == HC_AUTO && s_verdict == 1);
 }
 
@@ -457,8 +478,8 @@ int pico_ra_debug_line(int i, char *buf, unsigned cap)
 		return 1;
 	}
 	if (i == 1) {
-		snprintf(buf, cap, "ra: hardcore %d pref %d verdict %d online %d why %s", hc_now(), s_pref[PREF_HARDCORE],
-			 s_verdict, s_session_online, s_hc_why);
+		snprintf(buf, cap, "ra: hc %d live %d sent %u frames %u ms %u lb %u/%u/%u/%u/%u", hc_now(), s_live_net, s_live_sent,
+			 s_frame_n, now_ms(), s_lb_ev[0], s_lb_ev[1], s_lb_ev[2], s_lb_ev[3], s_lb_ev[4]);
 		return 1;
 	}
 	i--;
@@ -485,8 +506,8 @@ static void clock_snapshot(void)
 /* ---- the blob ---- */
 
 /* Our own user agent, always (RetroAchievements validates clients by it): "GammaOS-Pico/1.0.0
- * (LK; <core>, <the emulator it comes from>) rcheevos/x.y.z". The core is named so that
- * RetroAchievements can see what runs each game; it never claims to be another client. */
+ * (LK; <the core by its own name>) rcheevos/x.y.z", "(LK; armGBA v1.7)" say. The core is named
+ * so that RetroAchievements can see what runs each game; it never claims to be another client. */
 static void ua_set(const char *core)
 {
 	char ua[160], clause[48];
@@ -497,17 +518,22 @@ static void ua_set(const char *core)
 	netsvc_user_agent(ua);
 }
 
-/* the core that runs a game of rcheevos' console c, and its upstream */
+/* the core that runs a game of rcheevos' console c, by its own name: the GBA core says its name and
+ * version itself ("armGBA v1.7 (pico 1558bd3)" -> "armGBA v1.7", "gpSP pico" -> "gpSP"), the
+ * others are known by system */
 static const char *core_credit(int c)
 {
+	static char gba[40];
 	switch (c) {
 	case 5: {	/* GBA: the core picked for this game */
 		extern const struct gba_core_exports *gba_core_current(void) __attribute__((weak));
 		const struct gba_core_exports *g = gba_core_current ? gba_core_current() : 0;
-		const char *n = g && g->version >= 3 && g->name ? g->name : "";
-		if (!strncmp(n, "armGBA", 6)) return "armGBA, derived from mGBA";
-		if (!strncmp(n, "gpSP", 4) || !strncmp(n, "gpsp", 4)) return "gpSP";
-		return "armGBA, derived from mGBA";
+		const char *n = g && g->version >= 3 && g->name ? g->name : "armGBA";
+		unsigned k;
+		copy_n(gba, sizeof gba, n);
+		for (k = 0; gba[k]; k++)	/* the name and version only: our build's mark goes ("(pico 1558bd3)", "pico") */
+			if ((gba[k] == ' ' && gba[k + 1] == '(') || !strncmp(gba + k, " pico", 5)) { gba[k] = 0; break; }
+		return gba;
 	}
 	case 4: case 6: return "gambatte";
 	case 3: return "snes9x";
@@ -535,7 +561,7 @@ static int ra_load(void)
 		return -1;
 	}
 	span = (hdr[4] + 63u) & ~63u;
-	heap = RA_BADGE_PA - (RA_MEM_PA + span);
+	heap = RA_CARDPIC_PA - (RA_MEM_PA + span);
 	X->heap_init((void *)(RA_MEM_PA + span), heap);
 	if (X->init() != 0) { X = 0; s_load_failed = 1; return -1; }
 	ua_set(0);
@@ -544,7 +570,7 @@ static int ra_load(void)
 
 /* ---- the cards over the game ---- */
 
-#define CARDS 4
+#define CARDS 8	/* (a burst: the start card, unlocks, a leaderboard attempt, its score and rank) */
 #define CARD_MS 4000u
 static struct pico_ra_card s_cards[CARDS];
 static unsigned s_card_head, s_card_tail, s_card_t0;
@@ -572,6 +598,7 @@ int pico_ra_card_now(struct pico_ra_card *out)
 {
 	unsigned t, ms = now_ms();
 	while (s_card_head != s_card_tail) {
+		if (s_card_hold && ms - s_card_t0 > 1000u) s_card_t0 = ms - 1000u;	/* (held fully in) */
 		t = ms - s_card_t0;
 		if (t < CARD_MS) {
 			*out = s_cards[s_card_head % CARDS];
@@ -584,7 +611,156 @@ int pico_ra_card_now(struct pico_ra_card *out)
 	return 0;
 }
 
+/* ---- the leaderboards' trackers ---- */
+static struct { unsigned id; int on; char text[24]; } s_trk[PICO_RA_TRACKERS];
+
+static void tracker_set(unsigned id, int on, const char *text)
+{
+	int i, free_i = -1;
+	for (i = 0; i < PICO_RA_TRACKERS; i++) {
+		if (s_trk[i].on && s_trk[i].id == id) {
+			if (on) copy_n(s_trk[i].text, sizeof s_trk[i].text, text);
+			else s_trk[i].on = 0;
+			return;
+		}
+		if (!s_trk[i].on && free_i < 0) free_i = i;
+	}
+	if (on && free_i >= 0) {
+		s_trk[free_i].id = id;
+		s_trk[free_i].on = 1;
+		copy_n(s_trk[free_i].text, sizeof s_trk[free_i].text, text);
+	}
+}
+
+/* the memory a theme keeps a card's picture in (0 when RetroAchievements' slot is not mapped) */
+void *pico_ra_card_pic(unsigned *size)
+{
+	*size = 0x80000u;
+	return s_mapped ? (void *)(addr_t)RA_CARDPIC_PA : 0;
+}
+
+int pico_ra_trackers(char out[][24], int max)
+{
+	int i, n = 0;
+	if (!s_game_on || !s_pref[PREF_ON]) return 0;
+	for (i = 0; i < PICO_RA_TRACKERS && n < max; i++)
+		if (s_trk[i].on) copy_n(out[n++], 24, s_trk[i].text);
+	return n;
+}
+
 /* ---- events ---- */
+
+/* ---- the challenge badges (melonds-nano's: in over 0.2 s; at the end a tick or a cross for 1.4 s,
+ * then out over 0.3 s) ---- */
+#define CHAL_IN_MS 200u
+#define CHAL_END_MS 1400u
+#define CHAL_OUT_MS 300u
+static struct { unsigned id, start, end_at; int on, ended, outcome; char badge[16]; } s_chal[PICO_RA_CHALLENGES];
+
+static void chal_show(unsigned id, const char *badge)
+{
+	int i, k = -1;
+	for (i = 0; i < PICO_RA_CHALLENGES; i++) {
+		if (s_chal[i].on && s_chal[i].id == id && !s_chal[i].ended) return;	/* (up already) */
+		if (!s_chal[i].on && k < 0) k = i;
+	}
+	if (k < 0) return;				/* (six up: the seventh waits for room, as melonds-nano) */
+	memset(&s_chal[k], 0, sizeof s_chal[k]);
+	s_chal[k].on = 1; s_chal[k].id = id; s_chal[k].start = now_ms();
+	copy_n(s_chal[k].badge, sizeof s_chal[k].badge, badge);
+}
+/* its indicator went: a cross, unless the achievement unlocked (chal_unlocked, in either order) */
+static void chal_hide(unsigned id)
+{
+	int i;
+	for (i = 0; i < PICO_RA_CHALLENGES; i++)
+		if (s_chal[i].on && s_chal[i].id == id && !s_chal[i].ended) {
+			s_chal[i].ended = 1; s_chal[i].end_at = now_ms();
+			if (!s_chal[i].outcome) s_chal[i].outcome = -1;
+		}
+}
+static void chal_unlocked(unsigned id)
+{
+	int i;
+	for (i = 0; i < PICO_RA_CHALLENGES; i++)
+		if (s_chal[i].on && s_chal[i].id == id) {
+			s_chal[i].outcome = 1;
+			if (!s_chal[i].ended) { s_chal[i].ended = 1; s_chal[i].end_at = now_ms(); }
+		}
+}
+int pico_ra_challenges(struct pico_ra_chal *out, int max)
+{
+	unsigned ms = now_ms();
+	int i, n = 0;
+	for (i = 0; i < PICO_RA_CHALLENGES; i++) {
+		unsigned a = 255, t;
+		if (!s_chal[i].on) continue;
+		if (s_chal[i].ended && ms - s_chal[i].end_at >= CHAL_END_MS + CHAL_OUT_MS) { s_chal[i].on = 0; continue; }
+		t = ms - s_chal[i].start;
+		if (t < CHAL_IN_MS) a = t * 255u / CHAL_IN_MS;
+		if (s_chal[i].ended && ms - s_chal[i].end_at > CHAL_END_MS)
+			a = a * (CHAL_END_MS + CHAL_OUT_MS - (ms - s_chal[i].end_at)) / CHAL_OUT_MS;
+		if (n < max) {
+			out[n].id = s_chal[i].id;
+			out[n].outcome = s_chal[i].outcome;
+			out[n].alpha = a;
+			copy_n(out[n].badge, sizeof out[n].badge, s_chal[i].badge);
+			n++;
+		}
+	}
+	return n;
+}
+
+/* ---- the leaderboards' scores sent: each waits a little for its rank, else its own card ---- */
+#define LB_SENT 4
+static struct { unsigned id, at; int on; char title[96], score[24]; } s_lb_sent[LB_SENT];
+
+/* 1234567 -> "1,234,567" */
+static void thousands(unsigned v, char *out, unsigned cap)
+{
+	char t[16];
+	int n = snprintf(t, sizeof t, "%u", v), i, o = 0;
+	for (i = 0; i < n && o + 2 < (int)cap; i++) {
+		if (i && (n - i) % 3 == 0) out[o++] = ',';
+		out[o++] = t[i];
+	}
+	out[o] = 0;
+}
+static void lb_sent_add(unsigned id, const char *title, const char *score)
+{
+	int i, k = 0;
+	for (i = 0; i < LB_SENT; i++) {		/* a free one, else the oldest */
+		if (!s_lb_sent[i].on) { k = i; break; }
+		if (s_lb_sent[i].at - s_lb_sent[k].at > 0x80000000u) k = i;
+	}
+	s_lb_sent[k].on = 1; s_lb_sent[k].id = id; s_lb_sent[k].at = now_ms();
+	copy_n(s_lb_sent[k].title, sizeof s_lb_sent[k].title, title);
+	copy_n(s_lb_sent[k].score, sizeof s_lb_sent[k].score, score);
+}
+/* the rank came: its score for the chip ("" none), and no "Submitted" card */
+static void lb_sent_take(unsigned id, char *score, unsigned cap)
+{
+	int i;
+	score[0] = 0;
+	for (i = 0; i < LB_SENT; i++)
+		if (s_lb_sent[i].on && s_lb_sent[i].id == id) { copy_n(score, cap, s_lb_sent[i].score); s_lb_sent[i].on = 0; }
+}
+/* 3 s without a rank (offline, the server slow): "Submitted" with the score */
+static void lb_sent_check(void)
+{
+	unsigned ms = now_ms();
+	int i;
+	for (i = 0; i < LB_SENT; i++) {
+		struct pico_ra_card *c;
+		if (!s_lb_sent[i].on || ms - s_lb_sent[i].at < 3000u) continue;
+		s_lb_sent[i].on = 0;
+		c = card_new(PICO_RA_CARD_BOARD);
+		copy_n(c->head, sizeof c->head, "Leaderboard");
+		copy_n(c->title, sizeof c->title, s_lb_sent[i].title);
+		copy_n(c->line, sizeof c->line, "Submitted");
+		copy_n(c->chip, sizeof c->chip, s_lb_sent[i].score);
+	}
+}
 
 static void events(int playing)
 {
@@ -633,7 +809,8 @@ static void events(int playing)
 					copy_n(s_hc_why, sizeof s_hc_why, "RetroAchievements does not validate this client yet");
 				}
 				c = card_new(PICO_RA_CARD_GAME);
-				copy_n(c->head, sizeof c->head, sm.hardcore ? "RetroAchievements: hardcore" : "RetroAchievements: softcore");
+				c->hardcore = sm.hardcore;
+				copy_n(c->head, sizeof c->head, sm.hardcore ? "Hardcore" : s_session_online ? "Softcore" : "Offline softcore");
 				copy_n(c->title, sizeof c->title, e.title);
 				if (!sm.hardcore && s_hc_why[0] && hc_wanted())
 					copy_n(c->line, sizeof c->line, s_hc_why);
@@ -657,7 +834,11 @@ static void events(int playing)
 		case RA_EV_RESET:		/* hardcore came on: the game starts again (pico_ra_reset_wanted) */
 			s_reset_wanted = 1;
 			break;
+		case RA_EV_CHALLENGE:	/* value 1 shown, 0 gone */
+			if (e.value) chal_show(e.id, e.badge); else chal_hide(e.id);
+			break;
 		case RA_EV_UNLOCK:
+			chal_unlocked(e.id);
 			c = card_new(PICO_RA_CARD_UNLOCK);
 			copy_n(c->badge, sizeof c->badge, e.badge);
 			copy_n(c->head, sizeof c->head, "Achievement unlocked");
@@ -679,8 +860,50 @@ static void events(int playing)
 			copy_n(c->head, sizeof c->head, "Progress");
 			copy_n(c->title, sizeof c->title, e.title);
 			copy_n(c->line, sizeof c->line, e.text);
+			copy_n(c->badge, sizeof c->badge, e.badge);
+			c->pct = e.value;
 			break;
 		}
+		case RA_EV_LB_STARTED:	/* no card: its tracker shows the attempt (melonds-nano's way) */
+			s_lb_ev[0]++;
+			break;
+		case RA_EV_LB_FAILED:
+			s_lb_ev[1]++;
+			c = card_new(PICO_RA_CARD_BOARD);
+			copy_n(c->head, sizeof c->head, "Leaderboard");
+			copy_n(c->title, sizeof c->title, "Attempt failed");
+			copy_n(c->line, sizeof c->line, e.title);
+			c->pct = -1;			/* (red) */
+			break;
+		case RA_EV_LB_SUBMITTED:	/* the score waits for its rank (lb_sent_check: "Submitted" if none comes) */
+			s_lb_ev[2]++;
+			lb_sent_add(e.id, e.title, e.text);
+			break;
+		case RA_EV_LB_RANK: {
+			char a[16], b[16], score[24];
+			s_lb_ev[3]++;
+			lb_sent_take(e.id, score, sizeof score);
+			c = card_new(PICO_RA_CARD_BOARD);
+			copy_n(c->head, sizeof c->head, "Leaderboard");
+			copy_n(c->title, sizeof c->title, e.title);
+			c->line[0] = 0;
+			if (e.value > 0) {
+				thousands((unsigned)e.value, a, sizeof a);
+				thousands((unsigned)e.when, b, sizeof b);
+				if (e.when > 0) snprintf(c->line, sizeof c->line, "Rank %s of %s", a, b);
+				else snprintf(c->line, sizeof c->line, "Rank %s", a);
+			}
+			if (e.text[0]) {
+				unsigned l = (unsigned)strlen(c->line);
+				snprintf(c->line + l, sizeof c->line - l, l ? ", best %s" : "Best %s", e.text);
+			}
+			copy_n(c->chip, sizeof c->chip, score);
+			break;
+		}
+		case RA_EV_TRACKER:
+			s_lb_ev[4]++;
+			tracker_set(e.id, e.ok, e.text);
+			break;
 		case RA_EV_QUEUED:
 			if (s_nq < RA_QUEUE_MAX) {
 				struct ra_queued *q = &S_QUEUE[s_nq++];
@@ -699,6 +922,7 @@ static void events(int playing)
 			break;
 		}
 	}
+	lb_sent_check();
 }
 
 /* ---- server calls ---- */
@@ -761,7 +985,7 @@ static void award_done(int status, const unsigned char *body, unsigned len)
 		if (r < 0) note("The server refused an unlock");
 		memmove(S_QUEUE, S_QUEUE + 1, (unsigned)(s_nq - 1) * sizeof *S_QUEUE);
 		s_nq--;
-		queue_store(0);
+		queue_store(s_in_game);		/* (during a game through the card writer) */
 	} else {
 		s_award_wait_until = now_ms() + 60000u;	/* try again in a minute */
 	}
@@ -786,9 +1010,26 @@ static unsigned fake_answer(const char *api, char *out, unsigned cap)
 			 "{\"ID\":2,\"Title\":\"Memory read\",\"Description\":\"The game's first byte, 200 frames\",\"Flags\":3,"
 			 "\"Points\":1,\"MemAddr\":\"0xH0000=0xH0000.200.\",\"Author\":\"GammaOS\",\"BadgeName\":\"00100\","
 			 "\"Created\":1,\"Modified\":1,\"Type\":\"\",\"Rarity\":1,\"RarityHardcore\":1,\"BadgeURL\":\"\","
-			 "\"BadgeLockedURL\":\"\"}],\"Leaderboards\":[]}]}", s_console);
+			 "\"BadgeLockedURL\":\"\"},{\"ID\":3,\"Title\":\"A long stay with the same game: ten whole minutes of it, without a single break or a pause\","
+			 "\"Description\":\"Keep playing for ten minutes without a break; the counter shows how far along it is\","
+			 "\"Flags\":3,\"Points\":10,\"MemAddr\":\"M:1=1.36000.\",\"Author\":\"GammaOS\",\"BadgeName\":\"00200\","
+			 "\"Created\":1,\"Modified\":1,\"Type\":\"progression\",\"Rarity\":1,\"RarityHardcore\":1,\"BadgeURL\":\"\","
+			 "\"BadgeLockedURL\":\"\"},{\"ID\":4,\"Title\":\"A challenge kept\",\"Description\":"
+			 "\"Primed from the start, it unlocks at fifteen seconds\",\"Flags\":3,\"Points\":5,\"MemAddr\":"
+			 "\"1=1_T:1=1.900.\",\"Author\":\"GammaOS\",\"BadgeName\":\"00300\",\"Created\":1,\"Modified\":1,"
+			 "\"Type\":\"\",\"Rarity\":1,\"RarityHardcore\":1,\"BadgeURL\":\"\",\"BadgeLockedURL\":\"\"},"
+			 "{\"ID\":5,\"Title\":\"A challenge lost\",\"Description\":\"Primed, then paused for good at twelve seconds\","
+			 "\"Flags\":3,\"Points\":5,\"MemAddr\":\"1=1_T:1=1.3000._P:1=1.720.\",\"Author\":\"GammaOS\","
+			 "\"BadgeName\":\"00400\",\"Created\":1,\"Modified\":1,\"Type\":\"\",\"Rarity\":1,\"RarityHardcore\":1,"
+			 "\"BadgeURL\":\"\",\"BadgeLockedURL\":\"\"}],\"Leaderboards\":[{\"ID\":1,\"Title\":\"Ten seconds\",\"Description\":"
+			 "\"The first byte after ten seconds\",\"Mem\":\"STA:1=1.120.::CAN:0=1::SUB:1=1.600.::VAL:0xH0000\","
+			 "\"Format\":\"VALUE\",\"LowerIsBetter\":false,\"Hidden\":false}]}]}", s_console);
 	else if (!strcmp(api, "startsession"))
 		snprintf(out, cap, "{\"Success\":true,\"HardcoreUnlocks\":[],\"Unlocks\":[],\"ServerNow\":1}");
+	else if (!strcmp(api, "submitlbentry"))
+		snprintf(out, cap, "{\"Success\":true,\"Response\":{\"Score\":0,\"BestScore\":0,\"LBData\":{\"Format\":"
+			 "\"VALUE\",\"LeaderboardID\":1,\"GameID\":1,\"Title\":\"Ten seconds\",\"LowerIsBetter\":false},"
+			 "\"RankInfo\":{\"Rank\":3,\"NumEntries\":\"40\"},\"TopEntries\":[]}}");
 	else if (!strcmp(api, "awardachievement"))
 		snprintf(out, cap, "{\"Success\":true,\"Score\":0,\"SoftcoreScore\":5,\"AchievementID\":1,"
 			 "\"AchievementsRemaining\":0}");
@@ -866,14 +1107,17 @@ static void pump(int net, int card)
 				return;				/* the service is busy (box art): next time */
 			s_http_id = q->id;
 			memset(q->post, 0, sizeof q->post);	/* (sent: a password is not kept) */
+			if (s_game_on) s_live_sent++;
 			return;
 		} else {
 			unsigned n = card && keepable(q->api) ? copy_read(q->api, q->key) : 0;
 			finish(q, n ? 200 : 0, n ? S_FBUF : 0, n);
 		}
 	}
-	/* nothing of the blob's waiting: a kept unlock to the server */
-	if (online && s_state == PICO_RA_SIGNED_IN && s_nq && !s_game_on && (int)(now_ms() - s_award_wait_until) >= 0) {
+	/* nothing of the blob's waiting: a kept unlock to the server (during a game too, when it started
+	 * online: an unlock reaches the server moments after it happened) */
+	if (online && s_state == PICO_RA_SIGNED_IN && s_nq && (!s_game_on || s_live_net) &&
+	    (int)(now_ms() - s_award_wait_until) >= 0) {
 		static char url[256], post[640];
 		struct ra_req tmp;
 		const char *h, *slash;
@@ -891,6 +1135,7 @@ static void pump(int net, int card)
 			return;
 		s_http_id = 0xFFFFFFFFu;
 		s_http_award = 1;
+		if (s_game_on) s_live_sent++;
 		return;
 	}
 badges:
@@ -985,8 +1230,12 @@ void pico_ra_menu_tick(void)
 /* oem cheevos:fake:1|0, oem cheevos:login (with the test server) */
 void pico_ra_debug(const char *arg)
 {
-	if (!strncmp(arg, "fake:", 5)) s_fake = arg[5] == '1';
+	if (!strncmp(arg, "hold:", 5)) s_card_hold = arg[5] == '1';
+	else if (!strcmp(arg, "next")) { if (s_card_head != s_card_tail) { s_card_head++; s_card_t0 = now_ms() - 300u; } }
+	else if (!strncmp(arg, "fakehc:", 7)) s_fake_hc = arg[7] == '1';
+	else if (!strncmp(arg, "fake:", 5)) s_fake = arg[5] == '1';
 	else if (!strncmp(arg, "login", 5) && s_fake) s_fake_login = 1;
+	else if (!strncmp(arg, "card", 4)) s_dbg_card = 1;	/* a test card, on the game's thread */
 	else if (!strncmp(arg, "in:", 3)) {	/* the real server: the name up to the next ':', then the password */
 		const char *u = arg + 3, *c = strchr(u, ':');
 		unsigned n = c ? (unsigned)(c - u) : 0;
@@ -1034,7 +1283,7 @@ void pico_ra_core_ready(const void *rom, unsigned rom_size, const struct pico_co
 		struct netsvc_status ns;
 		int want = hc_wanted();
 		netsvc_get(&ns);
-		s_session_online = ns.state == NETSVC_ONLINE;
+		s_session_online = ns.state == NETSVC_ONLINE || s_fake;	/* (the test server answers here: no network needed) */
 		s_hc_why[0] = 0;
 		if (want && !s_session_online) {
 			want = 0;
@@ -1059,26 +1308,41 @@ void pico_ra_core_ready(const void *rom, unsigned rom_size, const struct pico_co
 		s_console = 0;
 		s_game_on = 0;
 	}
-	X->set_online(0);
-	netsvc_quiet(1);
+	s_live_net = s_session_online && s_game_seen;
+	if (!s_live_net) {			/* no network: answered here, the service asleep (costs the game nothing) */
+		X->set_online(0);
+		netsvc_quiet(1);
+	}
 }
 
 void pico_ra_frame(void)
 {
 	int i;
 	if (!X || !s_game_on) return;
+	s_frame_n++;
+	if (s_dbg_card) {
+		struct pico_ra_card *c = card_new(PICO_RA_CARD_UNLOCK);
+		s_dbg_card = 0;
+		copy_n(c->head, sizeof c->head, "Achievement unlocked");
+		copy_n(c->title, sizeof c->title, "A test card");
+		copy_n(c->line, sizeof c->line, "What a card costs the game, measured");
+		c->points = 10;
+	}
 	if (!s_pref[PREF_ON]) { s_paused_by_pref = 1; return; }	/* turned off in the in-game menu */
 	if (s_paused_by_pref) {		/* and on again: what was counted before no longer fits the memory */
 		s_paused_by_pref = 0;
 		X->progress_load(0, 0);
 	}
 	X->do_frame();
-	/* nothing waits on the network in play: a call rcheevos makes now gets "not reached" */
-	for (i = 0; i < RA_REQ_MAX; i++)
-		if (S_REQ[i].used) {
-			unsigned n = s_fake ? fake_answer(S_REQ[i].api, (char *)S_FBUF, 4096) : 0;
-			finish(&S_REQ[i], n ? 200 : 0, n ? S_FBUF : 0, n);
-		}
+	if (s_live_net) {
+		pump(1, 0);		/* the network: rcheevos' calls and the kept unlocks (never the card) */
+	} else {		/* nothing waits on the network: a call rcheevos makes now gets "not reached" */
+		for (i = 0; i < RA_REQ_MAX; i++)
+			if (S_REQ[i].used) {
+				unsigned n = s_fake ? fake_answer(S_REQ[i].api, (char *)S_FBUF, 4096) : 0;
+				finish(&S_REQ[i], n ? 200 : 0, n ? S_FBUF : 0, n);
+			}
+	}
 	events(1);
 }
 
@@ -1119,8 +1383,10 @@ void pico_ra_paused(void)
 	if (now_ms() - last < 1000u) return;
 	last = now_ms();
 	X->idle();
-	for (i = 0; i < RA_REQ_MAX; i++)
-		if (S_REQ[i].used) finish(&S_REQ[i], 0, 0, 0);
+	if (s_live_net) pump(1, 0);
+	else
+		for (i = 0; i < RA_REQ_MAX; i++)
+			if (S_REQ[i].used) finish(&S_REQ[i], 0, 0, 0);
 	events(1);
 }
 
@@ -1130,6 +1396,9 @@ void pico_ra_game_end(void)
 	s_console = 0;
 	s_game_on = 0;
 	s_in_game = 0;
+	s_live_net = 0;
+	memset(s_trk, 0, sizeof s_trk);
+	memset(s_chal, 0, sizeof s_chal);
 	if (X) ua_set(0);			/* the menu's calls are no game's */
 	netsvc_quiet(0);			/* the menu: the network as it was */
 	s_card_head = s_card_tail;
@@ -1221,6 +1490,7 @@ static struct ra_row *row_add(const char *title, const char *value, const char *
 	r->unlocked = 0;
 	r->sw = -1;
 	r->pref = -1;
+	r->ach = -1;
 	return r;
 }
 
@@ -1236,7 +1506,8 @@ static const char *status_text(void)
 {
 	if (pico_ra_state() == PICO_RA_NO_BLOB) return "Not on the card";
 	if (s_state != PICO_RA_SIGNED_IN) return "Sign in first";
-	if (s_game_on) return !s_pref[PREF_ON] ? "Off for now" : hc_now() ? "Hardcore" : "Softcore";
+	if (s_game_on) return !s_pref[PREF_ON] ? "Off for now" : hc_now() ? "Hardcore" :
+			      s_session_online ? "Softcore" : "Offline softcore";
 	if (!s_pref[PREF_ON]) return "Off";
 	return "No set for this game";
 }
@@ -1253,7 +1524,7 @@ int pico_ra_list(void)
 	row_switch("Unlock cards", PREF_UNLOCK_CARDS, "A card over the game when one unlocks");
 	row_switch("Progress cards", PREF_PROGRESS_CARDS, "A card when an achievement with a count moves on");
 	row_switch("Game start card", PREF_START_CARD, "The game's name and how far you are, at its start");
-	{
+	if (PICO_RA_HARDCORE) {
 		struct ra_row *r = row_add("Hardcore", s_pref[PREF_HARDCORE] == HC_ON ? "On" :
 					   s_pref[PREF_HARDCORE] == HC_OFF ? "Off" : "Automatic",
 					   s_pref[PREF_HARDCORE] == HC_AUTO ? "Hardcore once RetroAchievements validates this client; "
@@ -1261,9 +1532,10 @@ int pico_ra_list(void)
 					   "rewind in hardcore");
 		r->pref = PREF_HARDCORE;
 	}
-	row_add("RetroAchievements", s_verdict == 1 ? "Validated" : s_verdict == 0 ? "Not validated yet" : "Not known yet",
-		s_verdict == 0 ? "Hardcore unlocks count as softcore until RetroAchievements validates GammaOS Pico" :
-		s_verdict == 1 ? "Hardcore unlocks count" : "Known after a game with achievements is played online");
+	if (PICO_RA_HARDCORE)
+		row_add("RetroAchievements", s_verdict == 1 ? "Validated" : s_verdict == 0 ? "Not validated yet" : "Not known yet",
+			s_verdict == 0 ? "Hardcore unlocks count as softcore until RetroAchievements validates GammaOS Pico" :
+			s_verdict == 1 ? "Hardcore unlocks count" : "Known after a game with achievements is played online");
 	if (s_nq) {
 		char v[16];
 		snprintf(v, sizeof v, "%d", s_nq);
@@ -1286,6 +1558,7 @@ int pico_ra_list(void)
 		struct ra_row *r;
 		if (X->achievement(i, &a) != 0) continue;
 		r = row_add(a.title, "", a.text);
+		r->ach = i;
 		r->unlocked = a.state == RA_ACH_UNLOCKED;
 		if (r->unlocked) copy_n(r->value, sizeof r->value, "Unlocked");
 		else if (a.state == RA_ACH_UNSUPPORTED) copy_n(r->value, sizeof r->value, "Unsupported");
@@ -1293,6 +1566,28 @@ int pico_ra_list(void)
 		else snprintf(r->value, sizeof r->value, "%u points", a.points);
 	}
 	return s_list_n;
+}
+
+/* row i's achievement, for the in-game menu's detail page: 0 filled, -1 not an achievement */
+int pico_ra_detail(int i, struct pico_ra_detail *d)
+{
+	struct ra_achievement a;
+	unsigned k;
+	memset(d, 0, sizeof *d);
+	if (i < 0 || i >= s_list_n || S_LIST[i].ach < 0 || !X || X->achievement(S_LIST[i].ach, &a) != 0) return -1;
+	copy_n(d->title, sizeof d->title, a.title);
+	copy_n(d->text, sizeof d->text, a.text);
+	copy_n(d->measured, sizeof d->measured, a.measured);
+	copy_n(d->badge, sizeof d->badge, a.badge);
+	d->points = a.points;
+	d->percent = a.percent;
+	d->state = a.state == RA_ACH_UNLOCKED ? PICO_RA_UNLOCKED : a.state == RA_ACH_UNSUPPORTED ? PICO_RA_UNSUPPORTED :
+		   a.state == RA_ACH_ALMOST ? PICO_RA_ALMOST : PICO_RA_LOCKED;
+	d->when = a.when;
+	for (k = 0; k < (unsigned)s_nq; k++)
+		if (S_QUEUE[k].id == a.id) d->waiting = 1;	/* unlocked here, not on the server yet */
+	if (d->waiting) d->state = PICO_RA_UNLOCKED;
+	return 0;
 }
 
 /* row i: -1 a row only looked at, 0/1 a switch and its state */

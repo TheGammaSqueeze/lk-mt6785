@@ -46,6 +46,12 @@ extern void ayaneo_accel_filter(int v[3]);
 volatile unsigned int g_dbg_gbc_motion_n;
 volatile int g_dbg_gbc_motion_v[3];
 /* RetroAchievements after a frame the game really ran (pico_ra.c; absent on consoles without it) */
+/* a RetroAchievements card wants the theme's layer while no menu is open (pico_current.c) */
+static int ra_card_wanted(void)
+{
+	extern int pico_igm_card_wanted(void) __attribute__((weak));
+	return pico_igm_card_wanted && pico_igm_card_wanted();
+}
 /* RetroAchievements' hardcore limits how often the menu may pause the game (pico_ra.c) */
 static int ra_may_pause(void)
 {
@@ -1251,7 +1257,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * underneath and no pause. Done BEFORE the present so the layer state matches the frame. */
 			{
 				extern void ayaneo_menu_overlay(void (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int), int open);
-				if (s_gbc_igm_on) pico_igm_overlay(g_gbc_menu_open);
+				if (s_gbc_igm_on || (!g_gbc_menu_open && ra_card_wanted())) pico_igm_overlay(g_gbc_menu_open);	/* or a RetroAchievements card on its layer */
 				else ayaneo_menu_overlay(gbc_menu_paint, g_gbc_menu_open);
 			}
 

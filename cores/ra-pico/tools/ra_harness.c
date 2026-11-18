@@ -83,6 +83,7 @@ static unsigned srv_score = 40;
 static unsigned srv_last_o;	/* the seconds since unlock of the last award */
 static int srv_warn;		/* the set carries RetroAchievements' warning entry (a client not validated) */
 static int srv_last_h = -1;	/* h= of the last award */
+static unsigned srv_last_lb;	/* the score of the last leaderboard entry */
 
 static int srv_has(unsigned id)
 {
@@ -143,7 +144,17 @@ static int server(const char *post, char *body, unsigned cap)
 						 "\"MemAddr\":\"0=1\",\"Author\":\"\",\"BadgeName\":\"00000\",\"Created\":1,"
 						 "\"Modified\":1,\"Type\":\"\",\"Rarity\":0,\"RarityHardcore\":0,\"BadgeURL\":\"\","
 						 "\"BadgeLockedURL\":\"\"}");
-		snprintf(body + at, cap - at, "],\"Leaderboards\":[]}]}");
+		snprintf(body + at, cap - at, "],\"Leaderboards\":[{\"ID\":5501,\"Title\":\"Byte race\",\"Description\":"
+			 "\"The first byte when the second is 9\",\"Mem\":\"STA:0xH0001=1::CAN:0xH0001=2::SUB:0xH0001=9::VAL:0xH0000\","
+			 "\"Format\":\"VALUE\",\"LowerIsBetter\":false,\"Hidden\":false}]}]}");
+		return 200;
+	}
+	if (!strcmp(r, "submitlbentry")) {
+		form(post, "s", v, sizeof v);
+		srv_last_lb = (unsigned)strtoul(v, 0, 10);
+		snprintf(body, cap, "{\"Success\":true,\"Response\":{\"Score\":%u,\"BestScore\":%u,\"LBData\":{\"Format\":\"VALUE\","
+			 "\"LeaderboardID\":5501,\"GameID\":77001,\"Title\":\"Byte race\",\"LowerIsBetter\":false},"
+			 "\"RankInfo\":{\"Rank\":3,\"NumEntries\":\"40\"},\"TopEntries\":[]}}", srv_last_lb, srv_last_lb);
 		return 200;
 	}
 	if (!strcmp(r, "startsession")) {
@@ -248,13 +259,13 @@ static void im_log(const char *line) { printf("    [rc] %s\n", line); }
 static const struct ra_core_imports k_im = { im_request, im_now_ms, im_utc, im_log };
 
 /* the events since the last call: counted by kind, queued unlocks kept */
-static int events[16];
-static struct ra_event last[16];
+static int events[32];
+static struct ra_event last[32];
 static void drain(void)
 {
 	struct ra_event e;
 	while (X->next_event(&e)) {
-		if (e.kind >= 0 && e.kind < 16) { events[e.kind]++; last[e.kind] = e; }
+		if (e.kind >= 0 && e.kind < 32) { events[e.kind]++; last[e.kind] = e; }
 		if (e.kind == RA_EV_QUEUED && nqueue < 16) {
 			queue[nqueue].id = e.id;
 			snprintf(queue[nqueue].hash, sizeof queue[nqueue].hash, "%s", e.hash);
@@ -462,6 +473,19 @@ int main(int argc, char **argv)
 	X->reset();
 	X->summary(&s);
 	CHECK(s.hardcore == 1, "hardcore after the reset");
+	printf("a leaderboard (hardcore)\n");
+	ram[0] = 42; ram[1] = 0; frames(2);
+	ram[1] = 1; frames(2);
+	CHECK(events[RA_EV_LB_STARTED] == 1 && last[RA_EV_LB_STARTED].id == 5501, "the attempt started");
+	CHECK(events[RA_EV_TRACKER] >= 1 && last[RA_EV_TRACKER].ok && !strcmp(last[RA_EV_TRACKER].text, "42"), "its tracker shows 42");
+	ram[0] = 77; frames(2);
+	CHECK(!strcmp(last[RA_EV_TRACKER].text, "77"), "the tracker follows the value");
+	ram[1] = 9; frames(2);
+	CHECK(events[RA_EV_LB_SUBMITTED] == 1 && !strcmp(last[RA_EV_LB_SUBMITTED].text, "77"), "submitted with 77");
+	CHECK(srv_last_lb == 77, "the server got 77");
+	CHECK(events[RA_EV_LB_RANK] == 1 && last[RA_EV_LB_RANK].value == 3 && last[RA_EV_LB_RANK].when == 40,
+	      "its rank: 3 of 40");
+	CHECK(last[RA_EV_TRACKER].ok == 0, "the tracker gone");
 	X->unload_game();
 	X->shutdown();
 

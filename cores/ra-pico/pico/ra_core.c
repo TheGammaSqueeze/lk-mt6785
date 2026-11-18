@@ -15,7 +15,9 @@
  *     list (set_local_unlocks), so a set read from the LK's copy shows them.
  *   - memory: rc_libretro's regions over the core's libretro map and blocks.
  *   - events: rc_client's, as ra_event records in a small ring the LK empties.
- *   - hardcore: off until the LK turns it on (set_hardcore); rcheevos' own rules from there. An
+ *   - hardcore: off until the LK turns it on (set_hardcore); rcheevos' own rules from there,
+ *     leaderboards with it (their attempts, trackers and ranks as events; submissions go out as
+ *     rcheevos sends them). An
  *     unlock earned in hardcore is queued as one and sent with h=1. RetroAchievements' verdict on
  *     this client is read from each set (its warning entry, id 101000001 and up, which is never
  *     listed or counted).
@@ -150,7 +152,41 @@ static void on_event(const rc_client_event_t *event, rc_client_t *client)
 	case RC_CLIENT_EVENT_RESET:	/* hardcore came on: the game starts again */
 		ev_push(RA_EV_RESET);
 		break;
-	default:	/* leaderboards, subsets: not here */
+	case RC_CLIENT_EVENT_LEADERBOARD_STARTED:
+	case RC_CLIENT_EVENT_LEADERBOARD_FAILED:
+	case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED:
+		e = ev_push(event->type == RC_CLIENT_EVENT_LEADERBOARD_STARTED ? RA_EV_LB_STARTED :
+			    event->type == RC_CLIENT_EVENT_LEADERBOARD_FAILED ? RA_EV_LB_FAILED : RA_EV_LB_SUBMITTED);
+		if (event->leaderboard) {
+			e->id = event->leaderboard->id;
+			copy_text(e->title, sizeof e->title, event->leaderboard->title);
+			copy_text(e->text, sizeof e->text, event->type == RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED ?
+				  event->leaderboard->tracker_value : event->leaderboard->description);
+		}
+		break;
+	case RC_CLIENT_EVENT_LEADERBOARD_SCOREBOARD:
+		e = ev_push(RA_EV_LB_RANK);
+		if (event->leaderboard_scoreboard) {
+			const rc_client_leaderboard_t *lb = rc_client_get_leaderboard_info(g_client,
+										    event->leaderboard_scoreboard->leaderboard_id);
+			e->id = event->leaderboard_scoreboard->leaderboard_id;
+			copy_text(e->title, sizeof e->title, lb ? lb->title : "");
+			copy_text(e->text, sizeof e->text, event->leaderboard_scoreboard->best_score);
+			e->value = (int)event->leaderboard_scoreboard->new_rank;
+			e->when = event->leaderboard_scoreboard->num_entries;
+		}
+		break;
+	case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_SHOW:
+	case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_UPDATE:
+	case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_HIDE:
+		e = ev_push(RA_EV_TRACKER);
+		e->ok = event->type != RC_CLIENT_EVENT_LEADERBOARD_TRACKER_HIDE;
+		if (event->leaderboard_tracker) {
+			e->id = event->leaderboard_tracker->id;
+			copy_text(e->text, sizeof e->text, event->leaderboard_tracker->display);
+		}
+		break;
+	default:	/* subsets: not here */
 		break;
 	}
 }

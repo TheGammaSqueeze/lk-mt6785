@@ -61,7 +61,8 @@ int  pico_ra_progress_save(void *buf, unsigned cap);
 void pico_ra_progress_load(const void *buf, unsigned len);
 
 /* the card to draw over the game now: 1 there is one */
-enum { PICO_RA_CARD_UNLOCK, PICO_RA_CARD_MASTERED, PICO_RA_CARD_GAME, PICO_RA_CARD_PROGRESS, PICO_RA_CARD_NOTE };
+enum { PICO_RA_CARD_UNLOCK, PICO_RA_CARD_MASTERED, PICO_RA_CARD_GAME, PICO_RA_CARD_PROGRESS, PICO_RA_CARD_NOTE,
+       PICO_RA_CARD_BOARD };	/* BOARD: a leaderboard's attempt (started, failed, submitted, its rank) */
 struct pico_ra_card {
 	int kind;
 	char head[48];			/* "Achievement unlocked" */
@@ -70,8 +71,22 @@ struct pico_ra_card {
 	int points;			/* -1 none */
 	char badge[16];			/* its badge's name ("" none): pico_ra_badge */
 	unsigned alpha;			/* 0..255: it fades in and out */
+	int pct;			/* PROGRESS: how far, 0..100 */
+	int hardcore;			/* GAME: the session counts in hardcore */
+	char chip[24];			/* BOARD: the score, on the chip at the right ("" none: the points if any) */
 };
 int  pico_ra_card_now(struct pico_ra_card *c);
+/* the leaderboards' trackers on screen now (their running values): how many, up to max, into out */
+#define PICO_RA_TRACKERS 4
+int  pico_ra_trackers(char out[][24], int max);
+/* the challenges primed now (an achievement that unlocks if nothing fails before its moment), as
+ * badges down the left of the game: up to max into out, how many. alpha 0..255 (fading in, or out
+ * after its end), outcome 0 still on, 1 it unlocked (a tick), -1 it failed (a cross) */
+#define PICO_RA_CHALLENGES 6
+struct pico_ra_chal { unsigned id; char badge[16]; int outcome; unsigned alpha; };
+int  pico_ra_challenges(struct pico_ra_chal *out, int max);
+/* memory a theme may keep a card's picture in while it fades (size into *size; 0 none) */
+void *pico_ra_card_pic(unsigned *size);
 /* a badge of the game being played, 48 x 48 RGB565, or 0 (not fetched yet) */
 #define PICO_RA_BADGE 48
 const unsigned short *pico_ra_badge(const char *name);
@@ -88,6 +103,17 @@ const char *pico_ra_short(void);		/* "12/40", for the menu's Achievements row */
 int  pico_ra_row_switch(int i);
 int  pico_ra_row_change(int i);
 int  pico_ra_igm_page(void);
+/* an achievement row's detail (the in-game menu's full page): 0 filled, -1 not an achievement */
+enum { PICO_RA_LOCKED, PICO_RA_UNLOCKED, PICO_RA_ALMOST, PICO_RA_UNSUPPORTED };
+struct pico_ra_detail {
+	char title[96], text[160], measured[24], badge[16];
+	unsigned points;
+	int percent;			/* -1 not measured */
+	int state;			/* PICO_RA_* */
+	int waiting;			/* unlocked here, waiting to reach the server */
+	long long when;			/* its unlock, seconds since 1970 (0 none) */
+};
+int  pico_ra_detail(int i, struct pico_ra_detail *d);
 int  pico_ra_item(int i, unsigned *id, char *title, unsigned tcap, char *line, unsigned lcap, int *unlocked, unsigned *points);
 void pico_ra_game_summary(char *line, unsigned cap);
 

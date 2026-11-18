@@ -196,6 +196,12 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			  snprintf(lbuf, sizeof lbuf, "igm: open=%uus at %u %u glass=%uus", g_dbg_igm_open_us, g_dbg_igm_open_part[0],
 				   g_dbg_igm_open_part[1], g_dbg_igm_glass_us);
 			  fastboot_info(lbuf);
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+			  { extern volatile int g_dbg_dt[5];
+			    snprintf(lbuf, sizeof lbuf, "igm detail: stage %d w %d title %d open %d paints %d", g_dbg_dt[0], g_dbg_dt[1],
+				     g_dbg_dt[2], g_dbg_dt[3], g_dbg_dt[4]);
+			    fastboot_info(lbuf); }
+#endif
 			  { extern volatile int g_dbg_lang_rc[4]; extern unsigned int pico_lang_serial(void);
 			    snprintf(lbuf, sizeof lbuf, "lang: last load rc=%d %dx%d lang %d, serial %u", g_dbg_lang_rc[0],
 				     g_dbg_lang_rc[1], g_dbg_lang_rc[2], g_dbg_lang_rc[3], pico_lang_serial());

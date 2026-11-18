@@ -44,6 +44,9 @@
 #include "pico_libmem.h"        /* the library's tables: thousands of games */
 #include "rom_archive.h"        /* why a game did not start */
 #include "pico_version.h"       /* the About row */
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+#include "pico_ra.h"            /* RetroAchievements: the cards, the Achievements page's detail */
+#endif
 #include "pico_settings.h"      /* the settings every theme offers */
 #include <kernel/thread.h>       /* thread_sleep: a pack read tried again */
 
@@ -325,10 +328,18 @@ static inline void touch(int y, int x0, int x1)
 	if (x0 < s_ux0[y]) s_ux0[y] = (int16_t)x0;
 	if (x1 > s_ux1[y]) s_ux1[y] = (int16_t)x1;
 }
+/* a horizontal clip for the ticker (put and everything drawn through it): x0..x1, the edges fading
+ * over fl / fr px as text hides behind them (0, 0, 0, 0: none) */
+static int g_cx0, g_cx1, g_cfl, g_cfr;
 /* blend with a = 0..255 coverage times op 0..256 */
 static inline void put(int x, int y, uint32_t rgb, int a)
 {
 	uint32_t *d;
+	if (g_cx1) {
+		if (x < g_cx0 || x >= g_cx1) return;
+		if (g_cfl && x < g_cx0 + g_cfl) a = a * (x - g_cx0) / g_cfl;
+		if (g_cfr && x >= g_cx1 - g_cfr) a = a * (g_cx1 - 1 - x) / g_cfr;
+	}
 	if ((unsigned)x >= (unsigned)g_W || (unsigned)y >= (unsigned)g_H || a <= 0) return;
 	touch(y, x, x + 1);
 	d = g_fb + y * g_W + x;
@@ -579,6 +590,36 @@ static void text_fit(const cfont *f, int x, int y, const char *s, uint32_t rgb, 
 {
 	char buf[192];
 	text(f, x, y, fit_str(f, s, max_w, buf, sizeof buf), rgb, op, 0, 0, 0);
+}
+/* The bounce ticker of a text wider than its box (melonds-nano's, the home's marquee in time):
+ * 1.5 s still at its start, then 30 units a second until its end shows, 1.5 s still there, back
+ * the same way, over and over. How far the text moves left t seconds after the ticker started */
+int pico_ui_ticker_shift(int excess, float speed, float t)
+{
+	float hold = 1.5f, travel, k;
+	if (excess <= 0 || speed <= 0) return 0;
+	travel = (float)excess / speed;
+	k = 2 * (hold + travel);
+	while (t >= k) t -= k;
+	if (t < hold) return 0;
+	if (t < hold + travel) return (int)((t - hold) * speed);
+	if (t < 2 * hold + travel) return excess;
+	t = (float)excess - (t - 2 * hold - travel) * speed;
+	return t > 0 ? (int)t : 0;
+}
+static int ticker_shift(int excess, float t) { return pico_ui_ticker_shift(excess, 30.0f * g_s, t); }
+/* text in a box box_w px wide: as it is when it fits, else on the ticker (t seconds since it
+ * started), its hidden sides fading softly (16 units at most) */
+static void text_ticker(const cfont *f, int x, int y, int box_w, const char *s, uint32_t rgb, int op, float t)
+{
+	int w = text_w(f, s, 0, 0), sh, fade = U(16);
+	if (w <= box_w) { text(f, x, y, s, rgb, op, 0, 0, 0); return; }
+	sh = ticker_shift(w - box_w, t);
+	g_cx0 = x; g_cx1 = x + box_w;
+	g_cfl = sh < fade ? sh : fade;
+	g_cfr = w - box_w - sh < fade ? w - box_w - sh : fade;
+	text(f, x - sh, y, s, rgb, op, 0, 0, 0);
+	g_cx0 = g_cx1 = g_cfl = g_cfr = 0;
 }
 /* text over at most two lines of max_w px, broken at a space (between any two letters for a
  * script written without them), the second cut with an ellipsis; returns the lines drawn */
@@ -2524,6 +2565,7 @@ static int s_igm_classic;
 #define IGM_RP   44.f                 /* the row pitch, units */
 
 extern void ayaneo_overlay_live(int (*paint)(unsigned int *, unsigned int, unsigned int, unsigned int, int *), int open);
+extern int ayaneo_overlay_live_up(void);
 extern volatile int g_dbg_key, g_dbg_key_hold;
 typedef struct { int kind, item, icon; const char *label; } igm_line;
 enum { IC_PLAY, IC_SAVE, IC_LOAD, IC_DISPLAY, IC_SOUND, IC_SPEED, IC_SYSTEM, IC_RESET, IC_EXIT, IC_N, IC_NONE = -1 };
@@ -2583,6 +2625,9 @@ static struct {
 /* a hash of each row of the last picture: only the rows that came out different are handed on */
 static uint32_t s_igm_rowh[1024];
 static int s_igm_rowh_ok;
+static int s_tk_want;			/* the focused row's ticker moved: that row again next frame (it alone) */
+static int s_igm_only = -1;		/* igm_rows(): draw this row only (the ticker's frames) */
+static int s_band_y0 = -1, s_band_y1;	/* igm_paint(): only these lines were drawn again */
 static float igm_ease(float t) { return t <= 0 ? 0 : t >= 1 ? 1 : 1 - (1 - t) * (1 - t) * (1 - t); }
 static float igm_smooth(float t) { return t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t); }
 
@@ -2712,6 +2757,18 @@ static int igm_lines(int page, igm_line *out)
 	}
 	return n;
 }
+/* the Achievements page's detail (below, with the cards' look) */
+static float s_dt;
+static int s_dt_on, s_dt_row = -1;
+static unsigned s_dt_tick;
+static int igm_detail_w(int ext, int W);
+static void igm_detail_paint(void);
+static int igm_detail_keys(int up, int dn, int a, int b);
+#if !defined(KONKR_KPA) && !defined(KONKR_BLOCK)
+static int igm_detail_w(int ext, int W) { (void)W; return ext; }
+static void igm_detail_paint(void) {}
+static int igm_detail_keys(int up, int dn, int a, int b) { (void)up; (void)dn; (void)a; (void)b; return 0; }
+#endif
 static igm_line s_igm_ln[IGM_ROWS];   /* the page being drawn (igm_rows), for the figure cache */
 /* what a row shows on its right, or 0 */
 static const char *igm_value(int page, const igm_line *l, char *buf)
@@ -2776,6 +2833,7 @@ void pico_igm_open(const struct igm_core *c)
 	}
 	G.hy = (G.sel[G.page] - G.top[G.page]) * IGM_RP; G.nudge_t = 1; G.toast_t = 99; G.toast[0] = 0;
 	G.tick = gpt4_get_current_tick(); G.last_paint = 0;
+	s_dt = 0; s_dt_on = 0;	/* no detail open from the last time */
 	G.dirty = 1; G.prev_keys = 0x3F;   /* what is held now (the menu key, a face button) is not a press */
 	g_dbg_igm_open_part[0] = (gpt4_get_current_tick() - t_open) / 13u;
 	G.ext_prev = 0; s_igm_rowh_ok = 0;
@@ -2883,6 +2941,7 @@ int pico_igm_frame(unsigned int keys)
 	a = (keys & IGM_K_A) && !(G.prev_keys & IGM_K_A);
 	b = (keys & IGM_K_B) && !(G.prev_keys & IGM_K_B);
 	G.prev_keys = (int)keys;
+	if (G.page == IGM_ACH && igm_detail_keys(up, dn, a, b)) return -1;
 	if (!n) { if (b) igm_go(IGM_TOP, -1); return -1; }
 	if (up) { G.sel[G.page] = (sel + n - 1) % n; G.dirty = 1; }
 	if (dn) { G.sel[G.page] = (sel + 1) % n; G.dirty = 1; }
@@ -2891,7 +2950,11 @@ int pico_igm_frame(unsigned int keys)
 		igm_line *l = &ln[sel];
 		const struct igm_core *c = G.c;
 		int dir = lt ? -1 : rt ? 1 : 0;
-		if (G.page == IGM_ACH) {	/* the settings' switches flip; the set is only looked at */
+		if (G.page == IGM_ACH) {	/* the settings' switches flip; an achievement opens its detail */
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+			struct pico_ra_detail dd;
+			if (a && pico_ra_detail(l->item, &dd) == 0) { s_dt_on = 1; s_dt_row = l->item; s_dt_tick = gpt4_get_current_tick(); G.dirty = 1; return -1; }
+#endif
 			if ((dir || a) && pico_ra_row_change && pico_ra_row_change(l->item)) {
 				G.nudge_row = sel; G.nudge_dir = dir ? dir : 1; G.nudge_t = 0; G.dirty = 1;
 			}
@@ -2951,6 +3014,7 @@ static void igm_rows(int page, float dx, int op, int wash)
 		float ry = IGM_Y0 + (i - top) * IGM_RP, rdx = 0;
 		int yy, f = i == sel, rop = op, lx, vx;
 		const char *v;
+		if (s_igm_only >= 0 && i != s_igm_only) continue;
 		if (ry < IGM_Y0 - IGM_RP * .5f || ry > IGM_Y0 + (nv - .5f) * IGM_RP) continue;
 		if (!G.closing && G.show_time < .6f && page == G.page) {	/* the opening: the rows arrive one after another */
 			float e = igm_ease((G.show_time - .035f * (i - first)) / .2f);
@@ -2976,8 +3040,23 @@ static void igm_rows(int page, float dx, int op, int wash)
 				room = text_w(&G.sval, v, 0, 0) + U(28) + (arrows ? 2 * G.chev.w + U(12) : 0) +
 				       (ln[i].kind == IGM_LINK ? G.chev.w + U(10) : 0);
 			}
-			text_fit(f ? &G.srowf : &G.srow, lx, yy + (int)(ph * .63f), ln[i].label, f ? C_INK : C_MUTED, rop,
-				 IX(rx + rw) - lx - room);
+			if (f && wash) {	/* the focused row: its name on the bounce ticker when too long (melonds-nano's) */
+				static int tk_sel = -1, tk_page = -1;
+				static unsigned tk_t0;
+				unsigned tnow = gpt4_get_current_tick();
+				const cfont *ff = &G.srowf;
+				int box = IX(rx + rw) - lx - room;
+				if (tk_sel != sel || tk_page != page) { tk_sel = sel; tk_page = page; tk_t0 = tnow; }
+				if (text_w(ff, ln[i].label, 0, 0) > box) {
+					text_ticker(ff, lx, yy + (int)(ph * .63f), box, ln[i].label, C_INK, rop,
+						    (float)((tnow - tk_t0) / 13000u) / 1000.0f);
+					if (!(s_dt_on && s_dt >= 1)) s_tk_want = 1;	/* (it moves: its row again next frame; not under the detail) */
+				} else {
+					text(ff, lx, yy + (int)(ph * .63f), ln[i].label, C_INK, rop, 0, 0, 0);
+				}
+			} else
+				text_fit(f ? &G.srowf : &G.srow, lx, yy + (int)(ph * .63f), ln[i].label, f ? C_INK : C_MUTED, rop,
+					 IX(rx + rw) - lx - room);
 		}
 		if (ln[i].kind == IGM_LINK) {
 			draw_mask(&G.chev, vx - G.chev.w, yy + (ph - G.chev.h) / 2, f ? C_INK : C_MUTED, rop);
@@ -3011,6 +3090,7 @@ static void igm_rows(int page, float dx, int op, int wash)
 		}
 		if (i + 1 < n) fill(IX(rx + rdx) + U(14), yy + ph - 1, wi - U(14), 1, C_MUTED, (rop * 36) >> 8);
 	}
+	if (s_igm_only >= 0) return;
 	if (first > 0) disc(IX(rx + rw) - U(6) + .0f, U(IGM_Y0 - 9) + .0f, U(2.3f) + .0f, C_MUTED, op * 3 / 4);
 	if (first + nv < n) disc(IX(rx + rw) - U(6) + .0f, U(IGM_Y0 + nv * IGM_RP + 6) + .0f, U(2.3f) + .0f, C_MUTED, op * 3 / 4);
 }
@@ -3161,6 +3241,7 @@ static void igm_bg_build(void)
 	g_dbg_igm_open_part[1] = (gpt4_get_current_tick() - t0) / 13u;
 }
 static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box);
+
 static int igm_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box)
 {
 	int y, y0 = -1, y1 = -1, x, w, drawn;
@@ -3169,11 +3250,15 @@ static int igm_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsi
 	pico_tr_igm_scope(0);
 	if (!drawn) return 0;
 	w = box[2];
-	for (y = 0; y < (int)H && y < 1024; y++) {
+	{
+		int ya = 0, yb = (int)H;
+		if (s_band_y0 >= 0) { ya = s_band_y0; yb = s_band_y1; s_band_y0 = -1; }
+	for (y = ya; y < yb && y < 1024; y++) {
 		const uint32_t *r = buf + y * W;
 		uint32_t h = 2166136261u;
 		for (x = 0; x < w; x++) h = (h ^ r[x]) * 16777619u;
 		if (!s_igm_rowh_ok || h != s_igm_rowh[y]) { s_igm_rowh[y] = h; if (y0 < 0) y0 = y; y1 = y + 1; }
+	}
 	}
 	s_igm_rowh_ok = 1;
 	if (y0 < 0) return 0;
@@ -3192,15 +3277,34 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 		if (G.hy != hy) still = 0;
 		if (G.top[G.page] != (float)(int)G.top[G.page]) still = 0;
 	}
-	if (G.bg_ok && now - s_gl.tick >= 13000000u / 30u) {	/* the glass follows the game */
+	if (G.bg_ok && !(s_dt_on && s_dt >= 1) && now - s_gl.tick >= 13000000u / 30u) {	/* the glass follows the game (not under the detail, which hides it) */
 		unsigned int tg = gpt4_get_current_tick();
 		s_gl.tick = now;
 		if (igm_glass_sample()) { igm_glass_paint(s_gl.ox); G.dirty = 1; }
 		g_dbg_igm_glass_us = (gpt4_get_current_tick() - tg) / 13u;
 	}
+	if (still && !G.dirty && s_tk_want && s_dt <= 0 && !s_dt_on && G.bg_ok && now - G.last_paint < 6500000u) {
+		/* only the ticker moved: its row alone, over the glass as it is (the whole drawer a frame
+		 * was the game's time under it) */
+		const uint32_t *bg = (const uint32_t *)IGM_BG_PA;
+		int sel = G.sel[G.page], b0, b1;
+		g_fb = buf; g_W = (int)W; g_H = (int)H; g_track = 0;
+		s_igm_ox = 0;
+		b0 = U(IGM_Y0 + (sel - G.top[G.page]) * IGM_RP); b1 = b0 + U(IGM_RP);
+		if (b0 < 0) b0 = 0;
+		if (b1 > (int)H) b1 = (int)H;
+		for (y = b0; y < b1; y++) memcpy(buf + y * W, bg + y * ext, (size_t)ext * 4);
+		s_tk_want = 0;
+		s_igm_only = sel;
+		igm_rows(G.page, 0, op, 1);
+		s_igm_only = -1;
+		box[0] = 0; box[1] = b0; box[2] = ext; box[3] = b1;
+		s_band_y0 = b0; s_band_y1 = b1;
+		return 1;
+	}
 	if (still && !G.dirty && now - G.last_paint < 6500000u) return 0;   /* live figures: twice a second */
 	if (!G.bg_ok) { igm_bg_build(); return 0; }   /* its own frame: the first picture comes next */
-	G.dirty = 0; G.last_paint = now;
+	G.dirty = 0; G.last_paint = now; s_tk_want = 0;	/* (the rows ask again if the ticker runs) */
 	if (now - G.fig_tick > 13000000u || G.fig_page != G.page) {	/* the figures: once a second */
 		int i;
 		for (i = 0; i < IGM_FIG; i++) G.fig[i][0] = 0;
@@ -3210,11 +3314,11 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 	g_fb = buf; g_W = (int)W; g_H = (int)H; g_track = 0;
 	(void)pitch;
 	{
-		int clr = ext > G.ext_prev ? ext : G.ext_prev;
+		int want = igm_detail_w(ext, (int)W), clr = want > G.ext_prev ? want : G.ext_prev;
 		for (y = 0; y < (int)H; y++) memset(buf + y * W, 0, (size_t)clr * 4);
 		box[0] = 0; box[1] = 0; box[2] = clr; box[3] = (int)H;
+		G.ext_prev = want;
 	}
-	G.ext_prev = ext;
 	if (op <= 0) return 1;
 	s_igm_ox = -(int)((1 - e) * ext + .5f);   /* the drawer slides in from beyond the edge, its shadow with it */
 	if (s_igm_ox <= -ext) return 1;
@@ -3313,6 +3417,7 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 			text(&G.info, IX(30) + U(28), ty + U(22), G.toast, C_INK, o, 0, 0, 0);
 		}
 	}
+	igm_detail_paint();
 	return 1;
 }
 #if PICO_LINK
@@ -3410,8 +3515,683 @@ static int link_paint(const struct lui_progress *p)
 }
 #endif
 
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+/* ---- RetroAchievements' cards over the game, in the theme's own look -------------------------------
+ * While the in-game menu is shut, a card (an unlock, mastery, the game's start, a note) goes on the
+ * menu's live layer, drawn by the theme in use: here the Current theme's dark rounded panel, its
+ * spaced capitals for the heading (coloured by the kind of card), its row and info fonts, the badge
+ * at the left; the Classic theme draws its own (pico_classic_igm.c). The card fades in and out
+ * with its alpha. Drawn on the layer, it never touches the game's picture. */
+static struct pico_ra_card s_cd;		/* the card shown now */
+static int s_cd_up;			/* the layer carries a card */
+static int s_layer_menu;		/* the layer last carried the menu (a card takes it only once it is down) */
+static int s_cd_fresh;			/* its first frame: its columns cleared top to bottom */
+static int s_cd_was[4];			/* where the last card frame drew (x0 y0 x1 y1) */
+volatile int g_ra_card_on_layer;		/* (pico_disp.inc leaves the game's picture alone) */
+volatile int g_ra_theme_cards;			/* a theme carries the cards (the old ones never come back then) */
+
+/* an antialiased rounded rectangle, corners of radius r */
+static void rrect_fill(int x, int y, int w, int h, float r, uint32_t rgb, int op)
+{
+	int i, j;
+	for (j = 0; j < h; j++)
+		for (i = 0; i < w; i++) {
+			float px = i + .5f, py = j + .5f, cx = px < r ? r : px > w - r ? w - r : px;
+			float cy = py < r ? r : py > h - r ? h - r : py, dx = px - cx, dy = py - cy, d;
+			if (dx == 0 && dy == 0) { put(x + i, y + j, rgb, op); continue; }	/* inside: no root to take */
+			d = r - sq(dx * dx + dy * dy) + .5f;
+			if (d <= 0) continue;
+			put(x + i, y + j, rgb, d >= 1 ? op : (int)(d * op));
+		}
+}
+
+/* the card's pixels faded by a 0..255 (colour and alpha: the layer's pixels are premultiplied) */
+static void fade_box(uint32_t *buf, int pitch, const int *b, unsigned a)
+{
+	int x, y;
+	if (a >= 255) return;
+	for (y = b[1]; y < b[3]; y++) {
+		uint32_t *r = buf + y * pitch;
+		for (x = b[0]; x < b[2]; x++) {
+			uint32_t v = r[x], rb = ((v & 0x00FF00FFu) * a >> 8) & 0x00FF00FFu, ag = (((v >> 8) & 0x00FF00FFu) * a) & 0xFF00FF00u;
+			r[x] = ag | rb;
+		}
+	}
+}
+
+/* melonds-nano's cards (RaCards), in this theme's fonts: the drawer's dark blue air, solid, a light
+ * rim, the accent's wash from the left and its stripe down the left edge, the badge in a dark box,
+ * the header in spaced capitals in the accent with the points in a chip at its right, the title
+ * large, the description under it; gold for unlocks and mastery (mastery larger), the mode's colour
+ * for a game's start, amber for a note, the leaderboards' own; the progress as a pill (the badge,
+ * "23/50", a bar); each leaderboard's running value in a tracker at the bottom right, its digits in
+ * cells of one width so a count does not jitter. All at the top right, over the game. */
+#define RA_AIR    0x0B1D42u
+#define RA_GOLD   0xFFD36Bu
+#define RA_GREEN  0x8FE3B0u
+#define RA_RED    0xFF9C9Cu
+#define RA_AMBER  0xFFC870u
+
+/* a rounded rectangle of radius r whose opacity falls from op at its left to 0 at fade_w px (0: flat) */
+static void rrect_fade(int x, int y, int w, int h, float r, uint32_t rgb, int op, int fade_w)
+{
+	int i, j;
+	for (j = 0; j < h; j++)
+		for (i = 0; i < w; i++) {
+			float px = i + .5f, py = j + .5f, cx = px < r ? r : px > w - r ? w - r : px;
+			float cy = py < r ? r : py > h - r ? h - r : py, dx = px - cx, dy = py - cy, d;
+			int o = op;
+			if (fade_w) { if (i >= fade_w) break; o = op * (fade_w - i) / fade_w; }
+			d = dx == 0 && dy == 0 ? 1 : r - sq(dx * dx + dy * dy) + .5f;	/* (inside: no root to take) */
+			if (d <= 0) continue;
+			put(x + i, y + j, rgb, d >= 1 ? o : (int)(d * o));
+		}
+}
+/* the cards' ground (melonds-nano's Ground): rim, air, the accent's wash and stripe */
+static void ra_ground(int x, int y, int w, int h, int r, uint32_t accent, int stripe)
+{
+	int px = 1;
+	rrect_fill(x, y, w, h, (float)r, C_MUTED, 61);
+	rrect_fill(x + px, y + px, w - 2 * px, h - 2 * px, (float)(r - px), RA_AIR, 256);
+	if (!accent) return;
+	rrect_fade(x + px, y + px, w - 2 * px, h - 2 * px, (float)(r - px), accent, 41, w * 62 / 100);
+	if (stripe) {	/* the lit left edge, along the corners' curve */
+		g_cx0 = x; g_cx1 = x + U(3) + 1;
+		rrect_fill(x, y, 2 * r + U(6), h, (float)r, accent, 256);
+		g_cx0 = g_cx1 = 0;
+	}
+}
+/* the badge (48 x 48 RGB565) at size px, bilinear, on its dark backing; a trophy in its place */
+static void ra_pic(int x, int y, int size, const unsigned short *px, uint32_t accent)
+{
+	int i, j;
+	rrect_fill(x - U(2), y - U(2), size + 2 * U(2), size + 2 * U(2), (float)U(7), 0, 90);
+	if (px) {
+		for (j = 0; j < size; j++) {
+			float sy = (j + .5f) * PICO_RA_BADGE / size - .5f;
+			int y0 = (int)sy, y1;
+			float fy = sy - y0;
+			if (sy < 0) { y0 = 0; fy = 0; }
+			y1 = y0 + 1 < PICO_RA_BADGE ? y0 + 1 : y0;
+			for (i = 0; i < size; i++) {
+				float sx = (i + .5f) * PICO_RA_BADGE / size - .5f;
+				int x0 = (int)sx, x1, k;
+				float fx = sx - x0;
+				uint32_t a, b2, c2, d2, o = 0;
+				if (sx < 0) { x0 = 0; fx = 0; }
+				x1 = x0 + 1 < PICO_RA_BADGE ? x0 + 1 : x0;
+				a = from565(px[y0 * PICO_RA_BADGE + x0]); b2 = from565(px[y0 * PICO_RA_BADGE + x1]);
+				c2 = from565(px[y1 * PICO_RA_BADGE + x0]); d2 = from565(px[y1 * PICO_RA_BADGE + x1]);
+				for (k = 0; k < 24; k += 8) {
+					float t = ((a >> k) & 255) * (1 - fx) + ((b2 >> k) & 255) * fx;
+					float u = ((c2 >> k) & 255) * (1 - fx) + ((d2 >> k) & 255) * fx;
+					o |= (uint32_t)(t * (1 - fy) + u * fy + .5f) << k;
+				}
+				put(x + i, y + j, o, 256);
+			}
+		}
+		return;
+	}
+	rrect_fill(x, y, size, size, (float)U(6), accent, 36);
+	{	/* a trophy: the cup, its stem and foot */
+		int cw = size * 46 / 100, cx = x + (size - cw) / 2, cy = y + size * 24 / 100;
+		rrect_fill(cx, cy, cw, size * 30 / 100, (float)(cw / 3), accent, 256);
+		fill(x + size / 2 - size / 32, cy + size * 28 / 100, size / 16 + 1, size * 14 / 100, accent, 256);
+		rrect_fill(x + size * 34 / 100, cy + size * 42 / 100, size * 32 / 100, size / 12 + 1, 2.0f, accent, 256);
+	}
+}
+/* the badge as the cards draw it, into another picture (the Classic in-game menu's detail): fb W x H,
+ * size px at x, y; badge "" or not in yet: the trophy in accent */
+void pico_ra_badge_paint(uint32_t *fb, int W, int H, int x, int y, int size, const char *badge, uint32_t accent)
+{
+	uint32_t *ofb = g_fb;
+	int oW = g_W, oH = g_H, otr = g_track, ocx0 = g_cx0, ocx1 = g_cx1;
+	float os = g_s;
+	g_fb = fb; g_W = W; g_H = H; g_s = (float)H / 720.0f; g_track = 0; g_cx0 = g_cx1 = 0;
+	ra_pic(x, y, size, badge && badge[0] ? pico_ra_badge(badge) : 0, accent);
+	g_fb = ofb; g_W = oW; g_H = oH; g_s = os; g_track = otr; g_cx0 = ocx0; g_cx1 = ocx1;
+}
+/* the cards' times: when the card in hand came (its title's ticker starts there) */
+static unsigned s_cd_tick;
+static char s_cd_key[96];
+static int s_cd_tick_long;			/* its title is on the ticker (drawn each frame while so) */
+
+/* the cards' words: in the Current theme its pack's fonts (Inter, as melonds-nano's), in a Classic
+ * theme the kit's (pico_classic_igm.c), in panel pixels either way */
+enum { RF_HEAD, RF_TITLE, RF_BODY, RF_FIG, RF_CHIP, RF_N };
+static int s_rf_classic;
+static const signed char k_rf_cf[RF_N] = { 2, 0, 1, 1, 2 };		/* CF_S, CF_L, CF_M, CF_M, CF_S */
+static const float k_rf_sc[RF_N] = { .78f, .74f, .8f, .86f, .74f };
+static const cfont *rf_cur(int r)
+{
+	return r == RF_HEAD ? &G.tag13 : r == RF_TITLE ? &G.dname : r == RF_BODY ? &G.srow : r == RF_FIG ? &G.srowf : &G.sval;
+}
+static const char *rf_up(const char *s, int upper, char *b, int cap)
+{
+	int i;
+	if (!upper) return s;
+	for (i = 0; s[i] && i < cap - 1; i++) b[i] = (char)(s[i] >= 'a' && s[i] <= 'z' ? s[i] - 32 : s[i]);
+	b[i] = 0;
+	return b;
+}
+static int rf_w(int r, const char *s, int ls, int upper)
+{
+	char b[160];
+	if (!s_rf_classic) return text_w(rf_cur(r), s, ls, upper);
+	return pico_classic_ra_text_w(k_rf_cf[r], k_rf_sc[r], rf_up(s, upper, b, sizeof b));
+}
+static void rf_text(int r, int x, int y, const char *s, uint32_t rgb, int anchor, int ls, int upper)
+{
+	char b[160];
+	if (!s_rf_classic) { text(rf_cur(r), x, y, s, rgb, 256, anchor, ls, upper); return; }
+	pico_classic_ra_text(k_rf_cf[r], k_rf_sc[r], x, y, rf_up(s, upper, b, sizeof b), rgb, anchor);
+}
+static int rf_asc(int r) { return s_rf_classic ? pico_classic_ra_asc(k_rf_cf[r], k_rf_sc[r]) : rf_cur(r)->asc; }
+static int rf_px(int r) { return s_rf_classic ? pico_classic_ra_px(k_rf_cf[r], k_rf_sc[r]) : rf_cur(r)->px; }
+/* s cut with an ellipsis to max_w px (into b) */
+static const char *rf_fit(int r, const char *s, int max_w, char *b, int cap)
+{
+	int n = (int)strlen(s);
+	if (rf_w(r, s, 0, 0) <= max_w || n >= cap - 4) return s;
+	memcpy(b, s, (size_t)n + 1);
+	while (n > 0) {
+		n--;
+		while (n > 0 && ((unsigned char)b[n] & 0xC0) == 0x80) n--;
+		b[n] = (char)0xE2; b[n + 1] = (char)0x80; b[n + 2] = (char)0xA6; b[n + 3] = 0;
+		if (rf_w(r, b, 0, 0) <= max_w) break;
+	}
+	return b;
+}
+/* the title: on the ticker when wider than its box (Current), cut short in the Classic fonts */
+static void rf_ticker(int r, int x, int y, int box, const char *s, uint32_t rgb, float t)
+{
+	char b[192];
+	if (!s_rf_classic) { text_ticker(rf_cur(r), x, y, box, s, rgb, 256, t); return; }
+	rf_text(r, x, y, rf_fit(r, s, box, b, sizeof b), rgb, 0, 0, 0);
+}
+/* two lines at most (Current), one cut short (Classic) */
+static void rf_wrap2(int r, int x, int y, int lh, const char *s, uint32_t rgb, int max_w)
+{
+	char b[192];
+	if (!s_rf_classic) { text_wrap2(rf_cur(r), x, y, lh, s, rgb, 256, max_w); return; }
+	rf_text(r, x, y, rf_fit(r, s, max_w, b, sizeof b), rgb, 0, 0, 0);
+}
+
+/* one card at the top right: its box into r (x0 y0 x1 y1) */
+static void ra_card(const struct pico_ra_card *c, int *r, float t)
+{
+	int big = c->kind == PICO_RA_CARD_MASTERED, P = U(big ? 92 : 72), x0, right = U(16), pad = U(big ? 16 : 13);
+	int W, H, colW, x, y, chipw = 0, hb, tb, lb = 0, rad = U(big ? 16 : 13), lines = 0, sp = s_rf_classic ? 0 : U(1.2f);
+	uint32_t acc = c->kind == PICO_RA_CARD_UNLOCK || big ? RA_GOLD : c->kind == PICO_RA_CARD_GAME ?
+		       (c->hardcore ? RA_GOLD : C_ACCENT) : c->kind == PICO_RA_CARD_NOTE ? RA_AMBER :
+		       c->kind == PICO_RA_CARD_BOARD ? (c->pct < 0 ? RA_RED : C_ACCENT) : C_ACCENT;
+	char chip[32], hb_s[64];
+	const unsigned short *pic = c->badge[0] ? pico_ra_badge(c->badge) : 0;
+	x0 = U(19) + P + U(16);
+	chip[0] = 0;
+	if (c->chip[0]) snprintf(chip, sizeof chip, "%s", c->chip);	/* (a leaderboard's score) */
+	else if (c->points >= 0) snprintf(chip, sizeof chip, "+%d", c->points);
+	if (chip[0]) chipw = rf_w(RF_CHIP, chip, 0, 0) + U(16);
+	snprintf(hb_s, sizeof hb_s, "%s", c->head);
+	{
+		int need = rf_w(RF_HEAD, hb_s, sp, 1) + (chipw ? chipw + U(12) : 0), tw = rf_w(RF_TITLE, c->title, 0, 0);
+		int lw = c->line[0] ? rf_w(RF_BODY, c->line, 0, 0) : 0, maxW = U(500), minW = U(big ? 400 : 320);
+		if (tw > need) need = tw;
+		if (lw > need) need = lw;
+		need += x0 + right;
+		if (maxW > g_W * 62 / 100) maxW = g_W * 62 / 100;
+		W = need < maxW ? need : maxW;
+		if (W < (minW < maxW ? minW : maxW)) W = minW < maxW ? minW : maxW;
+	}
+	colW = W - x0 - right;
+	hb = pad + rf_asc(RF_HEAD);
+	tb = hb + U(6) + rf_asc(RF_TITLE);
+	y = tb + (rf_px(RF_TITLE) - rf_asc(RF_TITLE));
+	if (c->line[0]) {
+		lb = y + U(4) + rf_asc(RF_BODY);
+		lines = rf_w(RF_BODY, c->line, 0, 0) > colW && !s_rf_classic ? 2 : 1;
+		y = lb + (lines - 1) * (rf_px(RF_BODY) + U(2)) + (rf_px(RF_BODY) - rf_asc(RF_BODY));
+	}
+	H = y + pad;
+	if (H < P + U(34)) H = P + U(34);
+	x = g_W - W - U(20);
+	y = U(20);
+	r[0] = x; r[1] = y; r[2] = x + W; r[3] = y + H;
+	ra_ground(x, y, W, H, rad, acc, 1);
+	if (big) rrect_fade(x + 1, y + 1, W - 2, H * 55 / 100, (float)(rad - 1), acc, 26, 0);
+	ra_pic(x + U(19), y + (H - P) / 2 < U(17) ? y + (H - P) / 2 : y + U(17), P, pic, acc);
+	if (chipw) {
+		int ch = rf_px(RF_CHIP) + U(6), cy = y + hb - rf_asc(RF_CHIP) - U(3);
+		rrect_fill(x + W - right - chipw, cy, chipw, ch, (float)(ch / 2), acc, 51);
+		rf_text(RF_CHIP, x + W - right - chipw + U(8), cy + U(3) + rf_asc(RF_CHIP), chip, acc, 0, 0, 0);
+	}
+	{
+		char cut[64];
+		rf_text(RF_HEAD, x + x0, y + hb, rf_fit(RF_HEAD, hb_s, colW - (chipw ? chipw + U(12) : 0), cut, sizeof cut), acc, 0, sp, 1);
+	}
+	s_cd_tick_long = !s_rf_classic && rf_w(RF_TITLE, c->title, 0, 0) > colW;
+	rf_ticker(RF_TITLE, x + x0, y + tb, colW, c->title, C_INK, t);
+	if (c->line[0]) {
+		if (lines > 1) rf_wrap2(RF_BODY, x + x0, y + lb, rf_px(RF_BODY) + U(2), c->line, C_INK, colW);
+		else { char cut[192]; rf_text(RF_BODY, x + x0, y + lb, rf_fit(RF_BODY, c->line, colW, cut, sizeof cut), C_INK, 0, 0, 0); }
+	}
+}
+
+/* the progress pill at the top right: the badge, "23/50", a bar */
+static void ra_pill(const struct pico_ra_card *c, int *r)
+{
+	int h = U(42), P = U(30), tx = U(7) + P + U(11), tw = rf_w(RF_FIG, c->line, 0, 0), barW = U(86), bx, w, x, y;
+	int pct = c->pct < 0 ? 0 : c->pct > 100 ? 100 : c->pct;
+	bx = tx + tw + U(14);
+	w = bx + barW + U(18);
+	x = g_W - w - U(20); y = U(20);
+	r[0] = x; r[1] = y; r[2] = x + w; r[3] = y + h;
+	ra_ground(x, y, w, h, h / 2, 0, 0);
+	ra_pic(x + U(7), y + (h - P) / 2, P, c->badge[0] ? pico_ra_badge(c->badge) : 0, C_ACCENT);
+	rf_text(RF_FIG, x + tx, y + h / 2 + rf_asc(RF_FIG) / 2 - U(1), c->line, C_INK, 0, 0, 0);
+	rrect_fill(x + bx, y + h / 2 - U(3), barW, U(6), (float)U(3), C_MUTED, 56);
+	if (pct) rrect_fill(x + bx, y + h / 2 - U(3), barW * pct / 100 > U(6) ? barW * pct / 100 : U(6), U(6), (float)U(3), C_ACCENT, 256);
+}
+
+/* a leaderboard's running value at the bottom right (k from the bottom) */
+static void ra_tracker(const char *v, int k, int *r)
+{
+	int cell = 0, tw = 0, h = U(42), w, x, y, i;
+	char d[2] = { 0, 0 };
+	for (d[0] = '0'; d[0] <= '9'; d[0]++) { int a = rf_w(RF_FIG, d, 0, 0); if (a > cell) cell = a; }
+	for (i = 0; v[i]; i++) { d[0] = v[i]; tw += v[i] >= '0' && v[i] <= '9' ? cell : rf_w(RF_FIG, d, 0, 0); }
+	w = U(14) + U(14) + U(12) + tw + U(18);
+	x = g_W - w - U(20);
+	y = g_H - U(20) - (k + 1) * h - k * U(8);
+	r[0] = x; r[1] = y; r[2] = x + w; r[3] = y + h;
+	ra_ground(x, y, w, h, U(11), 0, 0);
+	disc((float)(x + U(21)), (float)(y + h / 2), (float)U(6), C_ACCENT, 256);	/* (the timer's place: the accent dot) */
+	{
+		int px = x + U(40);
+		for (i = 0; v[i]; i++) {
+			int a;
+			d[0] = v[i];
+			a = v[i] >= '0' && v[i] <= '9' ? cell : rf_w(RF_FIG, d, 0, 0);
+			rf_text(RF_FIG, px + a / 2, y + h / 2 + rf_asc(RF_FIG) / 2 - U(1), d, C_INK, 1, 0, 0);
+			px += a;
+		}
+	}
+}
+
+/* a round-ended line x0,y0 to x1,y1, rad px thick on each side (the tick and the cross) */
+static void ra_stroke(float x0, float y0, float x1, float y1, float rad, uint32_t rgb)
+{
+	float dx = x1 - x0, dy = y1 - y0, len = dx * dx + dy * dy;
+	int i, n;
+	for (n = 1; (float)(n * n) < len * 4; n++) ;	/* (a step every half pixel) */
+	for (i = 0; i <= n; i++) disc(x0 + dx * i / n, y0 + dy * i / n, rad, rgb, 256);
+}
+/* a challenge's badge, k-th down the left of the game (melonds-nano's): a gold ring while it is on,
+ * green with a tick when it unlocked, red with a cross (the badge grey) when it failed */
+static void ra_challenge(const struct pico_ra_chal *c, int k, int *r)
+{
+	int S = U(58), x = U(12), y = g_H * 16 / 100 + k * (S + U(8)), B = U(40), i, j;
+	uint32_t tone = c->outcome > 0 ? RA_GREEN : c->outcome < 0 ? RA_RED : RA_GOLD;
+	r[0] = x; r[1] = y; r[2] = x + S; r[3] = y + S;
+	ra_ground(x, y, S, S, U(11), 0, 0);
+	rrect_fill(x + U(3), y + U(3), S - U(6), S - U(6), (float)U(9), tone, 77);
+	ra_pic(x + U(9), y + U(9), B, c->badge[0] ? pico_ra_badge(c->badge) : 0, RA_GOLD);
+	if (c->outcome < 0)		/* failed: the badge in grey */
+		for (j = 0; j < B; j++) {
+			uint32_t *d = g_fb + (y + U(9) + j) * g_W + x + U(9);
+			if (y + U(9) + j < 0 || y + U(9) + j >= g_H) continue;
+			for (i = 0; i < B; i++) {
+				uint32_t v = d[i], l = (((v >> 16) & 255) * 77 + ((v >> 8) & 255) * 150 + (v & 255) * 29) >> 8;
+				l = l * 3 / 4;
+				d[i] = (v & 0xFF000000u) | l << 16 | l << 8 | l;
+			}
+		}
+	if (c->outcome) {
+		float cx = (float)(x + S - U(13)), cy = (float)(y + S - U(13)), q = (float)U(5), w = U(1.6f) > 1 ? (float)U(1.6f) : 1.0f;
+		disc(cx, cy, (float)U(10.5f), tone, 256);
+		if (c->outcome > 0) {
+			ra_stroke(cx - q, cy, cx - q * .3f, cy + q * .7f, w * .5f, RA_AIR);
+			ra_stroke(cx - q * .3f, cy + q * .7f, cx + q, cy - q * .7f, w * .5f, RA_AIR);
+		} else {
+			ra_stroke(cx - q * .7f, cy - q * .7f, cx + q * .7f, cy + q * .7f, w * .5f, RA_AIR);
+			ra_stroke(cx - q * .7f, cy + q * .7f, cx + q * .7f, cy - q * .7f, w * .5f, RA_AIR);
+		}
+	}
+}
+
+/* ---- the Achievements page's detail: a panel out of the drawer to the whole screen ----------------
+ * A on an achievement opens it, growing from the drawer's edge over the game (melonds-nano's detail
+ * card): the badge large, its state in a chip, the title, the points, the description, the progress
+ * with its bar while it counts, when it was unlocked. Up and Down go to the one before or after, A
+ * or B back to the list. */
+static int igm_detail_w(int ext, int W) { return s_dt > 0 || s_dt_on ? W : ext; }
+/* the text in lines of max_w px, words whole where they fit, at most max lines (the last cut short) */
+static int wrap_lines(const cfont *f, const char *s, int max_w, char (*out)[160], int max)
+{
+	int n = 0;
+	while (*s && n < max) {
+		int len = (int)strlen(s), cut = 0, sp = 0, i;
+		char a[160];
+		while (*s == ' ') { s++; len--; }
+		if (!len) break;
+		for (i = 1; i <= len && i < (int)sizeof a; i++) {
+			if (i < len && ((unsigned char)s[i] & 0xC0) == 0x80) continue;
+			memcpy(a, s, (size_t)i); a[i] = 0;
+			if (text_w(f, a, 0, 0) > max_w) break;
+			cut = i;
+			if (s[i] == ' ' || !s[i]) sp = i;
+		}
+		if (!cut) break;
+		if (cut < len && sp > 0) cut = sp;
+		if (n == max - 1 && cut < len) {	/* the last line: what is left, cut with an ellipsis */
+			const char *t = fit_str(f, s, max_w, out[n], 160);
+			if (t != out[n]) snprintf(out[n], 160, "%s", t);
+			return n + 1;
+		}
+		memcpy(out[n], s, (size_t)cut); out[n][cut] = 0;
+		n++;
+		s += cut;
+	}
+	return n;
+}
+volatile int g_dbg_dt[5];	/* oem diag: the detail panel's last paint (stage, width, title, open x1000, frames) */
+static void igm_detail_paint(void)
+{
+	struct pico_ra_detail d;
+	unsigned now = gpt4_get_current_tick();
+	float dt = (float)((now - s_dt_tick) / 13000u) / 1000.0f, k;
+	int pw = G.pw + G.sh, w, bx, by, bwid, bh, pad, B, tx, tw, y, i, n;
+	uint32_t tone;
+	const char *tag;
+	char lines[8][160];
+	s_dt_tick = now;
+	if (dt > .05f) dt = .05f;
+	if (s_dt_on && s_dt < 1) { s_dt += dt * 4; if (s_dt > 1) s_dt = 1; }
+	if (!s_dt_on && s_dt > 0) { s_dt -= dt * 5; if (s_dt < 0) s_dt = 0; }
+	if (s_dt <= 0) return;
+	if ((s_dt_on && s_dt < 1) || !s_dt_on) G.dirty = 1;	/* (drawn again while it grows or goes; still, only on a key) */
+	g_dbg_dt[0] = 1; g_dbg_dt[4]++;
+	if (pico_ra_detail(s_dt_row, &d) != 0) { s_dt_on = 0; return; }
+	g_dbg_dt[0] = 2; g_dbg_dt[2] = (int)strlen(d.title); g_dbg_dt[3] = (int)(s_dt * 1000);
+	k = igm_ease(s_dt);
+	w = pw + (int)((g_W - pw) * k);	/* from the drawer's edge to the screen's */
+	g_cx0 = 0; g_cx1 = w;
+	fill(0, 0, w, g_H, RA_AIR, (int)(256 * (k < .3f ? k / .3f : 1)));
+	rrect_fade(0, 0, w, g_H, 0, C_ACCENT, 30, (int)(w * 36 / 100));
+	fill(w - 1, 0, 1, g_H, C_MUTED, 60);	/* its edge */
+	g_dbg_dt[0] = 3; g_dbg_dt[1] = w;
+	bx = U(30); by = U(26); bwid = g_W - U(60); bh = g_H - by - U(70);
+	pad = U(26);
+	B = U(128); if (B > bh * 30 / 100) B = bh * 30 / 100; if (B > bwid * 24 / 100) B = bwid * 24 / 100;
+	tx = bx + pad + B + U(24); tw = bx + bwid - pad - tx;
+	switch (d.state) {
+	case PICO_RA_UNLOCKED: tag = d.waiting ? "Waiting to sync" : "Unlocked"; tone = d.waiting ? RA_AMBER : RA_GREEN; break;
+	case PICO_RA_UNSUPPORTED: tag = "Unsupported"; tone = RA_RED; break;
+	case PICO_RA_ALMOST: tag = "Almost there"; tone = C_ACCENT; break;
+	default: tag = "Locked"; tone = C_MUTED; break;
+	}
+	ra_pic(bx + pad, by + pad, B, d.badge[0] ? pico_ra_badge(d.badge) : 0, tone == C_MUTED ? C_ACCENT : tone);
+	y = by + pad;
+	{	/* the state's chip */
+		int cw = text_w(&G.tag11, tr(tag), U(1), 1) + U(16), ch = U(19);
+		rrect_fill(tx, y, cw, ch, (float)(ch / 2), tone, 51);
+		text(&G.tag11, tx + U(8), y + U(14), tr(tag), tone, 256, 0, U(1), 1);
+		y += ch + U(10);
+	}
+	n = wrap_lines(&G.dname, d.title, tw, lines, 2);
+	for (i = 0; i < n; i++) text(&G.dname, tx, y + G.dname.asc + i * U(34), lines[i], C_INK, 256, 0, 0, 0);
+	y += G.dname.asc + (n > 1 ? U(34) : 0) + U(30);
+	{
+		char pt[32];
+		snprintf(pt, sizeof pt, d.points == 1 ? tr("%u point") : tr("%u points"), d.points);
+		text(&G.sval, tx, y, pt, C_MUTED, 256, 0, 0, 0);
+	}
+	{	/* the footer: the progress while it counts, then when it was unlocked */
+		int foot = by + bh - pad, bottom = foot - U(34), dy, lh = U(30);
+		if (d.percent >= 0 && d.state != PICO_RA_UNLOCKED && d.measured[0]) {
+			int barY = foot - U(42);
+			text(&G.tag13, bx + pad, barY - U(12), tr("Progress"), C_MUTED, 256, 0, U(2), 1);
+			text(&G.sval, bx + bwid - pad, barY - U(12), d.measured, C_INK, 256, 2, 0, 0);
+			rrect_fill(bx + pad, barY, bwid - 2 * pad, U(7), (float)U(3), C_MUTED, 56);
+			if (d.percent > 0)
+				rrect_fill(bx + pad, barY, (bwid - 2 * pad) * (d.percent > 100 ? 100 : d.percent) / 100, U(7), (float)U(3),
+					   C_ACCENT, 256);
+			bottom = barY - U(40);
+		}
+		if (d.when > 0 && d.state == PICO_RA_UNLOCKED) {
+			char dt_s[48], f2[80];
+			long long off = pico_clock_is_set() ? pico_clock_local() - pico_clock_utc() : 0;
+			pico_clock_date_text(d.when + off, dt_s, sizeof dt_s);
+			snprintf(f2, sizeof f2, tr("Unlocked %s"), dt_s);
+			text(&G.info, bx + pad, foot, f2, C_MUTED, 256, 0, 0, 0);
+		} else if (d.waiting) {
+			text(&G.info, bx + pad, foot, tr("Unlocked here, waiting to reach RetroAchievements"), C_MUTED, 256, 0, 0, 0);
+		}
+		/* the description under the badge, as many lines as there is room for */
+		dy = by + pad + B + U(18);
+		if (dy < y + U(18)) dy = y + U(18);
+		n = (bottom - dy) / lh + 1;
+		if (n > 8) n = 8;
+		if (n > 0) {
+			n = wrap_lines(&G.srow, d.text, bwid - 2 * pad, lines, n);
+			for (i = 0; i < n; i++) text(&G.srow, bx + pad, dy + G.srow.asc + i * lh, lines[i], C_INK, 236, 0, 0, 0);
+		}
+	}
+	{	/* the keys */
+		int xx = U(30), cy = g_H - U(27), rad = U(8.3f);
+		const char *codes[1] = { "B" };
+		const char *labels[1] = { "Back" };
+		for (i = 0; i < 1; i++) {
+			draw_mask(&G.ring, xx, cy - G.ring.h / 2, C_MUTED, 256);
+			text(&G.hintc, xx + rad, g_H - U(22.9f), codes[i], C_INK, 256, 1, 0, 0);
+			xx += 2 * rad + U(8);
+			xx += text(&G.hint, xx, g_H - U(22), tr(labels[i]), C_MUTED, 256, 0, 0, 0) + U(16);
+		}
+		text(&G.hint, xx, g_H - U(22), tr("Up / Down: the one before or after"), C_MUTED, 256, 0, 0, 0);
+	}
+	g_dbg_dt[0] = 4;
+	g_cx0 = g_cx1 = 0;
+}
+/* the keys while it is open: 1 taken */
+static int igm_detail_keys(int up, int dn, int a, int b)
+{
+	struct pico_ra_detail d;
+	if (!s_dt_on) return 0;
+	if (a || b) { s_dt_on = 0; G.dirty = 1; return 1; }
+	if (up || dn) {
+		int r = s_dt_row, step = up ? -1 : 1, tries;
+		for (tries = 0; tries < 256; tries++) {
+			r += step;
+			if (pico_ra_detail(r, &d) == 0) { s_dt_row = r; G.sel[IGM_ACH] = r; G.dirty = 1; break; }
+			if (r < 0 || r > 255) break;
+		}
+		return 1;
+	}
+	return 1;		/* (the panel holds the keys while open) */
+}
+static int s_cd_have;				/* a card is in hand (else only the trackers) */
+/* What the card's picture is made of (not its fade): drawn again when that changes */
+static unsigned card_sig(int *ticks)
+{
+	unsigned h = 2166136261u;
+	const char *p;
+	char tv[PICO_RA_TRACKERS][24];
+	int i, nt;
+	*ticks = 0;
+	h = (h ^ (unsigned)s_cd_have) * 16777619u;
+	if (s_cd_have) {
+		for (p = s_cd.title; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+		for (p = s_cd.line; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+		for (p = s_cd.head; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+		for (p = s_cd.chip; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+		h = (h ^ (unsigned)(s_cd.badge[0] && pico_ra_badge(s_cd.badge) != 0)) * 16777619u;
+		h = (h ^ (unsigned)s_cd.pct) * 16777619u;
+		*ticks = !CLASSIC_IGM && s_cd.kind != PICO_RA_CARD_PROGRESS && s_cd_tick_long;
+	}
+	nt = pico_ra_trackers(tv, PICO_RA_TRACKERS);
+	for (i = 0; i < nt; i++) for (p = tv[i]; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+	h = (h ^ (unsigned)nt) * 16777619u;
+	{	/* the challenge badges: which, how each ended, their fade in eight steps, their pictures */
+		struct pico_ra_chal ch[PICO_RA_CHALLENGES];
+		int nc = pico_ra_challenges(ch, PICO_RA_CHALLENGES);
+		for (i = 0; i < nc; i++) {
+			h = (h ^ ch[i].id) * 16777619u;
+			h = (h ^ (unsigned)(ch[i].outcome + 2)) * 16777619u;
+			h = (h ^ ((ch[i].alpha + 16u) >> 5)) * 16777619u;
+			h = (h ^ (unsigned)(ch[i].badge[0] && pico_ra_badge(ch[i].badge) != 0)) * 16777619u;
+		}
+		h = (h ^ (unsigned)nc) * 16777619u;
+	}
+	return h;
+}
+
+/* Drawn in full only when the card's picture changes (a new card, a new value, a tracker that
+ * moved, a title on the ticker): then its pixels are kept (pico_ra_card_pic), and each step of its
+ * fade (eight in, eight out) only scales those into the layer. A card standing in full is not
+ * touched at all (the layer then copies nothing). Every frame drawn in full had cost the game. */
+static int card_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box)
+{
+	static int was[1 + PICO_RA_TRACKERS + PICO_RA_CHALLENGES][4], nwas, card_r[4], have_r;
+	static unsigned s_sig, s_a = 999;
+	char tv[PICO_RA_TRACKERS][24];
+	int now[1 + PICO_RA_TRACKERS + PICO_RA_CHALLENGES][4], n = 0, k, i, nt, ticks;
+	unsigned tick = gpt4_get_current_tick(), sig, a, pic_cap = 0;
+	uint32_t *pic = (uint32_t *)pico_ra_card_pic(&pic_cap);
+	float t;
+	g_fb = buf; g_W = (int)W; g_H = (int)H; g_s = (float)H / 720.0f; g_track = 0;
+	s_rf_classic = CLASSIC_IGM;
+	a = s_cd_have ? (s_cd.alpha >= 240 ? 255u : (s_cd.alpha + 16u) & ~31u) : 0u;
+	sig = card_sig(&ticks);
+	if (!s_cd_fresh && sig == s_sig && !ticks) {
+		/* the same picture: only its fade, from the kept pixels */
+		if (a == s_a || !have_r || !pic) return 0;
+		{
+			int cw = card_r[2] - card_r[0], y;
+			for (y = card_r[1]; y < card_r[3]; y++) {
+				const uint32_t *src = pic + (y - card_r[1]) * cw;
+				uint32_t *d = buf + y * pitch + card_r[0];
+				int x;
+				for (x = 0; x < cw; x++) {
+					uint32_t v = src[x];
+					d[x] = ((((v >> 8) & 0x00FF00FFu) * a) & 0xFF00FF00u) | (((v & 0x00FF00FFu) * a >> 8) & 0x00FF00FFu);
+				}
+			}
+			memcpy(box, card_r, sizeof card_r);
+			s_a = a;
+			return 1;
+		}
+	}
+	s_sig = sig; s_a = a;
+	if (s_rf_classic) pico_classic_ra_target(buf, pitch, W, H);
+	if (s_cd_fresh) {	/* the whole picture: the layer shows every column (the challenge badges at the left,
+				 * the cards at the right), and the menu's drawer may have been drawn there */
+		for (k = 0; k < (int)H; k++) memset(buf + k * pitch, 0, (size_t)W * 4);
+		box[0] = 0; box[1] = 0; box[2] = (int)W; box[3] = (int)H;
+		s_cd_fresh = 0; nwas = 0;
+	} else {
+		box[0] = (int)W; box[1] = (int)H; box[2] = 0; box[3] = 0;
+	}
+	for (i = 0; i < nwas; i++) {	/* what was there goes */
+		for (k = was[i][1]; k < was[i][3]; k++) memset(buf + k * pitch + was[i][0], 0, (size_t)(was[i][2] - was[i][0]) * 4);
+		if (was[i][0] < box[0]) box[0] = was[i][0]; if (was[i][1] < box[1]) box[1] = was[i][1];
+		if (was[i][2] > box[2]) box[2] = was[i][2]; if (was[i][3] > box[3]) box[3] = was[i][3];
+	}
+	have_r = 0;
+	if (s_cd_have) {
+		if (strncmp(s_cd_key, s_cd.title, sizeof s_cd_key)) {
+			snprintf(s_cd_key, sizeof s_cd_key, "%s", s_cd.title);
+			s_cd_tick = tick;
+		}
+		t = (float)((tick - s_cd_tick) / 13000u) / 1000.0f;
+		if (s_cd.kind == PICO_RA_CARD_PROGRESS) ra_pill(&s_cd, now[n]); else ra_card(&s_cd, now[n], t);
+		{	/* kept in full, for the fade's steps */
+			int cw = now[n][2] - now[n][0], ch = now[n][3] - now[n][1], y;
+			if (pic && cw > 0 && ch > 0 && (unsigned)(cw * ch * 4) <= pic_cap) {
+				for (y = 0; y < ch; y++) memcpy(pic + y * cw, buf + (now[n][1] + y) * pitch + now[n][0], (size_t)cw * 4);
+				memcpy(card_r, now[n], sizeof card_r);
+				have_r = 1;
+			}
+		}
+		fade_box(buf, (int)pitch, now[n], a);
+		n++;
+	}
+	nt = pico_ra_trackers(tv, PICO_RA_TRACKERS);
+	for (i = 0; i < nt; i++) ra_tracker(tv[i], i, now[n++]);
+	{
+		struct pico_ra_chal ch[PICO_RA_CHALLENGES];
+		int nc = pico_ra_challenges(ch, PICO_RA_CHALLENGES);
+		for (i = 0; i < nc; i++) {
+			unsigned ca = ch[i].alpha >= 240 ? 255u : (ch[i].alpha + 16u) & ~31u;
+			ra_challenge(&ch[i], i, now[n]);
+			if (ca < 255u) fade_box(buf, (int)pitch, now[n], ca);
+			n++;
+		}
+	}
+	for (i = 0; i < n; i++) {
+		if (now[i][0] < box[0]) box[0] = now[i][0]; if (now[i][1] < box[1]) box[1] = now[i][1];
+		if (now[i][2] > box[2]) box[2] = now[i][2]; if (now[i][3] > box[3]) box[3] = now[i][3];
+		memcpy(was[i], now[i], sizeof was[i]);
+	}
+	nwas = n;
+	if (box[2] <= box[0]) { box[0] = box[1] = box[2] = box[3] = 0; return 0; }
+	return 1;
+}
+
+/* a card to show now, the menu shut (1: it is on the layer this frame) */
+static int card_frame(int open)
+{
+	struct pico_ra_card c;
+	char tv[PICO_RA_TRACKERS][24];
+	struct pico_ra_chal ch[PICO_RA_CHALLENGES];
+	int card = !open && pico_ra_card_now(&c), have = card || (!open && (pico_ra_trackers(tv, PICO_RA_TRACKERS) > 0 ||
+									    pico_ra_challenges(ch, PICO_RA_CHALLENGES) > 0));
+	g_ra_card_on_layer = 0;
+	if (!have) {
+		if (s_cd_up) { s_cd_up = 0; if (!open) { ayaneo_overlay_live(card_paint, 0); return 1; } }
+		return 0;
+	}
+	if (CLASSIC_IGM ? !pico_classic_igm_card_ok() : !G.loaded) return 0;	/* the theme's look is not here */
+	g_ra_theme_cards = 1;
+	if (s_layer_menu) {	/* the menu just shut over a card: its layer down first (it spans the drawer's
+				 * columns, which the card would leave showing), the card's own next frame */
+		s_layer_menu = 0;
+		ayaneo_overlay_live(card_paint, 0);
+		return 1;
+	}
+	s_cd_have = card;
+	if (card) s_cd = c;
+	if (!s_cd_up) { s_cd_up = 1; s_cd_fresh = 1; }
+	g_ra_card_on_layer = 1;
+	ayaneo_overlay_live(card_paint, 1);	/* (both themes: melonds-nano's cards, the theme's fonts) */
+	return 1;
+}
+
+/* a card wants the layer (the runners drive it then, the menu shut too) */
+int pico_igm_card_wanted(void)
+{
+	struct pico_ra_card c;
+	char tv[PICO_RA_TRACKERS][24];
+	if (s_cd_up) return 1;			/* (checked when it came up: the theme's packs are costly to check) */
+	struct pico_ra_chal ch[PICO_RA_CHALLENGES];
+	if (!pico_ra_card_now(&c) && !pico_ra_trackers(tv, PICO_RA_TRACKERS) && !pico_ra_challenges(ch, PICO_RA_CHALLENGES))
+		return 0;
+	return pico_igm_on();
+}
+#endif
+
 void pico_igm_overlay(int open)
 {
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	if (open && s_cd_up) {		/* the menu comes over a card: the layer down first, then the menu's */
+		s_cd_up = 0;
+		g_ra_card_on_layer = 0;
+		ayaneo_overlay_live(card_paint, 0);
+		return;
+	}
+	if (card_frame(open)) return;
+#endif
+	if (open) s_layer_menu = 1;
+	else if (s_layer_menu && !ayaneo_overlay_live_up()) s_layer_menu = 0;	/* (down on its own: nothing to hand over) */
 	if (CLASSIC_IGM) { pico_classic_igm_overlay(open); return; }
 	ayaneo_overlay_live(igm_paint, open && G.loaded);
 }

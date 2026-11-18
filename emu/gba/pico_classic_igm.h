@@ -12,6 +12,7 @@
  * pico_igm.h's calls hand over to these when a Classic theme is in use (pico_current.c).
  */
 #ifndef PICO_CLASSIC_IGM_H
+#include <stdint.h>
 #define PICO_CLASSIC_IGM_H
 
 #include "menu/snes_pack.h"
@@ -26,5 +27,13 @@ void pico_classic_igm_open(const struct igm_core *c);
 void pico_classic_igm_dismiss(void);
 int  pico_classic_igm_frame(unsigned int keys);
 void pico_classic_igm_overlay(int open);
+/* RetroAchievements' cards over the game (melonds-nano's, drawn by pico_current.c): the kit is here;
+ * the words in the Classic fonts, in panel pixels (f: CF_*, sc its scale) */
+int  pico_classic_igm_card_ok(void);
+void pico_classic_ra_target(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H);
+int  pico_classic_ra_px(int f, float sc);
+int  pico_classic_ra_asc(int f, float sc);
+int  pico_classic_ra_text_w(int f, float sc, const char *s);
+void pico_classic_ra_text(int f, float sc, int x, int baseline, const char *s, uint32_t rgb, int anchor);
 
 #endif
