@@ -41,9 +41,20 @@ void pico_ra_game_begin(int type);
 void pico_ra_core_ready(const void *rom, unsigned rom_size, const struct pico_core_memory *mem);
 void pico_ra_frame(void);
 void pico_ra_paused(void);
+/* hardcore: after pico_ra_frame, 1 once when the game must restart from its power on (the runner
+ * resets its core, then pico_ra_game_reset); the game was reset; hardcore holds now (the gates) */
+int  pico_ra_reset_wanted(void);
+void pico_ra_game_reset(void);
+int  pico_ra_hardcore(void);
+/* the in-game menu may pause the game now (hardcore limits how often): 0 not yet, a card says so */
+int  pico_ra_may_pause(void);
 void pico_ra_game_end(void);
 /* a save state was loaded by the player: rcheevos' counts start again from it */
 void pico_ra_state_loaded(void);
+/* a save state saved / loaded (dir, the game's name, the state's extension): its progress is kept
+ * beside it, and brought back with it (counts start again when there is none) */
+void pico_ra_state_saved(fat_vol *v, const char *dir, const char *rom, const char *state_ext);
+void pico_ra_state_loaded_from(fat_vol *v, const char *dir, const char *rom, const char *state_ext);
 /* a save state: rcheevos' progress, kept beside it (size 0: none) */
 unsigned pico_ra_progress_size(void);
 int  pico_ra_progress_save(void *buf, unsigned cap);
@@ -72,6 +83,11 @@ const char *pico_ra_row_title(int i);		/* row i of that list: its title, its sta
 const char *pico_ra_row_value(int i);		/* "23/50", "10 points") and its description */
 const char *pico_ra_row_text(int i);
 const char *pico_ra_short(void);		/* "12/40", for the menu's Achievements row */
+/* the page's account and settings rows come first: a switch row (-1 none, else on 1 / off 0) flips
+ * with Left, Right or A (1 changed); the page is there for a game of a system RA knows */
+int  pico_ra_row_switch(int i);
+int  pico_ra_row_change(int i);
+int  pico_ra_igm_page(void);
 int  pico_ra_item(int i, unsigned *id, char *title, unsigned tcap, char *line, unsigned lcap, int *unlocked, unsigned *points);
 void pico_ra_game_summary(char *line, unsigned cap);
 

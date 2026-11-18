@@ -9,7 +9,7 @@
  *
  * Header (image offset 0):
  *   u32 magic      0x31414152 "RAA1"
- *   u32 version    1 (RA_CORE_ABI_VERSION: change both together, the link script cannot include
+ *   u32 version    2 (RA_CORE_ABI_VERSION: change both together, the link script cannot include
  *                     the header)
  *   u32 entry      offset of ra_core_blob_init
  *   u32 load_size  bytes present in the file
@@ -25,7 +25,7 @@ SECTIONS
 	. = BLOB_VMA;
 	.header : {
 		LONG(0x31414152);
-		LONG(1);
+		LONG(2);
 		LONG(ra_core_blob_init - BLOB_VMA);
 		LONG(__blob_load_end - BLOB_VMA);
 		LONG(__blob_end - BLOB_VMA);

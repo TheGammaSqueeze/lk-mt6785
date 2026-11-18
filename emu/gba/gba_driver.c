@@ -590,6 +590,23 @@ volatile unsigned int g_dbg_legacy_refused;   /* oem mode: partition state / sav
 #define GBA_STATE_MAX	(1u * 1024 * 1024)	/* 512 KB gpSP state + hdr, block-aligned */
 
 #ifdef AYANEO_GBA_SD
+#define STATES_ON_CARD() sd_mode_on()	/* a manual state is a card file (its RetroAchievements progress beside it) */
+#else
+#define STATES_ON_CARD() 0
+#endif
+/* RetroAchievements' hardcore limits how often the menu may pause the game (pico_ra.c) */
+static int ra_may_pause(void)
+{
+	extern int pico_ra_may_pause(void) __attribute__((weak));
+	return !pico_ra_may_pause || pico_ra_may_pause();
+}
+/* RetroAchievements' hardcore holds (pico_ra.c, on the consoles with Wi-Fi): no state loads, no rewind */
+static int ra_hardcore_now(void)
+{
+	extern int pico_ra_hardcore(void) __attribute__((weak));
+	return pico_ra_hardcore && pico_ra_hardcore();
+}
+#ifdef AYANEO_GBA_SD
 static int  sd_mode_on(void);            /* defined after the SD globals below */
 static int  sd_state_write(unsigned char *scratch);
 static int  sd_state_read(unsigned char *scratch, const char *ext);
@@ -1969,7 +1986,8 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 		break;
 	case MI_ASPECT:   if (dir) g_gba_aspect = (g_gba_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
 	case MI_SLOT:     if (dir) s_gba_slot = (s_gba_slot + dir + GBA_SLOT_COUNT) % GBA_SLOT_COUNT; changed = 0; break;
-	case MI_LOADSTATE: if (act && s_gba_np) { mi_puts(status, "Not during netplay"); } else if (act) { int ok = manual_state_read(state); if (ok) { gba_rewind_arm(); { extern void pico_ra_state_loaded(void) __attribute__((weak)); if (pico_ra_state_loaded) pico_ra_state_loaded(); } } mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
+	case MI_LOADSTATE: if (act && s_gba_np) { mi_puts(status, "Not during netplay"); }
+			   else if (act && ra_hardcore_now()) { mi_puts(status, "Load state is off in hardcore"); } else if (act) { int ok = manual_state_read(state); if (ok) { gba_rewind_arm(); if (!STATES_ON_CARD()) { extern void pico_ra_state_loaded(void) __attribute__((weak)); if (pico_ra_state_loaded) pico_ra_state_loaded(); } } mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
 	case MI_SAVESTATE: if (act) {
 		/* the state and the battery save go to the card from the writer's thread, so the game and
 		 * its sound go on; the note comes once the state is there. oem persist: the time the game
@@ -2136,6 +2154,7 @@ static void gba_igm_toggle(void)
 {
 	if (s_menu_open && s_gba_igm_on) { pico_igm_dismiss(); return; }
 	if (!s_menu_open) {
+		if (!ra_may_pause()) return;	/* hardcore: too soon after the last pause */
 		s_gba_igm_on = pico_igm_on();
 		if (s_gba_igm_on) {
 			s_menu_open = 1; s_menu_status[0] = 0; s_menu_page = 0;
@@ -2753,6 +2772,8 @@ static int sd_manual_write(unsigned char *scratch)
 	gba_core_state_save(scratch);
 	if (gba_sd_write_state(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, sz) != 0) return 0;
 	pico_shot_save(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, gba_slot_ext(), 0);
+	{ extern void pico_ra_state_saved(fat_vol *v, const char *d, const char *r, const char *e) __attribute__((weak));
+	  if (pico_ra_state_saved) pico_ra_state_saved(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, gba_slot_ext()); }
 	return 1;
 }
 
@@ -2765,6 +2786,8 @@ static int sd_manual_write_bg(unsigned char *scratch, char *status)
 	if (gba_sd_write_state_bg(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, sz,
 				  status, 48, "State saved", "Save failed") != 0) return 0;
 	pico_shot_save(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, gba_slot_ext(), 1);
+	{ extern void pico_ra_state_saved(fat_vol *v, const char *d, const char *r, const char *e) __attribute__((weak));
+	  if (pico_ra_state_saved) pico_ra_state_saved(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, gba_slot_ext()); }
 	return 1;
 }
 
@@ -2774,6 +2797,10 @@ static int sd_manual_read(unsigned char *scratch)
 	uint32_t n = gba_sd_load_state(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, GBA_STATE_MAX);
 	if (!sz || n != sz) return 0;
 	gba_core_state_load(scratch);
+	{	/* and RetroAchievements' progress kept beside it (its counts start again without one) */
+		extern void pico_ra_state_loaded_from(fat_vol *v, const char *d, const char *r, const char *e) __attribute__((weak));
+		if (pico_ra_state_loaded_from) pico_ra_state_loaded_from(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, gba_slot_ext());
+	}
 	return 1;
 }
 
@@ -3149,6 +3176,19 @@ static int gba_np_find_rom(const char *name, unsigned int size, unsigned int crc
  * it) and, when the games differ and the other card lacks it, the cartridge; then the core pairs
  * the two machines (the host's game first) and both start from the same point. When the other
  * console never comes, or this core cannot pair, the game plays alone. */
+/* RetroAchievements: the game's set, with the machine's memory (not in netplay). Every way a GBA
+ * game starts calls it (the first game of a session and every one after it). */
+static void gba_ra_core_ready(unsigned int romsz)
+{
+	extern void pico_ra_core_ready(const void *rom, unsigned size, const struct pico_core_memory *mem)
+		__attribute__((weak));
+	if (pico_ra_core_ready && !s_gba_np && g_core && g_core->version >= GBA_CORE_ABI_V6 && g_core->get_memory) {
+		struct pico_core_memory mem;
+		g_core->get_memory(&mem);
+		pico_ra_core_ready(gba_core_rom_ptr(), romsz, &mem);
+	}
+}
+
 static void gba_np_begin(const gba_rom_entry *rom, unsigned int romsz)
 {
 #if defined(KONKR_BLOCK) || defined(KONKR_KPA)
@@ -3624,15 +3664,7 @@ static int emu_thread(void *arg)
 						state_read_open(scratch, ext);
 				}
 				gba_np_begin(&s_roms[s_sel_rom], romsz);	/* an armed launch: netplay */
-				{	/* RetroAchievements: the game's set, with the machine's memory (not in netplay) */
-					extern void pico_ra_core_ready(const void *rom, unsigned size, const struct pico_core_memory *mem)
-						__attribute__((weak));
-					if (pico_ra_core_ready && !s_gba_np && g_core->version >= GBA_CORE_ABI_V6 && g_core->get_memory) {
-						struct pico_core_memory mem;
-						g_core->get_memory(&mem);
-						pico_ra_core_ready(gba_core_rom_ptr(), romsz, &mem);
-					}
-				}
+				gba_ra_core_ready(romsz);	/* RetroAchievements: the game's set */
 				/* Do NOT blank here: it blacks the live frozen-menu snapshot = a black
 				 * flash before the opening punch. The punch composites the full frame
 				 * (menu snapshot + game) then clears the letterbox, so the frozen menu
@@ -3855,7 +3887,10 @@ static int emu_thread(void *arg)
 			if (!s_menu_open && !s_benchmark && !s_gba_np) gba_rewind_snap();
 			if (!s_menu_open && !s_gba_np) {	/* RetroAchievements: each committed frame */
 				extern void pico_ra_frame(void) __attribute__((weak));
+				extern int pico_ra_reset_wanted(void) __attribute__((weak));
 				if (pico_ra_frame) pico_ra_frame();
+				/* hardcore came on: the game starts again from its power on */
+				if (pico_ra_reset_wanted && pico_ra_reset_wanted()) s_reset_req = 1;
 			}
 			  g_dbg_snap_us = (gpt4_get_current_tick() - ts0) / 13u; }
 			lp_mark(3);   /* benchmark measures emulation: no 640 KB snapshot per frame */
@@ -4017,6 +4052,7 @@ static int emu_thread(void *arg)
 				reset_gba();
 				gba_rewind_arm();		/* reset breaks the rewind timeline */
 				s_cpu_restart_req = 1;
+				{ extern void pico_ra_game_reset(void) __attribute__((weak)); if (pico_ra_game_reset) pico_ra_game_reset(); }
 			}
 
 			/* in-game menu "Close": save the current game (state + battery sav) and
@@ -4094,6 +4130,7 @@ static int emu_thread(void *arg)
 							state_read_open(scratch, ext);
 					}
 					gba_np_begin(&s_roms[s_sel_rom], (unsigned) rsz);	/* an armed launch: netplay */
+					gba_ra_core_ready((unsigned) rsz);	/* RetroAchievements: the game's set */
 					gba_rewind_arm();	/* fresh game -> fresh rewind timeline */
 					/* no blank: keep the frozen menu on screen for the seamless
 					 * growing-circle opening (the punch composites the full frame). */

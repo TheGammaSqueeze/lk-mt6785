@@ -27,7 +27,7 @@
 #define RA_CORE_ABI_H
 
 #define RA_CORE_ABI_MAGIC   0x31414152u   /* "RAA1" */
-#define RA_CORE_ABI_VERSION 1u            /* blob.ld's header carries it too: change both together */
+#define RA_CORE_ABI_VERSION 2u            /* blob.ld's header carries it too: change both together */
 
 /* the slot: right after the Wi-Fi DMA memory (pico_bt.h), kept out of the rewind arena with it;
  * the image at its start, the heap the LK hands to heap_init after it */
@@ -48,9 +48,11 @@ enum {
 	RA_EV_PROGRESS_HIDE,
 	RA_EV_CHALLENGE,      /* id, title, badge: a challenge shows (value 1) or goes (value 0) */
 	RA_EV_SERVER_ERROR,   /* text */
-	RA_EV_QUEUED,         /* an unlock to keep on the card: id, hash, when */
+	RA_EV_QUEUED,         /* an unlock to keep on the card: id, hash, when; ok 1 earned in hardcore */
 	RA_EV_DISCONNECTED,   /* rcheevos could not reach the server for a while */
-	RA_EV_RECONNECTED
+	RA_EV_RECONNECTED,
+	RA_EV_RESET           /* hardcore came on: the game must start again from its power on (the
+	                       * LK resets the core, then calls reset()) */
 };
 
 struct ra_event {
@@ -69,6 +71,7 @@ struct ra_event {
 struct ra_queued {
 	unsigned id;          /* the achievement */
 	char hash[33];        /* the game's hash */
+	unsigned char hardcore;   /* 1 earned in hardcore (in what was padding: the size is unchanged) */
 	long long when;       /* seconds since 1970, 0 not known */
 };
 
@@ -97,6 +100,12 @@ struct ra_summary {
 	unsigned unlocked, total;     /* this game's achievements */
 	unsigned points_unlocked, points_total;
 	char rich[128];               /* rich presence */
+	int hardcore;                 /* rcheevos counts in hardcore now */
+	/* RetroAchievements' verdict on this client, from the game's set: 1 validated (hardcore
+	 * unlocks count), 0 not (its set carries the warning entry, id 101000001 and up: hardcore
+	 * unlocks count as softcore), -1 not known (no set read yet, or one without achievements) */
+	int verdict;
+	unsigned score_hardcore;      /* hardcore points */
 };
 
 /* Services the LK gives the blob. */
@@ -132,7 +141,8 @@ struct ra_core_exports {
 	/* after RA_EV_LOGIN ok: the token to keep (on the card) */
 	int  (*token)(char *out, unsigned cap);
 
-	/* the unlocks still on the card's queue (any game), before load_game */
+	/* the unlocks still on the card's queue (any game), before load_game; an id with bit 31 set was
+	 * earned in hardcore */
 	void (*set_local_unlocks)(const unsigned *ids, int n);
 	/* a game: its console (rc_consoles.h RC_CONSOLE_*), its ROM as loaded, the core's memory */
 	void (*load_game)(unsigned console, const void *rom, unsigned rom_size, const struct pico_core_memory *mem);
@@ -159,6 +169,12 @@ struct ra_core_exports {
 	unsigned (*progress_size)(void);
 	int  (*progress_save)(void *buf, unsigned cap);
 	int  (*progress_load)(const void *buf, unsigned len);
+
+	/* version 2: hardcore. On: from the next reset (a game running gets RA_EV_RESET); off: at once */
+	void (*set_hardcore)(int on);
+	/* the in-game menu may pause the game now: 1 yes; 0 not yet in hardcore (*frames_left until it
+	 * may, rc_client_can_pause) */
+	int  (*can_pause)(unsigned *frames_left);
 };
 
 typedef const struct ra_core_exports *(*ra_core_entry_fn)(const struct ra_core_imports *imp);

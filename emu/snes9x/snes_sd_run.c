@@ -75,10 +75,17 @@ extern void     ayaneo_set_snes_turbo(int v);
  * cut the sustained duty enough that the higher tiers are stable now (previously any run-ahead
  * was clamped to 1400 to avoid a brownout data-abort at ~100% duty). */
 /* RetroAchievements after a frame the game really ran (pico_ra.c; absent on consoles without it) */
+/* RetroAchievements' hardcore limits how often the menu may pause the game (pico_ra.c) */
+static int ra_may_pause(void)
+{
+	extern int pico_ra_may_pause(void) __attribute__((weak));
+	return !pico_ra_may_pause || pico_ra_may_pause();
+}
+static void snes_ra_reset_check(void);
 static void snes_ra_frame(void)
 {
 	extern void pico_ra_frame(void) __attribute__((weak));
-	if (pico_ra_frame) pico_ra_frame();
+	if (pico_ra_frame) { pico_ra_frame(); snes_ra_reset_check(); }
 }
 
 static const unsigned s_snes_ra_opp[4] = { 1400, 1600, 1800, 2000 };
@@ -376,6 +383,18 @@ static void snes_settings_tick(void)
 static void snes_settings_flush(void)
 { if (s_settings_dirty > 0) { s_settings_dirty = 0; ayaneo_menu_settings_persist(); } }
 
+/* hardcore came on during the game: it starts again from its power on, as RetroAchievements asks
+ * (pico_ra.c), and rcheevos hears of it */
+static void snes_ra_reset_check(void)
+{
+	extern int pico_ra_reset_wanted(void) __attribute__((weak));
+	extern void pico_ra_game_reset(void) __attribute__((weak));
+	if (!pico_ra_reset_wanted || !pico_ra_reset_wanted() || !s_menu_c) return;
+	s_menu_c->reset();
+	ayaneo_rewind_reset(s_snes_rw_payload);
+	if (pico_ra_game_reset) pico_ra_game_reset();
+}
+
 /* Hardware volume rocker (mirrors gba_driver.c poll_volume). Volume-up = mtk_detect_key(0x11),
  * volume-down = 0x00. Holding SELECT turns the rocker into a brightness control (matches the GBA
  * path). Edge-detected so one press = one step; the on-screen bar shows the new level, and the
@@ -616,19 +635,23 @@ static int sm_change(int i, int dir, int act)
 				gba_sd_state_name(s_menu_rom->name, ext, nm, sizeof nm);
 				card_writer_put(s_menu_vol, "/states/snes", nm, st, ssz, s_mstat, sizeof s_mstat, "State saved", "Save failed");
 				pico_shot_save(s_menu_vol, "/states/snes", s_menu_rom->name, ext, 1);
+				{ extern void pico_ra_state_saved(fat_vol *v, const char *d, const char *r, const char *e) __attribute__((weak));
+					if (pico_ra_state_saved) pico_ra_state_saved(s_menu_vol, "/states/snes", s_menu_rom->name, ext); }   /* its RetroAchievements progress beside it */
 			} else smput(s_mstat, "Save failed");
 			if (ok) { s_slot_used = 1; s_slot_known[s_save_slot] = 1; }
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
-	case SM_LOAD: if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF;
+	case SM_LOAD: if (act) { extern int pico_ra_hardcore(void) __attribute__((weak)); if (pico_ra_hardcore && pico_ra_hardcore()) { smput(s_mstat, "Load state is off in hardcore"); break; } }
+		if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF;
 			char ext[4]; unsigned n; int ok; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;
 			snes_slot_ext(ext);
 			n = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, st, SNES_STATE_CAP);
 			ok = (n && s_menu_c->state_load(st, n) == 0);
 			if (ok) ayaneo_rewind_reset(s_snes_rw_payload);   /* loaded state breaks the rewind timeline */
-			if (ok) { extern void pico_ra_state_loaded(void) __attribute__((weak)); if (pico_ra_state_loaded) pico_ra_state_loaded(); }   /* and RetroAchievements' counts */
+			if (ok) { extern void pico_ra_state_loaded_from(fat_vol *v, const char *d, const char *r, const char *e) __attribute__((weak));
+				if (pico_ra_state_loaded_from) pico_ra_state_loaded_from(s_menu_vol, "/states/snes", s_menu_rom->name, ext); }   /* and RetroAchievements' progress */
 			smput(s_mstat, ok ? "State loaded" : "No save state");
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
-	case SM_RESET: if (act) { s_menu_c->reset(); ayaneo_rewind_reset(s_snes_rw_payload); return 1; } break;
+	case SM_RESET: if (act) { s_menu_c->reset(); ayaneo_rewind_reset(s_snes_rw_payload); { extern void pico_ra_game_reset(void) __attribute__((weak)); if (pico_ra_game_reset) pico_ra_game_reset(); } return 1; } break;
 	case SM_CLOSE: if (act) { g_snes_menu_exit = 1; return 1; } break;   /* exit to the ROM selector */
 	}
 	return 0;
@@ -1263,6 +1286,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		  if (g_dbg_igm_toggle) { g_dbg_igm_toggle = 0; aya_prev = 0; aya = 1; } }
 		if (aya && !aya_prev) {
 			if (g_snes_menu_open && s_snes_igm_on) pico_igm_dismiss();   /* closes animated */
+			else if (!g_snes_menu_open && !ra_may_pause()) { }	/* hardcore: too soon after the last pause */
 			else if (!g_snes_menu_open && pico_igm_on()) {
 				s_snes_igm_on = 1; s_mstat[0] = 0; g_snes_menu_open = 1;
 				s_snes_igm.game = s_menu_rom->uname[0] ? s_menu_rom->uname : s_menu_rom->name;

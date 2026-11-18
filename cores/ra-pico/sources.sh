@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (c) 2026 TheGammaSqueeze
 # ra-pico: the rcheevos sources the blob and the PC harness build, and how. Sourced by build.sh and
-# tools/harness.sh. rcheevos comes from the copy RetroArch carries (with libretro-common's MD5, which
-# RetroArch's rhash/md5.h points at), already in the tree under the Armulators app (RCHEEVOS_DEPS).
+# tools/harness.sh. rcheevos is RetroAchievements' own release v12.3.0, unchanged, in rcheevos/ beside
+# this file (its LICENSE there); libretro-common (for libretro.h, which rc_libretro reads the cores'
+# memory maps with) comes from the copy already in the tree under the Armulators app (RCHEEVOS_DEPS).
 RCHEEVOS_DEPS=${RCHEEVOS_DEPS:-$ROOT/../armNES-pico/upstream/armulators/deps}
-RC=$RCHEEVOS_DEPS/rcheevos
+RC=${RC:-$ROOT/rcheevos}
 LRC=$RCHEEVOS_DEPS/libretro-common
 if [ ! -f "$RC/src/rc_client.c" ]; then
-	echo "rcheevos not found at $RC (git submodule update --init in cores/armNES-pico?)" >&2
+	echo "rcheevos not found at $RC (cores/ra-pico/rcheevos, release v12.3.0)" >&2
 	exit 1
 fi
 # no threads (the LK calls the blob from one thread at a time), hashing from a buffer for cartridge
@@ -20,4 +21,4 @@ RC_SRCS="src/rc_client.c src/rc_compat.c src/rc_util.c src/rc_version.c src/rc_l
 	src/rcheevos/format.c src/rcheevos/lboard.c src/rcheevos/memref.c src/rcheevos/operand.c
 	src/rcheevos/richpresence.c src/rcheevos/runtime.c src/rcheevos/runtime_progress.c
 	src/rcheevos/trigger.c src/rcheevos/value.c
-	src/rhash/hash.c src/rhash/hash_rom.c"
+	src/rhash/hash.c src/rhash/hash_rom.c src/rhash/md5.c"

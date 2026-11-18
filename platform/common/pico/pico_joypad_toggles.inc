@@ -116,7 +116,13 @@ int ayaneo_joypad_ff_level(void)
 
 int ayaneo_joypad_rewind_level(void)
 {
-	return kpa_toggle_poll(&s_rw_tog) ? 255 : 0;   /* L2 toggles rewind */
+	extern int pico_ra_hardcore(void) __attribute__((weak));
+	int on = kpa_toggle_poll(&s_rw_tog);   /* L2 toggles rewind */
+	if (on && pico_ra_hardcore && pico_ra_hardcore()) {	/* RetroAchievements' hardcore: no rewind */
+		s_rw_tog.on = 0;
+		return 0;
+	}
+	return on ? 255 : 0;
 }
 
 /* a game start or exit clears both toggles so nothing stays latched across sessions */

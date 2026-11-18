@@ -46,10 +46,17 @@ extern void ayaneo_accel_filter(int v[3]);
 volatile unsigned int g_dbg_gbc_motion_n;
 volatile int g_dbg_gbc_motion_v[3];
 /* RetroAchievements after a frame the game really ran (pico_ra.c; absent on consoles without it) */
+/* RetroAchievements' hardcore limits how often the menu may pause the game (pico_ra.c) */
+static int ra_may_pause(void)
+{
+	extern int pico_ra_may_pause(void) __attribute__((weak));
+	return !pico_ra_may_pause || pico_ra_may_pause();
+}
+static void gbc_ra_reset_check(void);
 static void gbc_ra_frame(void)
 {
 	extern void pico_ra_frame(void) __attribute__((weak));
-	if (pico_ra_frame) pico_ra_frame();
+	if (pico_ra_frame) { pico_ra_frame(); gbc_ra_reset_check(); }
 }
 
 static int s_gbc_accel_gone;   /* the sensor did not answer: not asked again until power off */
@@ -349,6 +356,18 @@ static int                 *s_menu_pal;      /* -> session pal_idx */
 static int  s_msel;
 static char s_mstat[48];
 
+/* hardcore came on during the game: it starts again from its power on, as RetroAchievements asks
+ * (pico_ra.c), and rcheevos hears of it */
+static void gbc_ra_reset_check(void)
+{
+	extern int pico_ra_reset_wanted(void) __attribute__((weak));
+	extern void pico_ra_game_reset(void) __attribute__((weak));
+	if (!pico_ra_reset_wanted || !pico_ra_reset_wanted() || !s_menu_c) return;
+	s_menu_c->reset();
+	ayaneo_rewind_reset(s_menu_ahead_sz);
+	if (pico_ra_game_reset) pico_ra_game_reset();
+}
+
 /* Palette LIST picker (A on the Palette row opens it): hold Up/Down to browse with
  * accelerating auto-repeat, applied live each step; A applies, B restores the previous
  * selection. State survives across sessions on the reused gbc thread, so it is reset at
@@ -504,17 +523,24 @@ static int gm_change(int i, int dir, int act)
 			     gba_sd_state_name(s_menu_rom->name, ext, nm, sizeof nm);
 			     card_writer_put(s_menu_vol, GBC_STATE_DIR, nm, s_menu_ahead, s_menu_ahead_sz,
 					     s_mstat, sizeof s_mstat, "State saved", "Save failed");
-			     pico_shot_save(s_menu_vol, GBC_STATE_DIR, s_menu_rom->name, ext, 1); }
+			     pico_shot_save(s_menu_vol, GBC_STATE_DIR, s_menu_rom->name, ext, 1);
+			     { extern void pico_ra_state_saved(fat_vol *v, const char *d, const char *r, const char *e) __attribute__((weak));
+				     if (pico_ra_state_saved) pico_ra_state_saved(s_menu_vol, GBC_STATE_DIR, s_menu_rom->name, ext); }   /* its RetroAchievements progress beside it */ }
 			 changed = 0; break;
 	case GM_LOAD:    if (act && s_gbc_np) { *mput(s_mstat, "Not during netplay") = 0; return 1; }
+			 if (act) { extern int pico_ra_hardcore(void) __attribute__((weak)); if (pico_ra_hardcore && pico_ra_hardcore()) { *mput(s_mstat, "Load state is off in hardcore") = 0; return 1; } }
 			 if (act && s_menu_ahead_sz) { char ext[4]; unsigned n;
 			     gbc_slot_ext(ext);
+			     const char *from = GBC_STATE_DIR;
 			     n = gba_sd_read_named(s_menu_vol, GBC_STATE_DIR, s_menu_rom->name, ext, s_menu_ahead, 0x00A00000u);
-			     if (!n && strcmp(g_gba_state_dir, GBC_STATE_DIR))
+			     if (!n && strcmp(g_gba_state_dir, GBC_STATE_DIR)) {
+				     from = g_gba_state_dir;
 				     n = gba_sd_read_named(s_menu_vol, g_gba_state_dir, s_menu_rom->name, ext, s_menu_ahead, 0x00A00000u);
+			     }
 			     int ok = (n && s_menu_c->state_load(s_menu_ahead, n) == 0);
 			     if (ok) ayaneo_rewind_reset(s_menu_ahead_sz);   /* loaded state breaks the rewind timeline */
-			     if (ok) { extern void pico_ra_state_loaded(void) __attribute__((weak)); if (pico_ra_state_loaded) pico_ra_state_loaded(); }   /* and RetroAchievements' counts */
+			     if (ok) { extern void pico_ra_state_loaded_from(fat_vol *v, const char *d, const char *r, const char *e) __attribute__((weak));
+				if (pico_ra_state_loaded_from) pico_ra_state_loaded_from(s_menu_vol, from, s_menu_rom->name, ext); }   /* and RetroAchievements' progress */
 			     mput(s_mstat, ok ? "State loaded" : "No save state"); }
 			 changed = 0; break;
 	case GM_RESET:   if (act && s_gbc_np) {	/* the host's, on both consoles at the same frame */
@@ -524,7 +550,7 @@ static int gm_change(int i, int dir, int act)
 			     pico_np_ask_reset();
 			     return 1;
 			 }
-			 if (act) { s_menu_c->reset(); ayaneo_rewind_reset(s_menu_ahead_sz); return 1; } changed = 0; break;
+			 if (act) { s_menu_c->reset(); ayaneo_rewind_reset(s_menu_ahead_sz); { extern void pico_ra_game_reset(void) __attribute__((weak)); if (pico_ra_game_reset) pico_ra_game_reset(); } return 1; } changed = 0; break;
 	case GM_CLOSE:   if (act) return 2; changed = 0; break;
 	default: changed = 0; break;
 	}
@@ -1096,6 +1122,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			  if (g_dbg_igm_toggle) { g_dbg_igm_toggle = 0; aya_prev = 0; aya = 1; } }
 			if (aya && !aya_prev) {
 				if (g_gbc_menu_open && s_gbc_igm_on) pico_igm_dismiss();   /* closes animated */
+				else if (!g_gbc_menu_open && !ra_may_pause()) { }	/* hardcore: too soon after the last pause */
 				else if (!g_gbc_menu_open && pico_igm_on()) {
 					s_gbc_igm_on = 1; s_mstat[0] = 0; s_pal_pick = 0; g_gbc_menu_open = 1;
 					s_gbc_igm.game = s_menu_rom->uname[0] ? s_menu_rom->uname : s_menu_rom->name;

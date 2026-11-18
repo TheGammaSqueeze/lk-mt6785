@@ -2539,7 +2539,13 @@ extern const char *pico_ra_row_title(int i) __attribute__((weak));
 extern const char *pico_ra_row_value(int i) __attribute__((weak));
 extern const char *pico_ra_short(void) __attribute__((weak));
 extern void pico_ra_paused(void) __attribute__((weak));
-static int igm_ra_on(void) { return pico_ra_game_loaded && pico_ra_game_loaded(); }
+extern int pico_ra_row_change(int i) __attribute__((weak));
+extern int pico_ra_row_switch(int i) __attribute__((weak));
+extern const char *pico_ra_row_text(int i) __attribute__((weak));
+extern int pico_ra_igm_page(void) __attribute__((weak));
+/* the Achievements page: any game of a system RetroAchievements knows (the account and settings,
+ * then the game's set when it loaded) */
+static int igm_ra_on(void) { return pico_ra_igm_page && pico_ra_igm_page(); }
 
 static struct {
 	int loaded, failed;          /* the pack is in memory / could not be read */
@@ -2676,7 +2682,9 @@ static int igm_lines(int page, igm_line *out)
 		unsigned int now = gpt4_get_current_tick();
 		if (!built || now - built > 13000000u) { built = now | 1u; k = igm_ra_on() ? pico_ra_list() : 0; }
 		for (i = 0; i < k && n < IGM_ROWS; i++, n++) {
-			out[n].kind = IGM_INFO; out[n].item = i; out[n].icon = IC_NONE; out[n].label = pico_ra_row_title(i);
+			/* a switch shows Left / Right like a setting (the page's own keys flip it) */
+			out[n].kind = pico_ra_row_switch && pico_ra_row_switch(i) >= 0 ? IGM_VALUE : IGM_INFO;
+			out[n].item = i; out[n].icon = IC_NONE; out[n].label = pico_ra_row_title(i);
 		}
 		return n;
 	}
@@ -2883,7 +2891,12 @@ int pico_igm_frame(unsigned int keys)
 		igm_line *l = &ln[sel];
 		const struct igm_core *c = G.c;
 		int dir = lt ? -1 : rt ? 1 : 0;
-		if (G.page == IGM_ACH) { dir = 0; a = 0; }	/* the set is only looked at */
+		if (G.page == IGM_ACH) {	/* the settings' switches flip; the set is only looked at */
+			if ((dir || a) && pico_ra_row_change && pico_ra_row_change(l->item)) {
+				G.nudge_row = sel; G.nudge_dir = dir ? dir : 1; G.nudge_t = 0; G.dirty = 1;
+			}
+			dir = 0; a = 0;
+		}
 		if (dir) {
 			if (G.page == IGM_CORE) c->opt_change(l->item, dir);
 			else if (l->kind == IGM_VALUE) { if (c->change(l->item, dir, 0)) { G.closing = 1; G.latch = 0; } }
@@ -2952,20 +2965,24 @@ static void igm_rows(int page, float dx, int op, int wash)
 			lx += m->w + U(14);
 		}
 		vx = IX(rx + rw + rdx) - U(14);
-		v = ln[i].kind == IGM_LINK ? 0 : igm_value(page, &ln[i], vb);
+		/* a link shows no value, except Achievements' count ("12/40", Sign in, Off) */
+		v = ln[i].kind == IGM_LINK && ln[i].item != IGM_ACH ? 0 : igm_value(page, &ln[i], vb);
 		{	/* the value takes at most 55 % of the row (cut with an ellipsis), the name what is left */
 			int arrows = f && v && v[0] && (ln[i].kind == IGM_VALUE || ((ln[i].item == G.c->save_item ||
 				     ln[i].item == G.c->load_item) && G.c->slot_item >= 0));
 			int room = ln[i].kind == IGM_LINK ? G.chev.w + U(16) : U(40);
 			if (v && v[0]) {
 				v = fit_str(&G.sval, v, U(rw) * 55 / 100 - (arrows ? 2 * G.chev.w + U(12) : 0), vfit, sizeof vfit);
-				room = text_w(&G.sval, v, 0, 0) + U(28) + (arrows ? 2 * G.chev.w + U(12) : 0);
+				room = text_w(&G.sval, v, 0, 0) + U(28) + (arrows ? 2 * G.chev.w + U(12) : 0) +
+				       (ln[i].kind == IGM_LINK ? G.chev.w + U(10) : 0);
 			}
 			text_fit(f ? &G.srowf : &G.srow, lx, yy + (int)(ph * .63f), ln[i].label, f ? C_INK : C_MUTED, rop,
 				 IX(rx + rw) - lx - room);
 		}
 		if (ln[i].kind == IGM_LINK) {
 			draw_mask(&G.chev, vx - G.chev.w, yy + (ph - G.chev.h) / 2, f ? C_INK : C_MUTED, rop);
+			if (v && v[0])
+				text(&G.sval, vx - G.chev.w - U(10), yy + (int)(ph * .61f), v, f ? C_INK : C_MUTED, rop, 2, 0, 0);
 		} else if (v && v[0]) {
 			int nudge = 0, vop = rop, w, pct = -1, len = (int)strlen(v);
 			if (i == G.nudge_row && page == G.page && G.nudge_t < 1) {
@@ -3279,6 +3296,12 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 			text(&G.hintc, xx + rad, U(720 - 22.9f), codes[i], C_INK, op, 1, 0, 0);
 			xx += 2 * rad + U(8);
 			xx += text(&G.hint, xx, U(720 - 22), tr(labels[i]), C_MUTED, op, 0, 0, 0) + U(16);
+		}
+		if (G.page == IGM_ACH && pico_ra_row_text) {	/* the focused row's words: what to do for it */
+			int s = G.sel[IGM_ACH];
+			const char *d = s >= 0 && s < IGM_ROWS ? pico_ra_row_text(s_igm_ln[s].item) : "";
+			if (d && d[0])
+				text_fit(&G.info, xx + U(8), U(720 - 22), d, C_MUTED, op, IX(30) + U(G.pwu - 60) - xx - U(8));
 		}
 	}
 	if (G.toast[0] && G.toast_t < 2.2f) {	/* a note: up and in, then out */

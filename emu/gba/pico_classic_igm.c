@@ -55,7 +55,13 @@ extern int pico_ra_list(void) __attribute__((weak));
 extern const char *pico_ra_row_title(int i) __attribute__((weak));
 extern const char *pico_ra_row_value(int i) __attribute__((weak));
 extern void pico_ra_paused(void) __attribute__((weak));
-static int ra_on(void) { return pico_ra_game_loaded && pico_ra_game_loaded(); }
+extern int pico_ra_row_switch(int i) __attribute__((weak));
+extern int pico_ra_row_change(int i) __attribute__((weak));
+extern int pico_ra_igm_page(void) __attribute__((weak));
+extern const char *pico_ra_row_text(int i) __attribute__((weak));
+/* the Achievements tab: any game of a system RetroAchievements knows (the account and settings,
+ * then the game's set when it loaded) */
+static int ra_on(void) { return pico_ra_igm_page && pico_ra_igm_page(); }
 
 static snes_pack s_pk;            /* the kit's pack */
 static const struct cui_set *s_set; /* its sprites */
@@ -89,6 +95,9 @@ static struct {
 	float box_x, box_w;           /* the tab box, gliding */
 	char fig[FIGS][64];
 } C;
+
+/* rows in view on a page: the Achievements page keeps its last one for the focused row's words */
+static int nv_of(int page) { return page == IGM_ACH && C.nv > 3 ? C.nv - 1 : C.nv; }
 
 /* ---- the rows ---- */
 static int lines(int page, cline *out)
@@ -134,7 +143,10 @@ static const char *row_value(int page, int row, const cline *l, char *buf, int *
 	*sw = -1;
 	buf[0] = 0;
 	if (page == IGM_CORE) v = c->opt_value(l->item, buf);
-	else if (page == IGM_ACH) return pico_ra_row_value ? pico_ra_row_value(l->item) : 0;
+	else if (page == IGM_ACH) {
+		if (pico_ra_row_switch) *sw = pico_ra_row_switch(l->item);
+		return pico_ra_row_value ? pico_ra_row_value(l->item) : 0;
+	}
 	else if (l->kind == IGM_LINK || l->item < 0) return 0;
 	else if ((l->item == c->save_item || l->item == c->load_item) && c->slot_item >= 0) {
 		char s[96], w[32], *sp;
@@ -324,7 +336,7 @@ int pico_classic_igm_frame(unsigned int keys)
 		float k = dt * 16, f = k / (1 + k + k * k * .5f) * (1 + k * .5f), want, hy;
 		int ti = tab_of(C.page), w = (int)(C.top[C.page] + .5f);   /* a whole row: never stopped between two */
 		if (sel < w) w = sel;
-		if (sel > w + C.nv - 1) w = sel - C.nv + 1;
+		if (sel > w + nv_of(C.page) - 1) w = sel - nv_of(C.page) + 1;
 		want = (float)(w < 0 ? 0 : w);
 		C.top[C.page] += (want - C.top[C.page]) * f;
 		if (C.top[C.page] - want < .01f && want - C.top[C.page] < .01f) C.top[C.page] = want;
@@ -355,7 +367,12 @@ int pico_classic_igm_frame(unsigned int keys)
 		cline *l = &ln[sel];
 		const struct igm_core *c = C.c;
 		int dir = lt ? -1 : rt ? 1 : 0;
-		if (C.page == IGM_ACH) { dir = 0; a = 0; }	/* the set is only looked at */
+		if (C.page == IGM_ACH) {	/* the settings' switches flip; the set is only looked at */
+			if ((dir || a) && pico_ra_row_change && pico_ra_row_change(l->item)) {
+				C.nudge_row = sel; C.nudge_dir = dir ? dir : 1; C.nudge_t = 0; C.dirty = 1;
+			}
+			dir = 0; a = 0;
+		}
 		if (dir) {
 			if (C.page == IGM_CORE) c->opt_change(l->item, dir);
 			else if (l->kind == IGM_VALUE) { if (c->change(l->item, dir, 0)) { C.closing = 1; C.latch = 0; } }
@@ -397,12 +414,12 @@ static void rows(int page, float y0, float dx, float op, int bar)
 	if (bar) cui_spr(KS_BAR, 640, y0 + (C.hy - top) * ROW_P, FW - 112, ROW_P - 4, op, 1, 1, 1);
 	first = (int)top - 1;
 	if (first < 0) first = 0;
-	for (i = first; i < n && i <= first + C.nv + 1; i++) {
+	for (i = first; i < n && i <= first + nv_of(page) + 1; i++) {
 		float cy = y0 + ((float)i - top) * ROW_P, vx = 1112 + dx, nud = 0, na = 1, vw = 0;
 		const cline *l = &ln[i];
 		const char *v;
 		int sw, f = i == sel;
-		float last = y0 + (C.nv - 1) * ROW_P, ro = op;
+		float last = y0 + (nv_of(page) - 1) * ROW_P, ro = op;
 		/* a row gliding past either end of the list fades as it goes */
 		if (cy < y0) ro *= cui_clamp01(1 - (y0 - cy) / 40);
 		if (cy > last) ro *= cui_clamp01(1 - (cy - last) / 40);
@@ -433,7 +450,7 @@ static void rows(int page, float y0, float dx, float op, int bar)
 	}
 	if (page == C.page && op >= 1) {	/* more above, more below */
 		if (top > .01f) cui_spr_x(KS_UP, 1182, y0 - 6, 1.5f, 1);
-		if ((int)(top + .5f) + C.nv < n) cui_spr_x(KS_DOWN, 1182, y0 + (C.nv - 1) * ROW_P + 6, 1.5f, 1);
+		if ((int)(top + .5f) + nv_of(page) < n) cui_spr_x(KS_DOWN, 1182, y0 + (nv_of(page) - 1) * ROW_P + 6, 1.5f, 1);
 	}
 }
 
@@ -508,6 +525,15 @@ list:
 			rows(C.from, y0, -C.dir * 40 * k, 1 - k, 0);   /* inside the frame: the bar fades in place */
 			rows(C.page, y0, C.dir * 40 * (1 - k), k, 1);
 		} else rows(C.page, y0, 0, 1, 1);
+		if (C.page == IGM_ACH && pico_ra_row_text && (k >= 1 || C.from == C.page)) {
+			/* the focused row's words (what to do for an achievement, what a switch does) */
+			cline ln[ROWS];
+			int n = lines(IGM_ACH, ln), sel = C.sel[IGM_ACH];
+			const char *d = sel >= 0 && sel < n ? pico_ra_row_text(ln[sel].item) : "";
+			if (d && d[0])
+				cui_text(CF_S, 128, y0 + nv_of(IGM_ACH) * ROW_P, 1, 0xFF8C8C8Cu, 0,
+					 cui_fit(CF_S, 1, d, 1024, tb, sizeof tb), 1);
+		}
 	}
 	if (C.toast[0] && C.toast_t < 2.2f) {	/* a note: up and in, then out */
 		float t = C.toast_t, in = cui_out_expo(t / .2f), out = t > 1.9f ? 1 - (t - 1.9f) / .3f : 1, o = in * cui_clamp01(out);

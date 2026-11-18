@@ -15,7 +15,10 @@
  *     list (set_local_unlocks), so a set read from the LK's copy shows them.
  *   - memory: rc_libretro's regions over the core's libretro map and blocks.
  *   - events: rc_client's, as ra_event records in a small ring the LK empties.
- *   - softcore only: hardcore is switched off before anything else and never on again.
+ *   - hardcore: off until the LK turns it on (set_hardcore); rcheevos' own rules from there. An
+ *     unlock earned in hardcore is queued as one and sent with h=1. RetroAchievements' verdict on
+ *     this client is read from each set (its warning entry, id 101000001 and up, which is never
+ *     listed or counted).
  */
 #include <stddef.h>
 #include <stdio.h>
@@ -33,6 +36,11 @@
 
 static const struct ra_core_imports *g_im;
 static rc_client_t *g_client;
+
+/* RetroAchievements' warning entry for a client it has not validated: ids from here up */
+#define WARNING_ID 101000001u
+static int g_verdict = -1;		/* ra_summary.verdict, for the set loaded last */
+static unsigned g_warn_n, g_warn_points;	/* warning entries in that set (taken out of the counts) */
 
 /* ---- helpers ------------------------------------------------------------------------------------ */
 
@@ -99,6 +107,7 @@ static void on_event(const rc_client_event_t *event, rc_client_t *client)
 	(void)client;
 	switch (event->type) {
 	case RC_CLIENT_EVENT_ACHIEVEMENT_TRIGGERED:
+		if (event->achievement && event->achievement->id >= WARNING_ID) break;	/* (never, but never shown) */
 		ev_achievement(RA_EV_UNLOCK, event->achievement);
 		break;
 	case RC_CLIENT_EVENT_GAME_COMPLETED: {
@@ -138,7 +147,10 @@ static void on_event(const rc_client_event_t *event, rc_client_t *client)
 	case RC_CLIENT_EVENT_RECONNECTED:
 		ev_push(RA_EV_RECONNECTED);
 		break;
-	default:	/* leaderboards (hardcore only), reset (to enter hardcore), subsets: not here */
+	case RC_CLIENT_EVENT_RESET:	/* hardcore came on: the game starts again */
+		ev_push(RA_EV_RESET);
+		break;
+	default:	/* leaderboards, subsets: not here */
 		break;
 	}
 }
@@ -185,21 +197,13 @@ static int form_value(const char *form, const char *name, char *out, unsigned ca
 	return 0;
 }
 
-/* a session answer with the queued unlocks added to its "Unlocks" list: a new heap copy, or 0 */
-static char *session_with_local(const char *body, unsigned len, unsigned *out_len)
+/* body with the entries in add (at bytes) put at the front of its list key ("\"Unlocks\":["), or
+ * a list made before the closing brace: a new heap copy (len in *out_len), or 0 */
+static char *list_with(const char *body, unsigned len, const char *key, const char *add, unsigned at, unsigned *out_len)
 {
-	static const char key[] = "\"Unlocks\":[";
-	long long now = pico_host_seconds();
-	unsigned add_cap = (unsigned)local_n * 40u + 32u, at = 0, i;
-	char *add, *out;
+	char *out = malloc(len + at + strlen(key) + 32u);
 	const char *k;
-	if (!local_n || !body) return 0;
-	add = malloc(add_cap);
-	if (!add) return 0;
-	for (i = 0; i < (unsigned)local_n; i++)
-		at += (unsigned)snprintf(add + at, add_cap - at, "%s{\"ID\":%u,\"When\":%lld}", i ? "," : "", local_ids[i], now);
-	out = malloc(len + at + 32u);
-	if (!out) { free(add); return 0; }
+	if (!out) return 0;
 	k = strstr(body, key);
 	if (k) {
 		unsigned head = (unsigned)(k - body) + (unsigned)strlen(key);
@@ -210,19 +214,47 @@ static char *session_with_local(const char *body, unsigned len, unsigned *out_le
 		memcpy(out + head + at, body + head, len - head);
 		*out_len = len + at;
 	} else {
-		/* no list: one before the closing brace */
 		const char *end = body + len;
 		unsigned head, n;
 		while (end > body && end[-1] != '}') end--;
-		if (end == body) { free(add); free(out); return 0; }
+		if (end == body) { free(out); return 0; }
 		head = (unsigned)(end - 1 - body);
 		memcpy(out, body, head);
-		n = (unsigned)snprintf(out + head, at + 32u, ",\"Unlocks\":[%s]", add);
+		n = (unsigned)snprintf(out + head, at + strlen(key) + 32u, ",%.*s%.*s]", (int)strlen(key), key, (int)at, add);
 		memcpy(out + head + n, body + head, len - head);
 		*out_len = len + n;
 	}
 	out[*out_len] = 0;
+	return out;
+}
+
+/* a session answer with the queued unlocks added: every one to its "Unlocks", the ones earned in
+ * hardcore to "HardcoreUnlocks" too (bit 31 of local_ids): a new heap copy, or 0 */
+static char *session_with_local(const char *body, unsigned len, unsigned *out_len)
+{
+	long long now = pico_host_seconds();
+	unsigned add_cap = (unsigned)local_n * 40u + 32u, at = 0, hat = 0, i, mid = 0;
+	char *add, *hadd, *out, *out2;
+	if (!local_n || !body) return 0;
+	add = malloc(add_cap);
+	hadd = malloc(add_cap);
+	if (!add || !hadd) { free(add); free(hadd); return 0; }
+	for (i = 0; i < (unsigned)local_n; i++) {
+		unsigned id = local_ids[i] & 0x7FFFFFFFu;
+		at += (unsigned)snprintf(add + at, add_cap - at, "%s{\"ID\":%u,\"When\":%lld}", at ? "," : "", id, now);
+		if (local_ids[i] & 0x80000000u)
+			hat += (unsigned)snprintf(hadd + hat, add_cap - hat, "%s{\"ID\":%u,\"When\":%lld}", hat ? "," : "", id, now);
+	}
+	out = list_with(body, len, "\"Unlocks\":[", add, at, &mid);
+	if (out && hat) {
+		out2 = list_with(out, mid, "\"HardcoreUnlocks\":[", hadd, hat, out_len);
+		free(out);
+		out = out2;
+	} else if (out) {
+		*out_len = mid;
+	}
 	free(add);
+	free(hadd);
 	return out;
 }
 
@@ -238,8 +270,12 @@ static int answer_here(const char *api, const char *post, struct call *c)
 		rc_client_user_game_summary_t s;
 		struct ra_event *e;
 		unsigned id, remaining;
+		char h[4];
+		int hard;
 		form_value(post, "a", a, sizeof a);
 		form_value(post, "m", hash, sizeof hash);
+		form_value(post, "h", h, sizeof h);
+		hard = h[0] == '1';
 		id = (unsigned)strtoul(a, 0, 10);
 		ach = rc_client_get_achievement_info(g_client, id);
 		rc_client_get_user_game_summary(g_client, &s);
@@ -248,9 +284,10 @@ static int answer_here(const char *api, const char *post, struct call *c)
 				    s.num_core_achievements - s.num_unlocked_achievements : 0;
 		snprintf(buf, sizeof buf,
 			 "{\"Success\":true,\"Score\":%u,\"SoftcoreScore\":%u,\"AchievementID\":%u,\"AchievementsRemaining\":%u}",
-			 (unsigned)(u ? u->score : 0), (unsigned)((u ? u->score_softcore : 0) + (ach ? ach->points : 0)), id,
-			 remaining);
+			 (unsigned)((u ? u->score : 0) + (hard && ach ? ach->points : 0)),
+			 (unsigned)((u ? u->score_softcore : 0) + (!hard && ach ? ach->points : 0)), id, remaining);
 		e = ev_push(RA_EV_QUEUED);
+		e->ok = hard;
 		e->id = id;
 		e->when = pico_host_seconds();
 		copy_text(e->hash, sizeof e->hash, hash);
@@ -444,11 +481,33 @@ static void ex_set_local_unlocks(const unsigned *ids, int n)
 	local_n = n;
 }
 
+/* the verdict and the warning entries of the set just loaded */
+static void verdict_read(void)
+{
+	rc_client_achievement_list_t *l;
+	unsigned b, i, real = 0;
+	g_verdict = -1;
+	g_warn_n = g_warn_points = 0;
+	if (!g_client || !rc_client_is_game_loaded(g_client)) return;
+	l = rc_client_create_achievement_list(g_client, RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE,
+					      RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+	if (!l) return;
+	for (b = 0; b < l->num_buckets; b++)
+		for (i = 0; i < l->buckets[b].num_achievements; i++) {
+			const rc_client_achievement_t *a = l->buckets[b].achievements[i];
+			if (a->id >= WARNING_ID) { g_warn_n++; g_warn_points += a->points; }
+			else real++;
+		}
+	rc_client_destroy_achievement_list(l);
+	g_verdict = g_warn_n ? 0 : real ? 1 : -1;
+}
+
 static void load_done(int result, const char *error_message, rc_client_t *client, void *userdata)
 {
 	struct ra_event *e = ev_push(RA_EV_GAME);
 	(void)client; (void)userdata;
 	e->ok = result == RC_OK && rc_client_is_game_loaded(g_client);
+	verdict_read();
 	if (e->ok) {
 		const rc_client_game_t *g = rc_client_get_game_info(g_client);
 		rc_client_user_game_summary_t s;
@@ -456,7 +515,7 @@ static void load_done(int result, const char *error_message, rc_client_t *client
 		copy_text(e->title, sizeof e->title, g ? g->title : "");
 		copy_text(e->badge, sizeof e->badge, g ? g->badge_name : "");
 		e->value = (int)s.num_unlocked_achievements;
-		e->id = s.num_core_achievements;
+		e->id = s.num_core_achievements > g_warn_n ? s.num_core_achievements - g_warn_n : 0;
 	} else {
 		copy_text(e->text, sizeof e->text, error_message ? error_message : rc_error_str(result));
 	}
@@ -500,7 +559,7 @@ static int ex_award_request(const struct ra_queued *q, char *url, unsigned url_c
 	p.username = u->username;
 	p.api_token = u->token;
 	p.achievement_id = q->id;
-	p.hardcore = 0;
+	p.hardcore = q->hardcore ? 1 : 0;
 	p.game_hash = q->hash[0] ? q->hash : 0;
 	/* the server takes the unlock as that long ago (0 when the time is not known on either side) */
 	if (q->when > 0 && now > q->when) p.seconds_since_unlock = (uint32_t)(now - q->when);
@@ -546,7 +605,10 @@ static void ex_summary(struct ra_summary *out)
 		out->logged_in = 1;
 		copy_text(out->user, sizeof out->user, u->display_name);
 		out->score = u->score_softcore;
+		out->score_hardcore = u->score;
 	}
+	out->hardcore = rc_client_get_hardcore_enabled(g_client);
+	out->verdict = g_verdict;
 	g = rc_client_get_game_info(g_client);
 	if (g && rc_client_is_game_loaded(g_client)) {
 		rc_client_user_game_summary_t s;
@@ -556,9 +618,9 @@ static void ex_summary(struct ra_summary *out)
 		copy_text(out->hash, sizeof out->hash, g->hash);
 		rc_client_get_user_game_summary(g_client, &s);
 		out->unlocked = s.num_unlocked_achievements;
-		out->total = s.num_core_achievements;
+		out->total = s.num_core_achievements > g_warn_n ? s.num_core_achievements - g_warn_n : 0;
 		out->points_unlocked = s.points_unlocked;
-		out->points_total = s.points_core;
+		out->points_total = s.points_core > g_warn_points ? s.points_core - g_warn_points : 0;
 		rc_client_get_rich_presence_message(g_client, out->rich, sizeof out->rich);
 	}
 }
@@ -587,6 +649,7 @@ static int ex_achievement_count(void)
 	if (!g_flat || !g_flat_bucket) return 0;
 	for (b = 0; b < g_list->num_buckets; b++)
 		for (i = 0; i < g_list->buckets[b].num_achievements; i++) {
+			if (g_list->buckets[b].achievements[i]->id >= WARNING_ID) continue;	/* the warning entry */
 			g_flat[g_flat_n] = g_list->buckets[b].achievements[i];
 			((uint8_t *)g_flat_bucket)[g_flat_n++] = g_list->buckets[b].bucket_type;
 		}
@@ -682,6 +745,16 @@ static void ex_shutdown(void)
 	ex_set_local_unlocks(0, 0);
 }
 
+static void ex_set_hardcore(int on) { if (g_client) rc_client_set_hardcore_enabled(g_client, on ? 1 : 0); deliver(); }
+
+static int ex_can_pause(unsigned *frames_left)
+{
+	uint32_t n = 0;
+	int ok = g_client ? rc_client_can_pause(g_client, &n) : 1;
+	if (frames_left) *frames_left = n;
+	return ok;
+}
+
 static void ex_user_agent_clause(char *out, unsigned cap)
 {
 	if (g_client) rc_client_get_user_agent_clause(g_client, out, cap);
@@ -716,6 +789,8 @@ static const struct ra_core_exports g_exports = {
 	.progress_size = ex_progress_size,
 	.progress_save = ex_progress_save,
 	.progress_load = ex_progress_load,
+	.set_hardcore = ex_set_hardcore,
+	.can_pause = ex_can_pause,
 };
 
 __attribute__((used, section(".text.ra_core_blob_init")))

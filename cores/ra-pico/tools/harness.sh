@@ -20,6 +20,6 @@ FL="-O1 -g -std=gnu11 -Wall -Wno-unused-parameter $RC_DEFS $RC_INC -I$ROOT/pico"
 [ "${SAN:-0}" = 1 ] && FL="$FL -fsanitize=address,undefined -fno-omit-frame-pointer"
 SRCS=()
 for f in $RC_SRCS; do SRCS+=("$RC/$f"); done
-gcc $FL -w -o "$OUT/ra_harness" "${SRCS[@]}" "$LRC/utils/md5.c" \
+gcc $FL -w -o "$OUT/ra_harness" "${SRCS[@]}" \
 	"$ROOT/pico/ra_core.c" "$ROOT/tools/host_libc.c" "$ROOT/tools/ra_harness.c" -lm
 "$OUT/ra_harness"

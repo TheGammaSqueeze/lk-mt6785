@@ -1046,6 +1046,7 @@ static unsigned int s_wf_join_want;		/* the answer awaited: 0xB0 authentication,
 static int s_wf_join_status = -1;		/* its status, -1 none yet */
 static unsigned int s_wf_join_aid;		/* the association number the AP gave us */
 static int s_wf_join_reason;			/* the AP sent us away: its reason (or -1 for none given), else 0 */
+static unsigned int s_wf_join_seen, s_wf_join_seen_m2;	/* every frame the join read; as of our second key message */
 static unsigned int s_wf_join_data;		/* data frames from the AP to us since association */
 static unsigned int s_wf_join_eapol;		/* key (EAPOL) frames from it */
 static unsigned char s_wf_eapol[512];		/* the last one, from its 802.1X header on */
@@ -1061,6 +1062,7 @@ static void wf_join_frame(const unsigned char *b, int len)
 	const unsigned char *f;
 	int flen, dbm, eth;
 	unsigned int ch;
+	s_wf_join_seen++;
 	if (!(f = wf_frame_in(b, len, &flen, &dbm, &ch, &eth)))
 		return;
 	if (eth) {					/* data in Ethernet form: to 0, from 6, type 12 */
@@ -1078,7 +1080,27 @@ static void wf_join_frame(const unsigned char *b, int len)
 	if (flen < 24 || memcmp(f + 4, s_wf_mac, 6) || memcmp(f + 10, s_wf_join_bssid, 6))
 		return;
 	if ((f[0] & 0x0C) == 0x08) {			/* data left in 802.11 form */
+		/* The AP's first key message comes moments after the association's answer, and the
+		 * radio passes what comes before it has taken in the association as it is, in 802.11
+		 * form: the header (24, a QoS field 2 more, HT control 4 more with the order bit), then
+		 * LLC/SNAP for type 0x888E and the EAPOL frame. Read there it starts the handshake;
+		 * left unread, the AP gave up after its retries (reason 15, 11-18). */
+		int hl = 24;
 		s_wf_join_data++;
+		if (f[1] & 0x40)			/* protected: not a handshake message */
+			return;
+		if (f[0] & 0x80) {
+			hl += 2;
+			if (f[1] & 0x80) hl += 4;
+		}
+		if (flen >= hl + 8 + 4 && f[hl] == 0xAA && f[hl + 1] == 0xAA && f[hl + 2] == 0x03 && !f[hl + 3] &&
+		    !f[hl + 4] && !f[hl + 5] && f[hl + 6] == 0x88 && f[hl + 7] == 0x8E &&
+		    flen - hl - 8 <= (int)sizeof s_wf_eapol) {
+			memcpy(s_wf_eapol, f + hl + 8, (unsigned)(flen - hl - 8));
+			s_wf_eapol_len = (unsigned)(flen - hl - 8);
+			s_wf_join_eapol++;
+			s_wf_key_pending = 1;
+		}
 		return;
 	}
 	if ((f[0] == 0xC0 || f[0] == 0xA0) && flen >= 26) {	/* deauthentication, disassociation */
@@ -1202,6 +1224,13 @@ static void wf_key_mic(const unsigned char *k, unsigned int len, unsigned char m
 
 /* a key frame of ours to the AP: key information ki, the replay counter as the AP's, nonce (or
  * zero), key data (or none); the MIC with the KCK. 0 sent. */
+/* how the handshake's answers go before the keys are in (oem netsvc:m2:mgmt|eth|both, a test):
+ * 0 an 802.11 data frame down the firmware's management queue, 1 Ethernet form on the data ring
+ * (the radio sends it as any data to the AP, unencrypted), 2 both. The data ring: on the KPA an
+ * answer down the management queue now and then never reached the AP (9 of 10 joins; the AP
+ * repeated its first message, receiving went on), on the data ring 10 of 10. */
+static int s_wf_key_path = 1;
+
 static int wf_key_send(const struct wf_seen *ap, unsigned int ki, const unsigned char *nonce,
 		       const unsigned char *data, unsigned int data_len)
 {
@@ -1226,6 +1255,10 @@ static int wf_key_send(const struct wf_seen *ap, unsigned int ki, const unsigned
 	wf_key_mic(k, len, k + 81);
 	if (s_wf_keys_in)
 		return wf_send_eth(f, 14 + len, 1);	/* a new group key's answer goes encrypted */
+	if (s_wf_key_path) {
+		int rc = wf_send_eth(f, 14 + len, 0);
+		if (s_wf_key_path == 1) return rc;
+	}
 	{	/* during the handshake: an 802.11 data frame down the firmware's queue */
 		static unsigned char w[32 + WF_KEY_HDR + 64];
 		memset(w, 0, 32);
@@ -1238,6 +1271,24 @@ static int wf_key_send(const struct wf_seen *ap, unsigned int ki, const unsigned
 		memcpy(w + 32, k, len);
 		return wf_send_mgmt(w, 32 + len, WF_AP_TABLE_INDEX, ap->channel > 14);
 	}
+}
+
+/* An EAPOL-Start to the AP (802.1X version 1, type Start, no body), as an 802.11 data frame down
+ * the firmware's queue like the handshake's own answers: an AP that sent its first key message
+ * before the radio was told of the association (that message lost) starts the handshake again
+ * on it, where otherwise it may wait long or give up without a word. */
+static void wf_eapol_start(const struct wf_seen *ap)
+{
+	unsigned char w[36];
+	memset(w, 0, sizeof w);
+	w[0] = 0x08; w[1] = 0x01;
+	memcpy(w + 4, ap->bssid, 6);
+	memcpy(w + 10, s_wf_mac, 6);
+	memcpy(w + 16, ap->bssid, 6);
+	w[24] = 0xAA; w[25] = 0xAA; w[26] = 0x03;
+	w[30] = 0x88; w[31] = 0x8E;
+	w[32] = 1; w[33] = 1;				/* version 1, Start; length 0 */
+	wf_send_mgmt(w, sizeof w, WF_AP_TABLE_INDEX, ap->channel > 14);
 }
 
 /* a key into the radio: pairwise (the AP's entry) or group (the broadcast entry, key id) */
@@ -1342,6 +1393,7 @@ static void wf_key_step(void)
 		}
 		if (wf_key_send(ap, 2u | WF_KI_PAIRWISE | WF_KI_MIC, s_wf_snonce, s_wf_join_ie, s_wf_join_ie_len) != 0)
 			s_wf_key_why = "our second message did not go";
+		s_wf_join_seen_m2 = s_wf_join_seen;
 		bt_log("wifi keys: 1 in, 2 out");
 		return;
 	}
@@ -1426,7 +1478,10 @@ static int wf_join_wait(unsigned int us, int stop_on_answer)
 			wf_join_frame(fr, got);
 		}
 		wf_fw_event(0xFF, s_wf_evt, sizeof s_wf_evt, &n, 5000);
-		if (s_wf_key_pending)
+		/* a key message that came during the authentication or the association waits until the
+		 * radio has been told of the association: an answer sent before then did not reach the
+		 * AP (the handshake stalled after its first message, 11-18) */
+		if (s_wf_key_pending && !stop_on_answer)
 			wf_key_step();
 	}
 	return s_wf_join_status;
@@ -1699,6 +1754,31 @@ static int wf_tell_connected(const struct wf_seen *ap, unsigned int aid)
 /* Joins ap: the channel, the AP's record, our network, open system authentication, then the
  * association. say (may be 0) hears each step. 0 associated (the AP's key handshake comes
  * next for a secured network); -1 with *why at the step that failed. */
+/* A deauthentication from us to the AP (reason 3: we are leaving). Before each join: an AP that
+ * still holds us from a session that ended without a word (a restart, a flash, the power) answers
+ * the new authentication and association but never starts the key handshake for a station it
+ * believes is already connected; told we left, it starts afresh. And when we leave or turn Wi-Fi
+ * off, so the next join finds it clean. */
+static int s_wf_join_band5;
+static void wf_deauth(const unsigned char bssid[6], int band5)
+{
+	unsigned char d[26];
+	memset(d, 0, sizeof d);
+	d[0] = 0xC0;
+	memcpy(d + 4, bssid, 6);
+	memcpy(d + 10, s_wf_mac, 6);
+	memcpy(d + 16, bssid, 6);
+	d[24] = 3;
+	wf_send_mgmt(d, sizeof d, WF_AP_TABLE_INDEX, band5);
+}
+
+/* we are leaving the AP joined (Wi-Fi off, Leave): it is told */
+static void wf_leave_ap(void)
+{
+	if (s_wf_linked)
+		wf_deauth(s_wf_join_bssid, s_wf_join_band5);
+}
+
 static int wf_join_ap(const struct wf_seen *ap, void (*say)(const char *), const char **why)
 {
 	static unsigned char f[256];
@@ -1717,6 +1797,7 @@ static int wf_join_ap(const struct wf_seen *ap, void (*say)(const char *), const
 	memcpy(s_wf_join_bssid, ap->bssid, 6);
 	s_wf_join_reason = 0;
 	s_wf_join_data = 0;
+	s_wf_join_seen = s_wf_join_seen_m2 = 0;
 	s_wf_join_eapol = 0;
 	s_wf_eapol_len = 0;
 	if (wf_stay_awake() != 0) { *why = "the power profile did not go"; return -1; }
@@ -1724,6 +1805,14 @@ static int wf_join_ap(const struct wf_seen *ap, void (*say)(const char *), const
 	if (wf_channel(ap, 0) != 0) { *why = "the radio did not get its channel"; return -1; }
 	if (wf_ap_record(ap, WF_STATE_NONE, 0, 1) != 0) { *why = "the AP's record was not made"; goto out; }
 	if (wf_net_info(ap, 0, kind, enc) != 0) { *why = "our network's settings did not go"; goto out; }
+	s_wf_join_band5 = band5;
+
+	/* first a goodbye for whatever the AP may still hold of us (wf_deauth), a moment for it */
+	s_wf_join_want = 0;
+	s_wf_join_status = -1;
+	wf_deauth(ap->bssid, band5);
+	wf_join_wait(40000, 0);
+	s_wf_join_reason = 0;
 
 	/* open system authentication, transaction 1 */
 	memset(auth, 0, sizeof auth);
@@ -1804,7 +1893,12 @@ static int wf_connect(const char *ssid, void (*say)(const char *), const char **
 	}
 	if (!n) { *why = "the network is not in range"; return -1; }
 	for (k = 0; k < n; k++) {
-		if (wf_connect_to(cand[k], say, why) == 0) return 0;
+		int rc = wf_connect_to(cand[k], say, why);
+		if (rc == -2) {			/* the handshake alone failed: that AP once more, afresh */
+			if (say) say("keys: trying that access point again");
+			rc = wf_connect_to(cand[k], say, why);
+		}
+		if (rc == 0) return 0;
 		if (say && k + 1 < n) say("trying the next access point of that name");
 	}
 	return -1;
@@ -1826,17 +1920,25 @@ static int wf_connect_to(struct wf_seen *best, void (*say)(const char *), const 
 		return -1;
 	}
 	if (s_wf_join_ie_len) {
-		wf_join_wait(3000000, 0);		/* the AP's key handshake */
+		wf_join_wait(1200000, 0);		/* the AP's key handshake */
+		if (!s_wf_keys_in && !s_wf_join_eapol && !s_wf_key_why && !s_wf_join_reason) {
+			if (say) say("keys: nothing yet, asking the AP to start (EAPOL-Start)");
+			wf_eapol_start(best);
+			wf_join_wait(2500000, 0);
+		}
 		if (!s_wf_keys_in) {
 			*why = s_wf_key_why ? s_wf_key_why : s_wf_join_eapol ? "the key handshake did not finish" :
 			       "the network never started the key handshake";
 			if (say) {
-				snprintf(l, sizeof l, "keys: %s (key frames %u)", *why, s_wf_join_eapol);
+				snprintf(l, sizeof l, "keys: %s", *why);
+				say(l);
+				snprintf(l, sizeof l, "keys: eapol %u data %u away %d heard %u/%u", s_wf_join_eapol, s_wf_join_data,
+					 s_wf_join_reason, s_wf_join_seen, s_wf_join_seen - s_wf_join_seen_m2);
 				say(l);
 			}
 			wf_channel(best, 1);
 			s_wf_frame_sink = 0;
-			return -1;
+			return -2;			/* (joined, but no keys: the same AP may do it the next time) */
 		}
 		if (say) {
 			snprintf(l, sizeof l, "connected: keys in (%s)", s_wf_join_ie[13] == 2 ? "TKIP" : "CCMP");
@@ -2961,6 +3063,7 @@ static int ns_thread(void *arg)
 		}
 		if (cmd == NS_JOIN) { g_ns_crumb[0] = NSC_JOIN; s_ns_auto_left = 0; ns_join(); }
 		if (cmd == NS_LEAVE && s_wf_linked) {
+			wf_leave_ap();
 			pico_net_stop();
 			s_wf_linked = 0;
 			ns_set_state(NETSVC_READY, "");
@@ -3013,6 +3116,7 @@ void netsvc_wifi(int on)
 	}
 	mutex_acquire(&s_wf_radio);
 	if (s_wf_up) {
+		wf_leave_ap();
 		pico_net_stop();
 		s_wf_linked = 0;
 		s_wf_up = 0;
@@ -3361,6 +3465,15 @@ static void cmd_netsvc(const char *arg, void *data, unsigned sz)
 		}
 		fastboot_okay("");
 		return;
+	} else if (!strncmp(arg, "ua", 2)) {	/* the user agent the next request carries */
+		fastboot_info(s_wf_user_agent[0] ? s_wf_user_agent : "GammaOS-Pico (none set)");
+		fastboot_okay("");
+		return;
+	} else if (!strncmp(arg, "m2:", 3)) {
+		s_wf_key_path = !strcmp(arg + 3, "eth") ? 1 : !strcmp(arg + 3, "both") ? 2 : 0;
+		snprintf(l, sizeof l, "handshake answers: %s", s_wf_key_path == 1 ? "data ring" :
+			 s_wf_key_path == 2 ? "both" : "management queue");
+		fastboot_info(l);
 	} else if (!strncmp(arg, "scrape", 6)) {
 		extern volatile int g_dbg_nui_scrape;
 		g_dbg_nui_scrape = strstr(arg, "stop") ? 2 : 1;

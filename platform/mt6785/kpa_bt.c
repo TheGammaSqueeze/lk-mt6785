@@ -348,8 +348,12 @@ static void cmd_btpwr(const char *arg, void *data, unsigned sz)
 	int rc = 0;
 	(void)data; (void)sz;
 	while (*arg == ' ' || *arg == ':') arg++;
-	if (*arg == '0')
+	if (*arg == '0') {
+		/* Wi-Fi first, the regular way: the AP joined is told we left (a radio cut while
+		 * joined left it holding us, and the next join never got its key handshake) */
+		{ extern void netsvc_wifi(int on); netsvc_wifi(0); }
 		pico_bt_off();
+	}
 	else
 		rc = kpa_bt_power_on();
 	snprintf(s_line, sizeof s_line, "bt power %s rc=%d", *arg == '0' ? "off" : "on", rc);

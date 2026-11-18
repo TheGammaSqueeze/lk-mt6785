@@ -81,6 +81,8 @@ static unsigned srv_unlocked[16];
 static int srv_n;
 static unsigned srv_score = 40;
 static unsigned srv_last_o;	/* the seconds since unlock of the last award */
+static int srv_warn;		/* the set carries RetroAchievements' warning entry (a client not validated) */
+static int srv_last_h = -1;	/* h= of the last award */
 
 static int srv_has(unsigned id)
 {
@@ -134,6 +136,13 @@ static int server(const char *post, char *body, unsigned cap)
 						 "\"Modified\":1,\"Type\":\"\",\"Rarity\":1,\"RarityHardcore\":1,\"BadgeURL\":\"\","
 						 "\"BadgeLockedURL\":\"\"}", i ? "," : "", k_set[i].id, k_set[i].title,
 						 k_set[i].points, k_set[i].mem, k_set[i].id % 100000);
+		if (srv_warn)
+			at += (unsigned)snprintf(body + at, cap - at,
+						 ",{\"ID\":101000001,\"Title\":\"Warning: Unknown Emulator\",\"Description\":"
+						 "\"Hardcore unlocks cannot be earned using this emulator.\",\"Flags\":3,\"Points\":0,"
+						 "\"MemAddr\":\"0=1\",\"Author\":\"\",\"BadgeName\":\"00000\",\"Created\":1,"
+						 "\"Modified\":1,\"Type\":\"\",\"Rarity\":0,\"RarityHardcore\":0,\"BadgeURL\":\"\","
+						 "\"BadgeLockedURL\":\"\"}");
 		snprintf(body + at, cap - at, "],\"Leaderboards\":[]}]}");
 		return 200;
 	}
@@ -152,6 +161,8 @@ static int server(const char *post, char *body, unsigned cap)
 		id = (unsigned)strtoul(v, 0, 10);
 		form(post, "o", v, sizeof v);
 		srv_last_o = (unsigned)strtoul(v, 0, 10);
+		form(post, "h", v, sizeof v);
+		srv_last_h = v[0] ? v[0] - '0' : -1;
 		for (i = 0; i < K_SET_N; i++) if (k_set[i].id == id) pts = k_set[i].points;
 		if (!pts) { snprintf(body, cap, "{\"Success\":false,\"Error\":\"Unknown achievement\"}"); return 404; }
 		had = srv_has(id);
@@ -248,6 +259,7 @@ static void drain(void)
 			queue[nqueue].id = e.id;
 			snprintf(queue[nqueue].hash, sizeof queue[nqueue].hash, "%s", e.hash);
 			queue[nqueue].when = e.when;
+			queue[nqueue].hardcore = (unsigned char)e.ok;
 			nqueue++;
 		}
 		printf("    event %d ok %d id %u value %d \"%s\" \"%s\"\n", e.kind, e.ok, e.id, e.value, e.title, e.text);
@@ -397,6 +409,76 @@ int main(int argc, char **argv)
 	for (i = 0; i < 200; i++) { X->idle(); fake_ms += 1000; pump(); }
 	drain();
 	CHECK(requests_seen[4] == pings_before, "rich presence answered locally offline");
+	X->unload_game();
+	X->shutdown();
+
+	printf("hardcore, with a server that has not validated this client\n");
+	online = 1;
+	srv_warn = 1;
+	nqueue = 0;
+	nkeep = 0;
+	memset(events, 0, sizeof events);
+	CHECK(X->init() == 0, "rc_client made again");
+	X->set_online(1);
+	X->login_token("tester", "tok0123456789");
+	pump();
+	drain();
+	X->set_hardcore(1);
+	{
+		unsigned hl[1] = { 9200003u | 0x80000000u };	/* a queued unlock earned in hardcore */
+		X->set_local_unlocks(hl, 1);
+	}
+	X->load_game(7, rom, sizeof rom, &mem);
+	pump();
+	drain();
+	X->summary(&s);
+	printf("  %s, %u of %u, %u of %u points, hardcore %d, verdict %d\n", s.game, s.unlocked, s.total,
+	       s.points_unlocked, s.points_total, s.hardcore, s.verdict);
+	CHECK(s.hardcore == 1, "hardcore on");
+	CHECK(last[RA_EV_GAME].id == 4, "the game's start counts four (the warning entry left out)");
+	CHECK(s.verdict == 0, "the warning entry read as: not validated");
+	CHECK(s.total == 4, "the warning entry not counted");
+	CHECK(s.unlocked == 1, "the queued hardcore unlock shows as unlocked in hardcore");
+	n = X->achievement_count();
+	CHECK(n == 4, "the warning entry not listed");
+	ram[4] = 0; frames(2); ram[4] = 1; frames(1); ram[4] = 0; frames(1);
+	CHECK(events[RA_EV_QUEUED] == 1 && nqueue == 1 && queue[0].hardcore == 1, "a hardcore unlock queued as hardcore");
+	CHECK(X->award_request(&queue[0], url, sizeof url, post, sizeof post) == 0 && strstr(post, "&h=1"), "sent with h=1");
+	{
+		static char body[1024];
+		int st = server(post, body, sizeof body);
+		CHECK(X->award_answer(st, body, (unsigned)strlen(body)) == 1 && srv_last_h == 1, "the server took it as hardcore");
+	}
+	{
+		unsigned left = 0;
+		CHECK(X->can_pause(&left) == 1, "a first pause allowed");
+	}
+	X->set_hardcore(0);
+	X->summary(&s);
+	CHECK(s.hardcore == 0, "hardcore off at once");
+	X->set_hardcore(1);
+	drain();
+	CHECK(events[RA_EV_RESET] == 1, "hardcore on during a game: the reset asked for");
+	X->reset();
+	X->summary(&s);
+	CHECK(s.hardcore == 1, "hardcore after the reset");
+	X->unload_game();
+	X->shutdown();
+
+	printf("a validated client (no warning entry)\n");
+	srv_warn = 0;
+	nkeep = 0;
+	memset(events, 0, sizeof events);
+	CHECK(X->init() == 0, "rc_client made again");
+	X->set_online(1);
+	X->login_token("tester", "tok0123456789");
+	pump();
+	drain();
+	X->load_game(7, rom, sizeof rom, &mem);
+	pump();
+	drain();
+	X->summary(&s);
+	CHECK(s.verdict == 1 && s.hardcore == 0, "verdict validated, softcore by default");
 	X->unload_game();
 	X->shutdown();
 

@@ -15,10 +15,10 @@ to the LK to keep on the card, and the LK sends them later with the time they ha
 
 ## Third party
 
-- rcheevos 12.2.1 (RetroAchievements, MIT), as RetroArch carries it, from the Armulators app's
-  `deps/` in `cores/armNES-pico` (see `sources.sh`). Compiled unchanged.
-- libretro-common's `utils/md5.c` (public domain, by Alexander Peslyak), the MD5 RetroArch's copy
-  of rcheevos uses. Compiled unchanged.
+- rcheevos 12.3.0 (RetroAchievements, MIT): their tagged release, unchanged, in `rcheevos/` (its
+  `LICENSE` there; its own MD5 in `src/rhash/md5.c`).
+- libretro-common's `libretro.h` (MIT), which rcheevos' `rc_libretro` reads the cores' memory maps
+  with, from the Armulators app's `deps/` in `cores/armNES-pico` (see `sources.sh`).
 - newlib (the C library of the arm-none-eabi toolchain).
 
 Everything in `pico/` and `tools/` is GammaOS code (GPL-2.0-or-later).

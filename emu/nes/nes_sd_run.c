@@ -120,10 +120,17 @@ extern unsigned int ayaneo_get_cpu_mhz(void);
  * the user's chosen ladder - each tier steps up ~200 MHz for the extra pf+1 emulations run-ahead does.
  * ayaneo_set_cpu_mhz programs the PLL directly (no grid snapping), so these exact values are applied. */
 /* RetroAchievements after a frame the game really ran (pico_ra.c; absent on consoles without it) */
+/* RetroAchievements' hardcore limits how often the menu may pause the game (pico_ra.c) */
+static int ra_may_pause(void)
+{
+	extern int pico_ra_may_pause(void) __attribute__((weak));
+	return !pico_ra_may_pause || pico_ra_may_pause();
+}
+static void nes_ra_reset_check(void);
 static void nes_ra_frame(void)
 {
 	extern void pico_ra_frame(void) __attribute__((weak));
-	if (pico_ra_frame) pico_ra_frame();
+	if (pico_ra_frame) { pico_ra_frame(); nes_ra_reset_check(); }
 }
 
 static const unsigned s_nes_ra_opp[4] = { 999, 1199, 1399, 1599 };
@@ -229,6 +236,18 @@ static const struct nes_core_exports *s_menu_c;   /* session context for the men
 static fat_vol             *s_menu_vol;
 static const gba_rom_entry *s_menu_rom;
 static unsigned             s_menu_rw_payload;
+
+/* hardcore came on during the game: it starts again from its power on, as RetroAchievements asks
+ * (pico_ra.c), and rcheevos hears of it */
+static void nes_ra_reset_check(void)
+{
+	extern int pico_ra_reset_wanted(void) __attribute__((weak));
+	extern void pico_ra_game_reset(void) __attribute__((weak));
+	if (!pico_ra_reset_wanted || !pico_ra_reset_wanted() || !s_menu_c) return;
+	s_menu_c->reset();
+	if (s_menu_rw_payload) ayaneo_rewind_reset(s_menu_rw_payload);
+	if (pico_ra_game_reset) pico_ra_game_reset();
+}
 
 extern void ayaneo_fill(unsigned int *buf, unsigned int pitch, int x, int y, int w, int h, unsigned int argb);
 extern int  ayaneo_text(unsigned int *buf, unsigned int pitch, int x, int y, int scale, unsigned int argb, const char *s);
@@ -449,20 +468,24 @@ static int gm_change(int i, int dir, int act)
 			gba_sd_state_name(s_menu_rom->name, ext, nm, sizeof nm);
 			card_writer_put(s_menu_vol, "/states/nes", nm, st, ssz, s_mstat, sizeof s_mstat, "State saved", "Save failed");
 			pico_shot_save(s_menu_vol, "/states/nes", s_menu_rom->name, ext, 1);
+			{ extern void pico_ra_state_saved(fat_vol *v, const char *d, const char *r, const char *e) __attribute__((weak));
+				if (pico_ra_state_saved) pico_ra_state_saved(s_menu_vol, "/states/nes", s_menu_rom->name, ext); }   /* its RetroAchievements progress beside it */
 		} else mput(s_mstat, "Save failed"); } break;
-	case GM_LOAD: if (act) {
+	case GM_LOAD: if (act) { extern int pico_ra_hardcore(void) __attribute__((weak)); if (pico_ra_hardcore && pico_ra_hardcore()) { mput(s_mstat, "Load state is off in hardcore"); break; } }
+		if (act) {
 		unsigned char *st = (unsigned char *)NES_STATE_BUF; char ext[4]; unsigned n; int ok;
 		nes_slot_ext(ext);
 		n = gba_sd_read_named(s_menu_vol, "/states/nes", s_menu_rom->name, ext, st, NES_STATE_CAP);
 		ok = (n && s_menu_c->state_load(st, n) == 0);
 		if (ok && s_menu_rw_payload) ayaneo_rewind_reset(s_menu_rw_payload);   /* loaded state breaks the rewind timeline */
-		if (ok) { extern void pico_ra_state_loaded(void) __attribute__((weak)); if (pico_ra_state_loaded) pico_ra_state_loaded(); }   /* and RetroAchievements' counts */
+		if (ok) { extern void pico_ra_state_loaded_from(fat_vol *v, const char *d, const char *r, const char *e) __attribute__((weak));
+				if (pico_ra_state_loaded_from) pico_ra_state_loaded_from(s_menu_vol, "/states/nes", s_menu_rom->name, ext); }   /* and RetroAchievements' progress */
 		mput(s_mstat, ok ? "State loaded" : "No save state"); } break;
 	case GM_DISK: if (act && (g_nes_dbg_disk & 1)) {
 		/* armNES takes L3 as the drive's eject: the disk out, then the next side in; held for a
 		 * few frames once the menu has closed, so the game sees it */
 		s_disk_swap_frames = 20; mput(s_mstat, "Disk side changed"); return 1; } break;
-	case GM_RESET: if (act) { s_menu_c->reset(); if (s_menu_rw_payload) ayaneo_rewind_reset(s_menu_rw_payload); return 1; } break;
+	case GM_RESET: if (act) { s_menu_c->reset(); if (s_menu_rw_payload) ayaneo_rewind_reset(s_menu_rw_payload); { extern void pico_ra_game_reset(void) __attribute__((weak)); if (pico_ra_game_reset) pico_ra_game_reset(); } return 1; } break;
 	case GM_EXIT:  if (act) { g_nes_menu_exit = 1; return 1; } break;
 	}
 	return 0;
@@ -987,6 +1010,7 @@ static void nes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			  if (g_dbg_igm_toggle) { g_dbg_igm_toggle = 0; aya_prev = 0; aya = 1; } }
 			if (aya && !aya_prev) {
 				if (g_nes_menu_open && s_nes_igm_on) pico_igm_dismiss();   /* closes animated */
+				else if (!g_nes_menu_open && !ra_may_pause()) { }	/* hardcore: too soon after the last pause */
 				else if (!g_nes_menu_open && pico_igm_on()) {
 					s_nes_igm_on = 1; s_mstat[0] = 0; g_nes_menu_open = 1;
 					s_nes_igm.game = s_menu_rom->uname[0] ? s_menu_rom->uname : s_menu_rom->name; s_nes_igm.system = s_menu_rom->type;
