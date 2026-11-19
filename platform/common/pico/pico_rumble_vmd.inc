@@ -27,6 +27,14 @@ volatile unsigned int g_dbg_vib_ons;   /* oem rumble: times the motor was starte
 /* oem rumble: the last runs, in calls (frames), on then off, to see how a game drives its motor */
 static unsigned short s_runs[16][3];   /* on frames, off frames, motor writes while on */
 static unsigned s_run_i, s_run_len, s_run_writes;
+/* A game's short buzz (a shot in Good Dog Galaxy) runs the motor for a frame or less: on for one
+ * 16.7 ms frame, this rotor never spins up far enough to be felt. Once started, the motor stays on
+ * at least VIB_MIN_ON_MS; longer runs are the game's own. The hold ends on a later call, so it
+ * relies on the cores' frame loops calling every frame (they do, menu open or not); every other
+ * stop (a game's end, a test pulse's) is ayaneo_rumble_stop, at once. */
+#define VIB_MIN_ON_MS 60u
+static unsigned s_hold_until;          /* gpt4 ticks (13 MHz): the motor stays on until then */
+static int s_holding;
 
 static int vib_write(const unsigned char *buf, unsigned n)
 {
@@ -96,13 +104,19 @@ void ayaneo_rumble_set(int on)
 	if (on) s_run_writes += writes;
 	if (on && s_state != VIB_READY && s_state != VIB_ABSENT) vib_setup_step();
 	if (s_state == VIB_COLD) return;   /* never started: the pin is still the boot default (low) */
+	{	/* the shortest run the motor makes: a start holds it on VIB_MIN_ON_MS */
+		unsigned now = gpt4_get_current_tick();
+		if (on && s_on != 1) { s_hold_until = now + VIB_MIN_ON_MS * 13000u; s_holding = 1; }
+		else if (!on && s_holding && (int)(s_hold_until - now) > 0) on = 1;
+		else if (!on) s_holding = 0;
+	}
 	if (on == s_on) return;
 	mt_set_gpio_out(VIB_PIN, (u32)on);
 	if (on) g_dbg_vib_ons++;
 	s_on = on;
 }
 
-void ayaneo_rumble_stop(void) { ayaneo_rumble_set(0); }
+void ayaneo_rumble_stop(void) { s_holding = 0; ayaneo_rumble_set(0); }   /* at once, no hold */
 
 /* oem rumble: the chip, its state and how often the motor ran */
 void ayaneo_rumble_report(void (*line)(const char *))
@@ -132,5 +146,5 @@ void ayaneo_rumble_pulse(unsigned ms)
 	ayaneo_rumble_set(1);
 	t = ms > 3000 ? 3000 : ms;
 	thread_sleep(t);
-	ayaneo_rumble_set(0);
+	ayaneo_rumble_stop();		/* (the test's own length, not the game's shortest run) */
 }
