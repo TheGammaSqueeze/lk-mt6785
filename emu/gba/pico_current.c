@@ -3261,12 +3261,19 @@ static void igm_bg_build(void)
 }
 static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box);
 
+volatile unsigned int g_dbg_igm_paint_us[3];	/* oem diag: the in-game menu's last paint, its worst, the hash pass */
 static int igm_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box)
 {
 	int y, y0 = -1, y1 = -1, x, w, drawn;
+	unsigned int t0 = gpt4_get_current_tick(), t1;
 	pico_tr_igm_scope(1);   /* the cores' rows come out in the language in use */
 	drawn = igm_paint_all(buf, pitch, W, H, box);
 	pico_tr_igm_scope(0);
+	t1 = gpt4_get_current_tick();
+	if (drawn) {
+		g_dbg_igm_paint_us[0] = (t1 - t0) / 13u;
+		if (g_dbg_igm_paint_us[0] > g_dbg_igm_paint_us[1]) g_dbg_igm_paint_us[1] = g_dbg_igm_paint_us[0];
+	}
 	if (!drawn) return 0;
 	w = box[2];
 	{
@@ -3280,6 +3287,7 @@ static int igm_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsi
 	}
 	}
 	s_igm_rowh_ok = 1;
+	g_dbg_igm_paint_us[2] = (gpt4_get_current_tick() - t1) / 13u;
 	if (y0 < 0) return 0;
 	box[1] = y0; box[3] = y1;
 	return 1;
@@ -3494,7 +3502,7 @@ static int link_paint(const struct lui_progress *p)
 		w = hx + U(31) + w + U(8);
 		w += text(&G.sub, w, U(47), "Pico", C_MUTED, 256, 0, 0, 0);
 		fill(w + U(14), U(31), 1, U(17), C_MUTED, 115);
-		text(&G.realm, w + U(32), U(46), tr("Link"), C_MUTED, 256, 0, 0, 0);
+		text(&G.realm, w + U(32), U(46), p->realm ? p->realm : tr("Link"), C_MUTED, 256, 0, 0, 0);
 	}
 	draw_mask(&G.ring, U(x), U(top - 70), C_ACCENT, 256);
 	draw_mask(&G.ring, U(x) + G.ring.w * 2 / 3, U(top - 70), C_ACCENT, 256);
@@ -3502,8 +3510,10 @@ static int link_paint(const struct lui_progress *p)
 	if (p->theirs) snprintf(t, sizeof t, "%s  +  %s", p->mine, p->theirs);
 	else snprintf(t, sizeof t, "%s", p->mine);
 	text_fit(&G.srowf, U(x), U(top + 46), t, C_INK, 256, U(s_uw - 2 * x));
-	snprintf(t, sizeof t, tr("With %s"), p->other);
-	text_fit(&G.info, U(x), U(top + 78), t, C_MUTED, 256, U(s_uw - 2 * x));
+	if (p->other) {
+		snprintf(t, sizeof t, tr("With %s"), p->other);
+		text_fit(&G.info, U(x), U(top + 78), t, C_MUTED, 256, U(s_uw - 2 * x));
+	}
 	text_fit(&G.srow, U(x), U(top + 150), p->step, C_INK, 256, U(s_uw - 2 * x));
 	{	/* the bar, and how far, how fast, how long */
 		int bx = U(x), bw = U(s_uw - 2 * x), by = U(top + 172), fillw = 0;
@@ -3511,8 +3521,8 @@ static int link_paint(const struct lui_progress *p)
 		if (p->total) {
 			fillw = (int)((unsigned long long)bw * (p->done < p->total ? p->done : p->total) / p->total);
 			fill(bx, by, fillw, U(4), C_ACCENT, 256);
-			prog_bytes(a, sizeof a, p->done);
-			prog_bytes(b, sizeof b, p->total);
+			if (p->items) { snprintf(a, sizeof a, "%u", p->done); snprintf(b, sizeof b, "%u", p->total); }
+			else { prog_bytes(a, sizeof a, p->done); prog_bytes(b, sizeof b, p->total); }
 			if (p->kbs && p->secs_left)
 				snprintf(t, sizeof t, tr("%s of %s, %u KB/s, %u s left"), a, b, p->kbs, p->secs_left);
 			else
@@ -3527,7 +3537,7 @@ static int link_paint(const struct lui_progress *p)
 		int cy = U(720 - 27), rad = U(8.3f), hx = U(x);
 		draw_mask(&G.ring, hx, cy - G.ring.h / 2, C_MUTED, 256);
 		text(&G.hintc, hx + rad, U(720 - 22.9f), "B", C_INK, 256, 1, 0, 0);
-		text(&G.hint, hx + 2 * rad + U(8), U(720 - 22), tr("Cancel"), C_MUTED, 256, 0, 0, 0);
+		text(&G.hint, hx + 2 * rad + U(8), U(720 - 22), p->hint ? p->hint : tr("Cancel"), C_MUTED, 256, 0, 0, 0);
 	}
 	ayaneo_canvas_present();
 	return cancel;

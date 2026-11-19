@@ -37,6 +37,7 @@
 #include "../../platform/common/pico/pico_netsvc.h"
 #include "../../platform/common/pico/pico_crypto.h"	/* the queue file's seal and owners */
 #include "pico_png.h"
+#include "pico_link_ui.h"	/* the start screen of a game's first download */
 
 extern BOOT_ARGUMENT *g_boot_arg;
 extern unsigned gpt4_get_current_tick(void);
@@ -217,6 +218,16 @@ static unsigned s_bdg_game;			/* the game the badges are of (0 none) */
 static int s_bdg_n;				/* badges in memory */
 static char s_bdg_want[BDG_MAX][8];		/* badges of that game not fetched yet */
 static int s_bdg_wantn, s_bdg_dirty;
+/* A game's badges come all at once the first time it starts online (badges_first: a progress
+ * screen before the game runs, which B skips; the pack written then, so it is never asked again),
+ * then whatever is still missing in the menus: the Pico menu, and the in-game menu while it is open
+ * (s_menu_open_ms: the last time pico_ra_paused ran). Never while the game plays, and the pack is
+ * written to the card only in the menus or when the game ends. */
+static unsigned s_menu_open_ms;
+static int s_bdg_had_pack;		/* the game's pack was on the card when it started */
+static int s_bdg_first;			/* the first start's download is going on */
+static unsigned now_ms(void);
+static int badges_menu_open(void) { return s_menu_open_ms && now_ms() - s_menu_open_ms < 250u; }
 static int s_http_badge;			/* the call on the network is a badge's */
 
 const unsigned short *pico_ra_badge(const char *name)
@@ -256,7 +267,8 @@ static void badges_load(void)
 	if (!s_bdg_game || !s_vol) return;
 	snprintf(name, sizeof name, "%u", s_bdg_game);
 	len = gba_sd_read_named(s_vol, RA_DIR "/b", name, "bdg", S_FBUF, 8);
-	if (len == 8 && !memcmp(S_FBUF, "GPBG", 4) && S_FBUF[4] == 1) {
+	s_bdg_had_pack = len == 8 && !memcmp(S_FBUF, "GPBG", 4) && S_FBUF[4] == 1;
+	if (s_bdg_had_pack) {
 		cnt = S_FBUF[6] | (unsigned)S_FBUF[7] << 8;
 		if (cnt > BDG_MAX) cnt = BDG_MAX;
 		n = gba_sd_read_named(s_vol, RA_DIR "/b", name, "bdg", S_FBUF, RA_FBUF_CAP);
@@ -1243,7 +1255,7 @@ static void pump(int net, int card)
 			im_log(l);
 			memmove(s_bdg_want, s_bdg_want + 1, (unsigned)(s_bdg_wantn - 1) * sizeof s_bdg_want[0]);
 			s_bdg_wantn--;
-			if (!s_bdg_wantn || !(s_bdg_n % 10)) badges_store();
+			if ((!s_bdg_wantn || !(s_bdg_n % 10)) && (!s_in_game || badges_menu_open())) badges_store();
 		} else if (s_http_award) {
 			award_done(r == 1 ? (int)status : 0, r == 1 ? body : 0, r == 1 ? len : 0);
 		} else {
@@ -1327,8 +1339,9 @@ static void pump(int net, int card)
 		return;
 	}
 badges:
-	/* then the badges the last game lacked (the menu only, nothing else waiting) */
-	if (online && s_bdg_wantn && !s_in_game) {
+	/* then the badges the game lacks, nothing else waiting: in the menu, in a game's first start and
+	 * while its in-game menu is open (never while it plays) */
+	if (online && s_bdg_wantn && (!s_in_game || (s_live_net && (badges_menu_open() || s_bdg_first)))) {
 		char path[48];
 		/* (LK's printf reads a precision as a width: %.8s would pad, never cut; the names end in a 0) */
 		snprintf(path, sizeof path, "/Badge/%s.png", s_bdg_want[0]);
@@ -1463,6 +1476,56 @@ void pico_ra_game_begin(int type)
 	netsvc_quiet(1);			/* (pico_ra_core_ready wakes it for the game's set, then it sleeps) */
 }
 
+/* The game's first start online (no pack of its badges on the card yet): every badge fetched now,
+ * before it runs, on the theme's start screen with a bar (lui_paint_progress); B skips. The pack is
+ * written either way, so this happens only once for a game; what was skipped comes later in the
+ * menus. Gives up when the network goes, or after two minutes. */
+static void badges_first(void)
+{
+	struct lui_progress p;
+	struct ra_summary sm;
+	struct netsvc_status ns;
+	unsigned total = (unsigned)s_bdg_wantn, t0 = now_ms(), painted = 0, paints = 0;
+	int skip = 0;
+	X->summary(&sm);
+	memset(&p, 0, sizeof p);
+	p.title = p.title_en = "RetroAchievements";
+	p.realm = "RetroAchievements";
+	p.mine = sm.game;
+	p.step = p.step_en = "Getting the achievements' pictures (once for this game)";
+	p.hint = p.hint_en = "Skip";
+	p.items = 1;
+	p.total = total;
+	s_bdg_first = 1;
+	while (s_bdg_wantn && !skip && now_ms() - t0 < 120000u) {
+		netsvc_get(&ns);
+		if (ns.state != NETSVC_ONLINE) break;
+		pump(1, 1);
+		mtk_wdt_restart();
+		if (!painted || now_ms() - painted >= 100u) {
+			p.done = total - (unsigned)s_bdg_wantn;
+			skip = lui_paint_progress(&p);
+			painted = now_ms() | 1u;
+			paints++;
+		}
+		thread_sleep(2);
+	}
+	if (s_http_id && s_http_badge) {	/* a badge still on its way (skipped, or out of time): let it go */
+		netsvc_http_abort();
+		s_http_id = 0;
+		s_http_badge = 0;
+	}
+	s_bdg_first = 0;
+	s_bdg_dirty = 1;			/* the pack on the card now, even with none of them: not asked again */
+	badges_store();
+	{
+		char l[96];
+		snprintf(l, sizeof l, "badges first start: %u of %u in %u ms, %s, %u paints", total - (unsigned)s_bdg_wantn,
+			 total, now_ms() - t0, skip ? "skipped" : "not skipped", paints);
+		im_log(l);
+	}
+}
+
 void pico_ra_core_ready(const void *rom, unsigned rom_size, const struct pico_core_memory *mem)
 {
 	unsigned *ids = (unsigned *)S_FBUF, t0;	/* (the blob copies them) */
@@ -1517,6 +1580,7 @@ void pico_ra_core_ready(const void *rom, unsigned rom_size, const struct pico_co
 		copy_n(c->line, sizeof c->line, "The game's set did not arrive in time: start the game again");
 	}
 	s_live_net = s_session_online && s_game_seen;
+	if (s_live_net && s_game_on && !s_bdg_had_pack && s_bdg_wantn) badges_first();
 	if (!s_live_net) {			/* no network: answered here, the service asleep (costs the game nothing) */
 		X->set_online(0);
 		netsvc_quiet(1);
@@ -1603,6 +1667,9 @@ void pico_ra_paused(void)
 	static unsigned last;
 	int i;
 	if (!X || !s_game_on) return;
+	s_menu_open_ms = now_ms() | 1u;
+	if (s_live_net && s_bdg_wantn) pump(1, 0);	/* the badges, back to back while the game waits */
+	if (s_bdg_dirty && !s_bdg_wantn) badges_store();	/* (the menu is open: the card may be written) */
 	if (now_ms() - last < 1000u) return;
 	last = now_ms();
 	X->idle();
@@ -1615,6 +1682,7 @@ void pico_ra_paused(void)
 
 void pico_ra_game_end(void)
 {
+	badges_store();				/* the badges that came during the game (nothing when none did) */
 	if (X && s_console) X->unload_game();
 	s_console = 0;
 	s_game_on = 0;

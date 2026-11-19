@@ -100,8 +100,16 @@ struct lui_progress {
 	unsigned int kbs, secs_left;		/* its speed, the time left (0: not known yet) */
 	const char *title_en, *step_en;		/* the same two in English, for a theme drawing with an
 						 * ASCII font (as its in-game menu does) */
+	/* for a start that is not a Link session (other NULL: no "With" line) */
+	const char *realm;			/* the header's place ("Link" when NULL) */
+	const char *hint;			/* what B does ("Cancel" when NULL), hint_en in English */
+	const char *hint_en;
+	int items;				/* done and total count things, not bytes ("12 of 58") */
 };
 void lui_set_painter(int (*paint)(const struct lui_progress *p));
+/* the theme's start screen for another wait before a game (RetroAchievements' first start): drawn
+ * now, 1 when B was pressed; 0 and nothing drawn without a theme's painter */
+int  lui_paint_progress(const struct lui_progress *p);
 
 /* the console names the screens use */
 const char *lui_model_name(int model);

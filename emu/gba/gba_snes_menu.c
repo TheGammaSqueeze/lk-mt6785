@@ -1707,15 +1707,16 @@ static int classic_link_sheet(const struct lui_progress *p, unsigned int *fb, un
 	sh.subtitle = kit_fit(sub, sizeof sub, games, CF_M);
 	{	/* what goes on now, and with which console */
 		char w[160];
-		snprintf(w, sizeof w, tr("With %s"), p->other ? p->other : "");
-		snprintf(with, sizeof with, "%s\n%s", p->step ? p->step : "", w);
+		if (p->other) snprintf(w, sizeof w, tr("With %s"), p->other);
+		else w[0] = 0;
+		snprintf(with, sizeof with, w[0] ? "%s\n%s" : "%s%s", p->step ? p->step : "", w);
 		sh.status = kit_fit(step, sizeof step, with, CF_M);
 	}
 	if (p->total) {
 		sh.done = p->done;
 		sh.total = p->total;
-		link_bytes(a, sizeof a, p->done);
-		link_bytes(b, sizeof b, p->total);
+		if (p->items) { snprintf(a, sizeof a, "%u", p->done); snprintf(b, sizeof b, "%u", p->total); }
+		else { link_bytes(a, sizeof a, p->done); link_bytes(b, sizeof b, p->total); }
 		if (p->kbs && p->secs_left) snprintf(prog, sizeof prog, tr("%s of %s, %u KB/s, %u s left"), a, b, p->kbs, p->secs_left);
 		else snprintf(prog, sizeof prog, tr("%s of %s"), a, b);
 		sh.progress = prog;
@@ -1723,7 +1724,7 @@ static int classic_link_sheet(const struct lui_progress *p, unsigned int *fb, un
 	sh.busy = 1;
 	sh.nhints = 1;
 	sh.hint_btn[0] = 'B';
-	sh.hint_label[0] = tr("Cancel");
+	sh.hint_label[0] = p->hint ? p->hint : tr("Cancel");
 	sh.clock = (float)(gpt4_get_current_tick() / 13000u) / 1000.0f;
 	cui_sheet(top, &sh);
 	return 1;
@@ -1754,15 +1755,17 @@ static int classic_link_paint(const struct lui_progress *p)
 	if (p->theirs) snprintf(t, sizeof t, "%s + %s", p->mine, p->theirs);
 	else snprintf(t, sizeof t, "%s", p->mine);
 	link_line(fb, pitch, px + 28, py + 84, 2, 0xFFC8D0E0u, t, tw);
-	snprintf(t, sizeof t, "With %s", p->other);
-	link_line(fb, pitch, px + 28, py + 110, 1, 0xFF8890A0u, t, tw);
+	if (p->other) {
+		snprintf(t, sizeof t, "With %s", p->other);
+		link_line(fb, pitch, px + 28, py + 110, 1, 0xFF8890A0u, t, tw);
+	}
 	link_line(fb, pitch, px + 28, py + 160, 2, 0xFFFFFFFFu, p->step_en, tw);
 	ayaneo_fill(fb, pitch, px + 28, py + 192, tw, 8, 0xFF303848u);
 	if (p->total) {
 		unsigned int d = p->done < p->total ? p->done : p->total;
 		ayaneo_fill(fb, pitch, px + 28, py + 192, (int)((unsigned long long)tw * d / p->total), 8, 0xFF5090F0u);
-		link_bytes(a, sizeof a, p->done);
-		link_bytes(b, sizeof b, p->total);
+		if (p->items) { snprintf(a, sizeof a, "%u", p->done); snprintf(b, sizeof b, "%u", p->total); }
+		else { link_bytes(a, sizeof a, p->done); link_bytes(b, sizeof b, p->total); }
 		if (p->kbs && p->secs_left)
 			snprintf(t, sizeof t, "%s of %s, %u KB/s, %u s left", a, b, p->kbs, p->secs_left);
 		else
@@ -1772,7 +1775,8 @@ static int classic_link_paint(const struct lui_progress *p)
 		int span = tw / 5, ph100 = (int)((gpt4_get_current_tick() / 130000u) % 100u);
 		ayaneo_fill(fb, pitch, px + 28 + (tw - span) * ph100 / 100, py + 192, span, 8, 0xFF5090F0u);
 	}
-	ayaneo_text(fb, pitch, px + 28, py + ph - 26, 1, 0xFF8890A0u, "B Cancel");
+	snprintf(t, sizeof t, "B %s", p->hint_en ? p->hint_en : "Cancel");
+	ayaneo_text(fb, pitch, px + 28, py + ph - 26, 1, 0xFF8890A0u, t);
 	ayaneo_canvas_present();
 	return cancel;
 }

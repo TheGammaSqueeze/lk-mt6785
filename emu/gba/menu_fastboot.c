@@ -193,8 +193,13 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			  extern volatile unsigned int g_dbg_cigm_us[6];
 			  extern volatile int g_dbg_aud_low; extern volatile unsigned int g_dbg_aud_short, g_dbg_igm_open_us, g_dbg_igm_open_part[2];
 			  extern volatile unsigned int g_dbg_igm_glass_us;
+			  extern volatile unsigned int g_dbg_igm_paint_us[3];
 			  snprintf(lbuf, sizeof lbuf, "igm: open=%uus at %u %u glass=%uus", g_dbg_igm_open_us, g_dbg_igm_open_part[0],
 				   g_dbg_igm_open_part[1], g_dbg_igm_glass_us);
+			  fastboot_info(lbuf);
+			  snprintf(lbuf, sizeof lbuf, "igmp: %u worst %u hash %u", g_dbg_igm_paint_us[0], g_dbg_igm_paint_us[1],
+				   g_dbg_igm_paint_us[2]);
+			  g_dbg_igm_paint_us[1] = 0;
 			  fastboot_info(lbuf);
 #if defined(KONKR_KPA) || defined(KONKR_BLOCK)
 			  { extern volatile int g_dbg_dt[5];

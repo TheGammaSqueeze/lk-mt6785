@@ -467,6 +467,7 @@ static int rom_for_host(void)
 }
 
 void lui_set_painter(int (*paint)(const struct lui_progress *p)) { s_paint = paint; }
+int lui_paint_progress(const struct lui_progress *p) { return s_paint && p ? s_paint(p) : 0; }
 
 /* The time, both ways once a link opens: 'T', seconds since 1970 UTC (8 bytes, little endian),
  * then 1 when that clock holds a real time. A console whose clock was never set or lost its time
