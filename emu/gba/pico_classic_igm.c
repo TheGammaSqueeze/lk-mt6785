@@ -917,6 +917,10 @@ void pico_classic_ra_target(unsigned int *buf, unsigned int pitch, unsigned int 
 	snes_target_fit(&s_t, buf, (int)pitch, (int)W, (int)H);
 	s_t.offx = s_t.offy = 0;
 	s_ra_base = snes_target_base(&s_t);
+	/* the kit's fonts and this target for the cards' words: the home menu leaves its own pack and a
+	 * target that draws nothing in hand (pico_classic_set.c), so the words were measured in the
+	 * wrong fonts and never drawn */
+	if (s_set) cui_use(&s_pk, s_set, &s_t);
 }
 int pico_classic_ra_px(int f, float sc) { return (int)(k_font_lh[f < 0 || f > 2 ? 1 : f] * sc * s_ra_base + .5f); }
 int pico_classic_ra_asc(int f, float sc) { return pico_classic_ra_px(f, sc) * 78 / 100; }
