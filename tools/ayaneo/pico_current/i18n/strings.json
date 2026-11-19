@@ -1492,6 +1492,346 @@
    "en": "Play the game the other console plays, or another game to link with it.",
    "kind": "about",
    "note": "status, wrapped; Link, Join: the two choices of a guest on a link cable system"
+  },
+  {
+   "en": "%u point",
+   "kind": "value",
+   "note": "RetroAchievements: an achievement's worth, one point"
+  },
+  {
+   "en": "%u points",
+   "kind": "value",
+   "note": "RetroAchievements: an achievement's worth, several points"
+  },
+  {
+   "en": "Unlocked %s",
+   "kind": "status",
+   "note": "RetroAchievements detail: when it was unlocked (%s: the date)"
+  },
+  {
+   "en": "Progress",
+   "kind": "label",
+   "note": "RetroAchievements detail: an achievement's progress, heading over its bar"
+  },
+  {
+   "en": "Unlocked here, waiting to reach RetroAchievements",
+   "kind": "status",
+   "note": "RetroAchievements: unlocked offline, not sent yet"
+  },
+  {
+   "en": "Up / Down: the one before or after",
+   "kind": "hint",
+   "note": "RetroAchievements detail: the keys go to the previous or next achievement"
+  },
+  {
+   "en": "%d of %d games: %d found",
+   "kind": "status",
+   "note": "box art search under way: games done of all, box art found"
+  },
+  {
+   "en": "%d without art",
+   "kind": "value",
+   "note": "Network: how many games have no box art"
+  },
+  {
+   "en": "%s forgotten",
+   "kind": "status",
+   "note": "Wi-Fi: a saved network was removed (%s: its name)"
+  },
+  {
+   "en": "8 to 63 characters",
+   "kind": "hint",
+   "note": "Wi-Fi password keyboard: the length a password must have"
+  },
+  {
+   "en": "A Wi-Fi password has 8 to 63 characters",
+   "kind": "status",
+   "note": "Wi-Fi: the password typed is too short or too long"
+  },
+  {
+   "en": "A sends them now; they also go by themselves whenever there is a network",
+   "kind": "about",
+   "note": "RetroAchievements: unlocks waiting to be sent"
+  },
+  {
+   "en": "Account",
+   "kind": "label",
+   "note": "RetroAchievements: the account row"
+  },
+  {
+   "en": "Box art",
+   "kind": "label",
+   "note": "Network tab: the box art row and page"
+  },
+  {
+   "en": "Box art: %d found, %d not found",
+   "kind": "status",
+   "note": "box art search finished"
+  },
+  {
+   "en": "Connect to a Wi-Fi network first",
+   "kind": "status",
+   "note": "Network: something needs a network"
+  },
+  {
+   "en": "Connected",
+   "kind": "value",
+   "note": "Wi-Fi: the network the console is on"
+  },
+  {
+   "en": "Connected to %s",
+   "kind": "status",
+   "note": "Wi-Fi: the network joined (%s: its name)"
+  },
+  {
+   "en": "Done",
+   "kind": "word",
+   "note": "keyboard key: finish typing"
+  },
+  {
+   "en": "Every game has art",
+   "kind": "status",
+   "note": "box art: nothing left to find"
+  },
+  {
+   "en": "Find box art for %d game",
+   "kind": "label",
+   "note": "box art: a button, one game"
+  },
+  {
+   "en": "Find box art for %d games",
+   "kind": "label",
+   "note": "box art: a button, several games"
+  },
+  {
+   "en": "Find box art for games without it",
+   "kind": "label",
+   "note": "box art: a button"
+  },
+  {
+   "en": "Forget",
+   "kind": "word",
+   "note": "Wi-Fi: remove a saved network"
+  },
+  {
+   "en": "From the network",
+   "kind": "value",
+   "note": "box art: where the pictures come from"
+  },
+  {
+   "en": "Good",
+   "kind": "value",
+   "note": "Wi-Fi: signal strength, middle"
+  },
+  {
+   "en": "In range",
+   "kind": "value",
+   "note": "Wi-Fi: a saved network that can be joined now"
+  },
+  {
+   "en": "Locked",
+   "kind": "value",
+   "note": "Wi-Fi: a network that needs a password"
+  },
+  {
+   "en": "Look again for box art",
+   "kind": "label",
+   "note": "box art: search again, also for games already tried"
+  },
+  {
+   "en": "Network",
+   "kind": "rail",
+   "note": "home rail tab and page: Wi-Fi, box art, RetroAchievements"
+  },
+  {
+   "en": "No saved networks: a network is saved when you join it.",
+   "kind": "about",
+   "note": "Wi-Fi: the saved networks list is empty"
+  },
+  {
+   "en": "Not connected",
+   "kind": "value",
+   "note": "Wi-Fi: on, but no network joined"
+  },
+  {
+   "en": "Not set",
+   "kind": "value",
+   "note": "a setting with nothing chosen yet"
+  },
+  {
+   "en": "Not signed in",
+   "kind": "value",
+   "note": "RetroAchievements: no account"
+  },
+  {
+   "en": "Not supported",
+   "kind": "value",
+   "note": "Wi-Fi: a network the console cannot join"
+  },
+  {
+   "en": "Not working",
+   "kind": "value",
+   "note": "Wi-Fi: the chip did not start"
+  },
+  {
+   "en": "Password",
+   "kind": "label",
+   "note": "a password field"
+  },
+  {
+   "en": "Password for %s",
+   "kind": "heading",
+   "note": "Wi-Fi keyboard: the network being joined (%s: its name)"
+  },
+  {
+   "en": "Points",
+   "kind": "label",
+   "note": "RetroAchievements: the account's points"
+  },
+  {
+   "en": "Press A again to forget",
+   "kind": "hint",
+   "note": "Wi-Fi: confirm removing a saved network"
+  },
+  {
+   "en": "Press A again to sign out",
+   "kind": "hint",
+   "note": "RetroAchievements: confirm signing out"
+  },
+  {
+   "en": "Region first",
+   "kind": "value",
+   "note": "box art: prefer the picture of the game's own region"
+  },
+  {
+   "en": "RetroAchievements is missing from the card (/cores)",
+   "kind": "status",
+   "note": "RetroAchievements: its file is not on the card"
+  },
+  {
+   "en": "RetroAchievements password",
+   "kind": "heading",
+   "note": "keyboard: typing the password"
+  },
+  {
+   "en": "RetroAchievements user name",
+   "kind": "heading",
+   "note": "keyboard: typing the user name"
+  },
+  {
+   "en": "Saved",
+   "kind": "value",
+   "note": "Wi-Fi: a network joined before"
+  },
+  {
+   "en": "Saved networks",
+   "kind": "label",
+   "note": "Wi-Fi: the list of networks joined before"
+  },
+  {
+   "en": "Saved networks are joined by themselves when they are in range.",
+   "kind": "about",
+   "note": "Wi-Fi: saved networks page"
+  },
+  {
+   "en": "Search again",
+   "kind": "label",
+   "note": "Wi-Fi: scan for networks again"
+  },
+  {
+   "en": "Searching...",
+   "kind": "status",
+   "note": "Wi-Fi: scanning for networks"
+  },
+  {
+   "en": "Sending the unlocks...",
+   "kind": "status",
+   "note": "RetroAchievements: sending unlocks made offline"
+  },
+  {
+   "en": "Shift",
+   "kind": "word",
+   "note": "keyboard key: capital letters"
+  },
+  {
+   "en": "Sign in",
+   "kind": "label",
+   "note": "RetroAchievements: a button"
+  },
+  {
+   "en": "Sign in with your retroachievements.org account",
+   "kind": "about",
+   "note": "RetroAchievements: before signing in"
+  },
+  {
+   "en": "Sign out",
+   "kind": "label",
+   "note": "RetroAchievements: a button"
+  },
+  {
+   "en": "Signing in...",
+   "kind": "status",
+   "note": "RetroAchievements: signing in"
+  },
+  {
+   "en": "Softcore. Unlocks made without a network are sent later.",
+   "kind": "about",
+   "note": "RetroAchievements: how unlocks count"
+  },
+  {
+   "en": "Source",
+   "kind": "label",
+   "note": "box art: where the pictures come from (the row)"
+  },
+  {
+   "en": "Stop",
+   "kind": "word",
+   "note": "box art: stop the search"
+  },
+  {
+   "en": "Strong",
+   "kind": "value",
+   "note": "Wi-Fi: signal strength, high"
+  },
+  {
+   "en": "This network's security is not supported yet",
+   "kind": "status",
+   "note": "Wi-Fi: a network the console cannot join yet"
+  },
+  {
+   "en": "Type your user name and password",
+   "kind": "about",
+   "note": "RetroAchievements: signing in"
+  },
+  {
+   "en": "Unlocks waiting to be sent",
+   "kind": "label",
+   "note": "RetroAchievements: unlocks made offline"
+  },
+  {
+   "en": "User name",
+   "kind": "label",
+   "note": "a user name field"
+  },
+  {
+   "en": "Weak",
+   "kind": "value",
+   "note": "Wi-Fi: signal strength, low"
+  },
+  {
+   "en": "Wi-Fi",
+   "kind": "label",
+   "note": "Network tab: the Wi-Fi row and page"
+  },
+  {
+   "en": "Wi-Fi is off: it uses no power until you turn it on here.",
+   "kind": "about",
+   "note": "Wi-Fi page while Wi-Fi is off"
+  },
+  {
+   "en": "Working...",
+   "kind": "status",
+   "note": "something under way"
   }
  ]
 }
