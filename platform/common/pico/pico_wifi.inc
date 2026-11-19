@@ -3413,10 +3413,29 @@ void netsvc_scan(void)
 	ns_wake();
 }
 
+/* oem netsvc:demo:1 - for the release's screenshots only: the Network tab shows made up networks,
+ * a made up joined network and address and made up saved networks, so no real network name or
+ * address of the place the pictures were taken appears. Wi-Fi itself runs as it is. Memory only. */
+static volatile int s_ns_demo;
+static const struct netsvc_ap k_ns_demo_aps[] = {
+	{ "HomeNetwork", -45, 6, 1, 1, 1 },
+	{ "HomeNetwork-5G", -58, 36, 1, 1, 1 },
+	{ "CoffeeShop-Free", -63, 11, 0, 1, 0 },
+	{ "Apartment-204", -70, 1, 1, 1, 0 },
+	{ "GuestNet", -74, 44, 1, 1, 0 },
+	{ "Office-Enterprise", -79, 149, 1, 0, 0 },
+};
+#define NS_DEMO_APS ((int)(sizeof k_ns_demo_aps / sizeof k_ns_demo_aps[0]))
+
 int netsvc_aps(struct netsvc_ap *out, int max)
 {
 	int n;
 	ns_ready();
+	if (s_ns_demo) {
+		n = NS_DEMO_APS < max ? NS_DEMO_APS : max;
+		memcpy(out, k_ns_demo_aps, sizeof *out * (unsigned)n);
+		return n;
+	}
 	mutex_acquire(&s_ns_info);
 	n = s_ns_naps < max ? s_ns_naps : max;
 	memcpy(out, s_ns_aps, sizeof *out * (unsigned)n);
@@ -3457,12 +3476,23 @@ void netsvc_get(struct netsvc_status *st)
 	*st = s_ns_st;
 	if (!st->why) st->why = "";
 	mutex_release(&s_ns_info);
+	if (s_ns_demo && (st->state == NETSVC_ONLINE || st->state == NETSVC_JOINING)) {
+		strcpy(st->ssid, "HomeNetwork");
+		st->ip = 0xC0A8012Au;			/* 192.168.1.42 */
+		st->gateway = st->dns = 0xC0A80101u;
+		st->dbm = -45;
+	}
 }
 
 int netsvc_saved_names(char names[][33], int max)
 {
 	int i, n;
 	ns_ready();
+	if (s_ns_demo) {			/* (the two saved ones of the made up list) */
+		n = max < 2 ? max : 2;
+		for (i = 0; i < n; i++) memcpy(names[i], k_ns_demo_aps[i].ssid, 33);
+		return n;
+	}
 	mutex_acquire(&s_ns_info);
 	n = s_ns_nsaved < max ? s_ns_nsaved : max;
 	for (i = 0; i < n; i++) memcpy(names[i], s_ns_saved[i].ssid, 33);
@@ -3776,6 +3806,9 @@ static void cmd_netsvc(const char *arg, void *data, unsigned sz)
 		}
 		fastboot_okay("");
 		return;
+	} else if (!strncmp(arg, "demo:", 5)) {
+		s_ns_demo = arg[5] == '1';
+		fastboot_info(s_ns_demo ? "demo: made up networks shown" : "demo: off");
 	} else if (!strncmp(arg, "wedge", 5)) {
 		/* a test of the start's recovery: the firmware downloaded again into the running chip, as a
 		 * second start once did (its DMA sticks). Then netsvc:off and netsvc:on: the start fails,
