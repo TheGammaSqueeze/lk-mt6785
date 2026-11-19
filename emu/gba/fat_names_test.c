@@ -75,6 +75,8 @@ static const char *const k_games[] = {
 	"Caf\xC3\xA9 One",                                               /* zip, marked UTF-8 */
 	"Caf\xC3\xA9 Two",                                               /* zip, code page 437 */
 	"Huit",                                                           /* 7z */
+	"Kirby_s Quest",                                                  /* zip of one: shown Kirby's Quest */
+	"Odd_one",                                                        /* zip of one, another name inside */
 	"Old",                                                            /* zip, code page 437 */
 	PK_E,
 	"Poke\xCC\x81mon2",
@@ -207,11 +209,13 @@ static void test_listing(fat_vol *v, const char *label)
 	n = gba_sd_list_roms(v, r, 64, &tot);
 	for (i = 0; i < n; i++) printf("  %s %2d %u %s\n", label, i, r[i].type, r[i].name);
 	for (i = 0; i < n; i++) {
-		if (!utf8_whole(r[i].name) || strlen(r[i].name) > 127 || strcmp(r[i].name, r[i].uname)) ok = 0;
+		if (!utf8_whole(r[i].name) || strlen(r[i].name) > 127) ok = 0;
+		if (!strcmp(r[i].name, "Kirby_s Quest")) { if (strcmp(r[i].uname, "Kirby's Quest")) ok = 0; }	/* the inside's apostrophe */
+		else if (strcmp(r[i].name, r[i].uname)) ok = 0;
 		if (!strcmp(r[i].name, GB_CN)) cn++;
 		if (!strcmp(r[i].name, GB_KO)) ko++;
 	}
-	check(ok, "every name whole UTF-8, at most 127 bytes, and the same as uname", 0);
+	check(ok, "every name whole UTF-8, at most 127 bytes, and shown as it is (Kirby's Quest from inside its zip)", 0);
 	check(cn == 1 && ko == 1, "two names of the same underscore form are two games", label);
 	for (i = 0, j = 0; i < n; i++) {	/* the GBA games, in order, the two in kana last */
 		if (r[i].type != GBA_CONSOLE_GBA) continue;

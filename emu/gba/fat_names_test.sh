@@ -31,6 +31,12 @@ names = ["Pokémon Émeraude.gba", "Pokémon2.gba", "ポケモン.gba",
          "Smile \U0001F600.gba", "Zelda.gba", "apple.gba"]
 os.makedirs(d + "/gba", exist_ok=True)
 for n in names: open(os.path.join(d, "gba", n), "wb").write(rom(n))
+# one ROM in a zip whose name has '_' for the apostrophe the ROM's own name has (shown with it),
+# and one whose ROM inside has another name (shown as the zip is named)
+with zipfile.ZipFile(d + "/gba/Kirby_s Quest.zip", "w") as z:
+    z.writestr("Kirby's Quest (USA).gba", rom("kq"))
+with zipfile.ZipFile(d + "/gba/Odd_one.zip", "w") as z:
+    z.writestr("Something Else.gba", rom("so"))
 with zipfile.ZipFile(d + "/gba/Multi.zip", "w") as z:
     z.writestr("Café One.gba", rom("c1")); z.writestr("Zeta.gba", rom("ze"))
 # one name in code page 437 (no UTF-8 flag): written under a stand-in, then the byte put in

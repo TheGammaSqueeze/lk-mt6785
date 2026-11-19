@@ -512,11 +512,39 @@ static const uint8_t *aix_archive(fat_vol *v, const char *dir, const fat_dirent 
 	return b.rec;
 }
 
-/* one game into out[] (its file e, its name in UTF-8, the archive it is in and which ROM of it);
- * a game already listed for the system keeps its first place, unless that was an archive and this
- * is the ROM itself (no unpacking). Returns the new count. */
+/* An archive of one ROM is listed under its own name, which a tool may have written with '_' for
+ * letters a file name once could not hold (Kirby_s Adventure.zip holding Kirby's Adventure.nes).
+ * When the ROM's name inside is the archive's name but for those, the name shown is the archive's
+ * with each '_' given back from the inside (into out, cap bytes): 1. Only what is shown changes;
+ * the saves, states and box art keep the file's name. */
+static int shown_from_inside(const char *arc_name, const char *inside, char *out, unsigned cap)
+{
+	unsigned a = 0, b = 0, o = 0;
+	int fixed = 0;
+	while (arc_name[a]) {
+		if (o + 5 >= cap) return 0;
+		if (arc_name[a] == '_' && inside[b] && inside[b] != '_') {
+			/* one letter of the inside for the '_' (all the bytes of a UTF-8 one) */
+			do out[o++] = inside[b++]; while (((unsigned char)inside[b] & 0xC0) == 0x80 && o + 1 < cap);
+			a++;
+			fixed = 1;
+			continue;
+		}
+		if (arc_name[a] != inside[b]) return 0;	/* another name: the archive's stays */
+		out[o++] = arc_name[a++];
+		b++;
+	}
+	if (inside[b] && inside[b] != ' ' && inside[b] != '(' && inside[b] != '[') return 0;	/* (tags may follow) */
+	out[o] = 0;
+	return fixed;
+}
+
+/* one game into out[] (its file e, its name in UTF-8, the archive it is in and which ROM of it, and
+ * the name to show when not that one: NULL the same); a game already listed for the system keeps
+ * its first place, unless that was an archive and this is the ROM itself (no unpacking). Returns
+ * the new count. */
 static int add_game(gba_rom_entry *out, int max, int n, int *tot, unsigned char type, int di,
-		    const fat_dirent *e, const char *nm, int arc, unsigned member)
+		    const fat_dirent *e, const char *nm, int arc, unsigned member, const char *shown)
 {
 	char key[sizeof out[0].name];
 	unsigned int slot;
@@ -536,7 +564,8 @@ static int add_game(gba_rom_entry *out, int max, int n, int *tot, unsigned char 
 		return n;
 	}
 	for (k = 0; (out[n].name[k] = key[k]) != 0; k++) ;
-	for (k = 0; (out[n].uname[k] = key[k]) != 0; k++) ;
+	if (shown && shown[0]) u8_copy(out[n].uname, shown, sizeof out[n].uname);
+	else for (k = 0; (out[n].uname[k] = key[k]) != 0; k++) ;
 	out[n].type = type;
 	out[n].first_clus = e->first_clus;
 	out[n].size = e->size;
@@ -585,12 +614,26 @@ static int scan_rom_folder(fat_vol *v, const char *path, uint32_t id, const stru
 		for (k = 0; k < L; k++) nm[k] = e.name[k];
 		nm[L] = 0;
 		if (arc && (el = word_in(nm, sys->exts, 1)) != 0) nm[L -= el] = 0;
-		if (!arc) { n = add_game(out, max, n, tot, sys->type, di, &e, nm, RA_NONE, 0); continue; }
+		if (!arc) { n = add_game(out, max, n, tot, sys->type, di, &e, nm, RA_NONE, 0, NULL); continue; }
 		/* an archive: one game under its own name when it holds one ROM (or cannot be read,
 		 * then its launch says why), a game for each ROM when it holds several */
 		rec = aix_archive(v, path, &e, arc, sys->exts);
 		cnt = rec ? (uint32_t)(rec[12] | (rec[13] << 8)) : AIX_BAD;
-		if (cnt == AIX_BAD || cnt <= 1) { n = add_game(out, max, n, tot, sys->type, di, &e, nm, arc, 0); continue; }
+		if (cnt == AIX_BAD || cnt <= 1) {
+			char shown[128], rn[128];
+			int ok = 0;
+			if (cnt == 1) {		/* its one ROM's name, folders and extension off */
+				const uint8_t *q = rec + 14;
+				int rl = q[0], st = 0, j;
+				for (j = 0; j < rl; j++) if (q[1 + j] == '/' || q[1 + j] == '\\') st = j + 1;
+				for (j = st; j < rl && j - st < 127; j++) rn[j - st] = (char)q[1 + j];
+				rn[j - st] = 0;
+				if ((el = word_in(rn, sys->exts, 1)) != 0) rn[(j - st) - el] = 0;
+				ok = shown_from_inside(nm, rn, shown, sizeof shown);
+			}
+			n = add_game(out, max, n, tot, sys->type, di, &e, nm, arc, 0, ok ? shown : NULL);
+			continue;
+		}
 		{
 			const uint8_t *q = rec + 14;
 			uint32_t m;
@@ -601,7 +644,7 @@ static int scan_rom_folder(fat_vol *v, const char *path, uint32_t id, const stru
 				for (j = st; j < rl && j - st < 127; j++) rn[j - st] = (char)q[1 + j];
 				rn[j - st] = 0;
 				if ((el = word_in(rn, sys->exts, 1)) != 0) rn[(j - st) - el] = 0;
-				n = add_game(out, max, n, tot, sys->type, di, &e, rn, arc, m);
+				n = add_game(out, max, n, tot, sys->type, di, &e, rn, arc, m, NULL);
 			}
 		}
 	}
