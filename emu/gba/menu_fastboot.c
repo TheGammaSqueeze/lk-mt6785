@@ -199,6 +199,10 @@ static void cmd_diag(const char *arg, void *data, unsigned sz)
 			  fastboot_info(lbuf);
 			  snprintf(lbuf, sizeof lbuf, "igmp: %u worst %u hash %u", g_dbg_igm_paint_us[0], g_dbg_igm_paint_us[1],
 				   g_dbg_igm_paint_us[2]);
+			  fastboot_info(lbuf);
+			  { extern volatile unsigned int g_dbg_dt_us[4];
+			    snprintf(lbuf, sizeof lbuf, "igmd: ground %u badge %u words %u all %u", g_dbg_dt_us[0], g_dbg_dt_us[1],
+				     g_dbg_dt_us[2], g_dbg_dt_us[3]); }
 			  g_dbg_igm_paint_us[1] = 0;
 			  fastboot_info(lbuf);
 #if defined(KONKR_KPA) || defined(KONKR_BLOCK)

@@ -3605,6 +3605,31 @@ static void fade_box(uint32_t *buf, int pitch, const int *b, unsigned a)
 static void rrect_fade(int x, int y, int w, int h, float r, uint32_t rgb, int op, int fade_w)
 {
 	int i, j;
+	if (r < .5f && !g_cfl && !g_cfr) {
+		/* square corners (the detail panel's whole screen ground): the same pixels without the
+		 * corner sums and a put per pixel, each row one run (it took 18 ms of a 20 ms paint) */
+		int n = fade_w && fade_w < w ? fade_w : w, i0 = 0, i1 = n;
+		if (x + i0 < 0) i0 = -x;
+		if (x + i1 > g_W) i1 = g_W - x;
+		if (g_cx1) {
+			if (x + i0 < g_cx0) i0 = g_cx0 - x;
+			if (x + i1 > g_cx1) i1 = g_cx1 - x;
+		}
+		if (i1 <= i0 || op <= 0) return;
+		for (j = 0; j < h; j++) {
+			int yy = y + j;
+			uint32_t *d;
+			if ((unsigned)yy >= (unsigned)g_H) continue;
+			touch(yy, x + i0, x + i1);
+			d = g_fb + yy * g_W + x;
+			for (i = i0; i < i1; i++) {
+				int a = fade_w ? op * (fade_w - i) / fade_w : op;
+				if (a <= 0) break;
+				d[i] = a >= 256 ? (0xFF000000u | rgb) : mix(d[i], rgb, a);
+			}
+		}
+		return;
+	}
 	for (j = 0; j < h; j++)
 		for (i = 0; i < w; i++) {
 			float px = i + .5f, py = j + .5f, cx = px < r ? r : px > w - r ? w - r : px;
@@ -3946,6 +3971,7 @@ static int wrap_lines(const cfont *f, const char *s, int max_w, char (*out)[160]
 	return n;
 }
 volatile int g_dbg_dt[5];	/* oem diag: the detail panel's last paint (stage, width, title, open x1000, frames) */
+volatile unsigned int g_dbg_dt_us[4];	/* oem diag: its parts, last paint: the ground, the badge, the words, all */
 static void igm_detail_paint(void)
 {
 	struct pico_ra_detail d;
@@ -3967,9 +3993,27 @@ static void igm_detail_paint(void)
 	k = igm_ease(s_dt);
 	w = pw + (int)((g_W - pw) * k);	/* from the drawer's edge to the screen's */
 	g_cx0 = 0; g_cx1 = w;
-	fill(0, 0, w, g_H, RA_AIR, (int)(256 * (k < .3f ? k / .3f : 1)));
-	rrect_fade(0, 0, w, g_H, 0, C_ACCENT, 30, (int)(w * 36 / 100));
-	fill(w - 1, 0, 1, g_H, C_MUTED, 60);	/* its edge */
+	{ static unsigned t0d; t0d = gpt4_get_current_tick(); g_dbg_dt_us[3] = t0d; }
+	if (k >= .3f && w > 0 && w <= 2048) {
+		/* opaque by now: every row of the ground is the same (the air, the accent's wash from the
+		 * left, the edge), so one row is made and copied down the screen */
+		static uint32_t row[2048];
+		int fw = (int)(w * 36 / 100), yy;
+		for (i = 0; i < w; i++) {
+			uint32_t c = 0xFF000000u | RA_AIR;
+			if (i < fw) { int a = 30 * (fw - i) / fw; if (a > 0) c = mix(c, C_ACCENT, a); }
+			if (i == w - 1) c = mix(c, C_MUTED, 60);
+			row[i] = c;
+		}
+		for (yy = 0; yy < g_H; yy++) {
+			touch(yy, 0, w);
+			memcpy(g_fb + yy * g_W, row, (size_t)w * 4);
+		}
+	} else {	/* still see-through as it opens */
+		fill(0, 0, w, g_H, RA_AIR, (int)(256 * (k < .3f ? k / .3f : 1)));
+		rrect_fade(0, 0, w, g_H, 0, C_ACCENT, 30, (int)(w * 36 / 100));
+		fill(w - 1, 0, 1, g_H, C_MUTED, 60);	/* its edge */
+	}
 	g_dbg_dt[0] = 3; g_dbg_dt[1] = w;
 	bx = U(30); by = U(26); bwid = g_W - U(60); bh = g_H - by - U(70);
 	pad = U(26);
@@ -3983,8 +4027,12 @@ static void igm_detail_paint(void)
 	}
 	{	/* the badge; locked (not unlocked) in grey, as the server's locked badge is */
 		const unsigned short *px = d.badge[0] ? pico_ra_badge(d.badge) : 0;
+		unsigned tb = gpt4_get_current_tick();
+		g_dbg_dt_us[0] = (tb - g_dbg_dt_us[3]) / 13u;
 		ra_pic(bx + pad, by + pad, B, px, tone == C_MUTED ? C_ACCENT : tone);
 		if (px && d.state != PICO_RA_UNLOCKED) ra_grey(bx + pad, by + pad, B);
+		g_dbg_dt_us[1] = (gpt4_get_current_tick() - tb) / 13u;
+		g_dbg_dt_us[2] = gpt4_get_current_tick();
 	}
 	y = by + pad;
 	{	/* the state's chip */
@@ -4045,6 +4093,11 @@ static void igm_detail_paint(void)
 		text(&G.hint, xx, g_H - U(22), tr("Up / Down: the one before or after"), C_MUTED, 256, 0, 0, 0);
 	}
 	g_dbg_dt[0] = 4;
+	{	/* (the words since the badge, then the whole paint, in place of its start) */
+		unsigned te = gpt4_get_current_tick();
+		g_dbg_dt_us[2] = (te - g_dbg_dt_us[2]) / 13u;
+		g_dbg_dt_us[3] = (te - g_dbg_dt_us[3]) / 13u;
+	}
 	g_cx0 = g_cx1 = 0;
 }
 /* the keys while it is open: 1 taken */
