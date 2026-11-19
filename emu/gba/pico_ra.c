@@ -203,6 +203,12 @@ static int ra_map(void)
 /* below the badges, 512 KB the theme keeps a card's picture in while it fades (pico_current.c): the
  * blob's heap ends there (rcheevos uses a small part of what is left) */
 #define RA_CARDPIC_PA	(RA_BADGE_PA - 0x80000u)
+/* below the card picture, with RA memory of 8 MB or more, 4 MB the server's answers land in (and the
+ * kept copies are read into): a game's set runs past the network service's own 768 KB for a big
+ * game (1.73 MB for Pokemon FireRed, 427 KB for Mario & Luigi). The blob's heap ends below it. With
+ * less memory there is none: answers use the service's memory and S_FBUF, as before. */
+#define RA_ANS_CAP	(s_ra_size >= 0x800000u ? 0x400000u : 0u)
+#define RA_ANS_PA	(RA_CARDPIC_PA - RA_ANS_CAP)
 #define BDG_PX		(PICO_RA_BADGE * PICO_RA_BADGE)
 #define BDG_MAX		100
 struct bdg { char name[8]; unsigned short px[BDG_PX]; };
@@ -672,7 +678,7 @@ static int ra_load(void)
 		return -1;
 	}
 	span = (hdr[4] + 63u) & ~63u;
-	heap = RA_CARDPIC_PA - (RA_MEM_PA + span);
+	heap = RA_ANS_PA - (RA_MEM_PA + span);
 	X->heap_init((void *)(RA_MEM_PA + span), heap);
 	if (X->init() != 0) { X = 0; s_load_failed = 1; return -1; }
 	ua_set(0);
@@ -933,7 +939,8 @@ static void event_one(const struct ra_event *pe, int playing)
 				}
 				c = card_new(PICO_RA_CARD_GAME);
 				c->hardcore = sm.hardcore;
-				copy_n(c->head, sizeof c->head, sm.hardcore ? "Hardcore" : s_session_online ? "Softcore" : "Offline softcore");
+				copy_n(c->head, sizeof c->head, sm.hardcore ? "RetroAchievements: Hardcore" : s_session_online ?
+				       "RetroAchievements: Softcore" : "RetroAchievements: Offline softcore");
 				copy_n(c->title, sizeof c->title, e.title);
 				if (!sm.hardcore && s_hc_why[0] && hc_wanted())
 					copy_n(c->line, sizeof c->line, s_hc_why);
@@ -1100,15 +1107,20 @@ static void events(int playing)
 
 /* ---- server calls ---- */
 
-/* the kept answer, read into S_FBUF: its length, 0 none */
+/* where a kept answer is read to: the answer memory when there is one, S_FBUF when not */
+static unsigned char *copy_buf(void) { return RA_ANS_CAP ? (unsigned char *)(addr_t)RA_ANS_PA : S_FBUF; }
+static unsigned copy_cap(void) { return RA_ANS_CAP ? RA_ANS_CAP : RA_FBUF_CAP; }
+
+/* the kept answer, read into copy_buf(): its length, 0 none */
 static unsigned copy_read(const char *api, const char *key)
 {
 	char name[96];
-	unsigned n;
+	unsigned char *b = copy_buf();
+	unsigned n, cap = copy_cap();
 	copy_name(name, sizeof name, api, key);
-	n = gba_sd_read_named(s_vol, RA_COPY_DIR, name, "json", S_FBUF, RA_FBUF_CAP - 1);
-	if (n >= RA_FBUF_CAP - 1) return 0;		/* (cut short: not used) */
-	S_FBUF[n] = 0;
+	n = gba_sd_read_named(s_vol, RA_COPY_DIR, name, "json", b, cap - 1);
+	if (n >= cap - 1) return 0;			/* (cut short: not used) */
+	b[n] = 0;
 	return n;
 }
 
@@ -1242,7 +1254,7 @@ static void pump(int net, int card)
 				if (r == 1) finish(q, (int)status, body, len);
 				else {
 					unsigned n = card && keepable(q->api) ? copy_read(q->api, q->key) : 0;
-					finish(q, n ? 200 : 0, n ? S_FBUF : 0, n);
+					finish(q, n ? 200 : 0, n ? copy_buf() : 0, n);
 				}
 			}
 		}
@@ -1276,15 +1288,18 @@ static void pump(int net, int card)
 		struct ra_req *q = &S_REQ[i];
 		if (!q->used) continue;
 		if (online) {
-			if (netsvc_http_begin(q->host, q->path, q->secure, q->post[0] ? q->post : 0, (unsigned)strlen(q->post)) != 0)
-				return;				/* the service is busy (box art): next time */
+			int b = RA_ANS_CAP ?
+				netsvc_http_begin_into(q->host, q->path, q->secure, q->post[0] ? q->post : 0, (unsigned)strlen(q->post),
+						       (void *)(addr_t)RA_ANS_PA, RA_ANS_CAP) :
+				netsvc_http_begin(q->host, q->path, q->secure, q->post[0] ? q->post : 0, (unsigned)strlen(q->post));
+			if (b != 0) return;		/* the service is busy (box art): next time */
 			s_http_id = q->id;
 			memset(q->post, 0, sizeof q->post);	/* (sent: a password is not kept) */
 			if (s_game_on) s_live_sent++;
 			return;
 		} else {
 			unsigned n = card && keepable(q->api) ? copy_read(q->api, q->key) : 0;
-			finish(q, n ? 200 : 0, n ? S_FBUF : 0, n);
+			finish(q, n ? 200 : 0, n ? copy_buf() : 0, n);
 		}
 	}
 	/* nothing of the blob's waiting: a kept unlock to the server (during a game too, when it started
@@ -1489,10 +1504,17 @@ void pico_ra_core_ready(const void *rom, unsigned rom_size, const struct pico_co
 		thread_sleep(2);
 	}
 	if (!s_game_seen) im_log("start: no answer for the set within 10 s");
-	if (!s_game_seen) {				/* too slow: no achievements this time */
+	if (!s_game_seen) {				/* too slow: no achievements this time, and said so */
+		struct pico_ra_card *c;
 		X->unload_game();
 		s_console = 0;
 		s_game_on = 0;
+		memset(s_trk, 0, sizeof s_trk);		/* (nothing of a set that never came stays on screen) */
+		memset(s_chal, 0, sizeof s_chal);
+		c = card_new(PICO_RA_CARD_NOTE);
+		copy_n(c->head, sizeof c->head, "RetroAchievements");
+		copy_n(c->title, sizeof c->title, "Achievements are off for now");
+		copy_n(c->line, sizeof c->line, "The game's set did not arrive in time: start the game again");
 	}
 	s_live_net = s_session_online && s_game_seen;
 	if (!s_live_net) {			/* no network: answered here, the service asleep (costs the game nothing) */
