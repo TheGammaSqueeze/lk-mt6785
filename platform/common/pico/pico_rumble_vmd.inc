@@ -32,7 +32,7 @@ static unsigned s_run_i, s_run_len, s_run_writes;
  * at least VIB_MIN_ON_MS; longer runs are the game's own. The hold ends on a later call, so it
  * relies on the cores' frame loops calling every frame (they do, menu open or not); every other
  * stop (a game's end, a test pulse's) is ayaneo_rumble_stop, at once. */
-#define VIB_MIN_ON_MS 60u
+#define VIB_MIN_ON_MS 80u
 static unsigned s_hold_until;          /* gpt4 ticks (13 MHz): the motor stays on until then */
 static int s_holding;
 
