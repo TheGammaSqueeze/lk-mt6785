@@ -851,6 +851,11 @@ int pico_scrape_step(void)
 	case ST_DONE:
 	default:
 		miss_save();
+		/* the list is only used during a pass: its 32 KB go back to the LK's heap now (kept
+		 * for the boot, it left the KPA's small heap too short for a launch: USB went silent) */
+		free(s_miss);
+		s_miss = 0;
+		s_nmiss = 0;
 		S.info.running = 0;
 		S.info.game = 0;
 		S.state = ST_IDLE;

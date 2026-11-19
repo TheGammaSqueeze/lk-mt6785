@@ -2576,6 +2576,26 @@ static void wf_conn_drop(struct wf_conn *c)
 	}
 	c->alive = 0;
 	c->h = -1;
+	/* the second slot's TLS state (40 KB of the LK's heap) is given back with its connection: kept
+	 * for the boot, it left the KPA's small heap too short for a game's launch, and USB went silent
+	 * while the game ran. The first slot's is static (s_wf_tls). */
+	if (c->tls && c->tls != &s_wf_tls) {
+		if (s_wf_tlsp == c->tls) s_wf_tlsp = &s_wf_tls;	/* (nothing left pointing at it) */
+		pico_wipe(c->tls, sizeof *c->tls);
+		free(c->tls);
+		c->tls = 0;
+	}
+}
+/* every kept connection idle past WF_CONN_IDLE_MS, or from a link that is gone, closed now (the
+ * service thread, every turn) rather than when the next request looks at it */
+static void wf_conn_sweep(void)
+{
+	unsigned int now = gpt4_get_current_tick(), k;
+	for (k = 0; k < WF_CONNS; k++) {
+		struct wf_conn *c = &s_wf_conn[k];
+		if (c->alive && (c->gen != s_wf_net_gen || (now - c->last) / 13000u >= WF_CONN_IDLE_MS)) wf_conn_drop(c);
+		else if (!c->alive && c->tls && c->tls != &s_wf_tls) wf_conn_drop(c);	/* (a closed slot's state) */
+	}
 }
 /* a slot for a new connection: a free one, else the one used longest ago (closed first) */
 static struct wf_conn *wf_conn_slot(void)
@@ -3187,6 +3207,7 @@ static void ns_http(void)
 /* a game is being played: the service sleeps (no link pumps, nothing sent), so it costs the game
  * nothing; the network stays joined and picks up where it was when the menu is back */
 static volatile int s_ns_quiet;
+static volatile unsigned int s_ns_quiet_gen;	/* raised each time a game makes the service quiet */
 /* The service's locks and its wake event, made once, by whichever comes first: the menu (its first
  * netsvc call can come before the fastboot commands are registered, at the same moment of the boot)
  * or the registration. A zeroed event signalled before this sent the KPA's boot round in a loop. */
@@ -3207,6 +3228,7 @@ static void ns_ready(void)
 void netsvc_quiet(int on)
 {
 	ns_ready();
+	if (on && !s_ns_quiet) s_ns_quiet_gen++;
 	s_ns_quiet = on;
 	if (!on) event_signal(&s_ns_wake, false);
 }
@@ -3233,7 +3255,17 @@ static int ns_thread(void *arg)
 		int cmd, online;
 		g_ns_crumb[0] = NSC_WAIT;
 		event_wait_timeout(&s_ns_wake, s_ns_quiet ? 1000 : s_ns_st.state == NETSVC_ONLINE ? 10 : 100);
-		if (s_ns_quiet) continue;
+		if (s_ns_quiet) {
+			/* a game: its kept connections closed once (their memory back before it runs) */
+			static unsigned int quiet_swept_gen;
+			if (quiet_swept_gen != s_ns_quiet_gen) {
+				quiet_swept_gen = s_ns_quiet_gen;
+				mutex_acquire(&s_wf_radio);
+				{ unsigned int k; for (k = 0; k < WF_CONNS; k++) wf_conn_drop(&s_wf_conn[k]); }
+				mutex_release(&s_wf_radio);
+			}
+			continue;
+		}
 		mutex_acquire(&s_ns_info);
 		cmd = s_ns_cmd;
 		s_ns_cmd = NS_NONE;
@@ -3242,6 +3274,7 @@ static int ns_thread(void *arg)
 		s_wf_coop = 1;
 		if (!s_wf_up) {
 			ns_fail_queued(0);
+			wf_conn_sweep();		/* (Wi-Fi off: the link's generation moved on, all go) */
 			if (s_ns_st.state != NETSVC_OFF && s_ns_st.state != NETSVC_STARTING && s_ns_st.state != NETSVC_FAILED)
 				ns_set_state(NETSVC_OFF, 0);
 			s_wf_coop = 0;
@@ -3303,6 +3336,7 @@ static int ns_thread(void *arg)
 		} else if (online) {
 			int i;
 			g_ns_crumb[0] = NSC_PUMP;
+			wf_conn_sweep();		/* idle kept connections closed, their memory back */
 			for (i = 0; i < 4; i++) wf_link_pump();	/* ARP answers, DHCP renewals, new group keys */
 		}
 		s_wf_coop = 0;
@@ -3320,10 +3354,24 @@ void netsvc_wifi(int on)
 		if (s_wf_up) return;
 		ns_set_state(NETSVC_STARTING, "");
 		mutex_acquire(&s_wf_radio);		/* the start reads the card: the caller's thread */
-		if (pico_wifi_up() != 0) {
+		if (s_wf_up) {				/* another thread started it meanwhile (the menu's own start
+							 * and a second caller): a second firmware download into the
+							 * running chip wedged its DMA until a power cut */
 			mutex_release(&s_wf_radio);
-			ns_set_state(NETSVC_FAILED, "Wi-Fi did not start (its firmware in /bios/connsys?)");
 			return;
+		}
+		if (pico_wifi_up() != 0) {
+			/* a start that stopped half way leaves CONNSYS powered with its DMA busy, and every
+			 * later start fails the same way: power it off and try once from the beginning
+			 * (not while the Bluetooth link is using CONNSYS) */
+			bt_log("wifi: start failed, CONNSYS off and once more");
+			if (s_svc_state == SVC_OFF || s_svc_state == SVC_FAILED) pico_bt_off();
+			if (pico_wifi_up() != 0) {
+				if (s_svc_state == SVC_OFF || s_svc_state == SVC_FAILED) pico_bt_off();
+				mutex_release(&s_wf_radio);
+				ns_set_state(NETSVC_FAILED, "Wi-Fi did not start (its firmware in /bios/connsys?)");
+				return;
+			}
 		}
 		mutex_release(&s_wf_radio);
 		ns_set_state(NETSVC_READY, "");
@@ -3728,6 +3776,16 @@ static void cmd_netsvc(const char *arg, void *data, unsigned sz)
 		}
 		fastboot_okay("");
 		return;
+	} else if (!strncmp(arg, "wedge", 5)) {
+		/* a test of the start's recovery: the firmware downloaded again into the running chip, as a
+		 * second start once did (its DMA sticks). Then netsvc:off and netsvc:on: the start fails,
+		 * powers CONNSYS off and starts again (btlog "start failed, CONNSYS off and once more") */
+		int rc;
+		mutex_acquire(&s_wf_radio);
+		rc = s_wf_up ? pico_wifi_up() : 1;
+		mutex_release(&s_wf_radio);
+		snprintf(l, sizeof l, "wedge: second start %d (1: Wi-Fi was not up)", rc);
+		fastboot_info(l);
 	} else if (!strncmp(arg, "ua", 2)) {	/* the user agent the next request carries */
 		fastboot_info(s_wf_user_agent[0] ? s_wf_user_agent : "GammaOS-Pico (none set)");
 		fastboot_okay("");
