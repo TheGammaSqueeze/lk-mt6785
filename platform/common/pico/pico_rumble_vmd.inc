@@ -32,8 +32,9 @@ static unsigned s_run_i, s_run_len, s_run_writes;
  * at least VIB_MIN_ON_MS; longer runs are the game's own. The hold ends on a later call, so it
  * relies on the cores' frame loops calling every frame (they do, menu open or not); every other
  * stop (a game's end, a test pulse's) is ayaneo_rumble_stop, at once. */
-#define VIB_MIN_ON_MS 80u
+#define VIB_MIN_ON_MS 120u
 static unsigned s_hold_until;          /* gpt4 ticks (13 MHz): the motor stays on until then */
+static int s_asked = -1;               /* what the game asked for last (the runs log follows it, not the pin) */
 static int s_holding;
 
 static int vib_write(const unsigned char *buf, unsigned n)
@@ -87,10 +88,10 @@ void ayaneo_rumble_set(int on)
 {
 	unsigned writes = on > 0 ? (unsigned)on : 0;
 	on = on ? 1 : 0;
-	if (on == s_on) { if (s_run_len < 0xffff) s_run_len++; }
-	else if (s_on >= 0) {
+	if (on == s_asked) { if (s_run_len < 0xffff) s_run_len++; }
+	else if (s_asked >= 0) {
 		/* a run ended: an on run opens a new entry, an off run closes it */
-		if (s_on) {
+		if (s_asked) {
 			s_runs[s_run_i & 15][0] = (unsigned short)s_run_len;
 			s_runs[s_run_i & 15][1] = 0;
 			s_runs[s_run_i & 15][2] = (unsigned short)(s_run_writes > 0xffff ? 0xffff : s_run_writes);
@@ -101,6 +102,7 @@ void ayaneo_rumble_set(int on)
 		s_run_len = 1;
 		s_run_writes = 0;
 	}
+	s_asked = on;
 	if (on) s_run_writes += writes;
 	if (on && s_state != VIB_READY && s_state != VIB_ABSENT) vib_setup_step();
 	if (s_state == VIB_COLD) return;   /* never started: the pin is still the boot default (low) */
