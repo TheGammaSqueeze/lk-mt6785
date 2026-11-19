@@ -302,6 +302,7 @@ OBJS += platform/common/pico/pico_xfer.o	# file transfer over the Bluetooth link
 OBJS += platform/common/pico/pico_netplay.o	# lockstep netplay over the Bluetooth link
 OBJS += $(LOCAL_DIR)/kpa_bt.o		# Bluetooth (CONNSYS), only when a Pico screen asks for it
 OBJS += platform/common/pico/pico_crypto.o	# Wi-Fi: WPA2 and TLS cryptography
+OBJS += platform/common/pico/pico_random.o	# random numbers: the SoC generator through the trusted firmware
 OBJS += platform/common/pico/pico_net.o		# Wi-Fi: the IPv4 stack
 OBJS += platform/common/pico/pico_tls.o		# Wi-Fi: TLS 1.3 / 1.2
 OBJS += platform/common/pico/pico_pki.o		# Wi-Fi: certificates

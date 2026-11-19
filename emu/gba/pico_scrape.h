@@ -12,7 +12,9 @@
 
 #include "sd_fat.h"
 
-enum { SCRAPE_SCREENSCRAPER, SCRAPE_LIBRETRO };
+/* SCRAPE_BOTH: libretro's thumbnails first (by the game's name, static files: quick), ScreenScraper
+ * for the games libretro does not have (by CRC, one request at a time for our account) */
+enum { SCRAPE_SCREENSCRAPER, SCRAPE_LIBRETRO, SCRAPE_BOTH };
 
 struct pico_scrape_info {
 	int running;

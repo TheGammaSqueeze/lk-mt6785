@@ -3,7 +3,8 @@
  *
  * Screens: the home (Wi-Fi, Box art, RetroAchievements), Wi-Fi (on or off, the network joined,
  * the networks around strongest first, search again; A joins, X forgets a saved one), the
- * keyboard (a password, an account), Box art (the source, the region, start; then its progress).
+ * keyboard (a password, an account), Box art (the source, the region, start; then its progress),
+ * the saved networks (every one kept on the card, in range or not; A twice forgets one).
  * Turning Wi-Fi on reads its firmware from the card, which takes a moment: it happens on the
  * next frame, after the screen says so.
  */
@@ -35,6 +36,9 @@ static unsigned int s_saved_gen_stored = (unsigned)-1;
 static int s_start_pending;		/* Wi-Fi to start on the next frame (the screen says so first) */
 static char s_msg[96];			/* the last thing worth saying ("Wrong password?") */
 static int s_was_joining;
+#define MAX_SAVED	16		/* (the service keeps as many) */
+static char s_saved[MAX_SAVED][33];	/* the saved networks' names, read when their page opens */
+static int s_nsaved, s_forget_confirm = -1;	/* the row A was pressed on once: the next A forgets */
 static int s_art_running, s_art_source, s_art_region;
 static char s_val[NUI_ROWS][48];
 
@@ -125,17 +129,33 @@ static int art_missing(void)
 	return gba_menu_art_missing();
 }
 
-/* ---- the Wi-Fi screen's rows: Wi-Fi on/off, then (when on) the networks, then Search again ---- */
-enum { ROW_TOGGLE, ROW_NET, ROW_SEARCH };
+/* ---- the Wi-Fi screen's rows: Wi-Fi on/off, then (when on) the networks and Search again, then
+ * the saved networks (also with Wi-Fi off: forgetting needs no radio) ---- */
+enum { ROW_TOGGLE, ROW_NET, ROW_SEARCH, ROW_SAVED };
 static int wifi_rows(int *kind, int *ap, int max)
 {
 	int n = 0, i;
 	kind[n] = ROW_TOGGLE; ap[n++] = -1;
-	if (s_st.state == NETSVC_OFF || s_st.state == NETSVC_FAILED || s_st.state == NETSVC_STARTING)
-		return n;
-	for (i = 0; i < s_naps && n < max - 1; i++) { kind[n] = ROW_NET; ap[n++] = i; }
-	kind[n] = ROW_SEARCH; ap[n++] = -1;
+	if (s_st.state != NETSVC_OFF && s_st.state != NETSVC_FAILED && s_st.state != NETSVC_STARTING) {
+		for (i = 0; i < s_naps && n < max - 2; i++) { kind[n] = ROW_NET; ap[n++] = i; }
+		kind[n] = ROW_SEARCH; ap[n++] = -1;
+	}
+	kind[n] = ROW_SAVED; ap[n++] = -1;
 	return n;
+}
+
+static void saved_read(void) { s_nsaved = netsvc_saved_names(s_saved, MAX_SAVED); }
+
+/* how a saved network stands now: connected, being joined, in the last search, or "" */
+static const char *saved_state(const char *ssid)
+{
+	int i;
+	if (s_st.state == NETSVC_ONLINE && !strcmp(s_st.ssid, ssid)) return tr("Connected");
+	if (s_st.state == NETSVC_JOINING && !strcmp(s_st.ssid, ssid)) return tr("Connecting...");
+	if (s_st.state != NETSVC_OFF)
+		for (i = 0; i < s_naps; i++)
+			if (!strcmp(s_aps[i].ssid, ssid)) return tr("In range");
+	return "";
 }
 
 static const char *signal_word(int dbm)
@@ -292,6 +312,11 @@ int nui_input(int e)
 			else { netsvc_wifi(0); s_naps = 0; wifi_on_store(0); }
 		} else if (kind[s_sel] == ROW_SEARCH) {
 			netsvc_scan();
+		} else if (kind[s_sel] == ROW_SAVED) {
+			saved_read();
+			s_screen = NUI_SAVED;
+			s_sel = 0; s_top = 0;
+			s_forget_confirm = -1;
 		} else {
 			const struct netsvc_ap *a = &s_aps[ap[s_sel]];
 			if (s_st.state == NETSVC_ONLINE && !strcmp(s_st.ssid, a->ssid)) {
@@ -308,6 +333,37 @@ int nui_input(int e)
 		return NUI_ACT_NONE;
 	case NUI_KEYBOARD:
 		return kb_input(e);
+	case NUI_SAVED:
+		if (e & NUI_B) {
+			if (s_forget_confirm >= 0) { s_forget_confirm = -1; return NUI_ACT_NONE; }	/* B: keep it after all */
+			s_screen = NUI_WIFI; s_top = 0;
+			n = wifi_rows(kind, ap, NUI_ROWS + MAX_APS);
+			s_sel = n - 1;			/* back on the Saved networks row */
+			if (s_sel >= LIST_ROWS) s_top = s_sel - LIST_ROWS + 1;
+			s_msg[0] = 0;
+			return NUI_ACT_NONE;
+		}
+		if (!s_nsaved) return NUI_ACT_NONE;
+		if (e & (NUI_UP | NUI_DOWN)) s_forget_confirm = -1;
+		if (e & NUI_UP) s_sel = s_sel > 0 ? s_sel - 1 : s_nsaved - 1;
+		if (e & NUI_DOWN) s_sel = s_sel < s_nsaved - 1 ? s_sel + 1 : 0;
+		if (s_sel >= s_nsaved) s_sel = s_nsaved - 1;
+		if (s_sel < s_top) s_top = s_sel;
+		if (s_sel >= s_top + LIST_ROWS) s_top = s_sel - LIST_ROWS + 1;
+		if (e & (NUI_A | NUI_X)) {
+			if (s_forget_confirm != s_sel) { s_forget_confirm = s_sel; s_msg[0] = 0; return NUI_ACT_NONE; }
+			netsvc_forget(s_saved[s_sel]);	/* (nui_tick writes the card's list) */
+			if ((s_st.state == NETSVC_ONLINE || s_st.state == NETSVC_JOINING) && !strcmp(s_st.ssid, s_saved[s_sel]))
+				netsvc_leave();
+			snprintf(s_msg, sizeof s_msg, tr("%s forgotten"), s_saved[s_sel]);
+			for (i = 0; i < s_naps; i++)
+				if (!strcmp(s_aps[i].ssid, s_saved[s_sel])) s_aps[i].saved = 0;
+			s_forget_confirm = -1;
+			saved_read();
+			if (s_sel >= s_nsaved) s_sel = s_nsaved ? s_nsaved - 1 : 0;
+			if (s_top > s_sel) s_top = s_sel;
+		}
+		return NUI_ACT_NONE;
 	case NUI_ART: {
 		struct pico_scrape_info si;
 		pico_scrape_get(&si);
@@ -326,7 +382,7 @@ int nui_input(int e)
 					snprintf(s_msg, sizeof s_msg, "%s", tr("Connect to a Wi-Fi network first"));
 				} else if (s_vol && s_roms) {
 					pico_scrape_start(s_vol, s_roms, s_nrom,
-							  pico_scrape_has_screenscraper() && !s_art_source ? SCRAPE_SCREENSCRAPER : SCRAPE_LIBRETRO,
+							  pico_scrape_has_screenscraper() && !s_art_source ? SCRAPE_BOTH : SCRAPE_LIBRETRO,
 							  k_regions[s_art_region]);
 					s_art_running = 1;
 					s_msg[0] = 0;
@@ -352,8 +408,9 @@ int nui_tick(void)
 		struct pico_scrape_info si;
 		pico_scrape_get(&si);
 		if (g_dbg_nui_scrape == 2 && si.running) pico_scrape_cancel();
-		else if (g_dbg_nui_scrape == 1 && !si.running && s_vol && s_roms)
-			pico_scrape_start(s_vol, s_roms, s_nrom, pico_scrape_has_screenscraper() ? SCRAPE_SCREENSCRAPER : SCRAPE_LIBRETRO,
+		else if ((g_dbg_nui_scrape == 1 || g_dbg_nui_scrape == 3) && !si.running && s_vol && s_roms)
+			pico_scrape_start(s_vol, s_roms, s_nrom, pico_scrape_has_screenscraper() && g_dbg_nui_scrape == 1 ?
+					  SCRAPE_BOTH : SCRAPE_LIBRETRO,
 					  k_regions[s_art_region]), s_art_running = 1;
 		g_dbg_nui_scrape = 0;
 	}
@@ -433,6 +490,11 @@ void nui_view(struct nui_view *v)
 					       s_st.state == NETSVC_FAILED ? tr("Not working") : tr("On");
 			} else if (kind[i] == ROW_SEARCH) {
 				v->rows[k] = s_st.state == NETSVC_SCANNING ? tr("Searching...") : tr("Search again");
+			} else if (kind[i] == ROW_SAVED) {
+				saved_read();			/* (the count: a join or a forget may have changed it) */
+				v->rows[k] = tr("Saved networks");
+				if (s_nsaved) snprintf(s_val[k], sizeof s_val[k], "%d", s_nsaved);
+				v->values[k] = s_nsaved ? s_val[k] : tr("None");
 			} else {
 				const struct netsvc_ap *a = &s_aps[ap[i]];
 				int joined = s_st.state == NETSVC_ONLINE && !strcmp(s_st.ssid, a->ssid);
@@ -460,6 +522,24 @@ void nui_view(struct nui_view *v)
 		v->hint_code[0] = "A"; v->hint_label[0] = tr("Select");
 		v->hint_code[1] = "X"; v->hint_label[1] = tr("Forget");
 		v->hint_code[2] = "B"; v->hint_label[2] = tr("Back");
+		break;
+	case NUI_SAVED:
+		v->title = tr("Saved networks");
+		if (s_sel >= s_nsaved) s_sel = s_nsaved ? s_nsaved - 1 : 0;
+		for (i = s_top; i < s_nsaved && v->nrows < LIST_ROWS; i++) {
+			int k = v->nrows;
+			v->rows[k] = s_saved[i];
+			v->values[k] = i == s_forget_confirm ? tr("Press A again to forget") : saved_state(s_saved[i]);
+			if (i == s_sel) v->sel = k;
+			v->nrows++;
+		}
+		v->more_up = s_top > 0;
+		v->more_down = i < s_nsaved;
+		v->status = s_msg[0] ? s_msg : !s_nsaved ? tr("No saved networks: a network is saved when you join it.") :
+			    tr("Saved networks are joined by themselves when they are in range.");
+		v->nhints = s_nsaved ? 2 : 1;
+		if (s_nsaved) { v->hint_code[0] = "A"; v->hint_label[0] = tr("Forget"); }
+		v->hint_code[v->nhints - 1] = "B"; v->hint_label[v->nhints - 1] = tr("Back");
 		break;
 	case NUI_RA: {
 		int st = pico_ra_state();
@@ -542,7 +622,7 @@ void nui_view(struct nui_view *v)
 			v->rows[0] = s_val[0];
 		} else v->rows[0] = art_missing() == 0 ? tr("Look again for box art") : tr("Find box art for games without it");
 		v->rows[1] = tr("Source");
-		v->values[1] = pico_scrape_has_screenscraper() && !s_art_source ? "ScreenScraper" : "libretro thumbnails";
+		v->values[1] = pico_scrape_has_screenscraper() && !s_art_source ? "libretro, then ScreenScraper" : "libretro thumbnails";
 		v->rows[2] = tr("Region first");
 		v->values[2] = tr(k_region_names[s_art_region]);
 		v->sel = s_sel;

@@ -14,7 +14,9 @@
  * good answer to the calls that can be kept (signing in, a game's set, its session) is written to
  * /gammaos/ra/c; without a network that copy answers instead. During play nothing goes out: the
  * blob answers unlocks itself and hands each one over to be kept (/gammaos/ra/queue.dat, through
- * the card writer), and the menu sends them when it can.
+ * the card writer), and the menu sends them when it can. Each kept unlock belongs to the account
+ * that earned it (only that account's are sent and shown; others wait on the card for it), and
+ * the file is sealed for this console: one changed elsewhere is not sent.
  *
  * The account: the name and rcheevos' token, masked for this console, in /gammaos/ra/account.dat.
  * The password is used once to sign in and never kept.
@@ -32,6 +34,7 @@
 #include "pico_stats.h"	/* the time played, for the mastery card */
 #include "gba_sd_save.h"
 #include "../../platform/common/pico/pico_netsvc.h"
+#include "../../platform/common/pico/pico_crypto.h"	/* the queue file's seal and owners */
 #include "pico_png.h"
 
 extern BOOT_ARGUMENT *g_boot_arg;
@@ -68,7 +71,10 @@ struct ra_req {
 	char post[640];
 };
 #define S_REQ	((struct ra_req *)RA_IO_PA)
-#define S_QUEUE	((struct ra_queued *)(RA_IO_PA + 0x4000u))
+#define S_QUEUE	((struct ra_queued *)(RA_IO_PA + 0x4000u))	/* the signed in account's (RA_QUEUE_MAX) */
+#define RA_HELD_MAX	64
+struct ra_held { struct ra_queued q; unsigned char owner[8]; };
+#define S_HELD	((struct ra_held *)(RA_IO_PA + 0x7000u))	/* other accounts' kept unlocks (to 0x7E00) */
 #define S_FBUF	((unsigned char *)(RA_IO_PA + RA_FBUF_OFF))
 struct ra_row { char title[96], value[32], text[160]; int unlocked, sw, pref, ach, head, tone; };	/* ach: the achievement (-1 none) */	/* sw: -1 none, 0/1 a switch */
 #define S_LIST	((struct ra_row *)(RA_IO_PA + RA_LIST_OFF))
@@ -82,10 +88,14 @@ static int s_state = PICO_RA_SIGNED_OUT;
 static unsigned s_points;
 static char s_note[96];
 static int s_nq;				/* unlocks in S_QUEUE */
+static int s_nheld;				/* other accounts' in S_HELD */
+static unsigned char s_qowner[8];		/* whose S_QUEUE is (owner_tag) */
+static int s_queue_refused;			/* the card's queue was changed elsewhere: not used */
 static unsigned s_sign_in_at;			/* ms of the kept account's last try (0 never) */
 static int s_login_refused;			/* the server said no to the last sign in */
 
 static int s_fake, s_fake_login;		/* the test server (pico_ra_debug) */
+static volatile int s_dbg_q;			/* oem cheevos:qload (1) / qstore (2), on the menu thread */
 static volatile int s_dbg_cards;		/* oem cheevos:cards - the made-up events below, on the game's thread */
 static int s_card_hold;				/* oem cheevos:hold:1 - the card up stays (screenshots); cheevos:next moves on */
 static unsigned s_lb_ev[5];			/* oem cheevos: leaderboard events seen (started, failed, submitted, rank, tracker) */
@@ -382,32 +392,120 @@ static int hc_now(void)
 	return sm.hardcore;
 }
 
-/* the queue as a file: "GPRQ", version, count, then the records */
+/* an account's mark on its kept unlocks: SHA-256 of the name as RetroAchievements compares it (any
+ * case), its first 8 bytes */
+static void owner_tag(const char *user, unsigned char out[8])
+{
+	struct pico_sha256 h;
+	unsigned char d[PICO_SHA256_LEN];
+	char c;
+	pico_sha256_start(&h);
+	pico_sha256_add(&h, "pico ra owner", 13);
+	for (; *user; user++) {
+		c = *user >= 'A' && *user <= 'Z' ? (char)(*user + 32) : *user;
+		pico_sha256_add(&h, &c, 1);
+	}
+	pico_sha256_end(&h, d);
+	memcpy(out, d, 8);
+}
+
+/* the queue file's seal: HMAC-SHA256 under a key made from this console's serial, so a file edited
+ * on a computer (an unlock added) is told apart. The card has no place a key could hide from
+ * someone holding the console and the open source; this stops changes made to the card alone. */
+static void queue_seal(const unsigned char *data, unsigned len, unsigned char out[PICO_SHA256_LEN])
+{
+	extern char sn_buf[];
+	struct pico_sha256 h;
+	unsigned char key[PICO_SHA256_LEN];
+	pico_sha256_start(&h);
+	pico_sha256_add(&h, "pico ra queue", 13);
+	pico_sha256_add(&h, sn_buf, strlen(sn_buf));
+	pico_sha256_end(&h, key);
+	pico_hmac_sha256(key, sizeof key, data, len, out);
+	pico_wipe(key, sizeof key);
+}
+
+/* the queue as a file (version 3): "GPRQ", 3, 0, 0, 0, the records' count (16 bits), 0, 0, then
+ * each record with its owner's mark (the signed in account's, then the others'), then the seal */
+#define QREC (sizeof(struct ra_queued) + 8)
 static unsigned queue_image(unsigned char *out, unsigned cap)
 {
-	unsigned len = 8 + (unsigned)s_nq * sizeof(struct ra_queued);
+	unsigned n = (unsigned)(s_nq + s_nheld), len = 12 + n * QREC + PICO_SHA256_LEN, i;
+	unsigned char *p = out + 12;
 	if (len > cap) return 0;
+	memset(out, 0, 12);
 	memcpy(out, "GPRQ", 4);
-	out[4] = 2;					/* 2: each record says whether it was earned in hardcore */
-	out[5] = (unsigned char)(s_nq & 0xFF);
-	out[6] = (unsigned char)(s_nq >> 8);
-	out[7] = 0;
-	memcpy(out + 8, S_QUEUE, (unsigned)s_nq * sizeof(struct ra_queued));
+	out[4] = 3;
+	out[8] = (unsigned char)(n & 0xFF);
+	out[9] = (unsigned char)(n >> 8);
+	for (i = 0; i < (unsigned)s_nq; i++, p += QREC) {
+		memcpy(p, &S_QUEUE[i], sizeof(struct ra_queued));
+		memcpy(p + sizeof(struct ra_queued), s_qowner, 8);
+	}
+	for (i = 0; i < (unsigned)s_nheld; i++, p += QREC) {
+		memcpy(p, &S_HELD[i].q, sizeof(struct ra_queued));
+		memcpy(p + sizeof(struct ra_queued), S_HELD[i].owner, 8);
+	}
+	queue_seal(out, (unsigned)(p - out), p);
 	return len;
+}
+
+/* the kept unlocks sorted again for the account now signed in (s_user; "" none): its own to
+ * S_QUEUE, every other account's to S_HELD. Called when the card arrives and when the account
+ * changes. Records past the room (256 own, 64 held) are dropped, the oldest kept. */
+static void queue_assign(void)
+{
+	/* (18 KB of room: the file buffer's end, free here: nothing waits in it between calls) */
+	struct ra_held *all = (struct ra_held *)(S_FBUF + RA_FBUF_CAP - 0x8000u);
+	unsigned char me[8];
+	int n = 0, i;
+	for (i = 0; i < s_nq; i++) { all[n].q = S_QUEUE[i]; memcpy(all[n].owner, s_qowner, 8); n++; }
+	for (i = 0; i < s_nheld; i++) all[n++] = S_HELD[i];
+	owner_tag(s_user, me);
+	memcpy(s_qowner, me, 8);
+	s_nq = s_nheld = 0;
+	for (i = 0; i < n; i++) {
+		if (!memcmp(all[i].owner, me, 8)) { if (s_nq < RA_QUEUE_MAX) S_QUEUE[s_nq++] = all[i].q; }
+		else if (s_nheld < RA_HELD_MAX) S_HELD[s_nheld++] = all[i];
+	}
+	memset(all, 0, sizeof all[0] * (unsigned)n);
 }
 
 static void queue_load(void)
 {
-	unsigned n = gba_sd_read_named(s_vol, RA_DIR, "queue", "dat", S_FBUF, RA_FBUF_CAP), cnt;
-	s_nq = 0;
-	if (n < 8 || memcmp(S_FBUF, "GPRQ", 4) || (S_FBUF[4] != 1 && S_FBUF[4] != 2)) return;
-	cnt = S_FBUF[5] | (unsigned)S_FBUF[6] << 8;
-	if (cnt > RA_QUEUE_MAX || 8 + cnt * sizeof(struct ra_queued) > n) return;
-	memcpy(S_QUEUE, S_FBUF + 8, cnt * sizeof(struct ra_queued));
-	s_nq = (int)cnt;
-	if (S_FBUF[4] == 1) {		/* version 1: all softcore, and that byte was padding */
-		unsigned i;
-		for (i = 0; i < cnt; i++) S_QUEUE[i].hardcore = 0;
+	unsigned n = gba_sd_read_named(s_vol, RA_DIR, "queue", "dat", S_FBUF, RA_FBUF_CAP), cnt, i;
+	unsigned char seal[PICO_SHA256_LEN];
+	s_nq = s_nheld = 0;
+	s_queue_refused = 0;
+	owner_tag(s_user, s_qowner);
+	if (n < 8 || memcmp(S_FBUF, "GPRQ", 4)) return;
+	if (S_FBUF[4] == 1 || S_FBUF[4] == 2) {	/* before owners and the seal: the card's account's */
+		cnt = S_FBUF[5] | (unsigned)S_FBUF[6] << 8;
+		if (cnt > RA_QUEUE_MAX || 8 + cnt * sizeof(struct ra_queued) > n) return;
+		memcpy(S_QUEUE, S_FBUF + 8, cnt * sizeof(struct ra_queued));
+		s_nq = (int)cnt;
+		if (S_FBUF[4] == 1)		/* version 1: all softcore, and that byte was padding */
+			for (i = 0; i < cnt; i++) S_QUEUE[i].hardcore = 0;
+		return;
+	}
+	if (S_FBUF[4] != 3 || n < 12 + PICO_SHA256_LEN) return;
+	cnt = S_FBUF[8] | (unsigned)S_FBUF[9] << 8;
+	if (cnt > RA_QUEUE_MAX + RA_HELD_MAX || 12 + cnt * QREC + PICO_SHA256_LEN > n) return;
+	queue_seal(S_FBUF, 12 + cnt * QREC, seal);
+	if (memcmp(seal, S_FBUF + 12 + cnt * QREC, PICO_SHA256_LEN)) {
+		s_queue_refused = 1;		/* (left as it is on the card until the next unlock replaces it) */
+		note("Kept unlocks were changed outside this console: not sent");
+		return;
+	}
+	for (i = 0; i < cnt; i++) {		/* the card's account's to S_QUEUE, the others' held */
+		const unsigned char *p = S_FBUF + 12 + i * QREC;
+		if (!memcmp(p + sizeof(struct ra_queued), s_qowner, 8)) {
+			if (s_nq < RA_QUEUE_MAX) memcpy(&S_QUEUE[s_nq++], p, sizeof(struct ra_queued));
+		} else if (s_nheld < RA_HELD_MAX) {
+			memcpy(&S_HELD[s_nheld].q, p, sizeof(struct ra_queued));
+			memcpy(S_HELD[s_nheld].owner, p + sizeof(struct ra_queued), 8);
+			s_nheld++;
+		}
 	}
 }
 
@@ -425,12 +523,14 @@ static void queue_store(int playing)
 
 /* ---- the blob's services ---- */
 
+static char s_game_hash[36];			/* the hash the last game's set was asked by (oem cheevos) */
 static void im_request(unsigned id, const char *url, const char *post, const char *ctype, const char *api, const char *key)
 {
 	struct ra_req *r = 0;
 	const char *h, *slash;
 	int i;
 	(void)ctype;
+	if (api && key && !strcmp(api, "achievementsets")) copy_n(s_game_hash, sizeof s_game_hash, key);
 	for (i = 0; i < RA_REQ_MAX; i++)
 		if (!S_REQ[i].used) { r = &S_REQ[i]; break; }
 	if (!r) return;					/* unanswered: rc_client times out and tries again */
@@ -484,7 +584,8 @@ int pico_ra_debug_line(int i, char *buf, unsigned cap)
 			 s_frame_n, now_ms(), s_lb_ev[0], s_lb_ev[1], s_lb_ev[2], s_lb_ev[3], s_lb_ev[4]);
 		return 1;
 	}
-	i--;
+	if (i == 2) { snprintf(buf, cap, "ra: hash %s console %d", s_game_hash[0] ? s_game_hash : "-", s_console); return 1; }
+	i -= 2;
 	if (i == 1 && s_bdg_game) {	/* (shifts the lines below by one while a game's badges are known) */
 		snprintf(buf, cap, "ra: badges game %u have %d want %d", s_bdg_game, s_bdg_n, s_bdg_wantn);
 		return 1;
@@ -789,12 +890,18 @@ static void event_one(const struct ra_event *pe, int playing)
 					}
 					memset(t, 0, sizeof t);
 				}
+				{	/* the kept unlocks: this account's to send, any other's held */
+					unsigned char me[8];
+					owner_tag(s_user, me);
+					if (memcmp(me, s_qowner, 8)) { queue_assign(); queue_store(playing); }
+				}
 				snprintf(s_note, sizeof s_note, "Signed in as %s", e.title);
 			} else {
 				s_state = PICO_RA_SIGNED_OUT;
 				if (s_login_refused) {		/* a wrong password, or a token no longer good */
 					s_user[0] = s_token[0] = 0;
 					account_store();
+					queue_assign();		/* (that account's kept unlocks wait for it) */
 				}
 				note(e.text[0] ? e.text : "Could not sign in");
 			}
@@ -1250,6 +1357,8 @@ void pico_ra_sign_out(void)
 	s_state = PICO_RA_SIGNED_OUT;
 	s_points = 0;
 	account_store();
+	queue_assign();				/* its kept unlocks wait on the card for it */
+	queue_store(0);
 	note("Signed out");
 }
 
@@ -1268,6 +1377,13 @@ void pico_ra_menu_tick(void)
 			X->set_online(1);
 			X->login_token(s_user, s_token);
 		}
+	}
+	if (s_dbg_q) {			/* oem cheevos:qload / qstore: the kept unlocks read or written again */
+		int q = s_dbg_q;
+		s_dbg_q = 0;
+		if (q == 1 && s_mapped) queue_load();
+		if (q == 2) queue_store(0);
+		snprintf(s_note, sizeof s_note, "queue own %d held %d refused %d", s_nq, s_nheld, s_queue_refused);
 	}
 	if (s_fake_login) {		/* oem cheevos:login (the test server): signed in from here */
 		s_fake_login = 0;
@@ -1294,6 +1410,9 @@ void pico_ra_debug(const char *arg)
 	else if (!strncmp(arg, "fakehc:", 7)) s_fake_hc = arg[7] == '1';
 	else if (!strncmp(arg, "fake:", 5)) s_fake = arg[5] == '1';
 	else if (!strncmp(arg, "login", 5) && s_fake) s_fake_login = 1;
+	else if (!strcmp(arg, "qload")) s_dbg_q = 1;
+	else if (!strcmp(arg, "qstore")) s_dbg_q = 2;
+	else if (!strcmp(arg, "q")) snprintf(s_note, sizeof s_note, "queue own %d held %d refused %d", s_nq, s_nheld, s_queue_refused);
 	else if (!strncmp(arg, "card", 4)) s_dbg_card = 1;	/* a test card, on the game's thread */
 	else if (!strncmp(arg, "in:", 3)) {	/* the real server: the name up to the next ':', then the password */
 		const char *u = arg + 3, *c = strchr(u, ':');

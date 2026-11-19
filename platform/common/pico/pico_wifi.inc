@@ -1126,6 +1126,7 @@ static void wf_join_frame(const unsigned char *b, int len)
  * (BE), 7 key length, 9 replay counter (8), 17 nonce (32), 49 IV (16), 65 RSC (8), 73 spare (8),
  * 81 MIC (16), 97 key data length (BE), 99 key data. */
 #include "pico_crypto.h"
+#include "pico_random.h"
 #include "pico_net.h"
 #include "pico_tls.h"
 #include "../../../emu/gba/pico_clock.h"
@@ -1173,15 +1174,17 @@ static int wf_pmk_for(const struct wf_seen *ap)
 	return 0;
 }
 
-/* 32 bytes nobody can guess: the timer's low bits read many times (their jitter), our address,
- * the AP's nonce and a count, hashed */
+/* 32 bytes nobody can guess: the SoC's random generator (pico_random), the timer's low bits read
+ * many times (their jitter), our address, the AP's nonce and a count, hashed */
 static void wf_new_nonce(unsigned char out[32])
 {
 	struct pico_sha1 h;
-	unsigned char d[PICO_SHA1_LEN];
+	unsigned char d[PICO_SHA1_LEN], hw[20];
 	unsigned int i, t, part;
 	for (part = 0; part < 2; part++) {
 		pico_sha1_start(&h);
+		pico_random(hw, sizeof hw);
+		pico_sha1_add(&h, hw, sizeof hw);
 		for (i = 0; i < 64; i++) {
 			t = gpt4_get_current_tick();
 			pico_sha1_add(&h, &t, sizeof t);
@@ -1194,6 +1197,7 @@ static void wf_new_nonce(unsigned char out[32])
 		pico_sha1_end(&h, d);
 		memcpy(out + 16 * part, d, 16);
 	}
+	memset(hw, 0, sizeof hw);
 }
 
 /* lower address/nonce first, as the key derivation wants them */
@@ -1922,6 +1926,7 @@ static int wf_connect(const char *ssid, void (*say)(const char *), const char **
 	return -1;
 }
 
+static void wf_net_stop(void);	/* (below: the link stopped, kept connections forgotten) */
 static int wf_connect_to(struct wf_seen *best, void (*say)(const char *), const char **why)
 {
 	char l[96];
@@ -1931,7 +1936,7 @@ static int wf_connect_to(struct wf_seen *best, void (*say)(const char *), const 
 		say(l);
 	}
 	s_wf_linked = 0;
-	pico_net_stop();
+	wf_net_stop();
 	s_wf_frame_sink = wf_join_frame;
 	if (wf_join_ap(best, say, why) != 0) {
 		s_wf_frame_sink = 0;
@@ -2148,9 +2153,13 @@ static void wf_link_pump(void)
 	 * cutting in front of the fastboot thread, which sat ready for minutes (USB gone quiet,
 	 * a black box record of 11-18 showed it), and of each other (a handshake crawling for
 	 * minutes). A yield goes to the back and costs nothing when nobody else is ready. */
-	if (GPT_US(now - given) > 2000u) {
+	if (GPT_US(now - given) > (s_wf_coop ? 4000u : 2000u)) {
 		given = now;
-		thread_yield();
+		/* the service is above the menu's priority: a yield would come straight back, so while
+		 * data flows it sleeps a moment every 4 ms (the menu and fastboot run meanwhile); the
+		 * fastboot thread's own commands keep the yield */
+		if (s_wf_coop) thread_sleep(1);
+		else thread_yield();
 	}
 	/* at most a ringful at a time: a busy network still lets the events and timers have their turn */
 	while (k < WF_RX0N && (got = wf_frame(fr, sizeof fr)) >= 0) {
@@ -2334,6 +2343,13 @@ static void cmd_wifidns(const char *arg, void *data, unsigned sz)
  * list for scraping goes in the free stretch after the data ring's buffers. */
 #define WF_GET_BUF		(WIFI_DMA_PA + WF_FW_STAGE)
 #define WF_GET_CAP		0xC0000u
+/* the answer's memory for this request: the 768 KB above (s_wf_rx_cap 0), or a caller's own for
+ * answers that may be bigger (ScreenScraper's game information runs past a megabyte for a famous
+ * game: 1.26 MB for Super Mario Bros.) */
+static unsigned char *s_wf_rx_buf;
+static unsigned int s_wf_rx_cap;
+static unsigned char *wf_rx_buf(void) { return s_wf_rx_cap ? s_wf_rx_buf : (unsigned char *)(addr_t)WF_GET_BUF; }
+static unsigned int wf_rx_cap(void) { return s_wf_rx_cap ? s_wf_rx_cap : WF_GET_CAP; }
 #define WF_LIST_BUF		(WIFI_DMA_PA + WF_LIST_AREA)
 #define WF_LIST_CAP		WF_LIST_AREA_LEN
 
@@ -2342,6 +2358,22 @@ static unsigned int s_wf_get_len, s_wf_get_total;	/* bytes kept, bytes received 
 static int s_wf_get_secure;				/* the download runs over TLS */
 static char s_wf_user_agent[96];			/* the HTTP user agent ("" GammaOS-Pico) */
 static struct pico_tls s_wf_tls;
+/* HTTP keep-alive: the last two connections stay open for the next request to the same host (box
+ * art asks the information host, then the picture host, game after game: a TCP and TLS handshake
+ * apiece was half a second or more). The first keeps its TLS state above, the second takes one from
+ * the heap when first needed. A connection is used again only on the same link, within 20 s. */
+#define WF_CONNS	2
+#define WF_CONN_IDLE_MS	20000u
+static struct wf_conn {
+	char host[64];
+	int secure, h, alive;
+	unsigned int gen, last;
+	struct pico_tls *tls;
+} s_wf_conn[WF_CONNS] = { { .h = -1 }, { .h = -1 } };	/* (no socket yet: 0 is a socket's number) */
+static unsigned int s_wf_net_gen;		/* the link's generation: a stop makes every socket old */
+static struct pico_tls *s_wf_tlsp = &s_wf_tls;	/* the TLS state of the connection in use */
+static int s_wf_get_closed;			/* the server closed the connection in use */
+static void wf_net_stop(void) { s_wf_net_gen++; pico_net_stop(); }
 
 /* TLS over our TCP connection s_wf_get_h: a send waits (the link running) until TCP took it all */
 static int wf_tls_send(void *ctx, const uint8_t *d, unsigned int n)
@@ -2370,7 +2402,7 @@ static int wf_tls_recv(void *ctx, uint8_t *b, unsigned int cap)
 	(void)ctx;
 	return pico_tcp_recv(s_wf_get_h, b, cap);
 }
-static int wf_tls_ready(void) { return pico_tls_step(&s_wf_tls) != PICO_TLS_HANDSHAKE; }
+static int wf_tls_ready(void) { return pico_tls_step(s_wf_tlsp) != PICO_TLS_HANDSHAKE; }
 
 static unsigned int s_wf_roots_len;
 /* the trusted roots (/bios/certs/roots.der, make_roots.py) into their stretch of the Wi-Fi memory,
@@ -2395,15 +2427,19 @@ static unsigned int wf_roots(void)
 	return s_wf_roots_len;
 }
 
-/* 64 bytes nobody can guess: SHA-256 over the timer's jitter read many times, our address and a
- * count (a hardware random source would be better: later) */
+/* 64 bytes nobody can guess: SHA-256 over the SoC's random generator (pico_random), the timer's
+ * jitter read many times, our address and a count. The jitter stays in: should the generator ever
+ * fail, the keys are no weaker than before it was used. */
 static void wf_entropy(unsigned char out[64])
 {
 	static unsigned int count;
 	struct pico_sha256 h;
 	unsigned int part, i, t;
+	unsigned char hw[32];
 	for (part = 0; part < 2; part++) {
 		pico_sha256_start(&h);
+		pico_random(hw, sizeof hw);
+		pico_sha256_add(&h, hw, sizeof hw);
 		for (i = 0; i < 256; i++) {
 			t = gpt4_get_current_tick();
 			pico_sha256_add(&h, &t, sizeof t);
@@ -2414,24 +2450,48 @@ static void wf_entropy(unsigned char out[64])
 		pico_sha256_add(&h, &part, sizeof part);
 		pico_sha256_end(&h, out + 32 * part);
 	}
+	memset(hw, 0, sizeof hw);
 }
 static int wf_tcp_opened(void) { return pico_tcp_state(s_wf_get_h) != PICO_TCP_CONNECTING; }
+static const char *wf_http_header(const char *h, unsigned int hl, const char *name);
+/* the answer is whole by its own framing (a Content-Length met, or a chunked body's last chunk):
+ * a kept-alive connection is never closed by the server to say so */
+static int wf_answer_whole(const unsigned char *buf, unsigned int len, unsigned int total)
+{
+	unsigned int i, hl = 0;
+	const char *v;
+	if (total != len) return 0;			/* (past the buffer: read on to the end, it fails anyway) */
+	for (i = 0; i + 3 < len; i++)
+		if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') { hl = i + 4; break; }
+	if (!hl) return 0;
+	v = wf_http_header((const char *)buf, hl, "transfer-encoding:");
+	if (v && !strncmp(v, "chunked", 7))
+		return len >= hl + 5 && !memcmp(buf + len - 5, "0\r\n\r\n", 5);
+	if ((v = wf_http_header((const char *)buf, hl, "content-length:")) != 0) {
+		unsigned int cl = 0;
+		while (*v >= '0' && *v <= '9') cl = cl * 10 + (unsigned)(*v++ - '0');
+		return len >= hl + cl;
+	}
+	return 0;					/* no framing: the server's close ends it */
+}
 static int wf_get_more(void)
 {
-	unsigned char *buf = (unsigned char *)(addr_t)WF_GET_BUF;
+	unsigned char *buf = wf_rx_buf();
+	unsigned int cap = wf_rx_cap();
 	int n;
 	for (;;) {
-		/* the first WF_GET_CAP bytes are kept; past that the last 16 KB are written over (counted) */
-		unsigned int at = s_wf_get_len < WF_GET_CAP ? s_wf_get_len : WF_GET_CAP - 16384;
-		unsigned int room = s_wf_get_len < WF_GET_CAP ? WF_GET_CAP - s_wf_get_len : 16384;
-		n = s_wf_get_secure ? pico_tls_recv(&s_wf_tls, buf + at, room) : pico_tcp_recv(s_wf_get_h, buf + at, room);
+		/* the first cap bytes are kept; past that the last 16 KB are written over (counted) */
+		unsigned int at = s_wf_get_len < cap ? s_wf_get_len : cap - 16384;
+		unsigned int room = s_wf_get_len < cap ? cap - s_wf_get_len : 16384;
+		n = s_wf_get_secure ? pico_tls_recv(s_wf_tlsp, buf + at, room) : pico_tcp_recv(s_wf_get_h, buf + at, room);
 		if (n <= 0)
 			break;
-		if (s_wf_get_len < WF_GET_CAP) s_wf_get_len += (unsigned)n;
+		if (s_wf_get_len < cap) s_wf_get_len += (unsigned)n;
 		s_wf_get_total += (unsigned)n;
 		g_ns_crumb[2] = s_wf_get_total;
 	}
-	return n < 0;					/* done: the server closed */
+	if (n < 0) { s_wf_get_closed = 1; return 1; }	/* done: the server closed */
+	return wf_answer_whole(buf, s_wf_get_len, s_wf_get_total);
 }
 
 /* a header's value in the answer's header block (name ends with ':'), case not counting: its
@@ -2487,6 +2547,84 @@ static unsigned int s_wf_dns_ip;
 
 /* HTTP GET http://host/path (path already encoded): *status, the body at *body (*blen bytes) in
  * the download buffer. 0 an answer came (any status), -1 none (*why says what failed). */
+#include <stdlib.h>				/* malloc: the second connection's TLS state */
+static void wf_conn_drop(struct wf_conn *c);
+/* a kept connection to host (TLS or not) that may be used again now, 0 none */
+static struct wf_conn *wf_conn_find(const char *host, int secure)
+{
+	unsigned int now = gpt4_get_current_tick(), k;
+	for (k = 0; k < WF_CONNS; k++) {
+		struct wf_conn *c = &s_wf_conn[k];
+		if (!c->alive || c->secure != secure || strcmp(c->host, host)) continue;
+		if (c->gen == s_wf_net_gen && pico_tcp_state(c->h) == PICO_TCP_OPEN &&
+		    (now - c->last) / 13000u < WF_CONN_IDLE_MS)
+			return c;
+		wf_conn_drop(c);			/* (old, or the link went: let it go) */
+	}
+	return 0;
+}
+/* closes a connection (its TLS first, over its own socket) */
+static void wf_conn_drop(struct wf_conn *c)
+{
+	int h = s_wf_get_h;
+	if (!c) return;
+	if (c->h >= 0 && c->gen == s_wf_net_gen) {
+		s_wf_get_h = c->h;			/* (the TLS close writes through wf_tls_send) */
+		if (c->secure && c->tls) pico_tls_close(c->tls);
+		pico_tcp_close(c->h);
+		s_wf_get_h = h == c->h ? -1 : h;
+	}
+	c->alive = 0;
+	c->h = -1;
+}
+/* a slot for a new connection: a free one, else the one used longest ago (closed first) */
+static struct wf_conn *wf_conn_slot(void)
+{
+	struct wf_conn *c = 0;
+	unsigned int k, now = gpt4_get_current_tick();
+	for (k = 0; k < WF_CONNS && !c; k++) if (!s_wf_conn[k].alive) c = &s_wf_conn[k];
+	if (!c) {
+		c = &s_wf_conn[0];
+		for (k = 1; k < WF_CONNS; k++) if (now - s_wf_conn[k].last > now - c->last) c = &s_wf_conn[k];
+		wf_conn_drop(c);
+	}
+	if (!c->tls) {
+		if (c == &s_wf_conn[0]) c->tls = &s_wf_tls;
+		else if ((c->tls = (struct pico_tls *)malloc(sizeof(struct pico_tls))) == 0) {
+			c = &s_wf_conn[0];		/* (no memory: one connection, as before) */
+			wf_conn_drop(c);
+			c->tls = &s_wf_tls;
+		}
+	}
+	if (c->h >= 0) wf_conn_drop(c);		/* (a socket a failed request left: closed, never lost) */
+	c->h = -1;
+	return c;
+}
+static void wf_conn_drop_all(void)
+{
+	unsigned int k;
+	for (k = 0; k < WF_CONNS; k++) wf_conn_drop(&s_wf_conn[k]);
+}
+static void wf_conn_keep(struct wf_conn *c, const char *host, int secure)
+{
+	strncpy(c->host, host, sizeof c->host - 1);
+	c->host[sizeof c->host - 1] = 0;
+	c->secure = secure;
+	c->h = s_wf_get_h;
+	c->gen = s_wf_net_gen;
+	c->last = gpt4_get_current_tick();
+	c->alive = strlen(host) < sizeof c->host;	/* (a name too long to keep: not kept) */
+	if (!c->alive) wf_conn_drop(c);
+}
+/* oem netsvc:scrape?: where the HTTP requests' time went since the counts were cleared, ms: the
+ * name, the connection, the TLS handshake, the request and its answer */
+volatile unsigned int g_wf_step_ms[4];
+static void wf_step_ms(int k, unsigned int *t)
+{
+	unsigned int now = gpt4_get_current_tick();
+	g_wf_step_ms[k] += (now - *t) / 13000u;
+	*t = now;
+}
 static int wf_http(const char *host, const char *path, int secure, const unsigned char *post, unsigned int post_len,
 		   unsigned int *status, unsigned char **body, unsigned int *blen, const char **why);
 
@@ -2504,9 +2642,11 @@ static int wf_http(const char *host, const char *path, int secure, const unsigne
 		   unsigned int *status, unsigned char **body, unsigned int *blen, const char **why)
 {
 	static char req[1024];
-	unsigned char *buf = (unsigned char *)(addr_t)WF_GET_BUF;
-	unsigned int ip, hl = 0, i;
+	unsigned char *buf = wf_rx_buf();
+	unsigned int ip, hl = 0, i, tq = gpt4_get_current_tick();
 	const char *v;
+	struct wf_conn *cn;
+	int reused, freed = 0;
 	*status = 0; *body = buf; *blen = 0;
 	g_ns_crumb[0] = NSC_DNS;
 	g_ns_crumb[2] = 0;
@@ -2518,17 +2658,42 @@ static int wf_http(const char *host, const char *path, int secure, const unsigne
 		s_wf_dns_ip = ip;
 	}
 	if (strlen(path) + strlen(host) + 300 > sizeof req) { *why = "path too long"; return -1; }
+	wf_step_ms(0, &tq);
+again:
+	cn = wf_conn_find(host, secure);
+	if (cn) {					/* kept alive from the last request to this host */
+		reused = 1;
+		s_wf_get_h = cn->h;
+		s_wf_get_secure = secure;
+		s_wf_tlsp = cn->tls;
+		cn->alive = 0;				/* (kept again only once this answer is whole) */
+		goto send;
+	}
+	reused = 0;
+	cn = wf_conn_slot();
+	if (!cn) { *why = "no memory for a connection"; return -1; }
 	g_ns_crumb[0] = NSC_CONNECT;
 	s_wf_get_h = pico_tcp_connect(s_wf_dns_ip, secure ? 443 : 80);
 	s_wf_get_secure = secure;
-	if (s_wf_get_h < 0) { *why = "no connection slot"; return -1; }
+	s_wf_tlsp = cn->tls;
+	if (s_wf_get_h < 0) {			/* every socket taken: the kept ones go, and once more */
+		if (!freed) { freed = 1; wf_conn_drop_all(); goto again; }
+		*why = "no connection slot";
+		return -1;
+	}
+	/* the slot owns the socket from here: whatever ends this request closes it (or keeps it) */
+	cn->h = s_wf_get_h;
+	cn->gen = s_wf_net_gen;
+	cn->secure = secure;
 	wf_link_run(8000000, wf_tcp_opened);
 	if (pico_tcp_state(s_wf_get_h) != PICO_TCP_OPEN) {
 		pico_tcp_abort(s_wf_get_h);
+		cn->h = -1;
 		s_wf_dns_ip = 0;			/* look it up again next time */
 		*why = "the server did not answer";
 		return -1;
 	}
+	wf_step_ms(1, &tq);
 	if (secure) {
 		struct pico_tls_io io;
 		unsigned char ent[64];
@@ -2542,44 +2707,64 @@ static int wf_http(const char *host, const char *path, int secure, const unsigne
 		trust.now = wf_time_now();	/* never the RTC here: this may be the service's thread */
 		g_ns_crumb[0] = NSC_TLS;
 		if (!trust.roots_len) trust.roots = 0;
-		pico_tls_start(&s_wf_tls, &io, host, ent, &trust);
+		pico_tls_start(s_wf_tlsp, &io, host, ent, &trust);
 		pico_wipe(ent, sizeof ent);
 		wf_link_run(15000000, wf_tls_ready);
-		if (s_wf_tls.state != PICO_TLS_OPEN) {
-			*why = s_wf_tls.state == PICO_TLS_FAILED ? s_wf_tls.why : "TLS handshake timed out";
+		if (s_wf_tlsp->state != PICO_TLS_OPEN) {
+			*why = s_wf_tlsp->state == PICO_TLS_FAILED ? s_wf_tlsp->why : "TLS handshake timed out";
 			pico_tcp_abort(s_wf_get_h);
+			cn->h = -1;
 			return -1;
 		}
 	}
+	wf_step_ms(2, &tq);
+send:
 	g_ns_crumb[0] = NSC_SEND;
 	if (post)
-		snprintf(req, sizeof req, "POST %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: close\r\n"
+		snprintf(req, sizeof req, "POST %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
 			 "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %u\r\n\r\n",
 			 path, host, s_wf_user_agent[0] ? s_wf_user_agent : "GammaOS-Pico", post_len);
 	else
-		snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: close\r\n\r\n",
+		snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n\r\n",
 			 path, host, s_wf_user_agent[0] ? s_wf_user_agent : "GammaOS-Pico");
 	if (secure) {
-		pico_tls_send(&s_wf_tls, req, (unsigned)strlen(req));
-		if (post && post_len) pico_tls_send(&s_wf_tls, post, post_len);
+		pico_tls_send(s_wf_tlsp, req, (unsigned)strlen(req));
+		if (post && post_len) pico_tls_send(s_wf_tlsp, post, post_len);
 	} else {
 		pico_tcp_send(s_wf_get_h, req, (unsigned)strlen(req));
 		if (post && post_len) wf_tcp_send_all(post, post_len);
 	}
 	s_wf_get_len = s_wf_get_total = 0;
+	s_wf_get_closed = 0;
 	g_ns_crumb[0] = NSC_RECV;
 	wf_link_run(60000000, wf_get_more);
+	wf_step_ms(3, &tq);
 	g_ns_crumb[0] = NSC_PARSE;
-	if (secure) pico_tls_close(&s_wf_tls);
-	pico_tcp_close(s_wf_get_h);
+	if (reused && s_wf_get_len == 0) {	/* the server had let the kept connection go: once more, afresh */
+		wf_conn_drop(cn);
+		goto again;
+	}
 	for (i = 0; i + 3 < s_wf_get_len; i++)
 		if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') { hl = i + 4; break; }
-	if (s_wf_get_len < WF_GET_CAP) buf[s_wf_get_len] = 0;	/* a text answer ends in a 0 for its readers */
+	/* kept for the next request when the answer ended by its framing and the server keeps it */
+	if (!s_wf_get_closed && hl && wf_answer_whole(buf, s_wf_get_len, s_wf_get_total) &&
+	    !((v = wf_http_header((const char *)buf, hl, "connection:")) && !strncmp(v, "close", 5)))
+		wf_conn_keep(cn, host, secure);
+	else
+		wf_conn_drop(cn);
+	hl = 0;
+	for (i = 0; i + 3 < s_wf_get_len; i++)
+		if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') { hl = i + 4; break; }
+	if (s_wf_get_len < wf_rx_cap()) buf[s_wf_get_len] = 0;	/* a text answer ends in a 0 for its readers */
 	if (!hl || s_wf_get_len < 12 || memcmp(buf, "HTTP/1.", 7)) { *why = "no HTTP answer"; return -1; }
 	*status = (unsigned)(buf[9] - '0') * 100u + (unsigned)(buf[10] - '0') * 10u + (unsigned)(buf[11] - '0');
 	*body = buf + hl;
 	*blen = s_wf_get_len - hl;
-	if (s_wf_get_total > s_wf_get_len) { *why = "too big"; return -1; }
+	if (s_wf_get_total > s_wf_get_len) {
+		bt_log("http: answer of %u bytes, %u kept: too big", s_wf_get_total, s_wf_get_len);
+		*why = "too big";
+		return -1;
+	}
 	v = wf_http_header((const char *)buf, hl, "transfer-encoding:");
 	if (v && !strncmp(v, "chunked", 7)) {
 		int n = wf_unchunk(*body, *blen);
@@ -2621,7 +2806,7 @@ static void wf_get_say(const char *arg, int secure)
 		 blen, ms, ms ? s_wf_get_total / ms : 0, *why ? ", " : "", why);
 	if (secure) {
 		fastboot_info(l);
-		snprintf(l, sizeof l, "TLS: %s", s_wf_tls.verified ? "server verified (chain, name, dates, signature)" :
+		snprintf(l, sizeof l, "TLS: %s", s_wf_tlsp->verified ? "server verified (chain, name, dates, signature)" :
 			 "NOT verified (no roots on the card: /bios/certs/roots.der)");
 	}
 	fastboot_info(l);
@@ -2813,6 +2998,8 @@ static char s_nsh_host[96], s_nsh_path[640];
 static int s_nsh_secure;
 static unsigned char s_nsh_post[4096];
 static unsigned int s_nsh_post_len, s_nsh_status, s_nsh_len;
+static unsigned char *s_nsh_buf;		/* the job's own answer memory (0: the usual) */
+static unsigned int s_nsh_cap;
 static const unsigned char *s_nsh_body;
 static const char *s_nsh_why;
 
@@ -2895,7 +3082,7 @@ static void ns_join(void)
 	s_ns_st.state = NETSVC_JOINING;
 	s_ns_st.why = "";
 	mutex_release(&s_ns_info);
-	if (s_wf_linked) { pico_net_stop(); s_wf_linked = 0; }
+	if (s_wf_linked) { wf_net_stop(); s_wf_linked = 0; }
 	/* the key: a saved network's PMK, or the passphrase given */
 	pico_wipe(s_wf_pmk, sizeof s_wf_pmk);
 	s_wf_pmk_ok = 0;
@@ -2975,11 +3162,15 @@ static void ns_http(void)
 	s_nsh_state = NSH_RUNNING;
 	s_wf_abort = 0;
 	mutex_release(&s_ns_info);
-	/* a transfer runs flat out (it takes turns with the menu): asleep between frames it would
-	 * lose a timer tick on every round trip */
-	s_wf_coop = 0;
+	/* a transfer waits asleep too: this thread is above the menu's priority, so it is back the
+	 * moment a sleep ends (it ran flat out at the menu's own priority, and a server taking its
+	 * time to answer had the two of them trading the CPU so badly that a TLS handshake took a
+	 * minute) */
+	s_wf_coop = 1;
+	s_wf_rx_buf = s_nsh_buf; s_wf_rx_cap = s_nsh_buf ? s_nsh_cap : 0;
 	rc = wf_http(s_nsh_host, s_nsh_path, s_nsh_secure, s_nsh_post_len ? s_nsh_post : 0, s_nsh_post_len, &status, &body,
 		     &len, &why);
+	s_wf_rx_cap = 0; s_wf_rx_buf = 0;		/* (the answer stays where it is: the job's caller reads it there) */
 	s_wf_coop = 1;
 	mutex_acquire(&s_ns_info);
 	s_nsh_status = status;
@@ -3100,7 +3291,7 @@ static int ns_thread(void *arg)
 		if (cmd == NS_JOIN) { g_ns_crumb[0] = NSC_JOIN; s_ns_auto_left = 0; ns_join(); }
 		if (cmd == NS_LEAVE && s_wf_linked) {
 			wf_leave_ap();
-			pico_net_stop();
+			wf_net_stop();
 			s_wf_linked = 0;
 			ns_set_state(NETSVC_READY, "");
 		}
@@ -3143,9 +3334,9 @@ void netsvc_wifi(int on)
 		s_ns_auto_tries = NS_AUTO_TRIES;
 		mutex_release(&s_ns_info);
 		if (!s_ns_thread) {
-			/* the menu's priority: it takes turns with the menu (which hardly sleeps) and waits
-			 * asleep, so it costs nothing while it has nothing to do */
-			s_ns_thread = thread_create("pico_net", ns_thread, 0, DEFAULT_PRIORITY, 16384);
+			/* one above the menu's priority (the menu hardly sleeps: at its level this thread got
+			 * the CPU's leftovers), and it waits asleep, so it costs nothing with nothing to do */
+			s_ns_thread = thread_create("pico_net", ns_thread, 0, DEFAULT_PRIORITY + 1, 16384);
 			if (s_ns_thread) thread_resume(s_ns_thread);
 		}
 		ns_wake();
@@ -3154,7 +3345,7 @@ void netsvc_wifi(int on)
 	mutex_acquire(&s_wf_radio);
 	if (s_wf_up) {
 		wf_leave_ap();
-		pico_net_stop();
+		wf_net_stop();
 		s_wf_linked = 0;
 		s_wf_up = 0;
 		s_wf_station = 0;
@@ -3323,9 +3514,17 @@ void netsvc_saved_store(void *vol)
 	pico_wipe(f, sizeof f);
 }
 
+/* a request is waiting or running (no lock: a look for the menu, which then gives it time) */
+int netsvc_http_busy(void) { return s_nsh_state == NSH_QUEUED || s_nsh_state == NSH_RUNNING; }
 int netsvc_http_begin(const char *host, const char *path, int secure, const void *post, unsigned int post_len)
 {
+	return netsvc_http_begin_into(host, path, secure, post, post_len, 0, 0);
+}
+int netsvc_http_begin_into(const char *host, const char *path, int secure, const void *post, unsigned int post_len,
+			   void *buf, unsigned int cap)
+{
 	int ok = 0;
+	if (buf && cap < 65536u) buf = 0;		/* (too small to be of use: the usual memory) */
 	ns_ready();
 	mutex_acquire(&s_ns_info);
 	if (s_ns_st.state == NETSVC_ONLINE && s_nsh_state == NSH_IDLE && strlen(host) < sizeof s_nsh_host &&
@@ -3335,6 +3534,8 @@ int netsvc_http_begin(const char *host, const char *path, int secure, const void
 		s_nsh_secure = secure;
 		s_nsh_post_len = post ? post_len : 0;
 		if (post && post_len) memcpy(s_nsh_post, post, post_len);
+		s_nsh_buf = (unsigned char *)buf;
+		s_nsh_cap = cap;
 		s_nsh_state = NSH_QUEUED;
 		ok = 1;
 	}
@@ -3476,6 +3677,30 @@ static void cmd_netsvc(const char *arg, void *data, unsigned sz)
 		}
 		fastboot_okay("");
 		return;
+	} else if (!strncmp(arg, "scrape?", 7)) {	/* the box art's counts and times (pico_scrape_report) */
+		extern void pico_scrape_report(char *a, unsigned cap_a, char *b, unsigned cap_b) __attribute__((weak));
+		char l2[96];
+		if (pico_scrape_report) {
+			extern const char *pico_scrape_fail_line(int i);
+			int fi;
+			pico_scrape_report(l, sizeof l, l2, sizeof l2);
+			fastboot_info(l);
+			fastboot_info(l2);
+			snprintf(l2, sizeof l2, "ms dns %u tcp %u tls %u io %u", g_wf_step_ms[0], g_wf_step_ms[1], g_wf_step_ms[2],
+				 g_wf_step_ms[3]);
+			fastboot_info(l2);
+			{ extern volatile unsigned int g_tls_ms[3];
+			  snprintf(l2, sizeof l2, "tls max: chain %u sig %u kx %u", g_tls_ms[0], g_tls_ms[1], g_tls_ms[2]);
+			  fastboot_info(l2); }
+			{ extern volatile unsigned g_dbg_idle_crit, g_dbg_idle_stale, g_dbg_idle_calls, g_dbg_idle_sleeps;
+			  snprintf(l2, sizeof l2, "idle calls %u sleeps %u crit %u stale %u", g_dbg_idle_calls, g_dbg_idle_sleeps,
+				   g_dbg_idle_crit, g_dbg_idle_stale);
+			  fastboot_info(l2); }
+
+			for (fi = 0; fi < 3; fi++) if (pico_scrape_fail_line(fi)[0]) fastboot_info(pico_scrape_fail_line(fi));
+		}
+		fastboot_okay("");
+		return;
 	} else if (!strncmp(arg, "crumb", 5)) {
 		/* no lock taken: this must answer even when the service or the menu is stuck */
 		extern volatile unsigned int g_dbg_present_cnt, g_scrape_crumb;
@@ -3514,7 +3739,7 @@ static void cmd_netsvc(const char *arg, void *data, unsigned sz)
 		fastboot_info(l);
 	} else if (!strncmp(arg, "scrape", 6)) {
 		extern volatile int g_dbg_nui_scrape;
-		g_dbg_nui_scrape = strstr(arg, "stop") ? 2 : 1;
+		g_dbg_nui_scrape = strstr(arg, "stop") ? 2 : strstr(arg, ":lr") ? 3 : 1;	/* :lr from libretro's thumbnails */
 	} else if (!strncmp(arg, "art", 3)) {
 		extern volatile int g_dbg_nui_art;
 		g_dbg_nui_art = 1;

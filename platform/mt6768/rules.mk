@@ -625,6 +625,7 @@ OBJS += \
 	platform/common/pico/pico_xfer.o \
 	platform/common/pico/pico_netplay.o \
 	platform/common/pico/pico_crypto.o \
+	platform/common/pico/pico_random.o \
 	platform/common/pico/pico_net.o \
 	platform/common/pico/pico_tls.o \
 	platform/common/pico/pico_pki.o \

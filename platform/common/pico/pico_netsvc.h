@@ -65,6 +65,12 @@ void netsvc_saved_store(void *vol);
  * running, 1 done (*status, the body at *body, *len), -1 failed (*why). The body stays valid
  * until release, which frees the service for the next request. */
 int  netsvc_http_begin(const char *host, const char *path, int secure, const void *post, unsigned int post_len);
+/* a request is waiting or running: a menu that draws every frame gives the service time meanwhile */
+int  netsvc_http_busy(void);
+/* the same, the answer kept in buf (cap bytes, at least 64 KB) instead of the service's 768 KB: for
+ * answers that may be bigger; buf must stay the caller's until the answer is released */
+int  netsvc_http_begin_into(const char *host, const char *path, int secure, const void *post, unsigned int post_len,
+			    void *buf, unsigned int cap);
 int  netsvc_http_poll(unsigned int *status, const unsigned char **body, unsigned int *len, const char **why);
 void netsvc_http_release(void);
 /* the transfer asked for is not wanted any more: a running one stops at once, its slot freed */

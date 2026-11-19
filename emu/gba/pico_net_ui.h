@@ -12,7 +12,7 @@
 
 #include "sd_fat.h"
 
-enum { NUI_CLOSED, NUI_HOME, NUI_WIFI, NUI_KEYBOARD, NUI_ART, NUI_RA };
+enum { NUI_CLOSED, NUI_HOME, NUI_WIFI, NUI_KEYBOARD, NUI_ART, NUI_RA, NUI_SAVED };	/* SAVED: the saved networks, near or not */
 
 /* buttons, as edges this frame */
 enum { NUI_UP = 1, NUI_DOWN = 2, NUI_LEFT = 4, NUI_RIGHT = 8, NUI_A = 16, NUI_B = 32, NUI_X = 64, NUI_Y = 128 };

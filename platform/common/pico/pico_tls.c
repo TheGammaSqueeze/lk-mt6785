@@ -7,6 +7,19 @@
 #include "pico_pki.h"
 #include <string.h>
 
+/* oem netsvc:scrape?: the slowest of each costly step of a TLS 1.2 handshake so far, ms: the
+ * certificate chain, the server's key signature, the key exchange (on the console only: its clock) */
+extern unsigned int gpt4_get_current_tick(void) __attribute__((weak));
+volatile unsigned int g_tls_ms[3];
+static unsigned int tls_t0(void) { return gpt4_get_current_tick ? gpt4_get_current_tick() : 0; }
+static void tls_ms(int k, unsigned int t0)
+{
+	unsigned int ms;
+	if (!gpt4_get_current_tick) return;
+	ms = (gpt4_get_current_tick() - t0) / 13000u;
+	if (ms > g_tls_ms[k]) g_tls_ms[k] = ms;
+}
+
 #define REC_CCS		20
 #define REC_ALERT	21
 #define REC_HANDSHAKE	22
@@ -409,7 +422,11 @@ static int certificate_verify(struct pico_tls *t, const uint8_t *b, unsigned int
 	const char *why;
 	if (!t->trust.roots) return 0;
 	if (parse_chain(t, &n) != 0) return -1;
-	why = pki_chain_check(s_chain, n, t->host, t->trust.now, t->trust.roots, t->trust.roots_len);
+	{
+		unsigned int t0 = tls_t0();
+		why = pki_chain_check(s_chain, n, t->host, t->trust.now, t->trust.roots, t->trust.roots_len);
+		tls_ms(0, t0);
+	}
 	if (why) return fail(t, why);
 	if (len < 4) return fail(t, "bad CertificateVerify");
 	alg = get16(b);
@@ -419,8 +436,13 @@ static int certificate_verify(struct pico_tls *t, const uint8_t *b, unsigned int
 	memcpy(content + 64, "TLS 1.3, server CertificateVerify", 33);
 	content[97] = 0;
 	memcpy(content + 98, t->cv_hash, 32);
-	if (leaf_signed(&s_chain[0], alg, content, sizeof content, b + 4, sl) != 0)
-		return fail(t, "the server's handshake signature does not check");
+	{
+		unsigned int t0 = tls_t0();
+		int bad = leaf_signed(&s_chain[0], alg, content, sizeof content, b + 4, sl) != 0;
+		tls_ms(1, t0);
+		if (bad)
+			return fail(t, "the server's handshake signature does not check");
+	}
 	t->cv_done = 1;
 	return 0;
 }
@@ -438,7 +460,9 @@ static int client_flight12(struct pico_tls *t)
 	if (parse_chain(t, &n) != 0) return -1;
 	leaf = &s_chain[0];
 	if (t->trust.roots) {
+		unsigned int t0 = tls_t0();
 		const char *why = pki_chain_check(s_chain, n, t->host, t->trust.now, t->trust.roots, t->trust.roots_len);
+		tls_ms(0, t0);
 		if (why) return fail(t, why);
 	}
 	if (t->suite != SUITE_RSA_GCM) {
@@ -459,13 +483,18 @@ static int client_flight12(struct pico_tls *t)
 			memcpy(signed_part, t->c_random, 32);
 			memcpy(signed_part + 32, t->s_random, 32);
 			memcpy(signed_part + 64, k, params);
-			if (leaf_signed(leaf, alg, signed_part, 64 + params, k + params + 4, sl) != 0)
+			unsigned int t0 = tls_t0();
+			int bad = leaf_signed(leaf, alg, signed_part, 64 + params, k + params + 4, sl) != 0;
+			tls_ms(1, t0);
+			if (bad)
 				return fail(t, "the server's key signature does not check");
 		}
 		if (group == GROUP_X25519 && kl == 32) {
+			unsigned int t0 = tls_t0();
 			pico_x25519(pms, t->secret, k + 4);
 			pms_len = 32;
 			pico_x25519_base(msg + 5, t->secret);
+			tls_ms(2, t0);
 			msg[4] = 32;
 			ml = 4 + 1 + 32;
 		} else if (group == 0x0017 || group == 0x0018) {

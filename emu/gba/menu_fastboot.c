@@ -2902,6 +2902,44 @@ static void cmd_core(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem threads - every LK thread now (state, priority, wait queue, code addresses on its stack), read
+ * from the fastboot thread: the menu's own stack shows here, as it was when it lost the CPU */
+static void cmd_threads(const char *arg, void *data, unsigned sz)
+{
+	extern unsigned int thread_snapshot(char *out, unsigned int cap);
+	static char snap[2048];
+	unsigned int n, i = 0;
+	(void)arg; (void)data; (void)sz;
+	n = thread_snapshot(snap, sizeof snap);
+	while (i < n) {	/* in pieces a fastboot line holds */
+		char l[61];
+		unsigned int k = n - i < 60 ? n - i : 60;
+		memcpy(l, snap + i, k); l[k] = 0;
+		fastboot_info(l);
+		i += k;
+	}
+	fastboot_okay("");
+}
+/* oem rnd - the hardware random generator: eight words straight from the trusted firmware with each
+ * call's result code, and how many words the Pico has taken from it (and from the fallback) */
+static void cmd_rnd(const char *arg, void *data, unsigned sz)
+{
+	extern void pico_random_probe(uint32_t *words, uint32_t *codes, unsigned int n);
+	extern void pico_random_counts(unsigned int *hw, unsigned int *fallback);
+	uint32_t w[8], c[8];
+	unsigned int i, hw, fb;
+	char l[64];
+	(void)arg; (void)data; (void)sz;
+	pico_random_probe(w, c, 8);
+	for (i = 0; i < 8; i += 2) {
+		snprintf(l, sizeof l, "rnd %08x rc %x  %08x rc %x", w[i], c[i], w[i + 1], c[i + 1]);
+		fastboot_info(l);
+	}
+	pico_random_counts(&hw, &fb);
+	snprintf(l, sizeof l, "taken: hardware %u fallback %u", hw, fb);
+	fastboot_info(l);
+	fastboot_okay("");
+}
 /* oem cheevos - RetroAchievements: the state, the last outcome and rcheevos' last messages (no secrets) */
 static void cmd_cheevos(const char *arg, void *data, unsigned sz)
 {
@@ -3529,6 +3567,8 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem gauge", cmd_gauge, 1, 0);
 	fastboot_register("oem serialinfo", cmd_serialinfo, 1, 0);
 	fastboot_register("oem blackbox", cmd_blackbox, 1, 0);
+	fastboot_register("oem threads", cmd_threads, 1, 0);
+	fastboot_register("oem rnd", cmd_rnd, 1, 0);
 	fastboot_register("oem cheevos", cmd_cheevos, 1, 0);
 	fastboot_register("oem core", cmd_core, 1, 0);
 	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);
@@ -3568,6 +3608,8 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem env:", cmd_env, 1, 0);
 	fastboot_register("oem serialinfo", cmd_serialinfo, 1, 0);
 	fastboot_register("oem blackbox", cmd_blackbox, 1, 0);
+	fastboot_register("oem threads", cmd_threads, 1, 0);
+	fastboot_register("oem rnd", cmd_rnd, 1, 0);
 	fastboot_register("oem cheevos", cmd_cheevos, 1, 0);
 	fastboot_register("oem core", cmd_core, 1, 0);
 	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);

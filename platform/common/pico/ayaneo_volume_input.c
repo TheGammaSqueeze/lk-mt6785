@@ -163,13 +163,15 @@ void ayaneo_volume_inject(int steps) { (void)steps; }   /* the rocker has no que
 #include <kernel/thread.h>
 extern unsigned gpt4_get_current_tick(void);
 volatile unsigned g_dbg_idle_sleep_max_us, g_dbg_idle_sleeps;   /* oem led: the longest 1 ms sleep seen */
+volatile unsigned g_dbg_idle_crit, g_dbg_idle_stale, g_dbg_idle_calls;	/* oem idle: sleeps that did not happen, and why */
 void ayaneo_idle_until(unsigned target_tick)
 {
+	g_dbg_idle_calls++;
 	/* the tick is 1 ms on the Konkr (kernel/timer.c), so a 1 ms sleep returns within ~2 ms;
 	 * stop sleeping 4 ms before the deadline and let the caller spin the rest */
 	extern int critical_section_count;
-	if (critical_section_count > 0) return;   /* interrupts off: a sleep would never return, let the caller spin */
-	if ((int)(target_tick - gpt4_get_current_tick()) > 2 * 13000000) return;   /* over 2 s away: a stale target, never sleep on it */
+	if (critical_section_count > 0) { g_dbg_idle_crit++; return; }   /* interrupts off: a sleep would never return, let the caller spin */
+	if ((int)(target_tick - gpt4_get_current_tick()) > 2 * 13000000) { g_dbg_idle_stale++; return; }   /* over 2 s away: a stale target, never sleep on it */
 	while ((int)(target_tick - gpt4_get_current_tick()) > 4 * 13000) {
 		unsigned t0 = gpt4_get_current_tick(), d;
 		thread_sleep(1);

@@ -4,6 +4,7 @@
  * Everything is static; one frame is built at a time.
  */
 #include "pico_net.h"
+#include "pico_random.h"	/* DHCP and DNS ids, TCP sequence numbers and ports */
 #include <string.h>
 
 #define ETH_HDR		14
@@ -439,9 +440,7 @@ void pico_net_dhcp(const char *host_name)
 	unsigned int i;
 	strncpy(s_dhcp_host, host_name ? host_name : "", sizeof s_dhcp_host - 1);
 	s_dhcp_host[sizeof s_dhcp_host - 1] = 0;
-	s_dhcp_xid = now() * 2654435761u;
-	for (i = 0; i < 6; i++)
-		s_dhcp_xid = (s_dhcp_xid ^ s_link.mac[i]) * 16777619u;
+	s_dhcp_xid = pico_random32();
 	s_have_ip = 0;
 	s_dhcp_state = DHCP_SELECTING;
 	s_dhcp_tries = 0;
@@ -508,7 +507,7 @@ int pico_net_dns(const char *name)
 	if (!s_have_ip || !n || n > 250)
 		return -1;
 	memset(s_dns_q, 0, 12);
-	s_dns_id = (uint16_t)(now() * 40503u + s_dns_id + 1);
+	s_dns_id = (uint16_t)pico_random32();	/* (an id an off-path sender cannot guess) */
 	put16(s_dns_q, s_dns_id);
 	put16(s_dns_q + 2, 0x0100);			/* recursion wanted */
 	put16(s_dns_q + 4, 1);
@@ -683,7 +682,7 @@ struct tcp_conn {
 };
 static struct tcp_conn s_tcp[PICO_TCP_SLOTS];
 static uint16_t s_tcp_port = 49200;
-static uint32_t s_tcp_isn_salt;
+static int s_tcp_port_seeded;
 
 /* sequence numbers wrap: a before b */
 static int seq_lt(uint32_t a, uint32_t b) { return (int32_t)(a - b) < 0; }
@@ -1065,10 +1064,13 @@ int pico_tcp_connect(uint32_t ip, uint16_t port)
 	c->tx = c->rx + PICO_TCP_RX;
 	c->ip = ip;
 	c->port = port;
+	if (!s_tcp_port_seeded) {		/* start somewhere new each boot (RFC 6056) */
+		s_tcp_port = (uint16_t)(49200 + pico_random32() % (65000 - 49200));
+		s_tcp_port_seeded = 1;
+	}
 	c->local = s_tcp_port;
 	s_tcp_port = (uint16_t)(s_tcp_port >= 65000 ? 49200 : s_tcp_port + 1);
-	s_tcp_isn_salt = s_tcp_isn_salt * 1103515245u + 12345u + now();
-	c->iss = s_tcp_isn_salt ^ (ip * 2654435761u) ^ ((uint32_t)c->local << 16);
+	c->iss = pico_random32();		/* (RFC 6528: a sequence number nobody can predict) */
 	c->snd_una = c->iss;
 	c->snd_nxt = c->iss + 1;
 	c->peer_mss = 536;
