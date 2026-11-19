@@ -95,6 +95,10 @@ void snes_fill_quad(snes_target *t, float cx, float cy, float w, float h,
  * name hash, g (n glyphs sorted by code point, their places in the alpha-only page a8, w x h);
  * n 0 empties the slot. The text calls below fall back to it (a language pack keeps them). */
 void snes_font_more(int slot, uint32_t font_hash, const snes_glyph *g, int n, const uint8_t *a8, int w, int h);
+/* the same for the font of that name in one pack only (pk): the game names' letters, scaled to that
+ * pack's fonts (slots 4 on; 0..2 are the language's) */
+void snes_font_more_pk(int slot, const snes_pack *pk, uint32_t font_hash, const snes_glyph *g, int n,
+		       const uint8_t *a8, int w, int h);
 /* draw text with a pack font (by font-name hash); align 0 left/1 centre/2 right. */
 int snes_font_covers(const snes_pack *pk, const snes_font_entry *fe, const char *s);
 void snes_draw_text(snes_target *t, const snes_pack *pk, uint32_t font_hash,

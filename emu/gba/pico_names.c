@@ -28,7 +28,7 @@ extern int zunzip(unsigned char *src, unsigned long *lenp, void *dst, int dstlen
 #define KEY_MEDIUM  (1u << 24)
 #define NG_MAX      8192          /* glyphs read at most, both weights */
 #define PIX_CAP     (3u << 20)    /* their pixels, 4 bits each */
-#define NSETS       12            /* sizes and weights scaled */
+#define NSETS       24            /* sizes and weights scaled (the Current theme's fonts and the Classic themes') */
 #define ATLAS_W     512
 
 typedef struct { uint32_t key; int8_t xo, yo; uint8_t w, h; uint16_t adv, blk; uint32_t off; } nidx;

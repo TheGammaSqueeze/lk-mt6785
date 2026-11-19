@@ -14,6 +14,8 @@
 #include "pico_classic_ui.h"
 #include "pico_classic_igm.h"
 #include "pico_i18n.h"
+#include "pico_names.h"
+#include "pico_libmem.h"
 
 extern unsigned int gba_menu_theme(void);
 
@@ -62,6 +64,94 @@ void cui_lang_fonts(void)
 		else
 			snes_font_more(i, 0, 0, 0, 0, 0, 0);
 	}
+}
+
+/* ---- game names in any script ----
+ * The themes' fonts hold Latin letters only. The card's names pack (pico_names.c, which the Current
+ * theme draws its names with) has every letter of the games' names: its glyphs, scaled to each font
+ * of a pack and put in that font's own measures, are added to the font (snes_font_more_pk), so a
+ * name in Japanese, Chinese or Korean shows as it is. The home menu's pack takes slots 4 to 11, the
+ * in-game kit's 12 to 15 (0 to 2 are the language's). */
+#define NM_SLOTS 16
+static struct { snes_glyph *g; int cap; } s_nm_slot[NM_SLOTS];
+static unsigned int s_nm_serial[NM_SLOTS];
+static const snes_pack *s_nm_pk[NM_SLOTS];
+
+/* the size in pixels a font's letters were drawn at: from its capital H (about 0.7 of the size in
+ * the themes' fonts), else from its line height */
+static int font_size_px(const snes_pack *pk, const snes_font_entry *fe)
+{
+	const snes_glyph *g = (const snes_glyph *)(pk->base + fe->glyphs);
+	int lo = 0, hi = (int)fe->glyph_count - 1;
+	while (lo <= hi) {
+		int mid = (lo + hi) >> 1;
+		if (g[mid].cp == 'H') return g[mid].h > 0 ? (g[mid].h * 10 + 3) / 7 : (int)fe->line_height * 4 / 5;
+		if (g[mid].cp < 'H') lo = mid + 1; else hi = mid - 1;
+	}
+	return (int)fe->line_height * 4 / 5;
+}
+
+int cui_names_ready(void)
+{
+	const pico_nglyph *g;
+	const uint8_t *a;
+	int w;
+	return pico_names_set(24, 0, &g, &a, &w) > 0;
+}
+
+void cui_names_fonts(const snes_pack *pk, int slot0, int nslots)
+{
+	int done[NM_SLOTS], k = 0, i, j;
+	if (!pk || slot0 < 0 || nslots <= 0 || slot0 + nslots > NM_SLOTS) return;
+	if (s_nm_pk[slot0] == pk && s_nm_serial[slot0] == pico_names_serial()) return;	/* (as they are) */
+	s_nm_pk[slot0] = pk;
+	s_nm_serial[slot0] = pico_names_serial();
+	for (i = 0; i <= (int)pk->res_mask && k < nslots; i++) {
+		const snes_res_entry *r = &pk->res[i];
+		const snes_font_entry *fe;
+		const pico_nglyph *ng = 0;
+		const uint8_t *at = 0;
+		int aw = 0, ah = 0, n, seen = 0, s = slot0 + k;
+		if (!r->id_hash || r->type != RES_FONT) continue;
+		for (j = 0; j < k; j++) if (done[j] == r->index) seen = 1;
+		if (seen) continue;			/* (one font under several names) */
+		done[k] = r->index;
+		fe = &pk->font[r->index];
+		n = pico_names_set(font_size_px(pk, fe), 0, &ng, &at, &aw);
+		if (n > 0 && s_nm_slot[s].cap < n) {
+			s_nm_slot[s].g = (snes_glyph *)pico_lib_alloc((unsigned)n * (unsigned)sizeof(snes_glyph));
+			s_nm_slot[s].cap = s_nm_slot[s].g ? n : 0;
+		}
+		if (n <= 0 || !s_nm_slot[s].g) {
+			snes_font_more_pk(s, pk, 0, 0, 0, 0, 0, 0);
+			k++;
+			continue;
+		}
+		for (j = 0; j < n; j++) {		/* from the pen on the baseline to the line's top */
+			snes_glyph *o = &s_nm_slot[s].g[j];
+			o->cp = ng[j].code;
+			o->x = ng[j].x; o->y = ng[j].y; o->w = ng[j].w; o->h = ng[j].h;
+			o->xo = ng[j].xo;
+			o->yo = (int16_t)((int)fe->base + ng[j].yo);
+			o->xadv = (int16_t)((ng[j].adv + 32u) / 64u);
+			o->pad = 0;
+			if (ng[j].y + ng[j].h > ah) ah = ng[j].y + ng[j].h;
+		}
+		snes_font_more_pk(s, pk, r->id_hash, s_nm_slot[s].g, n, at, aw, ah);
+		k++;
+	}
+	for (; k < nslots; k++) snes_font_more_pk(slot0 + k, pk, 0, 0, 0, 0, 0, 0);
+}
+
+void cui_utf8_whole(char *s)
+{
+	int L = (int)strlen(s), k = L, need;
+	unsigned char c;
+	while (k > 0 && ((unsigned char)s[k - 1] & 0xC0) == 0x80) k--;	/* the last letter's start */
+	if (k == 0) return;
+	c = (unsigned char)s[k - 1];
+	need = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+	if (L - (k - 1) < need) s[k - 1] = 0;
 }
 
 const char *cui_order(const char *s)

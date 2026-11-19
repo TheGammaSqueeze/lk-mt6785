@@ -65,6 +65,12 @@ uint32_t cui_font(int f);   /* the font's hash */
 /* the language pack's added letters for the l, m and s fonts (c_l, c_m, c_s), for the letters the
  * fonts lack; again after another pack is read (none: the fonts as they are) */
 void  cui_lang_fonts(void);
+/* game names in any script: whether the card's names pack is there (after pico_names_prepare), and
+ * its glyphs added to every font of pk, nslots slots from slot0 (home menu 4, 8; in-game kit 12, 4) */
+int   cui_names_ready(void);
+void  cui_names_fonts(const snes_pack *pk, int slot0, int nslots);
+/* a name cut at its last whole letter (a cut at a byte count may end inside one) */
+void  cui_utf8_whole(char *s);
 /* a text in drawing order (right-to-left letters turned), in one of a few rotating buffers */
 const char *cui_order(const char *s);
 

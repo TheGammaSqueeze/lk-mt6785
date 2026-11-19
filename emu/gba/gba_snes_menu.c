@@ -23,6 +23,7 @@
 #include "menu/gba_name.h"          /* gba_clean_name (shared with host_render) */
 #include "sd_fat.h"                 /* gba_rom_entry */
 #include "pico_fold.h"              /* names in the themes' ASCII fonts */
+#include "pico_names.h"             /* names in any script: the card's names pack */
 #include "gba_sd_save.h"            /* the games' files under their older names */
 #include "gba_boxart.h"             /* gba_boxart_decode */
 #include "pico_libmem.h"            /* the roster's tables, PICO_GAMES_MAX */
@@ -699,15 +700,25 @@ static int tables_take(void)
 	return s_names && s_nameptr && s_types && s_vnameptr && s_vtypes && s_vboxart && s_vmap && s_vorder &&
 	       s_art && s_boxart_full;
 }
-/* the names as these themes' fonts can show them: ASCII, a Latin letter with an accent as the
- * letter, any other character outside ASCII as '_' (pico_fold_ascii) */
+/* game names in any script (cui_names_fonts): the names pack is there, the names are kept as they are */
+static int s_nm_on;
+
+/* the names as these themes show them: as they are when the card's names pack has their letters
+ * (cui_names_fonts), else as the fonts alone can: ASCII, a Latin letter with an accent as the letter,
+ * any other character outside ASCII as '_' (pico_fold_ascii) */
 static void build_names(const gba_rom_entry *roms, int nrom)
 {
-	int i;
-	for (i = 0; i < nrom && i < PICO_GAMES_MAX; i++) {
+	int i, n = nrom < PICO_GAMES_MAX ? nrom : PICO_GAMES_MAX;
+	/* the names pack: read the letters of every name, then see whether it is there */
+	for (i = 0; i < n; i++) gba_clean_name(roms[i].uname[0] ? roms[i].uname : roms[i].name, s_names[i]);
+	pico_names_prepare(&s_names[0][0], 128, n);
+	s_nm_on = n > 0 && cui_names_ready();
+	for (i = 0; i < n; i++) {
 		char nm[128];
-		pico_fold_ascii(roms[i].uname[0] ? roms[i].uname : roms[i].name, nm, sizeof nm);
+		if (s_nm_on) snprintf(nm, sizeof nm, "%s", roms[i].uname[0] ? roms[i].uname : roms[i].name);
+		else pico_fold_ascii(roms[i].uname[0] ? roms[i].uname : roms[i].name, nm, sizeof nm);
 		gba_clean_name(nm, s_names[i]);
+		if (s_nm_on) cui_utf8_whole(s_names[i]);
 		if (s_names[i][0] == 0) {                       /* pathological all-tag name */
 			int L = 0;
 			while (nm[L] && L < 127) { s_names[i][L] = nm[L]; L++; }
@@ -1910,6 +1921,7 @@ int gba_snes_menu_run(const gba_rom_entry *roms, int nrom, int start_sel)
 	}
 
 	build_names(roms, nrom);
+	if (s_nm_on) cui_names_fonts(&s_pk, 4, 8);	/* the names' letters the fonts lack */
 	cart = snes_res_img(&s_pk, snes_hash("gba_cart"));
 	s_cart_img = cart;
 	/* The roster itself is set by apply_filter() below, AFTER the boxart table loads, so the

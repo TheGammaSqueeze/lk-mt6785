@@ -25,6 +25,7 @@
 #include "menu/snes_render.h"
 #include "menu/gba_name.h"          /* gba_clean_name */
 #include "pico_fold.h"              /* the game's name in the theme's letters */
+#include "pico_names.h"             /* or in any script, from the card's names pack */
 #include "pico_i18n.h"              /* tr(): the menus' languages */
 
 extern unsigned int gpt4_get_current_tick(void);
@@ -281,7 +282,12 @@ void pico_classic_igm_open(const struct igm_core *c)
 		memcpy(base, g, n);
 		base[n] = 0;
 		gba_clean_name(base, clean);
-		pico_fold_ascii(clean, C.title, sizeof C.title);
+		pico_names_prepare_one(clean);
+		if (cui_names_ready()) {	/* the card's names pack: the name as it is, its letters added */
+			snprintf(C.title, sizeof C.title, "%s", clean);
+			cui_utf8_whole(C.title);
+			cui_names_fonts(&s_pk, 12, 4);
+		} else pico_fold_ascii(clean, C.title, sizeof C.title);
 	}
 	pico_tr_igm_scope(1);
 	tabs_lay_out();

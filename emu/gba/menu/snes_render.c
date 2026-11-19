@@ -484,21 +484,30 @@ static uint32_t utf8_next(const char **pp)
 	return c;
 }
 
-/* a font's added letters (snes_font_more): looked up when the font itself lacks one. s_more_cur is
- * the set of the font being drawn or measured now, s_more_hit says the last glyph came from it. */
-#define MORE_N 8
+/* a font's added letters (snes_font_more): looked up when the font itself lacks one, in every set
+ * given for it (a language's letters and the game names' can both be there). s_more_cur lists the
+ * sets of the font being drawn or measured now, s_more_hit says the last glyph came from one of
+ * them, s_more_src which. */
+#define MORE_N 16
 static struct snes_font_more_set {
 	uint32_t font;
+	const snes_pack *pk;	/* the pack whose font it is (0: any pack's font of that name) */
 	const snes_glyph *g;
 	int n, w, h;
 	const uint8_t *a8;
 } s_more[MORE_N];
-static const struct snes_font_more_set *s_more_cur;
-static int s_more_hit;
+static const struct snes_font_more_set *s_more_cur[MORE_N], *s_more_src;
+static int s_more_ncur, s_more_hit;
 void snes_font_more(int slot, uint32_t font_hash, const snes_glyph *g, int n, const uint8_t *a8, int w, int h)
+{
+	snes_font_more_pk(slot, 0, font_hash, g, n, a8, w, h);
+}
+void snes_font_more_pk(int slot, const snes_pack *pk, uint32_t font_hash, const snes_glyph *g, int n,
+		       const uint8_t *a8, int w, int h)
 {
 	if (slot < 0 || slot >= MORE_N) return;
 	s_more[slot].font = n > 0 ? font_hash : 0;
+	s_more[slot].pk = pk;
 	s_more[slot].g = g; s_more[slot].n = n > 0 ? n : 0;
 	s_more[slot].a8 = a8; s_more[slot].w = w; s_more[slot].h = h;
 }
@@ -508,12 +517,11 @@ static void more_for(const snes_pack *pk, uint32_t font_hash)
 {
 	const snes_font_entry *fe = snes_res_font(pk, font_hash);
 	int i;
-	s_more_cur = 0;
+	s_more_ncur = 0;
 	for (i = 0; i < MORE_N; i++)
-		if (s_more[i].n && (s_more[i].font == font_hash || (fe && snes_res_font(pk, s_more[i].font) == fe))) {
-			s_more_cur = &s_more[i];
-			return;
-		}
+		if (s_more[i].n && (!s_more[i].pk || s_more[i].pk == pk) &&
+		    (s_more[i].font == font_hash || (fe && snes_res_font(pk, s_more[i].font) == fe)))
+			s_more_cur[s_more_ncur++] = &s_more[i];
 }
 static const snes_glyph *glyph_in(const snes_glyph *g, int n, uint32_t cp)
 {
@@ -528,8 +536,10 @@ static const snes_glyph *glyph_in(const snes_glyph *g, int n, uint32_t cp)
 static const snes_glyph *glyph_find(const snes_font_entry *fe, const snes_glyph *g, uint32_t cp)
 {
 	const snes_glyph *r = glyph_in(g, fe->glyph_count, cp);
+	int i;
 	s_more_hit = 0;
-	if (!r && s_more_cur && (r = glyph_in(s_more_cur->g, s_more_cur->n, cp))) s_more_hit = 1;
+	for (i = 0; !r && i < s_more_ncur; i++)
+		if ((r = glyph_in(s_more_cur[i]->g, s_more_cur[i]->n, cp))) { s_more_hit = 1; s_more_src = s_more_cur[i]; }
 	return r;
 }
 
@@ -540,9 +550,10 @@ int snes_font_covers(const snes_pack *pk, const snes_font_entry *fe, const char 
 	int i;
 	if (!fe || !s) return 0;
 	g = (const snes_glyph *)(pk->base + fe->glyphs);
-	s_more_cur = 0;
+	s_more_ncur = 0;
 	for (i = 0; i < MORE_N; i++)
-		if (s_more[i].n && snes_res_font(pk, s_more[i].font) == fe) { s_more_cur = &s_more[i]; break; }
+		if (s_more[i].n && (!s_more[i].pk || s_more[i].pk == pk) && snes_res_font(pk, s_more[i].font) == fe)
+			s_more_cur[s_more_ncur++] = &s_more[i];
 	while (*s) {
 		uint32_t c = utf8_next(&s);
 		if (c != ' ' && c != '\n' && !glyph_find(fe, g, c)) return 0;
@@ -558,7 +569,7 @@ static uint32_t label_stand_in(const snes_pack *pk, const snes_font_entry *fe, c
 	int i, bd = 1 << 30;
 	if (snes_font_covers(pk, fe, text)) return 0;
 	for (i = 0; i < MORE_N; i++) {
-		const snes_font_entry *o = s_more[i].n ? snes_res_font(pk, s_more[i].font) : 0;
+		const snes_font_entry *o = s_more[i].n && (!s_more[i].pk || s_more[i].pk == pk) ? snes_res_font(pk, s_more[i].font) : 0;
 		int d;
 		if (!o || o == fe || !snes_font_covers(pk, o, text)) continue;
 		d = (int)o->line_height - (int)fe->line_height;
@@ -648,7 +659,7 @@ static void draw_label(snes_target *t, snes_scene *s, const snes_comp *c,
 				if (g->w > 0) {
 					snes_draw d;
 					float gm[6];
-					if (s_more_hit) { d.pix = s_more_cur->a8; d.fmt = 3; d.img_w = s_more_cur->w; d.img_h = s_more_cur->h; }
+					if (s_more_hit) { d.pix = s_more_src->a8; d.fmt = 3; d.img_w = s_more_src->w; d.img_h = s_more_src->h; }
 					else { d.pix = pgpix; d.fmt = fmt; d.img_w = pgw; d.img_h = pgh; }
 					d.sx = g->x; d.sy = g->y; d.sw = g->w; d.sh = g->h;
 					d.dw = g->w * scale; d.dh = g->h * scale; d.px = 0; d.py = 0;
@@ -715,7 +726,7 @@ void snes_draw_text(snes_target *t, const snes_pack *pk, uint32_t font_hash,
 		if (!g) continue;   /* missing glyphs drop to zero width (web parity) */
 		if (g->w > 0) {
 			snes_draw d; float gm[6];
-			if (s_more_hit) { d.pix = s_more_cur->a8; d.fmt = 3; d.img_w = s_more_cur->w; d.img_h = s_more_cur->h; }
+			if (s_more_hit) { d.pix = s_more_src->a8; d.fmt = 3; d.img_w = s_more_src->w; d.img_h = s_more_src->h; }
 			else { d.pix = pgpix; d.fmt = fmt; d.img_w = pgw; d.img_h = pgh; }
 			d.sx = g->x; d.sy = g->y; d.sw = g->w; d.sh = g->h;
 			d.dw = g->w * scale; d.dh = g->h * scale; d.px = 0; d.py = 0;
