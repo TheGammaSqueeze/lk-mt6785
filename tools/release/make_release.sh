@@ -76,6 +76,7 @@ for c in armgba-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico ar
 	[ -f out/sdcard/cores/$c.blob ] || { echo "!! the card template has no $c core" >&2; exit 1; }
 done
 [ -f out/sdcard/bios/certs/roots.der ] || { echo "!! the card template has no HTTPS roots" >&2; exit 1; }
+[ "$(ls out/sdcard/bios/connsys 2>/dev/null | wc -l)" -ge 10 ] || { echo "!! the card template has no Wi-Fi and Bluetooth firmware (bios/connsys)" >&2; exit 1; }
 
 rm -rf "$FILES" "$R"/*.zip "$R"/SHA256SUMS "$R"/RELEASE_NOTES.md
 mkdir -p "$FILES"

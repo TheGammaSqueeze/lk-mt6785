@@ -31,7 +31,8 @@
 #include "gba_core_abi.h"
 #include "core_file.h"
 #include "card_writer.h"
-#include "pico_stats.h"	/* the time played, for the mastery card */
+#include "pico_stats.h"
+#include "pico_version.h"	/* the release in the user agent */	/* the time played, for the mastery card */
 #include "gba_sd_save.h"
 #include "../../platform/common/pico/pico_netsvc.h"
 #include "../../platform/common/pico/pico_crypto.h"	/* the queue file's seal and owners */
@@ -52,7 +53,7 @@ extern long long pico_clock_utc(void);
 #define PICO_RA_HARDCORE 0
 #endif
 #define RA_COPY_DIR	"/gammaos/ra/c"
-#define RA_UA		"GammaOS-Pico/1.0.0"
+#define RA_UA		"GammaOS-Pico"	/* then "/" and the release (VERSION, pico_version()) */
 
 /* our megabyte at the end of the RA memory */
 #define RA_IO_PA	(RA_MEM_PA + RA_MEM_SIZE - 0x100000u)
@@ -608,7 +609,7 @@ static void clock_snapshot(void)
 
 /* ---- the blob ---- */
 
-/* Our own user agent, always (RetroAchievements validates clients by it): "GammaOS-Pico/1.0.0
+/* Our own user agent, always (RetroAchievements validates clients by it): "GammaOS-Pico/1.1.0
  * (LK; <the core by its own name>) rcheevos/x.y.z", "(LK; armGBA v1.7)" say. The core is named
  * so that RetroAchievements can see what runs each game; it never claims to be another client. */
 static void ua_set(const char *core)
@@ -616,8 +617,8 @@ static void ua_set(const char *core)
 	char ua[160], clause[48];
 	clause[0] = 0;
 	if (X) X->user_agent_clause(clause, sizeof clause);
-	if (core && core[0]) snprintf(ua, sizeof ua, "%s (LK; %s) %s", RA_UA, core, clause);
-	else snprintf(ua, sizeof ua, "%s (LK) %s", RA_UA, clause);
+	if (core && core[0]) snprintf(ua, sizeof ua, "%s/%s (LK; %s) %s", RA_UA, pico_version(), core, clause);
+	else snprintf(ua, sizeof ua, "%s/%s (LK) %s", RA_UA, pico_version(), clause);
 	netsvc_user_agent(ua);
 }
 

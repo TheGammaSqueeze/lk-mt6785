@@ -108,6 +108,19 @@ if [ "$(stat -c %s out/sdcard/bios/certs/roots.der)" -ge 131072 ]; then
 	exit 1
 fi
 
+# The Wi-Fi and Bluetooth chip's firmware (tools/release/connsys: each console's stock vendor
+# firmware, both consoles' sets on the one card): the LK loads it from bios/connsys/. A set missing
+# would ship a card on which Wi-Fi and Bluetooth do not start, so that stops the template here.
+mkdir -p out/sdcard/bios/connsys
+for v in 1a_1 2a_1; do
+	for f in soc1_0_ram_mcu_${v}_hdr.bin soc1_0_ram_bt_${v}_hdr.bin soc1_0_ram_wifi_${v}_hdr.bin \
+		 soc1_0_patch_mcu_${v}_hdr.bin WIFI_RAM_CODE_soc1_0_${v}.bin; do
+		[ -f "tools/release/connsys/$f" ] || { echo "!! tools/release/connsys/$f is missing" >&2; exit 1; }
+		cp "tools/release/connsys/$f" out/sdcard/bios/connsys/
+	done
+done
+(cd tools/release/connsys && sha256sum -c --quiet SHA256SUMS) || { echo "!! the connsys firmware does not match SHA256SUMS" >&2; exit 1; }
+
 # A theme with a menu of its own (a 'layout' file in its folder) brings its card packs, one per
 # screen it was drawn for: the Current theme's are built from tools/ayaneo/pico_current. 960x640
 # is the Konkr Pocket Advance's screen, 960x720 the Konkr Pocket Block's, 1280x960 the Pocket Air

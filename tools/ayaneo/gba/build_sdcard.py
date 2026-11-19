@@ -40,7 +40,12 @@ BIOS_README = ("Put the Game Boy Advance BIOS here as gba_bios.bin (16384 bytes)
                "and the exact routines the games were made against. Without it armGBA's built-in\n"
                "replacement BIOS runs them, not every game the same way, and its own splash is the\n"
                "intro. gpSP (when armGBA is not in cores/, or chosen in the in-game menu) needs this\n"
-               "file. The BIOS is Nintendo's and is not included.\n")
+               "file. The BIOS is Nintendo's and is not included.\n"
+               "\n"
+               "connsys/ holds the firmware of the consoles' Wi-Fi and Bluetooth chip, the same\n"
+               "files their stock Android loads (both consoles' sets: each uses its own). certs/\n"
+               "holds the trusted roots HTTPS connections are checked against. Both come with each\n"
+               "release and are replaced by it; leave them as they are.\n")
 
 
 def check_core(name, data):
