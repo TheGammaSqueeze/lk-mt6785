@@ -55,8 +55,11 @@ extern long long pico_clock_utc(void);
 #define RA_COPY_DIR	"/gammaos/ra/c"
 #define RA_UA		"GammaOS-Pico"	/* then "/" and the release (VERSION, pico_version()) */
 
+/* the RA memory's size, picked when it is mapped (ra_map): RA_MEM_MIN to RA_MEM_MAX, as much as the
+ * console's DRAM block there holds. Our buffers sit at its end, so the blob's heap is all the rest. */
+static unsigned s_ra_size = RA_MEM_MIN;
 /* our megabyte at the end of the RA memory */
-#define RA_IO_PA	(RA_MEM_PA + RA_MEM_SIZE - 0x100000u)
+#define RA_IO_PA	(RA_MEM_PA + s_ra_size - 0x100000u)
 #define RA_REQ_MAX	8
 #define RA_QUEUE_MAX	256
 #define RA_FBUF_OFF	0x8000u
@@ -166,21 +169,25 @@ static int keepable(const char *api)
 	       !strcmp(api, "gameid") || !strcmp(api, "patch");
 }
 
-/* the RA memory: DRAM the preloader marked usable, mapped cached (the blob runs from it) */
+/* the RA memory: DRAM the preloader marked usable, mapped cached (the blob runs from it); as much of
+ * RA_MEM_MAX as the DRAM block it starts in holds (whole megabytes), at least RA_MEM_MIN */
 static int ra_map(void)
 {
-	unsigned i;
-	int ok = 0;
+	unsigned i, size = 0;
 	if (s_mapped) return 0;
 	if (!g_boot_arg) return -1;
 	for (i = 0; i < g_boot_arg->mblock_info.mblock_num && i < 128u; i++) {
 		unsigned long long s = g_boot_arg->mblock_info.mblock[i].start;
 		unsigned long long e = s + g_boot_arg->mblock_info.mblock[i].size;
-		if (s <= RA_MEM_PA && RA_MEM_PA + (unsigned long long)RA_MEM_SIZE <= e) ok = 1;
+		if (s <= RA_MEM_PA && RA_MEM_PA < e) {
+			unsigned long long room = e - RA_MEM_PA;
+			size = room >= RA_MEM_MAX ? RA_MEM_MAX : (unsigned)(room & ~0xFFFFFull);
+		}
 	}
-	if (!ok || arch_mmu_map((uint64_t)RA_MEM_PA, (vaddr_t)RA_MEM_PA,
-				MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA, RA_MEM_SIZE) != 0)
+	if (size < RA_MEM_MIN || arch_mmu_map((uint64_t)RA_MEM_PA, (vaddr_t)RA_MEM_PA,
+					      MMU_MEMORY_TYPE_NORMAL_WRITE_BACK | MMU_MEMORY_AP_P_RW_U_NA, size) != 0)
 		return -1;
+	s_ra_size = size;
 	memset((void *)RA_IO_PA, 0, RA_FBUF_OFF);
 	s_mapped = 1;
 	return 0;

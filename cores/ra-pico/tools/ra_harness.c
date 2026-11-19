@@ -226,6 +226,11 @@ static struct keep *kept(const char *api, const char *key)
 	return 0;
 }
 
+/* RA_SET_FILE: a real game's set (an achievementsets answer kept by the console, say) answers the
+ * set request instead of the harness's own, at full size */
+static char *g_set_file;
+static long g_set_file_len;
+
 /* every waiting request answered: from the server, or offline from the copies */
 static void pump(void)
 {
@@ -235,6 +240,10 @@ static void pump(void)
 		int status;
 		memmove(pend, pend + 1, (size_t)(npend - 1) * sizeof *pend);
 		npend--;
+		if (g_set_file && !strcmp(p.api, "achievementsets")) {
+			X->answer(p.id, 200, g_set_file, (unsigned)g_set_file_len);
+			continue;
+		}
 		if (online) {
 			status = server(p.post, body, sizeof body);
 			if (status == 200 && strstr(body, "\"Success\":true")) {
@@ -290,6 +299,60 @@ static void frames(int n)
 	drain();
 }
 
+/* RA_SET_FILE=<achievementsets answer> [RA_HEAP_LIKE_LK=1]: a GBA game with that set, started the
+ * way the console starts one from its resume state (the counts reset), played, closed, and the same
+ * again: what the Pocket Advance did when Mario & Luigi: Superstar Saga (three sets, 226
+ * achievements, 427 KB) crashed in rc_reset_condset. With RA_HEAP_LIKE_LK the blob's heap is the
+ * LK's (the slot less its top 2 MB: our buffers, the badges and the card picture). */
+static int big_set_run(void)
+{
+	static unsigned char rom[1 << 20], wram[0x40000], iwram[0x8000];
+	struct pico_core_memory mem;
+	struct ra_summary s;
+	int round, i;
+	FILE *f = fopen(getenv("RA_SET_FILE"), "rb");
+	setvbuf(stdout, 0, _IONBF, 0);		/* (every line out before a crash) */
+	if (!f) { perror("RA_SET_FILE"); return 2; }
+	fseek(f, 0, SEEK_END);
+	g_set_file_len = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	g_set_file = malloc((size_t)g_set_file_len + 1);
+	if (!g_set_file || fread(g_set_file, 1, (size_t)g_set_file_len, f) != (size_t)g_set_file_len) { fclose(f); return 2; }
+	fclose(f);
+	g_set_file[g_set_file_len] = 0;
+	printf("set file: %ld bytes\n", g_set_file_len);
+	X->set_online(1);
+	X->login_password("tester", "secret");
+	pump();
+	drain();
+	CHECK(events[RA_EV_LOGIN] == 1 && last[RA_EV_LOGIN].ok, "signed in");
+	for (i = 0; i < (int)sizeof rom; i++) rom[i] = (unsigned char)(i * 13 + 7);
+	memset(&mem, 0, sizeof mem);
+	mem.system_ram = wram;
+	mem.system_ram_size = sizeof wram;
+	mem.save_ram = iwram;
+	mem.save_ram_size = sizeof iwram;
+	for (round = 1; round <= 3; round++) {
+		int before = events[RA_EV_GAME];
+		printf("round %d: load, reset as from a resume state, play, close\n", round);
+		X->load_game(5 /* RC_CONSOLE_GAMEBOY_ADVANCE */, rom, sizeof rom, &mem);
+		pump();
+		drain();
+		CHECK(events[RA_EV_GAME] == before + 1 && last[RA_EV_GAME].ok, "the set loaded");
+		X->summary(&s);
+		printf("  %s, %u achievements, %u points\n", s.game, s.total, s.points_total);
+		CHECK(X->progress_load(0, 0) == 0, "the counts reset (as from a resume state)");
+		for (i = 0; i < 120; i++) { wram[i & 0xFF] = (unsigned char)i; X->do_frame(); fake_ms += 16; pump(); }
+		drain();
+		CHECK(X->progress_load(0, 0) == 0, "reset again after play");
+		X->unload_game();
+		pump();
+		drain();
+	}
+	printf("%s\n", fails ? "FAILED" : "all checks passed");
+	return fails ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
 	static unsigned char rom[16 + 32768];
@@ -304,7 +367,10 @@ int main(int argc, char **argv)
 	if (argc < 2 || load_blob(argv[1]) != 0) { fprintf(stderr, "usage: %s out/ra-pico.blob\n", argv[0]); return 2; }
 	X = ra_core_blob_init(&k_im);
 	CHECK(X && X->magic == RA_CORE_ABI_MAGIC && X->version == RA_CORE_ABI_VERSION, "the export table");
-	X->heap_init(g_slot + g_span, RA_SLOT_SIZE - g_span);
+	if (getenv("RA_HEAP_LIKE_LK"))		/* the LK keeps the slot's top 2 MB for itself */
+		X->heap_init(g_slot + g_span, RA_SLOT_SIZE - 0x200000u - g_span);
+	else
+		X->heap_init(g_slot + g_span, RA_SLOT_SIZE - g_span);
 	(void)heap;
 #else
 	(void)argc; (void)argv;
@@ -316,6 +382,7 @@ int main(int argc, char **argv)
 	X->user_agent_clause(ua, sizeof ua);
 	printf("  user agent clause: %s\n", ua);
 	CHECK(!strncmp(ua, "rcheevos/", 9), "user agent clause");
+	if (getenv("RA_SET_FILE")) return big_set_run();
 
 	printf("login\n");
 	X->set_online(1);

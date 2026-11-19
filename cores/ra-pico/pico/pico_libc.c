@@ -40,7 +40,7 @@ struct block {
 
 static uint8_t *h_base, *h_top, *h_end;
 static struct block *h_free;
-static uint32_t h_peak, h_live;
+static uint32_t h_peak, h_live, h_fails;
 
 void pico_heap_init(void *base, unsigned size)
 {
@@ -49,11 +49,12 @@ void pico_heap_init(void *base, unsigned size)
 	h_end = (uint8_t *) base + size;
 	if (h_end < h_base) h_end = h_base;
 	h_free = NULL;
-	h_peak = h_live = 0;
+	h_peak = h_live = h_fails = 0;
 }
 
 unsigned pico_heap_used(void) { return h_live; }
 unsigned pico_heap_peak(void) { return h_peak; }
+unsigned pico_heap_fails(void) { return h_fails; }
 unsigned pico_heap_size(void) { return (unsigned) (h_end - h_base); }
 
 static int heap_owns(const void *p)
@@ -105,7 +106,7 @@ void *malloc(size_t n)
 	cap = ((uint32_t) n + HEAP_ALIGN - 1u) & ~(HEAP_ALIGN - 1u);
 	if (!cap) cap = HEAP_ALIGN;
 	b = heap_take(cap);
-	if (!b) { errno = ENOMEM; return NULL; }
+	if (!b) { h_fails++; errno = ENOMEM; return NULL; }
 	b->magic = MAGIC_USED;
 	b->next = NULL;
 	h_live += b->size;

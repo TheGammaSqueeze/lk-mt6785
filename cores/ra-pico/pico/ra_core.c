@@ -542,11 +542,25 @@ static void verdict_read(void)
 	g_verdict = g_warn_n ? 0 : real ? 1 : -1;
 }
 
+/* allocations the heap refused before this game's load began (pico_heap_fails) */
+static unsigned g_fails_at_load;
+
 static void load_done(int result, const char *error_message, rc_client_t *client, void *userdata)
 {
 	struct ra_event *e = ev_push(RA_EV_GAME);
 	(void)client; (void)userdata;
 	e->ok = result == RC_OK && rc_client_is_game_loaded(g_client);
+	if (e->ok && pico_heap_fails() != g_fails_at_load) {
+		/* an allocation was refused while the set was read: some of it may be half made (a
+		 * trigger left unparsed once crashed the next reset, rc_reset_condset): nothing of
+		 * this game counts, rather than a set rcheevos cannot rely on */
+		say("ra: %sthe game's set did not fit the memory (%u bytes in use), achievements off", "", pico_heap_used());
+		rc_client_unload_game(g_client);
+		e->ok = 0;
+		copy_text(e->text, sizeof e->text, "This game's achievements need more memory than is free");
+		verdict_read();
+		return;
+	}
 	verdict_read();
 	if (e->ok) {
 		const rc_client_game_t *g = rc_client_get_game_info(g_client);
@@ -572,6 +586,7 @@ static void ex_load_game(unsigned console, const void *rom, unsigned rom_size, c
 	map.num_descriptors = g_mem.num_descriptors;
 	g_regions_up = rc_libretro_memory_init(&g_regions, g_mem.num_descriptors ? &map : 0, core_memory_info, console);
 	if (!g_regions_up) say("ra: no memory regions for console %s%u", "", console);
+	g_fails_at_load = pico_heap_fails();
 	rc_client_begin_identify_and_load_game(g_client, console, 0, (const uint8_t *)rom, rom_size, load_done, 0);
 }
 

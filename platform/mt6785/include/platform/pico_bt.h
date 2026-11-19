@@ -19,7 +19,11 @@
 /* RetroAchievements (cores/ra-pico, emu/gba/pico_ra.c): the blob, its heap and the LK's buffers for
  * it, after the Wi-Fi memory and left out of the rewind arena too */
 #define RA_MEM_PA	(WIFI_DMA_PA + WIFI_DMA_SIZE)
-#define RA_MEM_SIZE	0x00400000u
-#define PICO_NET_MEM_END	(RA_MEM_PA + RA_MEM_SIZE)	/* the end of all of it */
+/* as much of the next 16 MB as the console's DRAM block holds there, at least 4 MB (pico_ra.c picks
+ * it at its first use): a game with a big set (Mario & Luigi: Superstar Saga, three sets and 226
+ * achievements) needs about 2 MB of the blob's heap, more than 4 MB less our 2 MB of buffers left */
+#define RA_MEM_MIN	0x00400000u
+#define RA_MEM_MAX	0x01000000u
+#define PICO_NET_MEM_END	(RA_MEM_PA + RA_MEM_MAX)	/* the end of all of it (the rewind arena leaves it out) */
 
 #endif
