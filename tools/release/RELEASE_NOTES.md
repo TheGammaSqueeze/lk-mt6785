@@ -1,5 +1,5 @@
-GammaOS Pico for the **Konkr Pocket Advance** and, new in this release, the **Konkr Pocket Block**,
-release @VERSION@ (lk-mt6785 `@COMMIT@`).
+GammaOS Pico for the **Konkr Pocket Advance** and the **Konkr Pocket Block**, release @VERSION@
+(lk-mt6785 `@COMMIT@`).
 
 GammaOS Pico replaces only the console's bootloader (LK). With the GammaOS Pico microSD card in the slot the
 console starts a console menu and plays Game Boy, Game Boy Color, Game Boy Advance, NES, Famicom
@@ -8,28 +8,71 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
 
 ![Home](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/home.png)
 
-## What's new in 1.0.2
+## What's new in 1.1
 
-- **The Konkr Pocket Block.** GammaOS Pico now runs on the Konkr Pocket Block (MediaTek MT8786,
-  960 x 720) as it does on the Konkr Pocket Advance: the same menus, cores, saves and settings,
-  the panel retimed to each system's refresh, run-ahead, rewind, fast forward, black frame
-  insertion, the clock, the battery gauge, the power light and headphones, with the CPU at
-  1800 MHz on every system. The same microSD card works in both consoles. The Block has its own
-  packages (`gammaos-pico-block-*`); on the Block the bootloader combo is SELECT + START + R1, the
-  in-game menu is on the side key, volume and brightness are set in the in-game menu, and the
-  BIOS intro is off by default (Settings > BIOS Boot turns it on). Not on the Block yet: tilt and
-  rumble for the cartridges that have them.
-- **NES, Famicom and Famicom Disk System.** A new core, armNES 1.1, plays `.nes` and `.unf`
-  cartridges and `.fds` Disk System games, also from .zip and .7z archives, with run-ahead,
-  rewind, fast forward, save states, the LCD filters, aspect ratios and NTSC, PAL and Dendy
-  timing. Disk System games need the Disk System BIOS on the card as `bios/disksys.rom`; Swap
-  Disk Side on the in-game menu's first page turns the disk over. Disk System games run on the core's fast
-  path, so they keep run-ahead at full speed like cartridges do. Games go in `roms/nes/` (or
-  `famicom`, `fds`).
-- **Zipped games start every time.** On some cards a game in a .zip or .7z could refuse to start
-  with "This archive is too large to open" after a power on that found every archive already
-  listed; the archive reader now has memory of its own.
-- The NES's words in all 17 languages.
+- **Wi-Fi.** Both consoles join Wi-Fi networks from the bootloader: a new **Network** tab in the
+  Pico menu (System > Network in the Classic themes) turns Wi-Fi on and off, lists the networks
+  around you strongest first with their security and signal, joins them with a password typed on
+  the on-screen keyboard, and remembers them. Saved networks join by themselves when they are in
+  range, and Wi-Fi stays as you left it across power ons. A **Saved networks** page lists every
+  network kept on the card, in range or not, and forgets one with two presses of A. WPA2 and open
+  networks are supported (WPA3-only and enterprise networks are not yet). Wi-Fi costs nothing
+  while it is off, and it sleeps while you play.
+- **RetroAchievements.** Sign in with your retroachievements.org account on the Network tab and
+  every system earns achievements: Game Boy, Game Boy Color, Game Boy Advance, NES, SNES, Mega
+  Drive / Genesis, Master System and Game Gear. Achievements are softcore. Unlocks earned without
+  a network are kept on the card and sent with their time once you are back online. The in-game
+  menu has an **Achievements** page with the game's set in groups (almost there, locked,
+  unlocked, waiting to be sent), each achievement's badge and a full screen detail, plus the
+  account and the settings (achievements on or off, which cards show). Unlock, progress and game
+  start cards appear over the game in your theme's own look. Save states keep achievement
+  progress. GammaOS Pico identifies itself to RetroAchievements with its own name and each core's.
+- **Box art from the network.** The Network tab's **Box art** page finds covers for every game
+  that has none: libretro's thumbnails first (matched by the game's No-Intro checksum, so files
+  with any name are found, zipped games included), then ScreenScraper for the rest. Choose the
+  region you prefer; covers appear in the menu as soon as they arrive. Games no source has are
+  not asked again for 30 days.
+- **Play together over Bluetooth.** Two consoles link over Bluetooth with no cables: **Play
+  together** runs lockstep netplay for NES, SNES, Mega Drive / Genesis, Master System, Game Gear
+  and Game Boy / Game Boy Color / Game Boy Advance link games (trading, link battles), **Send** and
+  **Receive** copy a game you own from one card to the other, and **Join a game** offers the same
+  game when the other console has it. The consoles also share the time.
+- **Each core's own options** in the in-game menu, for every system, cropping among them.
+- **The Classic themes' own in-game menu**: a sheet in the menu's look, with L and R for its tabs.
+  The Classic menubar starts with **Link** and has the Current theme's settings (Display, Settings,
+  System with Date & Time, Network and About), and **Down** on the home opens the **Suspend Point
+  List**: the focused game's save states, each with its picture and when it was made.
+- **Konkr Pocket Block: tilt, gyro and rumble** for the cartridges that have them, as on the Pocket Advance.
+- Faster and safer under the hood: the clock is set from the network, HTTPS connections are
+  checked against trusted roots, and keys come from the chip's hardware random generator.
+
+| | |
+|---|---|
+| ![Wi-Fi](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/network-wifi.png) | ![The keyboard](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/network-keyboard.png) |
+| Network > Wi-Fi: the networks around, strongest first | Typing a password |
+| ![RetroAchievements](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/ra-igm-achievements.png) | ![An achievement](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/ra-igm-detail.png) |
+| A game's achievements in the in-game menu | An achievement's full screen detail |
+| ![The game start card](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/ra-start-card.png) | ![Box art from the network](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/boxart-done.png) |
+| The game start card over the game | Box art from the network |
+| ![Play together](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/link-game.png) | ![Classic in-game menu](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/classic-igm.png) |
+| Play together, Send, Join a game, Receive | The Classic themes' own in-game menu |
+| ![Classic home](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/classic-home.png) | ![Suspend Point List](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/classic-suspend-points.png) |
+| The Classic theme, Link first in its menubar | The Suspend Point List under the games |
+
+The Wi-Fi screenshots show example network names.
+
+### Updating from 1.0.x
+
+Flash the 1.1.0 bootloader and put the 1.1.0 card files on the card (GammaOS Pico Tool 1.1.0's card
+update does both the files and keeps yours). The card brings the Wi-Fi and Bluetooth chip's
+firmware in `bios/connsys/` and HTTPS's trusted roots in `bios/certs/`: without them Wi-Fi and
+Bluetooth do not start. Your games, saves, states and settings stay as they are.
+
+### Known issue
+
+On the Konkr Pocket Advance the USB connection to a computer (fastboot, GammaOS Pico Tool's
+console features) can drop after a game is started while Wi-Fi is busy. The console and the game
+carry on; unplugging and plugging the cable back in, or a restart, brings it back.
 
 ## What makes it different
 
@@ -67,7 +110,7 @@ bootloader, before any operating system, and owns the hardware outright.
   in step with the screen's refresh, so moving pictures stay crisp the way they did on a CRT
   instead of smearing. 25 %, 50 % or 75 % dark (Settings > Black Frame Insertion, or per game in
   the in-game menu's Display page); the screen looks dimmer the higher it is set.
-- **Tilt, gyro and rumble** (Konkr Pocket Advance). The console's own motion sensor and vibration
+- **Tilt, gyro and rumble** (both consoles). The console's own motion sensor and vibration
   motor stand in for the cartridges': Yoshi Topsy-Turvy and Kirby Tilt 'n' Tumble tilt (a flick of the console makes
   Kirby jump), WarioWare: Twisted! turns and rumbles, as do Drill Dozer and the Game Boy Color's
   rumble cartridges.
@@ -111,8 +154,14 @@ the in-game menu shots lay its drawer over the game the way the display hardware
 | A Game Boy Color game's Display page: palette, colour correction, dark filter | Picking a theme |
 | ![Classic theme](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/theme-classic.png) | ![Classic theme display page](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/theme-classic-display.png) |
 | The Classic theme (beta) | Its Display page, with the themes |
-| ![GBA Indigo theme](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/theme-gba-indigo.png) | |
-| The GBA Indigo theme (beta) | |
+| ![GBA Indigo theme](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/theme-gba-indigo.png) | ![Network](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/network-home.png) |
+| The GBA Indigo theme (beta) | The Network tab: Wi-Fi, box art, RetroAchievements |
+| ![Saved networks](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/network-saved.png) | ![RetroAchievements account](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/ra-account.png) |
+| Saved networks | The RetroAchievements account |
+| ![snes9x's options](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/core-options-snes.png) | ![Receive](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/link-receive-notice.png) |
+| snes9x's own options | Receive: only copy games you own |
+| ![Classic Network](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/classic-wifi.png) | ![Classic System](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/classic-system.png) |
+| The Classic themes' System > Network > Wi-Fi | The Classic themes' System page |
 
 ## Buttons
 
@@ -154,6 +203,8 @@ Every menu is in the language chosen in Settings.
 | Games | the systems on the card, each with its console and logo; Left / Right move between systems, A opens a system's library (its games with their box art, how long each has been played and when last), where holding Up / Down speeds up, Left / Right turn a page and L / R jump from letter to letter; Y searches the system (or, on this page, every system) with an on-screen keyboard |
 | Resume | the games played most recently, newest first, to carry on with one press |
 | Settings | the console settings below |
+| Link | Play together, Send, Join a game and Receive between two consoles over Bluetooth (X on a game in a library starts Play together or Send for it) |
+| Network | Wi-Fi (on or off, the networks around, joining with a password, Saved networks), Box art (find covers on the network: the source, the region first) and RetroAchievements (sign in, points, unlocks waiting to be sent, sign out) |
 
 L and R switch between the tabs, A picks and B goes back. The header shows the menu you are in,
 the date, the time and the battery.
@@ -175,7 +226,8 @@ the date, the time and the battery.
 
 ### In a game
 
-The Menu button opens the in-game menu over the game. Its first page: Resume, Save state and Load
+The Menu button opens the in-game menu over the game. Its first page: Resume, Achievements (the
+game's RetroAchievements and their settings), Save state and Load
 state (Left / Right pick the slot), the Display, Sound, Gameplay and System pages, Reset game and
 Exit game (a Disk System game also has Swap Disk Side there). The pages hold what each emulator
 offers:
@@ -184,7 +236,7 @@ offers:
 |---|---|---|---|---|---|
 | Display | Brightness, LCD Filter, Aspect Ratio, Color Correction, BFI, Show FPS | Brightness, LCD Filter, Aspect Ratio, Palette (original Game Boy), Color Correction, Correction Mode, Dark Filter, BFI, Show FPS | Brightness, Aspect Ratio, LCD Filter, BFI, Show FPS | Brightness, LCD Filter, Aspect Ratio, Overscan, Hi-Res Blend, BFI, Show FPS | Brightness, Aspect Ratio, LCD Filter, BFI, Show FPS |
 | Sound | Volume | Volume | Volume | Volume, Audio Filter | Volume |
-| Gameplay | CPU Clock, Run-Ahead, Rewind, Benchmark, GBA Core (armGBA or gpSP), Core options, Latency LED, Panel Refresh | CPU Clock, Run-Ahead, Rewind | CPU Clock, Run-Ahead, Rewind, Region, Refresh Rate | CPU Clock, Run-Ahead, Rewind, Turbo (auto-fire), Benchmark, Panel Refresh | CPU Clock, Run-Ahead, Rewind, Region, Refresh Rate |
+| Gameplay | CPU Clock, Run-Ahead, Rewind, Benchmark, GBA Core (armGBA or gpSP), Core options, Latency LED, Panel Refresh | CPU Clock, Run-Ahead, Rewind, Core options | CPU Clock, Run-Ahead, Rewind, Region, Refresh Rate, Core options | CPU Clock, Run-Ahead, Rewind, Turbo (auto-fire), Benchmark, Panel Refresh, Core options | CPU Clock, Run-Ahead, Rewind, Region, Refresh Rate, Core options |
 | System | Resume on Power On, Resume on Game Open, BIOS Intro Background, Skip BIOS Intro, Battery | Resume on Power On, Battery | Resume on Power On, Battery | Resume on Power On, Battery | Resume on Power On, Battery |
 
 armGBA's Core options: BIOS (Nintendo from the card, or armGBA's built-in), LCD Ghosting, Interlaced
@@ -199,12 +251,13 @@ A, B, A+B; Region Auto, USA, Europe, Japan (NES: Auto, NTSC, PAL, Dendy).
 
 ### Classic theme (beta)
 
-The SNES Classic style carousel, with its own pages from the top bar: Display (CRT filter, 4:3 or
-pixel perfect, and the Theme row), Options (Mute BIOS Audio, Mute Menu Audio, burn-in reduction,
-Boot to Android),
-Language (English, French, German, Spanish, Italian, Dutch, Portuguese, Russian; the others leave
-it in English), Legal notices and the manual. Suspend points are made when you reset a game.
-X shows one system at a time; in a long carousel L / R jump from letter to letter.
+The SNES Classic style carousel, with its own pages from the top bar: Link (Play together, Send,
+Join a game, Receive), Display (brightness, black frame insertion and the Theme row), Settings
+(volume, Mute Menu Audio, BIOS Boot, Game Resume, Boot to Android), Language (every language) and
+System (Date & Time, Network, About). Down on the home opens the Suspend Point List: the focused
+game's save states with their pictures and times, to start the game from one. Its own in-game
+menu is a sheet in the menu's look, with L / R for its pages, Core options and Achievements among
+them. X shows one system at a time; in a long carousel L / R jump from letter to letter.
 
 ## Downloads
 
