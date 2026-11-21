@@ -2,15 +2,25 @@
 # Copyright (c) 2026 TheGammaSqueeze
 # ra-pico: the rcheevos sources the blob and the PC harness build, and how. Sourced by build.sh and
 # tools/harness.sh. rcheevos is RetroAchievements' own release v12.3.0, unchanged, in rcheevos/ beside
-# this file (its LICENSE there); libretro-common (for libretro.h, which rc_libretro reads the cores'
-# memory maps with) comes from the copy already in the tree under the Armulators app (RCHEEVOS_DEPS).
+# this file (its LICENSE there), built from a copy in out/ with the patches in patches/ applied;
+# libretro-common (for libretro.h, which rc_libretro reads the cores' memory maps with) comes from
+# the copy already in the tree under the Armulators app (RCHEEVOS_DEPS).
 RCHEEVOS_DEPS=${RCHEEVOS_DEPS:-$ROOT/../armNES-pico/upstream/armulators/deps}
-RC=${RC:-$ROOT/rcheevos}
+RC_RELEASE=${RC_RELEASE:-$ROOT/rcheevos}
 LRC=$RCHEEVOS_DEPS/libretro-common
-if [ ! -f "$RC/src/rc_client.c" ]; then
-	echo "rcheevos not found at $RC (cores/ra-pico/rcheevos, release v12.3.0)" >&2
+if [ ! -f "$RC_RELEASE/src/rc_client.c" ]; then
+	echo "rcheevos not found at $RC_RELEASE (cores/ra-pico/rcheevos, release v12.3.0)" >&2
 	exit 1
 fi
+# the release is left as it is: a copy in out/ with the patches in patches/ applied is what is built
+RC=$ROOT/out/rcheevos
+rm -rf "$RC"
+mkdir -p "$ROOT/out"
+cp -a "$RC_RELEASE" "$RC"
+for p in "$ROOT"/patches/*.patch; do
+	[ -e "$p" ] || continue
+	(cd "$RC" && patch -p1 --quiet --forward < "$p")
+done
 # no threads (the LK calls the blob from one thread at a time), hashing from a buffer for cartridge
 # systems only: no discs, archives or encrypted images
 RC_DEFS="-DRC_NO_THREADS -DRC_CLIENT_SUPPORTS_HASH -DRC_HASH_NO_DISC -DRC_HASH_NO_ZIP -DRC_HASH_NO_ENCRYPTED"

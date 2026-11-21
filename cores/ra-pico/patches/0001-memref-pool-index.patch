@@ -1,0 +1,352 @@
+ra-pico patch to RetroAchievements' rcheevos v12.3.0 (src/rcheevos/rc_internal.h, src/rcheevos/memref.c),
+MIT like the files it changes. Copyright (c) 2026 TheGammaSqueeze. Applied by sources.sh to a copy
+in out/rcheevos.
+
+A game's memory references are kept in one pool, and every reference an achievement reads is looked
+up there, and in the achievement's own pool, before a new one is made: twice for each achievement
+(the size first, then the real parse), by walking the whole pool. A set of a few hundred achievements over pointer chains (Pokemon
+LeafGreen: 288) has thousands of entries, and loading it took 4.4 seconds on a Cortex-A55. The pool
+made by rc_memrefs_init (the game's) and the one made by rc_init_preparse_state (a definition's,
+freed by rc_destroy_preparse_state) now keep an index, open addressing over hashes of what an
+entry never changes once made (its size, its modifier's kind, each operand's kind and address or constant, down a pointer chain), brought up to
+date with what each list gained since the last lookup; a candidate passes the walk's own test, so the
+answer is the walk's. The pool only grows, so the entries stay where they are. Other pools (a
+trigger's own, made in its buffer) are walked as before, and so is any pool without memory for its
+table. LeafGreen's set loads in about 0.2 s.
+
+diff -ruN a/src/rcheevos/alloc.c b/src/rcheevos/alloc.c
+--- a/src/rcheevos/alloc.c
++++ b/src/rcheevos/alloc.c
+@@ -98,10 +98,12 @@
+ {
+   rc_init_parse_state(&preparse->parse, NULL);
+   rc_init_parse_state_memrefs(&preparse->parse, &preparse->memrefs);
++  preparse->memrefs.indexed = 1; /* a definition's own pool can be long too (pointer chains) */
+ }
+ 
+ void rc_destroy_preparse_state(rc_preparse_state_t* preparse)
+ {
++  rc_memrefs_free_index(&preparse->memrefs);
+   rc_destroy_parse_state(&preparse->parse);
+ }
+ 
+diff -ruN a/src/rcheevos/memref.c b/src/rcheevos/memref.c
+--- a/src/rcheevos/memref.c
++++ b/src/rcheevos/memref.c
+@@ -6,12 +6,207 @@
+ 
+ #define MEMREF_PLACEHOLDER_ADDRESS 0xFFFFFFFF
+ 
++/* ---- the index of a game's pool ----
++ * A game's pool holds every memory reference its achievements, leaderboards and rich presence read,
++ * and each one parsed looks its references up there: walking the whole pool for each made a set
++ * of a few hundred achievements over pointer chains take seconds to load on a handheld. The pool
++ * only grows (its lists are appended to, never moved or emptied), so a table of hashes kept up with
++ * what was appended since the last lookup finds an entry at once. An entry is hashed from fields that
++ * never change once it is made, and a candidate is always checked with the same test as the walk, so
++ * the answers are the walk's. Without the memory for the table, the pool is walked as before. */
++typedef struct rc_memref_index_table_t {
++  void** item;
++  uint32_t* hash;
++  uint32_t size;  /* a power of two, or 0 */
++  uint32_t used;
++} rc_memref_index_table_t;
++
++typedef struct rc_memref_index_t {
++  rc_memref_index_table_t plain, modified;
++} rc_memref_index_t;
++
++static uint32_t rc_index_mix(uint32_t h, uint32_t v) {
++  h = (h ^ v) * 0x9E3779B1u;
++  return h ^ (h >> 16);
++}
++
++static uint32_t rc_index_plain_key(uint32_t address, uint8_t size) {
++  return rc_index_mix(rc_index_mix(0x2545F491u, address), size);
++}
++
++/* a modified reference is filed under what never changes once it is made: its size, its modifier's
++ * kind and the address it keeps (its modifier's address, or the constant), as rc_alloc_modified_memref
++ * sets it. The parent and the modifier are compared in full when a candidate is checked. */
++static uint32_t rc_index_operand_key(const rc_operand_t* operand) {
++  /* its kind, and the address it reads or the constant it is; a reference built from others
++   * (a pointer chain) adds theirs, down the chain: what stays the same once made */
++  uint32_t h = rc_index_mix(0x3C6EF372u, operand->type);
++  if (rc_operand_is_memref(operand) && operand->value.memref) {
++    const rc_memref_t* memref = operand->value.memref;
++    h = rc_index_mix(h, memref->address);
++    if (memref->value.memref_type == RC_MEMREF_TYPE_MODIFIED_MEMREF) {
++      const rc_modified_memref_t* modified = (const rc_modified_memref_t*)memref;
++      h = rc_index_mix(h, modified->modifier_type);
++      h = rc_index_mix(h, rc_index_operand_key(&modified->parent));
++      h = rc_index_mix(h, rc_index_operand_key(&modified->modifier));
++    }
++    return h;
++  }
++  if (operand->type == RC_OPERAND_CONST)
++    return rc_index_mix(h, operand->value.num);
++  return h;
++}
++
++static uint32_t rc_index_modified_key(uint8_t size, uint8_t modifier_type, const rc_operand_t* parent,
++                                      const rc_operand_t* modifier) {
++  uint32_t h = rc_index_mix(rc_index_mix(0x6A09E667u, size), modifier_type);
++  return rc_index_mix(rc_index_mix(h, rc_index_operand_key(parent)), rc_index_operand_key(modifier));
++}
++
++/* an entry in, the table doubled first when half full; 0 without the memory */
++static int rc_index_insert(rc_memref_index_table_t* table, void* item, uint32_t hash) {
++  uint32_t at;
++  if ((table->used + 1) * 2 > table->size) {
++    const uint32_t size = table->size ? table->size * 2 : 256;
++    void** items = (void**)calloc(size, sizeof(void*));
++    uint32_t* hashes = (uint32_t*)malloc(size * sizeof(uint32_t));
++    uint32_t i;
++    if (!items || !hashes) {
++      free(items);
++      free(hashes);
++      return 0;
++    }
++    for (i = 0; i < table->size; ++i) {
++      if (table->item[i]) {
++        at = table->hash[i] & (size - 1);
++        while (items[at])
++          at = (at + 1) & (size - 1);
++        items[at] = table->item[i];
++        hashes[at] = table->hash[i];
++      }
++    }
++    free(table->item);
++    free(table->hash);
++    table->item = items;
++    table->hash = hashes;
++    table->size = size;
++  }
++  at = hash & (table->size - 1);
++  while (table->item[at])
++    at = (at + 1) & (table->size - 1);
++  table->item[at] = item;
++  table->hash[at] = hash;
++  table->used++;
++  return 1;
++}
++
++void rc_memrefs_free_index(rc_memrefs_t* memrefs) {
++  rc_memref_index_t* index = memrefs->index;
++  if (!index)
++    return;
++  free(index->plain.item);
++  free(index->plain.hash);
++  free(index->modified.item);
++  free(index->modified.hash);
++  free(index);
++  memrefs->index = NULL;
++}
++
++/* the table up with the pool; 0 when the pool must be walked instead (no memory for it). Each list
++ * keeps how many of its entries are in: a new list can be linked on while an earlier one still has
++ * room, and that one is filled first, so every list of the chain is looked at. */
++static int rc_index_catch_up(rc_memrefs_t* memrefs) {
++  rc_memref_index_t* index = memrefs->index;
++  rc_memref_list_t* list;
++  rc_modified_memref_list_t* modified_list;
++
++  if (!memrefs->indexed)
++    return 0;
++  if (!index) {
++    index = memrefs->index = (rc_memref_index_t*)calloc(1, sizeof(rc_memref_index_t));
++    if (!index) {
++      memrefs->indexed = 0;
++      return 0;
++    }
++    for (list = &memrefs->memrefs; list; list = list->next)
++      list->indexed = 0;
++    for (modified_list = &memrefs->modified_memrefs; modified_list; modified_list = modified_list->next)
++      modified_list->indexed = 0;
++  }
++
++  for (list = &memrefs->memrefs; list; list = list->next) {
++    for (; list->indexed < list->count; ++list->indexed) {
++      const rc_memref_t* memref = &list->items[list->indexed];
++      if (!rc_index_insert(&index->plain, (void*)memref, rc_index_plain_key(memref->address, memref->value.size)))
++        goto no_memory;
++    }
++  }
++  for (modified_list = &memrefs->modified_memrefs; modified_list; modified_list = modified_list->next) {
++    for (; modified_list->indexed < modified_list->count; ++modified_list->indexed) {
++      const rc_modified_memref_t* modified = &modified_list->items[modified_list->indexed];
++      if (!rc_index_insert(&index->modified, (void*)modified, rc_index_modified_key(modified->memref.value.size,
++                           modified->modifier_type, &modified->parent, &modified->modifier)))
++        goto no_memory;
++    }
++  }
++  return 1;
++
++no_memory:
++  rc_memrefs_free_index(memrefs);
++  memrefs->indexed = 0;
++  return 0;
++}
++
++/* the pool's entry for this address and size: 1 found, 0 none, -1 walk the pool */
++static int rc_index_find_memref(rc_memrefs_t* memrefs, uint32_t address, uint8_t size, rc_memref_t** found) {
++  const rc_memref_index_table_t* table;
++  uint32_t hash, at;
++  if (!rc_index_catch_up(memrefs))
++    return -1;
++  table = &memrefs->index->plain;
++  if (!table->size)
++    return 0;
++  hash = rc_index_plain_key(address, size);
++  for (at = hash & (table->size - 1); table->item[at]; at = (at + 1) & (table->size - 1)) {
++    rc_memref_t* memref = (rc_memref_t*)table->item[at];
++    if (table->hash[at] == hash && memref->address == address && memref->value.size == size) {
++      *found = memref;
++      return 1;
++    }
++  }
++  return 0;
++}
++
++static int rc_index_find_modified(rc_memrefs_t* memrefs, uint8_t size, const rc_operand_t* parent,
++                                  uint8_t modifier_type, const rc_operand_t* modifier, rc_modified_memref_t** found) {
++  const rc_memref_index_table_t* table;
++  uint32_t hash, at;
++  if (!rc_index_catch_up(memrefs))
++    return -1;
++  table = &memrefs->index->modified;
++  if (!table->size)
++    return 0;
++  hash = rc_index_modified_key(size, modifier_type, parent, modifier);
++  for (at = hash & (table->size - 1); table->item[at]; at = (at + 1) & (table->size - 1)) {
++    rc_modified_memref_t* modified = (rc_modified_memref_t*)table->item[at];
++    if (table->hash[at] == hash && modified->memref.value.size == size &&
++        modified->modifier_type == modifier_type &&
++        rc_operands_are_equal(&modified->parent, parent) &&
++        rc_operands_are_equal(&modified->modifier, modifier)) {
++      *found = modified;
++      return 1;
++    }
++  }
++  return 0;
++}
++
+ rc_memref_t* rc_alloc_memref(rc_parse_state_t* parse, uint32_t address, uint8_t size) {
+   rc_memref_list_t* memref_list = NULL;
+   rc_memref_t* memref = NULL;
+   int i;
+ 
+   for (i = 0; i < 2; i++) {
++    rc_memrefs_t* pool = (i == 0) ? parse->existing_memrefs : parse->memrefs;
+     if (i == 0) {
+       if (!parse->existing_memrefs)
+         continue;
+@@ -22,6 +217,14 @@
+       memref_list = &parse->memrefs->memrefs;
+     }
+ 
++    if (pool->indexed) {
++      const int r = rc_index_find_memref(pool, address, size, &memref);
++      if (r == 1)
++        return memref;
++      if (r == 0)
++        continue;
++    }
++
+     do
+     {
+       const rc_memref_t* memref_stop;
+@@ -58,6 +261,7 @@
+     }
+ 
+     memref_list->items = RC_ALLOC_ARRAY_SCRATCH(rc_memref_t, 8, parse);
++    memref_list->indexed = 0; /* (scratch memory is not cleared) */
+     memref_list->count = 1;
+     memref_list->capacity = 8;
+     memref_list->allocated = 0;
+@@ -86,6 +290,7 @@
+   int i = 0;
+ 
+   for (i = 0; i < 2; i++) {
++    rc_memrefs_t* pool = (i == 0) ? parse->existing_memrefs : parse->memrefs;
+     if (i == 0) {
+       if (!parse->existing_memrefs)
+         continue;
+@@ -96,6 +301,14 @@
+       modified_memref_list = &parse->memrefs->modified_memrefs;
+     }
+ 
++    if (pool->indexed) {
++      const int r = rc_index_find_modified(pool, size, parent, modifier_type, modifier, &modified_memref);
++      if (r == 1)
++        return modified_memref;
++      if (r == 0)
++        continue;
++    }
++
+     do {
+       const rc_modified_memref_t* memref_stop;
+ 
+@@ -135,6 +348,7 @@
+     }
+ 
+     modified_memref_list->items = RC_ALLOC_ARRAY_SCRATCH(rc_modified_memref_t, 8, parse);
++    modified_memref_list->indexed = 0; /* (scratch memory is not cleared) */
+     modified_memref_list->count = 1;
+     modified_memref_list->capacity = 8;
+     modified_memref_list->allocated = 0;
+@@ -178,6 +392,8 @@
+   memrefs->modified_memrefs.items =
+     (rc_modified_memref_t*)malloc(memrefs->modified_memrefs.capacity * sizeof(rc_modified_memref_t));
+   memrefs->modified_memrefs.allocated = 1;
++
++  memrefs->indexed = 1;
+ }
+ 
+ void rc_memrefs_destroy(rc_memrefs_t* memrefs)
+@@ -185,6 +401,8 @@
+   rc_memref_list_t* memref_list = &memrefs->memrefs;
+   rc_modified_memref_list_t* modified_memref_list = &memrefs->modified_memrefs;
+ 
++  rc_memrefs_free_index(memrefs);
++
+   do {
+     rc_memref_list_t* current_memref_list = memref_list;
+     memref_list = memref_list->next;
+diff -ruN a/src/rcheevos/rc_internal.h b/src/rcheevos/rc_internal.h
+--- a/src/rcheevos/rc_internal.h
++++ b/src/rcheevos/rc_internal.h
+@@ -28,6 +28,7 @@
+   uint16_t count;
+   uint16_t capacity;
+   uint8_t allocated;
++  uint16_t indexed; /* the first this many are in the pool's index (rc_memrefs_t.index) */
+ } rc_memref_list_t;
+ 
+ typedef struct rc_modified_memref_list_t {
+@@ -36,11 +37,17 @@
+   uint16_t count;
+   uint16_t capacity;
+   uint8_t allocated;
++  uint16_t indexed; /* the first this many are in the pool's index (rc_memrefs_t.index) */
+ } rc_modified_memref_list_t;
+ 
+ typedef struct rc_memrefs_t {
+   rc_memref_list_t memrefs;
+   rc_modified_memref_list_t modified_memrefs;
++  /* a pool made by rc_memrefs_init (a game's, shared by all its achievements) or by
++   * rc_init_preparse_state (one definition's while its size is worked out) keeps an index of its
++   * entries, so a lookup does not walk them all; other pools have none and are walked */
++  struct rc_memref_index_t* index;
++  uint8_t indexed;
+ } rc_memrefs_t;
+ 
+ typedef struct rc_trigger_with_memrefs_t {
+@@ -294,6 +301,7 @@
+ uint32_t rc_peek_value(uint32_t address, uint8_t size, rc_peek_t peek, void* ud);
+ 
+ void rc_memrefs_init(rc_memrefs_t* memrefs);
++void rc_memrefs_free_index(rc_memrefs_t* memrefs);
+ void rc_memrefs_destroy(rc_memrefs_t* memrefs);
+ uint32_t rc_memrefs_count_memrefs(const rc_memrefs_t* memrefs);
+ uint32_t rc_memrefs_count_modified_memrefs(const rc_memrefs_t* memrefs);

@@ -1450,6 +1450,12 @@ void pico_ra_debug(const char *arg)
 	else if (!strcmp(arg, "qload")) s_dbg_q = 1;
 	else if (!strcmp(arg, "qstore")) s_dbg_q = 2;
 	else if (!strcmp(arg, "q")) snprintf(s_note, sizeof s_note, "queue own %d held %d refused %d", s_nq, s_nheld, s_queue_refused);
+	else if (!strcmp(arg, "sum") && X) {	/* the game's set as loaded: its achievements and points */
+		struct ra_summary sm;
+		X->summary(&sm);
+		snprintf(s_note, sizeof s_note, "set %u: %u/%u, %u/%u points", sm.game_id, sm.unlocked, sm.total,
+			 sm.points_unlocked, sm.points_total);
+	}
 	else if (!strncmp(arg, "card", 4)) s_dbg_card = 1;	/* a test card, on the game's thread */
 	else if (!strncmp(arg, "in:", 3)) {	/* the real server: the name up to the next ':', then the password */
 		const char *u = arg + 3, *c = strchr(u, ':');

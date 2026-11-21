@@ -10,7 +10,8 @@
 # Built: RetroAchievements' rcheevos (rc_client, its server calls, the achievement runtime, ROM
 # hashing for cartridge systems, rc_libretro's memory maps), libretro-common's MD5 that RetroArch's
 # rcheevos uses, the glue in pico/ra_core.c and the C runtime in pico/pico_libc.c (sources.sh).
-# rcheevos is compiled unchanged.
+# rcheevos is compiled from a copy with patches/ applied (sources.sh); the release in rcheevos/ is
+# left as it is.
 #
 # Target: the LK calls the blob in 32 bit ARM state on a Cortex-A55 (MT6768 and MT6785): ARMv8-A,
 # hardware floating point with the softfp calling convention, as the core blobs. -Os: the

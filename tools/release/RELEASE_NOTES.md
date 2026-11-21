@@ -28,6 +28,9 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
   the default and plays the games whose chips need firmware files.
 - **Newer emulator cores**: armGBA 1.8.1, armNES 1.4, and the latest fixes of Genesis Plus GX and
   snes9x.
+- **Games with big achievement sets start much faster.** A set of a few hundred achievements over
+  pointer chains held the game's start for seconds while it loaded (Pokemon LeafGreen on the Konkr
+  Pocket Block: 6.4 s to start, now 2.0 s); the set is the same.
 
 ### Updating from 1.1.0
 

@@ -16,9 +16,13 @@ to the LK to keep on the card, and the LK sends them later with the time they ha
 ## Third party
 
 - rcheevos 12.3.0 (RetroAchievements, MIT): their tagged release, unchanged, in `rcheevos/` (its
-  `LICENSE` there; its own MD5 in `src/rhash/md5.c`).
+  `LICENSE` there; its own MD5 in `src/rhash/md5.c`). The blob is built from a copy in `out/` with
+  the patch in `patches/` applied: `0001-memref-pool-index.patch` indexes the pools a set's memory
+  references are looked up in, so a big set over pointer chains loads in a fraction of the time
+  (Pokemon LeafGreen's on the Konkr Pocket Block: 4.7 s to 0.4 s), the same set to the byte.
 - libretro-common's `libretro.h` (MIT), which rcheevos' `rc_libretro` reads the cores' memory maps
   with, from the Armulators app's `deps/` in `cores/armNES-pico` (see `sources.sh`).
 - newlib (the C library of the arm-none-eabi toolchain).
 
-Everything in `pico/` and `tools/` is GammaOS code (GPL-2.0-or-later).
+Everything in `pico/` and `tools/` is GammaOS code (GPL-2.0-or-later); the patch in `patches/` is
+under rcheevos' MIT licence, as the files it changes.
