@@ -34,9 +34,10 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
 
 ### Updating from 1.1.0
 
-Flash the 1.1.1 bootloader and put the 1.1.1 card files on the card. The new files are the cheat
-database (`gammaos/cheats/`), armSNES (`cores/armsnes-pico.blob`) and the updated cores; your games,
-saves, states and settings stay as they are.
+Flash the 1.1.1 bootloader and put the 1.1.1 card files on the card (GammaOS Pico Tool 1.1.1's card
+update does both the files and keeps yours). The new files are the cheat database
+(`gammaos/cheats/`), armSNES (`cores/armsnes-pico.blob`) and the updated cores; your games, saves,
+states, settings and your own cheat files stay as they are.
 
 ## What's new in 1.1
 
@@ -93,7 +94,7 @@ The Wi-Fi screenshots show example network names.
 
 ### Updating from 1.0.x
 
-Flash the 1.1.0 bootloader and put the 1.1.0 card files on the card (GammaOS Pico Tool 1.1.0's card
+Flash the 1.1.1 bootloader and put the 1.1.1 card files on the card (GammaOS Pico Tool 1.1.1's card
 update does both the files and keeps yours). The card brings the Wi-Fi and Bluetooth chip's
 firmware in `bios/connsys/` and HTTPS's trusted roots in `bios/certs/`: without them Wi-Fi and
 Bluetooth do not start. Your games, saves, states and settings stay as they are.
@@ -308,7 +309,7 @@ Each console has its own packages. The two card packages hold the same card.
   driver installer (MediaTek SP Driver 5.23.07.02), as MediaTek ships them. SP Flash Tool V6 does
   not work with these packages.
 - **The card**: copy its contents to the root of a FAT32 or exFAT microSD card. It has the menus,
-  the six emulator cores and the demo games below.
+  the seven emulator cores and the demo games below.
 - **[GammaOS Pico Tool](https://github.com/TheGammaSqueeze/GammaOSPico-Tool/releases)** (Windows,
   macOS, Linux) sets up and updates the card, adds box art, and backs up, updates and restores
   the bootloader of a console already running GammaOS Pico, on both consoles.
