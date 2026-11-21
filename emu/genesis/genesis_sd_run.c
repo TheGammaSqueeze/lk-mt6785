@@ -14,6 +14,7 @@
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
 #include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
+#include "../gba/pico_input.h"    /* the player's button map, the hotkeys */
 #include "../gba/pico_coreopt.h"
 #include "../gba/card_writer.h"   /* in-game saves go to the card off the game's thread */
 #include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
@@ -160,29 +161,12 @@ unsigned ayaneo_genesis_pad_mask(unsigned port)
 	return port == 0 ? gen_local_pad() : 0u;
 }
 
-/* this console's pad, nothing while the in-game menu is open */
+/* this console's pad, nothing while the in-game menu is open: the player's map (pico_input.c, the
+ * buttons as they always were unless moved, the names the system's pad has) */
 static unsigned gen_local_pad(void)
 {
-	unsigned m = 0, d;
 	if (g_genesis_menu_open) return 0;
-	if (PRESSED(GPIO_B))      m |= 1u << RJ_B;
-	if (PRESSED(GPIO_A))      m |= 1u << RJ_A;
-	if (PRESSED(GPIO_Y))      m |= 1u << RJ_Y;
-	if (PRESSED(GPIO_X))      m |= 1u << RJ_X;
-	if (PRESSED(GPIO_LB))     m |= 1u << RJ_L;
-	if (PRESSED(GPIO_RB))     m |= 1u << RJ_R;
-	if (PRESSED(GPIO_START))  m |= 1u << RJ_START;
-	if (PRESSED(GPIO_SELECT)) m |= 1u << RJ_SELECT;
-	if (PRESSED(GPIO_UP))     m |= 1u << RJ_UP;
-	if (PRESSED(GPIO_DOWN))   m |= 1u << RJ_DOWN;
-	if (PRESSED(GPIO_LEFT))   m |= 1u << RJ_LEFT;
-	if (PRESSED(GPIO_RIGHT))  m |= 1u << RJ_RIGHT;
-	d = ayaneo_joypad_dpad();   /* left analog stick -> D-pad */
-	if (d & 0x01u) m |= 1u << RJ_UP;
-	if (d & 0x02u) m |= 1u << RJ_DOWN;
-	if (d & 0x04u) m |= 1u << RJ_LEFT;
-	if (d & 0x08u) m |= 1u << RJ_RIGHT;
-	return m;
+	return pico_input_pad();
 }
 
 static int rom_type_to_system(unsigned char type)
@@ -663,6 +647,10 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		struct pico_cheat_core cc = { 0, 0 };
 		if (!s_gen_np && c->version >= GENESIS_CORE_ABI_V7) { cc.reset = c->cheat_reset; cc.add = c->cheat_add; }
 		pico_cheats_game(vol, rom->type, rom->name, (const void *)GEN_ROM_BUF, romsz, &cc);
+		/* the buttons: the game's map (the Mega Drive's six, the Master System's two), the menu's
+		 * save, load and restart for the hotkeys */
+		pico_input_game(vol, rom->type, rom->name, &s_gen_igm, -1);
+		pico_input_netplay(s_gen_np);
 	}
 
 	/* RetroAchievements: the game's set, with its memory (not in netplay) */
@@ -993,7 +981,9 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 		/* AYA taps toggle the Pico menu; holding AYA ~1.5 s force-exits to the selector. */
 		{
-			int aya = PRESSED(GPIO_AYA);
+			int aya;
+			pico_input_frame(g_genesis_menu_open);	/* the hotkeys: states, restart, the menu (a tap of its key) */
+			aya = PRESSED(GPIO_AYA);
 			{ extern volatile int g_dbg_igm_toggle;   /* oem igm: a tap of the menu key */
 			  if (g_dbg_igm_toggle) { g_dbg_igm_toggle = 0; aya_prev = 0; aya = 1; } }
 			if (aya && !aya_prev) {
@@ -1024,7 +1014,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (PRESSED(GPIO_LB)) k |= IGM_K_L;
 			if (PRESSED(GPIO_RB)) k |= IGM_K_R;
 			r = pico_igm_frame(k);
-			if (r >= 0) { g_genesis_menu_open = 0; genesis_settings_flush(); }
+			if (r >= 0) { g_genesis_menu_open = 0; pico_input_hold_back(); genesis_settings_flush(); }
 			reset_hold = 0;
 		} else if (g_genesis_menu_open) {
 			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
@@ -1059,8 +1049,8 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (dn && FIRE(dn_h)) s_msel = (s_msel + 1) % GM_COUNT;
 				if (lt && FIRE(lt_h)) gm_change(s_msel, -1, 0);
 				if (rt && FIRE(rt_h)) gm_change(s_msel, +1, 0);
-				if (a && !a_p) { if (gm_change(s_msel, 0, 1)) { g_genesis_menu_open = 0; genesis_settings_flush(); } }
-				if (b && !b_p) { g_genesis_menu_open = 0; genesis_settings_flush(); }
+				if (a && !a_p) { if (gm_change(s_msel, 0, 1)) { g_genesis_menu_open = 0; pico_input_hold_back(); genesis_settings_flush(); } }
+				if (b && !b_p) { g_genesis_menu_open = 0; pico_input_hold_back(); genesis_settings_flush(); }
 			}
 			#undef NAV_DELAY
 			#undef NAV_REP

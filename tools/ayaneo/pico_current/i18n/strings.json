@@ -1897,6 +1897,121 @@
    "en": "Clear search",
    "kind": "label",
    "note": "in-game menu, Cheats page chooser: the row that empties the search typed"
+  },
+  {
+   "en": "Controls",
+   "kind": "label",
+   "note": "in-game menu: the page and the row of the console's buttons, which button plays which of the game's buttons, and the hotkeys"
+  },
+  {
+   "en": "Buttons for",
+   "kind": "label",
+   "note": "in-game menu, Controls page: the first row, whether the buttons set here are for this game only or for every game of the system; its value is This game or All games"
+  },
+  {
+   "en": "This game",
+   "kind": "value",
+   "note": "in-game menu, Controls page: the buttons set are for this game only"
+  },
+  {
+   "en": "All games",
+   "kind": "value",
+   "note": "in-game menu, Controls page: the buttons set are the same for every game of this system"
+  },
+  {
+   "en": "Game buttons",
+   "kind": "label",
+   "note": "in-game menu, Controls page: heading over the rows of the game's own buttons (A, B, START...)"
+  },
+  {
+   "en": "Hotkeys",
+   "kind": "label",
+   "note": "in-game menu, Controls page: heading over the shortcuts (fast forward, save state...) and the buttons that run them"
+  },
+  {
+   "en": "Reset to default",
+   "kind": "label",
+   "note": "in-game menu, Controls page: the last row; A puts every button back as it came"
+  },
+  {
+   "en": "Let go of the buttons",
+   "kind": "value",
+   "note": "in-game menu, Controls page: shown on a row while waiting for every button to be released before listening"
+  },
+  {
+   "en": "Press a button",
+   "kind": "value",
+   "note": "in-game menu, Controls page: shown on a row while waiting for the button to give that job"
+  },
+  {
+   "en": "Press up to 3 buttons",
+   "kind": "value",
+   "note": "in-game menu, Controls page: shown on a hotkey's row while waiting for the buttons, pressed together, that will run it"
+  },
+  {
+   "en": "Button %d",
+   "kind": "value",
+   "note": "in-game menu, Controls page: a button of the console with no name of its own; %d is its number"
+  },
+  {
+   "en": "Up",
+   "kind": "value",
+   "note": "a direction of the d-pad (a button's name)"
+  },
+  {
+   "en": "Down",
+   "kind": "value",
+   "note": "a direction of the d-pad (a button's name)"
+  },
+  {
+   "en": "Left",
+   "kind": "value",
+   "note": "a direction of the d-pad (a button's name)"
+  },
+  {
+   "en": "Right",
+   "kind": "value",
+   "note": "a direction of the d-pad (a button's name)"
+  },
+  {
+   "en": "Turbo A",
+   "kind": "label",
+   "note": "in-game menu, Controls page: the game's A pressed again and again while the button is held"
+  },
+  {
+   "en": "Turbo B",
+   "kind": "label",
+   "note": "in-game menu, Controls page: the game's B pressed again and again while the button is held"
+  },
+  {
+   "en": "Zapper away (L)",
+   "kind": "label",
+   "note": "in-game menu, Controls page, NES: the button that points the Zapper light gun away from the screen"
+  },
+  {
+   "en": "Zapper trigger (R)",
+   "kind": "label",
+   "note": "in-game menu, Controls page, NES: the button that pulls the Zapper light gun's trigger"
+  },
+  {
+   "en": "Fast forward",
+   "kind": "label",
+   "note": "in-game menu, Controls page: hotkey that turns fast forward on and off"
+  },
+  {
+   "en": "Fast forward (hold)",
+   "kind": "label",
+   "note": "in-game menu, Controls page: hotkey, fast forward for as long as it is held"
+  },
+  {
+   "en": "Rewind (hold)",
+   "kind": "label",
+   "note": "in-game menu, Controls page: hotkey, rewind for as long as it is held"
+  },
+  {
+   "en": "Open the menu",
+   "kind": "label",
+   "note": "in-game menu, Controls page: hotkey that opens this in-game menu"
   }
  ]
 }

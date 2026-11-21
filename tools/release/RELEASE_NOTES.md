@@ -26,6 +26,17 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
   comes beside snes9x, as gpSP is beside armGBA: pick it with **SNES Core** in the in-game menu's
   Gameplay page, from the next game on. Its save states and core options are its own. snes9x stays
   the default and plays the games whose chips need firmware files.
+- **Change the buttons, and hotkeys.** The in-game menu has a **Controls** page (a tab in the
+  Classic themes) for every system: which of the console's buttons plays each of the game's (A, B,
+  START, the d-pad, turbo A and B, the Mega Drive's six buttons and MODE, the NES Zapper's trigger)
+  and the hotkeys: fast forward and rewind (toggled or held), save state, load state, reset game,
+  open the menu, and the disk side for Famicom Disk System games. Press A on a row, then the button
+  you want; a hotkey takes up to three buttons pressed together. Every button of the console can
+  be used, the ones no game used before included (the Konkr Pocket Block's MODE key, second side
+  key and back key, the Konkr Pocket Advance's spare buttons). The buttons can be the same for
+  all of a system's games or the game's own, and stay across restarts (`gammaos/controls/`). The
+  Menu button, Power and SELECT + START + L + R always keep their jobs, so the menu can never be
+  locked out.
 - **Newer emulator cores**: armGBA 1.8.1, armNES 1.4, and the latest fixes of Genesis Plus GX and
   snes9x.
 - **Games with big achievement sets start much faster.** A set of a few hundred achievements over
@@ -37,7 +48,7 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
 Flash the 1.1.1 bootloader and put the 1.1.1 card files on the card (GammaOS Pico Tool 1.1.1's card
 update does both the files and keeps yours). The new files are the cheat database
 (`gammaos/cheats/`), armSNES (`cores/armsnes-pico.blob`) and the updated cores; your games, saves,
-states, settings and your own cheat files stay as they are.
+states, settings, your own cheat files and your button maps stay as they are.
 
 ## What's new in 1.1
 

@@ -75,6 +75,7 @@ struct pico_ra_card {
 	int hardcore;			/* GAME: the session counts in hardcore */
 	char chip[24];			/* the chip at the right: a leaderboard's score, the mode ("" none: the points if any) */
 	char note[64];			/* MASTERED: the player and the time played, under the line ("" none) */
+	int plain;			/* a note from elsewhere (a hotkey's "State saved"): no picture */
 };
 int  pico_ra_card_now(struct pico_ra_card *c);
 /* the leaderboards' trackers on screen now (their running values): how many, up to max, into out */

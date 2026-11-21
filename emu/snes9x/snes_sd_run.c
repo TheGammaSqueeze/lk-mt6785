@@ -18,6 +18,7 @@
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
 #include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
+#include "../gba/pico_input.h"    /* the player's button map, the hotkeys */
 #include "../gba/pico_coreopt.h"
 #include "../gba/card_writer.h"   /* in-game saves go to the card off the game's thread */
 #include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
@@ -301,7 +302,6 @@ volatile unsigned g_snes_dbg_heapused;  /* arena bytes in use at test end (run-a
  * closes on the press edge, but the player is still holding the button that same frame, so
  * without this the held A/B bleeds straight into the game as an unintended input. Set on close,
  * cleared here once the button is physically released. */
-int g_snes_ab_latch;   /* bit0 = A held-over, bit1 = B held-over */
 /* FNV-1a hash of a returned frame's visible RGB565 pixels (0 if the frame had no video). Used
  * by the headless run-ahead determinism check to compare a rendered look-ahead frame across
  * the full-render and render-skip paths. */
@@ -327,39 +327,16 @@ static unsigned snes_np_reader(unsigned port)
 
 unsigned ayaneo_snes_pad_mask(void)
 {
-	/* Turbo (auto-fire): g_snes_turbo bit0 = A, bit1 = B. When set and the button is held,
-	 * the bit is gated by a ~15 Hz pulse (2 emulated frames on, 2 off) so it rapid-fires. */
-	unsigned m = 0;
-	int a_on = 1, b_on = 1;
+	/* the player's map (pico_input.c): the buttons as they always were unless moved, the buttons
+	 * that closed the menu held back until let go. The menu's Turbo (g_snes_turbo bit0 = A, bit1 =
+	 * B) gates those bits by a ~15 Hz pulse (2 emulated frames on, 2 off) so they rapid-fire. */
+	unsigned m;
 	if (g_snes_menu_open) return 0;
-	/* Clear each latch once its button is up; while latched, gate that button out of the game. */
-	if (!PRESSED(GPIO_A)) g_snes_ab_latch &= ~1;
-	if (!PRESSED(GPIO_B)) g_snes_ab_latch &= ~2;
-	if (g_snes_ab_latch & 1) a_on = 0;
-	if (g_snes_ab_latch & 2) b_on = 0;
-	if (g_snes_turbo) { int pulse = (g_snes_dbg_frames & 3u) < 2u;
-		if (g_snes_turbo & 1) a_on = pulse;
-		if (g_snes_turbo & 2) b_on = pulse; }
-	if (PRESSED(GPIO_B) && b_on) m |= 1u << RJ_B;
-	if (PRESSED(GPIO_Y))      m |= 1u << RJ_Y;
-	if (PRESSED(GPIO_SELECT)) m |= 1u << RJ_SELECT;
-	if (PRESSED(GPIO_START))  m |= 1u << RJ_START;
-	if (PRESSED(GPIO_UP))     m |= 1u << RJ_UP;
-	if (PRESSED(GPIO_DOWN))   m |= 1u << RJ_DOWN;
-	if (PRESSED(GPIO_LEFT))   m |= 1u << RJ_LEFT;
-	if (PRESSED(GPIO_RIGHT))  m |= 1u << RJ_RIGHT;
-	{	/* left analog stick -> D-pad (JOY_UP=1 DOWN=2 LEFT=4 RIGHT=8) */
-		extern unsigned int ayaneo_joypad_dpad(void);
-		unsigned d = ayaneo_joypad_dpad();
-		if (d & 0x01u) m |= 1u << RJ_UP;
-		if (d & 0x02u) m |= 1u << RJ_DOWN;
-		if (d & 0x04u) m |= 1u << RJ_LEFT;
-		if (d & 0x08u) m |= 1u << RJ_RIGHT;
+	m = pico_input_pad();
+	if (g_snes_turbo && (g_snes_dbg_frames & 3u) >= 2u) {
+		if (g_snes_turbo & 1) m &= ~(1u << RJ_A);
+		if (g_snes_turbo & 2) m &= ~(1u << RJ_B);
 	}
-	if (PRESSED(GPIO_A) && a_on) m |= 1u << RJ_A;
-	if (PRESSED(GPIO_X))      m |= 1u << RJ_X;
-	if (PRESSED(GPIO_LB))     m |= 1u << RJ_L;
-	if (PRESSED(GPIO_RB))     m |= 1u << RJ_R;
 	return m;
 }
 
@@ -846,6 +823,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		struct pico_cheat_core cc = { 0, 0 };
 		if (!s_snes_np && c->version >= SNES_CORE_ABI_V6) { cc.reset = c->cheat_reset; cc.add = c->cheat_add; }
 		pico_cheats_game(vol, rom->type, rom->name, rombuf, romsz, &cc);
+		/* the buttons: the game's map, the menu's save, load and restart for the hotkeys */
+		pico_input_game(vol, rom->type, rom->name, &s_snes_igm, -1);
+		pico_input_netplay(s_snes_np);
 	}
 
 	/* RetroAchievements: the game's set, with its memory (not in netplay) */
@@ -1332,6 +1312,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		snes_settings_tick();   /* debounced settings persist (~0.5 s after the last change) */
 
 		/* AYA taps toggle the menu; holding AYA ~1.5 s force-exits to the selector. */
+		pico_input_frame(g_snes_menu_open);	/* the hotkeys: states, restart, the menu (a tap of its key) */
 		aya = PRESSED(GPIO_AYA);
 		{ extern volatile int g_dbg_igm_toggle;   /* oem igm: a tap of the menu key */
 		  if (g_dbg_igm_toggle) { g_dbg_igm_toggle = 0; aya_prev = 0; aya = 1; } }
@@ -1372,7 +1353,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (PRESSED(GPIO_LB)) k |= IGM_K_L;
 			if (PRESSED(GPIO_RB)) k |= IGM_K_R;
 			r = pico_igm_frame(k);
-			if (r >= 0) { g_snes_menu_open = 0; g_snes_ab_latch |= r; snes_settings_flush(); }
+			if (r >= 0) { g_snes_menu_open = 0; pico_input_hold_back(); snes_settings_flush(); }
 			reset_hold = 0;
 		} else if (g_snes_menu_open) {
 			int up = PRESSED(GPIO_UP), dn = PRESSED(GPIO_DOWN);
@@ -1413,8 +1394,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (dn && FIRE(dn_h)) s_msel = (s_msel + 1) % SM_COUNT;
 				if (lt && FIRE(lt_h)) sm_change(s_msel, -1, 0);
 				if (rt && FIRE(rt_h)) sm_change(s_msel, +1, 0);
-				if (a  && !a_p)  { if (sm_change(s_msel, 0, 1)) { g_snes_menu_open = 0; g_snes_ab_latch |= 1; snes_settings_flush(); } }
-				if (b  && !b_p)  { g_snes_menu_open = 0; g_snes_ab_latch |= 2; snes_settings_flush(); }
+				if (a  && !a_p)  { if (sm_change(s_msel, 0, 1)) { g_snes_menu_open = 0; pico_input_hold_back(); snes_settings_flush(); } }
+				if (b  && !b_p)  { g_snes_menu_open = 0; pico_input_hold_back(); snes_settings_flush(); }
 			}
 			#undef NAV_DELAY
 			#undef NAV_REP

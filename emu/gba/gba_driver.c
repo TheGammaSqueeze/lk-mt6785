@@ -43,6 +43,7 @@ extern int _dprintf(const char *fmt, ...);
 #include "gba_core_abi.h"
 #include "../../platform/common/pico/pico_netplay.h"
 #include "pico_igm.h"
+#include "pico_input.h"   /* the player's button map, the hotkeys */
 #if defined(AYANEO_GBA_SD)
 #include "pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #else
@@ -194,6 +195,7 @@ extern int  mtk_detect_key(unsigned short hwkey);
 #define GBA_ARENA_PA	0x50000000u
 #define GBA_ARENA_SZ	(64u * 1024 * 1024)
 #define GBA_DRV_RESERVE	(2u * 1024 * 1024)	/* state/sav scratch at the arena tail */
+#define GBA_SCRATCH	((unsigned char *)(GBA_ARENA_PA + GBA_ARENA_SZ - GBA_DRV_RESERVE))	/* (the game loop's) */
 #define GBA_W		240
 #define GBA_H		160
 
@@ -286,7 +288,6 @@ static volatile unsigned s_keys;	/* GBA mask, refreshed once per frame */
 /* Release-latch for the A/B that dismissed the Pico menu: the menu closes on the press edge
  * while the button is still held, so without this the held A/B bleeds into the game as an
  * unintended input. Set on close (menu_tick), cleared once the button is released. */
-static volatile unsigned s_ab_latch;
 
 int gbc_benchmark_on(void) { return s_benchmark; }
 int gbc_get_fps(void) { return s_fps; }
@@ -394,42 +395,11 @@ static void gpio_in_pullup(unsigned gpio)
 unsigned ayaneo_gbc_pad_mask(void)
 {
 	extern volatile int g_gbc_menu_open;   /* gbc_sd_run.c: gate game input while the menu is open */
-	extern volatile int g_gbc_ab_latch;    /* held-over A/B from dismissing the menu */
-	unsigned m = 0;
 	if (g_gbc_menu_open) return 0;
-	/* Release-latch: clear each latched bit once its button is up; gate held-over A/B meanwhile
-	 * so dismissing the menu with A/B does not bleed a press into the game. */
-	if (!PRESSED(GPIO_A)) g_gbc_ab_latch &= ~0x01;
-	if (!PRESSED(GPIO_B)) g_gbc_ab_latch &= ~0x02;
-	if (PRESSED(GPIO_A) && !(g_gbc_ab_latch & 0x01)) m |= 0x01u;
-	if (PRESSED(GPIO_B) && !(g_gbc_ab_latch & 0x02)) m |= 0x02u;
-	if (PRESSED(GPIO_SELECT)) m |= 0x04u;
-	if (PRESSED(GPIO_START))  m |= 0x08u;
-	if (PRESSED(GPIO_RIGHT))  m |= 0x10u;
-	if (PRESSED(GPIO_LEFT))   m |= 0x20u;
-	if (PRESSED(GPIO_UP))     m |= 0x40u;
-	if (PRESSED(GPIO_DOWN))   m |= 0x80u;
-	/* X and Y are autofire B and A, at the GBA cores' rate */
-	if (((unsigned)current_time() * AUTOFIRE_HZ / 500u) & 1) {
-#if defined(TURBO_A_IS_X)
-		if (PRESSED(GPIO_Y)) m |= 0x02u;
-		if (PRESSED(GPIO_X)) m |= 0x01u;
-#else
-		if (PRESSED(GPIO_X)) m |= 0x02u;
-		if (PRESSED(GPIO_Y)) m |= 0x01u;
-#endif
-	}
-	{	/* left analog stick -> D-pad (JOY_UP=1 DOWN=2 LEFT=4 RIGHT=8) */
-		extern unsigned int ayaneo_joypad_dpad(void);
-		unsigned d = ayaneo_joypad_dpad();
-		if (d & 0x08u) m |= 0x10u;   /* RIGHT */
-		if (d & 0x04u) m |= 0x20u;   /* LEFT */
-		if (d & 0x01u) m |= 0x40u;   /* UP */
-		if (d & 0x02u) m |= 0x80u;   /* DOWN */
-	}
-	return m;
+	/* the player's map (pico_input.c): the buttons as they always were unless moved, X and Y as
+	 * turbo A and B, the buttons that closed the menu held back until let go */
+	return pico_input_gb_keys();
 }
-
 static void input_init(void)
 {
 	unsigned i;
@@ -450,91 +420,44 @@ int ayaneo_gbc_select_held(void)
 
 static volatile int s_sel_modifier;
 
-#define RB_X	0x1000u
-#define RB_Y	0x2000u
-#define RB_FF	0x4000u
 
-/* refresh the button state once per frame. GAMEPLAY_DEBOUNCE = N-read agreement: a bit
- * is accepted only after it read pressed on N CONSECUTIVE frames, adding N-1 frames of
- * press latency (release is immediate). N=1 is RAW (zero debounce, lowest latency); N=2
- * rejects single-frame glitches (+1 frame); N=3 rejects single- AND two-frame glitches
- * (+2 frames). Now that the button pins run with a hardware Schmitt trigger (gpio_in_pullup)
- * deglitching them at the pin, the software filter can be dialed down - testing N=1 (raw). */
-#define GAMEPLAY_DEBOUNCE 1
+/* The game's buttons once a frame, from the player's map (pico_input.c: the buttons as they always
+ * were unless moved, X and Y as turbo A and B, a hotkey's buttons and those that closed the menu
+ * kept from the game). The key lines run with a hardware Schmitt trigger (gpio_in_pullup), so they
+ * are read raw, no software debounce. The hotkeys that change the game (save, load, restart, the
+ * menu) run here too, between its frames. */
 static void update_buttons(void)
 {
-#if GAMEPLAY_DEBOUNCE > 1
-	static unsigned hist[GAMEPLAY_DEBOUNCE - 1];	/* the last N-1 raw reads */
-#endif
-	unsigned raw = 0, deb, m, i;
-	int af;
+	unsigned raw, m;
+	const unsigned combo = (1u << PB_SELECT) | (1u << PB_START) | (1u << PB_L) | (1u << PB_R);
 
-	for (i = 0; i < sizeof(s_btn) / sizeof(s_btn[0]); i++)
-		if (PRESSED(s_btn[i].gpio))
-			raw |= s_btn[i].mask;
-	if (PRESSED(GPIO_X))  raw |= RB_X;
-	if (PRESSED(GPIO_Y))  raw |= RB_Y;
-#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
-	{ extern int ayaneo_joypad_ff_level(void); if (ayaneo_joypad_ff_level() > 0) raw |= RB_FF; }   /* R2 toggle */
-#else
-	if (PRESSED(GPIO_R2)) raw |= RB_FF;
-#endif
-	{	/* left analog stick -> D-pad (JOY_UP=1 DOWN=2 LEFT=4 RIGHT=8) */
-		extern unsigned int ayaneo_joypad_dpad(void);
-		unsigned d = ayaneo_joypad_dpad();
-		if (d & 0x01u) raw |= GB_UP;
-		if (d & 0x02u) raw |= GB_DOWN;
-		if (d & 0x04u) raw |= GB_LEFT;
-		if (d & 0x08u) raw |= GB_RIGHT;
-	}
-
-	/* N-frame agreement: accept a bit only when this read AND the previous N-1 reads
-	 * all had it pressed. At N=1 this is a pure raw pass (no history). */
-	deb = raw;
-#if GAMEPLAY_DEBOUNCE > 1
-	for (i = 0; i < GAMEPLAY_DEBOUNCE - 1; i++) deb &= hist[i];
-	for (i = GAMEPLAY_DEBOUNCE - 2; i > 0; i--) hist[i] = hist[i - 1];
-	hist[0] = raw;
-#endif
-
-	m = deb & 0x3ffu;			/* the 10 GBA buttons */
+	pico_input_frame(s_menu_open);
+	raw = pico_input_raw();
+	m = pico_input_gba_keys();
 
 	if (s_sel_modifier)
 		m &= ~GB_SEL;			/* Select drives brightness, not the game */
 
-	af = ((unsigned)current_time() * AUTOFIRE_HZ / 500u) & 1;
-	if (af) {
-#if defined(TURBO_A_IS_X)
-		if (deb & RB_Y) m |= GB_B;	/* Y = autofire B */
-		if (deb & RB_X) m |= GB_A;	/* X = autofire A */
-#else
-		if (deb & RB_X) m |= GB_B;	/* X = autofire B */
-		if (deb & RB_Y) m |= GB_A;	/* Y = autofire A */
-#endif
-	}
-
-	/* soft-reset hotkey: Select+Start+L+R held ~0.5s restarts the current game.
-	 * Suppress those four from the game while the combo is engaged (so it does not
-	 * also act on them) and latch so it fires exactly once per hold. */
+	/* soft-reset hotkey: Select+Start+L+R held ~0.5s restarts the current game, the console's
+	 * buttons whatever the map gives them. The game sees nothing while the four are held, and it
+	 * fires exactly once per hold. */
 	{
 		static int rc_hold, rc_fired;
-		unsigned combo = GB_SEL | GB_START | GB_L | GB_R;
-		if ((deb & combo) == combo) {
-			m &= ~combo;
+		if ((raw & combo) == combo) {
+			m = 0;
 			if (++rc_hold >= 30 && !rc_fired && !s_gba_np) { s_reset_req = 1; rc_fired = 1; }
 		} else {
 			rc_hold = 0; rc_fired = 0;
 		}
 	}
 
-	s_fast_forward = (deb & RB_FF) ? 1 : 0;	/* R2 held = fast-forward */
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ extern int ayaneo_joypad_ff_level(void); s_fast_forward = ayaneo_joypad_ff_level() > 0; }   /* its toggle or hold */
+#else
+	s_fast_forward = pico_input_hot_down(PH_FF) || pico_input_hot_down(PH_FF_HOLD);	/* held = fast-forward */
+#endif
 	if (s_menu_open)
 		m = 0;
-	/* Release-latch: gate a held A/B that just dismissed the menu out of the game until it is
-	 * physically released, so closing the menu never registers as an in-game button press. */
-	if (!PRESSED(GPIO_A)) s_ab_latch &= ~GB_A;
-	if (!PRESSED(GPIO_B)) s_ab_latch &= ~GB_B;
-	m &= ~s_ab_latch;
 	{	/* oem gbakey: GBA keys ORed into the game's for a number of frames (tests, screenshots) */
 		extern volatile unsigned int g_dbg_gba_keys, g_dbg_gba_key_frames;
 		if (g_dbg_gba_key_frames && !s_menu_open) {
@@ -1364,7 +1287,7 @@ static void gba_run_ahead_selftest(int nframes)
 }
 
 /* ===================== GammaOS Pico overlay menu ===================== */
-static char *mi_puts(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+static char *mi_puts(char *p, const char *s) { while (*s) *p++ = *s++; *p = 0; return p; }	/* ended, so a shorter line never keeps a longer one's tail */
 static char *mi_putu(char *p, unsigned v)
 {
 	char t[12]; int n = 0;
@@ -2088,8 +2011,8 @@ static void menu_tick(unsigned char *state)
 	if (k & MK_DOWN)  { s_menu_sel = (s_menu_sel + 1) % MI_COUNT; s_menu_status[0] = 0; }
 	if (k & MK_LEFT)  { if (menu_change(s_menu_sel, -1, 0, state, s_menu_status)) s_menu_open = 0; }
 	if (k & MK_RIGHT) { if (menu_change(s_menu_sel, +1, 0, state, s_menu_status)) s_menu_open = 0; }
-	if (k & MK_A)     { if (menu_change(s_menu_sel, 0, 1, state, s_menu_status)) { s_menu_open = 0; s_ab_latch |= GB_A; } }
-	if (k & MK_B)     { s_menu_open = 0; s_ab_latch |= GB_B; }
+	if (k & MK_A)     { if (menu_change(s_menu_sel, 0, 1, state, s_menu_status)) { s_menu_open = 0; pico_input_hold_back(); } }
+	if (k & MK_B)     { s_menu_open = 0; pico_input_hold_back(); }
 }
 
 /* ---- the Current theme's in-game menu (pico_igm.h): the rows in its pages, the handlers above ---- */
@@ -2113,8 +2036,9 @@ static const struct igm_row k_gba_igm_rows[] = {
 	{ MI_BOOTROW, IGM_SYSTEM, IGM_VALUE }, { MI_SKIPINTRO, IGM_SYSTEM, IGM_VALUE },
 	{ MI_BATTERY, IGM_SYSTEM, IGM_INFO },
 };
-static unsigned char *s_igm_state;   /* the game loop's scratch, for the save and load rows */
-static int gba_igm_change(int item, int dir, int act) { return menu_change(item, dir, act, s_igm_state, s_menu_status); }
+/* the save and load rows work in the game loop's scratch: always the same buffer, so a hotkey's save
+ * (pico_input.c, the menu shut, perhaps never opened this game) has it too */
+static int gba_igm_change(int item, int dir, int act) { return menu_change(item, dir, act, GBA_SCRATCH, s_menu_status); }
 /* the running core's own options (Core options) */
 static int gba_igm_opt_n(void)
 {
@@ -2179,13 +2103,13 @@ static void gba_igm_tick(unsigned char *state)
 	if (PRESSED(GPIO_LB))    k |= IGM_K_L;
 	if (PRESSED(GPIO_RB))    k |= IGM_K_R;
 	{ extern unsigned int ayaneo_joypad_dpad(void); k |= ayaneo_joypad_dpad() & (IGM_K_UP | IGM_K_DOWN | IGM_K_LEFT | IGM_K_RIGHT); }
-	s_igm_state = state;
+	(void)state;
 	battery_poll(BATTERY_MENU_FRAMES);
 	r = pico_igm_frame(k);
 	if (r >= 0) {
 		s_menu_open = 0;
-		if (r & 1) s_ab_latch |= GB_A;
-		if (r & 2) s_ab_latch |= GB_B;
+		pico_input_hold_back();		/* the buttons that closed it stay out of the game until let go */
+		(void)r;
 	}
 }
 #else
@@ -2653,6 +2577,7 @@ static int gba_sd_rom_select(void)
 		{ extern void pico_stats_abort(void); if (gba_rom_peek_error()) pico_stats_abort(); else pico_stats_end(); }
 		{ extern void pico_ra_game_end(void) __attribute__((weak)); if (pico_ra_game_end) pico_ra_game_end(); }
 		pico_cheats_game_end();   /* the game played before this menu: its codes go with its core */
+		pico_input_game_end();
 		{	/* oem showcase:1 (until the next power on): the menus list only the release's demo
 			 * games, and games named in other scripts (copies of them under translated names, for
 			 * the screenshots of names in any language), for the README's screenshots; nothing on
@@ -3199,6 +3124,9 @@ static void gba_ra_core_ready(unsigned int romsz)
 		if (!s_gba_np && g_core && g_core->version >= GBA_CORE_ABI_V7) { cc.reset = g_core->cheat_reset; cc.add = g_core->cheat_add; }
 		pico_cheats_game(&s_sd_vol, GBA_CONSOLE_GBA, s_roms[s_sel_rom].name, gba_core_rom_ptr(), romsz, &cc);
 	}
+	/* the buttons: the game's map, the menu's save, load and restart for the hotkeys */
+	pico_input_game(&s_sd_vol, GBA_CONSOLE_GBA, s_roms[s_sel_rom].name, &s_gba_igm, -1);
+	pico_input_netplay(s_gba_np);
 }
 
 static void gba_np_begin(const gba_rom_entry *rom, unsigned int romsz)
@@ -3327,7 +3255,7 @@ static void gba_np_frame(void)
 
 static int emu_thread(void *arg)
 {
-	unsigned char *scratch = (unsigned char *)(GBA_ARENA_PA + GBA_ARENA_SZ - GBA_DRV_RESERVE);
+	unsigned char *scratch = GBA_SCRATCH;
 	unsigned romsz, frame = 0;
 
 	(void)arg;

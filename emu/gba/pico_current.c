@@ -48,6 +48,7 @@
 #include "pico_ra.h"            /* RetroAchievements: the cards, the Achievements page's detail */
 #include "pico_cheats.h"        /* the Cheats page */
 #endif
+#include "pico_input.h"         /* the Controls page */
 #include "pico_settings.h"      /* the settings every theme offers */
 #include <kernel/thread.h>       /* thread_sleep: a pack read tried again */
 
@@ -2571,9 +2572,9 @@ extern volatile int g_dbg_key, g_dbg_key_hold;
 typedef struct { int kind, item, icon; const char *label; } igm_line;
 enum { IC_PLAY, IC_SAVE, IC_LOAD, IC_DISPLAY, IC_SOUND, IC_SPEED, IC_SYSTEM, IC_RESET, IC_EXIT, IC_N, IC_NONE = -1 };
 static const char *const k_igm_page[IGM_NPAGES] = { "", "Display", "Sound", "Gameplay", "System", "Core options",
-						   "Achievements", "Cheats" };
+						   "Achievements", "Cheats", "Controls" };
 static const signed char k_igm_page_ic[IGM_NPAGES] = { IC_NONE, IC_DISPLAY, IC_SOUND, IC_SPEED, IC_SYSTEM, IC_SYSTEM,
-							IC_PLAY, IC_SPEED };
+							IC_PLAY, IC_SPEED, IC_SYSTEM };
 
 /* RetroAchievements (pico_ra.c, on the consoles with Wi-Fi; absent elsewhere) */
 extern int pico_ra_game_loaded(void) __attribute__((weak));
@@ -2590,6 +2591,7 @@ extern int pico_ra_row_tone(int i) __attribute__((weak));
 static int igm_row_head(int page, const igm_line *l)
 {
 	if (page == IGM_CHT) return pico_cheats_row_head(l->item);
+	if (page == IGM_CTL) return pico_input_row_head(l->item);
 	return page == IGM_ACH && pico_ra_row_head && pico_ra_row_head(l->item);
 }
 extern const char *pico_ra_row_text(int i) __attribute__((weak));
@@ -2750,6 +2752,14 @@ static int igm_lines(int page, igm_line *out)
 		}
 		return n;
 	}
+	if (page == IGM_CTL) {	/* the buttons: what plays each of the game's, the hotkeys */
+		int k = pico_input_rows();
+		for (i = 0; i < k && n < IGM_ROWS; i++, n++) {
+			out[n].kind = pico_input_row_head(i) ? IGM_INFO : pico_input_row_value(i) ? IGM_VALUE : IGM_ACTION;
+			out[n].item = i; out[n].icon = IC_NONE; out[n].label = tr(pico_input_row_title(i));
+		}
+		return n;
+	}
 	if (page == IGM_TOP) { out[0].kind = IGM_ACTION; out[0].item = -1; out[0].icon = IC_PLAY; out[0].label = tr("Resume"); n = 1; }
 	if (page == IGM_TOP && igm_ra_on()) {	/* RetroAchievements: the game's set, under Resume */
 		out[n].kind = IGM_LINK; out[n].item = IGM_ACH; out[n].icon = k_igm_page_ic[IGM_ACH];
@@ -2759,6 +2769,11 @@ static int igm_lines(int page, igm_line *out)
 	if (page == IGM_TOP && pico_cheats_page()) {	/* the game's cheats, under it */
 		out[n].kind = IGM_LINK; out[n].item = IGM_CHT; out[n].icon = k_igm_page_ic[IGM_CHT];
 		out[n].label = tr(k_igm_page[IGM_CHT]);
+		n++;
+	}
+	if (page == IGM_TOP && pico_input_page()) {	/* the buttons, under them */
+		out[n].kind = IGM_LINK; out[n].item = IGM_CTL; out[n].icon = k_igm_page_ic[IGM_CTL];
+		out[n].label = tr(k_igm_page[IGM_CTL]);
 		n++;
 	}
 	for (i = 0; i < c->nrows && n < IGM_ROWS; i++) {
@@ -2801,6 +2816,7 @@ static const char *igm_value(int page, const igm_line *l, char *buf)
 	if (page == IGM_ACH) return pico_ra_row_value ? pico_ra_row_value(l->item) : 0;
 	if (l->kind == IGM_LINK && l->item == IGM_ACH) return pico_ra_short ? pico_ra_short() : 0;
 	if (page == IGM_CHT) { const char *v = pico_cheats_row_value(l->item); return v ? tr(v) : 0; }
+	if (page == IGM_CTL) return pico_input_row_value(l->item);	/* (in the language already) */
 	if (l->kind == IGM_LINK && l->item == IGM_CHT) {	/* how many are on: "On: 2" */
 		const char *v = pico_cheats_short();
 		if (!v) return 0;
@@ -2897,6 +2913,7 @@ static void igm_toast(const char *t)
 static void igm_go(int page, int dir)
 {
 	if (page == IGM_CHT && page != G.page) pico_cheats_page_open();
+	if (page == IGM_CTL && page != G.page) pico_input_page_open();
 	G.from = G.page; G.page = page; G.dir = dir; G.page_t = 0;
 	if (dir > 0) { G.sel[page] = 0; G.top[page] = 0; }
 	G.hy = (G.sel[page] - G.top[page]) * IGM_RP;
@@ -2968,6 +2985,12 @@ int pico_igm_frame(unsigned int keys)
 		}
 	}
 	if (G.closing || G.show < .6f) { G.prev_keys = (int)keys; return -1; }
+	if (pico_input_busy()) {	/* the Controls page listens for a button: the keys are its */
+		pico_input_listen();
+		G.prev_keys = (int)keys;
+		G.dirty = 1; s_igm_rowh_ok = 0;
+		return -1;
+	}
 	/* the keys */
 	up = igm_fire(0, !!(keys & IGM_K_UP), dt);
 	dn = igm_fire(1, !!(keys & IGM_K_DOWN), dt);
@@ -3011,6 +3034,13 @@ int pico_igm_frame(unsigned int keys)
 		}
 		if (G.page == IGM_CHT) {	/* a cheat flips with Left, Right or A; the parts row steps */
 			if ((dir || a) && pico_cheats_row_change(l->item, dir)) {
+				G.nudge_row = sel; G.nudge_dir = dir ? dir : 1; G.nudge_t = 0; G.dirty = 1;
+				s_igm_rowh_ok = 0;
+			}
+			dir = 0; a = 0;
+		}
+		if (G.page == IGM_CTL) {	/* Left / Right step a job's button, A listens for one */
+			if ((dir || a) && pico_input_row_change(l->item, dir)) {
 				G.nudge_row = sel; G.nudge_dir = dir ? dir : 1; G.nudge_t = 0; G.dirty = 1;
 				s_igm_rowh_ok = 0;
 			}
@@ -3080,7 +3110,7 @@ static void igm_rows(int page, float dx, int op, int wash)
 		yy = U(ry);
 		lx = IX(rx + rdx) + U(14);
 		if (igm_row_head(page, &ln[i])) {	/* a group's heading: its name in small capitals, its count */
-			const char *cnt = page == IGM_CHT ? pico_cheats_row_value(ln[i].item) :
+			const char *cnt = page == IGM_CHT ? pico_cheats_row_value(ln[i].item) : page == IGM_CTL ? "" :
 					  pico_ra_row_value ? pico_ra_row_value(ln[i].item) : "";
 			text(&G.tag13, lx, yy + (int)(ph * .66f), tr(ln[i].label), C_MUTED, rop, 0, U(2), 1);
 			if (cnt && cnt[0]) text(&G.tag13, IX(rx + rw + rdx) - U(14), yy + (int)(ph * .66f), cnt, C_MUTED, rop, 2, 0, 0);
@@ -3095,7 +3125,7 @@ static void igm_rows(int page, float dx, int op, int wash)
 		/* a link shows no value, except Achievements' count ("12/40", Sign in, Off) */
 		v = ln[i].kind == IGM_LINK && ln[i].item != IGM_ACH && ln[i].item != IGM_CHT ? 0 : igm_value(page, &ln[i], vb);
 		{	/* the value takes at most 55 % of the row (cut with an ellipsis), the name what is left */
-			int arrows = f && v && v[0] && (ln[i].kind == IGM_VALUE || (page != IGM_ACH && (ln[i].item == G.c->save_item ||
+			int arrows = f && v && v[0] && (ln[i].kind == IGM_VALUE || (page != IGM_ACH && page != IGM_CTL && (ln[i].item == G.c->save_item ||
 				     ln[i].item == G.c->load_item) && G.c->slot_item >= 0));
 			int room = ln[i].kind == IGM_LINK ? G.chev.w + U(16) : U(40);
 			if (v && v[0]) {
@@ -3131,7 +3161,7 @@ static void igm_rows(int page, float dx, int op, int wash)
 				float e = igm_ease(G.nudge_t);
 				nudge = (int)((1 - e) * U(12)) * G.nudge_dir; vop = (int)(rop * (.35f + .65f * e));
 			}
-			if (f && (ln[i].kind == IGM_VALUE || (page != IGM_ACH && (ln[i].item == G.c->save_item || ln[i].item == G.c->load_item)
+			if (f && (ln[i].kind == IGM_VALUE || (page != IGM_ACH && page != IGM_CTL && (ln[i].item == G.c->save_item || ln[i].item == G.c->load_item)
 								&& G.c->slot_item >= 0))) {	/* Left / Right change it */
 				draw_mask(&G.chev, vx - G.chev.w, yy + (ph - G.chev.h) / 2, C_INK, rop);
 				vx -= G.chev.w + U(6);
@@ -3142,7 +3172,7 @@ static void igm_rows(int page, float dx, int op, int wash)
 				uint32_t vc = tone == 1 ? 0xFFC870u : tone == 2 ? 0xFFD36Bu : f ? C_INK : C_MUTED;
 				text(&G.sval, vx + nudge, yy + (int)(ph * .61f), v, vc, vop, 2, 0, 0);
 			}
-			if (f && (ln[i].kind == IGM_VALUE || (page != IGM_ACH && (ln[i].item == G.c->save_item || ln[i].item == G.c->load_item)
+			if (f && (ln[i].kind == IGM_VALUE || (page != IGM_ACH && page != IGM_CTL && (ln[i].item == G.c->save_item || ln[i].item == G.c->load_item)
 								&& G.c->slot_item >= 0)))
 				draw_mask(&G.back, vx - w - U(6) - G.back.w, yy + (ph - G.back.h) / 2, C_INK, rop);
 			if (len >= 2 && v[len - 1] == '%' && v[0] >= '0' && v[0] <= '9') {	/* a level: its bar */
@@ -3859,7 +3889,7 @@ static void ra_card(const struct pico_ra_card *c, int *r, float t)
 		       c->kind == PICO_RA_CARD_BOARD ? (c->pct < 0 ? RA_RED : C_ACCENT) : C_ACCENT;
 	char chip[32], hb_s[64];
 	const unsigned short *pic = c->badge[0] ? pico_ra_badge(c->badge) : 0;
-	x0 = U(19) + P + U(16);
+	x0 = c->plain ? U(19) : U(19) + P + U(16);	/* a plain note: no picture, its words from the edge */
 	chip[0] = 0;
 	if (c->chip[0]) snprintf(chip, sizeof chip, "%s", c->chip);	/* (a leaderboard's score) */
 	else if (c->points >= 0) snprintf(chip, sizeof chip, "+%d", c->points);
@@ -3867,7 +3897,7 @@ static void ra_card(const struct pico_ra_card *c, int *r, float t)
 	snprintf(hb_s, sizeof hb_s, "%s", c->head);
 	{
 		int need = rf_w(RF_HEAD, hb_s, sp, 1) + (chipw ? chipw + U(12) : 0), tw = rf_w(RF_TITLE, c->title, 0, 0);
-		int lw = c->line[0] ? rf_w(RF_BODY, c->line, 0, 0) : 0, maxW = U(500), minW = U(big ? 400 : 320);
+		int lw = c->line[0] ? rf_w(RF_BODY, c->line, 0, 0) : 0, maxW = U(500), minW = c->plain ? U(200) : U(big ? 400 : 320);
 		int nw = c->note[0] ? rf_w(RF_BODY, c->note, 0, 0) : 0;
 		if (tw > need) need = tw;
 		if (lw > need) need = lw;
@@ -3891,13 +3921,13 @@ static void ra_card(const struct pico_ra_card *c, int *r, float t)
 		y = nb + (rf_px(RF_BODY) - rf_asc(RF_BODY));
 	}
 	H = y + pad;
-	if (H < P + U(34)) H = P + U(34);
+	if (!c->plain && H < P + U(34)) H = P + U(34);
 	x = g_W - W - U(20);
 	y = U(20);
 	r[0] = x; r[1] = y; r[2] = x + W; r[3] = y + H;
 	ra_ground(x, y, W, H, rad, acc, 1);
 	if (big) rrect_fade(x + 1, y + 1, W - 2, H * 55 / 100, (float)(rad - 1), acc, 26, 0);
-	ra_pic(x + U(19), y + (H - P) / 2 < U(17) ? y + (H - P) / 2 : y + U(17), P, pic, acc);
+	if (!c->plain) ra_pic(x + U(19), y + (H - P) / 2 < U(17) ? y + (H - P) / 2 : y + U(17), P, pic, acc);
 	if (chipw) {
 		int ch = rf_px(RF_CHIP) + U(6), cy = y + hb - rf_asc(RF_CHIP) - U(3);
 		rrect_fill(x + W - right - chipw, cy, chipw, ch, (float)(ch / 2), acc, 51);

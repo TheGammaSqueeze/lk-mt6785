@@ -19,6 +19,7 @@
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
 #include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
+#include "../gba/pico_input.h"    /* the player's button map, the hotkeys */
 #include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #include "../gba/gba_sd_save.h"
 #include "../gba/pico_state_shot.h"   /* each state's picture and time, for the Suspend Point List */
@@ -348,9 +349,6 @@ static void gbc_sd_poll_volume(void)
 }
 
 volatile int g_gbc_menu_open;   /* read by ayaneo_gbc_pad_mask (gba_driver.c) to gate game input */
-/* Release-latch (gambatte mask: A=0x01, B=0x02) for the A/B that dismissed the menu, so the
- * still-held button does not bleed into the game. Cleared in ayaneo_gbc_pad_mask on release. */
-volatile int g_gbc_ab_latch;
 
 /* session context the menu acts on, set at session start */
 static const struct gbc_core_exports *s_menu_c;
@@ -855,6 +853,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		struct pico_cheat_core cc = { 0, 0 };
 		if (!s_gbc_np && c->version >= GBC_CORE_ABI_V5) { cc.reset = c->cheat_reset; cc.add = c->cheat_add; }
 		pico_cheats_game(vol, rom->type, rom->name, rombuf, romsz, &cc);
+		/* the buttons: the game's map, the menu's save, load and restart for the hotkeys */
+		pico_input_game(vol, rom->type, rom->name, &s_gbc_igm, -1);
+		pico_input_netplay(s_gbc_np);
 	}
 
 	/* RetroAchievements: the game's set, with its memory (not in netplay) */
@@ -1131,6 +1132,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			/* AYA taps toggle the in-game menu (game keeps running underneath).
 			 * Holding AYA ~1.5 s force-exits to the selector - a safety so a broken
 			 * menu can never soft-lock the game (the watchdog is disabled here). */
+			pico_input_frame(g_gbc_menu_open);	/* the hotkeys: states, restart, the menu (a tap of its key) */
 			aya = PRESSED(GPIO_AYA);
 			{ extern volatile int g_dbg_igm_toggle;   /* oem igm: a tap of the menu key */
 			  if (g_dbg_igm_toggle) { g_dbg_igm_toggle = 0; aya_prev = 0; aya = 1; } }
@@ -1176,7 +1178,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					gbc_menu_arm_reverse(vbuf);
 					break;
 				}
-				if (r >= 0) { g_gbc_menu_open = 0; g_gbc_ab_latch |= r; }
+				if (r >= 0) { g_gbc_menu_open = 0; pico_input_hold_back(); }
 				reset_hold = 0;
 			} else if (g_gbc_menu_open && s_pal_pick) {
 				/* Palette LIST picker: hold Up/Down to browse with accelerating
@@ -1237,14 +1239,14 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (rt && !rt_prev) res = gm_change(s_msel, +1, 0);
 				if (a  && !a_prev)  res = gm_change(s_msel, 0, 1);
 				if (x  && !x_prev)  res = gm_change(s_msel, 0, 2);  /* X = reset option to default */
-				if (b  && !b_prev)  { g_gbc_menu_open = 0; g_gbc_ab_latch |= 0x02; }
+				if (b  && !b_prev)  { g_gbc_menu_open = 0; pico_input_hold_back(); }
 				up_prev = up; dn_prev = dn; lt_prev = lt; rt_prev = rt; a_prev = a; b_prev = b; x_prev = x;
 				if (res == 2) {                    /* Close -> exit to the selector */
 					extern void gbc_menu_arm_reverse(const unsigned short *frame);
 					gbc_menu_arm_reverse(vbuf);   /* closing punch: shrink into the menu */
 					break;
 				}
-				if (res == 1) { g_gbc_menu_open = 0; g_gbc_ab_latch |= 0x01; } /* Reset (A) -> close menu, game runs */
+				if (res == 1) { g_gbc_menu_open = 0; pico_input_hold_back(); } /* Reset (A) -> close menu, game runs */
 			} else {
 				/* Soft reset hotkey: SELECT+START+L+R held ~0.5 s. */
 				combo = PRESSED(GPIO_SELECT) && PRESSED(GPIO_START) &&

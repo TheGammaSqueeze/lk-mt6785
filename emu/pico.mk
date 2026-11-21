@@ -15,6 +15,8 @@ OBJS += emu/gba/sd_fat.o
 OBJS += emu/gba/fat_wr.o
 OBJS += emu/gba/fat_exfat.o
 OBJS += emu/gba/gba_sd_save.o
+OBJS += emu/gba/pico_input.o		# the buttons for every core: the player's map, hotkeys, the Controls page
+$(BUILDDIR)/emu/gba/pico_input.o:       CFLAGS += -Os
 ifeq ($(AYANEO_GBA_SD),yes)
 OBJS += emu/gba/sd_fastboot.o
 OBJS += emu/gba/menu_fastboot.o

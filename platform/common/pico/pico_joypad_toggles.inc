@@ -49,9 +49,18 @@ extern unsigned int gpt4_get_current_tick(void);
 /* and a second press within this long of the last flip is ignored (contact bounce) */
 #define KPA_TOGGLE_GUARD_TICKS (13000u * 150u)  /* 150 ms */
 
-/* stable: the level that last held long enough; cand/cand_t0: the level being timed now */
-struct kpa_toggle { int on, armed, stable, cand; unsigned cand_t0, t_flip; unsigned gpio; };
-static struct kpa_toggle s_ff_tog = { .gpio = KPA_GPIO_R2 }, s_rw_tog = { .gpio = KPA_GPIO_L2 };
+/* stable: the level that last held long enough; cand/cand_t0: the level being timed now; hot: the
+ * hotkey that presses it (emu/gba/pico_input.h: PH_FF, PH_RW), R2 and L2 unless the player moved it */
+struct kpa_toggle { int on, armed, stable, cand; unsigned cand_t0, t_flip; unsigned gpio; int hot; };
+static struct kpa_toggle s_ff_tog = { .gpio = KPA_GPIO_R2, .hot = 0 }, s_rw_tog = { .gpio = KPA_GPIO_L2, .hot = 2 };
+/* the Controls page's map (pico_input.c), where it is built in: the hotkey's buttons all held */
+extern int pico_input_hot_down(int hk) __attribute__((weak));
+#define KPA_HOT_FF_HOLD 1
+#define KPA_HOT_RW_HOLD 3
+static int kpa_toggle_down(const struct kpa_toggle *t)
+{
+	return pico_input_hot_down ? pico_input_hot_down(t->hot) : KPA_PRESSED(t->gpio);
+}
 volatile unsigned int g_dbg_ff_flips, g_dbg_rw_flips;   /* oem ff: R2 and L2 toggle flips seen */
 
 /* R2 and L2 are never set up by anything else in the LK, and left as they come out of reset they
@@ -77,11 +86,11 @@ static int kpa_toggle_poll(struct kpa_toggle *t)
 	if (!t->armed) {
 		kpa_toggle_pin(t->gpio);
 		t->armed = 1;
-		t->stable = t->cand = KPA_PRESSED(t->gpio);   /* held at start: not a press */
+		t->stable = t->cand = kpa_toggle_down(t);   /* held at start: not a press */
 		t->cand_t0 = tick;
 		return t->on;
 	}
-	now = KPA_PRESSED(t->gpio);
+	now = kpa_toggle_down(t);
 	if (now != t->cand) {
 		t->cand = now;
 		t->cand_t0 = tick;
@@ -111,13 +120,16 @@ void ayaneo_joypad_rw_force(int on)
 
 int ayaneo_joypad_ff_level(void)
 {
-	return kpa_toggle_poll(&s_ff_tog) ? 255 : 0;   /* R2 toggles fast forward */
+	int on = kpa_toggle_poll(&s_ff_tog);   /* R2 toggles fast forward */
+	if (pico_input_hot_down && pico_input_hot_down(KPA_HOT_FF_HOLD)) on = 1;   /* or a button held for it */
+	return on ? 255 : 0;
 }
 
 int ayaneo_joypad_rewind_level(void)
 {
 	extern int pico_ra_hardcore(void) __attribute__((weak));
 	int on = kpa_toggle_poll(&s_rw_tog);   /* L2 toggles rewind */
+	if (pico_input_hot_down && pico_input_hot_down(KPA_HOT_RW_HOLD)) on = 1;   /* or a button held for it */
 	if (on && pico_ra_hardcore && pico_ra_hardcore()) {	/* RetroAchievements' hardcore: no rewind */
 		s_rw_tog.on = 0;
 		return 0;

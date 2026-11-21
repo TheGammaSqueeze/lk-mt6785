@@ -12,6 +12,8 @@ exFAT, put the card in the console and power it on. The console needs the GammaO
                        database (libretro-database, CC BY-SA 4.0, licences/cheats/); your own
                        RetroArch .cht files go in gammaos/cheats/<system>/ (gb, gbc, gba, nes,
                        snes, md, sms, gg), named as the game
+  gammaos/controls/    made by the console: your button maps from the in-game menu's Controls
+                       page (one per system, and a game's own in gammaos/controls/<system>/)
   cores/               the emulator cores: armGBA and gpSP (Game Boy Advance), gambatte (Game
                        Boy, Game Boy Color), snes9x and armSNES (SNES), Genesis Plus GX (Mega
                        Drive / Genesis, Master System, Game Gear, SG-1000), armNES (NES, Famicom

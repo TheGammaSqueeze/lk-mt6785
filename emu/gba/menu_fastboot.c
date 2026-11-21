@@ -28,6 +28,7 @@ extern void fastboot_register(const char *prefix,
 			      void (*handle)(const char *arg, void *data, unsigned sz),
 			      int allow_locked, int need_download);
 extern void fastboot_info(const char *reason);
+#include "pico_input.h"   /* oem input */
 #include "gba_core_abi.h"
 #include "fat_ro.h"
 #include "sd_fat.h"
@@ -2979,6 +2980,24 @@ static void cmd_cheats(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem input[:<hex buttons>:<ms>] - the button map in force, the buttons held now; with an argument,
+ * those buttons (pico_input.h's PB_ bits) are pressed for that long first (pico_input.c) */
+static void cmd_input(const char *arg, void *data, unsigned sz)
+{
+	char d[1400], l[64];
+	int i, n;
+	(void)data; (void)sz;
+	while (*arg == ':' || *arg == ' ') arg++;
+	if (*arg) pico_input_debug(arg);
+	pico_input_diag(d, sizeof d);
+	n = (int)strlen(d);
+	for (i = 0; i < n; i += 56) {	/* a fastboot line holds about 60 */
+		snprintf(l, sizeof l, "%.56s", d + i);
+		fastboot_info(l);
+	}
+	fastboot_okay("");
+}
+
 /* oem blackbox[:clear] - the event records kept on the card (faults, charging screen hand overs) */
 static void cmd_blackbox(const char *arg, void *data, unsigned sz)
 {
@@ -3597,6 +3616,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem rnd", cmd_rnd, 1, 0);
 	fastboot_register("oem cheevos", cmd_cheevos, 1, 0);
 	fastboot_register("oem cheats", cmd_cheats, 1, 0);
+	fastboot_register("oem input", cmd_input, 1, 0);
 	fastboot_register("oem core", cmd_core, 1, 0);
 	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);
 	fastboot_register("oem bbram", cmd_bbram, 1, 0);
@@ -3639,6 +3659,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem rnd", cmd_rnd, 1, 0);
 	fastboot_register("oem cheevos", cmd_cheevos, 1, 0);
 	fastboot_register("oem cheats", cmd_cheats, 1, 0);
+	fastboot_register("oem input", cmd_input, 1, 0);
 	fastboot_register("oem core", cmd_core, 1, 0);
 	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);
 	fastboot_register("oem bbram", cmd_bbram, 1, 0);

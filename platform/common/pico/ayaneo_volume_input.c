@@ -139,9 +139,13 @@ void ayaneo_volume_input_init(void)
 int ayaneo_volume_dir(void)
 {
 	static int vu_prev, vd_prev;
+	/* a key the player gave a job on the Controls page (emu/gba/pico_input.c) is that job's alone */
+	extern int pico_input_key_taken(int code) __attribute__((weak));
 	int vu = mtk_detect_key(0x11);	/* VOL_UP */
 	int vd = mtk_detect_key(0x00);	/* VOL_DOWN */
 	int dir = 0;
+	if (pico_input_key_taken && pico_input_key_taken(0x11)) vu = 0;
+	if (pico_input_key_taken && pico_input_key_taken(0x00)) vd = 0;
 
 	if (vu && !vu_prev) dir = +1;
 	else if (vd && !vd_prev) dir = -1;

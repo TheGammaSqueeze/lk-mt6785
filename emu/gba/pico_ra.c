@@ -35,6 +35,7 @@
 #include "pico_version.h"	/* the release in the user agent */	/* the time played, for the mastery card */
 #include "gba_sd_save.h"
 #include "pico_cheats.h"	/* a cheat on: nothing unlocks */
+#include "pico_i18n.h"	/* tr: a note from elsewhere in the language in use */
 #include "../../platform/common/pico/pico_netsvc.h"
 #include "../../platform/common/pico/pico_crypto.h"	/* the queue file's seal and owners */
 #include "pico_png.h"
@@ -722,6 +723,17 @@ static struct pico_ra_card *card_new(int kind)
 	c->points = -1;
 	if (s_card_tail - s_card_head == 1) s_card_t0 = now_ms();
 	return c;
+}
+
+/* a short note over the game from elsewhere (a hotkey's "State saved"): the cards' look, no points;
+ * tone 1 it worked (green), -1 it did not (red), 0 neither */
+void pico_ra_toast(const char *head, const char *line, int tone)
+{
+	struct pico_ra_card *c = card_new(PICO_RA_CARD_NOTE);
+	copy_n(c->head, sizeof c->head, head ? tr(head) : "");
+	copy_n(c->title, sizeof c->title, line ? tr(line) : "");
+	c->pct = tone;
+	c->plain = 1;
 }
 
 int pico_ra_card_now(struct pico_ra_card *out)
