@@ -72,10 +72,14 @@ case " $CONSOLES " in *" block "*)
 	./build_konkr_block.sh
 	[ -f out/lk_a_block_signed.img ] || { echo "!! the Block's LK build did not produce its image" >&2; exit 1; } ;;
 esac
-for c in armgba-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico armnes-pico ra-pico; do
+for c in armgba-pico gpsp-pico gambatte-pico snes9x-pico armsnes-pico genesis-plus-gx-pico armnes-pico ra-pico; do
 	[ -f out/sdcard/cores/$c.blob ] || { echo "!! the card template has no $c core" >&2; exit 1; }
 done
 [ -f out/sdcard/bios/certs/roots.der ] || { echo "!! the card template has no HTTPS roots" >&2; exit 1; }
+for c in gb gbc gba nes snes md sms gg; do
+	[ -f out/sdcard/gammaos/cheats/$c.gcd ] || { echo "!! the card template has no $c cheat pack" >&2; exit 1; }
+done
+[ -f out/sdcard/licences/cheats/LICENSE ] || { echo "!! the card template has no licence for the cheat packs" >&2; exit 1; }
 [ "$(ls out/sdcard/bios/connsys 2>/dev/null | wc -l)" -ge 10 ] || { echo "!! the card template has no Wi-Fi and Bluetooth firmware (bios/connsys)" >&2; exit 1; }
 
 rm -rf "$FILES" "$R"/*.zip "$R"/SHA256SUMS "$R"/RELEASE_NOTES.md
@@ -89,7 +93,7 @@ CARD_SRC="$FILES/card"
 mkdir -p "$CARD_SRC"
 cp -r out/sdcard/. "$CARD_SRC/"
 python3 tools/release/demo_games.py tools/release/demo_games.json "$CARD_SRC" "$R/cache"
-for dir in armGBA-pico gpsp-pico gambatte-pico snes9x-pico genesis-plus-gx-pico armNES-pico; do
+for dir in armGBA-pico gpsp-pico gambatte-pico snes9x-pico armSNES-pico genesis-plus-gx-pico armNES-pico; do
 	d="$CARD_SRC/licences/cores/$dir"
 	mkdir -p "$d"
 	cp cores/$dir/LICENSE "$d/LICENSE"

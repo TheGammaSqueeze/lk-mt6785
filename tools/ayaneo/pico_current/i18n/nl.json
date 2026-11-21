@@ -370,5 +370,18 @@
  "Weak": "Zwak",
  "Wi-Fi": "Wifi",
  "Wi-Fi is off: it uses no power until you turn it on here.": "Wifi staat uit: het gebruikt geen stroom tot je het hier aanzet.",
- "Working...": "Bezig..."
+ "Working...": "Bezig...",
+ "Cheats": "Cheats",
+ "Page": "Pagina",
+ "Not read": "Niet leesbaar",
+ "Your cheats": "Je eigen cheats",
+ "On: %s": "Aan: %s",
+ "SNES Core": "SNES-core",
+ "No armSNES core on the card": "Geen armSNES-core op de kaart",
+ "Cheat list": "Cheatlijst",
+ "Found for this game": "Gevonden voor dit spel",
+ "Your cheat files": "Je eigen cheatbestanden",
+ "Cheat database": "Cheatdatabase",
+ "In use": "In gebruik",
+ "Clear search": "Zoekopdracht wissen"
 }

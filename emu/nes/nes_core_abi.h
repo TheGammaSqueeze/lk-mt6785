@@ -19,6 +19,7 @@
 #define NES_CORE_ABI_MAGIC   0x3153454Eu   /* "NES1" */
 #define NES_CORE_ABI_VERSION 2u   /* 2: opt_count / opt_info (the core's own option list) */
 #define NES_CORE_ABI_V3      3u   /* 3: the machine's memory, for RetroAchievements */
+#define NES_CORE_ABI_V4      4u   /* 4: cheat codes */
 
 #include "pico_core_memory.h"
 
@@ -114,6 +115,13 @@ struct nes_core_exports {
 	 * and the map it announces), for RetroAchievements to read in place between frames. Valid from
 	 * load until unload. */
 	void (*get_memory)(struct pico_core_memory *out);
+
+	/* 4: cheat codes. cheat_reset drops every code in force; cheat_add adds one cheat's code as a
+	 * RetroArch .cht file gives it (one or more codes joined by '+' or spaces), in force from the
+	 * next frame: 0 = taken, negative = a code the core cannot read (codes before it in the same
+	 * text may be in force). Between frames, from load until unload. */
+	void (*cheat_reset)(void);
+	int  (*cheat_add)(const char *code);
 };
 
 typedef const struct nes_core_exports *(*nes_core_blob_init_fn)(const struct nes_core_imports *imp);

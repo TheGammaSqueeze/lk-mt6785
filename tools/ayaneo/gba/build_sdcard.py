@@ -20,13 +20,15 @@ COMP_MAX = 8 * 1024 * 1024                    # gba_snes_menu.c SNES_COMP_MAX
 # the core blob header: magic, version, entry, load size, total span (core_file.h)
 CORE_MAGIC = {
     "armgba-pico": 0x41424743, "gpsp-pico": 0x41424743, "gambatte-pico": 0x31434247,
-    "snes9x-pico": 0x31534E53, "genesis-plus-gx-pico": 0x31474553, "armnes-pico": 0x3153454E,
+    "snes9x-pico": 0x31534E53, "armsnes-pico": 0x31534E53, "genesis-plus-gx-pico": 0x31474553,
+    "armnes-pico": 0x3153454E,
     "ra-pico": 0x31414152,
 }
 # the DRAM slot each core loads into (core_file_load's slot_size)
 CORE_SLOT = {
     "armgba-pico": 0x400000, "gpsp-pico": 0x400000, "gambatte-pico": 0x800000,
     "snes9x-pico": 0x800000, "genesis-plus-gx-pico": 0x800000, "armnes-pico": 0x800000,
+    "armsnes-pico": 0x1000000,  # the SNES slot and the Genesis one after it (snes_core_loader.c)
     "ra-pico": 0x100000,     # RetroAchievements: the image's part of its 4 MB (the rest is its heap)
 }
 ROM_DIRS = ["gb", "gbc", "gba", "snes", "genesis", "sms", "gg", "sg", "nes"]

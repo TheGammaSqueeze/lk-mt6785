@@ -22,11 +22,12 @@
 
 extern BOOT_ARGUMENT *g_boot_arg;
 
-#define REWIND_SCRATCH_END 0x63400000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
+#define REWIND_SCRATCH_END 0x63600000ULL /* the 128MB emulator scratch ends at 0x56000000, then the
 					   * menu's box art slots (SNES_BOXART_PA, 20 MB, gba_snes_menu.c),
 					   * then the armGBA core's own window, the language pack, the card
 					   * writer's buffer, the emulator stacks, the box art import,
-					   * the game library and the archive reader's memory (below);
+					   * the game library, the archive reader's memory and the
+					   * cheats' (below);
 					   * look above them all */
 /* The armGBA core's heap: 128 MB of the island above the box art. The scratch's 62 MB held its ROM
  * buffer (32 MB), its recompiler's code buffer and what the recompiler notes on each block it
@@ -65,6 +66,10 @@ extern BOOT_ARGUMENT *g_boot_arg;
  * index a launch from one failed ("This archive is too large to open"). */
 #define ARCHIVE_PA    0x63000000u
 #define ARCHIVE_SIZE  0x00400000u
+/* The cheats of the game running (emu/gba/pico_cheats.c): the pack's tables while it looks the game
+ * up, the game's cheats and the rows of its Cheats page. */
+#define CHEATS_PA     0x63400000u
+#define CHEATS_SIZE   0x00200000u
 #define REWIND_VA_LIMIT    0x100000000ULL /* LK is 32-bit VA (identity) - can only map phys < 4GB */
 #define REWIND_CAP         0x40000000u    /* per-block ceiling (1GB); the largest real island (mblk10
 					   * ~1022MB) sits just under it, so no block is actually capped -
@@ -271,6 +276,13 @@ void *ayaneo_archive_arena(unsigned int *size)
 	static int s_state;
 	void *p = fixed_window(ARCHIVE_PA, ARCHIVE_SIZE, &s_state);
 	if (p && size) *size = ARCHIVE_SIZE;
+	return p;
+}
+void *ayaneo_cheats_arena(unsigned int *size)
+{
+	static int s_state;
+	void *p = fixed_window(CHEATS_PA, CHEATS_SIZE, &s_state);
+	if (p && size) *size = CHEATS_SIZE;
 	return p;
 }
 void *ayaneo_import_arena(unsigned int *size)

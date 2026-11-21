@@ -34,6 +34,7 @@
 #include "pico_stats.h"
 #include "pico_version.h"	/* the release in the user agent */	/* the time played, for the mastery card */
 #include "gba_sd_save.h"
+#include "pico_cheats.h"	/* a cheat on: nothing unlocks */
 #include "../../platform/common/pico/pico_netsvc.h"
 #include "../../platform/common/pico/pico_crypto.h"	/* the queue file's seal and owners */
 #include "pico_png.h"
@@ -1557,14 +1558,23 @@ void pico_ra_core_ready(const void *rom, unsigned rom_size, const struct pico_co
 	}
 	s_reset_wanted = 0;
 	s_game_seen = 0;
-	X->load_game((unsigned)s_console, rom, rom_size, mem);
-	/* the set and the session: from the network (a few seconds at most) or the copies */
 	t0 = now_ms();
-	while (!s_game_seen && now_ms() - t0 < 10000u) {
-		pump(1, 1);
-		events(0);
-		mtk_wdt_restart();
-		thread_sleep(2);
+	X->load_game((unsigned)s_console, rom, rom_size, mem);
+	{
+		unsigned t1 = now_ms();
+		/* the set and the session: from the network (a few seconds at most) or the copies */
+		while (!s_game_seen && now_ms() - t1 < 10000u) {
+			pump(1, 1);
+			events(0);
+			mtk_wdt_restart();
+			thread_sleep(2);
+		}
+		{	/* how long each part took: the game's hash and load, then its set */
+			char l[96];
+			snprintf(l, sizeof l, "start: load %u ms, set %u ms, online %d, set seen %d", t1 - t0, now_ms() - t1,
+				 s_session_online, s_game_seen);
+			im_log(l);
+		}
 	}
 	if (!s_game_seen) im_log("start: no answer for the set within 10 s");
 	if (!s_game_seen) {				/* too slow: no achievements this time, and said so */
@@ -1590,6 +1600,7 @@ void pico_ra_core_ready(const void *rom, unsigned rom_size, const struct pico_co
 void pico_ra_frame(void)
 {
 	int i;
+	pico_cheats_service();	/* oem cheats:N, on the game's thread (every game calls this once a frame) */
 	if (!X || !s_game_on) return;
 	s_frame_n++;
 	if (s_dbg_cards) {	/* the session's other cards, through the same code as rcheevos' own events */
@@ -1616,6 +1627,9 @@ void pico_ra_frame(void)
 		c->points = 10;
 	}
 	if (!s_pref[PREF_ON]) { s_paused_by_pref = 1; return; }	/* turned off in the in-game menu */
+	/* a cheat is on (pico_cheats.c): nothing may unlock, so nothing is counted; once every cheat
+	 * is off the counts start again from there, as when the player turns achievements back on */
+	if (pico_cheats_on()) { s_paused_by_pref = 1; return; }
 	if (s_paused_by_pref) {		/* and on again: what was counted before no longer fits the memory */
 		s_paused_by_pref = 0;
 		X->progress_load(0, 0);
@@ -1800,6 +1814,7 @@ static const char *status_text(void)
 {
 	if (pico_ra_state() == PICO_RA_NO_BLOB) return "Not on the card";
 	if (s_state != PICO_RA_SIGNED_IN) return "Sign in first";
+	if (s_game_on && s_pref[PREF_ON] && pico_cheats_on()) return "Paused while a cheat is on";
 	if (s_game_on) return !s_pref[PREF_ON] ? "Off for now" : hc_now() ? "Hardcore" :
 			      s_session_online ? "Softcore" : "Offline softcore";
 	if (!s_pref[PREF_ON]) return "Off";
@@ -1967,6 +1982,7 @@ const char *pico_ra_short(void)
 	if (s_state != PICO_RA_SIGNED_IN) return "Sign in";
 	if (!s_pref[PREF_ON]) return "Off";
 	if (!X || !s_game_on) return "No set";
+	if (pico_cheats_on()) return "Paused";
 	X->summary(&s);
 	snprintf(b, sizeof b, "%u/%u", s.unlocked, s.total);
 	return b;

@@ -364,5 +364,18 @@
  "Weak": "弱",
  "Wi-Fi": "Wi-Fi",
  "Wi-Fi is off: it uses no power until you turn it on here.": "Wi-Fi はオフです。ここでオンにするまで電力を使いません。",
- "Working...": "処理中..."
+ "Working...": "処理中...",
+ "Cheats": "チート",
+ "Page": "ページ",
+ "Not read": "読めません",
+ "Your cheats": "自分のチート",
+ "On: %s": "オン: %s",
+ "SNES Core": "SNESコア",
+ "No armSNES core on the card": "SDカードにarmSNESコアがありません",
+ "Cheat list": "チートリスト",
+ "Found for this game": "このゲーム用",
+ "Your cheat files": "自分のチートファイル",
+ "Cheat database": "チートデータベース",
+ "In use": "使用中",
+ "Clear search": "検索をクリア"
 }

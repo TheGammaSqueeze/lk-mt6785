@@ -378,5 +378,18 @@
  "Weak": "ضعيفة",
  "Wi-Fi": "Wi-Fi",
  "Wi-Fi is off: it uses no power until you turn it on here.": "Wi-Fi متوقف: لا يستهلك طاقة حتى تشغله هنا.",
- "Working...": "جارٍ العمل..."
+ "Working...": "جارٍ العمل...",
+ "Cheats": "الغش",
+ "Page": "الصفحة",
+ "Not read": "غير مقروء",
+ "Your cheats": "رموزك",
+ "On: %s": "مفعّل: %s",
+ "SNES Core": "نواة SNES",
+ "No armSNES core on the card": "لا توجد نواة armSNES على البطاقة",
+ "Cheat list": "قائمة الغش",
+ "Found for this game": "وُجدت لهذه اللعبة",
+ "Your cheat files": "ملفات الغش الخاصة بك",
+ "Cheat database": "قاعدة بيانات الغش",
+ "In use": "قيد الاستخدام",
+ "Clear search": "مسح البحث"
 }

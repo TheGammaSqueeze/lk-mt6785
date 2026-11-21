@@ -372,5 +372,18 @@
  "Weak": "חלש",
  "Wi-Fi": "Wi-Fi",
  "Wi-Fi is off: it uses no power until you turn it on here.": "ה-Wi-Fi כבוי: הוא לא צורך חשמל עד שתדליקו אותו כאן.",
- "Working...": "עובד..."
+ "Working...": "עובד...",
+ "Cheats": "צ'יטים",
+ "Page": "עמוד",
+ "Not read": "לא נקרא",
+ "Your cheats": "הצ'יטים שלך",
+ "On: %s": "פעילים: %s",
+ "SNES Core": "ליבת SNES",
+ "No armSNES core on the card": "אין ליבת armSNES בכרטיס",
+ "Cheat list": "רשימת צ'יטים",
+ "Found for this game": "נמצאה למשחק הזה",
+ "Your cheat files": "קובצי הצ'יטים שלך",
+ "Cheat database": "מאגר צ'יטים",
+ "In use": "בשימוש",
+ "Clear search": "ניקוי החיפוש"
 }

@@ -364,5 +364,18 @@
  "Weak": "Zayıf",
  "Wi-Fi": "Wi-Fi",
  "Wi-Fi is off: it uses no power until you turn it on here.": "Wi-Fi kapalı: burada açana kadar güç harcamaz.",
- "Working...": "Çalışıyor..."
+ "Working...": "Çalışıyor...",
+ "Cheats": "Hileler",
+ "Page": "Sayfa",
+ "Not read": "Okunamadı",
+ "Your cheats": "Kendi hilelerin",
+ "On: %s": "Açık: %s",
+ "SNES Core": "SNES çekirdeği",
+ "No armSNES core on the card": "Kartta armSNES çekirdeği yok",
+ "Cheat list": "Hile listesi",
+ "Found for this game": "Bu oyun için bulundu",
+ "Your cheat files": "Kendi hile dosyaların",
+ "Cheat database": "Hile veritabanı",
+ "In use": "Kullanımda",
+ "Clear search": "Aramayı temizle"
 }

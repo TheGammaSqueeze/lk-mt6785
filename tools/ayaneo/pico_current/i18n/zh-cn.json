@@ -364,5 +364,18 @@
  "Weak": "低",
  "Wi-Fi": "Wi-Fi",
  "Wi-Fi is off: it uses no power until you turn it on here.": "Wi-Fi 已关闭：打开后才会用电。",
- "Working...": "正在进行..."
+ "Working...": "正在进行...",
+ "Cheats": "金手指",
+ "Page": "页",
+ "Not read": "无法读取",
+ "Your cheats": "我的金手指",
+ "On: %s": "已开启：%s",
+ "SNES Core": "SNES 核心",
+ "No armSNES core on the card": "卡上没有 armSNES 核心",
+ "Cheat list": "金手指列表",
+ "Found for this game": "本游戏",
+ "Your cheat files": "我的金手指文件",
+ "Cheat database": "金手指数据库",
+ "In use": "使用中",
+ "Clear search": "清除搜索"
 }

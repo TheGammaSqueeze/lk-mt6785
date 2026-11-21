@@ -17,6 +17,7 @@
 #define GENESIS_CORE_ABI_MAGIC   0x31474553u   /* "SEG1" */
 #define GENESIS_CORE_ABI_VERSION 5u   /* v5: opt_count / opt_info (the core's own option list); v4: set_av_skip video 2 = sprites only; v3: + fps_milli (core frame rate for dynamic per-core panel refresh; v2 was set_ra_fast, sound_rebase) */
 #define GENESIS_CORE_ABI_V6      6u   /* v6: the machine's memory, for RetroAchievements */
+#define GENESIS_CORE_ABI_V7      7u   /* v7: cheat codes */
 
 #include "pico_core_memory.h"
 
@@ -143,6 +144,13 @@ struct genesis_core_exports {
 	 * RAM and the map it announces), for RetroAchievements to read in place between frames. Valid
 	 * from load until unload. */
 	void (*get_memory)(struct pico_core_memory *out);
+
+	/* v7: cheat codes. cheat_reset drops every code in force; cheat_add adds one cheat's code as a
+	 * RetroArch .cht file gives it (one or more codes joined by '+'), in force from the next frame:
+	 * 0 = taken, negative = a code the core cannot read (the others in the same text are taken).
+	 * Between frames, from load until unload. */
+	void (*cheat_reset)(void);
+	int  (*cheat_add)(const char *code);
 };
 
 typedef const struct genesis_core_exports *(*genesis_core_blob_init_fn)(const struct genesis_core_imports *imp);

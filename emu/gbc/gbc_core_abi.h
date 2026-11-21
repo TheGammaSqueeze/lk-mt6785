@@ -19,7 +19,8 @@
 #define GBC_CORE_ABI_V2      2u   /* + motion_wanted, set_motion, rumble */
 #define GBC_CORE_ABI_V3      3u   /* + set_pad_reader and the link cable (two linked machines) */
 #define GBC_CORE_ABI_V4      4u   /* + get_memory (the machine's memory, for RetroAchievements) */
-#define GBC_CORE_ABI_MAX     GBC_CORE_ABI_V4
+#define GBC_CORE_ABI_V5      5u   /* + cheat codes */
+#define GBC_CORE_ABI_MAX     GBC_CORE_ABI_V5
 
 #include "pico_core_memory.h"
 
@@ -118,6 +119,14 @@ struct gbc_core_exports {
 	 * 0x10000), for RetroAchievements to read in place between frames. Valid from load until the
 	 * next load. */
 	void (*get_memory)(struct pico_core_memory *out);
+
+	/* ---- V5 ----
+	 * Cheat codes. cheat_reset drops every code in force; cheat_add adds one cheat's code as a
+	 * RetroArch .cht file gives it (Game Genie or GameShark codes, joined by '+' or spaces), in
+	 * force from the next frame: 0 = taken, negative = a code the core cannot read (nothing of
+	 * that text is taken). Between frames, from load until the next load. */
+	void (*cheat_reset)(void);
+	int  (*cheat_add)(const char *code);
 };
 
 typedef const struct gbc_core_exports *(*gbc_core_blob_init_fn)(const struct gbc_core_imports *imp);

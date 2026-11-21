@@ -16,3 +16,6 @@
 [submodule "cores/armNES-pico"]
 	path = cores/armNES-pico
 	url = ../armNES-pico.git
+[submodule "cores/armSNES-pico"]
+	path = cores/armSNES-pico
+	url = ../armSNES-pico.git

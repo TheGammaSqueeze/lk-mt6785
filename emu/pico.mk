@@ -52,6 +52,9 @@ $(BUILDDIR)/emu/gba/pico_settings.o:    CFLAGS += -Os
 # a core's own options (the Core Settings page for NES, SNES, Genesis/SMS/GG)
 OBJS += emu/gba/pico_coreopt.o
 $(BUILDDIR)/emu/gba/pico_coreopt.o:     CFLAGS += -Os
+# cheat codes for every core: the release's packs and the player's own .cht, the Cheats page
+OBJS += emu/gba/pico_cheats.o
+$(BUILDDIR)/emu/gba/pico_cheats.o:      CFLAGS += -Os
 # playing together over Bluetooth, the flow every theme shares (the consoles with the link)
 ifneq ($(filter yes,$(KONKR_KPA) $(KONKR_BLOCK)),)
 OBJS += emu/gba/pico_link_ui.o

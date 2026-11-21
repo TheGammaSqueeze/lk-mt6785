@@ -8,6 +8,33 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
 
 ![Home](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/home.png)
 
+## What's new in 1.1.1
+
+- **Cheats for every system.** The in-game menu has a **Cheats** page (a tab in the Classic
+  themes) with the game's cheats from RetroArch's cheat database, which comes on the card
+  (`gammaos/cheats/`, from libretro-database, CC BY-SA 4.0). A game is found by its dump's checksum,
+  whatever its file is called, so each code is the one made for that dump; each cheat turns on and
+  off with A. When a game is not found, or you want another list, the page's **Cheat list** row
+  picks one: any title of the database (it opens at your game's name, and a **Search** row narrows
+  it letter by letter) or one of your own RetroArch `.cht` files in `gammaos/cheats/<system>/`
+  (one named as the game is used by itself). L and R move through long lists a page at a time.
+  The list you pick and the cheats you turn on stay as you left them, across games and restarts. Every core takes
+  its own codes: GameShark, Action Replay and CodeBreaker on the GBA, Game Genie and GameShark on
+  the Game Boy, Game Genie and Pro Action Replay on the SNES, Game Genie and Action Replay on the
+  Sega consoles, Game Genie and raw codes on the NES. While a cheat is on, RetroAchievements waits.
+- **armSNES, a second SNES core.** armSNES, Magnominus's accurate SNES emulator (a port of ares),
+  comes beside snes9x, as gpSP is beside armGBA: pick it with **SNES Core** in the in-game menu's
+  Gameplay page, from the next game on. Its save states and core options are its own. snes9x stays
+  the default and plays the games whose chips need firmware files.
+- **Newer emulator cores**: armGBA 1.8.1, armNES 1.4, and the latest fixes of Genesis Plus GX and
+  snes9x.
+
+### Updating from 1.1.0
+
+Flash the 1.1.1 bootloader and put the 1.1.1 card files on the card. The new files are the cheat
+database (`gammaos/cheats/`), armSNES (`cores/armsnes-pico.blob`) and the updated cores; your games,
+saves, states and settings stay as they are.
+
 ## What's new in 1.1
 
 - **Wi-Fi.** Both consoles join Wi-Fi networks from the bootloader: a new **Network** tab in the
@@ -227,7 +254,7 @@ the date, the time and the battery.
 ### In a game
 
 The Menu button opens the in-game menu over the game. Its first page: Resume, Achievements (the
-game's RetroAchievements and their settings), Save state and Load
+game's RetroAchievements and their settings), Cheats, Save state and Load
 state (Left / Right pick the slot), the Display, Sound, Gameplay and System pages, Reset game and
 Exit game (a Disk System game also has Swap Disk Side there). The pages hold what each emulator
 offers:
@@ -236,7 +263,7 @@ offers:
 |---|---|---|---|---|---|
 | Display | Brightness, LCD Filter, Aspect Ratio, Color Correction, BFI, Show FPS | Brightness, LCD Filter, Aspect Ratio, Palette (original Game Boy), Color Correction, Correction Mode, Dark Filter, BFI, Show FPS | Brightness, Aspect Ratio, LCD Filter, BFI, Show FPS | Brightness, LCD Filter, Aspect Ratio, Overscan, Hi-Res Blend, BFI, Show FPS | Brightness, Aspect Ratio, LCD Filter, BFI, Show FPS |
 | Sound | Volume | Volume | Volume | Volume, Audio Filter | Volume |
-| Gameplay | CPU Clock, Run-Ahead, Rewind, Benchmark, GBA Core (armGBA or gpSP), Core options, Latency LED, Panel Refresh | CPU Clock, Run-Ahead, Rewind, Core options | CPU Clock, Run-Ahead, Rewind, Region, Refresh Rate, Core options | CPU Clock, Run-Ahead, Rewind, Turbo (auto-fire), Benchmark, Panel Refresh, Core options | CPU Clock, Run-Ahead, Rewind, Region, Refresh Rate, Core options |
+| Gameplay | CPU Clock, Run-Ahead, Rewind, Benchmark, GBA Core (armGBA or gpSP), Core options, Latency LED, Panel Refresh | CPU Clock, Run-Ahead, Rewind, Core options | CPU Clock, Run-Ahead, Rewind, Region, Refresh Rate, Core options | CPU Clock, Run-Ahead, Rewind, Turbo (auto-fire), Benchmark, Panel Refresh, SNES Core (snes9x or armSNES), Core options | CPU Clock, Run-Ahead, Rewind, Region, Refresh Rate, Core options |
 | System | Resume on Power On, Resume on Game Open, BIOS Intro Background, Skip BIOS Intro, Battery | Resume on Power On, Battery | Resume on Power On, Battery | Resume on Power On, Battery | Resume on Power On, Battery |
 
 armGBA's Core options: BIOS (Nintendo from the card, or armGBA's built-in), LCD Ghosting, Interlaced
@@ -329,6 +356,7 @@ Each is redistributed under its licence; the texts are in `licences/games/` on t
   [gpsp-pico](https://github.com/TheGammaSqueeze/gpsp-pico),
   [gambatte-pico](https://github.com/TheGammaSqueeze/gambatte-pico),
   [snes9x-pico](https://github.com/TheGammaSqueeze/snes9x-pico),
+  [armSNES-pico](https://github.com/TheGammaSqueeze/armSNES-pico),
   [genesis-plus-gx-pico](https://github.com/TheGammaSqueeze/genesis-plus-gx-pico),
   [armNES-pico](https://github.com/TheGammaSqueeze/armNES-pico).
 

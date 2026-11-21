@@ -17,6 +17,7 @@
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
+#include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
 #include "../gba/pico_coreopt.h"
 #include "../gba/card_writer.h"   /* in-game saves go to the card off the game's thread */
 #include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
@@ -29,7 +30,14 @@
 #include "../gba/rom_archive.h"   /* RA_ERR_START */
 extern const char *ayaneo_strobe_name(int b);
 
-extern const struct snes_core_exports *snes_core_load(fat_vol *v);   /* snes_core_loader.c: from the card */
+extern const struct snes_core_exports *snes_core_load(fat_vol *v, int netplay);   /* snes_core_loader.c: from the card */
+extern int  snes_core_is_armsnes(void);                 /* snes_core_loader.c: snes9x or armSNES */
+extern int  snes_core_pref_armsnes(fat_vol *v);
+extern int  snes_core_armsnes_present(fat_vol *v);
+extern void snes_core_set_pref(fat_vol *v, int armsnes);
+extern const char *snes_core_state_dir(int armsnes);
+/* the save states of the core running: snes9x's and armSNES's do not load in each other */
+static const char *s_snes_states = "/states/snes";
 extern void     ayaneo_snes_show_frame(const unsigned short *pix, unsigned sw, unsigned sh, unsigned spitch_px);
 extern unsigned int ayaneo_get_cpu_mhz(void);
 extern void         ayaneo_set_cpu_mhz(unsigned int mhz);   /* ARM-PLL OPP (see gba_driver s_cpu_opp) */
@@ -149,6 +157,11 @@ static void snes_apply_clock(void)
 {
 	extern unsigned ayaneo_core_clock(int core, unsigned tier_mhz, unsigned tier0_mhz);
 	int pf = ayaneo_get_preempt_frames();
+	/* armSNES does far more work a frame than snes9x (it is the accurate core): it gets the top of
+	 * the ladder, which the console caps at its own highest clock (1.8 GHz on both Konkrs, where
+	 * Super Mario World runs at its full 60.1 fps); a CPU Clock picked by hand still wins */
+	unsigned top = s_snes_ra_opp[sizeof s_snes_ra_opp / sizeof s_snes_ra_opp[0] - 1];
+	if (snes_core_is_armsnes()) { ayaneo_set_cpu_mhz(ayaneo_core_clock(2, top, top)); return; }
 	ayaneo_set_cpu_mhz(ayaneo_core_clock(2, s_snes_ra_opp[(pf > 0 && pf <= 3) ? pf : 0], s_snes_ra_opp[0]));
 }
 
@@ -435,11 +448,11 @@ static void snes_slot_check(void)
 	if (!s_menu_vol || !s_menu_rom) { s_slot_used = 0; return; }
 	if (s_slot_known[s_save_slot] >= 0) { s_slot_used = s_slot_known[s_save_slot]; return; }
 	snes_slot_ext(ext);
-	s_slot_used = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, tmp, sizeof tmp) > 0;
+	s_slot_used = gba_sd_read_named(s_menu_vol, s_snes_states, s_menu_rom->name, ext, tmp, sizeof tmp) > 0;
 	s_slot_known[s_save_slot] = (signed char)s_slot_used;
 }
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
-       SM_CPU, SM_RUNAHEAD, SM_REWIND, SM_TURBO, SM_BENCH, SM_SHOWFPS, SM_CORE, SM_BATTERY, SM_PANEL, SM_STROBE, SM_RESUME,
+       SM_CPU, SM_RUNAHEAD, SM_REWIND, SM_TURBO, SM_BENCH, SM_SHOWFPS, SM_EMU, SM_CORE, SM_BATTERY, SM_PANEL, SM_STROBE, SM_RESUME,
        SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
 #define SNES_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -494,6 +507,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
 	case SM_SHOWFPS: return "Show FPS"; case SM_BATTERY: return "Battery";
 	case SM_CORE:   return "Core Settings";
+	case SM_EMU:    return "SNES Core";
 	case SM_STROBE: return "BFI"; case SM_RESUME: return "Resume on Power On";
 	case SM_SLOT:   return "Save Slot";
 	case SM_SAVE:   return "Save State"; case SM_LOAD:   return "Load State";
@@ -532,6 +546,11 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 	case SM_SLOT: p = smputu(p, (unsigned)s_save_slot); p = smput(p, s_slot_used ? " used" : " empty"); break;
 	case SM_SAVE: case SM_LOAD: case SM_RESET: case SM_CLOSE: p = smput(p, "[A]"); break;
 	case SM_CORE: p = smput(p, pico_coreopt_n() ? ">" : "None"); break;
+	case SM_EMU: {	/* the choice, and when it is not the core running, that it comes with the next game */
+		int want = snes_core_pref_armsnes(s_menu_vol) && snes_core_armsnes_present(s_menu_vol);
+		p = smput(p, want ? "armSNES" : "snes9x");
+		if (want != snes_core_is_armsnes()) { p = smput(p, " "); p = smput(p, tr_igm("(next game)")); }
+		break; }
 	default: break; } *p = 0; return buf; }
 
 int snes_menu_open(void) { return g_snes_menu_open; }
@@ -623,6 +642,12 @@ static int sm_change(int i, int dir, int act)
 	case SM_BATTERY: break;   /* read-only */
 	case SM_PANEL:  break;   /* read-only */
 	case SM_CORE: if (act || dir > 0) pico_coreopt_page_open(); break;   /* the core's own options */
+	case SM_EMU:	/* snes9x or armSNES, from the next game */
+		if (!(dir || act)) break;
+		if (!snes_core_armsnes_present(s_menu_vol)) { smput(s_mstat, "No armSNES core on the card"); break; }
+		snes_core_set_pref(s_menu_vol, !snes_core_pref_armsnes(s_menu_vol));
+		smput(s_mstat, "Takes effect at the next game start");
+		break;
 	case SM_STROBE: if (dir) { ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); snes_settings_touch(); } break;
 	case SM_REWIND: if (dir || act) { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
 			ayaneo_set_rewind(!ayaneo_get_rewind()); snes_settings_touch(); } break;
@@ -639,10 +664,10 @@ static int sm_change(int i, int dir, int act)
 			if (ok) {
 				char nm[288];
 				gba_sd_state_name(s_menu_rom->name, ext, nm, sizeof nm);
-				card_writer_put(s_menu_vol, "/states/snes", nm, st, ssz, s_mstat, sizeof s_mstat, "State saved", "Save failed");
-				pico_shot_save(s_menu_vol, "/states/snes", s_menu_rom->name, ext, 1);
+				card_writer_put(s_menu_vol, s_snes_states, nm, st, ssz, s_mstat, sizeof s_mstat, "State saved", "Save failed");
+				pico_shot_save(s_menu_vol, s_snes_states, s_menu_rom->name, ext, 1);
 				{ extern void pico_ra_state_saved(fat_vol *v, const char *d, const char *r, const char *e) __attribute__((weak));
-					if (pico_ra_state_saved) pico_ra_state_saved(s_menu_vol, "/states/snes", s_menu_rom->name, ext); }   /* its RetroAchievements progress beside it */
+					if (pico_ra_state_saved) pico_ra_state_saved(s_menu_vol, s_snes_states, s_menu_rom->name, ext); }   /* its RetroAchievements progress beside it */
 			} else smput(s_mstat, "Save failed");
 			if (ok) { s_slot_used = 1; s_slot_known[s_save_slot] = 1; }
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
@@ -650,11 +675,11 @@ static int sm_change(int i, int dir, int act)
 		if (act) { unsigned char *st = (unsigned char *)SNES_STATE_BUF;
 			char ext[4]; unsigned n; int ok; void *m = s_menu_c->heap_mark ? s_menu_c->heap_mark() : 0;
 			snes_slot_ext(ext);
-			n = gba_sd_read_named(s_menu_vol, "/states/snes", s_menu_rom->name, ext, st, SNES_STATE_CAP);
+			n = gba_sd_read_named(s_menu_vol, s_snes_states, s_menu_rom->name, ext, st, SNES_STATE_CAP);
 			ok = (n && s_menu_c->state_load(st, n) == 0);
 			if (ok) ayaneo_rewind_reset(s_snes_rw_payload);   /* loaded state breaks the rewind timeline */
 			if (ok) { extern void pico_ra_state_loaded_from(fat_vol *v, const char *d, const char *r, const char *e) __attribute__((weak));
-				if (pico_ra_state_loaded_from) pico_ra_state_loaded_from(s_menu_vol, "/states/snes", s_menu_rom->name, ext); }   /* and RetroAchievements' progress */
+				if (pico_ra_state_loaded_from) pico_ra_state_loaded_from(s_menu_vol, s_snes_states, s_menu_rom->name, ext); }   /* and RetroAchievements' progress */
 			smput(s_mstat, ok ? "State loaded" : "No save state");
 			if (m && s_menu_c->heap_reset) s_menu_c->heap_reset(m); } break;
 	case SM_RESET: if (act) { s_menu_c->reset(); ayaneo_rewind_reset(s_snes_rw_payload); { extern void pico_ra_game_reset(void) __attribute__((weak)); if (pico_ra_game_reset) pico_ra_game_reset(); } return 1; } break;
@@ -676,7 +701,8 @@ static const struct igm_row k_snes_igm_rows[] = {
 	{ SM_VOLUME, IGM_SOUND, IGM_VALUE }, { SM_AUDIO, IGM_SOUND, IGM_VALUE },
 	{ SM_CPU, IGM_PLAY, IGM_VALUE }, { SM_RUNAHEAD, IGM_PLAY, IGM_VALUE },
 	{ SM_REWIND, IGM_PLAY, IGM_VALUE }, { SM_TURBO, IGM_PLAY, IGM_VALUE },
-	{ SM_BENCH, IGM_PLAY, IGM_VALUE }, { SM_PANEL, IGM_PLAY, IGM_INFO }, { IGM_CORE, IGM_PLAY, IGM_LINK },
+	{ SM_BENCH, IGM_PLAY, IGM_VALUE }, { SM_PANEL, IGM_PLAY, IGM_INFO },
+	{ SM_EMU, IGM_PLAY, IGM_VALUE }, { IGM_CORE, IGM_PLAY, IGM_LINK },
 	{ SM_RESUME, IGM_SYSTEM, IGM_VALUE }, { SM_BATTERY, IGM_SYSTEM, IGM_INFO },
 };
 static struct igm_core s_snes_igm = {
@@ -718,9 +744,13 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	g_snes_dbg_w = g_snes_dbg_h = 0; g_snes_dbg_loadrc = 0xFF;
 
 	SNES_PRE_MARK(0);
-	c = snes_core_load(vol);
+	{	/* a netplay launch: the same core on both consoles (snes_core_loader.c) */
+		extern int pico_np_is_armed(void) __attribute__((weak));
+		c = snes_core_load(vol, pico_np_is_armed && pico_np_is_armed());
+	}
 	SNES_PRE_MARK(1);
 	if (!c) { g_snes_dbg_exit = 2; gba_rom_set_error(RA_ERR_START); return; }   /* blob load failed */
+	s_snes_states = snes_core_state_dir(snes_core_is_armsnes());
 	g_snes_dbg_stage = 2;
 
 	romsz = gba_sd_load_rom(vol, rom, rombuf, SNES_ROM_CAP);
@@ -728,14 +758,22 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	if (!romsz) { g_snes_dbg_exit = 3; return; }   /* ROM read failed */
 	g_snes_dbg_stage = 3;
 
-	c->heap_init((void *)SNES_HEAP_BASE, SNES_HEAP_SZ);
+	{	/* armSNES builds its memory map in two tables over the whole 24 bit bus (80 MB, for a moment
+		 * at load): its heap is the armGBA core's high window (128 MB, unused while a SNES game
+		 * runs; armGBA sets its heap up again at each GBA game). snes9x keeps its own. */
+		extern void *ayaneo_gba_high_arena(unsigned int *size);
+		unsigned int hsz = 0;
+		void *hi = snes_core_is_armsnes() ? ayaneo_gba_high_arena(&hsz) : 0;
+		if (hi) c->heap_init(hi, hsz);
+		else c->heap_init((void *)SNES_HEAP_BASE, SNES_HEAP_SZ);
+	}
 	c->init();
 	/* the core's own options (it declared them in init): the choices saved for this system, read
 	 * by the core while the game loads */
 	if (c->version >= 4 && c->opt_count && c->opt_info && c->set_option) {
 		static struct pico_coreopt_core copt;
 		copt.count = c->opt_count; copt.info = c->opt_info; copt.set = c->set_option;
-		pico_coreopt_begin(vol, "snes", &copt);
+		pico_coreopt_begin(vol, snes_core_is_armsnes() ? "armsnes" : "snes", &copt);	/* each core its own */
 	} else
 		pico_coreopt_begin(vol, "snes", 0);
 	g_snes_dbg_stage = 4;
@@ -764,7 +802,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	char open_ext[4];   /* the state picked in the Suspend Point List, or the suspend point */
 	if (!PRESSED(GPIO_B) && gba_launch_state(open_ext)) {
 		unsigned char *st = (unsigned char *)SNES_STATE_BUF;
-		unsigned n = gba_sd_read_named(vol, "/states/snes", rom->name, open_ext, st, SNES_STATE_CAP);
+		unsigned n = gba_sd_read_named(vol, s_snes_states, rom->name, open_ext, st, SNES_STATE_CAP);
 		if (n) c->state_load(st, n);
 	}
 
@@ -801,6 +839,13 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				return;
 			}
 		}
+	}
+
+	/* cheats: the game's, those on put in force (none in netplay: the other console has none) */
+	{
+		struct pico_cheat_core cc = { 0, 0 };
+		if (!s_snes_np && c->version >= SNES_CORE_ABI_V6) { cc.reset = c->cheat_reset; cc.add = c->cheat_add; }
+		pico_cheats_game(vol, rom->type, rom->name, rombuf, romsz, &cc);
 	}
 
 	/* RetroAchievements: the game's set, with its memory (not in netplay) */
@@ -965,8 +1010,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				snes_settings_flush();
 				{ extern void ayaneo_settings_persist_flush(void); ayaneo_settings_persist_flush(); }
 				if (ssz && ssz <= SNES_STATE_CAP && c->state_save(st, ssz) == 0) {
-					gba_sd_write_named(vol, "/states/snes", rom->name, "sus", st, ssz);
-					pico_shot_save(vol, "/states/snes", rom->name, "sus", 0);
+					gba_sd_write_named(vol, s_snes_states, rom->name, "sus", st, ssz);
+					pico_shot_save(vol, s_snes_states, rom->name, "sus", 0);
 				}
 				sz = s_snes_np_guest ? 0u : c->sram_size(); p = c->sram_ptr();
 				if (p && sz && sz <= 0x20000u)
@@ -1405,8 +1450,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		unsigned ssz = c->state_size();
 		g_snes_dbg_ss_size = ssz; g_snes_dbg_ss_core = 0; g_snes_dbg_ss_sd = 0;
 		if (ssz && ssz <= SNES_STATE_CAP && c->state_save(st, ssz) == 0) {
-			int wr = gba_sd_write_named(vol, "/states/snes", rom->name, "sstst", st, ssz);
-			unsigned rd = gba_sd_read_named(vol, "/states/snes", rom->name, "sstst", st2, SNES_STATE_CAP);
+			int wr = gba_sd_write_named(vol, s_snes_states, rom->name, "sstst", st, ssz);
+			unsigned rd = gba_sd_read_named(vol, s_snes_states, rom->name, "sstst", st2, SNES_STATE_CAP);
 			if (wr == 0 && rd == ssz) {
 				unsigned i, diff = 0;
 				for (i = 0; i < ssz; i++) if (st[i] != st2[i]) { diff = 1; break; }
@@ -1556,8 +1601,8 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		unsigned char *st = (unsigned char *)SNES_STATE_BUF;
 		unsigned ssz = c->state_size();
 		if (ssz && ssz <= SNES_STATE_CAP && c->state_save(st, ssz) == 0) {
-			gba_sd_write_named(vol, "/states/snes", rom->name, "sus", st, ssz);
-			pico_shot_save(vol, "/states/snes", rom->name, "sus", 0);
+			gba_sd_write_named(vol, s_snes_states, rom->name, "sus", st, ssz);
+			pico_shot_save(vol, s_snes_states, rom->name, "sus", 0);
 		}
 	}
 

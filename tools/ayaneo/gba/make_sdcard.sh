@@ -47,7 +47,8 @@ python3 tools/ayaneo/snes/pack_snes.py "$SNES_ASSETS" out/snes_pack.bin \
 echo ">> Building the SD card template (out/sdcard)"
 CORE_ARGS=()
 for spec in armgba-pico:armGBA-pico gpsp-pico:gpsp-pico gambatte-pico:gambatte-pico \
-	    snes9x-pico:snes9x-pico genesis-plus-gx-pico:genesis-plus-gx-pico armnes-pico:armNES-pico; do
+	    snes9x-pico:snes9x-pico armsnes-pico:armSNES-pico genesis-plus-gx-pico:genesis-plus-gx-pico \
+	    armnes-pico:armNES-pico; do
 	name="${spec%%:*}"; dir="${spec#*:}"
 	if [ -n "$CORE_REPOS" ]; then
 		repo="$CORE_REPOS/$dir"
@@ -120,6 +121,13 @@ for v in 1a_1 2a_1; do
 	done
 done
 (cd tools/release/connsys && sha256sum -c --quiet SHA256SUMS) || { echo "!! the connsys firmware does not match SHA256SUMS" >&2; exit 1; }
+
+# The cheat packs (gammaos/cheats/<system>.gcd, and their licence under licences/cheats): made from
+# libretro-database at the commit tools/cheats/build_cheats.py pins, fetched once into
+# out/cheats-cache. Without them the card works, with only the cheats players put there themselves.
+echo ">> Building the cheat packs"
+python3 tools/cheats/build_cheats.py out/sdcard out/cheats-cache ||
+	echo "!! the cheat packs could not be made (the card has none)" >&2
 
 # A theme with a menu of its own (a 'layout' file in its folder) brings its card packs, one per
 # screen it was drawn for: the Current theme's are built from tools/ayaneo/pico_current. 960x640

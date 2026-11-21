@@ -16,6 +16,7 @@
 #define CORE_PATH_GPSP     "/cores/gpsp-pico.blob"
 #define CORE_PATH_GAMBATTE "/cores/gambatte-pico.blob"
 #define CORE_PATH_SNES9X   "/cores/snes9x-pico.blob"
+#define CORE_PATH_ARMSNES  "/cores/armsnes-pico.blob"
 #define CORE_PATH_GENESIS  "/cores/genesis-plus-gx-pico.blob"
 #define CORE_PATH_NES      "/cores/armnes-pico.blob"
 

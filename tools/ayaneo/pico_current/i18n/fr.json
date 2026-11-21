@@ -370,5 +370,18 @@
  "Weak": "Faible",
  "Wi-Fi": "Wi-Fi",
  "Wi-Fi is off: it uses no power until you turn it on here.": "Le Wi-Fi est désactivé : il ne consomme rien tant que vous ne l'activez pas ici.",
- "Working...": "En cours..."
+ "Working...": "En cours...",
+ "Cheats": "Codes de triche",
+ "Page": "Page",
+ "Not read": "Illisible",
+ "Your cheats": "Vos codes",
+ "On: %s": "Activés : %s",
+ "SNES Core": "Cœur SNES",
+ "No armSNES core on the card": "Pas de cœur armSNES sur la carte",
+ "Cheat list": "Liste de codes",
+ "Found for this game": "Trouvée pour ce jeu",
+ "Your cheat files": "Vos fichiers de codes",
+ "Cheat database": "Base de codes",
+ "In use": "Utilisée",
+ "Clear search": "Effacer la recherche"
 }

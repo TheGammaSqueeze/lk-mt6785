@@ -31,13 +31,13 @@ const struct genesis_core_exports *genesis_core_load(fat_vol *v)
 
 	init = (genesis_core_blob_init_fn)core_file_load(v, CORE_PATH_GENESIS, CORE_SLOT_VMA,
 						      CORE_SLOT_END - CORE_SLOT_VMA,
-						      GENESIS_CORE_ABI_MAGIC, GENESIS_CORE_ABI_VERSION, GENESIS_CORE_ABI_V6, &err);
+						      GENESIS_CORE_ABI_MAGIC, GENESIS_CORE_ABI_VERSION, GENESIS_CORE_ABI_V7, &err);
 	g_gen_dbg_loaderr = (unsigned)err;
 	if (!init)
 		return 0;
 	ex = init(&s_imports);
 	if (!ex || ex->magic != GENESIS_CORE_ABI_MAGIC || ex->version < GENESIS_CORE_ABI_VERSION ||
-	    ex->version > GENESIS_CORE_ABI_V6) {
+	    ex->version > GENESIS_CORE_ABI_V7) {
 		g_gen_dbg_loaderr = CORE_FILE_REJECTED;
 		return 0;
 	}

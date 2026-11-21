@@ -13,6 +13,7 @@
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
+#include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
 #include "../gba/pico_coreopt.h"
 #include "../gba/card_writer.h"   /* in-game saves go to the card off the game's thread */
 #include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
@@ -655,6 +656,13 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				return;
 			}
 		}
+	}
+
+	/* cheats: the game's, those on put in force (none in netplay: the other console has none) */
+	{
+		struct pico_cheat_core cc = { 0, 0 };
+		if (!s_gen_np && c->version >= GENESIS_CORE_ABI_V7) { cc.reset = c->cheat_reset; cc.add = c->cheat_add; }
+		pico_cheats_game(vol, rom->type, rom->name, (const void *)GEN_ROM_BUF, romsz, &cc);
 	}
 
 	/* RetroAchievements: the game's set, with its memory (not in netplay) */

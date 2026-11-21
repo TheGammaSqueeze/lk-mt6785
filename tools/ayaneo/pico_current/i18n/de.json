@@ -370,5 +370,18 @@
  "Weak": "Schwach",
  "Wi-Fi": "WLAN",
  "Wi-Fi is off: it uses no power until you turn it on here.": "WLAN ist aus: Es verbraucht keinen Strom, bis du es hier einschaltest.",
- "Working...": "Läuft..."
+ "Working...": "Läuft...",
+ "Cheats": "Cheats",
+ "Page": "Seite",
+ "Not read": "Nicht lesbar",
+ "Your cheats": "Eigene Cheats",
+ "On: %s": "An: %s",
+ "SNES Core": "SNES-Core",
+ "No armSNES core on the card": "Kein armSNES-Core auf der Karte",
+ "Cheat list": "Cheat-Liste",
+ "Found for this game": "Für dieses Spiel gefunden",
+ "Your cheat files": "Eigene Cheat-Dateien",
+ "Cheat database": "Cheat-Datenbank",
+ "In use": "In Gebrauch",
+ "Clear search": "Suche löschen"
 }

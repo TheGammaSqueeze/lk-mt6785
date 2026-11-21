@@ -2387,6 +2387,7 @@ static fat_vol s_sd_vol;
 /* the games on the card, sorted (sd_fat.c); in the library window, PICO_GAMES_MAX of them, and
  * a handful here when that window is missing, so the menu still lists a few */
 #include "pico_libmem.h"
+#include "pico_cheats.h"     /* the game's cheats, the Cheats page */
 static gba_rom_entry s_roms_few[16];
 static gba_rom_entry *s_roms = s_roms_few;
 static int s_roms_cap = 16;
@@ -2514,8 +2515,9 @@ static int gba_want_armgba(void)
 	if (g_dbg_core_force) return g_dbg_core_force == 1;
 	return s_sdcore_present > 0 && s_core_pref == 0;
 }
-/* The folder a game's states are in, for the menu's Suspend Point List: a GBA game's that of the core
- * its next launch would use (armGBA and gpSP states do not mix), the others' their core's own. */
+/* The folder a game's states are in, for the menu's Suspend Point List: a GBA or SNES game's that of
+ * the core its next launch would use (armGBA and gpSP states do not mix, nor snes9x and armSNES), the
+ * others' their core's own. */
 const char *gba_state_dir_of(int system)
 {
 	switch (system) {
@@ -2526,7 +2528,11 @@ const char *gba_state_dir_of(int system)
 		return (g_core && s_core_is_sd && g_core->version >= GBA_CORE_ABI_V3 && g_core->state_dir)
 			? g_core->state_dir : "/states/armgba";
 	case GBA_CONSOLE_GB: case GBA_CONSOLE_GBC: return "/states/gba";
-	case GBA_CONSOLE_SNES: return "/states/snes";
+	case GBA_CONSOLE_SNES: {	/* snes9x's or armSNES's, as the next launch picks (snes_core_loader.c) */
+		extern int snes_core_next_armsnes(fat_vol *v);
+		extern const char *snes_core_state_dir(int armsnes);
+		return snes_core_state_dir(snes_core_next_armsnes(&s_sd_vol));
+	}
 	case GBA_CONSOLE_NES: return "/states/nes";
 	default: return "/states/genesis";   /* Mega Drive, Master System, Game Gear, SG-1000 */
 	}
@@ -2646,6 +2652,7 @@ static int gba_sd_rom_select(void)
 		 * taken back */
 		{ extern void pico_stats_abort(void); if (gba_rom_peek_error()) pico_stats_abort(); else pico_stats_end(); }
 		{ extern void pico_ra_game_end(void) __attribute__((weak)); if (pico_ra_game_end) pico_ra_game_end(); }
+		pico_cheats_game_end();   /* the game played before this menu: its codes go with its core */
 		{	/* oem showcase:1 (until the next power on): the menus list only the release's demo
 			 * games, and games named in other scripts (copies of them under translated names, for
 			 * the screenshots of names in any language), for the README's screenshots; nothing on
@@ -3186,6 +3193,11 @@ static void gba_ra_core_ready(unsigned int romsz)
 		struct pico_core_memory mem;
 		g_core->get_memory(&mem);
 		pico_ra_core_ready(gba_core_rom_ptr(), romsz, &mem);
+	}
+	{	/* cheats: the game's, those on put in force (none in netplay, nor with gpSP: it has none) */
+		struct pico_cheat_core cc = { 0, 0 };
+		if (!s_gba_np && g_core && g_core->version >= GBA_CORE_ABI_V7) { cc.reset = g_core->cheat_reset; cc.add = g_core->cheat_add; }
+		pico_cheats_game(&s_sd_vol, GBA_CONSOLE_GBA, s_roms[s_sel_rom].name, gba_core_rom_ptr(), romsz, &cc);
 	}
 }
 

@@ -364,5 +364,18 @@
  "Weak": "약함",
  "Wi-Fi": "Wi-Fi",
  "Wi-Fi is off: it uses no power until you turn it on here.": "Wi-Fi가 꺼져 있습니다. 여기서 켜기 전까지 전력을 쓰지 않습니다.",
- "Working...": "처리 중..."
+ "Working...": "처리 중...",
+ "Cheats": "치트",
+ "Page": "페이지",
+ "Not read": "읽을 수 없음",
+ "Your cheats": "내 치트",
+ "On: %s": "켜짐: %s",
+ "SNES Core": "SNES 코어",
+ "No armSNES core on the card": "카드에 armSNES 코어가 없습니다",
+ "Cheat list": "치트 목록",
+ "Found for this game": "이 게임용",
+ "Your cheat files": "내 치트 파일",
+ "Cheat database": "치트 데이터베이스",
+ "In use": "사용 중",
+ "Clear search": "검색 지우기"
 }

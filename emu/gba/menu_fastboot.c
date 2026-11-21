@@ -388,7 +388,8 @@ static void cmd_cores(const char *arg, void *data, unsigned sz)
 {
 	extern void *gba_sd_menu_vol(void);   /* the mounted card (fat_vol *), 0 outside SD mode */
 	static const char *const paths[] = { "/cores/armgba-pico.blob", "/cores/gpsp-pico.blob",
-		"/cores/gambatte-pico.blob", "/cores/snes9x-pico.blob", "/cores/genesis-plus-gx-pico.blob" };
+		"/cores/gambatte-pico.blob", "/cores/snes9x-pico.blob", "/cores/armsnes-pico.blob",
+		"/cores/genesis-plus-gx-pico.blob", "/cores/armnes-pico.blob" };
 	fat_vol *v = (fat_vol *)gba_sd_menu_vol();
 	unsigned i;
 	(void)arg; (void)data; (void)sz;
@@ -2964,6 +2965,20 @@ static void cmd_cheevos(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem cheats[:N | :list:N] - the game's cheats: the state, rows from N; :N flips row N (pico_cheats.c) */
+static void cmd_cheats(const char *arg, void *data, unsigned sz)
+{
+	extern void pico_cheats_debug(const char *arg);
+	extern int pico_cheats_debug_line(int i, char *buf, unsigned cap);
+	char l[128];
+	int i;
+	(void)data; (void)sz;
+	while (*arg == ':' || *arg == ' ') arg++;
+	if (*arg) pico_cheats_debug(arg);
+	for (i = 0; i < 14 && pico_cheats_debug_line(i, l, sizeof l); i++) fastboot_info(l);
+	fastboot_okay("");
+}
+
 /* oem blackbox[:clear] - the event records kept on the card (faults, charging screen hand overs) */
 static void cmd_blackbox(const char *arg, void *data, unsigned sz)
 {
@@ -3031,9 +3046,11 @@ static void cmd_mmuq(const char *arg, void *data, unsigned sz)
 	while (*arg == ' ' || *arg == ':') arg++;
 	a = fb_hex(&arg);
 	k = arch_mmu_probe(a, &l1, &l2);
-	snprintf(lbuf, sizeof lbuf, "mmuq 0x%08x: %s l1=%08x%08x l2=%08x%08x", a,
+	snprintf(lbuf, sizeof lbuf, "mmuq 0x%08x: %s l1=%08x%08x", a,
 		 k == 1 ? "1GB block" : k == 2 ? "2MB section" : k == 3 ? "page table" : "UNMAPPED",
-		 (unsigned)(l1 >> 32), (unsigned)l1, (unsigned)(l2 >> 32), (unsigned)l2);
+		 (unsigned)(l1 >> 32), (unsigned)l1);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "mmuq l2=%08x%08x", (unsigned)(l2 >> 32), (unsigned)l2);   /* (a line holds 64) */
 	fastboot_info(lbuf);
 	fastboot_okay("");
 }
@@ -3579,6 +3596,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem threads", cmd_threads, 1, 0);
 	fastboot_register("oem rnd", cmd_rnd, 1, 0);
 	fastboot_register("oem cheevos", cmd_cheevos, 1, 0);
+	fastboot_register("oem cheats", cmd_cheats, 1, 0);
 	fastboot_register("oem core", cmd_core, 1, 0);
 	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);
 	fastboot_register("oem bbram", cmd_bbram, 1, 0);
@@ -3620,6 +3638,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem threads", cmd_threads, 1, 0);
 	fastboot_register("oem rnd", cmd_rnd, 1, 0);
 	fastboot_register("oem cheevos", cmd_cheevos, 1, 0);
+	fastboot_register("oem cheats", cmd_cheats, 1, 0);
 	fastboot_register("oem core", cmd_core, 1, 0);
 	fastboot_register("oem faulttest", cmd_faulttest, 1, 0);
 	fastboot_register("oem bbram", cmd_bbram, 1, 0);

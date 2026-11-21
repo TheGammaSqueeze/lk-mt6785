@@ -372,5 +372,18 @@
  "Weak": "Слабый",
  "Wi-Fi": "Wi-Fi",
  "Wi-Fi is off: it uses no power until you turn it on here.": "Wi-Fi выключен: он не тратит энергию, пока вы не включите его здесь.",
- "Working...": "Выполняется..."
+ "Working...": "Выполняется...",
+ "Cheats": "Читы",
+ "Page": "Страница",
+ "Not read": "Не прочитан",
+ "Your cheats": "Ваши читы",
+ "On: %s": "Вкл.: %s",
+ "SNES Core": "Ядро SNES",
+ "No armSNES core on the card": "На карте нет ядра armSNES",
+ "Cheat list": "Список читов",
+ "Found for this game": "Найден для этой игры",
+ "Your cheat files": "Ваши файлы читов",
+ "Cheat database": "База читов",
+ "In use": "Используется",
+ "Clear search": "Сбросить поиск"
 }

@@ -27,6 +27,7 @@
 #include "pico_fold.h"              /* the game's name in the theme's letters */
 #include "pico_names.h"             /* or in any script, from the card's names pack */
 #include "pico_i18n.h"              /* tr(): the menus' languages */
+#include "pico_cheats.h"            /* the Cheats tab */
 
 extern unsigned int gpt4_get_current_tick(void);
 extern void ayaneo_canvas_dims(unsigned int *cw, unsigned int *ch);
@@ -48,7 +49,7 @@ extern volatile unsigned int g_dbg_cigm_us[6];   /* oem diag: what a paint costs
 
 typedef struct { int kind, item; const char *label; } cline;
 static const char *const k_page[IGM_NPAGES] = { "", "Display", "Sound", "Gameplay", "System", "Core options",
-						 "Achievements" };
+						 "Achievements", "Cheats" };
 
 /* RetroAchievements (pico_ra.c, on the consoles with Wi-Fi; absent elsewhere) */
 extern int pico_ra_game_loaded(void) __attribute__((weak));
@@ -63,7 +64,11 @@ extern const char *pico_ra_row_text(int i) __attribute__((weak));
 extern int pico_ra_row_head(int i) __attribute__((weak));
 extern int pico_ra_row_tone(int i) __attribute__((weak));
 /* the Achievements page's row is a group's heading (never focused) */
-static int row_head(int page, int item) { return page == IGM_ACH && pico_ra_row_head && pico_ra_row_head(item); }
+static int row_head(int page, int item)
+{
+	if (page == IGM_CHT) return pico_cheats_row_head(item);
+	return page == IGM_ACH && pico_ra_row_head && pico_ra_row_head(item);
+}
 /* the Achievements tab: any game of a system RetroAchievements knows (the account and settings,
  * then the game's set when it loaded) */
 static int ra_on(void) { return pico_ra_igm_page && pico_ra_igm_page(); }
@@ -118,7 +123,7 @@ static struct {
 } C;
 
 /* rows in view on a page: the Achievements page keeps its last one for the focused row's words */
-static int nv_of(int page) { return page == IGM_ACH && C.nv > 3 ? C.nv - 1 : C.nv; }
+static int nv_of(int page) { return (page == IGM_ACH || page == IGM_CHT) && C.nv > 3 ? C.nv - 1 : C.nv; }
 
 /* ---- the rows ---- */
 static int lines(int page, cline *out)
@@ -136,6 +141,14 @@ static int lines(int page, cline *out)
 		unsigned int now = gpt4_get_current_tick();
 		if (!built || now - built > 13000000u) { built = now | 1u; k = ra_on() ? pico_ra_list() : 0; }
 		for (i = 0; i < k && n < ROWS; i++, n++) { out[n].kind = IGM_INFO; out[n].item = i; out[n].label = pico_ra_row_title(i); }
+		return n;
+	}
+	if (page == IGM_CHT) {	/* the cheats: each a switch, under its format's heading */
+		int k = pico_cheats_rows();
+		for (i = 0; i < k && n < ROWS; i++, n++) {
+			out[n].kind = pico_cheats_row_head(i) ? IGM_INFO : IGM_VALUE;
+			out[n].item = i; out[n].label = pico_cheats_row_title(i);
+		}
 		return n;
 	}
 	if (page == IGM_TOP) { out[0].kind = IGM_ACTION; out[0].item = -1; out[0].label = "Resume"; n = 1; }
@@ -167,6 +180,10 @@ static const char *row_value(int page, int row, const cline *l, char *buf, int *
 	else if (page == IGM_ACH) {
 		if (pico_ra_row_switch) *sw = pico_ra_row_switch(l->item);
 		return pico_ra_row_value ? pico_ra_row_value(l->item) : 0;
+	}
+	else if (page == IGM_CHT) {
+		*sw = pico_cheats_row_switch(l->item);
+		return pico_cheats_row_value(l->item);
 	}
 	else if (l->kind == IGM_LINK || l->item < 0) return 0;
 	else if ((l->item == c->save_item || l->item == c->load_item) && c->slot_item >= 0) {
@@ -216,6 +233,7 @@ static void tabs_lay_out(void)
 	}
 	if (core && C.ntab < IGM_NPAGES) C.tab[C.ntab++] = IGM_CORE;
 	if (ra_on() && C.ntab < IGM_NPAGES) C.tab[C.ntab++] = IGM_ACH;	/* RetroAchievements: the game's set */
+	if (pico_cheats_page() && C.ntab < IGM_NPAGES) C.tab[C.ntab++] = IGM_CHT;	/* the game's cheats */
 	C.tab_sc = 0.8f;
 	for (;;) {
 		total = 0;
@@ -303,6 +321,7 @@ void pico_classic_igm_dismiss(void)
 
 static void go(int page, int dir)
 {
+	if (page == IGM_CHT && page != C.page) pico_cheats_page_open();
 	C.from = C.page; C.page = page; C.dir = dir; C.page_t = 0;
 	if (dir > 0) { C.sel[page] = 0; C.top[page] = 0; }
 	C.hy = (float)C.sel[page];
@@ -313,6 +332,7 @@ static void tab_step(int dir)
 {
 	int i = (tab_of(C.page) + dir + C.ntab) % C.ntab;
 	if (C.ntab < 2) return;
+	if (C.tab[i] == IGM_CHT && C.page != IGM_CHT) pico_cheats_page_open();
 	C.from = C.page; C.page = C.tab[i]; C.dir = dir; C.page_t = 0;
 	C.hy = (float)C.sel[C.page];
 	C.nudge_t = 1; C.dirty = 1;
@@ -360,6 +380,11 @@ int pico_classic_igm_frame(unsigned int keys)
 	}
 	n = lines(C.page, ln);
 	if (C.sel[C.page] >= n) C.sel[C.page] = n ? n - 1 : 0;
+	{	/* never on a group's heading (a page opens on its first row, which may be one) */
+		int tries;
+		for (tries = 0; tries < n && row_head(C.page, ln[C.sel[C.page]].item); tries++)
+			C.sel[C.page] = (C.sel[C.page] + 1) % n;
+	}
 	sel = C.sel[C.page];
 	{	/* the list follows the focus, the bar glides to it, the tab box to its tab (the menu's pace) */
 		float k = dt * 16, f = k / (1 + k + k * k * .5f) * (1 + k * .5f), want, hy;
@@ -386,7 +411,14 @@ int pico_classic_igm_frame(unsigned int keys)
 	{
 		int tl = (keys & IGM_K_L) && !(C.prev_keys & IGM_K_L), tr_ = (keys & IGM_K_R) && !(C.prev_keys & IGM_K_R);
 		C.prev_keys = (int)keys;
-		if (tl || tr_) { tab_step(tl ? -1 : 1); return -1; }
+		if (tl || tr_) {	/* on Cheats a long list's parts first, then the tab beside */
+			if (C.page == IGM_CHT && pico_cheats_step_part(tl ? -1 : 1)) {
+				C.sel[C.page] = 0; C.top[C.page] = 0; C.hy = 0; C.dirty = 1;
+				return -1;
+			}
+			tab_step(tl ? -1 : 1);
+			return -1;
+		}
 	}
 	if (s_dt > 0 || s_dt_on) {	/* the detail holds the keys while it is up */
 		detail_keys(up, dn, a, b);
@@ -411,6 +443,12 @@ int pico_classic_igm_frame(unsigned int keys)
 			if (a && pico_ra_detail(l->item, &dd) == 0) { s_dt_on = 1; s_dt_row = l->item; C.dirty = 1; return -1; }
 #endif
 			if ((dir || a) && pico_ra_row_change && pico_ra_row_change(l->item)) {
+				C.nudge_row = sel; C.nudge_dir = dir ? dir : 1; C.nudge_t = 0; C.dirty = 1;
+			}
+			dir = 0; a = 0;
+		}
+		if (C.page == IGM_CHT) {	/* a cheat flips with Left, Right or A; the parts row steps */
+			if ((dir || a) && pico_cheats_row_change(l->item, dir)) {
 				C.nudge_row = sel; C.nudge_dir = dir ? dir : 1; C.nudge_t = 0; C.dirty = 1;
 			}
 			dir = 0; a = 0;
@@ -505,7 +543,8 @@ static void rows(int page, float y0, float dx, float op, int bar)
 		float last = y0 + (nv_of(page) - 1) * ROW_P, ro = op;
 		if (s_only_row >= 0 && i != s_only_row) continue;
 		if (row_head(page, l->item)) {	/* a group's heading: its name and count, small and grey */
-			const char *cnt = pico_ra_row_value ? pico_ra_row_value(l->item) : "";
+			const char *cnt = page == IGM_CHT ? pico_cheats_row_value(l->item) :
+					  pico_ra_row_value ? pico_ra_row_value(l->item) : "";
 			float ho = op;
 			if (cy < y0) ho *= cui_clamp01(1 - (y0 - cy) / 40);
 			if (cy > last) ho *= cui_clamp01(1 - (cy - last) / 40);
@@ -542,7 +581,7 @@ static void rows(int page, float y0, float dx, float op, int bar)
 		{
 			float maxw = (sw >= 0 ? 1030 : vw > 0 ? 1112 - vw - 52 : 1090) - 160;
 			const char *lab = cui_say(CF_M, l->label);
-			if (f && page == IGM_ACH && page == C.page && op >= 1 && cui_text_w(CF_M, 1, lab) > maxw)
+			if (f && (page == IGM_ACH || page == IGM_CHT) && page == C.page && op >= 1 && cui_text_w(CF_M, 1, lab) > maxw)
 				row_ticker(160 + dx, cy, maxw, lab, sel, ro, y0 + (C.hy - top) * ROW_P);	/* the focused name, too long: on the ticker */
 			else
 				cui_text(CF_M, 160 + dx, cy, 1, 0xFFF4F4F4u, 0, cui_fit(CF_M, 1, lab, maxw, fb, sizeof fb), ro);
@@ -625,6 +664,14 @@ list:
 			rows(C.from, y0, -C.dir * 40 * k, 1 - k, 0);   /* inside the frame: the bar fades in place */
 			rows(C.page, y0, C.dir * 40 * (1 - k), k, 1);
 		} else rows(C.page, y0, 0, 1, 1);
+		if (C.page == IGM_CHT && (k >= 1 || C.from == C.page)) {	/* the focused cheat's code */
+			cline ln[ROWS];
+			int n = lines(IGM_CHT, ln), sel = C.sel[IGM_CHT];
+			const char *d = sel >= 0 && sel < n ? pico_cheats_row_text(ln[sel].item) : "";
+			if (d && d[0])
+				cui_text(CF_S, 128, y0 + nv_of(IGM_CHT) * ROW_P, 1, 0xFF8C8C8Cu, 0,
+					 cui_fit(CF_S, 1, d, 1024, tb, sizeof tb), 1);
+		}
 		if (C.page == IGM_ACH && pico_ra_row_text && (k >= 1 || C.from == C.page)) {
 			/* the focused row's words (what to do for an achievement, what a switch does) */
 			cline ln[ROWS];

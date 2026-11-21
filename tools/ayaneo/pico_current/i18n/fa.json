@@ -370,5 +370,18 @@
  "Weak": "ضعیف",
  "Wi-Fi": "Wi-Fi",
  "Wi-Fi is off: it uses no power until you turn it on here.": "Wi-Fi خاموش است: تا اینجا روشنش نکنید برقی مصرف نمی کند.",
- "Working...": "در حال انجام..."
+ "Working...": "در حال انجام...",
+ "Cheats": "تقلب",
+ "Page": "صفحه",
+ "Not read": "خوانده نشد",
+ "Your cheats": "تقلب های شما",
+ "On: %s": "روشن: %s",
+ "SNES Core": "هسته SNES",
+ "No armSNES core on the card": "هسته armSNES روی کارت نیست",
+ "Cheat list": "فهرست تقلب",
+ "Found for this game": "برای این بازی پیدا شد",
+ "Your cheat files": "فایل های تقلب شما",
+ "Cheat database": "پایگاه تقلب",
+ "In use": "در حال استفاده",
+ "Clear search": "پاک کردن جستجو"
 }

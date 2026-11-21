@@ -8,10 +8,14 @@ exFAT, put the card in the console and power it on. The console needs the GammaO
   gammaos/boot.cfg     boot=sd starts GammaOS Pico; boot=android starts Android (the menu's Boot to
                        Android sets it; hold SELECT at power on to come back)
   gammaos/menu.pack    the menu
+  gammaos/cheats/      the cheats for the in-game menu's Cheats page, from RetroArch's cheat
+                       database (libretro-database, CC BY-SA 4.0, licences/cheats/); your own
+                       RetroArch .cht files go in gammaos/cheats/<system>/ (gb, gbc, gba, nes,
+                       snes, md, sms, gg), named as the game
   cores/               the emulator cores: armGBA and gpSP (Game Boy Advance), gambatte (Game
-                       Boy, Game Boy Color), snes9x (SNES), Genesis Plus GX (Mega Drive /
-                       Genesis, Master System, Game Gear, SG-1000), armNES (NES, Famicom and
-                       Famicom Disk System)
+                       Boy, Game Boy Color), snes9x and armSNES (SNES), Genesis Plus GX (Mega
+                       Drive / Genesis, Master System, Game Gear, SG-1000), armNES (NES, Famicom
+                       and Famicom Disk System)
   bios/                the Game Boy Advance BIOS goes here: copy your own as bios/gba_bios.bin
                        (16 KB). GBA games then run on Nintendo's BIOS with its boot logo; without
                        it armGBA's built-in replacement runs them, not every game the same way,
@@ -20,7 +24,7 @@ exFAT, put the card in the console and power it on. The console needs the GammaO
   roms/<system>/       games: gb, gbc, gba, nes, snes, genesis, sms, gg, sg (ROM files, or .zip /
                        .7z; NES games as .nes or .unf, Disk System games as .fds)
   roms/<system>/boxart/<game>.ART   box art, named like the game file
-  licences/            the demo games' and the cores' licences and credits
+  licences/            the demo games', the cores' and the cheat database's licences and credits
 
 Buttons
   At power on: hold SELECT for GammaOS Pico, SELECT + START for Android, SELECT + START + R (R1 on

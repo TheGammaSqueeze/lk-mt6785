@@ -1832,6 +1832,71 @@
    "en": "Working...",
    "kind": "status",
    "note": "something under way"
+  },
+  {
+   "en": "Cheats",
+   "kind": "label",
+   "note": "in-game menu: the page and the row of the game's cheat codes (also a heading over cheats with no code format named)"
+  },
+  {
+   "en": "Page",
+   "kind": "label",
+   "note": "in-game menu, Cheats page: the row that steps through a long list of cheats in parts; its value is like 2 / 5"
+  },
+  {
+   "en": "Not read",
+   "kind": "value",
+   "note": "in-game menu, Cheats page: a cheat code the emulator could not read"
+  },
+  {
+   "en": "Your cheats",
+   "kind": "label",
+   "note": "in-game menu, Cheats page: heading over the cheats the player put on the card in their own .cht file"
+  },
+  {
+   "en": "On: %s",
+   "kind": "value",
+   "note": "in-game menu: how many cheats are on, %s is the number"
+  },
+  {
+   "en": "SNES Core",
+   "kind": "label",
+   "note": "in-game menu setting: which Super Nintendo emulator core (snes9x or armSNES)"
+  },
+  {
+   "en": "No armSNES core on the card",
+   "kind": "status",
+   "note": "short note shown after an action in the in-game menu"
+  },
+  {
+   "en": "Cheat list",
+   "kind": "label",
+   "note": "in-game menu, Cheats page: the first row, naming the list of cheats in use; A opens the lists to choose from"
+  },
+  {
+   "en": "Found for this game",
+   "kind": "value",
+   "note": "in-game menu, Cheats page: the cheat list found for the game by its file's checksum or name"
+  },
+  {
+   "en": "Your cheat files",
+   "kind": "label",
+   "note": "in-game menu, Cheats page: heading over the player's own .cht files to choose from"
+  },
+  {
+   "en": "Cheat database",
+   "kind": "label",
+   "note": "in-game menu, Cheats page: heading over the titles of the cheat database on the card to choose from"
+  },
+  {
+   "en": "In use",
+   "kind": "value",
+   "note": "in-game menu, Cheats page: marks the cheat list now in use"
+  },
+  {
+   "en": "Clear search",
+   "kind": "label",
+   "note": "in-game menu, Cheats page chooser: the row that empties the search typed"
   }
  ]
 }

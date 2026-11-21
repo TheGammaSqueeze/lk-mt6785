@@ -364,5 +364,18 @@
  "Weak": "低",
  "Wi-Fi": "Wi-Fi",
  "Wi-Fi is off: it uses no power until you turn it on here.": "Wi-Fi 已關閉：開啟後才會用電。",
- "Working...": "正在進行..."
+ "Working...": "正在進行...",
+ "Cheats": "密技",
+ "Page": "部分",
+ "Not read": "無法讀取",
+ "Your cheats": "你的密技",
+ "On: %s": "已開啟：%s",
+ "SNES Core": "SNES 核心",
+ "No armSNES core on the card": "卡上沒有 armSNES 核心",
+ "Cheat list": "密技列表",
+ "Found for this game": "本遊戲",
+ "Your cheat files": "你的密技檔案",
+ "Cheat database": "密技資料庫",
+ "In use": "使用中",
+ "Clear search": "清除搜尋"
 }

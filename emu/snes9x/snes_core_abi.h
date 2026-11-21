@@ -15,6 +15,7 @@
 				    * v3: + set_pad_reader (both controller ports, for netplay)
 				    * v4: + opt_count / opt_info (the core's own option list) */
 #define SNES_CORE_ABI_V5      5u   /* v5: + get_memory (the machine's memory, for RetroAchievements) */
+#define SNES_CORE_ABI_V6      6u   /* v6: + cheat codes */
 
 #include "pico_core_memory.h"
 
@@ -135,6 +136,13 @@ struct snes_core_exports {
 	 * calls give them; no map), for RetroAchievements to read in place between frames. Valid from
 	 * load until unload. */
 	void (*get_memory)(struct pico_core_memory *out);
+
+	/* v6: cheat codes. cheat_reset drops every code in force; cheat_add adds one cheat's code as a
+	 * RetroArch .cht file gives it (one or more codes joined by '+' or spaces), in force from the
+	 * next frame: 0 = taken, negative = a code the core cannot read (the others in the same text
+	 * are taken). Between frames, from load until unload. */
+	void (*cheat_reset)(void);
+	int  (*cheat_add)(const char *code);
 };
 
 typedef const struct snes_core_exports *(*snes_core_blob_init_fn)(const struct snes_core_imports *imp);
