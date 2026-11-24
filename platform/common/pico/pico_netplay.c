@@ -657,16 +657,20 @@ static int np_begin(int host, unsigned int delay, void *state, unsigned int size
 	return np_start(host, delay, 0);
 }
 
-/* ---- the start of a linked session (GB/GBC link cable) ----
- * Both consoles run both Game Boys, so each needs the other's machine: each sends its own state
+/* ---- the start of a linked session (GB/GBC/GBA link cable) ----
+ * Both consoles run both machines, so each needs the other's machine: each sends its own state
  * (its cartridge save in it) and receives the other's. When the two play different games (Pokemon
- * Red and Blue) each console must have the other's game on its own card: no cartridge travels;
- * when either lacks it, both stop (-12) and the player copies it, if at all, with Send and
- * Receive. The guest's 'G' carries its state size, its cartridge's CRC-32, size and load flags;
- * the host answers 'Y' with whether the games differ, whether it has the guest's, and its own
- * flags; the guest answers 'Z' whether it has the host's. Then the guest's state goes to the host,
- * the host's state to the guest, and the host's clock ('W': the seconds the cartridges' clocks
- * start from, so both see the same time); then both say ready. */
+ * Red and Green) each console also needs the other's cartridge, as a link cable needs nothing but
+ * one cartridge in each console: a console takes it from its own card when it has the same game
+ * there, and otherwise the other console sends it, into memory for this session only (never
+ * written to the card). The guest's 'G' carries its state size, its cartridge's CRC-32, size and
+ * load flags; the host answers 'Y' with whether the games differ, whether it has the guest's
+ * (ROM_HAVE, ROM_SEND: send it, ROM_NO_ROOM: it cannot take one that big), and its own flags; the
+ * guest answers 'Z' the same about the host's. A ROM_NO_ROOM stops both (-12). Then the guest's
+ * cartridge goes to the host if wanted, the host's to the guest if wanted, the guest's state to
+ * the host, the host's state to the guest, and the host's clock ('W': the seconds the
+ * cartridges' clocks start from, so both see the same time); then both say ready. */
+enum { ROM_SEND, ROM_HAVE, ROM_NO_ROOM };
 static long s_np_clock0;		/* the session's clock start (the host's), seconds */
 static long s_np_guest_clock0;		/* the guest's own clock when it said 'G' */
 static long s_np_host_at_g;		/* the host's clock when that 'G' came in */
@@ -704,6 +708,35 @@ static int np_rom_here(const struct pico_np_pair *pp, const char *name, unsigned
 	return 1;
 }
 
+/* where this console stands with the other's cartridge, when the games differ: on its card
+ * (ROM_HAVE, in place), to be sent (ROM_SEND), or too big for the room it has (ROM_NO_ROOM) */
+static int np_rom_need(const struct pico_np_pair *pp, const char *name, unsigned int size, unsigned int crc)
+{
+	if (np_rom_here(pp, name, size, crc))
+		return ROM_HAVE;
+	return size && pp->their_rom && size <= pp->rom_cap ? ROM_SEND : ROM_NO_ROOM;
+}
+
+/* the other console's cartridge over the link, into memory: checked against the size and CRC-32
+ * it said it has */
+static int np_rom_recv(const struct pico_np_pair *pp, unsigned int size, unsigned int crc)
+{
+	unsigned int have = 0;
+	int rc;
+	np_phase(PICO_NP_RECV_GAME, size);
+	if ((rc = np_blob_recv((unsigned char *)pp->their_rom, pp->rom_cap, &have)) != 0)
+		return rc;
+	if (have != size || pico_np_crc(pp->their_rom, have) != crc)
+		return -5;
+	*pp->their_rom_size = have;
+	return 0;
+}
+static int np_rom_send(const struct pico_np_pair *pp)
+{
+	np_phase(PICO_NP_SEND_GAME, pp->rom_size);
+	return np_blob_send((const unsigned char *)pp->rom, pp->rom_size);
+}
+
 static int np_begin_pair(int host, unsigned int delay, const struct pico_np_pair *pp)
 {
 	extern long gba_host_time(void);
@@ -725,7 +758,7 @@ static int np_begin_pair(int host, unsigned int delay, const struct pico_np_pair
 		s_np_host_at_g = gba_host_time();
 		np_get_rom(s_np_msg + 13, their_name, &their_size, &their_crc);
 		trade = their_crc != id || their_size != pp->rom_size;	/* different games */
-		i_have = trade && np_rom_here(pp, their_name, their_size, their_crc);
+		i_have = trade ? np_rom_need(pp, their_name, their_size, their_crc) : ROM_HAVE;
 		m[0] = 'Y';
 		np_put32(m + 1, trade);
 		np_put32(m + 5, pp->rom_flags);
@@ -735,9 +768,13 @@ static int np_begin_pair(int host, unsigned int delay, const struct pico_np_pair
 			return -2;
 		if (!np_wait_kind('Z', 60000000u))	/* the guest looked on its card */
 			return -7;
-		they_have = s_np_msg[1];
-		if (trade && (!i_have || !they_have))
-			return -12;			/* a game missing on a card: none is sent */
+		they_have = trade ? s_np_msg[1] : ROM_HAVE;
+		if (i_have == ROM_NO_ROOM || they_have == ROM_NO_ROOM)
+			return -12;			/* a cartridge too big for the other's room */
+		if (i_have == ROM_SEND && (rc = np_rom_recv(pp, their_size, their_crc)) != 0)
+			return rc;
+		if (they_have == ROM_SEND && (rc = np_rom_send(pp)) != 0)
+			return rc;
 		np_phase(PICO_NP_RECV_STATE, pp->msize);
 		if ((rc = np_blob_recv((unsigned char *)pp->theirs, pp->cap, pp->got)) != 0)
 			return rc;
@@ -765,13 +802,18 @@ static int np_begin_pair(int host, unsigned int delay, const struct pico_np_pair
 		*pp->their_rom_flags = np_get32(s_np_msg + 5);
 		they_have = s_np_msg[9];
 		np_get_rom(s_np_msg + 10, their_name, &their_size, &their_crc);
-		i_have = trade && np_rom_here(pp, their_name, their_size, their_crc);
+		i_have = trade ? np_rom_need(pp, their_name, their_size, their_crc) : ROM_HAVE;
+		if (!trade) they_have = ROM_HAVE;
 		m[0] = 'Z';
 		m[1] = (unsigned char)i_have;
 		if (np_send(m, 2) != 0)
 			return -2;
-		if (trade && (!i_have || !they_have))
-			return -12;			/* a game missing on a card: none is sent */
+		if (i_have == ROM_NO_ROOM || they_have == ROM_NO_ROOM)
+			return -12;			/* a cartridge too big for the other's room */
+		if (they_have == ROM_SEND && (rc = np_rom_send(pp)) != 0)
+			return rc;
+		if (i_have == ROM_SEND && (rc = np_rom_recv(pp, their_size, their_crc)) != 0)
+			return rc;
 		np_phase(PICO_NP_SEND_STATE, pp->msize);
 		if ((rc = np_blob_send((const unsigned char *)pp->mine, pp->msize)) != 0)
 			return rc;
@@ -884,6 +926,20 @@ static void cmd_btnp(const char *arg, void *data, unsigned sz)
 }
 
 /* oem npnes:h|g[:DELAY] - the next game launch is a netplay session (host or guest) */
+/* oem npparts: the last eight checks in parts (gbc_sd_run.c): frame, the cable, machine 0, machine 1 */
+volatile unsigned int g_np_parts[8][4];
+static void cmd_npparts(const char *arg, void *data, unsigned sz)
+{
+	char line[64];
+	unsigned int i;
+	(void)arg; (void)data; (void)sz;
+	for (i = 0; i < 8; i++) {
+		snprintf(line, sizeof line, "%u %08x %08x %08x", g_np_parts[i][0], g_np_parts[i][1], g_np_parts[i][2], g_np_parts[i][3]);
+		fastboot_info(line);
+	}
+	fastboot_okay("");
+}
+
 static void cmd_nparm(const char *arg, void *data, unsigned sz)
 {
 	char line[64];
@@ -1009,6 +1065,7 @@ void pico_np_register_cmds(void)
 	fastboot_register("oem nppad", cmd_nppad, 1, 0);
 	fastboot_register("oem btnp", cmd_btnp, 1, 0);
 	fastboot_register("oem npnes", cmd_nparm, 1, 0);
+	fastboot_register("oem npparts", cmd_npparts, 1, 0);
 	fastboot_register("oem npstat", cmd_npstat, 1, 0);
 	fastboot_register("oem nptrim", cmd_nptrim, 1, 0);
 	fastboot_register("oem npdump", cmd_npdump, 1, 0);

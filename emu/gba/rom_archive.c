@@ -103,7 +103,7 @@ const char *rom_archive_error_text(int err)
 	case RA_ERR_HUGE:     return "This archive is too large to open";
 	case RA_ERR_SPLIT:    return "Archives split into parts are not supported";
 	case RA_ERR_NOBIOS:   return "Disk System games need disksys.rom in the bios folder";
-	case RA_ERR_LINKGAME: return "Both consoles need both games to play linked. Copy them first with Link, Send and Receive.";
+	case RA_ERR_LINKGAME: return "The other console's game is too large to play linked with this one.";
 	default:              return "This game could not be started";
 	}
 }

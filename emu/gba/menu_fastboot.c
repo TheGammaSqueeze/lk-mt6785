@@ -1188,6 +1188,20 @@ static void cmd_perf(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
+/* oem gnp[:h|j|l] - the in-game menu's Netplay page: host, join, leave (with the menu open) */
+static void cmd_gnp(const char *arg, void *data, unsigned sz)
+{
+	extern void lui_game_debug(const char *arg, char *out, int cap);
+	extern volatile int g_np_begin_rc;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	lui_game_debug(arg, lbuf, (int)sizeof lbuf);
+	fastboot_info(lbuf);
+	snprintf(lbuf, sizeof lbuf, "gnp: last start rc %d", g_np_begin_rc);
+	fastboot_info(lbuf);
+	fastboot_okay("");
+}
+
 /* oem gbabench[:N[,SLOT[,K]]] - K > 1 draws one frame in K (the rest render skipped, as fast forward);
  * N frames (default 600) of the game from a save state slot (default 0),
  * or from a fresh start of the game when that slot is empty, timed */
@@ -3318,9 +3332,9 @@ static void cmd_clk(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-#if defined(KONKR_KPA)
-/* oem ff[:1|:0|:r1|:r0] - fast forward (or with r, rewind) on or off as an R2 (L2) press would
- * toggle it; reports the state, the R2 and L2 flips seen and the batch counters */
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+/* oem ff[:1|:0|:r1|:r0|:cN] - fast forward (or with r, rewind) on or off as an R2 (L2) press would
+ * toggle it, or cN the Fast Forward Speed (2..10, 0 Unlimited, until a restart); reports the state, the R2 and L2 flips seen and the batch counters */
 static void cmd_ff(const char *arg, void *data, unsigned sz)
 {
 	extern void ayaneo_joypad_ff_force(int on), ayaneo_joypad_rw_force(int on);
@@ -3331,6 +3345,18 @@ static void cmd_ff(const char *arg, void *data, unsigned sz)
 	while (*arg == ' ' || *arg == ':') arg++;
 	if (*arg == '1' || *arg == '0') ayaneo_joypad_ff_force(*arg == '1');
 	else if (*arg == 'r' && (arg[1] == '1' || arg[1] == '0')) ayaneo_joypad_rw_force(arg[1] == '1');
+	else if (*arg == 'c') {	/* the Fast Forward Speed setting, as the menu's row sets it (not saved) */
+		extern void ayaneo_set_ff_cap(int v);
+		arg++;
+		ayaneo_set_ff_cap((int)fb_dec(&arg));
+	}
+	else if (*arg == 'w' && (arg[1] == '1' || arg[1] == '0')) {	/* the Rewind setting, until a restart */
+		extern void ayaneo_set_rewind(int v);
+		ayaneo_set_rewind(arg[1] == '1');
+	}
+	{ extern int ayaneo_get_ff_cap(void), ayaneo_get_rewind(void), ayaneo_joypad_rewind_level(void);
+	  snprintf(lbuf, sizeof lbuf, "ff: speed cap %d (0 unlimited), rewind %s, rewinding %d", ayaneo_get_ff_cap(),
+		   ayaneo_get_rewind() ? "on" : "off", ayaneo_joypad_rewind_level()); fastboot_info(lbuf); }
 	snprintf(lbuf, sizeof lbuf, "ff: %s R2 flips=%u L2 flips=%u", ayaneo_joypad_ff_level() ? "on" : "off",
 		 g_dbg_ff_flips, g_dbg_rw_flips);
 	fastboot_info(lbuf);
@@ -3592,10 +3618,14 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem extcsd", cmd_extcsd, 1, 0);
 	fastboot_register("oem plwrite", cmd_plwrite, 1, 0);
 	fastboot_register("oem gbabench", cmd_corebench, 1, 0);
+	fastboot_register("oem gnp", cmd_gnp, 1, 0);           /* the in-game Netplay page: h, j, l */
 	fastboot_register("oem odcap", cmd_odcap, 1, 0);         /* prev-indexed rising curve: kuphi,kuplo,gam */
 	fastboot_register("oem rot:", cmd_rot, 1, 0);
 	fastboot_register("oem igm", cmd_igm, 1, 0);           /* Konkr: 0 clockwise / 1 counter clockwise turn */
 	fastboot_register("oem shot", cmd_shot, 1, 0);
+#if defined(KONKR_BLOCK)
+	fastboot_register("oem ff", cmd_ff, 1, 0);
+#endif
 #if defined(KONKR_KPA)
 	fastboot_register("oem aw", cmd_aw, 1, 0);
 	fastboot_register("oem jack", cmd_jack, 1, 0);
@@ -3623,9 +3653,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem dsiw", cmd_dsiw, 1, 0);
 	fastboot_register("oem dsitime", cmd_dsitime, 1, 0);
 	fastboot_register("oem volstep", cmd_volstep, 1, 0);
-#if defined(KONKR_KPA)
 	fastboot_register("oem ff", cmd_ff, 1, 0);
-#endif
 	fastboot_register("oem introbg", cmd_introbg, 1, 0);
 	fastboot_register("oem gray", cmd_gray, 1, 0);
 	fastboot_register("oem awdump", cmd_awdump, 1, 0);

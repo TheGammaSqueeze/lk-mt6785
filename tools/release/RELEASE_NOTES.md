@@ -8,6 +8,38 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
 
 ![Home](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/home.png)
 
+## What's new in 1.1.2
+
+- **Faster fast forward, battles above all.** Fast forward runs as many frames as each refresh has
+  time for, and less of that time now goes elsewhere: the speed badge drew through the screen's
+  uncached memory (2.9 ms of every refresh, now 0.6), and with armGBA 2.0 and a GBA frame drawn after
+  skipped ones no longer redrawing every line, a Pokemon LeafGreen battle on the Konkr Pocket
+  Advance fast forwards at about 4 to 5 times instead of 2 (the overworld at well over 10). Battles
+  stay slower than the overworld: the game takes an interrupt on every line of the screen there.
+- **Fast Forward Speed.** A new row on the in-game menu's Gameplay page, for every system: Unlimited
+  (as fast as the console goes, the default) or a cap from 2x to 10x.
+- **Rewind while held.** L2 now rewinds while you hold it, and the game goes on as soon as you let go
+  (it was on and off with each press). Both stay in the Controls page: **Rewind** for the press that
+  turns it on and off, **Rewind (hold)** for the button held. A button map you saved in 1.1.1 that
+  still had the old L2 toggle moves to the hold; one where you chose another button keeps it.
+- **Play together from inside a game.** Game Boy, Game Boy Color and Game Boy Advance games have a
+  **Netplay** page in the in-game menu (a tab in the Classic themes): **Host a Session** waits for a
+  friend, **Join a Session** finds the consoles nearby hosting a game that links with yours, and the
+  session starts from where both games are, no save going anywhere. **Leave the Session** ends it,
+  and each console's game carries on alone; so does the other's when one console leaves or goes out
+  of reach. A console in a game and one on the Link screen find each other either way round.
+- **Two different games link with one copy each.** Pokemon Red on one console and Pokemon Green on
+  the other (or Ruby and Sapphire, FireRed and LeafGreen) no longer need both games on both cards:
+  each console needs only the game it plays.
+- **armGBA 2.0**, built the way upstream builds it for this kind of processor: about a fifth faster
+  in busy GBA scenes. Save states from 1.1.1 load as they are.
+
+### Updating
+
+Flash the @VERSION@ bootloader and put the @VERSION@ card files on the card (GammaOS Pico Tool's
+card update does both the files and keeps yours; use Tool 1.1.2 or newer, which also keeps your
+button maps). Your games, saves, states, settings, cheat files and button maps stay as they are.
+
 ## What's new in 1.1.1
 
 - **Cheats for every system.** The in-game menu has a **Cheats** page (a tab in the Classic
@@ -42,13 +74,6 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
 - **Games with big achievement sets start much faster.** A set of a few hundred achievements over
   pointer chains held the game's start for seconds while it loaded (Pokemon LeafGreen on the Konkr
   Pocket Block: 6.4 s to start, now 2.0 s); the set is the same.
-
-### Updating from 1.1.0
-
-Flash the 1.1.1 bootloader and put the 1.1.1 card files on the card (GammaOS Pico Tool 1.1.1's card
-update does both the files and keeps yours). The new files are the cheat database
-(`gammaos/cheats/`), armSNES (`cores/armsnes-pico.blob`) and the updated cores; your games, saves,
-states, settings, your own cheat files and your button maps stay as they are.
 
 ## What's new in 1.1
 
@@ -105,7 +130,7 @@ The Wi-Fi screenshots show example network names.
 
 ### Updating from 1.0.x
 
-Flash the 1.1.1 bootloader and put the 1.1.1 card files on the card (GammaOS Pico Tool 1.1.1's card
+Flash the @VERSION@ bootloader and put the @VERSION@ card files on the card (GammaOS Pico Tool's card
 update does both the files and keeps yours). The card brings the Wi-Fi and Bluetooth chip's
 firmware in `bios/connsys/` and HTTPS's trusted roots in `bios/certs/`: without them Wi-Fi and
 Bluetooth do not start. Your games, saves, states and settings stay as they are.
@@ -223,8 +248,8 @@ In a game:
 | Button | Does |
 |---|---|
 | Menu (the side key on the Konkr Pocket Block) | the Pico menu (save and load states, filters, settings); hold 1.5 s to go back to the game list |
-| R2 | fast forward on / off |
-| L2 | rewind on / off |
+| R2 | fast forward on / off (its top speed: Fast Forward Speed in the in-game menu) |
+| L2 (hold) | rewind |
 | SELECT + START + L + R (hold) | restart the game |
 | Volume wheel (Konkr Pocket Advance) | volume; with SELECT held, brightness. On the Konkr Pocket Block both are in the in-game menu |
 | X / Y | autofire |
@@ -269,7 +294,8 @@ the date, the time and the battery.
 ### In a game
 
 The Menu button opens the in-game menu over the game. Its first page: Resume, Achievements (the
-game's RetroAchievements and their settings), Cheats, Save state and Load
+game's RetroAchievements and their settings), Cheats, Controls, Netplay (Game Boy, Game Boy Color and
+Game Boy Advance: play together from where the game is), Save state and Load
 state (Left / Right pick the slot), the Display, Sound, Gameplay and System pages, Reset game and
 Exit game (a Disk System game also has Swap Disk Side there). The pages hold what each emulator
 offers:
@@ -278,7 +304,7 @@ offers:
 |---|---|---|---|---|---|
 | Display | Brightness, LCD Filter, Aspect Ratio, Color Correction, BFI, Show FPS | Brightness, LCD Filter, Aspect Ratio, Palette (original Game Boy), Color Correction, Correction Mode, Dark Filter, BFI, Show FPS | Brightness, Aspect Ratio, LCD Filter, BFI, Show FPS | Brightness, LCD Filter, Aspect Ratio, Overscan, Hi-Res Blend, BFI, Show FPS | Brightness, Aspect Ratio, LCD Filter, BFI, Show FPS |
 | Sound | Volume | Volume | Volume | Volume, Audio Filter | Volume |
-| Gameplay | CPU Clock, Run-Ahead, Rewind, Benchmark, GBA Core (armGBA or gpSP), Core options, Latency LED, Panel Refresh | CPU Clock, Run-Ahead, Rewind, Core options | CPU Clock, Run-Ahead, Rewind, Region, Refresh Rate, Core options | CPU Clock, Run-Ahead, Rewind, Turbo (auto-fire), Benchmark, Panel Refresh, SNES Core (snes9x or armSNES), Core options | CPU Clock, Run-Ahead, Rewind, Region, Refresh Rate, Core options |
+| Gameplay | CPU Clock, Run-Ahead, Rewind, Fast Forward Speed, Benchmark, GBA Core (armGBA or gpSP), Core options, Latency LED, Panel Refresh | CPU Clock, Run-Ahead, Rewind, Fast Forward Speed, Core options | CPU Clock, Run-Ahead, Rewind, Fast Forward Speed, Region, Refresh Rate, Core options | CPU Clock, Run-Ahead, Rewind, Turbo (auto-fire), Fast Forward Speed, Benchmark, Panel Refresh, SNES Core (snes9x or armSNES), Core options | CPU Clock, Run-Ahead, Rewind, Fast Forward Speed, Region, Refresh Rate, Core options |
 | System | Resume on Power On, Resume on Game Open, BIOS Intro Background, Skip BIOS Intro, Battery | Resume on Power On, Battery | Resume on Power On, Battery | Resume on Power On, Battery | Resume on Power On, Battery |
 
 armGBA's Core options: BIOS (Nintendo from the card, or armGBA's built-in), LCD Ghosting, Interlaced

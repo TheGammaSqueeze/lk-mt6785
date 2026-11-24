@@ -105,6 +105,30 @@ static int  s_resume_on_boot = 1;
 static int  s_rewind_on = 1;
 int  ayaneo_get_rewind(void)  { return s_rewind_on; }
 void ayaneo_set_rewind(int v) { s_rewind_on = v ? 1 : 0; }
+/* Fast Forward Speed (every core's in-game menu): fast forward runs at most this many frames a
+ * refresh, 2 to 10 (2x to 10x), or 0 for Unlimited (as many as the refresh has time for), the
+ * default. b+191: bit 7 set once written, the cap in bits 0-6. */
+static int  s_ff_cap;
+int  ayaneo_get_ff_cap(void)  { return s_ff_cap; }
+void ayaneo_set_ff_cap(int v) { s_ff_cap = (v >= 2 && v <= 10) ? v : 0; }
+/* Left/Right on the row: Unlimited, 2x, 3x .. 10x, round */
+void ayaneo_step_ff_cap(int dir)
+{
+	int i = s_ff_cap ? s_ff_cap - 1 : 0;	/* 0 Unlimited, 1..9 = 2x..10x */
+	i = (i + (dir < 0 ? -1 : 1) + 10) % 10;
+	s_ff_cap = i ? i + 1 : 0;
+}
+/* the row's value as shown (English, the menus translate it); buf holds 8 */
+const char *ayaneo_ff_cap_name(char *buf)
+{
+	if (!s_ff_cap) return "Unlimited";
+	if (s_ff_cap >= 10) { buf[0] = '1'; buf[1] = '0'; buf[2] = 'x'; buf[3] = 0; }
+	else { buf[0] = (char)('0' + s_ff_cap); buf[1] = 'x'; buf[2] = 0; }
+	return buf;
+}
+/* the most frames a fast forward refresh may run, the committed one included: each core's batch
+ * stops there, or earlier when the refresh has no time for another (ayaneo_ff_fits) */
+int  ayaneo_ff_cap_frames(void) { return s_ff_cap ? s_ff_cap : 121; }
 static char s_resume_name[100];
 static int  s_resume_set;
 #define AYANEO_RESUME_MAGIC 0x52455355u   /* "RESU" */
@@ -196,6 +220,7 @@ static void resume_fields_write(unsigned char *b)
 	b[188] = (unsigned char)(0x80u | (unsigned)(s_nes_aspect & 7) | ((unsigned)(s_nes_filter & 7) << 3));
 	b[189] = (unsigned char)(0x80u | (unsigned)(s_nes_region & 3) | ((unsigned)(s_nes_slot & 3) << 2));
 	b[190] = (unsigned char)(0x80u | s_cpu_manual[4]);
+	b[191] = (unsigned char)(0x80u | (unsigned)s_ff_cap);   /* 0 Unlimited, 2..10 */
 #if defined(KONKR_BLOCK)
 	b[187] = BLOCK_DEFAULTS_MARK;                  /* the Block's defaults are in (block_defaults_read) */
 #endif
@@ -225,6 +250,7 @@ static void resume_fields_read(const unsigned char *b, int len)
 		if (b[188] & 0x80u) { s_nes_aspect = (b[188] & 7) > 5 ? 0 : (b[188] & 7); s_nes_filter = ((b[188] >> 3) & 7) > 5 ? 0 : ((b[188] >> 3) & 7); }
 		if (b[189] & 0x80u) { s_nes_region = b[189] & 3; s_nes_slot = ((b[189] >> 2) & 3) > 2 ? 0 : ((b[189] >> 2) & 3); }
 		if (b[190] & 0x80u) s_cpu_manual[4] = b[190] & 15;
+		if (len >= 192 && (b[191] & 0x80u)) ayaneo_set_ff_cap(b[191] & 0x7f);
 	}
 #if defined(KONKR_BLOCK)
 	block_defaults_read(b, len);

@@ -26,7 +26,7 @@ enum {
 	RA_ERR_SPLIT = -8,       /* an archive in parts (.zip.001, .z01...) */
 	RA_ERR_START = -9,       /* the core would not start the game */
 	RA_ERR_NOBIOS = -10,     /* a Famicom Disk System game, and no disksys.rom on the card */
-	RA_ERR_LINKGAME = -11    /* linked play: a console lacks the other's game (none is sent) */
+	RA_ERR_LINKGAME = -11    /* linked play: the other's cartridge is too large to take for the session */
 };
 
 /* The ROMs in an archive file (f: the archive; exts: the system's extensions, space separated,

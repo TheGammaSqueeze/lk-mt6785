@@ -44,6 +44,7 @@ extern int _dprintf(const char *fmt, ...);
 #include "../../platform/common/pico/pico_netplay.h"
 #include "pico_igm.h"
 #include "pico_input.h"   /* the player's button map, the hotkeys */
+#include "pico_link_ui.h" /* the in-game menu's Netplay page */
 #if defined(AYANEO_GBA_SD)
 #include "pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #else
@@ -1707,7 +1708,7 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 #endif
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_RESUME, MI_BOOTROW, MI_SKIPINTRO,
-	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_REWIND, MI_BENCH, MI_SHOWFPS, MI_LATLED, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_COUNT
+	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_REWIND, MI_BENCH, MI_SHOWFPS, MI_LATLED, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_FFCAP, MI_COUNT
 };
 #define GBA_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -1732,6 +1733,7 @@ static const char *menu_value(int item, char *buf)
 	case MI_COLORCORRECT: p = mi_puts(p, ayaneo_get_color_correct() ? "On" : "Off"); break;
 	case MI_STROBE:   { int b = ayaneo_get_strobe(); p = mi_puts(p, ayaneo_strobe_name(b)); } break;
 	case MI_REWIND:   { extern int ayaneo_get_rewind(void); p = mi_puts(p, ayaneo_get_rewind() ? "On" : "Off"); } break;
+	case MI_FFCAP:    { extern const char *ayaneo_ff_cap_name(char *buf); char t[8]; p = mi_puts(p, ayaneo_ff_cap_name(t)); } break;
 	case MI_PREEMPT: { int pf = ayaneo_get_preempt_frames();
 		/* Named tiers (max desired depth) + the depth the closed loop is running
 		 * right now (it backs off to hold 60 fps), so the user sees it adapt -
@@ -1841,6 +1843,7 @@ static const char *menu_label(int item)
 	case MI_STROBE:    return "BFI";
 	case MI_PREEMPT:   return "Run-Ahead";
 	case MI_REWIND:    return "Rewind";
+	case MI_FFCAP:     return "Fast Forward Speed";
 	case MI_BENCH:     return "Benchmark (Uncap)";
 	case MI_SHOWFPS:   return "Show FPS";
 	case MI_LATLED:    return "Latency LED";
@@ -1873,6 +1876,8 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 	} else changed = 0; break;
 	case MI_REWIND:   { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
 			    if (dir || act) ayaneo_set_rewind(!ayaneo_get_rewind()); else changed = 0; } break;
+	case MI_FFCAP:    { extern void ayaneo_step_ff_cap(int dir);
+			    if (dir || act) ayaneo_step_ff_cap(dir ? dir : 1); else changed = 0; } break;
 #if defined(AYANEO_GBA_SD)
 	case MI_LOADBOOT: { extern int ayaneo_get_resume_on_open(void); extern void ayaneo_set_resume_on_open(int v);
 			    if (dir || act) ayaneo_set_resume_on_open(!ayaneo_get_resume_on_open()); else changed = 0; } break;
@@ -2030,6 +2035,7 @@ static const struct igm_row k_gba_igm_rows[] = {
 	{ MI_STROBE, IGM_DISPLAY, IGM_VALUE }, { MI_SHOWFPS, IGM_DISPLAY, IGM_VALUE },
 	{ MI_VOLUME, IGM_SOUND, IGM_VALUE },
 	{ MI_CPU, IGM_PLAY, IGM_VALUE }, { MI_PREEMPT, IGM_PLAY, IGM_VALUE }, { MI_REWIND, IGM_PLAY, IGM_VALUE },
+	{ MI_FFCAP, IGM_PLAY, IGM_VALUE },
 	{ MI_BENCH, IGM_PLAY, IGM_VALUE }, { MI_CORE, IGM_PLAY, IGM_VALUE }, { IGM_CORE, IGM_PLAY, IGM_LINK },
 	{ MI_LATLED, IGM_PLAY, IGM_VALUE }, { MI_PANEL, IGM_PLAY, IGM_INFO },
 	{ MI_RESUME, IGM_SYSTEM, IGM_VALUE }, { MI_LOADBOOT, IGM_SYSTEM, IGM_VALUE },
@@ -3110,8 +3116,10 @@ static int gba_np_find_rom(const char *name, unsigned int size, unsigned int crc
  * console never comes, or this core cannot pair, the game plays alone. */
 /* RetroAchievements: the game's set, with the machine's memory (not in netplay). Every way a GBA
  * game starts calls it (the first game of a session and every one after it). */
+static unsigned int s_cur_romsz;	/* the running game's cartridge as loaded (the Netplay page's start) */
 static void gba_ra_core_ready(unsigned int romsz)
 {
+	s_cur_romsz = romsz;
 	extern void pico_ra_core_ready(const void *rom, unsigned size, const struct pico_core_memory *mem)
 		__attribute__((weak));
 	if (pico_ra_core_ready && !s_gba_np && g_core && g_core->version >= GBA_CORE_ABI_V6 && g_core->get_memory) {
@@ -3127,8 +3135,22 @@ static void gba_ra_core_ready(unsigned int romsz)
 	/* the buttons: the game's map, the menu's save, load and restart for the hotkeys */
 	pico_input_game(&s_sd_vol, GBA_CONSOLE_GBA, s_roms[s_sel_rom].name, &s_gba_igm, -1);
 	pico_input_netplay(s_gba_np);
+	/* the Netplay page: a session started from the game, or Leave for one this launch began */
+	lui_game_begin(GBA_CONSOLE_GBA, s_roms[s_sel_rom].name, s_roms[s_sel_rom].uname, s_roms[s_sel_rom].size,
+		       g_core && s_core_is_sd && g_core->version >= GBA_CORE_ABI_V5 && g_core->pair_open && g_core->pair_rom_ptr);
+	if (s_gba_np) lui_game_armed_session();
 }
 
+/* the cheats the player has on, back in force (a session runs without them) */
+static void gba_cheats_again(void)
+{
+	struct pico_cheat_core cc = { 0, 0 };
+	if (g_core && g_core->version >= GBA_CORE_ABI_V7) { cc.reset = g_core->cheat_reset; cc.add = g_core->cheat_add; }
+	pico_cheats_game(&s_sd_vol, GBA_CONSOLE_GBA, s_roms[s_sel_rom].name, gba_core_rom_ptr(), s_cur_romsz, &cc);
+}
+
+static int s_np_in_game;		/* the start comes from the Netplay page: a failed one plays on */
+static volatile int s_gba_np_dropped;	/* the other console left: the Netplay page is told */
 static void gba_np_begin(const gba_rom_entry *rom, unsigned int romsz)
 {
 #if defined(KONKR_BLOCK) || defined(KONKR_KPA)
@@ -3178,9 +3200,11 @@ static void gba_np_begin(const gba_rom_entry *rom, unsigned int romsz)
 		gba_core_state_load((void *)GBA_NP_MINE);
 		/* cancelled (B on the start's screen, here or on the other console): back to the menu, as
 		 * the in-game menu's Close; the other console simply not coming lets the game play alone */
+		if (s_np_in_game)
+			return;
 		if (g_np_begin_rc == -11 || g_np_begin_rc == -8)
 			s_close_req = 1;
-		if (g_np_begin_rc == -12) {	/* a console lacks the other's game: back to the menu, saying so */
+		if (g_np_begin_rc == -12) {	/* the other cartridge too large to take: back to the menu, saying so */
 			gba_rom_set_error(RA_ERR_LINKGAME);
 			s_close_req = 1;
 		}
@@ -3191,6 +3215,112 @@ static void gba_np_begin(const gba_rom_entry *rom, unsigned int romsz)
 #else
 	(void)rom; (void)romsz;
 #endif
+}
+
+static void gba_np_end(void);
+/* why a start in a game did not come about, for the Netplay page (English: the menu translates) */
+static const char *gba_np_why(void)
+{
+	extern volatile int g_np_begin_rc;
+	switch (g_np_begin_rc) {
+	case -11: return "Cancelled";
+	case -8:  return "The other console cancelled.";
+	case -12: return "The other console's game is too large to play linked with this one.";
+	case -7: case -3: case -6: return "The other console did not answer.";
+	default:  return "The session could not start.";
+	}
+}
+/* the start's screen while a session starts in a game: the in-game menu over the game's last
+ * picture, its Netplay page saying how far; B cancels */
+static int s_np_b_prev;
+static int gba_np_progress(void)
+{
+	int b = PRESSED(GPIO_B), cancel = b && !s_np_b_prev;
+	s_np_b_prev = b;
+	snprintf(s_menu_status, sizeof s_menu_status, "%s", lui_game_progress());
+	pico_igm_frame(0);
+	pico_igm_overlay(1);
+	ayaneo_gbc_show_frame(gba_core_screen());
+	mtk_wdt_restart();
+	return cancel;
+}
+/* A session started in a game comes about as an armed launch does, so both consoles' machines come
+ * from the same steps: the game as it stands is kept, the core is loaded afresh from the card (its
+ * globals start as after a boot: a core that has been playing keeps some of its own, and two
+ * consoles' would part), the cartridge and the machine go back in, then the start (gba_np_begin).
+ * The state sits in the game loop's scratch, which the core's reload leaves alone. */
+static void gba_np_begin_here(void)
+{
+	unsigned char *st = GBA_SCRATCH, *rp;
+	unsigned int sz = gba_core_state_size(), rsz;
+	if (!sz || sz > GBA_DRV_RESERVE) { gba_np_begin(&s_roms[s_sel_rom], s_cur_romsz); return; }
+	gba_core_state_save(st);
+	rp = gba_core_for_launch();		/* armed: the core comes from the card afresh */
+	rsz = rp ? gba_sd_load_rom(&s_sd_vol, &s_roms[s_sel_rom], rp, gba_core_rom_capacity()) : 0;
+	if (!rsz || gba_core_start(rsz, s_have_bios ? s_sd_bios : 0) != 0) {
+		/* the card's core or game could not be read again: nothing to play on */
+		{ extern int pico_np_armed(unsigned int *delay); pico_np_armed(0); }	/* (the arming used up) */
+		s_close_req = 1;
+		return;
+	}
+	gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name, (unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
+	g_gba_load_light = 1; gba_core_state_load(st); g_gba_load_light = 0;
+	s_cur_romsz = rsz;
+	gba_np_begin(&s_roms[s_sel_rom], rsz);	/* reads the arming the page set */
+	dynarec_enable = 1;
+}
+
+/* The Netplay page, once a frame in the game loop (the CPU thread parked): hosting and joining go
+ * on while the menu is up; the start or the Leave it asked for happens here; a session the other
+ * console left is the page's news. */
+static void gba_np_page(unsigned char *scratch)
+{
+	int want;
+	(void)scratch;
+	lui_game_tick(s_menu_open && s_gba_igm_on);
+	want = lui_game_start_wanted();
+	if (want >= 0 && !s_gba_np) {
+		extern int pico_ra_game_loaded(void) __attribute__((weak));
+		extern void pico_ra_game_end(void) __attribute__((weak));
+		ayaneo_menu_audio_silence();		/* the start takes seconds: no looping sound */
+		if (pico_ra_game_loaded && pico_ra_game_loaded() && pico_ra_game_end)
+			pico_ra_game_end();		/* achievements stop for this game: the other console plays in it */
+		if (g_core && g_core->version >= GBA_CORE_ABI_V7 && g_core->cheat_reset) g_core->cheat_reset();
+		s_np_b_prev = 1;
+		pico_np_set_progress(gba_np_progress);
+		s_np_in_game = 1;
+		gba_np_begin_here();
+		s_np_in_game = 0;
+		pico_np_set_progress(0);
+		s_menu_status[0] = 0;
+		if (s_gba_np) {
+			pico_input_netplay(1);
+			lui_game_session(1, 0);
+		} else {
+			{ extern void pico_np_stop(void); pico_np_stop(); }
+			gba_cheats_again();
+			lui_game_session(0, gba_np_why());
+		}
+		gba_rewind_arm();			/* the history starts again here */
+		s_cpu_clean_boundary = 1;		/* the machine may have been made afresh: a clean entry */
+		s_cpu_restart_req = 1;
+	}
+	if (lui_game_leave_wanted() && s_gba_np) {
+		gba_np_end();
+		pico_input_netplay(0);
+		gba_cheats_again();
+		gba_rewind_arm();
+		s_cpu_clean_boundary = 1;
+		s_cpu_restart_req = 1;
+		lui_game_session(0, 0);
+	}
+	if (s_gba_np_dropped) {
+		s_gba_np_dropped = 0;
+		pico_input_netplay(0);
+		gba_cheats_again();
+		gba_rewind_arm();
+		lui_game_session(0, "The other console left.");
+	}
 }
 
 /* The session ends: the other console is told, this console's machine plays on alone. Only where
@@ -3222,6 +3352,7 @@ static void gba_np_frame(void)
 	extern int pico_np_take_reset(unsigned int *p1);
 	if (pico_np_frame(s_keys & 0x3FFu, &p1, &p2) != 0) {
 		gba_np_end();
+		s_gba_np_dropped = 1;
 		return;
 	}
 	if (pico_np_take_reset(&p1)) {	/* the host's reset, here at the same frame: both machines */
@@ -3867,13 +3998,13 @@ static int emu_thread(void *arg)
 					 * still fits before this refresh's present (ayaneo_ff_fits), then one rendered
 					 * frame, which is the picture shown. The panel gets a new frame every refresh,
 					 * the game advances as far as the CPU allows in between. */
-					extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us);
+					extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us); extern int ayaneo_ff_cap_frames(void);
 					static unsigned int s_ff_skip_us, s_ff_rend_us;
 					unsigned int rend = s_ff_rend_us ? s_ff_rend_us : (s_committed_us ? s_committed_us : 2500u);
 					unsigned int skipc = s_ff_skip_us ? s_ff_skip_us : rend;
 					unsigned int blit = g_dbg_blit_us < 15500u ? g_dbg_blit_us : 0u;
 					int n = 1;
-					while (n < 120 && ayaneo_ff_fits(s_ff_t0, blit, skipc, rend)) {
+					while (n < ayaneo_ff_cap_frames() - 1 && ayaneo_ff_fits(s_ff_t0, blit, skipc, rend)) {
 						unsigned int t = gpt4_get_current_tick(), us;
 						gba_core_skip_render(1);
 						run_one_frame();
@@ -3979,6 +4110,7 @@ static int emu_thread(void *arg)
 				gba_igm_tick(scratch);
 			else if (s_menu_open)
 				menu_tick(scratch);
+			gba_np_page(scratch);
 
 			/* soft reset (menu "Reset Game" or the Select+Start+L+R hotkey): restart
 			 * the current game. The ROM + BIOS are still resident, so reset_gba() alone
@@ -4027,6 +4159,7 @@ static int emu_thread(void *arg)
 					{ extern void ayaneo_accel_stop(void); ayaneo_accel_stop(); }   /* the accelerometer to standby */
 					{ extern void ayaneo_rumble_stop(void); ayaneo_rumble_stop(); }   /* the motor off */
 					gba_np_end();			/* a netplay session ends with the game */
+					lui_game_end();
 					state_write(scratch);		/* persist the current game */
 					sav_save(scratch);
 					gba_menu_arm_reverse(gba_core_screen());  /* freeze frame for reverse */

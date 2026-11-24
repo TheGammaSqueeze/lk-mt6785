@@ -13,6 +13,7 @@
  * Only one core runs at a time, so we reuse the gpSP arena at 0x50000000.
  */
 #include <string.h>
+#include <printf.h>
 #include "gbc_core_abi.h"
 #include "../../platform/common/pico/pico_netplay.h"
 #include <platform/ayaneo_volume_input.h>
@@ -20,6 +21,7 @@
 #include "../gba/pico_igm.h"
 #include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
 #include "../gba/pico_input.h"    /* the player's button map, the hotkeys */
+#include "../gba/pico_link_ui.h"  /* the in-game menu's Netplay page */
 #include "../gba/pico_i18n.h"   /* tr_igm: the in-game menu's words in the language in use */
 #include "../gba/gba_sd_save.h"
 #include "../gba/pico_state_shot.h"   /* each state's picture and time, for the Suspend Point List */
@@ -243,7 +245,8 @@ static const char *dmg_pal_name(const struct gbc_core_exports *c, int idx)
 
 /* A netplay session with the link cable (pico_netplay.c): both Game Boys run on both consoles,
  * this one shows its own; the buttons of both players come from the lockstep exchange. */
-static int s_gbc_np;
+static int s_gbc_np, s_gbc_np_host;
+static int s_gbc_np_touched;	/* the core holds more than this console's machine (gbc_np_solo) */
 
 static void apply_dmg_palette(const struct gbc_core_exports *c, int idx)
 {
@@ -384,7 +387,7 @@ static int  s_pick_hold;        /* frames the direction has been held */
 static int  s_pick_tick;        /* frames since the last auto-repeat step */
 
 enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_ASPECT, GM_PALETTE, GM_COLORCC, GM_CCMODE, GM_DARK,
-       GM_PREEMPT, GM_REWIND, GM_CPU, GM_BFI, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_COUNT };
+       GM_PREEMPT, GM_REWIND, GM_CPU, GM_BFI, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_FFCAP, GM_COUNT };
 
 /* Display aspect (0=Pixel integer, 1=Fit native-aspect fill, 2=Stretch full panel). Read by
  * ayaneo_gb_show_frame (mt_disp_drv.c); session-scoped, defaults to Pixel = current behaviour. */
@@ -427,6 +430,7 @@ static const char *gm_label(int i)
 	case GM_DARK:    return "Dark Filter";
 	case GM_PREEMPT: return "Run-Ahead";
 	case GM_REWIND:  return "Rewind";
+	case GM_FFCAP:   return "Fast Forward Speed";
 	case GM_CPU:     return "CPU Clock";
 	case GM_BFI:     return "BFI";
 	case GM_SHOWFPS: return "Show FPS";
@@ -469,6 +473,7 @@ static const char *gm_value(int i, char *buf)
 	case GM_PREEMPT: { int pf = ayaneo_get_preempt_frames();
 			   p = mput(p, pf == 0 ? "Off" : pf == 1 ? "Balanced" : pf == 2 ? "Responsive" : "Max"); } break;
 	case GM_REWIND:  { extern int ayaneo_get_rewind(void); p = mput(p, ayaneo_get_rewind() ? "On" : "Off"); } break;
+	case GM_FFCAP:    { extern const char *ayaneo_ff_cap_name(char *buf); char t[8]; p = mput(p, ayaneo_ff_cap_name(t)); } break;
 	case GM_CPU:     p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
 	case GM_BFI:     { extern int ayaneo_get_strobe(void); int b = ayaneo_get_strobe(); p = mput(p, (b == 3 ? "75%" : b == 2 ? "50%" : b == 1 ? "25%" : "Off")); } break;
 	case GM_RESUME:  { extern int ayaneo_get_resume_on_boot(void); p = mput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
@@ -512,6 +517,8 @@ static int gm_change(int i, int dir, int act)
 	case GM_PREEMPT: if (dir) ayaneo_set_preempt_frames((ayaneo_get_preempt_frames() + dir + 4) % 4); else changed = 0; break;
 	case GM_REWIND:  { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
 			   if (dir || act) ayaneo_set_rewind(!ayaneo_get_rewind()); else changed = 0; } break;
+	case GM_FFCAP:   { extern void ayaneo_step_ff_cap(int dir);
+			   if (dir || act) ayaneo_step_ff_cap(dir ? dir : 1); else changed = 0; } break;
 	case GM_CPU:     if (dir) gbc_cpu_step(dir); else changed = 0; break;   /* persisted per core */
 	case GM_BFI:     { extern int ayaneo_get_strobe(void); extern void ayaneo_set_strobe(int v);
 			   if (dir) ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); else changed = 0; } break;
@@ -578,6 +585,7 @@ static const struct igm_row k_gbc_igm_rows[] = {
 	{ GM_SHOWFPS, IGM_DISPLAY, IGM_VALUE },
 	{ GM_VOLUME, IGM_SOUND, IGM_VALUE },
 	{ GM_CPU, IGM_PLAY, IGM_VALUE }, { GM_PREEMPT, IGM_PLAY, IGM_VALUE }, { GM_REWIND, IGM_PLAY, IGM_VALUE },
+	{ GM_FFCAP, IGM_PLAY, IGM_VALUE },
 	{ GM_RESUME, IGM_SYSTEM, IGM_VALUE }, { GM_BATTERY, IGM_SYSTEM, IGM_INFO },
 };
 static int s_gbc_igm_exit;   /* the in-game menu's Exit game: leave the game */
@@ -698,6 +706,165 @@ static void gbc_rtc_save(fat_vol *vol, const gba_rom_entry *rom, const struct gb
 	gba_sd_write_named(vol, "/saves/gba", rom->name, "rtc", (const unsigned char *)c->rtcdata_ptr(), sz);
 }
 
+/* A core as a launch makes it: the blob loaded again (its statics start afresh: gambatte keeps
+ * lists in them that point into its heap), its heap emptied, the emulator created. 0 when the
+ * card's core is gone or is another than the one running. */
+static int gbc_core_fresh(fat_vol *vol, const struct gbc_core_exports *was)
+{
+	const struct gbc_core_exports *c = gbc_core_load(vol);
+	if (!c || c != was)
+		return -1;
+	c->heap_init((void *)GBC_HEAP_BASE, GBC_HEAP_SZ);
+	return c->create();
+}
+
+/* ---- netplay over the link cable ----
+ * Each console sends the other its own machine (its save and any resume in it, or the game as it
+ * stands when the session starts in a game), and its cartridge when the other lacks it; both then
+ * run the host's machine first and the guest's second, wired together, from the same start. Each
+ * shows, plays and later saves its own. mine holds this console's machine (the caller saved it);
+ * 0 the session runs, else pico_np_stop was called and g_np_begin_rc says why; s_gbc_np_touched
+ * then says whether the core still holds this console's machine alone (gbc_np_solo puts it back). */
+static int gbc_np_pair(const struct gbc_core_exports *c, fat_vol *vol, int host, unsigned delay, const gba_rom_entry *rom,
+		       const unsigned char *rombuf, unsigned romsz, unsigned flags, unsigned char *mine)
+{
+	extern void pico_np_stop(void);
+	unsigned int got = 0, msz = 0, trom = 0, tflags = 0;
+	unsigned char *theirs = mine + GBC_NP_HALF;
+	const unsigned char *other_rom = rombuf;	/* the same game unless one came */
+	unsigned int other_sz = romsz, other_flags = flags;
+	struct pico_np_pair pp;
+	int ok = c->version >= GBC_CORE_ABI_V3 && c->link_open && c->set_pad_reader && romsz <= GBC_NP_ROM_CAP;
+	if (ok) {
+		msz = c->state_size();
+		ok = msz && msz <= GBC_NP_HALF;
+	}
+	if (ok) {
+		memset(&pp, 0, sizeof pp);
+		pp.mine = mine; pp.msize = msz; pp.theirs = theirs; pp.cap = GBC_NP_HALF; pp.got = &got;
+		pp.rom = rombuf; pp.rom_size = romsz; pp.rom_flags = flags;
+		pp.their_rom = (void *)GBC_NP_ROM; pp.rom_cap = GBC_NP_ROM_CAP;
+		pp.their_rom_size = &trom; pp.their_rom_flags = &tflags;
+		pp.rom_name = rom->name;
+		pp.find_rom = 0;	/* GB cartridges are small: the other console sends its own (pico_netplay.c) */
+		ok = pico_np_begin_pair(host, delay, &pp) == 0;
+	}
+	if (ok && trom) {
+		other_rom = (const unsigned char *)GBC_NP_ROM;
+		other_sz = trom;
+		other_flags = tflags;
+	}
+	/* Machine 1 is the host's cartridge, freshly loaded on BOTH consoles before the states go in:
+	 * a state does not set every last internal value (gambatte keeps a sprite cursor across a load
+	 * outside the visible lines), so the machine must come about the same way on both, not carry
+	 * this console's history on one of them. Nor does a load: a core that has been playing keeps
+	 * some of its own (a session started in a game parted at its first check), so the core is made
+	 * afresh first, as at a launch. */
+	if (ok) {
+		s_gbc_np_touched = 1;
+		ok = gbc_core_fresh(vol, c) == 0;
+	}
+	if (ok)
+		ok = host ? c->load(rombuf, romsz, flags) == 0 : c->load(other_rom, other_sz, other_flags) == 0;
+	if (ok)
+		ok = host ? c->link_open(other_rom, other_sz, other_flags) == 0 : c->link_open(rombuf, romsz, flags) == 0;
+	if (ok) {
+		c->link_select(0);
+		ok = c->state_load(host ? mine : theirs, host ? msz : got) == 0;
+		c->link_select(1);
+		ok = ok && c->state_load(host ? theirs : mine, host ? got : msz) == 0;
+	}
+	if (!ok) {
+		pico_np_stop();
+		return -1;
+	}
+	{	/* each machine's cartridge clock stays its own console's */
+		extern long pico_np_clock_gap(void);
+		c->link_clock(0, 0);
+		c->link_clock(1, pico_np_clock_gap());
+	}
+	c->link_view(host ? 0u : 1u);
+	c->link_select(host ? 0u : 1u);
+	c->set_pad_reader(gbc_np_reader);
+	s_gbc_np = 1;
+	s_gbc_np_host = host;
+	return 0;
+}
+
+/* The core back to this console's machine alone, from its state in st: the core is made afresh
+ * (a linked core keeps its second machine for good), the cartridge loaded and the state put in.
+ * The colour settings are the console's, not the state's, so they go back in too. */
+static int gbc_np_solo(const struct gbc_core_exports *c, fat_vol *vol, const unsigned char *rombuf, unsigned romsz,
+		       unsigned flags, const unsigned char *st, unsigned stsz)
+{
+	if (gbc_core_fresh(vol, c) != 0 || c->load(rombuf, romsz, flags) != 0)
+		return -1;
+	if (st && stsz)
+		c->state_load(st, stsz);
+	apply_color_knobs(c);
+	s_gbc_np_touched = 0;
+	return 0;
+}
+
+/* the cheats the player has on, back in force (a session runs without them) */
+static void gbc_cheats_again(const struct gbc_core_exports *c, fat_vol *vol, const gba_rom_entry *rom,
+			     const unsigned char *rombuf, unsigned romsz)
+{
+	struct pico_cheat_core cc = { 0, 0 };
+	if (c->version >= GBC_CORE_ABI_V5) { cc.reset = c->cheat_reset; cc.add = c->cheat_add; }
+	pico_cheats_game(vol, rom->type, rom->name, rombuf, romsz, &cc);
+}
+
+/* why a start in a game did not come about, for the Netplay page (English: the menu translates) */
+static const char *gbc_np_why(void)
+{
+	extern volatile int g_np_begin_rc;
+	switch (g_np_begin_rc) {
+	case -11: return "Cancelled";
+	case -8:  return "The other console cancelled.";
+	case -12: return "The other console's game is too large to play linked with this one.";
+	case -7: case -3: case -6: return "The other console did not answer.";
+	default:  return "The session could not start.";
+	}
+}
+
+/* The session ends where the game stands (Leave, or the other console left or went out of reach):
+ * this console's machine goes on alone, as it is now. */
+static void gbc_np_end_here(const struct gbc_core_exports *c, fat_vol *vol, const gba_rom_entry *rom,
+			    const unsigned char *rombuf, unsigned romsz, unsigned flags, unsigned char *ahead,
+			    unsigned ahead_sz, const char *why)
+{
+	extern void pico_np_stop(void);
+	unsigned msz;
+	c->link_select(s_gbc_np_host ? 0u : 1u);
+	msz = c->state_size();
+	if (msz > GBC_NP_HALF) msz = 0;
+	if (msz) c->state_save(ahead);
+	pico_np_stop();
+	s_gbc_np = 0;
+	gbc_np_solo(c, vol, rombuf, romsz, flags, ahead, msz);
+	gbc_cheats_again(c, vol, rom, rombuf, romsz);
+	pico_input_netplay(0);
+	ayaneo_rewind_reset(ahead_sz);		/* the history starts again here, the machine's own */
+	lui_game_session(0, why);
+}
+
+/* the start's screen while a session starts in a game: the in-game menu over the game's last
+ * picture, its Netplay page saying how far; B cancels */
+static unsigned short *s_np_vbuf;
+static int s_np_b_prev;
+static int gbc_np_progress(void)
+{
+	int b = PRESSED(GPIO_B), cancel = b && !s_np_b_prev;
+	s_np_b_prev = b;
+	snprintf(s_mstat, sizeof s_mstat, "%s", lui_game_progress());
+	pico_igm_frame(0);
+	pico_igm_overlay(1);
+	if (s_np_vbuf) ayaneo_gb_show_frame(s_np_vbuf);
+	mtk_wdt_restart();
+	return cancel;
+}
+
 static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 {
 	const struct gbc_core_exports *c;   /* reloaded each session (cheap, ~20ms) so a
@@ -775,76 +942,23 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	}
 	apply_color_knobs(c);   /* CGB colour correction / dark filter (remembered settings) */
 
-	/* A netplay session over the link cable: each console sends the other its own machine (its
-	 * save and any resume in it), and its cartridge when the two play different games; both then
-	 * run the host's machine first and the guest's second, wired together, from the same start.
-	 * Each shows, plays and later saves its own. After the palette is set: the palette is part
-	 * of a machine's state, so each machine keeps its owner's colours on both consoles. */
+	/* A netplay session over the link cable, from the Link screen (an armed launch): see
+	 * gbc_np_pair. After the palette is set: the palette is part of a machine's state, so each
+	 * machine keeps its owner's colours on both consoles. */
 	s_gbc_np = 0;
 	{
 		extern int pico_np_armed(unsigned int *delay);
-		extern void pico_np_stop(void);
-		unsigned int delay = 2, got = 0, msz = 0, trom = 0, tflags = 0;
+		unsigned int delay = 2;
 		int host = pico_np_armed(&delay);
 		if (host >= 0) {
-			unsigned char *mine = ahead, *theirs = ahead + GBC_NP_HALF;
-			const unsigned char *other_rom = rombuf;	/* the same game unless one came */
-			unsigned int other_sz = romsz, other_flags = flags;
-			struct pico_np_pair pp;
-			int ok = c->version >= GBC_CORE_ABI_V3 && c->link_open && c->set_pad_reader &&
-				 romsz <= GBC_NP_ROM_CAP;
-			if (ok) {
-				msz = c->state_size();
-				ok = msz && msz <= GBC_NP_HALF;
-			}
-			if (ok) {
-				c->state_save(mine);
-				pp.mine = mine; pp.msize = msz; pp.theirs = theirs; pp.cap = GBC_NP_HALF; pp.got = &got;
-				pp.rom = rombuf; pp.rom_size = romsz; pp.rom_flags = flags;
-				pp.their_rom = (void *)GBC_NP_ROM; pp.rom_cap = GBC_NP_ROM_CAP;
-				pp.their_rom_size = &trom; pp.their_rom_flags = &tflags;
-				pp.rom_name = rom->name;
-				pp.find_rom = 0;	/* GB cartridges are small: they cross the air */
-				ok = pico_np_begin_pair(host, delay, &pp) == 0;
-			}
-			if (ok && trom) {
-				other_rom = (const unsigned char *)GBC_NP_ROM;
-				other_sz = trom;
-				other_flags = tflags;
-			}
-			/* Machine 1 is the host's cartridge, freshly loaded on BOTH consoles before the
-			 * states go in: a state does not set every last internal value (gambatte keeps a
-			 * sprite cursor across a load outside the visible lines), so the machine must come
-			 * about the same way on both, not carry this console's history on one of them. */
-			if (ok)
-				ok = host ? c->load(rombuf, romsz, flags) == 0
-					  : c->load(other_rom, other_sz, other_flags) == 0;
-			if (ok)
-				ok = host ? c->link_open(other_rom, other_sz, other_flags) == 0
-					  : c->link_open(rombuf, romsz, flags) == 0;
-			if (ok) {
-				c->link_select(0);
-				ok = c->state_load(host ? mine : theirs, host ? msz : got) == 0;
-				c->link_select(1);
-				ok = ok && c->state_load(host ? theirs : mine, host ? got : msz) == 0;
-			}
-			if (!ok) {
+			c->state_save(ahead);
+			if (gbc_np_pair(c, vol, host, delay, rom, rombuf, romsz, flags, ahead) != 0) {
 				extern volatile int g_np_begin_rc;
-				pico_np_stop();
-				/* a console lacks the other's game (none is sent), or the start failed */
+				/* the other cartridge too large to take, or the start failed */
 				gba_rom_set_error(g_np_begin_rc == -12 ? RA_ERR_LINKGAME : RA_ERR_START);
 				ayaneo_menu_audio_silence();
 				return;
 			}
-			{	/* each machine's cartridge clock stays its own console's */
-				extern long pico_np_clock_gap(void);
-				c->link_clock(0, 0);
-				c->link_clock(1, pico_np_clock_gap());
-			}
-			c->link_view(host ? 0u : 1u);
-			c->link_select(host ? 0u : 1u);
-			c->set_pad_reader(gbc_np_reader);
-			s_gbc_np = 1;
 		}
 	}
 
@@ -856,6 +970,9 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		/* the buttons: the game's map, the menu's save, load and restart for the hotkeys */
 		pico_input_game(vol, rom->type, rom->name, &s_gbc_igm, -1);
 		pico_input_netplay(s_gbc_np);
+		/* the Netplay page: a session started from here, or Leave for the one this launch began */
+		lui_game_begin(rom->type, rom->name, rom->uname, rom->size, c->version >= GBC_CORE_ABI_V3 && c->link_open);
+		if (s_gbc_np) lui_game_armed_session();
 	}
 
 	/* RetroAchievements: the game's set, with its memory (not in netplay) */
@@ -1031,8 +1148,10 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			extern unsigned ayaneo_gbc_pad_mask(void);
 			unsigned int p1 = 0, p2 = 0, fno, hsz;
 			extern int pico_np_take_reset(unsigned int *p1);
-			if (pico_np_frame(ayaneo_gbc_pad_mask(), &p1, &p2) != 0)
-				break;   /* the other console left or the link is gone: back to the menu */
+			if (pico_np_frame(ayaneo_gbc_pad_mask(), &p1, &p2) != 0) {
+				/* the other console left or the link is gone: this console plays on alone */
+				gbc_np_end_here(c, vol, rom, rombuf, romsz, flags, ahead, ahead_sz, "The other console left.");
+			} else {
 			if (pico_np_take_reset(&p1)) {	/* the host's reset: both linked machines, at the same frame */
 				unsigned int sel = c->link_stat(7);
 				c->link_select(0); c->reset();
@@ -1057,6 +1176,17 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					memset(ahead, 0, hsz);
 					c->link_state_save(ahead);
 					pico_np_hash(fno, pico_np_crc(ahead, hsz));
+					{	/* oem npparts: the same check in parts (the cable, machine 0, machine 1) */
+						extern volatile unsigned int g_np_parts[8][4];
+						unsigned int a0 = (unsigned)ahead[4] | (unsigned)ahead[5] << 8 | (unsigned)ahead[6] << 16 | (unsigned)ahead[7] << 24;
+						unsigned int k = (fno / 120u) % 8u;
+						if (20u + a0 <= hsz) {
+							g_np_parts[k][0] = fno;
+							g_np_parts[k][1] = pico_np_crc(ahead, 20u);
+							g_np_parts[k][2] = pico_np_crc(ahead + 20u, a0);
+							g_np_parts[k][3] = pico_np_crc(ahead + 20u + a0, hsz - 20u - a0);
+						}
+					}
 					{	/* oem npdump: this state on the card (/states/gba/np_dump.bin), once */
 						extern volatile int g_np_dump;
 						if (g_np_dump) {
@@ -1065,6 +1195,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 						}
 					}
 				}
+			}
 			}
 		}
 		{ unsigned int _t = gpt4_get_current_tick();
@@ -1102,7 +1233,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					 * 2x floor so a squeeze always advances even on a low CPU clock. */
 					/* no multiplier and no cap: more frames while one still fits before this
 					 * refresh's present (gambatte renders every frame, so each costs gbc_emu_us) */
-					extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us);
+					extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us); extern int ayaneo_ff_cap_frames(void);
 					unsigned int fe = gbc_emu_us ? gbc_emu_us : 2500u;
 					unsigned int blit = g_dbg_blit_us < 15500u ? g_dbg_blit_us : 0u;
 					int n = 1;
@@ -1115,7 +1246,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 						gbc_ra_frame();			/* and each fast forward frame */
 						ayaneo_gbc_audio_submit(snd, s2);
 						n++;
-						more = (n < 120 && ayaneo_ff_fits(ff_t0, blit, fe, 0));
+						more = (n < ayaneo_ff_cap_frames() && ayaneo_ff_fits(ff_t0, blit, fe, 0));
 						if (!more && ahead_sz && ayaneo_rewind_ready()) {   /* one snapshot per shown frame */
 							void *p = ayaneo_rewind_capture_begin();
 							if (p) { c->state_save(p); ayaneo_rewind_capture_commit(ahead_sz); }
@@ -1133,6 +1264,44 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			 * Holding AYA ~1.5 s force-exits to the selector - a safety so a broken
 			 * menu can never soft-lock the game (the watchdog is disabled here). */
 			pico_input_frame(g_gbc_menu_open);	/* the hotkeys: states, restart, the menu (a tap of its key) */
+			/* the Netplay page: hosting and joining go on while the menu is up; a start or a Leave
+			 * it asked for happens here, between frames */
+			lui_game_tick(g_gbc_menu_open && s_gbc_igm_on);
+			{
+				int want = lui_game_start_wanted();
+				if (want >= 0 && !s_gbc_np) {
+					extern int pico_np_armed(unsigned int *delay);
+					extern int pico_ra_game_loaded(void) __attribute__((weak));
+					extern void pico_ra_game_end(void) __attribute__((weak));
+					unsigned int delay = 2, msz = c->state_size();
+					int host = pico_np_armed(&delay);
+					if (host >= 0 && msz && msz <= GBC_NP_HALF) {
+						ayaneo_menu_audio_silence();	/* the start takes seconds: no looping sound */
+						if (pico_ra_game_loaded && pico_ra_game_loaded() && pico_ra_game_end)
+							pico_ra_game_end();	/* achievements stop for this game: the other console plays in it */
+						if (c->version >= GBC_CORE_ABI_V5 && c->cheat_reset) c->cheat_reset();
+						c->state_save(ahead);
+						s_np_vbuf = vbuf; s_np_b_prev = 1;
+						pico_np_set_progress(gbc_np_progress);
+						s_gbc_np_touched = 0;
+						if (gbc_np_pair(c, vol, host, delay, rom, rombuf, romsz, flags, ahead) == 0) {
+							pico_input_netplay(1);
+							lui_game_session(1, 0);
+						} else {
+							if (s_gbc_np_touched) gbc_np_solo(c, vol, rombuf, romsz, flags, ahead, msz);
+							gbc_cheats_again(c, vol, rom, rombuf, romsz);
+							lui_game_session(0, gbc_np_why());
+						}
+						pico_np_set_progress(0);
+						s_np_vbuf = 0;
+						s_mstat[0] = 0;
+						ayaneo_rewind_reset(ahead_sz);
+					} else
+						lui_game_session(0, "The session could not start.");
+				}
+				if (lui_game_leave_wanted() && s_gbc_np)
+					gbc_np_end_here(c, vol, rom, rombuf, romsz, flags, ahead, ahead_sz, 0);
+			}
 			aya = PRESSED(GPIO_AYA);
 			{ extern volatile int g_dbg_igm_toggle;   /* oem igm: a tap of the menu key */
 			  if (g_dbg_igm_toggle) { g_dbg_igm_toggle = 0; aya_prev = 0; aya = 1; } }
@@ -1332,6 +1501,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		c->set_pad_reader(0);
 		s_gbc_np = 0;
 	}
+	lui_game_end();
 	/* persist the cartridge battery save + a suspend save STATE (so the next launch
 	 * resumes), then hand the codec back to the menu */
 	{

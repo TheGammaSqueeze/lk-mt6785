@@ -115,4 +115,34 @@ int  lui_paint_progress(const struct lui_progress *p);
 const char *lui_model_name(int model);
 const char *lui_system_name(int type);
 
+/* ---- in a game: the in-game menu's Netplay page (IGM_NET), for link cable games ----
+ * A session started where the game stands: Host a Session (this console waits for a friend while
+ * the menu is open), Join a Session (the hosts nearby whose game links with this one, Left / Right,
+ * then A), Leave the Session. No save travels: the machines as they are now do. */
+/* a game starts: system GBA_CONSOLE_*, its name on the card, as shown, its file's size; can: the
+ * runner starts and ends sessions in a game (the page is offered only then) */
+void lui_game_begin(int system, const char *name, const char *shown, unsigned int size, int can);
+void lui_game_end(void);
+/* the runner, each frame at a point between frames: the start the page asked for (1 host, 0 guest,
+ * -1 none; the arming is set: the runner's start reads pico_np_armed as at a launch), and Leave */
+int  lui_game_start_wanted(void);
+int  lui_game_leave_wanted(void);
+/* the runner: the session started (on 1), or it ended or never started (why: the page says so,
+ * or NULL). Bluetooth goes off when it ends. */
+void lui_game_session(int on, const char *why);
+void lui_game_armed_session(void);	/* a session from an armed launch: the page offers Leave */
+/* each frame on the game's thread: hosting and joining go on while the menu is up */
+void lui_game_tick(int menu_open);
+/* the start's step and how far, for the runner's painter while it starts */
+const char *lui_game_progress(void);
+/* the page, as the Controls page's: its rows (titles in English, values in the language) */
+int  lui_game_page(void);
+void lui_game_page_open(void);
+int  lui_game_rows(void);
+const char *lui_game_row_title(int i);
+const char *lui_game_row_value(int i);
+int  lui_game_row_head(int i);
+int  lui_game_row_change(int i, int dir);
+unsigned int lui_game_sig(void);	/* changes whenever the page should be drawn again */
+
 #endif

@@ -1474,9 +1474,9 @@
    "note": "button hint: A accepts the notice and goes on"
   },
   {
-   "en": "Both consoles need both games to play linked. Copy them first with Link, Send and Receive.",
+   "en": "The other console's game is too large to play linked with this one.",
    "kind": "about",
-   "note": "note when a game played with the link cable cannot start: each console needs both games on its card; Link, Send and Receive are names in the menus"
+   "note": "note when a linked game cannot start: the other console's cartridge does not fit this console's memory (it is sent over for the session)"
   },
   {
    "en": "Same game",
@@ -2012,6 +2012,101 @@
    "en": "Open the menu",
    "kind": "label",
    "note": "in-game menu, Controls page: hotkey that opens this in-game menu"
+  },
+  {
+   "en": "Fast Forward Speed",
+   "kind": "label",
+   "note": "in-game menu setting: the most fast forward speeds the game up (2x to 10x, or Unlimited)"
+  },
+  {
+   "en": "Unlimited",
+   "kind": "value",
+   "note": "value of Fast Forward Speed: as fast as the console can go"
+  },
+  {
+   "en": "Netplay",
+   "kind": "label",
+   "note": "in-game menu: the page for playing a link cable game together with another console, started from the game"
+  },
+  {
+   "en": "Host a Session",
+   "kind": "label",
+   "note": "Netplay page row: this console waits for a friend to join, from where the game is"
+  },
+  {
+   "en": "Stop Hosting",
+   "kind": "label",
+   "note": "Netplay page row while hosting: stop waiting for a friend"
+  },
+  {
+   "en": "Join a Session",
+   "kind": "label",
+   "note": "Netplay page row: look for consoles nearby that host a game this game links with"
+  },
+  {
+   "en": "Leave the Session",
+   "kind": "label",
+   "note": "Netplay page row in a session: stop playing together; each console's game carries on alone"
+  },
+  {
+   "en": "Playing With",
+   "kind": "heading",
+   "note": "Netplay page, small heading over the other console's name during a session"
+  },
+  {
+   "en": "Waiting for a friend...",
+   "kind": "status",
+   "note": "Netplay page while hosting"
+  },
+  {
+   "en": "Joining...",
+   "kind": "status",
+   "note": "Netplay page while joining a host"
+  },
+  {
+   "en": "Looking...",
+   "kind": "value",
+   "note": "Netplay page, Join row: no host found nearby yet"
+  },
+  {
+   "en": "The other console cannot play with this game.",
+   "kind": "about",
+   "note": "Netplay page note: the joining console's game does not link with this one"
+  },
+  {
+   "en": "The other console's game cannot link with this one.",
+   "kind": "about",
+   "note": "Netplay page note: the host's game is of a system that does not link with this game's"
+  },
+  {
+   "en": "Not in RetroAchievements hardcore",
+   "kind": "about",
+   "note": "Netplay page note: playing together is not allowed while RetroAchievements hardcore mode is on"
+  },
+  {
+   "en": "Cancelled",
+   "kind": "status",
+   "note": "Netplay page note: the session's start was cancelled on this console"
+  },
+  {
+   "en": "The other console cancelled.",
+   "kind": "about",
+   "note": "Netplay page note: the other console cancelled the session's start"
+  },
+  {
+   "en": "The other console did not answer.",
+   "kind": "about",
+   "note": "Netplay page note: the session's start timed out"
+  },
+  {
+   "en": "The session could not start.",
+   "kind": "about",
+   "note": "Netplay page note: the session's start failed for another reason"
+  },
+  {
+   "en": "The other console left.",
+   "kind": "about",
+   "note": "Netplay page note: the session ended because the other console left or went out of reach; this game carries on alone"
   }
  ]
 }

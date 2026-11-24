@@ -29,6 +29,7 @@
 #include "pico_i18n.h"              /* tr(): the menus' languages */
 #include "pico_input.h"             /* the Controls page */
 #include "pico_cheats.h"            /* the Cheats tab */
+#include "pico_link_ui.h"           /* the Netplay tab */
 
 extern unsigned int gpt4_get_current_tick(void);
 extern void ayaneo_canvas_dims(unsigned int *cw, unsigned int *ch);
@@ -50,7 +51,7 @@ extern volatile unsigned int g_dbg_cigm_us[6];   /* oem diag: what a paint costs
 
 typedef struct { int kind, item; const char *label; } cline;
 static const char *const k_page[IGM_NPAGES] = { "", "Display", "Sound", "Gameplay", "System", "Core options",
-						 "Achievements", "Cheats", "Controls" };
+						 "Achievements", "Cheats", "Controls", "Netplay" };
 
 /* RetroAchievements (pico_ra.c, on the consoles with Wi-Fi; absent elsewhere) */
 extern int pico_ra_game_loaded(void) __attribute__((weak));
@@ -69,6 +70,7 @@ static int row_head(int page, int item)
 {
 	if (page == IGM_CHT) return pico_cheats_row_head(item);
 	if (page == IGM_CTL) return pico_input_row_head(item);
+	if (page == IGM_NET) return lui_game_row_head(item);
 	return page == IGM_ACH && pico_ra_row_head && pico_ra_row_head(item);
 }
 /* the Achievements tab: any game of a system RetroAchievements knows (the account and settings,
@@ -161,6 +163,14 @@ static int lines(int page, cline *out)
 		}
 		return n;
 	}
+	if (page == IGM_NET) {	/* a link cable game's session: host, join, leave */
+		int k = lui_game_rows();
+		for (i = 0; i < k && n < ROWS; i++, n++) {
+			out[n].kind = lui_game_row_head(i) ? IGM_INFO : lui_game_row_value(i) ? IGM_VALUE : IGM_ACTION;
+			out[n].item = i; out[n].label = lui_game_row_title(i);
+		}
+		return n;
+	}
 	if (page == IGM_TOP) { out[0].kind = IGM_ACTION; out[0].item = -1; out[0].label = "Resume"; n = 1; }
 	for (i = 0; i < c->nrows && n < ROWS; i++) {
 		const struct igm_row *r = &c->rows[i];
@@ -196,6 +206,7 @@ static const char *row_value(int page, int row, const cline *l, char *buf, int *
 		return pico_cheats_row_value(l->item);
 	}
 	else if (page == IGM_CTL) return pico_input_row_value(l->item);
+	else if (page == IGM_NET) return lui_game_row_value(l->item);
 	else if (l->kind == IGM_LINK || l->item < 0) return 0;
 	else if ((l->item == c->save_item || l->item == c->load_item) && c->slot_item >= 0) {
 		char s[96], w[32], *sp;
@@ -246,6 +257,7 @@ static void tabs_lay_out(void)
 	if (ra_on() && C.ntab < IGM_NPAGES) C.tab[C.ntab++] = IGM_ACH;	/* RetroAchievements: the game's set */
 	if (pico_cheats_page() && C.ntab < IGM_NPAGES) C.tab[C.ntab++] = IGM_CHT;	/* the game's cheats */
 	if (pico_input_page() && C.ntab < IGM_NPAGES) C.tab[C.ntab++] = IGM_CTL;	/* the buttons */
+	if (lui_game_page() && C.ntab < IGM_NPAGES) C.tab[C.ntab++] = IGM_NET;	/* playing together from here */
 	C.tab_sc = 0.8f;
 	for (;;) {
 		total = 0;
@@ -335,6 +347,7 @@ static void go(int page, int dir)
 {
 	if (page == IGM_CHT && page != C.page) pico_cheats_page_open();
 	if (page == IGM_CTL && page != C.page) pico_input_page_open();
+	if (page == IGM_NET && page != C.page) lui_game_page_open();
 	C.from = C.page; C.page = page; C.dir = dir; C.page_t = 0;
 	if (dir > 0) { C.sel[page] = 0; C.top[page] = 0; }
 	C.hy = (float)C.sel[page];
@@ -347,6 +360,7 @@ static void tab_step(int dir)
 	if (C.ntab < 2) return;
 	if (C.tab[i] == IGM_CHT && C.page != IGM_CHT) pico_cheats_page_open();
 	if (C.tab[i] == IGM_CTL && C.page != IGM_CTL) pico_input_page_open();
+	if (C.tab[i] == IGM_NET && C.page != IGM_NET) lui_game_page_open();
 	C.from = C.page; C.page = C.tab[i]; C.dir = dir; C.page_t = 0;
 	C.hy = (float)C.sel[C.page];
 	C.nudge_t = 1; C.dirty = 1;
@@ -391,6 +405,11 @@ int pico_classic_igm_frame(unsigned int keys)
 		snprintf(C.toast, sizeof C.toast, "%s", cui_say(CF_M, C.c->status));
 		pico_tr_igm_scope(0);
 		C.c->status[0] = 0; C.toast_t = 0; C.dirty = 1;
+	}
+	if (C.page == IGM_NET) {	/* the Netplay tab moves on by itself: a host found, a friend joined */
+		static unsigned shown_sig;
+		unsigned sig = lui_game_sig();
+		if (sig != shown_sig) { shown_sig = sig; C.dirty = 1; s_rowh_ok = 0; }
 	}
 	n = lines(C.page, ln);
 	if (C.sel[C.page] >= n) C.sel[C.page] = n ? n - 1 : 0;
@@ -475,6 +494,12 @@ int pico_classic_igm_frame(unsigned int keys)
 		}
 		if (C.page == IGM_CTL) {	/* Left / Right step a job's button, A listens for one */
 			if ((dir || a) && pico_input_row_change(l->item, dir)) {
+				C.nudge_row = sel; C.nudge_dir = dir ? dir : 1; C.nudge_t = 0; C.dirty = 1; s_rowh_ok = 0;
+			}
+			dir = 0; a = 0;
+		}
+		if (C.page == IGM_NET) {	/* host, join (Left / Right the host), leave */
+			if ((dir || a) && lui_game_row_change(l->item, dir)) {
 				C.nudge_row = sel; C.nudge_dir = dir ? dir : 1; C.nudge_t = 0; C.dirty = 1; s_rowh_ok = 0;
 			}
 			dir = 0; a = 0;
@@ -570,6 +595,7 @@ static void rows(int page, float y0, float dx, float op, int bar)
 		if (s_only_row >= 0 && i != s_only_row) continue;
 		if (row_head(page, l->item)) {	/* a group's heading: its name and count, small and grey */
 			const char *cnt = page == IGM_CHT ? pico_cheats_row_value(l->item) : page == IGM_CTL ? "" :
+					  page == IGM_NET ? lui_game_row_value(l->item) :
 					  pico_ra_row_value ? pico_ra_row_value(l->item) : "";
 			float ho = op;
 			if (cy < y0) ho *= cui_clamp01(1 - (y0 - cy) / 40);

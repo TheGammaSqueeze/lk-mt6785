@@ -127,9 +127,11 @@ int main(int argc, char **argv)
 	s_root = argc > 1 ? argv[1] : "/tmp/pico_input_card";
 	memset(&vol, 0, sizeof vol);
 
-	/* before any game: the toggles' hotkeys are R2 and L2 */
+	/* before any game: R2 toggles fast forward, L2 rewinds while held (no rewind toggle) */
 	s_lines = B(PB_R2);
 	CHECK(pico_input_hot_down(PH_FF) && !pico_input_hot_down(PH_RW), "R2 is fast forward with no game");
+	s_lines = B(PB_L2);
+	CHECK(pico_input_hot_down(PH_RW_HOLD) && !pico_input_hot_down(PH_RW), "L2 is the rewind hold with no game");
 
 	/* the GBA, no map on the card: as always */
 	s_lines = 0;
@@ -178,7 +180,7 @@ int main(int argc, char **argv)
 	CHECK(pico_input_gba_keys() == 0x003u, "Button 1 for A and B: %03x", pico_input_gba_keys());
 	/* the system's map on the card */
 	t = slurp("/gammaos/controls/gba.map");
-	CHECK(t && !strncmp(t, "map\n", 4) && strstr(t, "\na=ex1\n") && strstr(t, "\nb=ex1\n") && strstr(t, "\nff=r2\n"),
+	CHECK(t && !strncmp(t, "map 2\n", 6) && strstr(t, "\na=ex1\n") && strstr(t, "\nb=ex1\n") && strstr(t, "\nff=r2\n"),
 	      "gba.map: %s", t ? t : "(none)");
 
 	/* Left / Right: from B's Button 1 back to None and on past the buttons, never the menu key */
@@ -303,6 +305,24 @@ int main(int argc, char **argv)
 		s_lines = 0; pico_input_pad();
 		s_lines = B(PB_A) | B(PB_B) | B(PB_R);
 		CHECK(pico_input_pad() == (J(PJ_A) | J(PJ_B) | J(PJ_L) | J(PJ_R)), "SNES broken map %04x", pico_input_pad());
+	}
+	/* a 1.1.1 map: rewind still the toggle on L2 takes the hold; one the player moved keeps it */
+	{
+		FILE *f;
+		char p[1024];
+		snprintf(p, sizeof p, "%s/gammaos/controls/gbc.map", s_root);
+		f = fopen(p, "wb"); fputs("map\na=a\nrewind=l2\nrewind_hold=-\nsave=select+ex2\n", f); fclose(f);
+		pico_input_game(&vol, GBA_CONSOLE_GBC, "Zelda.gbc", &s_igm, -1);
+		s_lines = B(PB_L2);
+		CHECK(pico_input_hot_down(PH_RW_HOLD) && !pico_input_hot_down(PH_RW), "1.1.1 map: L2 not moved to the hold");
+		f = fopen(p, "wb"); fputs("map\nrewind=l2+select\nrewind_hold=-\n", f); fclose(f);
+		pico_input_game(&vol, GBA_CONSOLE_GBC, "Zelda.gbc", &s_igm, -1);
+		s_lines = B(PB_L2) | B(PB_SELECT);
+		CHECK(pico_input_hot_down(PH_RW) && !pico_input_hot_down(PH_RW_HOLD), "1.1.1 map: the player's rewind changed");
+		f = fopen(p, "wb"); fputs("map 2\nrewind=l2\nrewind_hold=-\n", f); fclose(f);
+		pico_input_game(&vol, GBA_CONSOLE_GBC, "Zelda.gbc", &s_igm, -1);
+		s_lines = B(PB_L2);
+		CHECK(pico_input_hot_down(PH_RW) && !pico_input_hot_down(PH_RW_HOLD), "map 2: the player's toggle changed");
 	}
 	pico_input_game_end();
 	CHECK(!pico_input_page(), "page with no game");

@@ -430,7 +430,7 @@ static void snes_slot_check(void)
 }
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
        SM_CPU, SM_RUNAHEAD, SM_REWIND, SM_TURBO, SM_BENCH, SM_SHOWFPS, SM_EMU, SM_CORE, SM_BATTERY, SM_PANEL, SM_STROBE, SM_RESUME,
-       SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_COUNT };
+       SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_FFCAP, SM_COUNT };
 #define SNES_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
 static const char *snes_turbo_name(int t)
@@ -480,6 +480,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_AUDIO:  return "Audio Filter";  case SM_HIRES:    return "Hi-Res Blend";
 	case SM_CPU:    return "CPU Clock"; case SM_RUNAHEAD: return "Run-Ahead";
 	case SM_REWIND: return "Rewind";
+	case SM_FFCAP:  return "Fast Forward Speed";
 	case SM_TURBO:  return "Turbo (auto-fire)";
 	case SM_BENCH:  return "Benchmark (Uncap)"; case SM_PANEL: return "Panel Refresh";
 	case SM_SHOWFPS: return "Show FPS"; case SM_BATTERY: return "Battery";
@@ -519,6 +520,7 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 		p = smput(p, " Hz"); break; }
 	case SM_STROBE: { int b = ayaneo_get_strobe(); p = smput(p, ayaneo_strobe_name(b)); } break;
 	case SM_REWIND: { extern int ayaneo_get_rewind(void); p = smput(p, ayaneo_get_rewind() ? "On" : "Off"); } break;
+	case SM_FFCAP:    { extern const char *ayaneo_ff_cap_name(char *buf); char t[8]; p = smput(p, ayaneo_ff_cap_name(t)); } break;
 	case SM_RESUME: { extern int ayaneo_get_resume_on_boot(void); p = smput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case SM_SLOT: p = smputu(p, (unsigned)s_save_slot); p = smput(p, s_slot_used ? " used" : " empty"); break;
 	case SM_SAVE: case SM_LOAD: case SM_RESET: case SM_CLOSE: p = smput(p, "[A]"); break;
@@ -628,6 +630,8 @@ static int sm_change(int i, int dir, int act)
 	case SM_STROBE: if (dir) { ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); snes_settings_touch(); } break;
 	case SM_REWIND: if (dir || act) { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
 			ayaneo_set_rewind(!ayaneo_get_rewind()); snes_settings_touch(); } break;
+	case SM_FFCAP:  if (dir || act) { extern void ayaneo_step_ff_cap(int dir);
+			ayaneo_step_ff_cap(dir ? dir : 1); snes_settings_touch(); } break;
 	case SM_RESUME: if (dir) { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
 			ayaneo_set_resume_on_boot(!ayaneo_get_resume_on_boot()); snes_settings_touch(); } break;
 	case SM_SLOT: if (dir) { s_save_slot = (s_save_slot + dir + SNES_SLOT_COUNT) % SNES_SLOT_COUNT;
@@ -678,6 +682,7 @@ static const struct igm_row k_snes_igm_rows[] = {
 	{ SM_VOLUME, IGM_SOUND, IGM_VALUE }, { SM_AUDIO, IGM_SOUND, IGM_VALUE },
 	{ SM_CPU, IGM_PLAY, IGM_VALUE }, { SM_RUNAHEAD, IGM_PLAY, IGM_VALUE },
 	{ SM_REWIND, IGM_PLAY, IGM_VALUE }, { SM_TURBO, IGM_PLAY, IGM_VALUE },
+	{ SM_FFCAP, IGM_PLAY, IGM_VALUE },
 	{ SM_BENCH, IGM_PLAY, IGM_VALUE }, { SM_PANEL, IGM_PLAY, IGM_INFO },
 	{ SM_EMU, IGM_PLAY, IGM_VALUE }, { IGM_CORE, IGM_PLAY, IGM_LINK },
 	{ SM_RESUME, IGM_SYSTEM, IGM_VALUE }, { SM_BATTERY, IGM_SYSTEM, IGM_INFO },
@@ -1190,14 +1195,14 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			static unsigned int s_snes_render_us;   /* last FF final-render cost (us), for the reserve */
 			/* no multiplier and no cap: render-skipped frames while one still fits before this
 			 * refresh's present (ayaneo_ff_fits), then one rendered frame, the picture shown */
-			extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us);
+			extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us); extern int ayaneo_ff_cap_frames(void);
 			unsigned int skip = snes_emu_us ? snes_emu_us : 1500u;   /* committed (render-skipped) cost */
 			unsigned int rend = s_snes_render_us ? s_snes_render_us : 4000u;
 			unsigned int blit = g_snes_show_us;
 			int n = 1, last = 0;
 			while (!last) {
 				unsigned int _t = 0;
-				last = !(n < 120 && ayaneo_ff_fits(ff_t0, blit, skip, rend));
+				last = !(n < ayaneo_ff_cap_frames() - 1 && ayaneo_ff_fits(ff_t0, blit, skip, rend));
 				if (c->set_av_skip) c->set_av_skip(last ? 0 : 1, 0);
 				if (last) _t = gpt4_get_current_tick();
 				c->run(&f);

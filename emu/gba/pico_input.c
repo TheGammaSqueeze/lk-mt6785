@@ -193,8 +193,8 @@ struct pi_job {
 	{ "left", "Left", J_IN, PJ_LEFT, PB_LEFT }, { "right", "Right", J_IN, PJ_RIGHT, PB_RIGHT }
 #define HOTKEYS { "ff", "Fast forward", J_HOT, PH_FF, PB_R2 }, \
 	{ "ff_hold", "Fast forward (hold)", J_HOT, PH_FF_HOLD, NB }, \
-	{ "rewind", "Rewind", J_HOT, PH_RW, PB_L2 }, \
-	{ "rewind_hold", "Rewind (hold)", J_HOT, PH_RW_HOLD, NB }, \
+	{ "rewind", "Rewind", J_HOT, PH_RW, NB }, \
+	{ "rewind_hold", "Rewind (hold)", J_HOT, PH_RW_HOLD, PB_L2 }, \
 	{ "save", "Save state", J_HOT, PH_SAVE, NB }, { "load", "Load state", J_HOT, PH_LOAD, NB }, \
 	{ "restart", "Reset Game", J_HOT, PH_RESTART, NB }, { "menu", "Open the menu", J_HOT, PH_MENU, NB }
 
@@ -330,10 +330,25 @@ static int button_of(const char *t, int n)
 
 /* a map file's text read into the map: "map" first, then "<job>=<button>[+<button>..]" or "<job>=-";
  * what it does not name stays as it was. 0 when it is not a map (a game's file put back to none). */
+/* The map file's form: "map" (GammaOS Pico 1.1.1, where L2 toggled rewind by default), "map 2"
+ * (since 1.1.2: L2 rewinds while held). A file records every job, the defaults too, so a 1.1.1 map
+ * whose rewind is still the toggle on L2 alone, with no button held for it, had only kept the old
+ * default: it takes the new one. One whose player moved either keeps it. */
+#define MAP_FORM 2
+static int job_index(int kind, int out);
+static void map_old_rewind(void)
+{
+	int t = job_index(J_HOT, PH_RW), h = job_index(J_HOT, PH_RW_HOLD);
+	if (t >= 0 && h >= 0 && S.map[t] == (1u << PB_L2) && !S.map[h]) {
+		S.map[t] = 0;
+		S.map[h] = 1u << PB_L2;
+	}
+}
+
 static int map_parse(char *t, unsigned int n)
 {
 	char *p = t, *e, *end = t + n;
-	int first = 1;
+	int first = 1, form = 1;
 	while (p < end) {
 		char *eq;
 		int i, nl;
@@ -341,7 +356,8 @@ static int map_parse(char *t, unsigned int n)
 		nl = (int)(e - p);
 		if (nl && p[nl - 1] == '\r') nl--;
 		if (first) {
-			if (nl != 3 || memcmp(p, "map", 3)) return 0;
+			if (nl < 3 || memcmp(p, "map", 3) || (nl > 3 && p[3] != ' ')) return 0;
+			if (nl > 4) form = p[4] - '0';
 			first = 0;
 			p = e + 1;
 			continue;
@@ -372,6 +388,7 @@ static int map_parse(char *t, unsigned int n)
 		}
 		p = e + 1;
 	}
+	if (!first && form < 2) map_old_rewind();
 	return !first;
 }
 
@@ -391,7 +408,7 @@ static unsigned int map_text(char *out, unsigned int cap)
 {
 	unsigned int len = 0;
 	int i, b;
-	len += (unsigned int)snprintf(out + len, cap - len, "map\n");
+	len += (unsigned int)snprintf(out + len, cap - len, "map %d\n", MAP_FORM);
 	for (i = 0; i < S.nj && len + 64 < cap; i++) {
 		int any = 0;
 		len += (unsigned int)snprintf(out + len, cap - len, "%s=", S.job[i].tok);

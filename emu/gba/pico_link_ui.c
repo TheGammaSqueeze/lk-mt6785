@@ -925,3 +925,383 @@ void lui_view(struct lui_view *v)
 int lui_action_rom(void) { return s_act_rom; }
 int lui_action_host(void) { return s_act_host; }
 int lui_action_system(void) { return s_act_system; }
+
+/* ---- in a game: the in-game menu's Netplay page ----
+ * A link cable game (GB, GBC, GBA) can start a session where it stands, with no save going
+ * anywhere: each console sends the other its machine as it is now (and its cartridge when the
+ * other lacks it, pico_netplay.c), the two machines are wired together, and both play on. The
+ * same messages as the Link screens ('T', 'I', 'J'), so a console in a game and one in the menu
+ * find each other either way round: a host in a game takes a guest that joined from the Link
+ * screen (which then launches its game for the session), and a guest in a game joins a host
+ * waiting on the Link screen.
+ * The page only asks: the runner starts the session at a point of its own between frames
+ * (lui_game_start_wanted), ends it (lui_game_leave_wanted) and says how it went
+ * (lui_game_session). Bluetooth is on only while hosting, finding, joining or playing. */
+enum { GS_OFF, GS_HOSTING, GS_FINDING, GS_JOINING, GS_STARTING, GS_PLAYING };
+static struct {
+	int system;			/* the running game's, -1 no game (the page is not offered) */
+	char name[128];			/* its file name on the card ('I') */
+	char shown[128];		/* its name as shown ('J', the start's screen) */
+	unsigned int size;		/* its file's size ('I') */
+	int state;
+	int start_req;			/* the runner is to start: 1 host, 0 guest, -1 nothing */
+	int leave_req;
+	int info_sent, time_sent;
+	int sel;			/* GS_FINDING: the host picked among s_peer */
+	char note[160];			/* the page's last word, in English (why a start failed, a session ended) */
+	char value[96];
+} G = { -1 };
+
+/* the systems whose games link with the running one's (the two Game Boys share one core) */
+static int gm_links_with(int system)
+{
+	if (G.system == 2) return system == 2;
+	return system == 0 || system == 1;
+}
+
+static void gm_off(const char *note)
+{
+	if (G.state == GS_JOINING)
+		{ unsigned char m[3] = { 'J', JOIN_LEFT, PICO_BT_MODEL_NO }; pico_link_send(m, 3); pico_link_flush(300u); }
+	bt_off();
+	G.state = GS_OFF;
+	G.start_req = -1;
+	if (note) snprintf(G.note, sizeof G.note, "%s", note);
+}
+
+void lui_game_begin(int system, const char *name, const char *shown, unsigned int size, int can)
+{
+	G.system = can && link_system(system) ? system : -1;
+	G.size = size;
+	snprintf(G.name, sizeof G.name, "%s", name ? name : "");
+	snprintf(G.shown, sizeof G.shown, "%s", shown && shown[0] ? shown : G.name);
+	G.state = GS_OFF;
+	G.start_req = -1;
+	G.leave_req = 0;
+	G.note[0] = 0;
+}
+
+void lui_game_end(void)
+{
+	if (G.state != GS_PLAYING && G.state != GS_STARTING)
+		gm_off(0);
+	G.system = -1;
+	G.state = GS_OFF;
+}
+
+void lui_game_session(int on, const char *why)
+{
+	if (on) {
+		G.state = GS_PLAYING;
+		G.note[0] = 0;
+		s_bt_on = 0;			/* the session's now */
+		return;
+	}
+	if (G.state == GS_PLAYING || G.state == GS_STARTING) {
+		s_bt_on = 1;			/* whoever had it: off */
+		bt_off();
+	}
+	G.state = GS_OFF;
+	G.start_req = -1;
+	G.leave_req = 0;
+	if (why) snprintf(G.note, sizeof G.note, "%s", why);
+}
+
+int lui_game_start_wanted(void)
+{
+	int h = G.start_req;
+	G.start_req = -1;
+	return h;
+}
+int lui_game_leave_wanted(void)
+{
+	int l = G.leave_req;
+	G.leave_req = 0;
+	return l;
+}
+/* a session started from the Link screen (an armed launch) is the page's too: Leave ends it */
+void lui_game_armed_session(void)
+{
+	if (G.system >= 0) {
+		G.state = GS_PLAYING;
+		G.note[0] = 0;
+	}
+}
+
+/* the start's progress for the runner's own painter: the step in words, how far */
+const char *lui_game_progress(void)
+{
+	static const char *const steps[] = { "", "Waiting for the other console", "Sending your game",
+					     "Receiving the other game", "Sending your save", "Receiving the other save",
+					     "Starting" };
+	unsigned int done, total, kbs;
+	int phase;
+	pico_np_progress(&phase, &done, &total, &kbs);
+	if (phase < 0 || phase > PICO_NP_STARTING) phase = 0;
+	if (total && done <= total)
+		snprintf(s_line, sizeof s_line, "%s  %u%%", lt(steps[phase]), (unsigned)((unsigned long long)done * 100u / total));
+	else
+		snprintf(s_line, sizeof s_line, "%s", lt(steps[phase]));
+	return s_line;
+}
+
+static void gm_start(int host)
+{
+	pico_np_set_progress(0);		/* the runner paints its own start (lui_game_progress) */
+	pico_np_arm(host, LUI_DELAY);
+	G.start_req = host;
+	G.state = GS_STARTING;
+}
+
+/* the host's side: a guest opened a link; our time and our game go, its answer comes */
+static void gm_host_step(void)
+{
+	unsigned char m[200];
+	int n;
+	if (G.info_sent && pico_link_state() != PICO_LINK_OPEN) {	/* it left: wait for another */
+		G.info_sent = 0;
+		pico_link_want(1);
+	}
+	if (pico_link_state() == PICO_LINK_OPEN && !G.info_sent) {
+		unsigned int k = 0;
+		time_send();
+		m[0] = 'I';
+		m[1] = (unsigned char)G.system;
+		put32(m + 2, G.size);
+		while (G.name[k] && k < 120u) k++;
+		memcpy(m + 6, G.name, k);
+		if (pico_link_send(m, 6 + k) == 0)
+			G.info_sent = 1;
+	}
+	while ((n = pico_link_recv(m, sizeof m)) > 0) {
+		if (m[0] == 'T') { time_take(m, n); continue; }
+		if (m[0] == 'J' && n >= 3) {
+			s_other_model = m[2];
+			if (m[1] == JOIN_PLAYS) { gm_start(1); return; }
+			if (m[1] == JOIN_LEFT) continue;	/* still hosting: the next friend */
+			snprintf(G.note, sizeof G.note, "%s", "The other console cannot play with this game.");
+		}
+	}
+}
+
+/* the guest's side: the link is open; the host's game says whether ours links with it */
+static void gm_join_step(void)
+{
+	unsigned char m[200];
+	int n;
+	if (pico_link_state() != PICO_LINK_OPEN && pico_link_state() != PICO_LINK_OPENING) {
+		gm_off("The other console could not be reached.");
+		return;
+	}
+	if (!G.time_sent && pico_link_state() == PICO_LINK_OPEN) {
+		time_send();
+		G.time_sent = 1;
+	}
+	while ((n = pico_link_recv(m, sizeof m)) > 0) {
+		if (m[0] == 'T') { time_take(m, n); continue; }
+		if (m[0] == 'I' && n >= 6) {
+			unsigned char r[3 + 128];
+			unsigned int k = 0;
+			r[0] = 'J';
+			r[2] = (unsigned char)PICO_BT_MODEL_NO;
+			if (!gm_links_with(m[1])) {
+				r[1] = JOIN_CANNOT;
+				pico_link_send(r, 3);
+				pico_link_flush(300u);
+				gm_off("The other console's game cannot link with this one.");
+				return;
+			}
+			r[1] = JOIN_PLAYS;
+			while (G.shown[k] && k < 120u) k++;
+			memcpy(r + 3, G.shown, k);
+			pico_link_send(r, 3 + k);
+			gm_start(0);
+			return;
+		}
+	}
+}
+
+/* each frame on the game's thread (menu_open: the in-game menu is up). Hosting, finding and
+ * joining stop when the menu closes: a start never comes over a game being played. */
+static void gm_debug_step(void);
+void lui_game_tick(int menu_open)
+{
+	if (G.system < 0)
+		return;
+	if (menu_open) gm_debug_step();
+	if (!menu_open && (G.state == GS_HOSTING || G.state == GS_FINDING || G.state == GS_JOINING)) {
+		gm_off(0);
+		return;
+	}
+	if (G.state == GS_HOSTING) gm_host_step();
+	else if (G.state == GS_JOINING) gm_join_step();
+}
+
+/* the page's rows: Host, Join (the hosts nearby, Left / Right), or Leave in a session */
+enum { GR_HOST, GR_JOIN, GR_LEAVE, GR_WITH, GR_NOTE };
+static int gm_rows[4], gm_nrows;
+static void gm_layout(void)
+{
+	gm_nrows = 0;
+	if (G.state == GS_PLAYING || G.state == GS_STARTING) {
+		gm_rows[gm_nrows++] = GR_LEAVE;
+		gm_rows[gm_nrows++] = GR_WITH;
+	} else {
+		gm_rows[gm_nrows++] = GR_HOST;
+		gm_rows[gm_nrows++] = GR_JOIN;
+	}
+	if (G.note[0] || G.state == GS_HOSTING || G.state == GS_JOINING)
+		gm_rows[gm_nrows++] = GR_NOTE;
+}
+static void gm_peers(void)
+{
+	struct pico_peer all[LUI_ROWS];
+	int i, n = pico_link_peers(all, LUI_ROWS);
+	s_npeer = 0;
+	for (i = 0; i < n; i++)
+		if (all[i].offer == PICO_OFFER_HOST && gm_links_with(all[i].system))
+			s_peer[s_npeer++] = all[i];
+	if (G.sel >= s_npeer) G.sel = s_npeer ? s_npeer - 1 : 0;
+}
+
+int lui_game_page(void) { return G.system >= 0; }
+void lui_game_page_open(void) { if (G.state != GS_FINDING) G.sel = 0; }
+int lui_game_rows(void) { gm_layout(); return gm_nrows; }
+const char *lui_game_row_title(int i)
+{
+	gm_layout();
+	if (i < 0 || i >= gm_nrows) return "";
+	switch (gm_rows[i]) {
+	case GR_HOST:  return G.state == GS_HOSTING ? "Stop Hosting" : "Host a Session";
+	case GR_JOIN:  return G.state == GS_FINDING ? "Join" : "Join a Session";
+	case GR_LEAVE: return "Leave the Session";
+	case GR_WITH:  return "Playing With";
+	case GR_NOTE:  return G.state == GS_HOSTING ? "Waiting for a friend..." : G.state == GS_JOINING ? "Joining..." : G.note;
+	default:       return "";
+	}
+}
+/* (in the menus' language already) */
+const char *lui_game_row_value(int i)
+{
+	gm_layout();
+	if (i < 0 || i >= gm_nrows) return 0;
+	switch (gm_rows[i]) {
+	case GR_JOIN:
+		if (G.state != GS_FINDING) return 0;
+		gm_peers();
+		if (!s_npeer) return lt("Looking...");
+		snprintf(G.value, sizeof G.value, "%s", lui_model_name(s_peer[G.sel].model));
+		return G.value;
+	case GR_WITH:
+		return lui_model_name(s_other_model);
+	default:
+		return 0;
+	}
+}
+int lui_game_row_head(int i) { gm_layout(); return i >= 0 && i < gm_nrows && (gm_rows[i] == GR_WITH || gm_rows[i] == GR_NOTE); }
+int lui_game_row_change(int i, int dir)
+{
+	gm_layout();
+	if (i < 0 || i >= gm_nrows) return 0;
+	switch (gm_rows[i]) {
+	case GR_HOST:
+		if (dir) return 0;
+		if (G.state == GS_HOSTING) { gm_off(0); return 1; }
+		{
+			extern int pico_ra_hardcore(void) __attribute__((weak));
+			if (pico_ra_hardcore && pico_ra_hardcore()) {
+				snprintf(G.note, sizeof G.note, "%s", "Not in RetroAchievements hardcore");
+				return 1;
+			}
+		}
+		if (G.state != GS_OFF) gm_off(0);
+		G.note[0] = 0;
+		G.info_sent = 0;
+		s_other_model = 0;
+		bt_on();
+		pico_link_offer(PICO_OFFER_HOST, G.system);
+		pico_link_want(1);			/* wait for a link, advertising */
+		G.state = GS_HOSTING;
+		return 1;
+	case GR_JOIN:
+		if (G.state == GS_JOINING) return 0;
+		if (G.state != GS_FINDING) {
+			extern int pico_ra_hardcore(void) __attribute__((weak));
+			if (dir) return 0;
+			if (pico_ra_hardcore && pico_ra_hardcore()) {
+				snprintf(G.note, sizeof G.note, "%s", "Not in RetroAchievements hardcore");
+				return 1;
+			}
+			if (G.state != GS_OFF) gm_off(0);
+			G.note[0] = 0;
+			G.sel = 0;
+			s_npeer = 0;
+			bt_on();
+			pico_link_want(3);		/* list the consoles nearby */
+			G.state = GS_FINDING;
+			return 1;
+		}
+		gm_peers();
+		if (dir && s_npeer) { G.sel = (G.sel + (dir < 0 ? s_npeer - 1 : 1)) % s_npeer; return 1; }
+		if (!dir && s_npeer) {
+			pico_link_connect(s_peer[G.sel].addr);
+			s_other_model = s_peer[G.sel].model;
+			G.time_sent = 0;
+			G.state = GS_JOINING;
+			return 1;
+		}
+		return 0;
+	case GR_LEAVE:
+		if (dir || G.state != GS_PLAYING) return 0;
+		G.leave_req = 1;
+		return 1;
+	default:
+		return 0;
+	}
+}
+/* what the page shows, as one number: it changes whenever the page should be drawn again */
+unsigned int lui_game_sig(void)
+{
+	unsigned int h = 2166136261u, i;
+	const char *p;
+	if (G.state == GS_FINDING) gm_peers();
+	h = (h ^ (unsigned)G.state) * 16777619u;
+	h = (h ^ (unsigned)s_npeer) * 16777619u;
+	h = (h ^ (unsigned)G.sel) * 16777619u;
+	h = (h ^ (unsigned)s_other_model) * 16777619u;
+	for (i = 0; i < (unsigned)s_npeer && G.state == GS_FINDING; i++)
+		h = (h ^ (unsigned)s_peer[i].model ^ ((unsigned)s_peer[i].addr[0] << 8)) * 16777619u;
+	for (p = G.note; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+	return h;
+}
+
+/* oem gnp[:h|j|l|n]: the Netplay page from USB, as its rows' A would (h Host or Stop, j Join: find,
+ * then the host found first, l Leave), carried out by the next tick on the game's thread; and the
+ * page as it stands (n: its note) */
+static volatile char s_gm_dbg;
+void lui_game_debug(const char *arg, char *out, int cap)
+{
+	static const char *const st[] = { "off", "hosting", "finding", "joining", "starting", "playing" };
+	if (arg && (*arg == 'h' || *arg == 'j' || *arg == 'l')) s_gm_dbg = *arg;
+	if (arg && *arg == 'n') {	/* the page's note, alone (a reply line holds 64) */
+		snprintf(out, (unsigned)cap, "%.60s", G.note);
+		return;
+	}
+	snprintf(out, (unsigned)cap, "gnp: sys %d %s peers %d sel %d model %d", G.system,
+		 st[G.state >= 0 && G.state <= GS_PLAYING ? G.state : 0], s_npeer, G.sel, s_other_model);
+}
+static void gm_debug_step(void)
+{
+	char c = s_gm_dbg;
+	int i;
+	if (!c) return;
+	s_gm_dbg = 0;
+	gm_layout();
+	for (i = 0; i < gm_nrows; i++) {
+		int r = gm_rows[i];
+		if ((c == 'h' && r == GR_HOST) || (c == 'j' && r == GR_JOIN) || (c == 'l' && r == GR_LEAVE)) {
+			lui_game_row_change(i, 0);
+			return;
+		}
+	}
+}

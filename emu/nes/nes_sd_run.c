@@ -311,7 +311,7 @@ static void nes_apply_clock(void)
 extern int  ayaneo_get_preempt_frames(void);
 extern void ayaneo_set_preempt_frames(int v);
 
-enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_REWIND, GM_CPU, GM_REFRESH, GM_STROBE, GM_SHOWFPS, GM_CORE, GM_BATTERY, GM_RESUME, GM_DISK, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_COUNT };
+enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_REWIND, GM_CPU, GM_REFRESH, GM_STROBE, GM_SHOWFPS, GM_CORE, GM_BATTERY, GM_RESUME, GM_DISK, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_FFCAP, GM_COUNT };
 /* Overdrive is On/Off: On applies the tuned halo-free profile (ayaneo_set_overdrive_level). The exact
  * kup/kdn/thr/cap are still pokeable live via `oem od:` for tuning. */
 #define OD_MENU_MAX 1
@@ -368,7 +368,7 @@ static const char *gm_label(int i) { switch (i) {
 	case GM_BRIGHT: return "Brightness"; case GM_VOLUME: return "Volume";
 	case GM_ASPECT: return "Aspect Ratio"; case GM_FILTER: return "LCD Filter";
 	case GM_REGION: return "Region"; case GM_REFRESH: return "Refresh Rate";
-	case GM_RUNAHEAD: return "Run-Ahead"; case GM_REWIND: return "Rewind"; case GM_CPU: return "CPU Clock";
+	case GM_RUNAHEAD: return "Run-Ahead"; case GM_REWIND: return "Rewind"; case GM_FFCAP: return "Fast Forward Speed"; case GM_CPU: return "CPU Clock";
 	case GM_STROBE: return "BFI"; case GM_RESUME: return "Resume on Power On";
 	case GM_SHOWFPS: return "Show FPS"; case GM_BATTERY: return "Battery";
 	case GM_CORE: return "Core Settings";
@@ -387,6 +387,7 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 		p = mputu(p, mhz / 1000u); *p++ = '.'; *p++ = (char)('0' + (mhz % 1000u) / 100u); p = mput(p, " Hz"); } break;
 	case GM_STROBE: { int b = ayaneo_get_strobe(); p = mput(p, ayaneo_strobe_name(b)); } break;
 	case GM_REWIND: { extern int ayaneo_get_rewind(void); p = mput(p, ayaneo_get_rewind() ? "On" : "Off"); } break;
+	case GM_FFCAP:    { extern const char *ayaneo_ff_cap_name(char *buf); char t[8]; p = mput(p, ayaneo_ff_cap_name(t)); } break;
 	case GM_SHOWFPS: { extern int ayaneo_get_show_fps(void); p = mput(p, ayaneo_get_show_fps() ? "On" : "Off"); } break;
 	case GM_BATTERY: { extern int ayaneo_gauge_pct(void); extern int ayaneo_gauge_time_str(char *out, int n); extern int upmu_is_chr_det(void);
 		char ts[64]; p = mputu(p, (unsigned)ayaneo_gauge_pct()); p = mput(p, "%");
@@ -439,6 +440,8 @@ static int gm_change(int i, int dir, int act)
 	case GM_STROBE: if (dir) { ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); nes_settings_touch(); } break;
 	case GM_REWIND: if (dir || act) { extern int ayaneo_get_rewind(void); extern void ayaneo_set_rewind(int v);
 			ayaneo_set_rewind(!ayaneo_get_rewind()); nes_settings_touch(); } break;
+	case GM_FFCAP:  if (dir || act) { extern void ayaneo_step_ff_cap(int dir);
+			ayaneo_step_ff_cap(dir ? dir : 1); nes_settings_touch(); } break;
 	case GM_SHOWFPS: if (dir || act) { extern int ayaneo_get_show_fps(void); extern void ayaneo_set_show_fps(int v);
 			ayaneo_set_show_fps(!ayaneo_get_show_fps()); nes_settings_touch(); } break;
 	case GM_BATTERY: break;   /* read-only */
@@ -497,6 +500,7 @@ static const struct igm_row k_nes_igm_rows[] = {
 	{ GM_SHOWFPS, IGM_DISPLAY, IGM_VALUE },
 	{ GM_VOLUME, IGM_SOUND, IGM_VALUE },
 	{ GM_CPU, IGM_PLAY, IGM_VALUE }, { GM_RUNAHEAD, IGM_PLAY, IGM_VALUE }, { GM_REWIND, IGM_PLAY, IGM_VALUE },
+	{ GM_FFCAP, IGM_PLAY, IGM_VALUE },
 	{ GM_REGION, IGM_PLAY, IGM_VALUE }, { GM_REFRESH, IGM_PLAY, IGM_INFO }, { IGM_CORE, IGM_PLAY, IGM_LINK },
 	{ GM_RESUME, IGM_SYSTEM, IGM_VALUE }, { GM_BATTERY, IGM_SYSTEM, IGM_INFO },
 	{ GM_DISK, IGM_TOP, IGM_ACTION },   /* last: left off for a cartridge (the session sets nrows) */
@@ -920,7 +924,7 @@ static void nes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		if (ff > 0) {
 			/* no multiplier and no cap: render-skipped frames while one still fits before this
 			 * refresh's present (ayaneo_ff_fits), then one rendered frame, the picture shown */
-			extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us);
+			extern int ayaneo_ff_fits(unsigned int t0, unsigned int blit_us, unsigned int next_us, unsigned int rend_us); extern int ayaneo_ff_cap_frames(void);
 			static unsigned int s_nes_skip_us, s_nes_rend_us;
 			unsigned int blit = g_dbg_blit_us < 15500u ? g_dbg_blit_us : 0u;
 			unsigned int rend = s_nes_rend_us ? s_nes_rend_us : (fe ? fe : 2500u);
@@ -928,7 +932,7 @@ static void nes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			int n = 1, last = 0;
 			while (!last) {
 				unsigned int _t = gpt4_get_current_tick(), us;
-				last = !(n < 120 && ayaneo_ff_fits(em0, blit, skipc, rend));
+				last = !(n < ayaneo_ff_cap_frames() - 1 && ayaneo_ff_fits(em0, blit, skipc, rend));
 				/* the frames between two presents skip their picture; what the game reads back of
 				 * the PPU (sprite 0 hit, overflow) still happens (nes_core_abi.h, set_av_skip) */
 				if (c->set_av_skip) c->set_av_skip(last ? 0 : 1, 0);

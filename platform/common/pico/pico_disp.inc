@@ -950,27 +950,46 @@ static void ayaneo_hud_tri(unsigned int *buf, unsigned int pitch_w, int x0, int 
 	}
 }
 
-/* Draw the FF/RW badge into the top-right of the game rect [gx,gy,gw,gh] in `buf` (pitch_w px). */
-static void ayaneo_hud_draw(unsigned int *buf, unsigned int pitch_w, int gx, int gy, int gw, int gh)
+/* The FF/RW badge's speed text ("3x", "1.5x") and its pill's size */
+#define HUD_BADGE_SCALE 2
+#define HUD_BADGE_ICON  22
+#define HUD_BADGE_GAP   8
+#define HUD_BADGE_PAD   10
+#define HUD_BADGE_EDGE  12	/* from the game's top right corner */
+static int ayaneo_hud_badge_text(int mode, int sx10, char *s)
 {
-	int mode = g_hud_mode, sx10 = g_hud_speed_x10;
-	unsigned int col;
-	char s[8]; int n = 0, whole, frac;
-	const int scale = 2, icon = 22, gap = 8, pad = 10;
-	int th = MTK_VFH * scale, bh = th + 12, bw, bx, by, iy, tx;
-	(void)gh;
-	if (!s_hud_no_fps) ayaneo_hud_draw_fps(buf, pitch_w, gx, gy);
-	if (mode != 1 && mode != 2) return;
-	col = (mode == 1) ? 0xFF3CFF78u : 0xFF46C8FFu;       /* FF green / RW cyan */
-	whole = sx10 / 10; frac = sx10 % 10;
+	int n = 0, whole = sx10 / 10, frac = sx10 % 10;
 	if (whole < 0) whole = 0; if (frac < 0) frac = 0;
 	if (whole >= 10) s[n++] = (char)('0' + (whole / 10) % 10);
 	s[n++] = (char)('0' + whole % 10);
 	if (mode == 2) { s[n++] = '.'; s[n++] = (char)('0' + frac); }   /* rewind shows one decimal */
 	s[n++] = 'x'; s[n] = 0;
-	bw = pad + icon * 2 + gap + n * MTK_VFW * scale + pad;
-	bx = gx + gw - bw - 12;
-	by = gy + 12;
+	return n;
+}
+static void ayaneo_hud_badge_size(int mode, int sx10, int *w, int *h)
+{
+	char s[8];
+	int n = ayaneo_hud_badge_text(mode, sx10, s);
+	*w = HUD_BADGE_PAD + HUD_BADGE_ICON * 2 + HUD_BADGE_GAP + n * MTK_VFW * HUD_BADGE_SCALE + HUD_BADGE_PAD;
+	*h = MTK_VFH * HUD_BADGE_SCALE + 12;
+}
+
+/* Draw the FF/RW badge into the top-right of the game rect [gx,gy,gw,gh] in `buf` (pitch_w px). */
+static void ayaneo_hud_draw(unsigned int *buf, unsigned int pitch_w, int gx, int gy, int gw, int gh)
+{
+	int mode = g_hud_mode, sx10 = g_hud_speed_x10;
+	unsigned int col;
+	char s[8];
+	const int scale = HUD_BADGE_SCALE, icon = HUD_BADGE_ICON, gap = HUD_BADGE_GAP, pad = HUD_BADGE_PAD;
+	int th = MTK_VFH * scale, bh, bw, bx, by, iy, tx;
+	(void)gh;
+	if (!s_hud_no_fps) ayaneo_hud_draw_fps(buf, pitch_w, gx, gy);
+	if (mode != 1 && mode != 2) return;
+	col = (mode == 1) ? 0xFF3CFF78u : 0xFF46C8FFu;       /* FF green / RW cyan */
+	ayaneo_hud_badge_text(mode, sx10, s);
+	ayaneo_hud_badge_size(mode, sx10, &bw, &bh);
+	bx = gx + gw - bw - HUD_BADGE_EDGE;
+	by = gy + HUD_BADGE_EDGE;
 	if (bx < gx) bx = gx;
 	ayaneo_fill_blend(buf, pitch_w, bx, by, bw, bh, 0xFF0A0A0Fu, 190);   /* translucent dark pill */
 	iy = by + (bh - icon) / 2;
@@ -2474,12 +2493,18 @@ static void rot_hud_osd(unsigned int *vbuf, unsigned fbpitch, unsigned iw, unsig
 		ayaneo_draw_clip(0, 0);
 		rot_box_push(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
 	}
-	/* FF / RW badge: top right of the game, as ayaneo_hud_draw lays it out */
+	/* FF / RW badge: top right of the game, as ayaneo_hud_draw lays it out. The box is the pill
+	 * itself and nothing around it: the game buffer is write combined, each pixel read from it is
+	 * uncached, and the 332 x 68 box this used to pull cost 2.9 ms a present in fast forward, near
+	 * a whole emulated frame (the pill of "3x" is 104 x 44). */
 	if (g_hud_mode == 1 || g_hud_mode == 2) {
-		int lw = 332, lh = 68, lx, ly = 0;
-		if (lw > LGW) lw = LGW;
-		if (lh > LGH) lh = LGH;
-		lx = LGW - lw;
+		int mode = g_hud_mode, sx10 = g_hud_speed_x10, lw, lh, lx, ly = HUD_BADGE_EDGE;
+		ayaneo_hud_badge_size(mode, sx10, &lw, &lh);
+		if (lw > LGW - HUD_BADGE_EDGE) lw = LGW - HUD_BADGE_EDGE;
+		if (lw > ROT_BOX_W) lw = ROT_BOX_W;
+		if (lh > ROT_BOX_H) lh = ROT_BOX_H;
+		if (ly + lh > LGH) lh = LGH - ly;
+		lx = LGW - HUD_BADGE_EDGE - lw;
 		rot_box_pull(vbuf, fbpitch, iw, ih, lx, ly, lw, lh);
 		ayaneo_draw_clip((unsigned)lw, (unsigned)lh);
 		s_hud_no_fps = 1;
