@@ -856,7 +856,23 @@ static void gba_disable_align_faults(void)
 #define SMP_STOP  28
 #define SMP_FAULT 37
 static volatile int s_smp_on, s_smp_dead;
+static volatile int s_smp_parked;     /* the guest is alive, waiting at its frame boundary for the next game */
+static volatile int s_smp_fresh;      /* the parked guest was started again: it waits at its entry, not in a game */
+static volatile int s_smp_broken;     /* the core could not be recovered: boot core only until the next power on */
+static volatile int s_smp_abort;      /* the guest died in this game: the game closes without a resume state */
+volatile unsigned int g_dbg_smp_deaths, g_dbg_smp_recovered;   /* oem smp:gst */
+static void *s_smp_jb[8];             /* the guest's own restart point (s_cpu_jb is the CPU thread's) */
 volatile unsigned int g_dbg_smp_wait_us;
+
+/* The guest's frame watchdog: this core's virtual timer, armed while a frame runs. If the frame
+ * does not end within half a second the timer's interrupt takes the core into the host, which holds
+ * the guest (a frame takes a few milliseconds; the counter runs at 13 MHz). */
+#define SMP_STALL 39
+static inline void gba_smp_watchdog(int on)
+{
+	if (on) __asm__ volatile("mcr p15, 0, %0, c14, c3, 0" : : "r"(6500000u));   /* CNTV_TVAL */
+	__asm__ volatile("mcr p15, 0, %0, c14, c3, 1" : : "r"(on ? 1u : 0u));       /* CNTV_CTL */
+}
 
 static void gba_smp_guest_wait(void)
 {
@@ -865,16 +881,42 @@ static void gba_smp_guest_wait(void)
 		if (c[SMP_STOP]) {      /* the console resets or powers off: this core off first */
 			__asm__ volatile("push {r7}\n\tmovw r7, #0x00ff\n\tmovt r7, #0x000f\n\tsvc 0\n\tpop {r7}" : : : "memory");
 		}
-		__asm__ volatile("yield");
+		__asm__ volatile("wfe");    /* asleep until the frontend's sev (run_one_frame, stop) */
 	}
+	gba_smp_watchdog(1);            /* a frame starts */
+	if (c[SMP_STALL] == 2u) __asm__ volatile(".inst.n 0xde00");   /* oem smp:stall,2: a guest fault's test */
+	if (c[SMP_STALL]) for (;;) ;    /* oem smp:stall: the watchdog's test */
 }
 
 void gba_smp_guest_main(void)
 {
 	gba_smp_guest_wait();           /* the first frontend kick */
-	__builtin_setjmp(s_cpu_jb);
+	__builtin_setjmp(s_smp_jb);
 	gba_core_cpu_loop();
 	for (;;) ;
+}
+
+/* A game ends (the menu comes back): its big core session ends with it. The guest stays up,
+ * parked at its frame boundary, for the next game. */
+static void gba_smp_game_end(void)
+{
+	/* The core is NOT powered off here. A core that was powered off, then sees the boot core's
+	 * clock change (every game start and end does that), resets the console at its next power on
+	 * (measured: on, off, clock change, on = reset; no clock change = fine). So the guest stays
+	 * parked at its frame boundary, asleep in wfe, until the next game or the console's reset. */
+	if (s_smp_on) { s_smp_on = 0; if (!s_smp_dead) s_smp_parked = 1; }
+	if (s_smp_dead) {
+		/* The guest faulted or was stopped and sits held in the host. It starts again from its
+		 * entry and waits there for the next game; if the host does not answer, the big core is
+		 * left alone for the rest of this power on and games run on the boot core. */
+		s_smp_dead = 0;
+		if (pico_smp_guest_restart((unsigned)gba_smp_guest_main, PICO_SMP_GUEST_STACK_TOP) == 0) {
+			s_smp_parked = 1; s_smp_fresh = 1; g_dbg_smp_recovered++;
+		} else {
+			s_smp_parked = 0; s_smp_broken = 1;
+		}
+	}
+	s_smp_abort = 0;
 }
 
 /* called by the core (on the CPU thread) at each vblank */
@@ -883,12 +925,14 @@ void gba_yield_to_main(void)
 	static int first = 1;
 	if (s_smp_on) {                 /* on the big core: no scheduler there */
 		volatile unsigned *c = g_pico_smp_comm;
+		gba_smp_watchdog(0);        /* the frame is done */
 		c[SMP_DONE] = c[SMP_GO];
+		PICO_SMP_MARK(15, c[SMP_DONE]);
 		gba_smp_guest_wait();
 		if (s_cpu_restart_req) {
 			s_cpu_restart_req = 0;
 			if (s_cpu_clean_boundary) { s_cpu_clean_boundary = 0; gba_frame_boundary_finish(); }
-			__builtin_longjmp(s_cpu_jb, 1);
+			__builtin_longjmp(s_smp_jb, 1);
 		}
 		return;
 	}
@@ -931,13 +975,30 @@ static void run_one_frame(void)
 	unsigned int t0 = gpt4_get_current_tick(), t1;
 	if (s_gba_np)
 		gba_np_frame();		/* netplay: both players' buttons, from both consoles */
+	if (s_smp_on) PICO_SMP_MARK(12, 1);
 	gba_core_pre_frame();		/* latch input */
-	if (g_pico_smp_gba_req && !s_smp_on && !s_smp_dead && s_cpu_thread) {
+	if (g_pico_smp_gba_req && !s_smp_on && !s_smp_dead && !s_smp_broken && s_cpu_thread) {
 		/* opt in: the loop moves to a big core before its first frame (the CPU thread stays parked) */
-		unsigned top = ((unsigned)s_cpu_thread->stack + s_cpu_thread->stack_size) & ~15u;
-		g_pico_smp_gba_req = 0;
-		/* only where the loop starts from its top anyway: the first frame ever, or a launch's restart */
-		if ((!s_cpu_started_once || s_cpu_restart_req) &&
+		unsigned top = PICO_SMP_GUEST_STACK_TOP;
+		/* the wish stays set (every GBA game until it is turned off);
+		 * the move happens only where the loop starts from its top anyway: the first frame ever, or a
+		 * launch's restart */
+		if (s_smp_parked) {
+			/* the guest of an earlier game is waiting: a launch's restart request sends it into
+			 * the new game's loop from the top as it wakes (gba_yield_to_main) */
+			if (!pico_smp_core_on(g_pico_smp_gba_core)) {
+				/* it was powered off behind our back (a bring up command): not powered again
+				 * in this power on, see gba_smp_game_end */
+				s_smp_parked = 0; s_smp_broken = 1;
+			} else if (s_cpu_restart_req) {
+				s_smp_parked = 0; s_smp_on = 1;
+				if (s_smp_fresh) {      /* it enters the loop from the top by itself */
+					s_smp_fresh = 0;
+					s_cpu_restart_req = 0;
+					if (s_cpu_clean_boundary) { s_cpu_clean_boundary = 0; gba_frame_boundary_finish(); }
+				}
+			}
+		} else if ((!s_cpu_started_once || s_cpu_restart_req) &&
 		    pico_smp_guest_start(g_pico_smp_gba_core, (unsigned)gba_smp_guest_main, top) == 0) {
 			s_cpu_restart_req = 0;
 			if (s_cpu_clean_boundary) { s_cpu_clean_boundary = 0; gba_frame_boundary_finish(); }
@@ -950,17 +1011,32 @@ static void run_one_frame(void)
 		unsigned int w0 = gpt4_get_current_tick();
 		if (!s_smp_dead) {
 			c[SMP_GO]++;
+			__asm__ volatile("dsb\n\tsev");   /* wake the guest */
+			PICO_SMP_MARK(13, c[SMP_GO]); PICO_SMP_MARK(12, 2);
 			while (c[SMP_DONE] != c[SMP_GO]) {
-				if (c[SMP_FAULT] || gpt4_get_current_tick() - w0 > 13u * 3000000u) { s_smp_dead = 1; break; }
+				if (c[SMP_FAULT] || gpt4_get_current_tick() - w0 > 13u * 1000000u) {
+					/* The guest faulted or its frame watchdog cut it off (the host holds it either
+					 * way), or it gave no frame for a second and the host does not hold it. The
+					 * game closes back to the menu. The emulated machine was cut mid frame, so no
+					 * resume state is written from it; the battery save is. A held guest is
+					 * started afresh for the next game; one that is not held leaves the big core
+					 * unused until the next power on. */
+					s_smp_dead = 1; s_smp_abort = 1; g_dbg_smp_deaths++;
+					if (!pico_smp_guest_held()) s_smp_broken = 1;
+					s_close_req = 1;
+					break;
+				}
 				__asm__ volatile("yield");
 			}
 		}
 		g_dbg_smp_wait_us = (gpt4_get_current_tick() - w0) / 13u;
+		PICO_SMP_MARK(14, g_dbg_smp_wait_us); PICO_SMP_MARK(12, 3);
 	} else {
 		event_signal(&ev_cpu, false);
 		event_wait(&ev_main);
 	}
 	gba_core_post_frame();		/* drain audio */
+	if (s_smp_on) PICO_SMP_MARK(12, 4);
 	t1 = gpt4_get_current_tick();
 	g_dbg_emu_frame_us = (t1 - t0) / 13u;
 	g_dbg_emu_total++;
@@ -2650,6 +2726,7 @@ static int gba_sd_rom_select(void)
 		 * taken back */
 		{ extern void pico_stats_abort(void); if (gba_rom_peek_error()) pico_stats_abort(); else pico_stats_end(); }
 		{ extern void pico_ra_game_end(void) __attribute__((weak)); if (pico_ra_game_end) pico_ra_game_end(); }
+		gba_smp_game_end();       /* and its big core, when it had one */
 		pico_cheats_game_end();   /* the game played before this menu: its codes go with its core */
 		pico_input_game_end();
 		{	/* oem showcase:1 (until the next power on): the menus list only the release's demo
@@ -4245,7 +4322,8 @@ static int emu_thread(void *arg)
 					{ extern void ayaneo_rumble_stop(void); ayaneo_rumble_stop(); }   /* the motor off */
 					gba_np_end();			/* a netplay session ends with the game */
 					lui_game_end();
-					state_write(scratch);		/* persist the current game */
+					if (!s_smp_abort)
+						state_write(scratch);	/* persist the current game */
 					sav_save(scratch);
 					gba_menu_arm_reverse(gba_core_screen());  /* freeze frame for reverse */
 					for (;;) {

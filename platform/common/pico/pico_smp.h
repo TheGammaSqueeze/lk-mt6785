@@ -53,10 +53,29 @@ void pico_smp_stop_all(void);
 extern volatile int g_pico_smp_gba_req;
 extern volatile unsigned g_pico_smp_gba_core;
 extern volatile unsigned g_pico_smp_gba_mhz;   /* big-core clock while a GBA guest runs (default 1600) */
-#define g_pico_smp_comm ((volatile unsigned *)0x4E000000u)   /* fixed DRAM, see pico_smp.c */
+#define g_pico_smp_comm ((volatile unsigned *)0x4CDC0000u)   /* fixed DRAM, see pico_smp.c */
 int pico_smp_guest_start(unsigned n, unsigned entry, unsigned stack_top);
+/* pico_smp_guest_held: the host holds the guest (it faulted, or its frame watchdog cut it off).
+ * A held guest starts again with pico_smp_guest_restart; the core stays powered. 0 = done. */
+int pico_smp_guest_held(void);
+int pico_smp_guest_restart(unsigned entry, unsigned stack_top);
+int pico_smp_core_on(unsigned n);
 
 /* Called by the reset and power off paths: stops the workers if any core was started. */
 void pico_smp_before_reset(void);
+
+/* The reset-proof mark page (the tail of the RAM console SRAM), 16 words. Words 12..15 are the GBA
+ * frontend's and guest's breadcrumbs: 12 frontend stage, 13 frames asked, 14 last wait (us),
+ * 15 frames the guest finished. Read with `oem smp:bc` after a restart. */
+#if defined(KONKR_BLOCK)
+#define PICO_SMP_SRAM 0x0010EF00u
+#else
+#define PICO_SMP_SRAM 0x0011D7C0u
+#endif
+/* The guest's own stack: the free DRAM below the shared buffers (0x4CD00000..0x4CDC0000, 768 KB),
+ * growing down from them. Never the parked CPU thread's stack: that holds the thread's saved
+ * context, and the next game that wakes the thread would crash on it. */
+#define PICO_SMP_GUEST_STACK_TOP 0x4CDC0000u
+#define PICO_SMP_MARK(i, v) (((volatile unsigned *)PICO_SMP_SRAM)[i] = (unsigned)(v))
 
 #endif /* PICO_SMP_H */

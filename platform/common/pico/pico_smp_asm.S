@@ -316,7 +316,7 @@ pico_smp_hyp_back:
 	msr	spsr_cxsf, r0
 	eret
 	.balign	4
-8:	.word	0x4E004000
+8:	.word	0x4CDC4000
 
 /* AArch64: marks 0x64 and CurrentEL in the SRAM, then stays (the watchdog restarts the console) */
 	.balign	64
@@ -386,7 +386,7 @@ pico_smp_sec_entry:
 	str	r0, [r12, #C_PONG]
 	b	3b
 	.balign	4
-8:	.word	0x4E000000
+8:	.word	0x4CDC0000
 
 /* A faithful copy of the LK's own kernel handoff, so the firmware drops to an address we chose as
  * if it were the kernel. Convention (app/mt_boot: lk_jump64):
@@ -571,7 +571,7 @@ pico_smp_elsw_land:
 	.balign	2048
 	.global	pico_smp_gba_land
 pico_smp_gba_land:
-	.word	0x140002ab
+	.word	0x140002ce
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -603,7 +603,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x1400028b
+	.word	0x140002ae
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -635,7 +635,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x1400026b
+	.word	0x1400028e
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -667,7 +667,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x1400024b
+	.word	0x1400026e
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -699,7 +699,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x1400022b
+	.word	0x1400024e
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -731,7 +731,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x1400020b
+	.word	0x1400022e
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -763,7 +763,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x140001eb
+	.word	0x1400020e
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -795,7 +795,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x140001cb
+	.word	0x140001ee
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -827,7 +827,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x140001ab
+	.word	0x140001ce
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -859,7 +859,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x1400018b
+	.word	0x140001ae
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -891,7 +891,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x1400016b
+	.word	0x1400018e
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -923,7 +923,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x1400014b
+	.word	0x1400016e
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -955,7 +955,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x140000b6
+	.word	0x140000ce
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -987,7 +987,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x1400010b
+	.word	0x14000123
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -1019,7 +1019,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x140000eb
+	.word	0x1400010e
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -1051,7 +1051,7 @@ pico_smp_gba_land:
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
-	.word	0x140000cb
+	.word	0x140000ee
 	.word	0xd503201f
 	.word	0xd503201f
 	.word	0xd503201f
@@ -1102,8 +1102,26 @@ pico_smp_gba_land:
 	.word	0xd518c001
 	.word	0xd2a00601
 	.word	0xd5181041
-	.word	0xd2800061
+	.word	0xd2802061
 	.word	0xd518e101
+	.word	0xd51be33f
+	.word	0xd53800a1
+	.word	0xd3483c21
+	.word	0xd2a180a2
+	.word	0x8b014442
+	.word	0x52a10003
+	.word	0xb9010043
+	.word	0xd538cca1
+	.word	0xb2400021
+	.word	0xd518cca1
+	.word	0xd5033fdf
+	.word	0xd538cc81
+	.word	0x927ef821
+	.word	0xd518cc81
+	.word	0xd2801fe1
+	.word	0xd5184601
+	.word	0xd2800021
+	.word	0xd518cce1
 	.word	0xd5033f9f
 	.word	0xd5033fdf
 	.word	0xd508871f
@@ -1124,9 +1142,15 @@ pico_smp_gba_land:
 	.word	0xb2690021
 	.word	0xd5181001
 	.word	0xd5033fdf
+	.word	SMP_A64_MOVZ_X7
+	.word	SMP_A64_MOVK_X7
+	.word	0xb94020e9
+	.word	0xb94028eb
+	.word	0xb9402cec
 	.word	0x52801626
 	.word	0xb90008e6
-	.word	0xd2803a03
+	.word	0xd51be33f
+	.word	0xd2802a03
 	.word	0x3600006b
 	.word	0xb27b0063
 	.word	0x927ff96b
@@ -1142,15 +1166,15 @@ pico_smp_gba_land:
 	.word	0xb50009f1
 	.word	0xd5384032
 	.word	0xd5384013
-	.word	0x36280e13
+	.word	0x36280f73
 	.word	0x79400254
 	.word	0x79400655
 	.word	0x529dc0f6
 	.word	0x6b16029f
-	.word	0x54000d61
+	.word	0x54000ec1
 	.word	0x12180eb6
 	.word	0x713c02df
-	.word	0x54000d01
+	.word	0x54000e61
 	.word	0x530c3eb7
 	.word	0x10000078
 	.word	0x8b170f18
@@ -1219,7 +1243,7 @@ pico_smp_gba_land:
 	.word	0xb90092b6
 	.word	0xd69f03e0
 	.word	0xf100463f
-	.word	0x54000461
+	.word	0x540005c1
 	.word	0x52800051
 	.word	0x72a001f1
 	.word	0x6b1100ff
@@ -1227,11 +1251,11 @@ pico_smp_gba_land:
 	.word	0x52801ff1
 	.word	0x72a001f1
 	.word	0x6b1100ff
-	.word	0x54000361
+	.word	0x540004c1
 	.word	0xd2800040
 	.word	0xf2b08000
 	.word	0xd4000003
-	.word	0x14000017
+	.word	0x14000022
 	.word	0x927a6412
 	.word	0x2a0103f3
 	.word	0xd50b7b32
@@ -1254,6 +1278,19 @@ pico_smp_gba_land:
 	.word	0xb90092b6
 	.word	0xd2800000
 	.word	0xd69f03e0
+	.word	0xd538cc10
+	.word	0x12005e11
+	.word	0x71006e3f
+	.word	0x54000060
+	.word	0xd518cc30
+	.word	0xd69f03e0
+	.word	0xd51be33f
+	.word	0xd5033fdf
+	.word	0xd518cc30
+	.word	0x5280004f
+	.word	0x14000002
+	.word	0x5280002f
+	.word	0xd51be33f
 	.word	SMP_A64_MOVZ_X20
 	.word	SMP_A64_MOVK_X20
 	.word	0xb9402295
@@ -1265,12 +1302,27 @@ pico_smp_gba_land:
 	.word	0xb9008ab0
 	.word	0xd5384010
 	.word	0xb9008eb0
-	.word	0x52800030
-	.word	0xb90096b0
+	.word	0xb90096af
 	.word	0x528017f0
 	.word	0xb9000a90
 	.word	0xd5033fbf
-	.word	0x17ffffff
+	.word	0xb94072b0
+	.word	0x35000190
+	.word	0xb9409ab0
+	.word	0x35000070
+	.word	0xd503205f
+	.word	0x17fffffa
+	.word	0xb90096bf
+	.word	0xb9009abf
+	.word	0xd5033f9f
+	.word	0xd508871f
+	.word	0xd5033f9f
+	.word	0xd5033fdf
+	.word	0x17ffff50
+	.word	0xd2800040
+	.word	0xf2b08000
+	.word	0xd4000003
+	.word	0x17ffffef
 
 	.balign 64
 	.global pico_smp_clk_land

@@ -1,7 +1,13 @@
 // AArch64 EL1 host for a 32 bit EL0 guest (the GBA core's CPU loop) on a second core.
 // Layout: exception vectors (0x800 bytes, the blob is 2 KB aligned), then the entry at +0x800.
 // SRAM page words: +32 shared block, +36 page table, +40 guest entry, +44 guest stack top.
-// Shared block bytes: 128 ESR, 132 ELR, 136 FAR, 140 SPSR, 144 flush calls, 148 fault flag.
+// Shared block bytes: 112 stop, 128 ESR, 132 ELR, 136 FAR, 140 SPSR, 144 flush calls, 148 fault
+// flag, 152 restart request.
+// The guest arms this core's virtual timer for the length of each frame it runs (interrupt 27): a
+// guest that stalls is cut off by that interrupt and held like one that faulted (fault flag 2).
+// A guest that faults is held here: the host records the fault and sleeps until the boot core asks
+// for a restart (the guest then starts again from its entry, on its stack, with fresh tables) or
+// for the core to stop. The core is never left spinning and never has to be powered off to recover.
 .macro	vec to
 	.balign	0x80
 	b	\to
@@ -20,7 +26,7 @@ vectors:
 	vec fault
 	vec fault
 	vec sync32			// +0x600: synchronous, from the 32 bit guest
-	vec fault
+	vec irq32			// +0x680: an interrupt while the guest ran
 	vec fault
 	vec fault
 	.balign	0x800
@@ -44,8 +50,27 @@ entry:
 	msr	vbar_el1, x1
 	mov	x1, #0x300000		// CPACR_EL1.FPEN: FP and SIMD for EL0 and EL1
 	msr	cpacr_el1, x1
-	mov	x1, #3			// CNTKCTL_EL1: the counters readable from EL0
+	mov	x1, #0x103		// CNTKCTL_EL1: the counters readable from EL0, the virtual timer the guest's
 	msr	cntkctl_el1, x1
+	msr	cntv_ctl_el0, xzr
+	// this core's interrupt interface: only the virtual timer (27) is let through
+	mrs	x1, mpidr_el1
+	ubfx	x1, x1, #8, #8
+	movz	x2, #0x0c05, lsl #16	// redistributor SGI frames: 0x0C050000 + core * 0x20000
+	add	x2, x2, x1, lsl #17
+	mov	w3, #0x08000000
+	str	w3, [x2, #0x100]	// GICR_ISENABLER0
+	mrs	x1, S3_0_C12_C12_5	// ICC_SRE_EL1
+	orr	x1, x1, #1
+	msr	S3_0_C12_C12_5, x1
+	isb
+	mrs	x1, S3_0_C12_C12_4	// ICC_CTLR_EL1: one write ends an interrupt (EOImode 0)
+	bic	x1, x1, #2
+	msr	S3_0_C12_C12_4, x1
+	mov	x1, #0xff
+	msr	S3_0_C4_C6_0, x1	// ICC_PMR_EL1
+	mov	x1, #1
+	msr	S3_0_C12_C12_7, x1	// ICC_IGRPEN1_EL1
 	dsb	sy
 	isb
 	tlbi	vmalle1
@@ -66,9 +91,16 @@ entry:
 	orr	x1, x1, #0x800000	// SPAN: taking an exception does not set PAN
 	msr	sctlr_el1, x1
 	isb
+reenter:
+	movz	x7, #0xd7c0
+	movk	x7, #0x11, lsl #16
+	ldr	w9, [x7, #32]
+	ldr	w11, [x7, #40]
+	ldr	w12, [x7, #44]
 	mov	w6, #0xb1
 	str	w6, [x7, #8]
-	mov	x3, #0x1d0		// AArch32 User, A I F masked
+	msr	cntv_ctl_el0, xzr
+	mov	x3, #0x150		// AArch32 User, A and F masked: the timer interrupt gets through
 	tbz	x11, #0, 1f
 	orr	x3, x3, #0x20		// Thumb entry
 	bic	x11, x11, #1
@@ -202,7 +234,21 @@ sync32:
 	mov	x0, #0
 	eret
 
+irq32:
+	mrs	x16, S3_0_C12_C12_0	// ICC_IAR1_EL1
+	and	w17, w16, #0xffffff
+	cmp	w17, #27
+	b.eq	1f
+	msr	S3_0_C12_C12_1, x16	// ICC_EOIR1_EL1
+	eret				// anything else is not ours
+1:	msr	cntv_ctl_el0, xzr	// the line drops before the interrupt is ended
+	isb
+	msr	S3_0_C12_C12_1, x16
+	mov	w15, #2			// the frame watchdog
+	b	2f
 fault:
+	mov	w15, #1
+2:	msr	cntv_ctl_el0, xzr
 	movz	x20, #0xd7c0
 	movk	x20, #0x11, lsl #16
 	ldr	w21, [x20, #32]
@@ -214,9 +260,24 @@ fault:
 	str	w16, [x21, #136]
 	mrs	x16, spsr_el1
 	str	w16, [x21, #140]
-	mov	w16, #1
-	str	w16, [x21, #148]
+	str	w15, [x21, #148]
 	mov	w16, #0xbf
 	str	w16, [x20, #8]
 4:	dmb	sy
+	ldr	w16, [x21, #112]	// stop: the console resets or powers off
+	cbnz	w16, 9f
+	ldr	w16, [x21, #152]	// restart request
+	cbnz	w16, 8f
+	wfe				// the boot core's sev follows each request
+	b	4b
+8:	str	wzr, [x21, #148]
+	str	wzr, [x21, #152]
+	dsb	sy
+	tlbi	vmalle1			// the boot core rebuilt the tables
+	dsb	sy
+	isb
+	b	reenter
+9:	movz	x0, #0x0002
+	movk	x0, #0x8400, lsl #16	// PSCI_CPU_OFF
+	smc	#0
 	b	4b

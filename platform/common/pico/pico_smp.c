@@ -22,10 +22,12 @@
 #include <platform/mt_typedefs.h>
 #include "pico_smp.h"
 
-/* The SMP shared buffers live in free DRAM above the emulator's use (0x50000000..0x55800000), NOT
- * in the LK's BSS: the KPA LK has only ~0.5 MB of heap above _end, and these 4 KB-aligned buffers
- * would eat it and stop the LK booting. cpu0 and the workers both reach them by physical address. */
-#define SMP_SCRATCH   0x4E000000u
+/* The SMP shared buffers live in the 1 MB of DRAM right after the LK's own 9 MB (0x4CD00000, a
+ * free memory block on both consoles, inside the LK's section mapping, used by nothing else), NOT
+ * in the LK's BSS: the LK has only ~0.5 MB of heap above _end and these 4 KB aligned buffers would
+ * eat it and stop it booting. Not the emulator scratch at 0x4E000000 either: closing or starting a
+ * game writes over that. cpu0 and the workers both reach them by physical address. */
+#define SMP_SCRATCH   0x4CDC0000u
 #define g_pico_smp_save  ((volatile unsigned *)(SMP_SCRATCH + 0x4000u))      /* 256 B, must match pico_smp_asm.S */
 #define g_pico_smp_pt    ((volatile unsigned long long *)(SMP_SCRATCH + 0x1000u))
 #define s_l2             ((volatile unsigned long long *)(SMP_SCRATCH + 0x2000u))
@@ -222,6 +224,19 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		fastboot_info(sl);
 		fastboot_okay("");
 		return;
+	} else if (!strncmp(arg, "stall", 5)) {
+		/* test: the running guest stops answering at its next frame boundary (a tight loop), as
+		 * a stalled game would; its frame watchdog has to cut it off and the game closes */
+		arg += 5;
+		g_pico_smp_comm[39] = hexarg(&arg) == 2u ? 2u : 1u;   /* ,2: an undefined instruction instead */
+		fastboot_info("the guest stalls or faults at its next frame");
+	} else if (!strncmp(arg, "a55", 3)) {
+		/* the boot core's clock, as a game start and end change it (bring up tests) */
+		extern void ayaneo_set_cpu_mhz(unsigned int mhz) __attribute__((weak));
+		unsigned m; arg += 3; m = hexarg(&arg);
+		if (ayaneo_set_cpu_mhz && m) ayaneo_set_cpu_mhz(m);
+		snprintf(sl, sizeof sl, "A55 PLL con1 %08x", rd32(0x1000C204u));
+		fastboot_info(sl);
 	} else if (!strncmp(arg, "pmic", 4)) {
 		unsigned a, v = 0; arg += 4; a = hexarg(&arg);
 		pwrap_read(a, &v);
@@ -280,6 +295,9 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		fastboot_info(sl);
 		snprintf(sl, sizeof sl, "esr %08x elr %08x far %08x spsr %08x", c[32], c[33], c[34], c[35]);
 		fastboot_info(sl);
+		{ extern volatile unsigned int g_dbg_smp_deaths, g_dbg_smp_recovered;
+		  snprintf(sl, sizeof sl, "guest stopped %u recovered %u", g_dbg_smp_deaths, g_dbg_smp_recovered);
+		  fastboot_info(sl); }
 	} else if (!strncmp(arg, "elsw", 4)) {
 		/* feasibility: can an AArch64 worker switch to AArch32 and run A32 code?
 		 * BC[2]=0xa0 A64 reached; BC[5]=CurrentEL raw (4=EL1,8=EL2); BC[6]=0x32 if A32 ran. */
@@ -503,24 +521,19 @@ void pico_smp_stop_all(void)
 	(void)0;
 	c[28] = 1u;                        /* STOP: workers self power-off via PSCI CPU_OFF */
 	arch_clean_cache_range((addr_t)c, 256);
+	__asm__ volatile("dsb\n\tsev");    /* a guest asleep at its frame boundary */
 	{ extern void mdelay(unsigned long msec); mdelay(300); }
 	c[28] = 0u;
 	arch_clean_cache_range((addr_t)c, 256);
-	if (s_big_saved_mhz) { pico_big_set_mhz(s_big_saved_mhz); s_big_saved_mhz = 0u; }
 }
 
 /* A 32 bit guest on core n: its code runs unprivileged (AArch32 EL0) under a small AArch64 EL1
  * host (pico_smp_gba_land). The guest may read, write and execute all of RAM and reach the
  * devices, as the LK's own code does; only the host's two pages are read only. Opt in only. */
-int pico_smp_guest_start(unsigned n, unsigned entry, unsigned stack_top)
+/* the guest's tables and its parameters (the mark page); the shared counters start from zero */
+static void guest_prepare(unsigned entry, unsigned stack_top)
 {
 	unsigned i, land = (unsigned)pico_smp_gba_land, blk = land & ~0x1FFFFFu, k = (blk - 0x40000000u) >> 21;
-	if (!pico_smp_available()) return -1;
-	if (land < 0x40000000u || land >= 0x80000000u) return -3;
-	if (g_pico_smp_gba_mhz && (n == 6u || n == 7u)) {
-		if (!s_big_saved_mhz) s_big_saved_mhz = pico_big_get_mhz();
-		pico_big_set_mhz(g_pico_smp_gba_mhz);
-	}
 	for (i = 0; i < 512u; i++) g_pico_smp_pt[i] = 0;
 	g_pico_smp_pt[0] = 0x445ull | (3ull << 53);              /* devices: EL0 and EL1 read/write, never executed */
 	g_pico_smp_pt[1] = (unsigned long long)(unsigned)s_l2 | 3ull;
@@ -542,7 +555,56 @@ int pico_smp_guest_start(unsigned n, unsigned entry, unsigned stack_top)
 	BC[9] = (unsigned)g_pico_smp_pt;
 	BC[10] = entry;
 	BC[11] = stack_top;
+}
+
+int pico_smp_guest_start(unsigned n, unsigned entry, unsigned stack_top)
+{
+	unsigned land = (unsigned)pico_smp_gba_land;
+	if (!pico_smp_available()) return -1;
+	if (land < 0x40000000u || land >= 0x80000000u) return -3;
+	if (g_pico_smp_gba_mhz && (n == 6u || n == 7u)) {
+		/* set before the core is powered and then left alone: the guest stays up between games */
+		if (!s_big_saved_mhz) { s_big_saved_mhz = pico_big_get_mhz(); pico_big_set_mhz(g_pico_smp_gba_mhz); }
+	}
+	guest_prepare(entry, stack_top);
 	return (int)smc4(PSCI_CPU_ON, n << 8, land + 0x800u, 0);
+}
+
+/* True when core n is powered (the power controller's status). */
+int pico_smp_core_on(unsigned n)
+{
+	return n < 8u && ((rd32(MCUCFG_CPC_SPMC) >> n) & 1u);
+}
+
+#define GUEST_FAULT   37   /* shared block words, as the host uses them (pico_smp_gbahost64.S.src) */
+#define GUEST_RESTART 38
+
+/* A guest that stalls is cut off by its own core: the guest arms the core's timer for each frame
+ * and the host holds it when the timer fires (pico_smp_gbahost64.S.src). The boot core cannot do
+ * it from outside: it has no way to interrupt the other core's guest, and emptying the translation
+ * caches from here does not reach that core (measured). True once the host reports the guest held. */
+int pico_smp_guest_held(void)
+{
+	return g_pico_smp_comm[GUEST_FAULT] != 0u;
+}
+
+/* Start a held guest again from `entry` on `stack_top` (after a fault or a kill). Returns 0 once
+ * the host took the request. The core stays powered throughout. */
+int pico_smp_guest_restart(unsigned entry, unsigned stack_top)
+{
+	volatile unsigned *c = g_pico_smp_comm;
+	unsigned i;
+	if (!c[GUEST_FAULT]) return -1;
+	guest_prepare(entry, stack_top);       /* clears the fault record too */
+	c[GUEST_FAULT] = 1u;                   /* still held until the host takes the request */
+	c[GUEST_RESTART] = 1u;
+	__asm__ volatile("dsb\n\tsev");
+	for (i = 0; i < 200u; i++) {
+		if (!c[GUEST_RESTART]) return 0;
+		{ extern void mdelay(unsigned long msec); mdelay(1); }
+	}
+	c[GUEST_RESTART] = 0u;
+	return -2;
 }
 
 void pico_smp_register_cmds(void)
