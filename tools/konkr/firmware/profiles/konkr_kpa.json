@@ -1,0 +1,16 @@
+{
+  "name": "tee_kpa",
+  "soc": "MT6785",
+  "device": "Konkr Pocket Advance (k85v1_64)",
+  "stock_tee_md5": "7da5255ed83dd1f7a66bdc81bceb3aec",
+  "payload_base": "0x440",
+  "patch_site": "0x4588",
+  "wrapper": "0x9290",
+  "old_insn": "0x94000B02",
+  "_notes": {
+    "payload_base": "file offset of the BL31 AArch64 reset vector; file_off = payload_addr + payload_base",
+    "patch_site": "droppable NOTICE banner-print 'bl' in bl31_main (runs once on the cold-boot core; result unused)",
+    "wrapper": "the one-shot CPC-arm routine (self-gated by a flag byte at adrp 0x2e000 + #3888)",
+    "old_insn": "the original 'bl 0x7190' at the patch site; the tool refuses to patch if the bytes differ"
+  }
+}

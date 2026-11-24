@@ -3676,6 +3676,9 @@ void gba_menu_fastboot_register(void)
 #if defined(KONKR_KPA)
 	{ extern void kpa_bt_register_cmds(void); kpa_bt_register_cmds(); }       /* kpa_bt.c: Bluetooth */
 #endif
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ extern void pico_smp_register_cmds(void); pico_smp_register_cmds(); }   /* pico_smp.c: a second core */
+#endif
 #if defined(KONKR_BLOCK)
 	{ extern void block_bt_register_cmds(void); block_bt_register_cmds(); }   /* block_bt.c: Bluetooth */
 	/* the board neutral ones of the KPA's set, and the pin reader */

@@ -1,0 +1,50 @@
+/*
+ * GammaOS Pico multi-core (SMP) support for the LK.
+ *
+ * DEFAULT IS SINGLE CORE. The LK boots and runs on the boot core only; nothing
+ * here is called at boot. This module is the opt-in path for powering the other
+ * CPU cores so that heavy work can later be shifted onto them.
+ *
+ * It only works on a device whose secure firmware has been patched to arm the
+ * CPU power controller at cold boot (see tools/konkr/firmware/). On stock
+ * firmware pico_smp_core_up() returns an error (the power-on would hang), so it
+ * is always safe to call: it is a no-op that reports "not available".
+ *
+ * The on-device bring-up, data exchange and cache-coherency were validated via
+ * the `oem smp` fastboot commands (see pico_smp.c). A core comes up in AArch64
+ * EL1; once it enables its caches with Inner-Shareable memory it is fully
+ * cache-coherent with the AArch32 boot core through the DSU, so shared-memory
+ * offload needs no per-use cache maintenance.
+ *
+ * Workload offload itself is not wired yet: by design we stay single-core until
+ * a specific hot path is chosen to move onto a worker.
+ */
+#ifndef PICO_SMP_H
+#define PICO_SMP_H
+
+/* Linear core ids on this SoC: 0 = boot core; 1..5 little (A55); 6,7 big (A76).
+ * MPIDR of core N is 0x8100_0N00. */
+#define PICO_SMP_CORE_BOOT   0u
+#define PICO_SMP_BIG0        6u
+#define PICO_SMP_BIG1        7u
+
+/* Register the `oem smp` debug/bring-up commands. Called from the fastboot
+ * command table; registering the commands does NOT power any core. */
+void pico_smp_register_cmds(void);
+
+/* True if the secure firmware arms the CPU power controller at cold boot (i.e.
+ * the tee CPC patch is applied): CPC_CTRL_ENABLE set in MCUCFG_CPC_FLOW_CTRL.
+ * When false, pico_smp_core_up() will not attempt a power-on (it would hang). */
+int pico_smp_available(void);
+
+/* Power core `n` (1..7) and start it at the given AArch64 entry, handing it the
+ * shared-block and page-table physical bases through the SRAM parameter page.
+ * Returns 0 on PSCI success. Safe to call on stock firmware: returns non-zero
+ * without touching the core when pico_smp_available() is false. */
+int pico_smp_core_up(unsigned n, unsigned entry_pa, unsigned shared_pa, unsigned pt_pa);
+
+/* Ask all running workers to stop (they self power-off via PSCI CPU_OFF) and
+ * wait until the power-status siblings clear. */
+void pico_smp_stop_all(void);
+
+#endif /* PICO_SMP_H */

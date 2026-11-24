@@ -300,6 +300,7 @@ OBJS += $(LOCAL_DIR)/ayaneo_accel.o
 OBJS += $(LOCAL_DIR)/ayaneo_rumble.o
 OBJS += platform/common/pico/pico_xfer.o	# file transfer over the Bluetooth link
 OBJS += platform/common/pico/pico_netplay.o	# lockstep netplay over the Bluetooth link
+OBJS += platform/common/pico/pico_smp.o platform/common/pico/pico_smp_asm.o	# a second CPU core (bring up)
 OBJS += $(LOCAL_DIR)/kpa_bt.o		# Bluetooth (CONNSYS), only when a Pico screen asks for it
 OBJS += platform/common/pico/pico_crypto.o	# Wi-Fi: WPA2 and TLS cryptography
 OBJS += platform/common/pico/pico_random.o	# random numbers: the SoC generator through the trusted firmware

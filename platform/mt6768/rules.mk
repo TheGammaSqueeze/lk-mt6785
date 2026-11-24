@@ -624,6 +624,8 @@ OBJS += \
 	$(LOCAL_DIR)/block_bt.o \
 	platform/common/pico/pico_xfer.o \
 	platform/common/pico/pico_netplay.o \
+	platform/common/pico/pico_smp.o \
+	platform/common/pico/pico_smp_asm.o \
 	platform/common/pico/pico_crypto.o \
 	platform/common/pico/pico_random.o \
 	platform/common/pico/pico_net.o \
