@@ -189,6 +189,7 @@ const char *smart_reset_check(void)
 
 void mt_power_off(void)
 {
+	{ extern void pico_smp_before_reset(void); pico_smp_before_reset(); }   /* other cores off first */
 #ifndef NO_POWER_OFF
 	dprintf(CRITICAL, "mt_power_off new\n");
 #ifdef BOOT_TRACE

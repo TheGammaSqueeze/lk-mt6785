@@ -68,6 +68,18 @@ The tool re-signs with the MediaTek test key under `../../ayaneo/keys`, which is
 what these test-key / unlocked units verify against. A unit fused to a
 production key needs that key via `--key` / `--pub`.
 
+## Profiles included
+
+- `profiles/konkr_kpa.json`: Konkr Pocket Advance (MT6785). The redirect goes to the firmware's
+  one-shot routine, so the later kernel boot call finds the controller already armed.
+- `profiles/konkr_block.json`: Konkr Pocket Block (MT6768). The redirect goes to the plain arming
+  routine instead. On this firmware the one-shot routine the kernel boot call uses does more than
+  arming, and calling it at cold boot leaves the console unable to boot (recovered with SP Flash
+  Tool). The kernel boot call still runs its full routine later, as on stock firmware.
+
+When you make a profile for another build, prefer the plain arming routine (it only unlocks the
+SPM, releases the other cores' resets and sets the enable bit) over a larger wrapper around it.
+
 ## Making a profile for a different device/build
 
 The patch-site and routine addresses differ per firmware build. A profile is

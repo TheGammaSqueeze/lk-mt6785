@@ -14,6 +14,21 @@
  */
 #include <asm.h>
 
+/* The parameter and mark page the workers use: the tail of the SRAM the RAM console sits in.
+ * Konkr Pocket Advance 0x0011D7C0, Konkr Pocket Block 0x0010EF00 (pico_smp.c: SMP_SRAM). The
+ * workers are stored as words, so their first two instructions (x7 or r7 = the page) are here. */
+#if defined(KONKR_BLOCK)
+#define SMP_A64_MOVZ_X7 0xd29de007	/* movz x7, #0xef00 */
+#define SMP_A64_MOVK_X7 0xf2a00207	/* movk x7, #0x10, lsl #16 */
+#define SMP_A32_MOVW_R7 0xe30e7f00	/* movw r7, #0xef00 */
+#define SMP_A32_MOVT_R7 0xe3407010	/* movt r7, #0x10 */
+#else
+#define SMP_A64_MOVZ_X7 0xd29af807	/* movz x7, #0xd7c0 */
+#define SMP_A64_MOVK_X7 0xf2a00227	/* movk x7, #0x11, lsl #16 */
+#define SMP_A32_MOVW_R7 0xe30d77c0	/* movw r7, #0xd7c0 */
+#define SMP_A32_MOVT_R7 0xe3407011	/* movt r7, #0x11 */
+#endif
+
 	.arch	armv7-a
 	.arch_extension virt
 	.arch_extension sec
@@ -44,8 +59,8 @@
 
 /* a mark in the page that outlives a watchdog restart (uncached when the MMU is off) */
 .macro	MARK n, slot=0
-	movw	r7, #0xd7c0
-	movt	r7, #0x0011
+	.word	SMP_A32_MOVW_R7
+	.word	SMP_A32_MOVT_R7
 	mov	r6, #\n
 	str	r6, [r7, #(\slot * 4)]
 .endm
@@ -303,8 +318,8 @@ pico_smp_hyp_back:
 	.balign	64
 	.global	pico_smp_a64_probe
 pico_smp_a64_probe:
-	.word	0xd29af807
-	.word	0xf2a00227
+	.word	SMP_A64_MOVZ_X7
+	.word	SMP_A64_MOVK_X7
 	.word	0x52800c86
 	.word	0xb90000e6
 	.word	0xd5384246
@@ -406,8 +421,8 @@ pico_smp_a32_land:
 	.global	pico_smp_a64_land
 	@ AArch64 worker, x0 = shared-block physical base (PSCI context_id).
 pico_smp_a64_land:
-	.word	0xd29af807
-	.word	0xf2a00227
+	.word	SMP_A64_MOVZ_X7
+	.word	SMP_A64_MOVK_X7
 	.word	0x52800ee6
 	.word	0xb90008e6
 	.word	0xb90010e0
@@ -415,7 +430,7 @@ pico_smp_a64_land:
 	.word	0xd342fc21
 	.word	0x92400421
 	.word	0xb90014e1
-	.word	0xf94010e9
+	.word	0xb94020e9
 	.word	0xd5033f9f
 	.word	0x528181c1
 	.word	0x72abd801
@@ -425,6 +440,8 @@ pico_smp_a64_land:
 	.word	0xd53800a1
 	.word	0xb9004d21
 	.word	0x52800002
+	.word	0xb9407121
+	.word	0x35000121
 	.word	0x11000442
 	.word	0xb9005122
 	.word	0xb9400121
@@ -432,13 +449,20 @@ pico_smp_a64_land:
 	.word	0xb9005521
 	.word	0xb90018e2
 	.word	0xd5033fbf
-	.word	0x17fffff9
+	.word	0x17fffff7
+	.word	0x52800fe6
+	.word	0xb90008e6
+	.word	0xd5033f9f
+	.word	0xd2800040
+	.word	0xf2b08000
+	.word	0xd4000003
+	.word	0x17fffffa
 
 	.balign 64
 	.global pico_smp_coh_land
 pico_smp_coh_land:
-	.word	0xd29af807
-	.word	0xf2a00227
+	.word	SMP_A64_MOVZ_X7
+	.word	SMP_A64_MOVK_X7
 	.word	0x52801106
 	.word	0xb90008e6
 	.word	0xb94020e9
@@ -507,3 +531,33 @@ pico_smp_coh_land:
 	.word	0xf2b08000
 	.word	0xd4000003
 	.word	0x17fffffa
+
+	.balign 64
+	.global pico_smp_elsw_land
+pico_smp_elsw_land:
+	.word	SMP_A64_MOVZ_X7
+	.word	SMP_A64_MOVK_X7
+	.word	0x52801406
+	.word	0xb90008e6
+	.word	0xd5384241
+	.word	0xb90014e1
+	.word	0xd5033f9f
+	.word	0x100001a2
+	.word	0xd342fc20
+	.word	0x92400400
+	.word	0xf100081f
+	.word	0x540000a0
+	.word	0xd2800203
+	.word	0xd5184003
+	.word	0xd5184022
+	.word	0xd69f03e0
+	.word	0xd2803a63
+	.word	0xd51c4003
+	.word	0xd51c4022
+	.word	0xd69f03e0
+	.word	SMP_A32_MOVW_R7
+	.word	SMP_A32_MOVT_R7
+	.word	0xe3a06032
+	.word	0xe5876018
+	.word	0xf57ff04f
+	.word	0xeafffffe

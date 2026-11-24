@@ -432,6 +432,7 @@ int mtk_wdt_boot_check(void)
 void mtk_arch_reset(char mode)
 {
 	WDTLOG("mtk_arch_reset\n");
+	{ extern void pico_smp_before_reset(void); pico_smp_before_reset(); }   /* other cores off first */
 #ifdef BOOT_TRACE
 	{
 		extern void boot_trace_flush(void);

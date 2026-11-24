@@ -1,0 +1,17 @@
+{
+  "name": "tee_block",
+  "soc": "MT6768",
+  "device": "Konkr Pocket Block (M8695_BW01_V02_20261014)",
+  "stock_tee_md5": "5610fa78a9305fc643c14d21bc6bfcbf",
+  "payload_base": "0x440",
+  "patch_site": "0x95e4",
+  "wrapper": "0x10624",
+  "old_insn": "0x97FFF74A",
+  "_notes": {
+    "payload_base": "file offset of the BL31 AArch64 reset vector; file_off = payload_addr + payload_base",
+    "patch_site": "droppable NOTICE banner print 'bl 0x730c' in bl31_main (cold boot, once, result unused)",
+    "wrapper": "0x10624 is the plain arming routine (SPM unlock, PWR_RST_B for cores 1-7, RESETPWRON cleared, CPC_CTRL_ENABLE set). Do NOT point this at 0x9418, the routine the kernel boot SMC calls: on this firmware it does more than arming and the console no longer boots (tried, recovered with SP Flash Tool).",
+    "old_insn": "the original 'bl 0x730c' at the patch site; the tool refuses to patch if the bytes differ",
+    "android": "the firmware's one-shot flag is not set by this patch, so the kernel boot SMC still runs its full routine as on stock firmware"
+  }
+}

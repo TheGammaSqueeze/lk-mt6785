@@ -35,6 +35,7 @@ extern void pico_smp_kboot(unsigned entry, unsigned a1, unsigned a2, unsigned wi
 extern void pico_smp_a32_land(void);
 extern void pico_smp_a64_land(void);
 extern void pico_smp_coh_land(void);
+extern void pico_smp_elsw_land(void);
 extern void mtk_wdt_restart(void);
 unsigned long long g_pico_smp_pt[512] __attribute__((aligned(4096)));
 
@@ -71,6 +72,7 @@ static unsigned hexarg(const char **pp)
 }
 
 static unsigned s_smc_r[4];
+static volatile int s_started;   /* a core was asked to power on since boot */
 static unsigned smc4(unsigned fid, unsigned a1, unsigned a2, unsigned a3)
 {
 	register unsigned r0 __asm__("r0") = fid;
@@ -80,12 +82,18 @@ static unsigned smc4(unsigned fid, unsigned a1, unsigned a2, unsigned a3)
 	__asm__ volatile(".arch_extension sec\n smc #0"
 			 : "+r"(r0), "+r"(r1), "+r"(r2), "+r"(r3) : : "r4", "r5", "r6", "r7", "r12", "memory");
 	s_smc_r[0] = r0; s_smc_r[1] = r1; s_smc_r[2] = r2; s_smc_r[3] = r3;
+	if (fid == PSCI_CPU_ON) s_started = 1;
 	return r0;
 }
 
 /* Marks that outlive a restart: the tail of the SRAM the RAM console sits in (device memory in
  * the LK's map, so nothing is cached). */
-#define BC ((volatile unsigned *)0x0011D7C0u)
+#if defined(KONKR_BLOCK)
+#define SMP_SRAM 0x0010EF00u   /* Block: RAM console SRAM 0x0010EA00 + 0x540, its last 64 bytes */
+#else
+#define SMP_SRAM 0x0011D7C0u   /* KPA: RAM console SRAM 0x0011D000 + 0x800, its last 64 bytes */
+#endif
+#define BC ((volatile unsigned *)SMP_SRAM)
 static void bc_map(void) { }
 static void bc_set(unsigned v) { BC[0] = v; }
 
@@ -169,10 +177,25 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		volatile unsigned *c = g_pico_smp_comm;
 		unsigned to;
 		c[28] = 1u; arch_clean_cache_range((addr_t)c, 256);
-		for (to = 0; to < 4000000u && (rd32(SPM_BASE + 0x160u) & 0x0001FC00u); to++) { if ((to & 0xFFFFFu) == 0u) mtk_wdt_restart(); }
+		thread_sleep(300);
 		c[28] = 0u; arch_clean_cache_range((addr_t)c, 256);
 		snprintf(sl, sizeof sl, "stop: pwrsta %08x (siblings bits 10..16 clear = all off)", rd32(SPM_BASE + 0x160u));
 		fastboot_info(sl);
+		fastboot_okay("");
+		return;
+	} else if (!strncmp(arg, "elsw", 4)) {
+		/* feasibility: can an AArch64 worker switch to AArch32 and run A32 code?
+		 * BC[2]=0xa0 A64 reached; BC[5]=CurrentEL raw (4=EL1,8=EL2); BC[6]=0x32 if A32 ran. */
+		volatile unsigned *mk = (volatile unsigned *)(SMP_SRAM + 8u); (void)mk;
+		unsigned to;
+		for (i = 0; i < 16u; i++) BC[i] = 0;
+		arch_clean_cache_range((unsigned)pico_smp_elsw_land & ~63u, 512);
+		smc4(PSCI_CPU_ON, 1u << 8, (unsigned)pico_smp_elsw_land, 0);
+		for (to = 0; to < 2000000u; to++) if (BC[6] != 0u) break;
+		snprintf(sl, sizeof sl, "elsw: a64 %08x EL %08x a32ran %08x", BC[2], BC[5], BC[6]);
+		fastboot_info(sl);
+		if (BC[6] == 0x32u) fastboot_info("RESULT: AArch32 switch WORKS - the existing A32 core can run on a big core");
+		else fastboot_info("RESULT: AArch32 did not run (switch not reachable this way)");
 		fastboot_okay("");
 		return;
 	} else if (!strncmp(arg, "coh", 3)) {
@@ -181,7 +204,7 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		 * cpu0 and worker exchange via barriers ONLY, no clean/invalidate. If the worker sees
 		 * cpu0's cached canary, the DSU keeps them coherent and offload needs no per-use flush. */
 		volatile unsigned *c = g_pico_smp_comm;
-		volatile unsigned *mk = (volatile unsigned *)0x0011D7C8u;
+		volatile unsigned *mk = (volatile unsigned *)(SMP_SRAM + 8u);
 		unsigned seen, cnt0, cnt1, to;
 		for (i = 0; i < 512u; i++) g_pico_smp_pt[i] = 0;
 		g_pico_smp_pt[0] = 0x405ull;                 /* 0x00000000 Device block */
@@ -193,12 +216,12 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		arch_clean_invalidate_cache_range((addr_t)c, 256);
 		for (i = 0; i < 16u; i++) BC[i] = 0;
 		arch_clean_cache_range((unsigned)pico_smp_coh_land & ~63u, 512);
-		*(volatile unsigned *)0x0011D7E0u = (unsigned)g_pico_smp_comm; /* BC[8] comm base */
-		*(volatile unsigned *)0x0011D7E4u = (unsigned)g_pico_smp_pt;   /* BC[9] page table */
+		*(volatile unsigned *)(SMP_SRAM + 32u) = (unsigned)g_pico_smp_comm; /* BC[8] comm base */
+		*(volatile unsigned *)(SMP_SRAM + 36u) = (unsigned)g_pico_smp_pt;   /* BC[9] page table */
 		arg += 3; cohn = hexarg(&arg); if (cohn == 0u) cohn = 1u;
 		/* stop any running worker: set STOP, wait for the power-status siblings to clear */
 		c[28] = 1u; arch_clean_cache_range((addr_t)c, 256);
-		for (to = 0; to < 4000000u && (rd32(SPM_BASE + 0x160u) & 0x0001FC00u); to++) { if ((to & 0xFFFFFu) == 0u) mtk_wdt_restart(); }
+		thread_sleep(300);
 		c[28] = 0u; c[20] = c[24] = c[25] = c[26] = c[27] = 0u;
 		arch_clean_invalidate_cache_range((addr_t)c, 256);
 		smc4(PSCI_CPU_ON, cohn << 8, (unsigned)pico_smp_coh_land, 0);
@@ -236,7 +259,7 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		arch_clean_cache_range(e & ~63u, 256);
 		arch_clean_cache_range(e & ~63u, 256);
 		arch_clean_invalidate_cache_range((addr_t)g_pico_smp_comm, 256);
-		*(volatile unsigned *)0x0011D7E0u = (unsigned)g_pico_smp_comm;  /* BC[8]: hand the worker its base */
+		*(volatile unsigned *)(SMP_SRAM + 32u) = (unsigned)g_pico_smp_comm;  /* BC[8]: hand the worker its base */
 		r = smc4(PSCI_CPU_ON, n << 8, e, a64 ? (unsigned)g_pico_smp_comm : (0x900u + n));
 		snprintf(sl, sizeof sl, "cpu_on%s %u: %08x pwrsta %08x (bc 08->32/66)", a64 ? "64" : "32", n, r, rd32(SPM_BASE + 0x160u));
 		fastboot_info(sl);
@@ -351,7 +374,7 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 /* ---- opt-in public API (see pico_smp.h). Nothing here runs at boot. ---- */
 
 #define CPC_CTRL_ENABLE  (1u << 16)   /* set in MCUCFG_CPC_FLOW when the firmware is patched */
-#define SRAM_PARAM_BASE  0x0011D7C0u  /* parameter page cpu0 writes before a core powers on */
+#define SRAM_PARAM_BASE  SMP_SRAM  /* parameter page cpu0 writes before a core powers on */
 
 int pico_smp_available(void)
 {
@@ -370,14 +393,20 @@ int pico_smp_core_up(unsigned n, unsigned entry_pa, unsigned shared_pa, unsigned
 	return (int)smc4(PSCI_CPU_ON, n << 8, entry_pa, 0);
 }
 
+/* Before a reset or power off: a warm reset does not power the other cores down, and a core
+ * left on refuses the next CPU_ON. Does nothing when no core was started. */
+void pico_smp_before_reset(void)
+{
+	if (s_started) pico_smp_stop_all();
+}
+
 void pico_smp_stop_all(void)
 {
 	volatile unsigned *c = g_pico_smp_comm;
-	unsigned to;
+	(void)0;
 	c[28] = 1u;                        /* STOP: workers self power-off via PSCI CPU_OFF */
 	arch_clean_cache_range((addr_t)c, 256);
-	for (to = 0; to < 4000000u && (rd32(SPM_BASE + 0x160u) & 0x0001FC00u); to++)
-		if ((to & 0xFFFFFu) == 0u) mtk_wdt_restart();
+	{ extern void mdelay(unsigned long msec); mdelay(300); }
 	c[28] = 0u;
 	arch_clean_cache_range((addr_t)c, 256);
 }

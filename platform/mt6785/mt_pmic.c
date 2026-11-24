@@ -180,6 +180,7 @@ const char *smart_reset_check(void)
 
 void mt_power_off(void)
 {
+	{ extern void pico_smp_before_reset(void); pico_smp_before_reset(); }   /* other cores off first */
 #ifdef MTK_MT6360_PMIC_SUPPORT
 	mt6360_pmic_enable_poweroff_seq(true);
 #endif /* MTK_MT6360_PMIC_SUPPORT */

@@ -12,7 +12,8 @@
  * A freshly PSCI-powered core enters MMU-off, caches-off, AArch64 EL1. It gets
  * nothing useful in x0 (the PSCI context_id is not delivered on this firmware),
  * so cpu0 hands it parameters through a fixed SRAM page before CPU_ON:
- *   0x0011D7C0 + 8   mark byte (worker progress, readable by cpu0 via oem smp:bc)
+ * (page: KPA 0x0011D7C0, Block 0x0010EF00; the embedded words take it from SMP_A64_MOVZ_X7/MOVK_X7)
+ *   page + 8   mark byte (worker progress, readable by cpu0 via oem smp:bc)
  *   0x0011D7C0 + 32  shared-block physical base   (BC[8])
  *   0x0011D7C0 + 36  page-table physical base     (BC[9], coherent worker only)
  * The shared block layout (byte offsets) matches pico_smp.c:
@@ -43,7 +44,9 @@
 	mrs	x1, mpidr_el1
 	str	w1, [x9, #76]
 	mov	w2, #0
-0:	add	w2, w2, #1
+0:	ldr	w1, [x9, #112]			// STOP (cpu0 cleans it out of its cache)
+	cbnz	w1, 9f
+	add	w2, w2, #1
 	str	w2, [x9, #80]			// COUNT heartbeat
 	ldr	w1, [x9, #0]			// PING from cpu0
 	add	w1, w1, #1
@@ -51,6 +54,13 @@
 	str	w2, [x7, #24]
 	dmb	sy
 	b	0b
+9:	mov	w6, #0x7f
+	str	w6, [x7, #8]			// mark: stopping
+	dsb	sy
+	movz	x0, #0x0002
+	movk	x0, #0x8400, lsl #16		// PSCI_CPU_OFF
+	smc	#0
+	b	9b
 
 /* ---- pico_smp_coh_land: cached, cache-coherent worker ---------------------
  * Sets up its own page table (Normal-WB Inner-Shareable), enables MMU + I/D

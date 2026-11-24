@@ -47,4 +47,7 @@ int pico_smp_core_up(unsigned n, unsigned entry_pa, unsigned shared_pa, unsigned
  * wait until the power-status siblings clear. */
 void pico_smp_stop_all(void);
 
+/* Called by the reset and power off paths: stops the workers if any core was started. */
+void pico_smp_before_reset(void);
+
 #endif /* PICO_SMP_H */
