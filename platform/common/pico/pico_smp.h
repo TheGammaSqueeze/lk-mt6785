@@ -47,6 +47,15 @@ int pico_smp_core_up(unsigned n, unsigned entry_pa, unsigned shared_pa, unsigned
  * wait until the power-status siblings clear. */
 void pico_smp_stop_all(void);
 
+/* The GBA experiment (opt in, off by default): g_pico_smp_gba_req asks the next GBA game to run
+ * its CPU loop on core g_pico_smp_gba_core. pico_smp_guest_start runs 32 bit code at `entry`
+ * on core n, unprivileged, on the given stack. */
+extern volatile int g_pico_smp_gba_req;
+extern volatile unsigned g_pico_smp_gba_core;
+extern volatile unsigned g_pico_smp_gba_mhz;   /* big-core clock while a GBA guest runs (default 1600) */
+#define g_pico_smp_comm ((volatile unsigned *)0x4E000000u)   /* fixed DRAM, see pico_smp.c */
+int pico_smp_guest_start(unsigned n, unsigned entry, unsigned stack_top);
+
 /* Called by the reset and power off paths: stops the workers if any core was started. */
 void pico_smp_before_reset(void);
 

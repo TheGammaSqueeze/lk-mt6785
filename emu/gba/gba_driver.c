@@ -818,6 +818,7 @@ static unsigned load_rom(void)
 /* ===================== CPU/frontend thread hand-off ===================== */
 static event_t ev_cpu, ev_main;
 static thread_t *s_cpu_thread;
+static int s_cpu_started_once;   /* the CPU loop has run a frame on the CPU thread or a big core */
 
 /* Clean restart of the CPU thread's execute_arm after a mid-run core reset (the
  * BIOS-intro -> selected-game transition). We cannot resume execute_arm in place
@@ -846,10 +847,51 @@ static void gba_disable_align_faults(void)
 	__asm__ __volatile__("isb" ::: "memory");
 }
 
+/* The CPU loop on a big core (opt in, platform/common/pico/pico_smp.h). The loop then runs
+ * unprivileged on that core instead of on the CPU thread, and the two sides meet through two
+ * counters in the shared block: the frontend raises GO, the core answers with DONE at its vblank. */
+#include "../../platform/common/pico/pico_smp.h"
+#define SMP_GO    24
+#define SMP_DONE  27
+#define SMP_STOP  28
+#define SMP_FAULT 37
+static volatile int s_smp_on, s_smp_dead;
+volatile unsigned int g_dbg_smp_wait_us;
+
+static void gba_smp_guest_wait(void)
+{
+	volatile unsigned *c = g_pico_smp_comm;
+	while (c[SMP_GO] == c[SMP_DONE]) {
+		if (c[SMP_STOP]) {      /* the console resets or powers off: this core off first */
+			__asm__ volatile("push {r7}\n\tmovw r7, #0x00ff\n\tmovt r7, #0x000f\n\tsvc 0\n\tpop {r7}" : : : "memory");
+		}
+		__asm__ volatile("yield");
+	}
+}
+
+void gba_smp_guest_main(void)
+{
+	gba_smp_guest_wait();           /* the first frontend kick */
+	__builtin_setjmp(s_cpu_jb);
+	gba_core_cpu_loop();
+	for (;;) ;
+}
+
 /* called by the core (on the CPU thread) at each vblank */
 void gba_yield_to_main(void)
 {
 	static int first = 1;
+	if (s_smp_on) {                 /* on the big core: no scheduler there */
+		volatile unsigned *c = g_pico_smp_comm;
+		c[SMP_DONE] = c[SMP_GO];
+		gba_smp_guest_wait();
+		if (s_cpu_restart_req) {
+			s_cpu_restart_req = 0;
+			if (s_cpu_clean_boundary) { s_cpu_clean_boundary = 0; gba_frame_boundary_finish(); }
+			__builtin_longjmp(s_cpu_jb, 1);
+		}
+		return;
+	}
 	if (first) { first = 0; gba_dbg("GBA 6b: dynarec yielded 1st frame"); }
 	event_signal(&ev_main, false);
 	event_wait(&ev_cpu);
@@ -890,8 +932,34 @@ static void run_one_frame(void)
 	if (s_gba_np)
 		gba_np_frame();		/* netplay: both players' buttons, from both consoles */
 	gba_core_pre_frame();		/* latch input */
-	event_signal(&ev_cpu, false);
-	event_wait(&ev_main);
+	if (g_pico_smp_gba_req && !s_smp_on && !s_smp_dead && s_cpu_thread) {
+		/* opt in: the loop moves to a big core before its first frame (the CPU thread stays parked) */
+		unsigned top = ((unsigned)s_cpu_thread->stack + s_cpu_thread->stack_size) & ~15u;
+		g_pico_smp_gba_req = 0;
+		/* only where the loop starts from its top anyway: the first frame ever, or a launch's restart */
+		if ((!s_cpu_started_once || s_cpu_restart_req) &&
+		    pico_smp_guest_start(g_pico_smp_gba_core, (unsigned)gba_smp_guest_main, top) == 0) {
+			s_cpu_restart_req = 0;
+			if (s_cpu_clean_boundary) { s_cpu_clean_boundary = 0; gba_frame_boundary_finish(); }
+			s_smp_on = 1;
+		}
+	}
+	s_cpu_started_once = 1;
+	if (s_smp_on) {
+		volatile unsigned *c = g_pico_smp_comm;
+		unsigned int w0 = gpt4_get_current_tick();
+		if (!s_smp_dead) {
+			c[SMP_GO]++;
+			while (c[SMP_DONE] != c[SMP_GO]) {
+				if (c[SMP_FAULT] || gpt4_get_current_tick() - w0 > 13u * 3000000u) { s_smp_dead = 1; break; }
+				__asm__ volatile("yield");
+			}
+		}
+		g_dbg_smp_wait_us = (gpt4_get_current_tick() - w0) / 13u;
+	} else {
+		event_signal(&ev_cpu, false);
+		event_wait(&ev_main);
+	}
 	gba_core_post_frame();		/* drain audio */
 	t1 = gpt4_get_current_tick();
 	g_dbg_emu_frame_us = (t1 - t0) / 13u;

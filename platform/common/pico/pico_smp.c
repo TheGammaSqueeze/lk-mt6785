@@ -22,6 +22,16 @@
 #include <platform/mt_typedefs.h>
 #include "pico_smp.h"
 
+/* The SMP shared buffers live in free DRAM above the emulator's use (0x50000000..0x55800000), NOT
+ * in the LK's BSS: the KPA LK has only ~0.5 MB of heap above _end, and these 4 KB-aligned buffers
+ * would eat it and stop the LK booting. cpu0 and the workers both reach them by physical address. */
+#define SMP_SCRATCH   0x4E000000u
+#define g_pico_smp_save  ((volatile unsigned *)(SMP_SCRATCH + 0x4000u))      /* 256 B, must match pico_smp_asm.S */
+#define g_pico_smp_pt    ((volatile unsigned long long *)(SMP_SCRATCH + 0x1000u))
+#define s_l2             ((volatile unsigned long long *)(SMP_SCRATCH + 0x2000u))
+#define s_l3             ((volatile unsigned long long *)(SMP_SCRATCH + 0x3000u))
+#define s_diag           ((volatile unsigned *)(SMP_SCRATCH + 0x5000u))
+
 extern void fastboot_okay(const char *info);
 extern void fastboot_fail(const char *reason);
 extern void fastboot_info(const char *reason);
@@ -36,12 +46,41 @@ extern void pico_smp_a32_land(void);
 extern void pico_smp_a64_land(void);
 extern void pico_smp_coh_land(void);
 extern void pico_smp_elsw_land(void);
-extern void mtk_wdt_restart(void);
-unsigned long long g_pico_smp_pt[512] __attribute__((aligned(4096)));
+extern void pico_smp_gba_land(void);
+extern void pico_smp_clk_land(void);
+extern signed int pwrap_read(unsigned int adr, unsigned int *rdata);
+extern signed int pwrap_write(unsigned int adr, unsigned int wdata);
+extern void udelay(unsigned long usec);
+static unsigned rd32(unsigned a);
 
-unsigned g_pico_smp_save[64] __attribute__((aligned(4096)));
-static unsigned s_diag[64] __attribute__((aligned(4096)));
-unsigned g_pico_smp_comm[1024] __attribute__((aligned(4096)));
+/* The A76 (big) cluster PLL is ARMPLL_BIG CON1 at APMIXED 0x1000C214 (the A55 cluster that
+ * ayaneo_set_cpu_mhz drives is 0x1000C204). Same MTK PLL formula; keeps POSDIV; pulses PCW_CHG.
+ * Clock only - the rail voltage is separate (MT6359 VPROC2). */
+static unsigned pico_big_get_mhz(void)
+{
+	unsigned c1 = rd32(0x1000C214u), pcw = c1 & 0x3FFFFFu, posdiv = (c1 >> 24) & 7u;
+	unsigned long long f = 26000000ull * pcw; f >>= 14; f >>= posdiv;
+	return (unsigned)(f / 1000000ull);
+}
+static void pico_big_set_mhz(unsigned mhz)
+{
+	volatile unsigned *con1 = (volatile unsigned *)0x1000C214u;
+	unsigned c = *con1, posdiv = (c >> 24) & 7u;
+	unsigned long long pcw;
+	if (mhz < 400u) mhz = 400u;
+	if (mhz > 2600u) mhz = 2600u;
+	pcw = ((unsigned long long)mhz * 1000000ull) << 14; pcw <<= posdiv; pcw /= 26000000ull;
+	if (pcw > 0x3FFFFFu) pcw = 0x3FFFFFu;
+	c = (c & ~0x003FFFFFu & ~0x80000000u) | (unsigned)pcw;
+	*con1 = c; udelay(2); *con1 = c | 0x80000000u; udelay(20);   /* PCW then PCW_CHG relock */
+}
+volatile int g_pico_smp_gba_req;      /* opt in: the next GBA game runs its CPU loop on a big core */
+volatile unsigned g_pico_smp_gba_core = 6u;
+volatile unsigned g_pico_smp_gba_mhz = 1600u;   /* the big core's clock while a GBA guest runs (stable at the
+                                                 * stock rail voltage, no voltage change); 0 leaves it as is */
+static unsigned s_big_saved_mhz;
+extern void mtk_wdt_restart(void);
+
 
 #define MCUCFG_CPC_FLOW  0x0C53A814u
 #define MCUCFG_CPC_SPMC  0x0C53A840u
@@ -183,6 +222,64 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		fastboot_info(sl);
 		fastboot_okay("");
 		return;
+	} else if (!strncmp(arg, "pmic", 4)) {
+		unsigned a, v = 0; arg += 4; a = hexarg(&arg);
+		pwrap_read(a, &v);
+		snprintf(sl, sizeof sl, "pmic %04x = %04x", a, v);
+		fastboot_info(sl);
+	} else if (!strncmp(arg, "bigv", 4)) {
+		/* set the A76 rail (MT6359 VPROC2 ELR0 0x17b2) VOSEL. V = 0.4 + code*6.25mV. Clamped to the
+		 * stock A76 top OPP (code 115 = 1.11875 V) - never above what the vendor runs the A76 at. */
+		unsigned code, cur = 0, dbg = 0; arg += 4; code = hexarg(&arg);
+		if (code > 115u) code = 115u;
+		pwrap_read(0x17b2u, &cur);
+		pwrap_write(0x17b2u, (cur & ~0x7Fu) | code);
+		udelay(1000);
+		pwrap_read(0x17a6u, &dbg);
+		snprintf(sl, sizeof sl, "VPROC2 set code %u (%u mV); readback %04x (code %u)", code,
+			 400u + code*6u + (code*25u)/100u, dbg, dbg & 0x7Fu);
+		fastboot_info(sl);
+	} else if (!strncmp(arg, "big", 3)) {
+		/* read or set the A76 cluster clock (MHz). CLOCK only, no voltage. */
+		unsigned m; arg += 3;
+		if (*arg == ':' || *arg == ',') { m = hexarg(&arg); pico_big_set_mhz(m); }
+		snprintf(sl, sizeof sl, "A76 PLL now ~%u MHz (A55 PLL ~%u)", pico_big_get_mhz(),
+			 (unsigned)({ unsigned c1=rd32(0x1000C204u),pc=c1&0x3FFFFFu,pd=(c1>>24)&7u; unsigned long long f=26000000ull*pc; f>>=14; f>>=pd; (unsigned)(f/1000000ull); }));
+		fastboot_info(sl);
+	} else if (!strncmp(arg, "clk", 3)) {
+		/* measure a core's clock: its own cycle counter against the 13 MHz architected timer */
+		volatile unsigned *c = g_pico_smp_comm;
+		unsigned n = 6u, to; unsigned long long cyc, tk;
+		arg += 3; if (*arg==':'||*arg==',') { n = hexarg(&arg); } if (n<1u||n>7u) n=6u;
+		for (i=0;i<16u;i++) BC[i]=0; for (i=18;i<28u;i++) c[i]=0;
+		arch_clean_invalidate_cache_range((addr_t)c, 256);
+		arch_clean_cache_range((unsigned)pico_smp_clk_land & ~63u, 256);
+		BC[8] = (unsigned)g_pico_smp_comm;
+		smc4(PSCI_CPU_ON, n<<8, (unsigned)pico_smp_clk_land, 0);
+		for (to=0; to<8000000u && *(volatile unsigned*)(SMP_SRAM+8u)!=0xc0u; to++) ;
+		arch_clean_invalidate_cache_range((addr_t)c, 256);
+		cyc = ((unsigned long long)c[25]<<32)|c[24];
+		tk  = ((unsigned long long)c[27]<<32)|c[26];
+		snprintf(sl, sizeof sl, "core %u midr %08x: %u cycles / %u ticks", n, c[18], (unsigned)cyc, (unsigned)tk);
+		fastboot_info(sl);
+		if (tk) { unsigned mhz = (unsigned)((cyc*13u)/tk); snprintf(sl, sizeof sl, "=> ~%u MHz", mhz); fastboot_info(sl); }
+		c[28]=1; arch_clean_cache_range((addr_t)c,256); { extern void mdelay(unsigned long); mdelay(200); } c[28]=0; arch_clean_cache_range((addr_t)c,256);
+		fastboot_okay("");
+		return;
+	} else if (!strncmp(arg, "gba", 3)) {
+		/* opt in for the next GBA game: its CPU loop on one big core (gba:0 = off, gba:7 = core 7) */
+		arg += 3;
+		if (*arg == ':' || *arg == ',') { i = hexarg(&arg); g_pico_smp_gba_req = i != 0u; if (i >= 1u && i <= 7u) g_pico_smp_gba_core = i; }
+		else g_pico_smp_gba_req = 1;
+		if (!pico_smp_available()) g_pico_smp_gba_req = 0;
+		snprintf(sl, sizeof sl, "gba on a big core: %s (core %u)", g_pico_smp_gba_req ? "next game" : "off", g_pico_smp_gba_core);
+		fastboot_info(sl);
+	} else if (!strncmp(arg, "gst", 3)) {
+		volatile unsigned *c = g_pico_smp_comm;
+		snprintf(sl, sizeof sl, "go %u done %u flushes %u fault %u mark %02x", c[24], c[27], c[36], c[37], BC[2]);
+		fastboot_info(sl);
+		snprintf(sl, sizeof sl, "esr %08x elr %08x far %08x spsr %08x", c[32], c[33], c[34], c[35]);
+		fastboot_info(sl);
 	} else if (!strncmp(arg, "elsw", 4)) {
 		/* feasibility: can an AArch64 worker switch to AArch32 and run A32 code?
 		 * BC[2]=0xa0 A64 reached; BC[5]=CurrentEL raw (4=EL1,8=EL2); BC[6]=0x32 if A32 ran. */
@@ -409,6 +506,43 @@ void pico_smp_stop_all(void)
 	{ extern void mdelay(unsigned long msec); mdelay(300); }
 	c[28] = 0u;
 	arch_clean_cache_range((addr_t)c, 256);
+	if (s_big_saved_mhz) { pico_big_set_mhz(s_big_saved_mhz); s_big_saved_mhz = 0u; }
+}
+
+/* A 32 bit guest on core n: its code runs unprivileged (AArch32 EL0) under a small AArch64 EL1
+ * host (pico_smp_gba_land). The guest may read, write and execute all of RAM and reach the
+ * devices, as the LK's own code does; only the host's two pages are read only. Opt in only. */
+int pico_smp_guest_start(unsigned n, unsigned entry, unsigned stack_top)
+{
+	unsigned i, land = (unsigned)pico_smp_gba_land, blk = land & ~0x1FFFFFu, k = (blk - 0x40000000u) >> 21;
+	if (!pico_smp_available()) return -1;
+	if (land < 0x40000000u || land >= 0x80000000u) return -3;
+	if (g_pico_smp_gba_mhz && (n == 6u || n == 7u)) {
+		if (!s_big_saved_mhz) s_big_saved_mhz = pico_big_get_mhz();
+		pico_big_set_mhz(g_pico_smp_gba_mhz);
+	}
+	for (i = 0; i < 512u; i++) g_pico_smp_pt[i] = 0;
+	g_pico_smp_pt[0] = 0x445ull | (3ull << 53);              /* devices: EL0 and EL1 read/write, never executed */
+	g_pico_smp_pt[1] = (unsigned long long)(unsigned)s_l2 | 3ull;
+	g_pico_smp_pt[2] = 0x80000000ull | 0x741ull;
+	g_pico_smp_pt[3] = 0xC0000000ull | 0x741ull;
+	for (i = 0; i < 512u; i++) s_l2[i] = (0x40000000ull + ((unsigned long long)i << 21)) | 0x741ull;
+	s_l2[k] = (unsigned long long)(unsigned)s_l3 | 3ull;
+	for (i = 0; i < 512u; i++) s_l3[i] = ((unsigned long long)blk + ((unsigned long long)i << 12)) | 0x743ull;
+	for (i = (land - blk) >> 12; i <= (land + 0xC00u - blk) >> 12 && i < 512u; i++)
+		s_l3[i] = ((unsigned long long)blk + ((unsigned long long)i << 12)) | 0x7C3ull;   /* the host: read only */
+	arch_clean_cache_range((addr_t)g_pico_smp_pt, 4096);
+	arch_clean_cache_range((addr_t)s_l2, 4096);
+	arch_clean_cache_range((addr_t)s_l3, 4096);
+	for (i = 0; i < 16u; i++) BC[i] = 0;
+	for (i = 24; i < 40u; i++) g_pico_smp_comm[i] = 0;
+	arch_clean_invalidate_cache_range((addr_t)g_pico_smp_comm, 256);
+	arch_clean_cache_range(land, 0xC00);
+	BC[8] = (unsigned)g_pico_smp_comm;
+	BC[9] = (unsigned)g_pico_smp_pt;
+	BC[10] = entry;
+	BC[11] = stack_top;
+	return (int)smc4(PSCI_CPU_ON, n << 8, land + 0x800u, 0);
 }
 
 void pico_smp_register_cmds(void)
