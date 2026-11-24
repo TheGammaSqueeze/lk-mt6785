@@ -275,6 +275,21 @@ static void apply_color_knobs(const struct gbc_core_exports *c)
 	if (c->set_dark_filter)           c->set_dark_filter((unsigned)s_dark);
 }
 
+/* This console's colours on the machine it shows (the selected one), after the core was made
+ * afresh in a game: the original Game Boy palette picked for the game (pal >= 0) and the colour
+ * settings. They are how its pictures are drawn, not part of the machine's state: a session started
+ * in a game showed the game grey without them. */
+static void gbc_own_colours(const struct gbc_core_exports *c, int pal)
+{
+	if (pal >= 0) {
+		int np = s_gbc_np;
+		s_gbc_np = 0;		/* (apply_dmg_palette leaves a session's machines alone) */
+		apply_dmg_palette(c, pal);
+		s_gbc_np = np;
+	}
+	apply_color_knobs(c);
+}
+
 /* ---- SD persistence (survives reboot) --------------------------------------
  * Global CGB display prefs (colour correction / mode / dark filter) live in one
  * small file /gba/gbcprefs.bin; the palette CHOICE is PER GAME (keyed by ROM name
@@ -795,13 +810,13 @@ static int gbc_np_pair(const struct gbc_core_exports *c, fat_vol *vol, int host,
  * (a linked core keeps its second machine for good), the cartridge loaded and the state put in.
  * The colour settings are the console's, not the state's, so they go back in too. */
 static int gbc_np_solo(const struct gbc_core_exports *c, fat_vol *vol, const unsigned char *rombuf, unsigned romsz,
-		       unsigned flags, const unsigned char *st, unsigned stsz)
+		       unsigned flags, const unsigned char *st, unsigned stsz, int pal)
 {
 	if (gbc_core_fresh(vol, c) != 0 || c->load(rombuf, romsz, flags) != 0)
 		return -1;
 	if (st && stsz)
 		c->state_load(st, stsz);
-	apply_color_knobs(c);
+	gbc_own_colours(c, pal);
 	s_gbc_np_touched = 0;
 	return 0;
 }
@@ -832,7 +847,7 @@ static const char *gbc_np_why(void)
  * this console's machine goes on alone, as it is now. */
 static void gbc_np_end_here(const struct gbc_core_exports *c, fat_vol *vol, const gba_rom_entry *rom,
 			    const unsigned char *rombuf, unsigned romsz, unsigned flags, unsigned char *ahead,
-			    unsigned ahead_sz, const char *why)
+			    unsigned ahead_sz, int pal, const char *why)
 {
 	extern void pico_np_stop(void);
 	unsigned msz;
@@ -842,7 +857,7 @@ static void gbc_np_end_here(const struct gbc_core_exports *c, fat_vol *vol, cons
 	if (msz) c->state_save(ahead);
 	pico_np_stop();
 	s_gbc_np = 0;
-	gbc_np_solo(c, vol, rombuf, romsz, flags, ahead, msz);
+	gbc_np_solo(c, vol, rombuf, romsz, flags, ahead, msz, pal);
 	gbc_cheats_again(c, vol, rom, rombuf, romsz);
 	pico_input_netplay(0);
 	ayaneo_rewind_reset(ahead_sz);		/* the history starts again here, the machine's own */
@@ -1150,7 +1165,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			extern int pico_np_take_reset(unsigned int *p1);
 			if (pico_np_frame(ayaneo_gbc_pad_mask(), &p1, &p2) != 0) {
 				/* the other console left or the link is gone: this console plays on alone */
-				gbc_np_end_here(c, vol, rom, rombuf, romsz, flags, ahead, ahead_sz, "The other console left.");
+				gbc_np_end_here(c, vol, rom, rombuf, romsz, flags, ahead, ahead_sz, is_dmg ? pal_idx : -1, "The other console left.");
 			} else {
 			if (pico_np_take_reset(&p1)) {	/* the host's reset: both linked machines, at the same frame */
 				unsigned int sel = c->link_stat(7);
@@ -1285,10 +1300,11 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 						pico_np_set_progress(gbc_np_progress);
 						s_gbc_np_touched = 0;
 						if (gbc_np_pair(c, vol, host, delay, rom, rombuf, romsz, flags, ahead) == 0) {
+							gbc_own_colours(c, is_dmg ? pal_idx : -1);	/* the shown machine's colours, this console's */
 							pico_input_netplay(1);
 							lui_game_session(1, 0);
 						} else {
-							if (s_gbc_np_touched) gbc_np_solo(c, vol, rombuf, romsz, flags, ahead, msz);
+							if (s_gbc_np_touched) gbc_np_solo(c, vol, rombuf, romsz, flags, ahead, msz, is_dmg ? pal_idx : -1);
 							gbc_cheats_again(c, vol, rom, rombuf, romsz);
 							lui_game_session(0, gbc_np_why());
 						}
@@ -1300,7 +1316,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 						lui_game_session(0, "The session could not start.");
 				}
 				if (lui_game_leave_wanted() && s_gbc_np)
-					gbc_np_end_here(c, vol, rom, rombuf, romsz, flags, ahead, ahead_sz, 0);
+					gbc_np_end_here(c, vol, rom, rombuf, romsz, flags, ahead, ahead_sz, is_dmg ? pal_idx : -1, 0);
 			}
 			aya = PRESSED(GPIO_AYA);
 			{ extern volatile int g_dbg_igm_toggle;   /* oem igm: a tap of the menu key */

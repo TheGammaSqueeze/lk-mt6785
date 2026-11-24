@@ -34,6 +34,11 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
 - **armGBA 2.0**, built the way upstream builds it for this kind of processor: about a fifth faster
   in busy GBA scenes. Save states from 1.1.1 load as they are.
 
+| | |
+|---|---|
+| ![Netplay from inside a game](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/igm-netplay-session.png) | ![Fast Forward Speed](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/pico-menu-gameplay-ff.png) |
+| A session started from the game's Netplay page | Fast Forward Speed on the Gameplay page |
+
 ### Updating
 
 Flash the @VERSION@ bootloader and put the @VERSION@ card files on the card (GammaOS Pico Tool's
