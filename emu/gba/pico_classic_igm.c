@@ -406,6 +406,8 @@ int pico_classic_igm_frame(unsigned int keys)
 		pico_tr_igm_scope(0);
 		C.c->status[0] = 0; C.toast_t = 0; C.dirty = 1;
 	}
+	if (lui_game_starting(0) && C.page != IGM_NET && !C.closing)
+		go(IGM_NET, 1);			/* a friend joined while another tab was up: the start shows here */
 	if (C.page == IGM_NET) {	/* the Netplay tab moves on by itself: a host found, a friend joined */
 		static unsigned shown_sig;
 		unsigned sig = lui_game_sig();
@@ -650,6 +652,10 @@ static float hints(float y)
 {
 	static const int ic[3] = { KS_DPAD, KS_BTN_B, KS_BTN_A };
 	const char *lab[3];
+	if (C.page == IGM_NET && lui_game_starting(0)) {	/* a start in a game: B cancels it */
+		lab[0] = cui_say(CF_S, "Cancel");
+		return cui_hints(1180, y, 1, ic + 1, lab);
+	}
 	lab[0] = cui_say(CF_S, "Select"); lab[1] = cui_say(CF_S, C.page == IGM_TOP ? "Resume" : "Back"); lab[2] = cui_say(CF_S, "OK");
 	return cui_hints(1180, y, 3, ic, lab);
 }
@@ -676,6 +682,40 @@ static void tabs(float T)
 		int on = i == tab_of(C.page);
 		if (C.tab[i] == IGM_TOP) cui_spr(KS_IC_RESUME, C.tab_cx[i], ty, 40, 40, on ? 1 : .55f, 1, 1, 1);
 		else cui_text(CF_M, C.tab_cx[i], ty, C.tab_sc, on ? 0xFFF4F4F4u : 0xFF8C8C8Cu, 1, cui_say(CF_M, k_page[C.tab[i]]), 1);
+	}
+}
+
+/* A start in a game, under the Netplay tab's rows: the step, a bar of how far in the cursor's cyan
+ * (as the Link screens' own bar), how much, how fast and how long; B cancels (the hints). */
+static void start_progress(float y0)
+{
+	struct lui_progress p;
+	char t[160], a[24], b[24], fb[160];
+	float y;
+	if (!lui_game_starting(&p))
+		return;
+	y = y0 + lui_game_rows() * ROW_P + 20;
+	cui_text(CF_M, 160, y, 1, 0xFFF4F4F4u, 0, cui_fit(CF_M, 1, cui_say(CF_M, p.step_en), 952, fb, sizeof fb), 1);
+	y += 44;
+	cui_quad(160, y, 960, 12, 0xFF2C3440u, 1);
+	if (p.total) {
+		float f = (float)p.done / (float)p.total;
+		unsigned int i;
+		if (f > 0) cui_quad(160, y, 960 * f, 12, 0xFF40C0FFu, 1);
+		for (i = 0; i < 2; i++) {
+			unsigned int v = i ? p.total : p.done;
+			char *d = i ? b : a;
+			if (v >= 1024u * 1024u) snprintf(d, sizeof a, "%u.%u MB", v / (1024u * 1024u), (v % (1024u * 1024u)) * 10u / (1024u * 1024u));
+			else snprintf(d, sizeof a, "%u KB", (v + 1023u) / 1024u);
+		}
+		if (p.kbs && p.secs_left)
+			snprintf(t, sizeof t, cui_say(CF_S, "%s of %s, %u KB/s, %u s left"), a, b, p.kbs, p.secs_left);
+		else
+			snprintf(t, sizeof t, cui_say(CF_S, "%s of %s"), a, b);
+		cui_text(CF_S, 160, y + 40, .9f, 0xFFB4B4B4u, 0, cui_fit(CF_S, .9f, t, 960, fb, sizeof fb), 1);
+	} else {	/* waiting: a short stretch that moves along */
+		float ph = (float)((gpt4_get_current_tick() / 130000u) % 100u) / 100.0f;
+		cui_quad(160 + (960 - 192) * ph, y, 192, 12, 0xFF40C0FFu, 1);
 	}
 }
 
@@ -724,6 +764,8 @@ list:
 				cui_text(CF_S, 128, y0 + nv_of(IGM_CHT) * ROW_P, 1, 0xFF8C8C8Cu, 0,
 					 cui_fit(CF_S, 1, d, 1024, tb, sizeof tb), 1);
 		}
+		if (C.page == IGM_NET && (k >= 1 || C.from == C.page))
+			start_progress(y0);
 		if (C.page == IGM_ACH && pico_ra_row_text && (k >= 1 || C.from == C.page)) {
 			/* the focused row's words (what to do for an achievement, what a switch does) */
 			cline ln[ROWS];

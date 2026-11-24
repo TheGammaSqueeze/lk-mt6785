@@ -23,6 +23,10 @@ struct pico_np_pair {
 	unsigned int rom_cap;
 	unsigned int *their_rom_size;	/* 0: the same game, nothing was sent */
 	unsigned int *their_rom_flags;
+	/* memory free while the start runs, for packing and unpacking what crosses (zlib's tables
+	 * and window, about 300 KB); NULL: everything crosses as it is */
+	void *work;
+	unsigned int work_size;
 };
 
 /* A reset of the game during a session: the host's menu asks (pico_np_ask_reset; only the host
@@ -44,5 +48,8 @@ void pico_np_progress(int *phase, unsigned int *done, unsigned int *total, unsig
 
 /* 0 the session started; both consoles call it, host 1 or 0 */
 int pico_np_begin_pair(int host, unsigned int delay, const struct pico_np_pair *pp);
+/* the runner's own part of a start in a game, for oem npstat: ms before pico_np_begin_pair (the
+ * machine kept, the core made afresh) and after it (the two machines put together) */
+void pico_np_note_prep(unsigned int before_ms, unsigned int after_ms);
 
 #endif

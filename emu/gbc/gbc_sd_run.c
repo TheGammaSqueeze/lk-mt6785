@@ -421,6 +421,7 @@ static void gbc_slot_ext(char *e) { e[0] = 's'; e[1] = 't'; e[2] = (char)('0' + 
 #define GBC_NP_HALF	0x00400000u	/* each console's state in the start's exchange (4 MB) */
 #define GBC_NP_ROM	(GBC_ROM_BUF + 0x00400000u)	/* the other console's cartridge, up to 4 MB */
 #define GBC_NP_ROM_CAP	0x00400000u
+#define GBC_NP_WORK	0x00100000u	/* zlib's memory at a start, at the end of the other state's room */
 static unsigned gbc_np_reader(unsigned port)
 {
 	extern unsigned int pico_np_pad(unsigned int port);
@@ -744,7 +745,8 @@ static int gbc_np_pair(const struct gbc_core_exports *c, fat_vol *vol, int host,
 		       const unsigned char *rombuf, unsigned romsz, unsigned flags, unsigned char *mine)
 {
 	extern void pico_np_stop(void);
-	unsigned int got = 0, msz = 0, trom = 0, tflags = 0;
+	extern int gba_np_find_gb_rom(const char *name, unsigned int size, unsigned int crc, void *dst, unsigned int cap);
+	unsigned int got = 0, msz = 0, trom = 0, tflags = 0, t_in = gpt4_get_current_tick(), t_pair = t_in, t_paired = t_in;
 	unsigned char *theirs = mine + GBC_NP_HALF;
 	const unsigned char *other_rom = rombuf;	/* the same game unless one came */
 	unsigned int other_sz = romsz, other_flags = flags;
@@ -752,17 +754,21 @@ static int gbc_np_pair(const struct gbc_core_exports *c, fat_vol *vol, int host,
 	int ok = c->version >= GBC_CORE_ABI_V3 && c->link_open && c->set_pad_reader && romsz <= GBC_NP_ROM_CAP;
 	if (ok) {
 		msz = c->state_size();
-		ok = msz && msz <= GBC_NP_HALF;
+		ok = msz && msz <= GBC_NP_HALF - GBC_NP_WORK;
 	}
 	if (ok) {
 		memset(&pp, 0, sizeof pp);
-		pp.mine = mine; pp.msize = msz; pp.theirs = theirs; pp.cap = GBC_NP_HALF; pp.got = &got;
+		pp.mine = mine; pp.msize = msz; pp.theirs = theirs; pp.cap = GBC_NP_HALF - GBC_NP_WORK; pp.got = &got;
 		pp.rom = rombuf; pp.rom_size = romsz; pp.rom_flags = flags;
 		pp.their_rom = (void *)GBC_NP_ROM; pp.rom_cap = GBC_NP_ROM_CAP;
 		pp.their_rom_size = &trom; pp.their_rom_flags = &tflags;
 		pp.rom_name = rom->name;
-		pp.find_rom = 0;	/* GB cartridges are small: the other console sends its own (pico_netplay.c) */
+		pp.find_rom = gba_np_find_gb_rom;	/* on this card too: taken from there, else sent */
+		pp.work = theirs + GBC_NP_HALF - GBC_NP_WORK;	/* (the end of the other state's room) */
+		pp.work_size = GBC_NP_WORK;
+		t_pair = gpt4_get_current_tick();
 		ok = pico_np_begin_pair(host, delay, &pp) == 0;
+		t_paired = gpt4_get_current_tick();
 	}
 	if (ok && trom) {
 		other_rom = (const unsigned char *)GBC_NP_ROM;
@@ -803,6 +809,7 @@ static int gbc_np_pair(const struct gbc_core_exports *c, fat_vol *vol, int host,
 	c->set_pad_reader(gbc_np_reader);
 	s_gbc_np = 1;
 	s_gbc_np_host = host;
+	pico_np_note_prep((t_pair - t_in) / 13000u, (gpt4_get_current_tick() - t_paired) / 13000u);
 	return 0;
 }
 
@@ -865,14 +872,11 @@ static void gbc_np_end_here(const struct gbc_core_exports *c, fat_vol *vol, cons
 }
 
 /* the start's screen while a session starts in a game: the in-game menu over the game's last
- * picture, its Netplay page saying how far; B cancels */
+ * picture, its Netplay page showing the step and how far (lui_game_starting); B cancels */
 static unsigned short *s_np_vbuf;
-static int s_np_b_prev;
 static int gbc_np_progress(void)
 {
-	int b = PRESSED(GPIO_B), cancel = b && !s_np_b_prev;
-	s_np_b_prev = b;
-	snprintf(s_mstat, sizeof s_mstat, "%s", lui_game_progress());
+	int cancel = lui_game_cancel_key(PRESSED(GPIO_B));
 	pico_igm_frame(0);
 	pico_igm_overlay(1);
 	if (s_np_vbuf) ayaneo_gb_show_frame(s_np_vbuf);
@@ -1298,7 +1302,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 							pico_ra_game_end();	/* achievements stop for this game: the other console plays in it */
 						if (c->version >= GBC_CORE_ABI_V5 && c->cheat_reset) c->cheat_reset();
 						c->state_save(ahead);
-						s_np_vbuf = vbuf; s_np_b_prev = 1;
+						s_np_vbuf = vbuf;
 						pico_np_set_progress(gbc_np_progress);
 						s_gbc_np_touched = 0;
 						if (gbc_np_pair(c, vol, host, delay, rom, rombuf, romsz, flags, ahead) == 0) {
@@ -1312,7 +1316,6 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 						}
 						pico_np_set_progress(0);
 						s_np_vbuf = 0;
-						s_mstat[0] = 0;
 						ayaneo_rewind_reset(ahead_sz);
 					} else
 						lui_game_session(0, "The session could not start.");

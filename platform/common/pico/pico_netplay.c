@@ -34,6 +34,7 @@
 #include <kernel/thread.h>
 #include <string.h>
 #include <printf.h>
+#include <lib/zlib.h>
 #include "pico_netplay.h"
 #include "pico_link.h"
 
@@ -71,7 +72,7 @@ struct np_session {
 	unsigned int waits, wait_us_max, wait_us_sum, msgs_in, msgs_out;
 	unsigned int waits_long;		/* over 8 ms: the frame likely missed its refresh */
 	/* the state hashes: ours and theirs for the last few checked frames, and the verdicts */
-	unsigned int my_hf[4], my_hc[4], th_hf[4], th_hc[4], same, differ, first_differ;
+	unsigned int my_hf[4], my_hc[4], th_hf[4], th_hc[4], same, differ, first_differ;	/* hf: frame + 1, 0 none */
 	/* a test pad ORed into this console's own (oem nppad) */
 	unsigned int test_pad, test_frames;
 	/* keeping the two frame clocks in step: how far ahead their pads arrive here and there
@@ -106,11 +107,11 @@ static int np_take(void)
 	int n;
 	while ((n = pico_link_recv(m, sizeof s_np_msg)) > 0) {
 		s_np.msgs_in++;
-		if (m[0] == 'Q')
+		if (m[0] == 'Q' || m[0] == 'X')	/* ended, or a start it gave up on after ours went */
 			return -1;
 		if (m[0] == 'H' && n >= 9) {
 			unsigned int f = np_get32(m + 1), k = (f / 120u) % 4u;
-			s_np.th_hf[k] = f;
+			s_np.th_hf[k] = f + 1u;
 			s_np.th_hc[k] = np_get32(m + 5);
 			np_hash_compare();
 			continue;
@@ -346,7 +347,7 @@ static void np_hash_compare(void)
 			continue;
 		if (s_np.my_hc[k] == s_np.th_hc[k]) s_np.same++;
 		else {
-			if (!s_np.differ) s_np.first_differ = s_np.my_hf[k];
+			if (!s_np.differ) s_np.first_differ = s_np.my_hf[k] - 1u;
 			s_np.differ++;
 		}
 		s_np.my_hf[k] = s_np.th_hf[k] = 0;	/* compared once */
@@ -360,7 +361,7 @@ void pico_np_hash(unsigned int frame, unsigned int crc)
 	unsigned int k = (frame / 120u) % 4u;
 	if (!s_np.on)
 		return;
-	s_np.my_hf[k] = frame;
+	s_np.my_hf[k] = frame + 1u;		/* (frame 0, the start itself, is checked too) */
 	s_np.my_hc[k] = crc;
 	m[0] = 'H';
 	np_put32(m + 1, frame);
@@ -420,8 +421,6 @@ static int np_send(const unsigned char *m, unsigned int n)
 	return rc;
 }
 
-/* wait for one message of kind k (others dropped: they are from before), up to us; its
- * length, 0 on none */
 /* ---- the start's progress, for the screen a theme shows meanwhile (pico_link_ui.c) ----
  * Each step of a start says what it does (PICO_NP_*, pico_netplay.h) and how far it is; the
  * function a theme set is called with it at most every 100 ms and may cancel (1): the start then
@@ -432,7 +431,20 @@ static int (*s_np_prog_fn)(void);
 static unsigned int s_np_prog_tick;
 static int s_np_cancel, s_np_other_gone;	/* this console cancelled; the other did ('X') */
 
+/* what the last start cost, step by step (oem npstat): ms, bytes of data and bytes that crossed */
+#define NP_STEPS		(PICO_NP_STARTING + 1)
+static unsigned int s_np_step_ms[NP_STEPS], s_np_step_raw[NP_STEPS], s_np_step_wire[NP_STEPS];
+static unsigned int s_np_wire;			/* bytes of data sent or received in this step */
+static unsigned int s_np_prep_ms[2], s_np_begin_ms;
+static unsigned int s_np_lead_us, s_np_pack_us, s_np_unpack_us;	/* role swaps, deflate, inflate */
+static int s_np_zipped;				/* the last start packed what crossed (either way) */
+
 void pico_np_set_progress(int (*fn)(void)) { s_np_prog_fn = fn; }
+void pico_np_note_prep(unsigned int before_ms, unsigned int after_ms)
+{
+	s_np_prep_ms[0] = before_ms;
+	s_np_prep_ms[1] = after_ms;
+}
 
 void pico_np_progress(int *phase, unsigned int *done, unsigned int *total, unsigned int *kbs)
 {
@@ -460,15 +472,29 @@ static int np_tick(int force)
 	return s_np_cancel;
 }
 
+/* the step that ran until now is counted, the next one starts */
+static void np_step_close(void)
+{
+	int p = s_np_phase;
+	if (p <= PICO_NP_IDLE || p >= NP_STEPS)
+		return;
+	s_np_step_ms[p] += GPT_US(gpt4_get_current_tick() - s_np_phase_tick) / 1000u;
+	s_np_step_raw[p] += s_np_done;
+	s_np_step_wire[p] += s_np_wire;
+}
 static void np_phase(int phase, unsigned int total)
 {
+	np_step_close();
 	s_np_phase = phase;
 	s_np_done = 0;
+	s_np_wire = 0;
 	s_np_total = total;
 	s_np_phase_tick = gpt4_get_current_tick();
 	np_tick(1);
 }
 
+/* wait for one message of kind k (others dropped: they are from before), up to us; its
+ * length, 0 on none */
 static int np_wait_kind(unsigned char k, unsigned int us)
 {
 	unsigned int t0 = gpt4_get_current_tick();
@@ -491,45 +517,230 @@ static int np_wait_kind(unsigned char k, unsigned int us)
 volatile int g_np_begin_rc;			/* oem npstat: how the last start went */
 volatile unsigned int g_np_begin_info;		/* the state's size (host) or bytes received (guest) */
 
-/* A state or a cartridge goes in 240 byte pieces ('S' offset data, then 'T' size CRC-32). The
- * receiving console may be busy for a moment and its link queue holds only so many messages, so
- * the pieces go in a window: the receiver answers 'A' with the pieces it has every NP_ACK_EVERY,
- * and the sender keeps at most NP_WINDOW unanswered. */
+/* ---- packing what crosses ----
+ * A machine state is mostly empty memory and the same bytes again (a GBA one of 770 KB comes to
+ * under 20 KB deflated) and a cartridge to about two fifths of itself, so when both consoles can,
+ * every state and cartridge crosses deflated: 'C' pieces of the packed stream in place of 'S'
+ * pieces of the data, unpacked into place as they come in. The 'T' at the end still gives the
+ * data's own size and CRC-32, checked after unpacking. Each console says in its first message of
+ * a start whether it takes packed pieces (NP_CAP_ZIP); one that does not (an older Pico, or a
+ * runner with no memory to spare) gets 'S' pieces as before. zlib works in memory the runner
+ * lends for the start (pico_np_pair.work), handed out from its start and all of it taken back
+ * when the next piece of data begins: the LK's own heap is too small to spare it. */
+#define NP_CAP_ZIP		1u
+#define NP_ZIP_LEVEL		6		/* the link is the slow part: the CPU packs far faster */
+#define NP_ZIP_FEED		16384u		/* data handed to deflate at a time (keeps each call short) */
+volatile int g_np_zip_on = 1;			/* oem npzip:0 - say we take none (both: all as it is) */
+static unsigned char *s_zw;			/* the memory lent for zlib */
+static unsigned int s_zw_size, s_zw_used;
+static unsigned int s_np_their_caps;		/* what the other console said it takes */
+
+static voidpf np_zalloc(voidpf opaque, uInt items, uInt size)
+{
+	unsigned int n = ((unsigned int)items * (unsigned int)size + 15u) & ~15u;
+	void *p;
+	(void)opaque;
+	if (!s_zw || n > s_zw_size - s_zw_used)
+		return Z_NULL;
+	p = s_zw + s_zw_used;
+	s_zw_used += n;
+	return p;
+}
+static void np_zfree(voidpf opaque, voidpf p) { (void)opaque; (void)p; }	/* all of it back at once */
+
+static unsigned int np_my_caps(void) { return g_np_zip_on && s_zw ? NP_CAP_ZIP : 0u; }
+
+/* A state or a cartridge goes in 240 byte pieces ('S' offset data, or packed 'C' offset data, then
+ * 'T' size CRC-32). The receiving console may be busy for a moment and its link queue holds only
+ * so many messages, so the pieces go in a window: the receiver answers 'A' with the pieces it has
+ * every NP_ACK_EVERY, and the sender keeps at most NP_WINDOW unanswered. */
 #define NP_WINDOW		56u		/* below the link queue (64): never more in flight than it holds */
 #define NP_ACK_EVERY		24u
+#define NP_PIECE		240u
 /* Each console numbers what it sends and what it receives from the start of a session, in the
  * same order on both sides; an 'A' carries the number of the piece of data it answers, so a late
  * answer to the previous one (sent after its sender stopped waiting) is told apart. */
 static unsigned int s_blob_out, s_blob_in;
+struct np_out { unsigned int seq, sent, acked, bytes; int led; };
+
+/* This console takes the link's central role for a big send (pico_link_lead): a peripheral sends
+ * about 30 KB/s, a central about 110 KB/s, but the swap itself drops and makes the link again
+ * (about a fifth of a second). Data packed piece by piece whose size was not known before it went
+ * (np_send_packed) swaps once it has proved big: past NP_LEAD_AFTER bytes, at a point where every
+ * piece has been answered (nothing of it in flight while the link is made again). */
+#define NP_LEAD_AFTER		49152u
+static void np_lead(struct np_out *o)
+{
+	extern int pico_link_lead(void);
+	unsigned int t0 = gpt4_get_current_tick();
+	o->led = 1;
+	pico_link_lead();
+	s_np_lead_us += GPT_US(gpt4_get_current_tick() - t0);
+}
+
+/* the receiver's answers until no more than left pieces are unanswered; 0, -2 none came */
+static int np_acks_down_to(struct np_out *o, unsigned int left)
+{
+	while (o->sent - o->acked > left) {
+		unsigned int k;
+		if (!np_wait_kind('A', 5000000u))
+			return -2;
+		k = np_get32(s_np_msg + 5);
+		if (np_get32(s_np_msg + 1) == o->seq && k > o->acked && k <= o->sent)
+			o->acked = k;
+	}
+	return 0;
+}
+
+/* one piece out, waiting first while the window is full; 0 sent */
+static int np_piece(struct np_out *o, unsigned char kind, unsigned int pos, const unsigned char *d, unsigned int n)
+{
+	unsigned char m[5 + NP_PIECE];
+	if (!o->led && o->bytes >= NP_LEAD_AFTER && o->sent % NP_ACK_EVERY == 0) {
+		if (np_acks_down_to(o, 0) != 0)
+			return -2;
+		np_lead(o);
+	}
+	if (np_acks_down_to(o, NP_WINDOW - 1u) != 0)	/* wait for the receiver to catch up */
+		return -2;
+	m[0] = kind;
+	np_put32(m + 1, pos);
+	memcpy(m + 5, d, n);
+	if (np_send(m, 5 + n) != 0)
+		return -2;
+	o->sent++;
+	o->bytes += n;
+	s_np_wire += n;
+	return 0;
+}
+
+/* deflate in time slices (the start's screen goes on being drawn, B looked at); 1 cancelled */
+static int np_deflate(z_stream *z, int flush, int *r)
+{
+	unsigned int t0 = gpt4_get_current_tick();
+	*r = deflate(z, flush);
+	s_np_pack_us += GPT_US(gpt4_get_current_tick() - t0);
+	return np_tick(0);
+}
+
+/* The data deflated. Up to NP_WHOLE_MAX (every state, a Game Boy cartridge) it is packed whole
+ * first, into the lent memory after zlib's own, so its packed size is known before a piece goes:
+ * this console takes the central role only when that much is worth the swap (NP_LEAD_MIN, about
+ * what a peripheral sends in the time a swap takes). Bigger, or when the packed data does not fit,
+ * the pieces go as the packed stream grows. 0 sent, -9 zlib could not start (nothing was sent: the
+ * caller sends it as it is). */
+#define NP_WHOLE_MAX		0x00100000u
+#define NP_LEAD_MIN		8192u
+static int np_send_packed(struct np_out *o, const unsigned char *b, unsigned int size)
+{
+	z_stream z;
+	unsigned char out[NP_PIECE];
+	unsigned int fed = 0, cpos = 0;
+	int r = Z_OK, rc = 0;
+	memset(&z, 0, sizeof z);
+	z.zalloc = np_zalloc;
+	z.zfree = np_zfree;
+	s_zw_used = 0;
+	if (deflateInit2(&z, NP_ZIP_LEVEL, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+		return -9;
+	if (size <= NP_WHOLE_MAX && s_zw_size - s_zw_used >= 65536u) {
+		unsigned char *pk = s_zw + s_zw_used;
+		unsigned int cap = s_zw_size - s_zw_used, c;
+		z.next_out = pk;
+		z.avail_out = cap;
+		while (r == Z_OK && z.avail_out) {
+			if (!z.avail_in && fed < size) {
+				c = size - fed > 65536u ? 65536u : size - fed;
+				z.next_in = (Bytef *)(b + fed);
+				z.avail_in = c;
+				fed += c;
+			}
+			if (np_deflate(&z, fed >= size && !z.avail_in ? Z_FINISH : Z_NO_FLUSH, &r))
+				{ deflateEnd(&z); return -11; }	/* cancelled */
+			if (r == Z_BUF_ERROR) r = Z_OK;
+		}
+		if (r == Z_STREAM_END) {	/* all of it packed: out it goes */
+			unsigned int csize = (unsigned int)z.total_out;
+			deflateEnd(&z);
+			if (csize >= NP_LEAD_MIN && !o->led)
+				np_lead(o);
+			for (cpos = 0; cpos < csize; cpos += c) {
+				c = csize - cpos > NP_PIECE ? NP_PIECE : csize - cpos;
+				if ((rc = np_piece(o, 'C', cpos, pk + cpos, c)) != 0)
+					return rc;
+				s_np_done = (unsigned int)((unsigned long long)size * (cpos + c) / csize);
+				if (np_tick(0))
+					return -11;
+			}
+			return 0;
+		}
+		if (r != Z_OK)
+			{ deflateEnd(&z); return -9; }
+		deflateReset(&z);		/* it does not fit: piece by piece after all */
+		fed = 0;
+		z.avail_in = 0;
+		r = Z_OK;
+	}
+	z.next_out = out;
+	z.avail_out = sizeof out;
+	for (;;) {
+		if (!z.avail_in && fed < size) {
+			unsigned int c = size - fed > NP_ZIP_FEED ? NP_ZIP_FEED : size - fed;
+			z.next_in = (Bytef *)(b + fed);
+			z.avail_in = c;
+			fed += c;
+		}
+		if (np_deflate(&z, fed >= size && !z.avail_in ? Z_FINISH : Z_NO_FLUSH, &r)) {
+			rc = -11;			/* cancelled */
+			break;
+		}
+		if (r != Z_OK && r != Z_STREAM_END && r != Z_BUF_ERROR) {
+			rc = -9;
+			break;
+		}
+		s_np_done = (unsigned int)z.total_in;
+		if (!z.avail_out || r == Z_STREAM_END) {	/* a piece full, or the last one */
+			unsigned int n = sizeof out - z.avail_out;
+			if (n && (rc = np_piece(o, 'C', cpos, out, n)) != 0)
+				break;
+			cpos += n;
+			z.next_out = out;
+			z.avail_out = sizeof out;
+		}
+		if (r == Z_STREAM_END)
+			break;
+	}
+	deflateEnd(&z);
+	return rc == -9 && cpos ? -2 : rc;	/* (failing partway is not a fresh start) */
+}
+
 static int np_blob_send(const unsigned char *b, unsigned int size)
 {
-	unsigned char m[256];
-	unsigned int pos, sent = 0, acked = 0, seq = ++s_blob_out;
-	/* a big one goes faster with this console as the link's central (pico_link_lead) */
-	if (size >= 65536u) {
-		extern int pico_link_lead(void);
-		pico_link_lead();
+	unsigned char m[16];
+	struct np_out o;
+	unsigned int pos;
+	int rc = -9;
+	memset(&o, 0, sizeof o);
+	o.seq = ++s_blob_out;
+	/* a big one goes faster with this console as the link's central: at once when it crosses as
+	 * it is or is too big to pack whole first (two fifths of a big cartridge is still big); else
+	 * once its packed size is known (np_send_packed) */
+	if (size >= 65536u && (!((s_np_their_caps & NP_CAP_ZIP) && s_zw) || size > NP_WHOLE_MAX))
+		np_lead(&o);
+	if ((s_np_their_caps & NP_CAP_ZIP) && s_zw) {
+		rc = np_send_packed(&o, b, size);
+		if (rc == 0) s_np_zipped = 1;
+		else if (rc != -9) return rc;
 	}
-	for (pos = 0; pos < size; pos += 240u) {
-		unsigned int c = size - pos > 240u ? 240u : size - pos;
-		while (sent - acked >= NP_WINDOW) {	/* wait for the receiver to catch up */
-			unsigned int k;
-			if (!np_wait_kind('A', 5000000u))
+	if (rc == -9)
+		for (pos = 0; pos < size; pos += NP_PIECE) {
+			unsigned int c = size - pos > NP_PIECE ? NP_PIECE : size - pos;
+			if (np_piece(&o, 'S', pos, b + pos, c) != 0)
 				return -2;
-			k = np_get32(s_np_msg + 5);
-			if (np_get32(s_np_msg + 1) == seq && k > acked && k <= sent)
-				acked = k;
+			s_np_done = pos + c;
+			if (np_tick(0))
+				return -11;		/* cancelled */
 		}
-		m[0] = 'S';
-		np_put32(m + 1, pos);
-		memcpy(m + 5, b + pos, c);
-		if (np_send(m, 5 + c) != 0)
-			return -2;
-		sent++;
-		s_np_done = pos + c;
-		if (np_tick(0))
-			return -11;			/* cancelled */
-	}
 	m[0] = 'T';
 	np_put32(m + 1, size);
 	np_put32(m + 5, pico_np_crc(b, size));
@@ -540,36 +751,72 @@ static int np_blob_send(const unsigned char *b, unsigned int size)
 	for (;;) {
 		if (!np_wait_kind('A', 20000000u))
 			return -2;
-		if (np_get32(s_np_msg + 1) == seq && np_get32(s_np_msg + 5) == 0xFFFFFFFFu)
+		if (np_get32(s_np_msg + 1) == o.seq && np_get32(s_np_msg + 5) == 0xFFFFFFFFu)
 			return 0;
 	}
 }
 
-/* receive one state into b (cap bytes); its size in *got. 0 whole and checked */
+/* receive one state or cartridge into b (cap bytes), as it is or packed; its size in *got. 0 whole
+ * and checked */
 static int np_blob_recv(unsigned char *b, unsigned int cap, unsigned int *got)
 {
-	unsigned int have = 0, pos, pieces = 0, seq = ++s_blob_in;
+	unsigned int have = 0, cpos = 0, pos, pieces = 0, seq = ++s_blob_in;
 	unsigned char a[9];
-	int n;
+	z_stream z;
+	int n, packed = 0, ended = 0, rc = 0;
 	for (;;) {
 		unsigned int t0 = gpt4_get_current_tick();
 		while ((n = pico_link_recv(s_np_msg, sizeof s_np_msg)) <= 0) {
 			if (pico_link_state() != LINK_OPEN || GPT_US(gpt4_get_current_tick() - t0) > 20000000u)
-				return -3;
+				{ rc = -3; goto out; }
 			if (np_tick(0))
-				return -11;		/* cancelled */
+				{ rc = -11; goto out; }	/* cancelled */
 			thread_sleep(1);
 		}
 		if (s_np_msg[0] == 'X') {
 			s_np_other_gone = 1;
-			return -8;
+			rc = -8;
+			goto out;
 		}
-		if (s_np_msg[0] == 'S' && n > 5) {
+		if ((s_np_msg[0] == 'S' || s_np_msg[0] == 'C') && n > 5) {
+			unsigned int len = (unsigned)(n - 5);
 			pos = np_get32(s_np_msg + 1);
-			if (pos != have || have + (unsigned)(n - 5) > cap)
-				return -4;
-			memcpy(b + have, s_np_msg + 5, (unsigned)(n - 5));
-			have += (unsigned)(n - 5);
+			if (s_np_msg[0] == 'S') {
+				if (packed || pos != have || have + len > cap)
+					{ rc = -4; goto out; }
+				memcpy(b + have, s_np_msg + 5, len);
+				have += len;
+			} else {
+				if (!packed) {		/* the first packed piece: unpacking starts */
+					if (have) { rc = -4; goto out; }
+					memset(&z, 0, sizeof z);
+					z.zalloc = np_zalloc;
+					z.zfree = np_zfree;
+					s_zw_used = 0;
+					if (inflateInit2(&z, -MAX_WBITS) != Z_OK)
+						{ rc = -9; goto out; }
+					z.next_out = b;
+					z.avail_out = cap;
+					packed = 1;
+				}
+				if (pos != cpos || ended)
+					{ rc = -4; goto out; }
+				cpos += len;
+				z.next_in = s_np_msg + 5;
+				z.avail_in = len;
+				while (z.avail_in && !ended) {
+					unsigned int t1 = gpt4_get_current_tick();
+					int r = inflate(&z, Z_NO_FLUSH);
+					s_np_unpack_us += GPT_US(gpt4_get_current_tick() - t1);
+					if (r == Z_STREAM_END) ended = 1;
+					else if (r != Z_OK) { rc = -4; goto out; }	/* damaged, or more than cap */
+				}
+				if (z.avail_in)
+					{ rc = -4; goto out; }	/* more after the end */
+				have = (unsigned int)z.total_out;
+				s_np_zipped = 1;
+			}
+			s_np_wire += len;
 			g_np_begin_info = have;
 			s_np_done = have;
 			if (++pieces % NP_ACK_EVERY == 0) {
@@ -577,27 +824,54 @@ static int np_blob_recv(unsigned char *b, unsigned int cap, unsigned int *got)
 				np_put32(a + 1, seq);
 				np_put32(a + 5, pieces);
 				if (np_send(a, 9) != 0)
-					return -2;
+					{ rc = -2; goto out; }
 			}
 		} else if (s_np_msg[0] == 'T' && n >= 9) {
-			if (np_get32(s_np_msg + 1) != have || pico_np_crc(b, have) != np_get32(s_np_msg + 5))
-				return -5;
+			if ((packed && !ended) || np_get32(s_np_msg + 1) != have ||
+			    pico_np_crc(b, have) != np_get32(s_np_msg + 5))
+				{ rc = -5; goto out; }
 			*got = have;
 			a[0] = 'A';			/* all here: the end, for the sender */
 			np_put32(a + 1, seq);
 			np_put32(a + 5, 0xFFFFFFFFu);
-			return np_send(a, 9) ? -2 : 0;
+			rc = np_send(a, 9) ? -2 : 0;
+			goto out;
 		}
 	}
+out:
+	if (packed)
+		inflateEnd(&z);
+	return rc;
 }
 
 /* Bring both consoles to the same state and the same first frame. host: state holds size bytes
  * to send; guest: state receives up to cap bytes, *got its size. 0 ready (the session started) */
 static int np_begin(int host, unsigned int delay, void *state, unsigned int size, unsigned int cap,
 		    unsigned int *got);
+/* a start's costs from nought (oem npstat) */
+static unsigned int s_np_begin_tick;
+static void np_stats_reset(void)
+{
+	memset(s_np_step_ms, 0, sizeof s_np_step_ms);
+	memset(s_np_step_raw, 0, sizeof s_np_step_raw);
+	memset(s_np_step_wire, 0, sizeof s_np_step_wire);
+	s_np_zipped = 0;
+	s_np_prep_ms[0] = s_np_prep_ms[1] = 0;
+	s_np_lead_us = s_np_pack_us = s_np_unpack_us = 0;
+	s_np_phase = PICO_NP_IDLE;
+	s_np_begin_tick = gpt4_get_current_tick();
+}
+static void np_stats_end(void)
+{
+	np_step_close();
+	s_np_phase = PICO_NP_IDLE;
+	s_np_begin_ms = GPT_US(gpt4_get_current_tick() - s_np_begin_tick) / 1000u;
+}
+
 int pico_np_begin(int host, unsigned int delay, void *state, unsigned int size, unsigned int cap,
 		  unsigned int *got)
 {
+	np_stats_reset();
 	g_np_begin_info = size;
 	g_np_begin_rc = np_begin(host, delay, state, size, cap, got);
 	if (g_np_begin_rc && s_np_cancel) {
@@ -605,7 +879,7 @@ int pico_np_begin(int host, unsigned int delay, void *state, unsigned int size, 
 		pico_link_flush(500u);		/* the 'X' reaches the other console before Bluetooth goes */
 	}
 	else if (g_np_begin_rc && s_np_other_gone) g_np_begin_rc = -8;	/* cancelled there */
-	s_np_phase = PICO_NP_IDLE;
+	np_stats_end();
 	return g_np_begin_rc;
 }
 
@@ -619,6 +893,8 @@ static int np_begin(int host, unsigned int delay, void *state, unsigned int size
 		return -1;
 	s_blob_out = s_blob_in = 0;
 	s_np_cancel = s_np_other_gone = 0;
+	s_zw = 0;				/* (this start's states cross as they are) */
+	s_np_their_caps = 0;
 	np_phase(PICO_NP_WAITING, 0);
 	/* Nothing is thrown away here: the two consoles reach this point at different times (one
 	 * card is slower), and what the first one sends must still be there for the second. The
@@ -742,21 +1018,26 @@ static int np_begin_pair(int host, unsigned int delay, const struct pico_np_pair
 	extern long gba_host_time(void);
 	unsigned char m[200];
 	char their_name[124];
-	unsigned int id = pico_np_crc(pp->rom, pp->rom_size), trade, their_size, their_crc, len;
-	int rc, i_have, they_have;
+	unsigned int id = pico_np_crc(pp->rom, pp->rom_size), trade, their_size, their_crc, len, at;
+	int rc, i_have, they_have, n;
 	if (pico_link_state() != LINK_OPEN)
 		return -1;
 	s_blob_out = s_blob_in = 0;
 	s_np_cancel = s_np_other_gone = 0;
+	s_np_their_caps = 0;
 	np_phase(PICO_NP_WAITING, 0);
 	*pp->their_rom_size = 0;
+	/* 'G' and 'Y' end with what their sender takes (NP_CAP_ZIP) after the cartridge's name, size
+	 * and CRC-32; a Pico from before packing sends nothing there */
 	if (host) {
-		if (!np_wait_kind('G', 30000000u))
+		if (!(n = np_wait_kind('G', 30000000u)))
 			return -7;
 		*pp->their_rom_flags = np_get32(s_np_msg + 5);
 		s_np_guest_clock0 = (long)np_get32(s_np_msg + 9);
 		s_np_host_at_g = gba_host_time();
 		np_get_rom(s_np_msg + 13, their_name, &their_size, &their_crc);
+		at = 13u + 9u + (s_np_msg[13] < 120u ? s_np_msg[13] : 120u);
+		if ((unsigned)n > at) s_np_their_caps = s_np_msg[at];
 		trade = their_crc != id || their_size != pp->rom_size;	/* different games */
 		i_have = trade ? np_rom_need(pp, their_name, their_size, their_crc) : ROM_HAVE;
 		m[0] = 'Y';
@@ -764,6 +1045,7 @@ static int np_begin_pair(int host, unsigned int delay, const struct pico_np_pair
 		np_put32(m + 5, pp->rom_flags);
 		m[9] = (unsigned char)i_have;
 		len = 10u + np_put_rom(m + 10, pp->rom_name, pp->rom_size, id);
+		m[len++] = (unsigned char)np_my_caps();
 		if (np_send(m, len) != 0)
 			return -2;
 		if (!np_wait_kind('Z', 60000000u))	/* the guest looked on its card */
@@ -794,14 +1076,17 @@ static int np_begin_pair(int host, unsigned int delay, const struct pico_np_pair
 		s_np_guest_clock0 = gba_host_time();
 		np_put32(m + 9, (unsigned int)s_np_guest_clock0);
 		len = 13u + np_put_rom(m + 13, pp->rom_name, pp->rom_size, id);
+		m[len++] = (unsigned char)np_my_caps();
 		if (np_send(m, len) != 0)
 			return -2;
-		if (!np_wait_kind('Y', 30000000u))
+		if (!(n = np_wait_kind('Y', 30000000u)))
 			return -7;
 		trade = np_get32(s_np_msg + 1);
 		*pp->their_rom_flags = np_get32(s_np_msg + 5);
 		they_have = s_np_msg[9];
 		np_get_rom(s_np_msg + 10, their_name, &their_size, &their_crc);
+		at = 10u + 9u + (s_np_msg[10] < 120u ? s_np_msg[10] : 120u);
+		if ((unsigned)n > at) s_np_their_caps = s_np_msg[at];
 		i_have = trade ? np_rom_need(pp, their_name, their_size, their_crc) : ROM_HAVE;
 		if (!trade) they_have = ROM_HAVE;
 		m[0] = 'Z';
@@ -836,6 +1121,10 @@ static int np_begin_pair(int host, unsigned int delay, const struct pico_np_pair
 
 int pico_np_begin_pair(int host, unsigned int delay, const struct pico_np_pair *pp)
 {
+	np_stats_reset();
+	s_zw = (unsigned char *)pp->work;	/* zlib's memory for this start */
+	s_zw_size = pp->work ? pp->work_size : 0u;
+	s_zw_used = 0;
 	g_np_begin_info = pp->msize;
 	g_np_begin_rc = np_begin_pair(host, delay, pp);
 	if (g_np_begin_rc && s_np_cancel) {
@@ -843,7 +1132,7 @@ int pico_np_begin_pair(int host, unsigned int delay, const struct pico_np_pair *
 		pico_link_flush(500u);		/* the 'X' reaches the other console before Bluetooth goes */
 	}
 	else if (g_np_begin_rc && s_np_other_gone) g_np_begin_rc = -8;	/* cancelled there */
-	s_np_phase = PICO_NP_IDLE;
+	np_stats_end();
 	return g_np_begin_rc;
 }
 
@@ -985,6 +1274,17 @@ static void cmd_npdump(const char *arg, void *data, unsigned sz)
 	fastboot_okay(g_np_dump ? "dump on" : "dump off");
 }
 
+/* oem npzip:0|1 - whether this console takes packed states and cartridges at a start (0 on both:
+ * everything crosses as it is, as before packing, to compare) */
+static void cmd_npzip(const char *arg, void *data, unsigned sz)
+{
+	(void)data; (void)sz;
+	if (arg && (*arg == ':')) arg++;
+	if (arg && (*arg == '0' || *arg == '1'))
+		g_np_zip_on = *arg - '0';
+	fastboot_okay(g_np_zip_on ? "packing on" : "packing off");
+}
+
 /* oem nptrim:0|1 - whether the guest trims its frame clock to follow the host's */
 static void cmd_nptrim(const char *arg, void *data, unsigned sz)
 {
@@ -1021,6 +1321,26 @@ static void cmd_npstat(const char *arg, void *data, unsigned sz)
 	fastboot_info(line);
 	snprintf(line, sizeof line, "state hashes: %u same, %u differ (first at frame %u)", s_np.same,
 		 s_np.differ, s_np.first_differ);
+	fastboot_info(line);
+	/* the last start, step by step (each line under a reply's 60 characters) */
+	snprintf(line, sizeof line, "start %u ms, %s, before %u after %u", s_np_begin_ms,
+		 s_np_zipped ? "packed" : "as is", s_np_prep_ms[0], s_np_prep_ms[1]);
+	fastboot_info(line);
+	snprintf(line, sizeof line, "start hello %u ms, ready %u ms, swap %u ms", s_np_step_ms[PICO_NP_WAITING],
+		 s_np_step_ms[PICO_NP_STARTING], s_np_lead_us / 1000u);
+	fastboot_info(line);
+	snprintf(line, sizeof line, "start packing %u ms, unpacking %u ms", s_np_pack_us / 1000u,
+		 s_np_unpack_us / 1000u);
+	fastboot_info(line);
+	snprintf(line, sizeof line, "start games %u ms, %u KB data, %u KB sent",
+		 s_np_step_ms[PICO_NP_SEND_GAME] + s_np_step_ms[PICO_NP_RECV_GAME],
+		 (s_np_step_raw[PICO_NP_SEND_GAME] + s_np_step_raw[PICO_NP_RECV_GAME] + 1023u) / 1024u,
+		 (s_np_step_wire[PICO_NP_SEND_GAME] + s_np_step_wire[PICO_NP_RECV_GAME] + 1023u) / 1024u);
+	fastboot_info(line);
+	snprintf(line, sizeof line, "start states %u ms, %u KB data, %u KB sent",
+		 s_np_step_ms[PICO_NP_SEND_STATE] + s_np_step_ms[PICO_NP_RECV_STATE],
+		 (s_np_step_raw[PICO_NP_SEND_STATE] + s_np_step_raw[PICO_NP_RECV_STATE] + 1023u) / 1024u,
+		 (s_np_step_wire[PICO_NP_SEND_STATE] + s_np_step_wire[PICO_NP_RECV_STATE] + 1023u) / 1024u);
 	fastboot_info(line);
 	{	/* the GBA link cable inside the pair, while a session has it */
 		extern unsigned gba_np_stat(unsigned what);
@@ -1071,5 +1391,6 @@ void pico_np_register_cmds(void)
 	fastboot_register("oem npparts", cmd_npparts, 1, 0);
 	fastboot_register("oem npstat", cmd_npstat, 1, 0);
 	fastboot_register("oem nptrim", cmd_nptrim, 1, 0);
+	fastboot_register("oem npzip", cmd_npzip, 1, 0);
 	fastboot_register("oem npdump", cmd_npdump, 1, 0);
 }

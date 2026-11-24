@@ -133,8 +133,12 @@ void lui_game_session(int on, const char *why);
 void lui_game_armed_session(void);	/* a session from an armed launch: the page offers Leave */
 /* each frame on the game's thread: hosting and joining go on while the menu is up */
 void lui_game_tick(int menu_open);
-/* the start's step and how far, for the runner's painter while it starts */
-const char *lui_game_progress(void);
+/* A start in a game (the runner's progress hook calls the in-game menu meanwhile): what it does
+ * now and how far, for the theme to draw on the Netplay page (the page is brought up for it), with
+ * B to cancel. 0 when no start runs (p may be NULL to ask only that). */
+int  lui_game_starting(struct lui_progress *p);
+/* the runner's progress hook: B's level now; 1 when it was pressed (or oem nav:B), to cancel */
+int  lui_game_cancel_key(int b);
 /* the page, as the Controls page's: its rows (titles in English, values in the language) */
 int  lui_game_page(void);
 void lui_game_page_open(void);

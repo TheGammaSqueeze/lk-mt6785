@@ -1028,26 +1028,53 @@ void lui_game_armed_session(void)
 	}
 }
 
-/* the start's progress for the runner's own painter: the step in words, how far */
-const char *lui_game_progress(void)
+static int s_gm_b_prev;		/* B's level at the last look during a start */
+/* A start in a game, for the in-game menu's Netplay page: what it does now and how far, as the
+ * Link screens' start screen has it (a theme draws it under the page's rows, with B to cancel).
+ * 0 when no start runs; p may be NULL to ask only that. */
+int lui_game_starting(struct lui_progress *p)
 {
-	static const char *const steps[] = { "", "Waiting for the other console", "Sending your game",
+	static const char *const steps[] = { "Starting", "Waiting for the other console", "Sending your game",
 					     "Receiving the other game", "Sending your save", "Receiving the other save",
 					     "Starting" };
-	unsigned int done, total, kbs;
 	int phase;
-	pico_np_progress(&phase, &done, &total, &kbs);
+	if (G.system < 0 || G.state != GS_STARTING)
+		return 0;
+	if (!p)
+		return 1;
+	memset(p, 0, sizeof *p);
+	pico_np_progress(&phase, &p->done, &p->total, &p->kbs);
 	if (phase < 0 || phase > PICO_NP_STARTING) phase = 0;
-	if (total && done <= total)
-		snprintf(s_line, sizeof s_line, "%s  %u%%", lt(steps[phase]), (unsigned)((unsigned long long)done * 100u / total));
-	else
-		snprintf(s_line, sizeof s_line, "%s", lt(steps[phase]));
-	return s_line;
+	p->title_en = "Playing together";
+	p->title = lt(p->title_en);
+	p->step_en = steps[phase];
+	p->step = lt(p->step_en);
+	p->mine = G.shown;
+	p->other = lui_model_name(s_other_model);
+	p->hint_en = "Cancel";
+	p->hint = lt(p->hint_en);
+	if (p->total && p->done > p->total) p->done = p->total;
+	if (p->kbs && p->total > p->done)
+		p->secs_left = (p->total - p->done) / (p->kbs * 1024u) + 1u;
+	return 1;
+}
+
+/* B on a start in a game: pressed now (b, the key's level, held from before is no press), or
+ * oem nav:B from USB. 1 to cancel the start. */
+int lui_game_cancel_key(int b)
+{
+	extern volatile int g_dbg_key, g_dbg_key_hold;
+	int cancel = b && !s_gm_b_prev;
+	s_gm_b_prev = b;
+	if (G.state != GS_STARTING) return 0;
+	if (g_dbg_key_hold > 0 && g_dbg_key == 5) { g_dbg_key_hold = 0; cancel = 1; }
+	return cancel;
 }
 
 static void gm_start(int host)
 {
-	pico_np_set_progress(0);		/* the runner paints its own start (lui_game_progress) */
+	pico_np_set_progress(0);		/* the runner draws its own start (lui_game_starting) */
+	s_gm_b_prev = 1;			/* B held as it starts is no press */
 	pico_np_arm(host, LUI_DELAY);
 	G.start_req = host;
 	G.state = GS_STARTING;
@@ -1143,7 +1170,11 @@ static int gm_rows[4], gm_nrows;
 static void gm_layout(void)
 {
 	gm_nrows = 0;
-	if (G.state == GS_PLAYING || G.state == GS_STARTING) {
+	if (G.state == GS_STARTING) {		/* the start's progress goes under it (lui_game_starting) */
+		gm_rows[gm_nrows++] = GR_WITH;
+		return;
+	}
+	if (G.state == GS_PLAYING) {
 		gm_rows[gm_nrows++] = GR_LEAVE;
 		gm_rows[gm_nrows++] = GR_WITH;
 	} else {
@@ -1272,6 +1303,15 @@ unsigned int lui_game_sig(void)
 	for (i = 0; i < (unsigned)s_npeer && G.state == GS_FINDING; i++)
 		h = (h ^ (unsigned)s_peer[i].model ^ ((unsigned)s_peer[i].addr[0] << 8)) * 16777619u;
 	for (p = G.note; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+	if (G.state == GS_STARTING) {	/* a start: its step, each percent, the seconds left */
+		struct lui_progress pr;
+		lui_game_starting(&pr);
+		h = (h ^ (unsigned)(unsigned long)pr.step_en) * 16777619u;
+		h = (h ^ (pr.total ? (unsigned)((unsigned long long)pr.done * 100u / pr.total) : 0u)) * 16777619u;
+		h = (h ^ pr.secs_left) * 16777619u;
+		if (!pr.total)		/* no bar yet: the moving stretch, ten times a second */
+			h = (h ^ (gpt4_get_current_tick() / 1300000u)) * 16777619u;
+	}
 	return h;
 }
 

@@ -3094,19 +3094,32 @@ int gba_motion_info(int out[6])
 
 #if defined(KONKR_BLOCK) || defined(KONKR_KPA)
 extern unsigned int pico_np_crc(const void *p, unsigned int n);
-/* the other console's game from this card: the same name in the game list, the same size and
- * CRC-32 (0 found, in dst) */
-static int gba_np_find_rom(const char *name, unsigned int size, unsigned int crc, void *dst, unsigned int cap)
+/* the other console's game from this card: the same name in the game list (a GBA game, or for
+ * gb a Game Boy or Game Boy Color one), the same size and CRC-32 (0 found, in dst) */
+static int np_card_rom(int gb, const char *name, unsigned int size, unsigned int crc, void *dst, unsigned int cap)
 {
 	int i;
 	for (i = 0; i < s_nrom; i++) {
 		uint32_t n;
-		if (s_roms[i].type != GBA_CONSOLE_GBA || !gba_sd_same_name(s_roms[i].name, name))
+		int t = s_roms[i].type;
+		if (!(gb ? t == GBA_CONSOLE_GB || t == GBA_CONSOLE_GBC : t == GBA_CONSOLE_GBA) ||
+		    !gba_sd_same_name(s_roms[i].name, name))
 			continue;
 		n = gba_sd_load_rom(&s_sd_vol, &s_roms[i], (unsigned char *)dst, cap);
-		return n == size && pico_np_crc(dst, n) == crc ? 0 : -1;
+		if (n == size && pico_np_crc(dst, n) == crc)
+			return 0;
 	}
 	return -1;
+}
+static int gba_np_find_rom(const char *name, unsigned int size, unsigned int crc, void *dst, unsigned int cap)
+{
+	return np_card_rom(0, name, size, crc, dst, cap);
+}
+/* the same for a Game Boy session (gbc_sd_run.c): a friend's Pokemon Blue taken from this card
+ * when it is there too rather than over the air */
+int gba_np_find_gb_rom(const char *name, unsigned int size, unsigned int crc, void *dst, unsigned int cap)
+{
+	return np_card_rom(1, name, size, crc, dst, cap);
 }
 #endif
 
@@ -3150,6 +3163,7 @@ static void gba_cheats_again(void)
 }
 
 static int s_np_in_game;		/* the start comes from the Netplay page: a failed one plays on */
+static unsigned int s_np_req_tick;	/* when the page asked for it (oem npstat's time before) */
 static volatile int s_gba_np_dropped;	/* the other console left: the Netplay page is told */
 static void gba_np_begin(const gba_rom_entry *rom, unsigned int romsz)
 {
@@ -3158,6 +3172,7 @@ static void gba_np_begin(const gba_rom_entry *rom, unsigned int romsz)
 	extern void pico_np_stop(void);
 	extern volatile int g_np_begin_rc;
 	unsigned int delay = 2, got = 0, msz, trom = 0, tflags = 0;
+	unsigned int t_in = s_np_req_tick ? s_np_req_tick : gpt4_get_current_tick(), t_pair, t_paired;
 	struct pico_np_pair pp;
 	int host = pico_np_armed(&delay), ok;
 	s_gba_np = 0;
@@ -3178,7 +3193,11 @@ static void gba_np_begin(const gba_rom_entry *rom, unsigned int romsz)
 	pp.their_rom = g_core->pair_rom_ptr(); pp.rom_cap = gba_core_rom_capacity();
 	pp.their_rom_size = &trom; pp.their_rom_flags = &tflags;
 	pp.find_rom = gba_np_find_rom;
+	pp.work = (void *)GBA_NP_PAIR;		/* (the checks' room: free until the session runs) */
+	pp.work_size = GBA_NP_PAIR_CAP;
+	t_pair = gpt4_get_current_tick();
 	ok = pico_np_begin_pair(host, delay, &pp) == 0;
+	t_paired = gpt4_get_current_tick();
 	if (ok && !trom) {			/* the same game: the second machine has its own copy */
 		memcpy(g_core->pair_rom_ptr(), gba_core_rom_ptr(), romsz);
 		trom = romsz;
@@ -3212,6 +3231,7 @@ static void gba_np_begin(const gba_rom_entry *rom, unsigned int romsz)
 	}
 	s_gba_np = 1;
 	s_gba_np_host = host;
+	pico_np_note_prep((t_pair - t_in) / 13000u, (gpt4_get_current_tick() - t_paired) / 13000u);
 #else
 	(void)rom; (void)romsz;
 #endif
@@ -3231,13 +3251,10 @@ static const char *gba_np_why(void)
 	}
 }
 /* the start's screen while a session starts in a game: the in-game menu over the game's last
- * picture, its Netplay page saying how far; B cancels */
-static int s_np_b_prev;
+ * picture, its Netplay page showing the step and how far (lui_game_starting); B cancels */
 static int gba_np_progress(void)
 {
-	int b = PRESSED(GPIO_B), cancel = b && !s_np_b_prev;
-	s_np_b_prev = b;
-	snprintf(s_menu_status, sizeof s_menu_status, "%s", lui_game_progress());
+	int cancel = lui_game_cancel_key(PRESSED(GPIO_B));
 	pico_igm_frame(0);
 	pico_igm_overlay(1);
 	ayaneo_gbc_show_frame(gba_core_screen());
@@ -3286,13 +3303,13 @@ static void gba_np_page(unsigned char *scratch)
 		if (pico_ra_game_loaded && pico_ra_game_loaded() && pico_ra_game_end)
 			pico_ra_game_end();		/* achievements stop for this game: the other console plays in it */
 		if (g_core && g_core->version >= GBA_CORE_ABI_V7 && g_core->cheat_reset) g_core->cheat_reset();
-		s_np_b_prev = 1;
 		pico_np_set_progress(gba_np_progress);
 		s_np_in_game = 1;
+		s_np_req_tick = gpt4_get_current_tick();
 		gba_np_begin_here();
+		s_np_req_tick = 0;
 		s_np_in_game = 0;
 		pico_np_set_progress(0);
-		s_menu_status[0] = 0;
 		if (s_gba_np) {
 			pico_input_netplay(1);
 			lui_game_session(1, 0);

@@ -2975,6 +2975,10 @@ int pico_igm_frame(unsigned int keys)
 		long long m = pico_clock_local() / 60;
 		if (m != shown_min) { shown_min = m; G.dirty = 1; }
 	}
+#if PICO_LINK
+	if (lui_game_starting(0) && G.page != IGM_NET && !G.closing)
+		igm_go(IGM_NET, 1);		/* a friend joined while another page was up: the start shows here */
+#endif
 	if (G.page == IGM_NET) {	/* the Netplay page moves on by itself: a host found, a friend joined */
 		static unsigned shown_sig;
 		unsigned sig = lui_game_sig();
@@ -3367,6 +3371,9 @@ static void igm_bg_build(void)
 	g_dbg_igm_open_part[1] = (gpt4_get_current_tick() - t0) / 13u;
 }
 static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box);
+#if PICO_LINK
+static void igm_start_paint(int op);	/* a start in a game, on the Netplay page (below) */
+#endif
 
 volatile unsigned int g_dbg_igm_paint_us[3];	/* oem diag: the in-game menu's last paint, its worst, the hash pass */
 static int igm_paint(unsigned int *buf, unsigned int pitch, unsigned int W, unsigned int H, int *box)
@@ -3524,11 +3531,17 @@ static int igm_paint_all(unsigned int *buf, unsigned int pitch, unsigned int W, 
 			igm_rows(G.page, G.dir * 56 * (1 - k), (int)(op * k), 1);
 		} else igm_rows(G.page, 0, op, 1);
 	}
-	{	/* the hints */
+#if PICO_LINK
+	igm_start_paint(op);
+#endif
+	{	/* the hints (a start in a game: only B, which cancels it) */
 		const char *codes[2] = { "A", "B" };
 		const char *labels[2] = { "Select", G.page == IGM_TOP ? "Resume" : "Back" };
-		int i, xx = IX(30), cy = U(720 - 27);
-		for (i = 0; i < 2; i++) {
+		int i, xx = IX(30), cy = U(720 - 27), nh = 2;
+#if PICO_LINK
+		if (G.page == IGM_NET && lui_game_starting(0)) { codes[0] = "B"; labels[0] = "Cancel"; nh = 1; }
+#endif
+		for (i = 0; i < nh; i++) {
 			int rad = U(8.3f);
 			draw_mask(&G.ring, xx, cy - G.ring.h / 2, C_MUTED, op);
 			text(&G.hintc, xx + rad, U(720 - 22.9f), codes[i], C_INK, op, 1, 0, 0);
@@ -3654,6 +3667,34 @@ static int link_paint(const struct lui_progress *p)
 	}
 	ayaneo_canvas_present();
 	return cancel;
+}
+
+/* A start in a game, on the Netplay page under its rows: the step, a bar with how far, how fast
+ * and how long, as the start screen above has them, in the drawer's width (B cancels: the hints). */
+static void igm_start_paint(int op)
+{
+	struct lui_progress p;
+	char t[160], a[24], b[24];
+	int x = IX(30), w = U(G.pwu - 60), y, by;
+	if (G.page != IGM_NET || !lui_game_starting(&p))
+		return;
+	y = U(IGM_Y0 + lui_game_rows() * IGM_RP + 44);
+	text_fit(&G.srow, x, y, tr(p.step_en), C_INK, op, w);
+	by = y + U(22);
+	fill(x, by, w, U(4), C_MUTED, (op * 64) >> 8);
+	if (p.total) {
+		fill(x, by, (int)((unsigned long long)w * p.done / p.total), U(4), C_ACCENT, op);
+		prog_bytes(a, sizeof a, p.done);
+		prog_bytes(b, sizeof b, p.total);
+		if (p.kbs && p.secs_left)
+			snprintf(t, sizeof t, tr("%s of %s, %u KB/s, %u s left"), a, b, p.kbs, p.secs_left);
+		else
+			snprintf(t, sizeof t, tr("%s of %s"), a, b);
+		text_fit(&G.info, x, by + U(36), t, C_MUTED, op, w);
+	} else {	/* waiting: a short stretch that moves along */
+		int span = w / 5, ph = (int)((gpt4_get_current_tick() / 130000u) % 100u);
+		fill(x + (w - span) * ph / 100, by, span, U(4), C_ACCENT, op);
+	}
 }
 #endif
 

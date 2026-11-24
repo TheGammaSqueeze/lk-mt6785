@@ -28,6 +28,11 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
   session starts from where both games are, no save going anywhere. **Leave the Session** ends it,
   and each console's game carries on alone; so does the other's when one console leaves or goes out
   of reach. A console in a game and one on the Link screen find each other either way round.
+- **Joining is near instant.** What the two consoles exchange to start a session (each one's game
+  as it stands) now crosses Bluetooth packed: a Game Boy Advance start went from about 15 seconds to
+  well under one, from the Link screen and from the Netplay page alike. While a start takes longer,
+  the Netplay page shows how far it has got and the time left, and B cancels on either console (both
+  games carry on). A console still on 1.1.1 or 1.1.2 links as before, without the packing.
 - **Two different games link with one copy each.** Pokemon Red on one console and Pokemon Green on
   the other (or Ruby and Sapphire, FireRed and LeafGreen) no longer need both games on both cards:
   each console needs only the game it plays.
