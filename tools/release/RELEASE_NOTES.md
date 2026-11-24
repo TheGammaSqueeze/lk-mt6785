@@ -31,6 +31,10 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
 - **Two different games link with one copy each.** Pokemon Red on one console and Pokemon Green on
   the other (or Ruby and Sapphire, FireRed and LeafGreen) no longer need both games on both cards:
   each console needs only the game it plays.
+- **Linked Game Boy sessions keep your colours**: the palette you picked for an original Game Boy
+  game stays on through a session and after it, where it went grey. And the two consoles' checks
+  that they run the same game no longer disagree while an in-game menu is open (a byte of the save
+  state nobody wrote; the games themselves never parted).
 - **armGBA 2.0**, built the way upstream builds it for this kind of processor: about a fifth faster
   in busy GBA scenes. Save states from 1.1.1 load as they are.
 

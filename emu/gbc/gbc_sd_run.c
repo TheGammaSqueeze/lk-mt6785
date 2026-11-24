@@ -974,6 +974,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				ayaneo_menu_audio_silence();
 				return;
 			}
+			gbc_own_colours(c, is_dmg ? pal_idx : -1);	/* the shown machine's colours, this console's */
 		}
 	}
 
@@ -1204,7 +1205,8 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					}
 					{	/* oem npdump: this state on the card (/states/gba/np_dump.bin), once */
 						extern volatile int g_np_dump;
-						if (g_np_dump) {
+						/* 1: the next check; a frame number: that check (the same one on both consoles) */
+						if (g_np_dump == 1 || (g_np_dump > 1 && (unsigned)g_np_dump == fno)) {
 							g_np_dump = 0;
 							gba_sd_write_named(vol, "/states/gba", "np_dump", "bin", ahead, hsz);
 						}

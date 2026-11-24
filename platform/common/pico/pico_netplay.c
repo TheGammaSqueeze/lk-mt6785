@@ -977,8 +977,11 @@ static void cmd_npdump(const char *arg, void *data, unsigned sz)
 {
 	(void)data; (void)sz;
 	if (arg && *arg == ':') arg++;
-	if (arg && (*arg == '0' || *arg == '1'))
-		g_np_dump = *arg - '0';
+	if (arg && *arg >= '0' && *arg <= '9') {	/* 0 off, 1 the next check, else that frame's check */
+		int v = 0;
+		while (*arg >= '0' && *arg <= '9') v = v * 10 + (*arg++ - '0');
+		g_np_dump = v;
+	}
 	fastboot_okay(g_np_dump ? "dump on" : "dump off");
 }
 
