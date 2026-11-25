@@ -250,6 +250,8 @@ def main():
     ap.add_argument("--wrapper", type=lambda s: int(s, 0))
     ap.add_argument("--old-insn", type=lambda s: int(s, 0))
     ap.add_argument("--name", default="tee")
+    ap.add_argument("--any-build", action="store_true",
+                    help="patch although the input is not the build the profile names (stock_tee_md5)")
     ap.add_argument("--key", default=DEFAULT_KEY)
     ap.add_argument("--pub", default=DEFAULT_PUB)
     a = ap.parse_args()
@@ -268,6 +270,14 @@ def main():
     name = prof.get("name", a.name)
     os.makedirs(a.out, exist_ok=True)
     stock = open(a.inp, "rb").read()
+    want = prof.get("stock_tee_md5")
+    have = hashlib.md5(stock).hexdigest()
+    if want and have != want.lower():
+        if not a.any_build:
+            raise SystemExit("input md5 %s is not the firmware this profile was made for (%s).\n"
+                             "The addresses in a profile belong to one build. If you checked them "
+                             "against your build, pass --any-build." % (have, want))
+        print("warning: input md5 %s differs from the profile's %s (--any-build given)" % (have, want))
 
     so = os.path.join(a.out, name + "_stock.img")
     co = os.path.join(a.out, name + "_control.img")
@@ -280,7 +290,16 @@ def main():
     patched, foff, old, new = apply_patch(stock, prof)
     print("code patch  file 0x%x: 0x%08x -> 0x%08x (bl -> wrapper 0x%x)"
           % (foff, old, new, prof["wrapper"]))
-    open(ao, "wb").write(resign(patched, a.key, a.pub))
+    final = resign(patched, a.key, a.pub)
+    # self check: against the control image (same re-sign, no patch) the only code difference is
+    # the one instruction; everything else that differs lies in the re-signed cert2 behind the code
+    control = open(co, "rb").read()
+    diff = [i for i in range(len(final)) if final[i] != control[i]]
+    code_end = max(off + PART_HEADER + isz for nm, off, isz in scan_parts(final) if nm not in ("cert1", "cert2"))
+    stray = [i for i in diff if i < code_end and not foff <= i < foff + 4]
+    if not diff or stray:
+        raise SystemExit("self check failed: unexpected difference at 0x%x" % (stray[0] if stray else 0))
+    open(ao, "wb").write(final)
     print("patch+sign  -> %s (flash after the control boots)" % ao)
 
 

@@ -56,6 +56,10 @@ python3 gammaos_cpc_patch.py \
     --out ./out
 ```
 
+The tool refuses an input whose md5 is not the build the profile names (the addresses belong to
+one build), and checks its own output: against the re-signed control image the patched one may
+differ in that one instruction and in the certificate only.
+
 This writes `out/tee_kpa_stock.img`, `out/tee_kpa_control.img`,
 `out/tee_kpa_armcpc.img`. Flash with fastboot (device in bootloader mode):
 
