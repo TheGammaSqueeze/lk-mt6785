@@ -302,10 +302,18 @@ long gba_host_time(void)
 {
 	extern long long pico_clock_local(void) __attribute__((weak));
 	extern long pico_np_clock(void) __attribute__((weak));
-	long np = pico_np_clock ? pico_np_clock() : 0;
-	if (np) return np;		/* a netplay session: the same clock on both consoles */
-	if (pico_clock_local) return (long)pico_clock_local();
-	return 1722470400L + (long)(current_time() / 1000);
+	extern int pico_bigrun_on_guest(void);
+	static volatile long s_latch;	/* the last reading: a core on the big core gets this one */
+	long np, t;
+	/* The clock chip sits behind the PMIC and only the boot core may talk to it: a core running
+	 * on the big core (pico_bigrun.h) reads what its frontend took before the frame. */
+	if (pico_bigrun_on_guest()) return s_latch;
+	np = pico_np_clock ? pico_np_clock() : 0;
+	if (np) t = np;			/* a netplay session: the same clock on both consoles */
+	else if (pico_clock_local) t = (long)pico_clock_local();
+	else t = 1722470400L + (long)(current_time() / 1000);
+	s_latch = t;
+	return t;
 }
 
 /* ---- gpio-keys (active-low) ---- */
@@ -396,6 +404,9 @@ static void gpio_in_pullup(unsigned gpio)
 unsigned ayaneo_gbc_pad_mask(void)
 {
 	extern volatile int g_gbc_menu_open;   /* gbc_sd_run.c: gate game input while the menu is open */
+	extern volatile unsigned g_gbc_pad_latch;   /* gbc_sd_run.c: the pad for a frame on the big core */
+	extern int pico_bigrun_on_guest(void);
+	if (pico_bigrun_on_guest()) return g_gbc_pad_latch;
 	if (g_gbc_menu_open) return 0;
 	/* the player's map (pico_input.c): the buttons as they always were unless moved, X and Y as
 	 * turbo A and B, the buttons that closed the menu held back until let go */
@@ -849,75 +860,33 @@ static void gba_disable_align_faults(void)
 	__asm__ __volatile__("isb" ::: "memory");
 }
 
-/* The CPU loop on a big core (opt in, platform/common/pico/pico_smp.h). The loop then runs
- * unprivileged on that core instead of on the CPU thread, and the two sides meet through two
- * counters in the shared block: the frontend raises GO, the core answers with DONE at its vblank. */
+/* The CPU loop on a big core (opt in, pico_bigrun.h). The loop then runs unprivileged on that
+ * core instead of on the CPU thread, as the guest's loop: it hands each frame over at its vblank
+ * (gba_yield_to_main) and the frontend asks for the next. */
+#include "pico_bigrun.h"
 #include "../../platform/common/pico/pico_smp.h"
-#define SMP_GO    24
-#define SMP_DONE  27
-#define SMP_STOP  28
-#define SMP_FAULT 37
-static volatile int s_smp_on, s_smp_dead;
-static volatile int s_smp_parked;     /* the guest is alive, waiting at its frame boundary for the next game */
-static volatile int s_smp_fresh;      /* the parked guest was started again: it waits at its entry, not in a game */
-static volatile int s_smp_broken;     /* the core could not be recovered: boot core only until the next power on */
+static volatile int s_smp_on;         /* this game's CPU loop is on the big core */
 static volatile int s_smp_abort;      /* the guest died in this game: the game closes without a resume state */
-volatile unsigned int g_dbg_smp_deaths, g_dbg_smp_recovered;   /* oem smp:gst */
 static void *s_smp_jb[8];             /* the guest's own restart point (s_cpu_jb is the CPU thread's) */
-volatile unsigned int g_dbg_smp_wait_us;
 
-/* The guest's frame watchdog: this core's virtual timer, armed while a frame runs. If the frame
- * does not end within half a second the timer's interrupt takes the core into the host, which holds
- * the guest (a frame takes a few milliseconds; the counter runs at 13 MHz). */
-#define SMP_STALL 39
-static inline void gba_smp_watchdog(int on)
+/* the guest's work for a GBA game: the CPU loop from its top, for as long as GBA games follow */
+static void gba_big_loop(void *arg)
 {
-	if (on) __asm__ volatile("mcr p15, 0, %0, c14, c3, 0" : : "r"(6500000u));   /* CNTV_TVAL */
-	__asm__ volatile("mcr p15, 0, %0, c14, c3, 1" : : "r"(on ? 1u : 0u));       /* CNTV_CTL */
-}
-
-static void gba_smp_guest_wait(void)
-{
-	volatile unsigned *c = g_pico_smp_comm;
-	while (c[SMP_GO] == c[SMP_DONE]) {
-		if (c[SMP_STOP]) {      /* the console resets or powers off: this core off first */
-			__asm__ volatile("push {r7}\n\tmovw r7, #0x00ff\n\tmovt r7, #0x000f\n\tsvc 0\n\tpop {r7}" : : : "memory");
-		}
-		__asm__ volatile("wfe");    /* asleep until the frontend's sev (run_one_frame, stop) */
-	}
-	gba_smp_watchdog(1);            /* a frame starts */
-	if (c[SMP_STALL] == 2u) __asm__ volatile(".inst.n 0xde00");   /* oem smp:stall,2: a guest fault's test */
-	if (c[SMP_STALL]) for (;;) ;    /* oem smp:stall: the watchdog's test */
-}
-
-void gba_smp_guest_main(void)
-{
-	gba_smp_guest_wait();           /* the first frontend kick */
+	(void)arg;
 	__builtin_setjmp(s_smp_jb);
 	gba_core_cpu_loop();
 	for (;;) ;
 }
 
 /* A game ends (the menu comes back): its big core session ends with it. The guest stays up,
- * parked at its frame boundary, for the next game. */
+ * asleep at its frame boundary, for the next game of any system. */
 static void gba_smp_game_end(void)
 {
 	/* The core is NOT powered off here. A core that was powered off, then sees the boot core's
 	 * clock change (every game start and end does that), resets the console at its next power on
-	 * (measured: on, off, clock change, on = reset; no clock change = fine). So the guest stays
-	 * parked at its frame boundary, asleep in wfe, until the next game or the console's reset. */
-	if (s_smp_on) { s_smp_on = 0; if (!s_smp_dead) s_smp_parked = 1; }
-	if (s_smp_dead) {
-		/* The guest faulted or was stopped and sits held in the host. It starts again from its
-		 * entry and waits there for the next game; if the host does not answer, the big core is
-		 * left alone for the rest of this power on and games run on the boot core. */
-		s_smp_dead = 0;
-		if (pico_smp_guest_restart((unsigned)gba_smp_guest_main, PICO_SMP_GUEST_STACK_TOP) == 0) {
-			s_smp_parked = 1; s_smp_fresh = 1; g_dbg_smp_recovered++;
-		} else {
-			s_smp_parked = 0; s_smp_broken = 1;
-		}
-	}
+	 * (measured: on, off, clock change, on = reset; no clock change = fine). */
+	s_smp_on = 0;
+	pico_bigrun_close();            /* a guest that faulted or was stopped starts afresh */
 	s_smp_abort = 0;
 }
 
@@ -926,11 +895,7 @@ void gba_yield_to_main(void)
 {
 	static int first = 1;
 	if (s_smp_on) {                 /* on the big core: no scheduler there */
-		volatile unsigned *c = g_pico_smp_comm;
-		gba_smp_watchdog(0);        /* the frame is done */
-		c[SMP_DONE] = c[SMP_GO];
-		PICO_SMP_MARK(15, c[SMP_DONE]);
-		gba_smp_guest_wait();
+		pico_bigrun_guest_yield(gba_big_loop);
 		if (s_cpu_restart_req) {
 			s_cpu_restart_req = 0;
 			if (s_cpu_clean_boundary) { s_cpu_clean_boundary = 0; gba_frame_boundary_finish(); }
@@ -979,60 +944,30 @@ static void run_one_frame(void)
 		gba_np_frame();		/* netplay: both players' buttons, from both consoles */
 	if (s_smp_on) PICO_SMP_MARK(12, 1);
 	gba_core_pre_frame();		/* latch input */
-	if (g_pico_smp_gba_req && !s_smp_on && !s_smp_dead && !s_smp_broken && s_cpu_thread) {
-		/* opt in: the loop moves to a big core before its first frame (the CPU thread stays parked) */
-		unsigned top = PICO_SMP_GUEST_STACK_TOP;
-		/* the wish stays set (every GBA game until it is turned off);
-		 * the move happens only where the loop starts from its top anyway: the first frame ever, or a
-		 * launch's restart */
-		if (s_smp_parked) {
-			/* the guest of an earlier game is waiting: a launch's restart request sends it into
-			 * the new game's loop from the top as it wakes (gba_yield_to_main) */
-			if (!pico_smp_core_on(g_pico_smp_gba_core)) {
-				/* it was powered off behind our back (a bring up command): not powered again
-				 * in this power on, see gba_smp_game_end */
-				s_smp_parked = 0; s_smp_broken = 1;
-			} else if (s_cpu_restart_req) {
-				s_smp_parked = 0; s_smp_on = 1;
-				if (s_smp_fresh) {      /* it enters the loop from the top by itself */
-					s_smp_fresh = 0;
-					s_cpu_restart_req = 0;
-					if (s_cpu_clean_boundary) { s_cpu_clean_boundary = 0; gba_frame_boundary_finish(); }
-				}
-			}
-		} else if ((!s_cpu_started_once || s_cpu_restart_req) &&
-		    pico_smp_guest_start(g_pico_smp_gba_core, (unsigned)gba_smp_guest_main, top) == 0) {
-			s_cpu_restart_req = 0;
-			if (s_cpu_clean_boundary) { s_cpu_clean_boundary = 0; gba_frame_boundary_finish(); }
-			s_smp_on = 1;
-		}
+	if (!s_smp_on && s_cpu_thread && (!s_cpu_started_once || s_cpu_restart_req) &&
+	    pico_bigrun_wanted(PICO_BIG_GBA) && pico_bigrun_open() == 0) {
+		/* opt in: the loop moves to the big core before its first frame (the CPU thread stays
+		 * parked). The move happens only where the loop starts from its top anyway: the first
+		 * frame ever, or a launch's restart; the guest enters the loop from its top by itself. */
+		s_cpu_restart_req = 0;
+		if (s_cpu_clean_boundary) { s_cpu_clean_boundary = 0; gba_frame_boundary_finish(); }
+		s_smp_on = 1;
 	}
 	s_cpu_started_once = 1;
 	if (s_smp_on) {
-		volatile unsigned *c = g_pico_smp_comm;
-		unsigned int w0 = gpt4_get_current_tick();
-		if (!s_smp_dead) {
-			c[SMP_GO]++;
-			__asm__ volatile("dsb\n\tsev");   /* wake the guest */
-			PICO_SMP_MARK(13, c[SMP_GO]); PICO_SMP_MARK(12, 2);
-			while (c[SMP_DONE] != c[SMP_GO]) {
-				if (c[SMP_FAULT] || gpt4_get_current_tick() - w0 > 13u * 1000000u) {
-					/* The guest faulted or its frame watchdog cut it off (the host holds it either
-					 * way), or it gave no frame for a second and the host does not hold it. The
-					 * game closes back to the menu. The emulated machine was cut mid frame, so no
-					 * resume state is written from it; the battery save is. A held guest is
-					 * started afresh for the next game; one that is not held leaves the big core
-					 * unused until the next power on. */
-					s_smp_dead = 1; s_smp_abort = 1; g_dbg_smp_deaths++;
-					if (!pico_smp_guest_held()) s_smp_broken = 1;
-					s_close_req = 1;
-					break;
-				}
-				__asm__ volatile("yield");
+		if (!s_smp_abort) {
+			(void)gba_host_time();          /* the cartridge clock's reading for this frame */
+			PICO_SMP_MARK(12, 2);
+			pico_bigrun_kick(gba_big_loop, 0);
+			if (pico_bigrun_join() != 0) {
+				/* The guest faulted or stalled. The game closes back to the menu. The emulated
+				 * machine was cut mid frame, so no resume state is written from it; the battery
+				 * save is. */
+				s_smp_abort = 1;
+				s_close_req = 1;
 			}
 		}
-		g_dbg_smp_wait_us = (gpt4_get_current_tick() - w0) / 13u;
-		PICO_SMP_MARK(14, g_dbg_smp_wait_us); PICO_SMP_MARK(12, 3);
+		PICO_SMP_MARK(12, 3);
 	} else {
 		event_signal(&ev_cpu, false);
 		event_wait(&ev_main);
@@ -1922,13 +1857,10 @@ static const char *menu_value(int item, char *buf)
 		break; }
 	case MI_BIGCORE:
 		/* the game's CPU on one of the big cores (needs the firmware patch, tools/konkr/firmware) */
-		if (!pico_smp_available()) { p = mi_puts(p, tr_igm("Not available")); break; }
-		p = mi_puts(p, g_pico_smp_gba_req ? "On" : "Off");
-		if ((g_pico_smp_gba_req != 0) != (s_smp_on != 0)) { p = mi_puts(p, " "); p = mi_puts(p, tr_igm("(next game)")); }
+		p = pico_bigrun_row_value(PICO_BIG_GBA, PICO_BIG_ROW_ON, s_smp_on, p);
 		break;
 	case MI_BIGMHZ:
-		if (!pico_smp_available() || !pico_smp_big_levels()) { p = mi_puts(p, tr_igm("Not available")); break; }
-		p = mi_putu(p, g_pico_smp_gba_mhz); p = mi_puts(p, " MHz");
+		p = pico_bigrun_row_value(PICO_BIG_GBA, PICO_BIG_ROW_CLOCK, s_smp_on, p);
 		break;
 	case MI_CPU: {
 		static unsigned mhz, tick;
@@ -2051,22 +1983,11 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 #endif
 	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;
 	case MI_CPU:      if (dir) cpu_step(dir); changed = 0; break;
-	case MI_BIGCORE:
-		if (!(dir || act)) { changed = 0; break; }
-		if (!pico_smp_available()) { mi_puts(status, "Needs the multi-core firmware patch"); changed = 0; break; }
-		g_pico_smp_gba_req = !g_pico_smp_gba_req;
-		core_opt_store("bigcore", g_pico_smp_gba_req);
-		mi_puts(status, "Takes effect at the next game start");
-		break;
-	case MI_BIGMHZ: {
-		int i, n = pico_smp_big_levels();
-		if (!dir || !n || !pico_smp_available()) { changed = 0; break; }
-		for (i = 0; i < n; i++) if (pico_smp_big_level_mhz(i) >= g_pico_smp_gba_mhz) break;
-		i += dir > 0 ? 1 : -1;
-		if (i < 0) i = 0;
-		if (i >= n) i = n - 1;
-		pico_smp_big_clock(pico_smp_big_level_mhz(i));   /* the guest is parked while the menu is up */
-		core_opt_store("bigmhz", (int)g_pico_smp_gba_mhz);
+	case MI_BIGCORE: case MI_BIGMHZ: {
+		const char *note = 0;
+		changed = pico_bigrun_row_change(PICO_BIG_GBA, item == MI_BIGCORE ? PICO_BIG_ROW_ON : PICO_BIG_ROW_CLOCK,
+						 dir, act, &note);
+		if (note) mi_puts(status, note);
 		break;
 	}
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
@@ -2575,9 +2496,6 @@ static void corecfg_load(void)
 	}
 	s_corecfg_dirty = 0;
 	if (core_opt_lookup("core", &v)) s_core_pref = v ? 1 : 0;
-	/* the big core option and its clock; the option only where the firmware can power the core */
-	if (core_opt_lookup("bigcore", &v)) g_pico_smp_gba_req = (v && pico_smp_available()) ? 1 : 0;
-	if (core_opt_lookup("bigmhz", &v) && v > 0) pico_smp_big_clock((unsigned)v);
 }
 static void corecfg_save(void)
 {

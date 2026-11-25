@@ -17,6 +17,7 @@
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
+#include "../gba/pico_bigrun.h"
 #include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
 #include "../gba/pico_input.h"    /* the player's button map, the hotkeys */
 #include "../gba/pico_coreopt.h"
@@ -325,12 +326,16 @@ static unsigned snes_np_reader(unsigned port)
 	return pico_np_pad(port);
 }
 
+static int s_snes_big;        /* this game's frames run on the big core (pico_bigrun.h) */
+static int s_snes_big_dead;   /* the big core's guest died in this game: the core is not run again */
+static unsigned s_snes_pad_latch;   /* the pad, read before a frame that runs on the big core */
 unsigned ayaneo_snes_pad_mask(void)
 {
 	/* the player's map (pico_input.c): the buttons as they always were unless moved, the buttons
 	 * that closed the menu held back until let go. The menu's Turbo (g_snes_turbo bit0 = A, bit1 =
 	 * B) gates those bits by a ~15 Hz pulse (2 emulated frames on, 2 off) so they rapid-fire. */
 	unsigned m;
+	if (pico_bigrun_on_guest()) return s_snes_pad_latch;
 	if (g_snes_menu_open) return 0;
 	m = pico_input_pad();
 	if (g_snes_turbo && (g_snes_dbg_frames & 3u) >= 2u) {
@@ -428,9 +433,34 @@ static void snes_slot_check(void)
 	s_slot_used = gba_sd_read_named(s_menu_vol, s_snes_states, s_menu_rom->name, ext, tmp, sizeof tmp) > 0;
 	s_slot_known[s_save_slot] = (signed char)s_slot_used;
 }
+/* One emulated frame: on the big core when this game runs there, else here. The core asks for the
+ * pad and the time while it runs; on the big core it gets what was read here just before. */
+struct snes_run_job { const struct snes_core_exports *c; struct snes_frame *fr; };
+static void snes_run_job(void *a) { struct snes_run_job *j = (struct snes_run_job *)a; j->c->run(j->fr); }
+static void snes_run(const struct snes_core_exports *c, struct snes_frame *fr)
+{
+	extern unsigned gpt4_get_current_tick(void);
+	unsigned t0 = gpt4_get_current_tick();
+	extern long gba_host_time(void);
+	static struct snes_run_job job;
+	if (s_snes_big_dead) { fr->video = 0; fr->frames = 0; return; }   /* the core's state is torn */
+	if (!s_snes_big) { c->run(fr); pico_bigrun_test_frame(t0, fr->audio, fr->frames * 4u); return; }
+	s_snes_pad_latch = ayaneo_snes_pad_mask();
+	(void)gba_host_time();
+	job.c = c; job.fr = fr;
+	if (pico_bigrun_call(snes_run_job, &job) != 0) {
+		/* the guest faulted or stalled in the frame: the game closes, no resume state is taken */
+		s_snes_big = 0; s_snes_big_dead = 1;
+		g_snes_menu_exit = 1;
+		fr->video = 0; fr->frames = 0;
+		return;
+	}
+	pico_bigrun_test_frame(t0, fr->audio, fr->frames * 4u);
+}
+
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
        SM_CPU, SM_RUNAHEAD, SM_REWIND, SM_TURBO, SM_BENCH, SM_SHOWFPS, SM_EMU, SM_CORE, SM_BATTERY, SM_PANEL, SM_STROBE, SM_RESUME,
-       SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_FFCAP, SM_COUNT };
+       SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_FFCAP, SM_BIGCORE, SM_BIGMHZ, SM_COUNT };
 #define SNES_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
 static const char *snes_turbo_name(int t)
@@ -479,6 +509,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_ASPECT: return "Aspect Ratio"; case SM_OVERSCAN: return "Overscan";
 	case SM_AUDIO:  return "Audio Filter";  case SM_HIRES:    return "Hi-Res Blend";
 	case SM_CPU:    return "CPU Clock"; case SM_RUNAHEAD: return "Run-Ahead";
+	case SM_BIGCORE: return pico_bigrun_row_label(PICO_BIG_ROW_ON); case SM_BIGMHZ: return pico_bigrun_row_label(PICO_BIG_ROW_CLOCK);
 	case SM_REWIND: return "Rewind";
 	case SM_FFCAP:  return "Fast Forward Speed";
 	case SM_TURBO:  return "Turbo (auto-fire)";
@@ -523,6 +554,8 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 	case SM_FFCAP:    { extern const char *ayaneo_ff_cap_name(char *buf); char t[8]; p = smput(p, ayaneo_ff_cap_name(t)); } break;
 	case SM_RESUME: { extern int ayaneo_get_resume_on_boot(void); p = smput(p, ayaneo_get_resume_on_boot() ? "On" : "Off"); } break;
 	case SM_SLOT: p = smputu(p, (unsigned)s_save_slot); p = smput(p, s_slot_used ? " used" : " empty"); break;
+	case SM_BIGCORE: p = pico_bigrun_row_value(PICO_BIG_SNES, PICO_BIG_ROW_ON, s_snes_big, p); break;
+	case SM_BIGMHZ:  p = pico_bigrun_row_value(PICO_BIG_SNES, PICO_BIG_ROW_CLOCK, s_snes_big, p); break;
 	case SM_SAVE: case SM_LOAD: case SM_RESET: case SM_CLOSE: p = smput(p, "[A]"); break;
 	case SM_CORE: p = smput(p, pico_coreopt_n() ? ">" : "None"); break;
 	case SM_EMU: {	/* the choice, and when it is not the core running, that it comes with the next game */
@@ -607,6 +640,10 @@ static int sm_change(int i, int dir, int act)
 		}
 		break;
 	case SM_CPU:    if (dir) { snes_cpu_step(dir); snes_settings_touch(); } break;   /* persisted per core */
+	case SM_BIGCORE: case SM_BIGMHZ: { const char *note = 0;
+		if (pico_bigrun_row_change(PICO_BIG_SNES, i == SM_BIGCORE ? PICO_BIG_ROW_ON : PICO_BIG_ROW_CLOCK, dir, act, &note))
+			snes_settings_touch();
+		if (note) smput(s_mstat, note); } break;
 	case SM_RUNAHEAD: if (dir) {
 		int pf = (ayaneo_get_preempt_frames() + dir + 4) % 4;
 		ayaneo_set_preempt_frames(pf);
@@ -683,6 +720,9 @@ static const struct igm_row k_snes_igm_rows[] = {
 	{ SM_CPU, IGM_PLAY, IGM_VALUE }, { SM_RUNAHEAD, IGM_PLAY, IGM_VALUE },
 	{ SM_REWIND, IGM_PLAY, IGM_VALUE }, { SM_TURBO, IGM_PLAY, IGM_VALUE },
 	{ SM_FFCAP, IGM_PLAY, IGM_VALUE },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ SM_BIGCORE, IGM_PLAY, IGM_VALUE }, { SM_BIGMHZ, IGM_PLAY, IGM_VALUE },
+#endif
 	{ SM_BENCH, IGM_PLAY, IGM_VALUE }, { SM_PANEL, IGM_PLAY, IGM_INFO },
 	{ SM_EMU, IGM_PLAY, IGM_VALUE }, { IGM_CORE, IGM_PLAY, IGM_LINK },
 	{ SM_RESUME, IGM_SYSTEM, IGM_VALUE }, { SM_BATTERY, IGM_SYSTEM, IGM_INFO },
@@ -884,6 +924,11 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	/* hand the in-game menu this session's context */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
 	s_msel = 0; s_mstat[0] = 0; g_snes_menu_open = 0; g_snes_menu_exit = 0; s_snes_igm_on = 0;
+	/* Big Core: this game's frames on the big core (not in netplay: the two consoles step alike) */
+	s_snes_big_dead = 0;
+	pico_bigrun_test_reset();
+	if (c->version >= SNES_CORE_ABI_V5 && c->get_memory) { struct pico_core_memory tm; memset(&tm, 0, sizeof tm); c->get_memory(&tm); pico_bigrun_test_memory(&tm); }
+	s_snes_big = !s_snes_np && pico_bigrun_wanted(PICO_BIG_SNES) && pico_bigrun_open() == 0;
 	s_save_slot = ayaneo_get_snes_slot();   /* restore the last-used manual save slot */
 	if (s_save_slot < 0 || s_save_slot >= SNES_SLOT_COUNT) s_save_slot = 0;   /* clamp stale 0..9 values */
 	g_snes_turbo = ayaneo_get_snes_turbo(); /* restore the persisted auto-fire setting */
@@ -922,7 +967,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			struct snes_frame pf; int i, w; pf.video = 0;
 			gba_punch_ready = 0;
 			SNES_PRE_MARK(4);
-			for (w = 0; w < 15; w++) { c->run(&pf); if (pf.video && pf.width && w >= 3) break; }
+			for (w = 0; w < 15; w++) { snes_run(c, &pf); if (pf.video && pf.width && w >= 3) break; }
 			if (c->aspect_x1000) g_snes_aspect_x1000 = c->aspect_x1000();
 			if (pf.video && pf.width && pf.height) {
 				ayaneo_snes_punch_prerender((const unsigned short *)pf.video, pf.width, pf.height, pf.pitch / 2u);
@@ -1042,7 +1087,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					if (!st || !sz) break;
 					c->state_load_ra(st);                   /* raw restore (matches the raw capture) */
 					if (c->set_av_skip) c->set_av_skip(0, 0);
-					c->run(&f);                             /* render video + audio */
+					snes_run(c, &f);                             /* render video + audio */
 					g_snes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 					if (f.audio && f.frames) {              /* reverse (+ decimate) -> play backwards */
 						const short *a = (const short *)f.audio;
@@ -1129,7 +1174,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			if (c->set_av_skip) c->set_av_skip(((pf > 0 || ff) && !g_snes_test_limit) ? 1 : 0, 0);
 			{ extern unsigned int gpt4_get_current_tick(void); unsigned int _t = gpt4_get_current_tick();
 			  ff_t0 = _t;
-			  c->run(&f);
+			  snes_run(c, &f);
 			  snes_emu_us = (gpt4_get_current_tick() - _t) / 13u; }   /* committed frame cost for the FF budget */
 			g_snes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 			if (!s_snes_np && !g_snes_menu_open) snes_ra_frame();	/* RetroAchievements: the committed frame */
@@ -1205,7 +1250,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				last = !(n < ayaneo_ff_cap_frames() - 1 && ayaneo_ff_fits(ff_t0, blit, skip, rend));
 				if (c->set_av_skip) c->set_av_skip(last ? 0 : 1, 0);
 				if (last) _t = gpt4_get_current_tick();
-				c->run(&f);
+				snes_run(c, &f);
 				if (last) s_snes_render_us = (gpt4_get_current_tick() - _t) / 13u;   /* measure final render */
 				g_snes_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 				snes_ra_frame();			/* and each fast forward frame */
@@ -1252,7 +1297,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				 * CPU/APU state still advances exactly, so the rewind is bit-identical. */
 				for (i = 0; i < pf; i++) {
 					if (c->set_av_skip) c->set_av_skip((i == pf - 1) ? 0 : 1, 1);
-					c->run(&f);
+					snes_run(c, &f);
 				}
 				if (c->set_av_skip) c->set_av_skip(0, 0);
 #if defined(KONKR_BLOCK)
@@ -1468,12 +1513,12 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				unsigned h_committed, h_full, h_skip;
 				c->set_ra_fast(1);
 				c->state_save(st, SNES_AHEAD_CAP);
-				c->set_av_skip(0, 0); c->run(&tf); h_committed = snes_hash_frame(&tf);   /* 1-ahead */
+				c->set_av_skip(0, 0); snes_run(c, &tf); h_committed = snes_hash_frame(&tf);   /* 1-ahead */
 				c->state_load(st, SNES_AHEAD_CAP);
-				for (i = 0; i < N; i++) { c->set_av_skip(0, 0); c->run(&tf); }            /* N-ahead, full render */
+				for (i = 0; i < N; i++) { c->set_av_skip(0, 0); snes_run(c, &tf); }            /* N-ahead, full render */
 				h_full = snes_hash_frame(&tf);
 				c->state_load(st, SNES_AHEAD_CAP);
-				for (i = 0; i < N; i++) { c->set_av_skip(i == N - 1 ? 0 : 1, 1); c->run(&tf); }  /* N-ahead, skip pattern */
+				for (i = 0; i < N; i++) { c->set_av_skip(i == N - 1 ? 0 : 1, 1); snes_run(c, &tf); }  /* N-ahead, skip pattern */
 				h_skip = snes_hash_frame(&tf);
 				c->set_av_skip(0, 0);
 				c->state_load(st, SNES_AHEAD_CAP);   /* restore committed state */
@@ -1489,7 +1534,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					unsigned rn = c->state_save_ra((void *)SNES_STATE_SCRATCH, SNES_AHEAD_CAP);
 					if (rn) {
 						unsigned h_raw;
-						for (i = 0; i < N; i++) { c->set_av_skip(i == N - 1 ? 0 : 1, 1); c->run(&tf); }
+						for (i = 0; i < N; i++) { c->set_av_skip(i == N - 1 ? 0 : 1, 1); snes_run(c, &tf); }
 						h_raw = snes_hash_frame(&tf);
 						c->set_av_skip(0, 0);
 						c->state_load_ra((const void *)SNES_STATE_SCRATCH);   /* restore committed */
@@ -1519,12 +1564,12 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				c->state_save(st, SNES_AHEAD_CAP);
 				c->set_av_skip(1, 1);                                  /* headless: skip video+audio */
 				t0 = gpt4_get_current_tick();
-				for (i = 0; i < NB; i++) c->run(&tf);
+				for (i = 0; i < NB; i++) snes_run(c, &tf);
 				g_snes_dbg_core_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NB);
 				c->state_load(st, SNES_AHEAD_CAP);
 				c->set_av_skip(0, 0);                                  /* full render */
 				t0 = gpt4_get_current_tick();
-				for (i = 0; i < NB; i++) c->run(&tf);
+				for (i = 0; i < NB; i++) snes_run(c, &tf);
 				g_snes_dbg_render_us = (gpt4_get_current_tick() - t0) / (13u * (unsigned)NB);
 				c->state_load(st, SNES_AHEAD_CAP);
 				/* save/load cost: measure the RAW run-ahead path when available (what live run-ahead
@@ -1585,7 +1630,7 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * netplay guest played the host's game and keeps its own saves as they were. */
 	if (!s_snes_np_guest) {
 		unsigned char *st = (unsigned char *)SNES_STATE_BUF;
-		unsigned ssz = c->state_size();
+		unsigned ssz = s_snes_big_dead ? 0u : c->state_size();   /* a core cut mid frame gives no state */
 		if (ssz && ssz <= SNES_STATE_CAP && c->state_save(st, ssz) == 0) {
 			gba_sd_write_named(vol, s_snes_states, rom->name, "sus", st, ssz);
 			pico_shot_save(vol, s_snes_states, rom->name, "sus", 0);
@@ -1601,7 +1646,9 @@ static void snes_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	}
 	s_snes_np = s_snes_np_guest = 0;
 	pico_coreopt_end();
-	c->unload();
+	if (!s_snes_big_dead) c->unload();   /* a torn core is left as it is: the next game loads it afresh */
+	s_snes_big = 0; s_snes_big_dead = 0;
+	pico_bigrun_close();
 	ayaneo_menu_audio_silence();
 }
 

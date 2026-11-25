@@ -159,12 +159,22 @@ static uint32_t read_form(fat_vol *v, const char *dir, const char *rom, const ch
 	return read_one(v, dir, tried[(*nt)++], dst, cap);
 }
 
+/* Load testing (oem smp:noio,1): every system's games start from reset and nothing of theirs is
+ * read from or written to the card. A game's files are the ones under /saves and /states. */
+extern volatile int g_gba_test_noio __attribute__((weak));
+static int test_noio(const char *dir)
+{
+	if (!&g_gba_test_noio || !g_gba_test_noio || !dir) return 0;
+	return !strncmp(dir, "/saves", 6) || !strncmp(dir, "/states", 7);
+}
+
 uint32_t gba_sd_read_named(fat_vol *v, const char *dir, const char *romname,
 			   const char *ext, unsigned char *dst, uint32_t cap)
 {
 	char tried[4][288], legacy[128];
 	int nt = 0;
 	uint32_t n;
+	if (test_noio(dir)) return 0;
 	/* the name; then where older versions put the file (the next write puts it under the name):
 	 * cut at its last dot, whatever followed it; and with each character outside ASCII as '_' */
 	if ((n = read_form(v, dir, romname, ext, 0, tried, &nt, dst, cap)) != 0) return n;
@@ -180,6 +190,7 @@ int gba_sd_write_named(fat_vol *v, const char *dir, const char *romname,
 		       const char *ext, const void *buf, uint32_t len)
 {
 	char nm[288];
+	if (test_noio(dir)) return 0;
 	base_ext(romname, ext, nm, (int)sizeof nm);
 	fat_wr_mkpath(v, dir);   /* ensure saves/gba or states/gba exists (idempotent) */
 	return fat_wr_put(v, dir, nm, buf, len);
@@ -212,12 +223,14 @@ extern void ayaneo_settings_deserialize(const unsigned char *b, int len);
 
 int gba_sd_settings_load(fat_vol *v)
 {
-	unsigned char b[192];
+	unsigned char b[256];   /* the block is 196 bytes; a card from before Big Core has 192 */
 	fat_file f;
+	uint32_t n;
 	if (fat_open(v, "/gammaos/settings.bin", &f) != 0 && fat_open(v, "/gba/settings.bin", &f) != 0)
 		return -1;
-	if (fat_read(&f, 0, b, (uint32_t)sizeof b) != (uint32_t)sizeof b) return -1;
-	ayaneo_settings_deserialize(b, (int)sizeof b);
+	n = f.size < (uint32_t)sizeof b ? f.size : (uint32_t)sizeof b;
+	if (n < 192u || fat_read(&f, 0, b, n) != n) return -1;
+	ayaneo_settings_deserialize(b, (int)n);
 	return 0;
 }
 
@@ -230,7 +243,7 @@ int gba_sd_settings_write(fat_vol *v, const unsigned char *b, int n)
 
 int gba_sd_settings_save(fat_vol *v)
 {
-	unsigned char b[192];
+	unsigned char b[256];
 	return gba_sd_settings_write(v, b, ayaneo_settings_serialize(b, (int)sizeof b));
 }
 
@@ -240,6 +253,7 @@ static int write_named_bg(fat_vol *v, const char *dir, const char *romname, cons
 {
 	char nm[288];
 	int rc, i;
+	if (test_noio(dir)) return 0;
 	base_ext(romname, ext, nm, (int)sizeof nm);
 	if (card_writer_put) return card_writer_put(v, dir, nm, buf, len, status, cap, ok, fail);
 	fat_wr_mkpath(v, dir);

@@ -13,6 +13,7 @@
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
+#include "../gba/pico_bigrun.h"
 #include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
 #include "../gba/pico_input.h"    /* the player's button map, the hotkeys */
 #include "../gba/pico_coreopt.h"
@@ -154,9 +155,13 @@ volatile int g_genesis_filter;            /* LCD filter: 0=off 1=scanlines 2/3=g
 static int s_gen_np;         /* this session is a netplay one (pico_netplay.c): both players' pads from it */
 static int s_gen_np_guest;   /* the guest plays the host's game: it keeps no save of it */
 static unsigned gen_local_pad(void);
+static int s_gen_big;        /* this game's frames run on the big core (pico_bigrun.h) */
+static int s_gen_big_dead;   /* the big core's guest died in this game: the core is not run again */
+static unsigned s_gen_pad_latch[2];   /* the pads, read before a frame that runs on the big core */
 unsigned ayaneo_genesis_pad_mask(unsigned port)
 {
 	extern unsigned int pico_np_pad(unsigned int port);
+	if (pico_bigrun_on_guest()) return s_gen_pad_latch[port & 1u];
 	if (s_gen_np) return pico_np_pad(port);   /* player one and two, the same on both consoles */
 	return port == 0 ? gen_local_pad() : 0u;
 }
@@ -293,7 +298,32 @@ static void genesis_apply_clock(void)
 extern int  ayaneo_get_preempt_frames(void);
 extern void ayaneo_set_preempt_frames(int v);
 
-enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_REWIND, GM_CPU, GM_REFRESH, GM_STROBE, GM_SHOWFPS, GM_CORE, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_FFCAP, GM_COUNT };
+/* One emulated frame: on the big core when this game runs there, else here. The core asks for the
+ * pads while it runs; on the big core it gets what was read here just before. */
+struct gen_run_job { const struct genesis_core_exports *c; struct genesis_frame *fr; };
+static void gen_run_job(void *a) { struct gen_run_job *j = (struct gen_run_job *)a; j->c->run(j->fr); }
+static void gen_run(const struct genesis_core_exports *c, struct genesis_frame *fr)
+{
+	extern unsigned gpt4_get_current_tick(void);
+	unsigned t0 = gpt4_get_current_tick();
+	extern long gba_host_time(void);
+	static struct gen_run_job job;
+	if (s_gen_big_dead) { fr->video = 0; fr->frames = 0; return; }   /* the core's state is torn */
+	if (!s_gen_big) { c->run(fr); pico_bigrun_test_frame(t0, fr->audio, fr->frames * 4u); return; }
+	s_gen_pad_latch[0] = ayaneo_genesis_pad_mask(0); s_gen_pad_latch[1] = ayaneo_genesis_pad_mask(1);
+	(void)gba_host_time();
+	job.c = c; job.fr = fr;
+	if (pico_bigrun_call(gen_run_job, &job) != 0) {
+		/* the guest faulted or stalled in the frame: the game closes, no resume state is taken */
+		s_gen_big = 0; s_gen_big_dead = 1;
+		g_genesis_menu_exit = 1;
+		fr->video = 0; fr->frames = 0;
+		return;
+	}
+	pico_bigrun_test_frame(t0, fr->audio, fr->frames * 4u);
+}
+
+enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_REWIND, GM_CPU, GM_REFRESH, GM_STROBE, GM_SHOWFPS, GM_CORE, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_FFCAP, GM_BIGCORE, GM_BIGMHZ, GM_COUNT };
 /* Overdrive is On/Off: On applies the tuned halo-free profile (ayaneo_set_overdrive_level). The exact
  * kup/kdn/thr/cap are still pokeable live via `oem od:` for tuning. */
 #define OD_MENU_MAX 1
@@ -358,6 +388,7 @@ static const char *gm_label(int i) { switch (i) {
 	case GM_SHOWFPS: return "Show FPS"; case GM_BATTERY: return "Battery";
 	case GM_CORE: return "Core Settings";
 	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
+	case GM_BIGCORE: return pico_bigrun_row_label(PICO_BIG_ROW_ON); case GM_BIGMHZ: return pico_bigrun_row_label(PICO_BIG_ROW_CLOCK);
 	case GM_RESET: return "Reset Game"; case GM_EXIT: return "Exit Game"; } return ""; }
 
 static const char *gm_value(int i, char *buf) { char *p = buf;
@@ -381,6 +412,8 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 	case GM_RUNAHEAD: p = mput(p, gen_ra_name(ayaneo_get_preempt_frames())); break;
 	case GM_CPU:    p = mputu(p, ayaneo_get_cpu_mhz()); p = mput(p, " MHz"); break;
 	case GM_SLOT:   p = mputu(p, (unsigned)s_save_slot); break;
+	case GM_BIGCORE: p = pico_bigrun_row_value(PICO_BIG_GENESIS, PICO_BIG_ROW_ON, s_gen_big, p); break;
+	case GM_BIGMHZ:  p = pico_bigrun_row_value(PICO_BIG_GENESIS, PICO_BIG_ROW_CLOCK, s_gen_big, p); break;
 	case GM_CORE:   p = mput(p, pico_coreopt_n() ? ">" : "None"); break;
 	case GM_SAVE: case GM_LOAD: case GM_RESET: case GM_EXIT: p = mput(p, "[A]"); break;
 	} *p = 0; return buf; }
@@ -440,6 +473,10 @@ static int gm_change(int i, int dir, int act)
 		ayaneo_set_preempt_frames(pf); genesis_apply_clock(); s_cpu_idx = -1;
 		genesis_settings_touch(); } break;   /* persist run-ahead (shared preempt-frames blob) */
 	case GM_CPU:    if (dir) { genesis_cpu_step(dir); genesis_settings_touch(); } break;   /* persisted per core */
+	case GM_BIGCORE: case GM_BIGMHZ: { const char *note = 0;
+		if (pico_bigrun_row_change(PICO_BIG_GENESIS, i == GM_BIGCORE ? PICO_BIG_ROW_ON : PICO_BIG_ROW_CLOCK, dir, act, &note))
+			genesis_settings_touch();
+		if (note) mput(s_mstat, note); } break;
 	case GM_SLOT:   if (dir) { s_save_slot = (s_save_slot + dir + 3) % 3;
 		ayaneo_set_gen_slot(s_save_slot); genesis_settings_touch(); } break;
 	case GM_SAVE: if (act) {
@@ -485,6 +522,9 @@ static const struct igm_row k_gen_igm_rows[] = {
 	{ GM_VOLUME, IGM_SOUND, IGM_VALUE },
 	{ GM_CPU, IGM_PLAY, IGM_VALUE }, { GM_RUNAHEAD, IGM_PLAY, IGM_VALUE }, { GM_REWIND, IGM_PLAY, IGM_VALUE },
 	{ GM_FFCAP, IGM_PLAY, IGM_VALUE },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ GM_BIGCORE, IGM_PLAY, IGM_VALUE }, { GM_BIGMHZ, IGM_PLAY, IGM_VALUE },
+#endif
 	{ GM_REGION, IGM_PLAY, IGM_VALUE }, { GM_REFRESH, IGM_PLAY, IGM_INFO }, { IGM_CORE, IGM_PLAY, IGM_LINK },
 	{ GM_RESUME, IGM_SYSTEM, IGM_VALUE }, { GM_BATTERY, IGM_SYSTEM, IGM_INFO },
 };
@@ -688,6 +728,11 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 
 	/* menu context (actions reference the session core + save target) */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom; s_menu_rw_payload = rw_payload;
+	/* Big Core: this game's frames on the big core (not in netplay: the two consoles step alike) */
+	s_gen_big_dead = 0;
+	pico_bigrun_test_reset();
+	if (c->version >= GENESIS_CORE_ABI_V6 && c->get_memory) { struct pico_core_memory tm; memset(&tm, 0, sizeof tm); c->get_memory(&tm); pico_bigrun_test_memory(&tm); }
+	s_gen_big = !s_gen_np && pico_bigrun_wanted(PICO_BIG_GENESIS) && pico_bigrun_open() == 0;
 	g_genesis_menu_open = 0; g_genesis_menu_exit = 0; s_msel = 0; s_mstat[0] = 0; s_cpu_idx = -1; s_gen_igm_on = 0;
 
 	/* Restore persisted per-core settings (aspect/filter/region/slot) so a launch honours the player's
@@ -707,7 +752,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * Restored to the stock 59.749 Hz for the menu on exit. */
 	if (s_gen_region && c->set_option) {
 		struct genesis_frame pf0; pf0.video = 0; pf0.width = 0; pf0.height = 0;
-		c->run(&pf0);   /* let check_variables apply the forced region so fps_milli reflects it */
+		gen_run(c, &pf0);   /* let check_variables apply the forced region so fps_milli reflects it */
 	}
 	{
 		unsigned fps = (c->fps_milli) ? c->fps_milli() : 0u;
@@ -729,7 +774,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			int i, w;
 			struct genesis_frame pf; pf.video = 0; pf.width = 0; pf.height = 0;
 			gba_punch_ready = 0;
-			for (w = 0; w < 20; w++) { c->run(&pf); if (pf.video && pf.width && w >= 3) break; }
+			for (w = 0; w < 20; w++) { gen_run(c, &pf); if (pf.video && pf.width && w >= 3) break; }
 			if (c->aspect_x1000) g_genesis_aspect_x1000 = c->aspect_x1000();
 			if (pf.video && pf.width && pf.height) {
 				ayaneo_genesis_punch_prerender((const unsigned short *)pf.video, pf.width, pf.height,
@@ -802,7 +847,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				if (c->set_ra_fast) c->set_ra_fast(0);
 				tb = gpt4_get_current_tick();
 				if (c->sound_rebase) c->sound_rebase();   /* clean audio baseline (state_load can't carry blip phase) */
-				c->run(&fr);                              /* render the target rewound frame ONCE */
+				gen_run(c, &fr);                              /* render the target rewound frame ONCE */
 				tc = gpt4_get_current_tick();
 				t_load = (tb - ta) / 13u; t_run = (tc - tb) / 13u;
 				g_gen_dbg_frames++; { extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
@@ -862,7 +907,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			}
 			if (unshown && c->set_av_skip) c->set_av_skip(2, 0);
 			em0 = gpt4_get_current_tick();
-			c->run(&fr);                                 /* committed frame */
+			gen_run(c, &fr);                                 /* committed frame */
 			fe = (gpt4_get_current_tick() - em0) / 13u;  /* per-frame emu cost (us) for the FF cap */
 			if (unshown && c->set_av_skip) c->set_av_skip(0, 0);
 		}
@@ -908,7 +953,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				/* the frames between two presents stay in the game: sprites only, not a bare skip,
 				 * which drops the sprite collision and overflow flags the game may read */
 				if (c->set_av_skip) c->set_av_skip(last ? 0 : 2, 0);
-				c->run(&fr);
+				gen_run(c, &fr);
 				us = (gpt4_get_current_tick() - _t) / 13u;
 				if (last) {
 					s_gen_rend_us += ((int)us - (int)s_gen_rend_us) / 4;
@@ -963,7 +1008,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					did_ra = 1;
 					for (i = 0; i < pf; i++) {
 						if (c->set_av_skip) c->set_av_skip(i == pf - 1 ? 0 : 1, 1);
-						c->run(&fr);
+						gen_run(c, &fr);
 					}
 					if (c->set_av_skip) c->set_av_skip(0, 0);
 #if defined(KONKR_BLOCK)
@@ -1094,7 +1139,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	if (!s_gen_np_guest) {
 		if (c->sram_ptr() && c->sram_size())
 			gba_sd_write_sav(vol, rom->name, c->sram_ptr(), c->sram_size());
-		ssz = c->state_size();
+		ssz = s_gen_big_dead ? 0u : c->state_size();   /* a core cut mid frame gives no state */
 		if (ssz && ssz <= GEN_STATE_CAP && c->state_save((void *)GEN_STATE_BUF, ssz) == 0) {
 			gba_sd_write_named(vol, "/states/genesis", rom->name, "sus",
 					   (const unsigned char *)GEN_STATE_BUF, ssz);
@@ -1103,7 +1148,9 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	}
 	s_gen_np = s_gen_np_guest = 0;
 	pico_coreopt_end();
-	c->unload();
+	if (!s_gen_big_dead) c->unload();   /* a torn core is left as it is: the next game loads it afresh */
+	s_gen_big = 0; s_gen_big_dead = 0;
+	pico_bigrun_close();
 	ayaneo_menu_audio_silence();
 }
 
@@ -1127,9 +1174,9 @@ static void genesis_bench_body(fat_vol *vol, const gba_rom_entry *rom, int frame
 	if (!romsz || c->load((const void *)GEN_ROM_BUF, romsz, rom_type_to_system(rom->type)) != 0) {
 		c->unload(); ayaneo_set_cpu_mhz(saved_mhz); return;
 	}
-	for (i = 0; i < 90; i++) c->run(&fr);          /* warm up past the BIOS/intro */
+	for (i = 0; i < 90; i++) gen_run(c, &fr);          /* warm up past the BIOS/intro */
 	t0 = gpt4_get_current_tick();
-	for (i = 0; i < frames; i++) c->run(&fr);
+	for (i = 0; i < frames; i++) gen_run(c, &fr);
 	t1 = gpt4_get_current_tick();
 	{
 		unsigned int per = ((t1 - t0) / 13u) / (unsigned)(frames > 0 ? frames : 1);
@@ -1154,7 +1201,7 @@ static void genesis_bench_body(fat_vol *vol, const gba_rom_entry *rom, int frame
 	if (c->set_av_skip) {
 		c->set_av_skip(1, 0);
 		t0 = gpt4_get_current_tick();
-		for (i = 0; i < frames; i++) c->run(&fr);
+		for (i = 0; i < frames; i++) gen_run(c, &fr);
 		t1 = gpt4_get_current_tick();
 		c->set_av_skip(0, 0);
 		g_gen_dbg_bench_norender_us = ((t1 - t0) / 13u) / (unsigned)(frames > 0 ? frames : 1);
@@ -1180,7 +1227,7 @@ static void genesis_bench_body(fat_vol *vol, const gba_rom_entry *rom, int frame
 		{
 			ayaneo_rewind_reset(rwp);
 			for (i = 0; i < 200; i++) {
-				c->run(&fr);
+				gen_run(c, &fr);
 				if (ayaneo_rewind_ready()) {
 					void *p = ayaneo_rewind_capture_begin();
 					if (p && c->state_save(p, rwp) == 0) ayaneo_rewind_capture_commit(rwp);
@@ -1197,7 +1244,7 @@ static void genesis_bench_body(fat_vol *vol, const gba_rom_entry *rom, int frame
 					c->state_load(st2, sz2);
 					if (c->set_ra_fast) c->set_ra_fast(0);
 					if (c->sound_rebase) c->sound_rebase();
-					c->run(&fr);
+					gen_run(c, &fr);
 					ok = (fr.video && fr.width >= 160u && fr.height >= 100u);
 				}
 				t1 = gpt4_get_current_tick();

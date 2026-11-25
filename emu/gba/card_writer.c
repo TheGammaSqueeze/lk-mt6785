@@ -90,6 +90,16 @@ int card_writer_put(fat_vol *v, const char *dir, const char *name, const void *b
 		    char *status, int status_cap, const char *ok, const char *fail)
 {
 	int rc;
+	{	/* load testing (oem smp:noio,1): nothing of a game's is written, a menu's Save State included */
+		extern volatile int g_gba_test_noio __attribute__((weak));
+		if (&g_gba_test_noio && g_gba_test_noio && dir &&
+		    (!strncmp(dir, "/saves", 6) || !strncmp(dir, "/states", 7))) {
+			int i;
+			for (i = 0; status && fail && i + 1 < status_cap && fail[i]; i++) status[i] = fail[i];
+			if (status && fail && status_cap > 0) status[i] = 0;
+			return -1;
+		}
+	}
 	enter_critical_section();
 	if (!s_put_mtx_up) { mutex_init(&s_put_mtx); s_put_mtx_up = 1; }
 	exit_critical_section();

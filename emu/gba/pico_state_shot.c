@@ -91,6 +91,8 @@ int pico_shot_save(fat_vol *v, const char *dir, const char *rom, const char *sta
 	long long t;
 	uint16_t *px = (uint16_t *)(void *)(s_file + SHOT_HEAD);
 	uint32_t len;
+	{ extern volatile int g_gba_test_noio __attribute__((weak));   /* load testing: nothing written */
+	  if (&g_gba_test_noio && g_gba_test_noio) return 0; }
 	if (!v || !dir || !rom) return -1;
 	if (!shrink(px, &w, &h)) {	/* the frame is gone: the one kept as it went, else the time alone */
 		w = s_kept_w; h = s_kept_h;

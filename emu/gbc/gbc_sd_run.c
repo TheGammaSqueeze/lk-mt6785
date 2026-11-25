@@ -19,6 +19,7 @@
 #include <platform/ayaneo_volume_input.h>
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
+#include "../gba/pico_bigrun.h"
 #include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
 #include "../gba/pico_input.h"    /* the player's button map, the hotkeys */
 #include "../gba/pico_link_ui.h"  /* the in-game menu's Netplay page */
@@ -401,8 +402,52 @@ static int  s_pick_dir;         /* current held direction (-1/0/+1) */
 static int  s_pick_hold;        /* frames the direction has been held */
 static int  s_pick_tick;        /* frames since the last auto-repeat step */
 
+/* One emulated frame: on the big core when this game runs there (pico_bigrun.h), else here. The
+ * core asks for the pad and the time while it runs; on the big core it gets what was read here
+ * just before. A netplay or link session stays on the boot core: its pads come from the session. */
+static int s_gbc_big;        /* this game's frames run on the big core */
+static int s_gbc_big_dead;   /* the big core's guest died in this game: the core is not run again */
+volatile unsigned g_gbc_pad_latch;   /* read by ayaneo_gbc_pad_mask (gba_driver.c) on the big core */
+struct gbc_run_job {
+	const struct gbc_core_exports *c;
+	unsigned short *video; int pitch; unsigned int *sound; unsigned sound_sz; unsigned *samples;
+	long r;
+};
+static void gbc_run_job(void *a)
+{
+	struct gbc_run_job *j = (struct gbc_run_job *)a;
+	j->r = j->c->run(j->video, j->pitch, j->sound, j->sound_sz, j->samples);
+}
+static long gbc_run(const struct gbc_core_exports *c, unsigned short *video, int pitch,
+		    unsigned int *sound, unsigned sound_sz, unsigned *samples)
+{
+	extern unsigned gpt4_get_current_tick(void);
+	unsigned t0 = gpt4_get_current_tick();
+	extern unsigned ayaneo_gbc_pad_mask(void);
+	extern long gba_host_time(void);
+	static struct gbc_run_job job;
+	if (s_gbc_big_dead) { *samples = 0; return -1; }   /* the core's state is torn */
+	if (!s_gbc_big || s_gbc_np) {
+		long r = c->run(video, pitch, sound, sound_sz, samples);
+		pico_bigrun_test_frame(t0, sound, *samples * 4u);
+		return r;
+	}
+	g_gbc_pad_latch = ayaneo_gbc_pad_mask();
+	(void)gba_host_time();
+	job.c = c; job.video = video; job.pitch = pitch; job.sound = sound; job.sound_sz = sound_sz;
+	job.samples = samples; job.r = -1;
+	if (pico_bigrun_call(gbc_run_job, &job) != 0) {
+		/* the guest faulted or stalled in the frame: the game closes, no resume state is taken */
+		s_gbc_big = 0; s_gbc_big_dead = 1;
+		*samples = 0;
+		return -1;
+	}
+	pico_bigrun_test_frame(t0, sound, *samples * 4u);
+	return job.r;
+}
+
 enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_ASPECT, GM_PALETTE, GM_COLORCC, GM_CCMODE, GM_DARK,
-       GM_PREEMPT, GM_REWIND, GM_CPU, GM_BFI, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_FFCAP, GM_COUNT };
+       GM_PREEMPT, GM_REWIND, GM_CPU, GM_BFI, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_FFCAP, GM_BIGCORE, GM_BIGMHZ, GM_COUNT };
 
 /* Display aspect (0=Pixel integer, 1=Fit native-aspect fill, 2=Stretch full panel). Read by
  * ayaneo_gb_show_frame (mt_disp_drv.c); session-scoped, defaults to Pixel = current behaviour. */
@@ -448,6 +493,8 @@ static const char *gm_label(int i)
 	case GM_REWIND:  return "Rewind";
 	case GM_FFCAP:   return "Fast Forward Speed";
 	case GM_CPU:     return "CPU Clock";
+	case GM_BIGCORE: return pico_bigrun_row_label(PICO_BIG_ROW_ON);
+	case GM_BIGMHZ:  return pico_bigrun_row_label(PICO_BIG_ROW_CLOCK);
 	case GM_BFI:     return "BFI";
 	case GM_SHOWFPS: return "Show FPS";
 	case GM_BATTERY: return "Battery";
@@ -499,6 +546,8 @@ static const char *gm_value(int i, char *buf)
 			   if (upmu_is_chr_det()) { p = mput(p, " "); p = mput(p, tr_igm("Charging")); }
 			   if (ayaneo_gauge_time_str(ts, sizeof ts)) { p = mput(p, " "); p = mput(p, ts); } } break;
 	case GM_SLOT:    p = mputu(p, (unsigned)s_gbc_slot); break;
+	case GM_BIGCORE: p = pico_bigrun_row_value(PICO_BIG_GBC, PICO_BIG_ROW_ON, s_gbc_big, p); break;
+	case GM_BIGMHZ:  p = pico_bigrun_row_value(PICO_BIG_GBC, PICO_BIG_ROW_CLOCK, s_gbc_big, p); break;
 	case GM_SAVE: case GM_LOAD: p = mput(p, "[A]"); break;
 	default: break;
 	}
@@ -536,6 +585,9 @@ static int gm_change(int i, int dir, int act)
 	case GM_FFCAP:   { extern void ayaneo_step_ff_cap(int dir);
 			   if (dir || act) ayaneo_step_ff_cap(dir ? dir : 1); else changed = 0; } break;
 	case GM_CPU:     if (dir) gbc_cpu_step(dir); else changed = 0; break;   /* persisted per core */
+	case GM_BIGCORE: case GM_BIGMHZ: { const char *note = 0;
+		changed = pico_bigrun_row_change(PICO_BIG_GBC, i == GM_BIGCORE ? PICO_BIG_ROW_ON : PICO_BIG_ROW_CLOCK, dir, act, &note);
+		if (note) *mput(s_mstat, note) = 0; } break;
 	case GM_BFI:     { extern int ayaneo_get_strobe(void); extern void ayaneo_set_strobe(int v);
 			   if (dir) ayaneo_set_strobe((ayaneo_get_strobe() + dir + 4) % 4); else changed = 0; } break;
 	case GM_RESUME:  { extern int ayaneo_get_resume_on_boot(void); extern void ayaneo_set_resume_on_boot(int v);
@@ -602,6 +654,9 @@ static const struct igm_row k_gbc_igm_rows[] = {
 	{ GM_VOLUME, IGM_SOUND, IGM_VALUE },
 	{ GM_CPU, IGM_PLAY, IGM_VALUE }, { GM_PREEMPT, IGM_PLAY, IGM_VALUE }, { GM_REWIND, IGM_PLAY, IGM_VALUE },
 	{ GM_FFCAP, IGM_PLAY, IGM_VALUE },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ GM_BIGCORE, IGM_PLAY, IGM_VALUE }, { GM_BIGMHZ, IGM_PLAY, IGM_VALUE },
+#endif
 	{ GM_RESUME, IGM_SYSTEM, IGM_VALUE }, { GM_BATTERY, IGM_SYSTEM, IGM_INFO },
 };
 static int s_gbc_igm_exit;   /* the in-game menu's Exit game: leave the game */
@@ -1043,7 +1098,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			gba_punch_ready = 0;
 			for (w = 0; w < 20; w++) {
 				unsigned s2 = GBC_SND_MAX;
-				if (c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2) >= 0 && w >= 3) break;
+				if (gbc_run(c, vbuf, GBC_W, snd, GBC_SND_MAX, &s2) >= 0 && w >= 3) break;
 			}
 			ayaneo_gb_punch_prerender(vbuf);
 			int steps = ayaneo_punch_steps();
@@ -1060,6 +1115,11 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	/* hand the in-game menu this session's context */
 	s_menu_c = c; s_menu_vol = vol; s_menu_rom = rom;
 	s_menu_ahead = ahead; s_menu_ahead_sz = ahead_sz;
+	/* Big Core: this game's frames on the big core */
+	s_gbc_big_dead = 0;
+	pico_bigrun_test_reset();
+	if (c->version >= GBC_CORE_ABI_V4 && c->get_memory) { struct pico_core_memory tm; memset(&tm, 0, sizeof tm); c->get_memory(&tm); pico_bigrun_test_memory(&tm); }
+	s_gbc_big = pico_bigrun_wanted(PICO_BIG_GBC) && pico_bigrun_open() == 0;
 	s_menu_is_dmg = is_dmg; s_menu_pal = &pal_idx;
 	s_msel = 0; s_mstat[0] = 0; g_gbc_menu_open = 0; s_pal_pick = 0; s_gbc_igm_on = 0; s_gbc_igm_exit = 0;
 
@@ -1138,7 +1198,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					st = ayaneo_rewind_cur(&sz);
 					if (!st || !sz) break;
 					c->state_load(st, sz);
-					c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);   /* render video + audio */
+					gbc_run(c, vbuf, GBC_W, snd, GBC_SND_MAX, &s2);   /* render video + audio */
 					for (i = 0; i < s2; i += (unsigned)steps)
 						s_gbc_audrev[j++] = snd[s2 - 1u - i];       /* reverse (+ decimate) */
 					ayaneo_gbc_audio_submit(s_gbc_audrev, j);       /* play this frame backwards */
@@ -1223,10 +1283,17 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 		  ff_t0 = _t;
 		  /* linked: the second machine may run a slice past the first, so its sound gets room
 		   * beyond one frame (the sound area is 1 MB) and the frame still ends in one call */
-		  r = c->run(vbuf, GBC_W, snd, s_gbc_np ? 2u * GBC_SND_MAX : GBC_SND_MAX, &samples);
+		  r = gbc_run(c, vbuf, GBC_W, snd, s_gbc_np ? 2u * GBC_SND_MAX : GBC_SND_MAX, &samples);
 		  gbc_emu_us = (gpt4_get_current_tick() - _t) / 13u; }   /* committed frame cost for the FF budget */
 
 		ayaneo_gbc_audio_submit(snd, samples);
+		if (s_gbc_big_dead) {   /* the big core's guest died in this game: it closes here */
+			extern void gbc_menu_arm_reverse(const unsigned short *frame);
+			extern volatile int g_dbg_force_close;
+			g_dbg_force_close = 0;
+			gbc_menu_arm_reverse(vbuf);
+			break;
+		}
 
 		if (r >= 0) {                       /* a video frame completed */
 			int combo, pf, aya, ff = 0;
@@ -1262,7 +1329,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 					for (;;) {
 						unsigned s2 = GBC_SND_MAX;
 						int more;
-						c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);
+						gbc_run(c, vbuf, GBC_W, snd, GBC_SND_MAX, &s2);
 						{ extern void ayaneo_fps_tick(void); ayaneo_fps_tick(); }
 						gbc_ra_frame();			/* and each fast forward frame */
 						ayaneo_gbc_audio_submit(snd, s2);
@@ -1479,7 +1546,7 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 				c->state_save(ahead);
 				for (i = 0; i < pf; i++) {
 					unsigned s2 = GBC_SND_MAX;
-					c->run(vbuf, GBC_W, snd, GBC_SND_MAX, &s2);   /* muted look-ahead */
+					gbc_run(c, vbuf, GBC_W, snd, GBC_SND_MAX, &s2);   /* muted look-ahead */
 				}
 #if defined(KONKR_BLOCK)
 				block_ra_note(1, (unsigned int)pf, ra_t0);
@@ -1532,13 +1599,15 @@ static void gbc_session_body(fat_vol *vol, const gba_rom_entry *rom)
 			gba_sd_write_sav(vol, rom->name, (const unsigned char *)c->savedata_ptr(), savsz);
 		gbc_rtc_save(vol, rom, c);   /* and the cartridge clock */
 	}
-	if (GBC_SUSPEND && ahead_sz) {
+	if (GBC_SUSPEND && ahead_sz && !s_gbc_big_dead) {   /* a core cut mid frame gives no state */
 		c->state_save(ahead);
 		gba_sd_write_named(vol, GBC_STATE_DIR, rom->name, "sus", ahead, ahead_sz);
 		pico_shot_save(vol, GBC_STATE_DIR, rom->name, "sus", 0);
 	}
 	gbc_prefs_save(vol);                            /* persist CGB colour prefs */
 	if (is_dmg) gbc_pal_save(vol, rom->name, pal_idx);   /* persist this game's palette */
+	s_gbc_big = 0; s_gbc_big_dead = 0;
+	pico_bigrun_close();
 	ayaneo_menu_audio_silence();
 }
 

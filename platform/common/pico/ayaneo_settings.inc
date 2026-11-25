@@ -202,6 +202,21 @@ void ayaneo_set_tz_quarters(int q)   { s_tz_q = (signed char)(q < -48 ? -48 : q 
 int  ayaneo_get_clock12(void)        { return s_clock12; }
 void ayaneo_set_clock12(int on)      { s_clock12 = on ? 1 : 0; }
 static unsigned char s_cpu_manual[5];   /* defined below with its defaults */
+/* Big Core (emu/gba/pico_bigrun.h): the option per system (bit 0 GBA, 1 GB/GBC, 2 SNES, 3 Genesis,
+ * 4 NES; all off on a new card) and the big core's clock in 10 MHz steps (0 = the console's top
+ * level) */
+static unsigned char s_bigcore_mask, s_bigcore_mhz10;
+int  ayaneo_get_bigcore(int sys)          { return sys >= 0 && sys < 5 && ((s_bigcore_mask >> sys) & 1u); }
+void ayaneo_set_bigcore(int sys, int on)
+{
+	if (sys < 0 || sys >= 5) return;
+	if (on) s_bigcore_mask |= (unsigned char)(1u << sys); else s_bigcore_mask &= (unsigned char)~(1u << sys);
+}
+unsigned ayaneo_get_bigcore_mhz(void)     { return (unsigned)s_bigcore_mhz10 * 10u; }
+void ayaneo_set_bigcore_mhz(unsigned mhz) { s_bigcore_mhz10 = (unsigned char)(mhz / 10u > 255u ? 255u : mhz / 10u); }
+/* the settings block's length: 192 bytes up to the fast forward cap, then Big Core's two and two
+ * spare. A card written before has 192; a build from before reads the first 192 of a longer one. */
+#define AYANEO_SET_LEN 196
 static void resume_fields_write(unsigned char *b)
 {
 	unsigned i;
@@ -221,6 +236,8 @@ static void resume_fields_write(unsigned char *b)
 	b[189] = (unsigned char)(0x80u | (unsigned)(s_nes_region & 3) | ((unsigned)(s_nes_slot & 3) << 2));
 	b[190] = (unsigned char)(0x80u | s_cpu_manual[4]);
 	b[191] = (unsigned char)(0x80u | (unsigned)s_ff_cap);   /* 0 Unlimited, 2..10 */
+	b[192] = (unsigned char)(0x80u | (s_bigcore_mask & 0x1Fu));   /* bit 7: written */
+	b[193] = s_bigcore_mhz10;
 #if defined(KONKR_BLOCK)
 	b[187] = BLOCK_DEFAULTS_MARK;                  /* the Block's defaults are in (block_defaults_read) */
 #endif
@@ -252,6 +269,7 @@ static void resume_fields_read(const unsigned char *b, int len)
 		if (b[190] & 0x80u) s_cpu_manual[4] = b[190] & 15;
 		if (len >= 192 && (b[191] & 0x80u)) ayaneo_set_ff_cap(b[191] & 0x7f);
 	}
+	if (len >= 194 && (b[192] & 0x80u)) { s_bigcore_mask = b[192] & 0x1Fu; s_bigcore_mhz10 = b[193]; }
 #if defined(KONKR_BLOCK)
 	block_defaults_read(b, len);
 #endif
@@ -554,7 +572,7 @@ void ayaneo_settings_load(void)
 	if (ver >= 8)
 		ayaneo_set_snes_turbo((int)rd32(b + 60));
 	g_dbg_set_step = 2;
-	resume_fields_read(b, 192);
+	resume_fields_read(b, AYANEO_SET_LEN);
 	g_dbg_set_step = 3;
 }
 
@@ -564,8 +582,8 @@ void ayaneo_settings_load(void)
  * settings loaded so a later boot_b load does not override the SD values. */
 int ayaneo_settings_serialize(unsigned char *b, int cap)
 {
-	if (cap < 192) return 0;
-	memset(b, 0, 192);
+	if (cap < AYANEO_SET_LEN) return 0;
+	memset(b, 0, AYANEO_SET_LEN);
 	wr32(b + 0, AYANEO_SET_MAGIC);
 	wr32(b + 4, AYANEO_SET_VER);
 	wr32(b + 8, (unsigned int)s_gbc_vol);
@@ -591,7 +609,7 @@ int ayaneo_settings_serialize(unsigned char *b, int cap)
 	wr32(b + 60, (unsigned int)s_snes_turbo);
 	resume_fields_write(b);
 	b[172] = s_cpu_manual[0]; b[173] = s_cpu_manual[1]; b[174] = s_cpu_manual[2]; b[175] = s_cpu_manual[3];
-	return 192;
+	return AYANEO_SET_LEN;
 }
 void ayaneo_settings_deserialize(const unsigned char *b, int len)
 {

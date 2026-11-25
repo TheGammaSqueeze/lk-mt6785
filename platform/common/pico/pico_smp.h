@@ -16,8 +16,8 @@
  * cache-coherent with the AArch32 boot core through the DSU, so shared-memory
  * offload needs no per-use cache maintenance.
  *
- * Workload offload itself is not wired yet: by design we stay single-core until
- * a specific hot path is chosen to move onto a worker.
+ * The one workload moved so far is a game core's emulation, behind each system's Big Core
+ * option (emu/gba/pico_bigrun.h); everything else stays on the boot core.
  */
 #ifndef PICO_SMP_H
 #define PICO_SMP_H
@@ -47,12 +47,11 @@ int pico_smp_core_up(unsigned n, unsigned entry_pa, unsigned shared_pa, unsigned
  * wait until the power-status siblings clear. */
 void pico_smp_stop_all(void);
 
-/* The GBA experiment (opt in, off by default): g_pico_smp_gba_req asks the next GBA game to run
- * its CPU loop on core g_pico_smp_gba_core. pico_smp_guest_start runs 32 bit code at `entry`
- * on core n, unprivileged, on the given stack. */
-extern volatile int g_pico_smp_gba_req;
+/* A 32 bit guest on a big core (opt in, off by default; emu/gba/pico_bigrun.h runs the game cores
+ * on it). pico_smp_guest_start runs 32 bit code at `entry` on core n, unprivileged, on the given
+ * stack; g_pico_smp_gba_core is the core the games use. */
 extern volatile unsigned g_pico_smp_gba_core;
-extern volatile unsigned g_pico_smp_gba_mhz;   /* big-core clock while a GBA guest runs (default 1600) */
+extern volatile unsigned g_pico_smp_gba_mhz;   /* the big core's clock while a guest runs (the console's top level) */
 #define g_pico_smp_comm ((volatile unsigned *)0x4CDC0000u)   /* fixed DRAM, see pico_smp.c */
 int pico_smp_guest_start(unsigned n, unsigned entry, unsigned stack_top);
 /* pico_smp_guest_held: the host holds the guest (it faulted, or its frame watchdog cut it off).

@@ -116,18 +116,21 @@ The replacement is `bl patch_site -> wrapper`, encoded
 ## After patching: using the cores
 
 The LK still boots on one core and powers no other core by itself. With the patched
-firmware, the in-game menu of a GBA game offers two rows on its Gameplay page:
+firmware, the in-game menu of every system (GBA, GB and GBC, NES, SNES, Genesis, Master
+System and Game Gear) offers two rows on its Gameplay page:
 
-- **Big Core** (off by default): the game's CPU runs on one of the big cores from the
-  next game start. On unpatched firmware the row reads "Not available".
+- **Big Core** (off by default, kept per system): the game's emulation runs on one of
+  the big cores from the next game start, while the picture, the sound and the menus
+  stay on the boot core. On unpatched firmware the row reads "Not available".
 - **Big Core Clock**: the big core's clock, one of the console's stock levels (up to
   2050 MHz on the Pocket Advance, 2000 MHz on the Pocket Block), each with its stock
-  voltage.
+  voltage. One setting for all systems.
 
 The big core stays powered between games once it was used and is put back as the boot
 left it at a reset or power off. A game that stalls or faults there is closed back to
-the menu instead of hanging the console.
+the menu instead of hanging the console. A netplay or link session runs on the boot
+core as before.
 
-The runtime is `platform/common/pico/pico_smp*`; `pico_smp.h` has the API and the
-`oem smp` commands cover manual bring-up, the on-device coherency self-test and the
-load-test helpers.
+The runtime is `platform/common/pico/pico_smp*` (the cores and the guest's host) and
+`emu/gba/pico_bigrun.*` (the game cores' use of it); the `oem smp` commands cover manual
+bring-up, the on-device coherency self-test and the load-test helpers.

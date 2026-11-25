@@ -178,7 +178,6 @@ static void pico_big_set_opp(unsigned mhz)
 	if (code >= now) { pico_big_set_code(code); pico_big_set_mhz(mhz); }
 	else { pico_big_set_mhz(mhz); pico_big_set_code(code); }
 }
-volatile int g_pico_smp_gba_req;      /* opt in: the next GBA game runs its CPU loop on a big core */
 volatile unsigned g_pico_smp_gba_core = 6u;
 volatile unsigned g_pico_smp_gba_mhz = BIG_MHZ_MAX;   /* the big core's clock while a GBA guest runs: the stock top
                                                  * level, at its stock voltage; 0 leaves it as is */
@@ -383,12 +382,12 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 			 BIG_VBASE_MV + (code * 625u) / 100u);
 		fastboot_info(sl);
 	} else if (!strncmp(arg, "noio", 4)) {
-		/* load testing: GBA games from reset, nothing of theirs read from or written to the card */
+		/* load testing: games from reset, nothing of theirs read from or written to the card */
 		extern volatile int g_gba_test_noio __attribute__((weak));
 		arg += 4;
 		if (&g_gba_test_noio) {
 			if (*arg == ':' || *arg == ',') g_gba_test_noio = hexarg(&arg) ? 1 : 0;
-			snprintf(sl, sizeof sl, "GBA test mode (no saves, no states): %s", g_gba_test_noio ? "on" : "off");
+			snprintf(sl, sizeof sl, "test mode (no saves, no states): %s", g_gba_test_noio ? "on" : "off");
 		} else snprintf(sl, sizeof sl, "no GBA core in this build");
 		fastboot_info(sl);
 	} else if (!strncmp(arg, "mhz", 3)) {
@@ -418,12 +417,31 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		fastboot_okay("");
 		return;
 	} else if (!strncmp(arg, "gba", 3)) {
-		/* opt in for the next GBA game: its CPU loop on one big core (gba:0 = off, gba:7 = core 7) */
+		/* load testing: every system's Big Core option overridden until the next reset
+		 * (gba or gba:6 = on, gba:7 = on, core 7; gba:0 = off; gba:ff = as the settings say) */
+		extern volatile int g_pico_big_force __attribute__((weak));
+		int f = 1;
 		arg += 3;
-		if (*arg == ':' || *arg == ',') { i = hexarg(&arg); g_pico_smp_gba_req = i != 0u; if (i >= 1u && i <= 7u) g_pico_smp_gba_core = i; }
-		else g_pico_smp_gba_req = 1;
-		if (!pico_smp_available()) g_pico_smp_gba_req = 0;
-		snprintf(sl, sizeof sl, "gba on a big core: %s (core %u)", g_pico_smp_gba_req ? "next game" : "off", g_pico_smp_gba_core);
+		if (*arg == ':' || *arg == ',') {
+			i = hexarg(&arg);
+			f = i == 0xffu ? -1 : i != 0u;
+			if (i >= 1u && i <= 7u) g_pico_smp_gba_core = i;
+		}
+		if (!&g_pico_big_force) { fastboot_fail("no game cores in this build"); return; }
+		g_pico_big_force = f;
+		snprintf(sl, sizeof sl, "games on a big core: %s (core %u)%s",
+			 f < 0 ? "as set in the menus" : f ? "on" : "off", g_pico_smp_gba_core,
+			 pico_smp_available() ? "" : ", firmware not patched");
+		fastboot_info(sl);
+	} else if (!strncmp(arg, "fh", 2)) {
+		/* load testing: the running game's sound hash (emu/gba/pico_bigrun.h) */
+		extern volatile unsigned int g_dbg_big_fh[7] __attribute__((weak));
+		if (!&g_dbg_big_fh[0]) { fastboot_fail("no game cores in this build"); return; }
+		snprintf(sl, sizeof sl, "fh n=%u now=%08x h600=%08x", g_dbg_big_fh[0], g_dbg_big_fh[1], g_dbg_big_fh[2]);
+		fastboot_info(sl);
+		snprintf(sl, sizeof sl, "fh h1200=%08x h1800=%08x ram=%08x", g_dbg_big_fh[3], g_dbg_big_fh[4], g_dbg_big_fh[6]);
+		fastboot_info(sl);
+		snprintf(sl, sizeof sl, "fh avg_us=%u", g_dbg_big_fh[0] ? g_dbg_big_fh[5] / g_dbg_big_fh[0] : 0u);
 		fastboot_info(sl);
 	} else if (!strncmp(arg, "gst", 3)) {
 		volatile unsigned *c = g_pico_smp_comm;
