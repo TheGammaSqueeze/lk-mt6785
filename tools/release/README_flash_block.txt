@@ -24,10 +24,9 @@ this version's tee, and going back to stock writes this version's stock tee, not
 console had. A tee the console cannot start leaves it dark until SP Flash Tool or mtkclient write
 a working one, so do not interrupt a flash and keep this package.
 
-Tested on a console: the fastboot scripts with all four partitions, and SP Flash Tool v5 with lk_a
-(the first install, on a console with its bootloader still locked) and with tee_a by itself. Not
-yet tested on a console: SP Flash Tool with all four ticked at once, and mtkclient, which writes
-the same partitions with the same files. Android starting from the GammaOS Pico LK has been tested on a
+Tested on a console, with all four partitions and each checked afterwards: SP Flash Tool v5.1924
+with this package's scatter, and fastboot with this package's files. Not yet tested on a console:
+mtkclient, which writes the same four partitions with the same files. Android starting from the GammaOS Pico LK has been tested on a
 console whose bootloader was unlocked afterwards; the LK hands Android the console's real lock
 state, so a locked console is expected to start it the same way.
 

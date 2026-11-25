@@ -24,10 +24,9 @@ this version's tee, and going back to stock writes this version's stock tee, not
 console had. A tee the console cannot start leaves it dark until SP Flash Tool or mtkclient write
 a working one, so do not interrupt a flash and keep this package.
 
-Tested on a console: the fastboot scripts with all four partitions, and SP Flash Tool v5.1924 with
-the two LK partitions (as every release before 1.2.0 had them). Not yet tested on a console: SP
-Flash Tool with the two tee partitions ticked as well, and mtkclient, which writes the same four
-partitions with the same files. SP Flash Tool V6 does not
+Tested on a console, with all four partitions and each read back afterwards: SP Flash Tool
+v5.1924 with this package's scatter, the fastboot scripts, and GammaOS Pico Tool 1.2.0. Not yet
+tested on a console: mtkclient, which writes the same four partitions with the same files. SP Flash Tool V6 does not
 work with these packages: use v5.
 
 1. Windows: SP Flash Tool v5
