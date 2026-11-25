@@ -1,12 +1,15 @@
 # Enabling the extra CPU cores (secure-firmware CPC patch)
 
-By default the GammaOS Pico LK runs on a single core. The other CPU cores can be
-powered on from the LK, but only after a small, reversible patch to the device's
-secure firmware (`tee.img`, which carries the ARM Trusted Firmware / BL31). This
-directory has the tooling and the recipe so you can patch your own device.
+The GammaOS Pico LK runs on a single core unless a game's Big Core option is on. The
+other CPU cores can be powered on from the LK only after a small, reversible patch
+to the device's secure firmware (`tee.img`, which carries the ARM Trusted Firmware /
+BL31). This directory has the tooling and the recipe.
 
-**This is optional.** The stock, unpatched firmware runs GammaOS Pico perfectly
-on one core. Only apply this if you want the multi-core capability.
+**Since GammaOS Pico 1.2.0 the release packages install the patched firmware for the
+two Konkr consoles** (the files in `images/`, made with this tool from each console's
+stock `tee.img`), so nothing here has to be run to use it. The tool and the recipe
+are for patching another build or another device. With the stock, unpatched firmware
+GammaOS Pico runs as before on one core and the Big Core rows read "Not available".
 
 ## What the patch does
 

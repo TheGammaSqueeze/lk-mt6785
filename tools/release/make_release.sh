@@ -32,19 +32,24 @@ CONSOLES="${CONSOLES:-kpa block}"
 R=out/release
 FILES=$R/files
 
-# Each console: its name, the signed LK the build writes, the stock files (lk.img, the preloader and
-# the scatter, from its own firmware package), the LK partitions GammaOS Pico writes and the
-# shoulder button of the bootloader combo. The Advance runs either LK slot, so both get it; the
-# Block's preloader starts lk_a, and its factory never writes lk_b, so only lk_a is written there.
+# Each console: its name, the signed LK the build writes, the stock files (lk.img, tee.img, the
+# preloader and the scatter, from its own firmware package), the LK partitions GammaOS Pico writes,
+# the secure firmware (tee) partitions it writes, where the tee's one changed instruction is, and
+# the shoulder button of the bootloader combo. The tee GammaOS Pico installs is the stock one with
+# the multi-core patch (tools/konkr/firmware). Both consoles get both copies of both: the Advance
+# runs either slot, and the Block, whose factory leaves its _b copies empty and whose preloader
+# starts lk_a, gets them too so that either slot holds the same pair.
 console_vars() {
 	case "$1" in
 	kpa)
 		NAME="Konkr Pocket Advance"; LK=out/lk_a_kpa_signed.img; STOCK=tools/konkr/stock
 		PRELOADER=preloader_k85v1_64.bin; SCATTER=MT6785_Android_scatter.txt; PARTS="lk_a lk_b"
+		TEEPARTS="tee_a tee_b"; TEE_SITE=0x4588; TEE_BASE=0x440
 		STOCK_FW="BW03" ;;
 	block)
 		NAME="Konkr Pocket Block"; LK=out/lk_a_block_signed.img; STOCK=tools/block/stock
-		PRELOADER=preloader_m8695_bw01.bin; SCATTER=MT6768_Android_scatter.txt; PARTS="lk_a"
+		PRELOADER=preloader_m8695_bw01.bin; SCATTER=MT6768_Android_scatter.txt; PARTS="lk_a lk_b"
+		TEEPARTS="tee_a tee_b"; TEE_SITE=0x95e4; TEE_BASE=0x440
 		STOCK_FW="V02" ;;
 	*) echo "!! unknown console $1 (kpa or block)" >&2; exit 1 ;;
 	esac
@@ -55,9 +60,21 @@ if [ -e .git ]; then
 	echo ">> Fetching the core submodules"
 	git submodule update --init --recursive cores
 fi
+TEEDIR=tools/konkr/firmware/images
+(cd "$TEEDIR" && sha256sum -c --quiet SHA256SUMS) || { echo "!! $TEEDIR does not match its SHA256SUMS" >&2; exit 1; }
 for c in $CONSOLES; do
 	console_vars $c
 	(cd "$STOCK" && sha256sum -c --quiet SHA256SUMS) || { echo "!! $STOCK does not match its SHA256SUMS" >&2; exit 1; }
+	# the patched tee: the kept file, and the stock one changed in its one instruction and its
+	# certificate only (a few hundred bytes, all after the instruction, none before it)
+	python3 - "$STOCK/tee.img" "$TEEDIR/tee_${c}_gammaos.img" $TEE_SITE $TEE_BASE <<'PY' || { echo "!! the patched tee for $c is not the stock tee with the multi-core patch" >&2; exit 1; }
+import sys
+a, b = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+site = int(sys.argv[3], 0) + int(sys.argv[4], 0)
+d = [i for i in range(len(a)) if a[i] != b[i]] if len(a) == len(b) else None
+ok = d is not None and d and site <= d[0] < site + 4 and len(d) < 400 and b[site + 3] == 0x94
+sys.exit(0 if ok else 1)
+PY
 done
 
 # the LK shows its commit in Settings > About, with a "+" when it was built from changed files
@@ -124,33 +141,47 @@ for c in $CONSOLES; do
 	mkdir -p "$F/spflash/gammaos" "$F/spflash/stock" "$F/mtkclient" "$F/fastboot"
 	set -- $PARTS
 	for which in gammaos stock; do
-		if [ $which = gammaos ]; then img=$LK; label="GammaOS Pico"; else img="$STOCK/lk.img"; label=stock; fi
+		if [ $which = gammaos ]; then img=$LK; tee="$TEEDIR/tee_${c}_gammaos.img"; label="GammaOS Pico"
+		else img="$STOCK/lk.img"; tee="$STOCK/tee.img"; label=stock; fi
 		name=lk_${c}_$which.img
-		# SP Flash Tool v5: the text scatter with only the LK partitions ticked (V6 does not take
-		# these packages), and a Checksum.ini with the 16-bit byte sums SP Flash Tool checks
+		tname=tee_${c}_$which.img
+		allparts="$PARTS $TEEPARTS"
+		# SP Flash Tool v5: the text scatter with only the LK and tee partitions ticked (V6 does not
+		# take these packages), and a Checksum.ini with the 16-bit byte sums SP Flash Tool checks
 		cp "$img" "$F/spflash/$which/$name"
+		cp "$tee" "$F/spflash/$which/$tname"
 		cp "$STOCK/$PRELOADER" "$F/spflash/$which/"
-		python3 tools/release/lk_scatter.py "$STOCK/$SCATTER" "$F/spflash/$which/$SCATTER" $name $PARTS
+		python3 tools/release/lk_scatter.py "$STOCK/$SCATTER" "$F/spflash/$which/$SCATTER" $name $PARTS \
+			$(for p in $TEEPARTS; do printf '%s=%s ' $p $tname; done)
 		if [ $c = block ]; then
 			sum16() { python3 -c "import sys; print('0x%04X' % (sum(open(sys.argv[1],'rb').read()) & 0xffff))" "$1"; }
-			printf '[VERSION]\r\nVERSION=V1\r\nTOOL=v5.1820.00\r\n[IsEnableChecksum]\r\nCHECKSUM_SWITCH=1\r\n[CheckSum]\r\npreloader=%s\r\nlk_a=%s\r\n' \
-				"$(sum16 "$F/spflash/$which/$PRELOADER")" "$(sum16 "$F/spflash/$which/$name")" > "$F/spflash/$which/Checksum.ini"
+			printf '[VERSION]\r\nVERSION=V1\r\nTOOL=v5.1820.00\r\n[IsEnableChecksum]\r\nCHECKSUM_SWITCH=1\r\n[CheckSum]\r\npreloader=%s\r\n' \
+				"$(sum16 "$F/spflash/$which/$PRELOADER")" > "$F/spflash/$which/Checksum.ini"
+			for p in $PARTS; do printf '%s=%s\r\n' $p "$(sum16 "$F/spflash/$which/$name")" >> "$F/spflash/$which/Checksum.ini"; done
+			for p in $TEEPARTS; do printf '%s=%s\r\n' $p "$(sum16 "$F/spflash/$which/$tname")" >> "$F/spflash/$which/Checksum.ini"; done
 		fi
 		cp "$img" "$F/mtkclient/$name"
 		cp "$img" "$F/fastboot/$name"
-		mparts=$(echo $PARTS | tr ' ' ,); mfiles=$(for p in $PARTS; do printf '%s,' $name; done); mfiles=${mfiles%,}
-		printf '#!/bin/sh\n# Write the %s LK to %s with mtkclient (Linux), no unlocked bootloader needed.\n# Power the console off and unplug it, run this, then plug the console in when mtkclient\n# waits for it. See README.txt for installing mtkclient.\ncd "$(dirname "$0")"\nMTK="${MTK:-mtk}"   # or MTK="python3 /path/to/mtkclient/mtk.py"\ncommand -v ${MTK%%%% *} >/dev/null 2>&1 || { echo "mtkclient (mtk) not found: see README.txt"; exit 1; }\nif $MTK w %s %s; then\n\techo "Done. Unplug the console and hold POWER to start it."\nelse\n\techo "Writing failed. Do not unplug yet if a write was in progress; run this again."\nfi\n' \
-			"$label" "$(echo $PARTS | sed 's/ / and /')" "$mparts" "$mfiles" > "$F/mtkclient/flash_$which.sh"
+		cp "$tee" "$F/mtkclient/$tname"
+		cp "$tee" "$F/fastboot/$tname"
+		mparts=$(echo $allparts | tr ' ' ,); mfiles=$(for p in $PARTS; do printf '%s,' $name; done; for p in $TEEPARTS; do printf '%s,' $tname; done); mfiles=${mfiles%,}
+		printf '#!/bin/sh\n# Write the %s LK and secure firmware to %s with mtkclient (Linux), no unlocked bootloader needed.\n# Power the console off and unplug it, run this, then plug the console in when mtkclient\n# waits for it. See README.txt for installing mtkclient.\ncd "$(dirname "$0")"\nMTK="${MTK:-mtk}"   # or MTK="python3 /path/to/mtkclient/mtk.py"\ncommand -v ${MTK%%%% *} >/dev/null 2>&1 || { echo "mtkclient (mtk) not found: see README.txt"; exit 1; }\nif $MTK w %s %s; then\n\techo "Done. Unplug the console and hold POWER to start it."\nelse\n\techo "Writing failed. Do not unplug yet if a write was in progress; run this again."\nfi\n' \
+			"$label" "$(echo $allparts | sed 's/ /, /g')" "$mparts" "$mfiles" > "$F/mtkclient/flash_$which.sh"
 		chmod +x "$F/mtkclient/flash_$which.sh"
 		bat=""; sh=""
+		# the secure firmware first: with it written and the LK not yet, the console still starts as before
+		for p in $TEEPARTS; do
+			bat="${bat}fastboot flash $p $tname || goto :fail\r\n"
+			sh="${sh}fastboot flash $p $tname && "
+		done
 		for p in $PARTS; do
 			bat="${bat}fastboot flash $p $name || goto :fail\r\n"
 			sh="${sh}fastboot flash $p $name && "
 		done
-		printf "@echo off\r\nrem Flash the %s LK to %s. The console must be in its bootloader (fastboot).\r\n${bat}fastboot reboot\r\necho Done.\r\ngoto :eof\r\n:fail\r\necho Flashing failed. Do not restart the console; run this again.\r\n" \
-			"$label" "$(echo $PARTS | sed 's/ / and /')" > "$F/fastboot/flash_$which.bat"
-		printf '#!/bin/sh\n# Flash the %s LK to %s. The console must be in its bootloader (fastboot).\ncd "$(dirname "$0")"\n%sfastboot reboot && echo Done. ||\n\techo "Flashing failed. Do not restart the console; run this again."\n' \
-			"$label" "$(echo $PARTS | sed 's/ / and /')" "$sh" > "$F/fastboot/flash_$which.sh"
+		printf "@echo off\r\nrem Flash the %s LK and secure firmware to %s. The console must be in its bootloader (fastboot).\r\n${bat}fastboot reboot\r\necho Done.\r\ngoto :eof\r\n:fail\r\necho Flashing failed. Do not restart the console; run this again.\r\n" \
+			"$label" "$(echo $allparts | sed 's/ /, /g')" > "$F/fastboot/flash_$which.bat"
+		printf '#!/bin/sh\n# Flash the %s LK and secure firmware to %s. The console must be in its bootloader (fastboot).\ncd "$(dirname "$0")"\n%sfastboot reboot && echo Done. ||\n\techo "Flashing failed. Do not restart the console; run this again."\n' \
+			"$label" "$(echo $allparts | sed 's/ /, /g')" "$sh" > "$F/fastboot/flash_$which.sh"
 		chmod +x "$F/fastboot/flash_$which.sh"
 	done
 	sed "s/@VERSION@/$VER/; s/@COMMIT@/$LK_COMMIT/" tools/release/README_flash_$c.txt > "$F/README.txt"

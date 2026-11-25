@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Write an SP Flash Tool scatter for the Konkr Pocket Advance or Block that downloads only the LK.
+"""Write an SP Flash Tool scatter for the Konkr Pocket Advance or Block that downloads only the
+partitions GammaOS Pico writes.
 
-    lk_scatter.py <stock scatter.txt|.xml> <out scatter> <lk image file name> [partition ...]
+    lk_scatter.py <stock scatter.txt|.xml> <out scatter> <lk image file name> [partition[=file] ...]
 
-From the console's stock scatter every partition is unticked with no file except the given LK
-partitions (default lk_a and lk_b), which get the LK file and are ticked. The preloader keeps its
+From the console's stock scatter every partition is unticked with no file except the given
+partitions (default lk_a and lk_b), which are ticked and get the LK file, or their own file when
+given as partition=file (tee_a=tee_kpa_gammaos.img). The preloader keeps its
 file name, unticked: SP Flash Tool reads its memory setup to connect, it is not written. The text
 scatter (for SP Flash Tool v5) also has a V2.2.0 config version, which v5 refuses, lowered to
 V2.1.0 (an older version, as the Konkr Block's V1.1.8, is kept); the .xml scatter (for SP Flash
@@ -17,7 +19,11 @@ def main():
     if len(sys.argv) < 4:
         sys.exit(__doc__)
     src, dst, lk = sys.argv[1], sys.argv[2], sys.argv[3]
-    parts = set(sys.argv[4:] or ["lk_a", "lk_b"])
+    files = {}
+    for a in sys.argv[4:] or ["lk_a", "lk_b"]:
+        pname, _, fname = a.partition("=")
+        files[pname] = fname or lk
+    parts = set(files)
     raw = open(src, newline="").read()
     eol = "\r\n" if "\r\n" in raw else "\n"   # written back with the stock file's line ends
     text = raw.replace("\r\n", "\n")
@@ -32,7 +38,7 @@ def main():
                     name = val.strip()
                 elif key == "file_name":
                     if name in parts:
-                        val = lk
+                        val = files[name]
                         seen.add(name)
                     elif name != "preloader":
                         val = "NONE"
@@ -51,7 +57,7 @@ def main():
                 name = val.strip()
             elif key == "file_name":
                 if name in parts:
-                    line, _ = ind + "file_name: " + lk, seen.add(name)
+                    line, _ = ind + "file_name: " + files[name], seen.add(name)
                 elif name != "preloader":
                     line = ind + "file_name: NONE"
             elif key == "is_download":

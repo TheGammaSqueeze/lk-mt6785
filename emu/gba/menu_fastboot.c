@@ -2065,10 +2065,11 @@ static void cmd_stage_hex(const char *arg, void *data, unsigned sz)
 	fastboot_okay("");
 }
 
-/* oem part-read:<lk_a|lk_b>[:<offset, hex>] - stage up to 1 MB of the bootloader partition from
+/* oem part-read:<lk_a|lk_b|tee_a|tee_b>[:<offset, hex>] - stage up to 1 MB of the partition from
  * offset (0 when left out) for `fastboot get_staged <file>`, so a computer can keep a copy before
- * flashing. The INFO line gives the partition's size, the offset and the length staged; the
- * caller steps the offset until it reaches the size. Only the two LK copies can be read. */
+ * flashing and check one after. The INFO line gives the partition's size, the offset and the
+ * length staged; the caller steps the offset until it reaches the size. Only the partitions a
+ * GammaOS Pico package writes can be read: the two LK copies and the two secure firmware copies. */
 #define PART_READ_STEP 0x100000u
 static void cmd_part_read(const char *arg, void *data, unsigned sz)
 {
@@ -2081,7 +2082,9 @@ static void cmd_part_read(const char *arg, void *data, unsigned sz)
 	while (*arg == ' ' || *arg == ':') arg++;
 	while (*arg && *arg != ':' && i < sizeof name - 1) name[i++] = *arg++;
 	name[i] = 0;
-	if (strcmp(name, "lk_a") && strcmp(name, "lk_b")) { fastboot_fail("part-read: only lk_a and lk_b"); return; }
+	if (strcmp(name, "lk_a") && strcmp(name, "lk_b") && strcmp(name, "tee_a") && strcmp(name, "tee_b")) {
+		fastboot_fail("part-read: only lk_a, lk_b, tee_a and tee_b"); return;
+	}
 	if (*arg == ':') {
 		arg++;
 		if (arg[0] == '0' && (arg[1] == 'x' || arg[1] == 'X')) arg += 2;

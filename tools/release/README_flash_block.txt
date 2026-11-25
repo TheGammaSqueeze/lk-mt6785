@@ -1,12 +1,14 @@
-GammaOS Pico for the Konkr Pocket Block: the LK, release @VERSION@ (lk-mt6785 @COMMIT@)
+GammaOS Pico for the Konkr Pocket Block: the LK and the tee, release @VERSION@ (lk-mt6785 @COMMIT@)
 
-GammaOS Pico writes one thing on the console: the bootloader (LK), in lk_a, the slot the console
-starts from. Android, its data and every other partition stay as they are. With a GammaOS Pico
+GammaOS Pico writes two things on the console, each in both of its slots: the bootloader (LK), in
+lk_a and lk_b, and the secure firmware (tee), in tee_a and tee_b. Android, its data and every other
+partition stay as they are. With a GammaOS Pico
 microSD card in the slot the console starts GammaOS Pico; without it (or with Boot to Android chosen
 in the menu) it starts Android as before. The card's contents are in the separate sdcard package.
 
-  spflash/gammaos/   SP Flash Tool v5 (Windows): the GammaOS Pico LK to lk_a
-  spflash/stock/     SP Flash Tool v5 (Windows): the stock LK (V02) back to lk_a
+  spflash/gammaos/   SP Flash Tool v5 (Windows): the GammaOS Pico LK to lk_a and lk_b, its tee to
+                     tee_a and tee_b
+  spflash/stock/     SP Flash Tool v5 (Windows): the stock LK and tee (V02) back to the same four
   mtkclient/         mtkclient (Linux): the same two, flash_gammaos.sh and flash_stock.sh
   fastboot/          fastboot (Windows .bat, Linux .sh): for a console already running GammaOS Pico
   SHA256SUMS         checksums of every file here
@@ -14,9 +16,18 @@ in the menu) it starts Android as before. The card's contents are in the separat
 SP Flash Tool and mtkclient talk to the console's own preloader over USB, so they need no unlocked
 bootloader. fastboot needs the GammaOS Pico LK already installed.
 
-Tested on a console: SP Flash Tool v5 (the first install, on a console with its bootloader still
-locked) and the fastboot scripts. Not yet tested on a console: mtkclient, which writes the same
-partition with the same files. Android starting from the GammaOS Pico LK has been tested on a
+The secure firmware (tee) GammaOS Pico installs is the console's own stock one (V02) with one
+instruction changed, so the bootloader can use the console's other CPU cores (the Big Core option
+of the in-game menus). Android starts with it exactly as with the stock one. It belongs to that
+stock firmware version: on a console whose Android is another version, the packages still write
+this version's tee, and going back to stock writes this version's stock tee, not the one the
+console had. A tee the console cannot start leaves it dark until SP Flash Tool or mtkclient write
+a working one, so do not interrupt a flash and keep this package.
+
+Tested on a console: the fastboot scripts with all four partitions, and SP Flash Tool v5 with lk_a
+(the first install, on a console with its bootloader still locked) and with tee_a by itself. Not
+yet tested on a console: SP Flash Tool with all four ticked at once, and mtkclient, which writes
+the same partitions with the same files. Android starting from the GammaOS Pico LK has been tested on a
 console whose bootloader was unlocked afterwards; the LK hands Android the console's real lock
 state, so a locked console is expected to start it the same way.
 
@@ -30,7 +41,7 @@ Install the LK again after an Android update.
    flash_tool.exe from SP Flash Tool's folder.
    a. Download tab, Scatter-loading File: Browse to MT6768_Android_scatter.txt in spflash/gammaos/
       (Browse, not the history list).
-   b. Mode "Download Only". Only lk_a is ticked. Never use "Format All + Download" or
+   b. Mode "Download Only". Only lk_a, lk_b, tee_a and tee_b are ticked. Never use "Format All + Download" or
       "Firmware Upgrade": they rewrite the whole flash.
    c. Power the console off, click Download, then connect it over USB. Wait for the green tick.
    The preloader file is there because SP Flash Tool reads its memory setup to connect; it is not
@@ -65,6 +76,6 @@ Power on buttons (GammaOS Pico LK)
   SELECT + START + R1 held    the bootloader (fastboot)
 
 If the console ever does not start after a flash, SP Flash Tool or mtkclient restore the stock LK
-whatever is in lk_a, since both work below the LK.
+and tee whatever is in those partitions, since both work below them.
 
 Source: https://github.com/TheGammaSqueeze/lk-mt6785 (branch lk-gba-emu-sd-card-kpa).
