@@ -22,7 +22,7 @@ static const struct snes_core_imports s_imports = {
 
 #define CORE_SLOT_VMA  0x4F000000u
 #define CORE_SLOT_END  0x4F800000u
-/* armSNES's picture buffers and memory maps are static (10 MB with them): it takes the Genesis and
+/* armSNES's picture buffers and memory maps are static (12 MB with them): it takes the Genesis and
  * NES cores' slot too, up to the emulator arena. Only one core runs at a time. */
 #define ARMSNES_SLOT_END 0x50000000u
 

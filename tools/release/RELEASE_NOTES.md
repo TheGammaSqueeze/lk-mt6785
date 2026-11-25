@@ -8,6 +8,48 @@ Without the card, or after Boot to Android in the menu, Android starts exactly a
 
 ![Home](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/home.png)
 
+## What's new in 1.2.0
+
+- **Big Core (optional, for consoles with the multi-core firmware patch).** Both consoles have big
+  CPU cores the bootloader never used. With the optional patch to the console's secure firmware
+  (`tools/konkr/firmware` in the source, with its own instructions and warnings; nothing in this
+  release applies it), every system's in-game menu gets two rows on its Gameplay page: **Big Core**
+  runs the game's emulation on one big core while the picture, the sound and the menus stay where
+  they were, and **Big Core Clock** sets that core's clock (the console's own stock levels, up to
+  2050 MHz on the Pocket Advance and 2000 MHz on the Pocket Block). The emulation itself then takes
+  a half to a third of the time. Off by default, kept per system; without the patch the rows read
+  "Not available" and nothing else changes. A game that stalls on the big core closes back to the
+  menu, and netplay and link sessions stay on the usual core.
+- **More aspect ratios, and your own.** The Aspect Ratio row of every system goes on past its own
+  choices to 4:3, 3:2, 16:9, 16:10, 5:4, 8:7, 10:9, 1:1 and **Custom**, whose two numbers are the
+  **Custom Width** and **Custom Height** rows under it.
+- **Integer Scale.** On keeps the picture at a whole multiple of the game's lines, whatever the
+  ratio, so every line of the game is as tall as the next. **Overscale** takes the next whole
+  multiple up, filling the screen's height and cutting the edges that no longer fit (on the Pocket
+  Advance a NES game goes from 2x with borders to 3x with 14 lines cut top and bottom).
+- **Filter Alignment.** Scanlines, the LCD grids and LCD1x / LCD3x were drawn on the game's pixels
+  and then scaled with the picture, so at a scale that is not a whole number their lines came out
+  uneven. Set to **Screen Pixels**, the filter is laid on the screen's own pixels instead, even at
+  any size and ratio; **Game Pixels** is the way it was. It takes a few milliseconds a frame more,
+  and the console raises the game's clock for it as it does for LCD1x and LCD3x.
+- **armSNES 1.1 and armNES 1.5.** armSNES no longer needs 80 MB of tables while a game loads;
+  armNES brings upstream's fix for flash saves. Save states from 1.1.2 load as they are.
+
+All of these are per system and stay as you set them. The new rows are in all 16 languages.
+
+| | |
+|---|---|
+| ![Display page](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/igm-display-scale.png) | ![Big Core](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/igm-big-core.png) |
+| The Display page: Aspect Ratio, Integer Scale, the custom ratio, Filter Alignment | Big Core and Big Core Clock on the Gameplay page |
+| ![Filter on the game's pixels](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/filter-game-pixels.png) | ![Filter on the screen's pixels](https://raw.githubusercontent.com/TheGammaSqueeze/GammaOSPico/main/screenshots/filter-screen-pixels.png) |
+| Scanlines on the game's pixels at a scale of 2.67 | The same with Filter Alignment at Screen Pixels |
+
+### Updating
+
+Flash the @VERSION@ bootloader and put the @VERSION@ card files on the card (GammaOS Pico Tool's
+card update does both the files and keeps yours). Your games, saves, states, settings, cheat files
+and button maps stay as they are.
+
 ## What's new in 1.1.2
 
 - **Faster fast forward, battles above all.** Fast forward runs as many frames as each refresh has
