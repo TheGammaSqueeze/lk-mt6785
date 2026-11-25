@@ -60,7 +60,7 @@ int pico_smp_guest_start(unsigned n, unsigned entry, unsigned stack_top);
 int pico_smp_guest_held(void);
 int pico_smp_guest_restart(unsigned entry, unsigned stack_top);
 int pico_smp_core_on(unsigned n);
-/* The big core's clock for the menus: the levels offered (0 when the console has no table yet), and
+/* The big core's clock for the menus: the levels offered (the console's stock ones), and
  * the setter (one of those levels; its stock voltage goes with it). */
 int pico_smp_big_levels(void);
 unsigned pico_smp_big_level_mhz(int i);

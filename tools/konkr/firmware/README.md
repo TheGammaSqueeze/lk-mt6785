@@ -120,8 +120,9 @@ firmware, the in-game menu of a GBA game offers two rows on its Gameplay page:
 
 - **Big Core** (off by default): the game's CPU runs on one of the big cores from the
   next game start. On unpatched firmware the row reads "Not available".
-- **Big Core Clock** (Konkr Pocket Advance): the big core's clock, one of the console's
-  stock levels up to 2050 MHz, each with its stock voltage.
+- **Big Core Clock**: the big core's clock, one of the console's stock levels (up to
+  2050 MHz on the Pocket Advance, 2000 MHz on the Pocket Block), each with its stock
+  voltage.
 
 The big core stays powered between games once it was used and is put back as the boot
 left it at a reset or power off. A game that stalls or faults there is closed back to

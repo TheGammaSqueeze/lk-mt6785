@@ -55,42 +55,90 @@ extern signed int pwrap_write(unsigned int adr, unsigned int wdata);
 extern void udelay(unsigned long usec);
 static unsigned rd32(unsigned a);
 
-#if !defined(KONKR_BLOCK)
-/* The A76 (big) cluster PLL is ARMPLL_BIG CON1 at APMIXED 0x1000C214 (the A55 cluster that
- * ayaneo_set_cpu_mhz drives is 0x1000C204). Same MTK PLL formula; keeps POSDIV; pulses PCW_CHG.
- * Clock only; pico_big_set_opp below moves the rail with it. */
+/* The big cluster's clock and supply, per console.
+ *
+ * Clock: the cluster's own PLL in APMIXED, f = 26 MHz * PCW / 2^14 / 2^POSDIV (CON1: PCW bits
+ * 21..0, POSDIV bits 26..24, bit 31 latches a new PCW).
+ * Supply: a PMIC buck whose target code is written and whose present code is read back; the
+ * cluster's memory supply follows the buck by itself (the PMIC's tracking, on at boot, 100 mV
+ * above). The tables are the consoles' own stock levels (the Pocket Advance's from its kernel, the
+ * Pocket Block's from its device tree): nothing here goes above the stock top level or below the
+ * level the console booted at.
+ *
+ *                      Pocket Advance (MT6785 + MT6359)     Pocket Block (MT6768 + MT6358)
+ *   PLL CON1           0x1000C214                           0x1000C20C
+ *   buck               VPROC1: set 0x172e, now 0x1726       VPROC11: set 0x13a6, now 0x139e
+ *   buck voltage       0.4 V + code * 6.25 mV               0.5 V + code * 6.25 mV
+ *   memory supply now  0x1e8e bits 14..8 (0.5 V base)       0x1b60 bits 14..8 (0.5 V base)
+ * (the little cluster and the bus are on the other buck, VPROC2 / VPROC12: never touched here) */
+#if defined(KONKR_BLOCK)
+#define BIG_PLL_CON1   0x1000C20Cu
+#define BIG_VPROC_SET  0x13a6u
+#define BIG_VPROC_NOW  0x139eu
+#define BIG_VSRAM_NOW  0x1b60u
+#define BIG_VBASE_MV   500u
+#define BIG_CODE_MAX   94u
+#define BIG_CODE_FLOOR 48u        /* 0.8 V, as the preloader leaves the buck */
+/* The Block's own clock code for the boot core (block_pico.c) sets both CPU bucks alike. The big
+ * cluster's buck therefore carries the higher of the two wishes: what the boot core's clock asks
+ * for (read from the other buck) and what the big core's clock needs (g_pico_big_rail_code, which
+ * block_pico.c honours when it moves the bucks). */
+#define BIG_PEER_NOW   0x141eu
+#define BIG_MHZ_MAX    2000u
+#define BIG_MENU_FIRST 4          /* the menu offers the levels from 1532 MHz up */
+/* the divider after the PLL: by one from this clock up, by two below (the PLL's own range) */
+#define BIG_POSDIV_FOR(mhz) ((mhz) >= 1600u ? 0u : 1u)
+static const struct { unsigned short mhz; unsigned char code; } k_big_opp[] = {
+	{ 1176, 48 }, { 1295, 55 }, { 1354, 59 }, { 1443, 64 }, { 1532, 69 }, { 1621, 75 },
+	{ 1710, 80 }, { 1800, 85 }, { 1850, 88 }, { 1900, 90 }, { 1950, 92 }, { 2000, 94 },
+};
+#else
+#define BIG_PLL_CON1   0x1000C214u
+#define BIG_VPROC_SET  0x172eu
+#define BIG_VPROC_NOW  0x1726u
+#define BIG_VSRAM_NOW  0x1e8eu
+#define BIG_VBASE_MV   400u
+#define BIG_CODE_MAX   115u
+#define BIG_CODE_FLOOR 64u        /* 0.8 V, as the console boots */
+#define BIG_MHZ_MAX    2050u
+#define BIG_MENU_FIRST 3          /* the menu offers the levels from 1530 MHz up */
+static const struct { unsigned short mhz; unsigned char code; } k_big_opp[] = {
+	{ 1169, 64 }, { 1308, 71 }, { 1419, 76 }, { 1530, 82 }, { 1670, 89 }, { 1733, 93 },
+	{ 1796, 98 }, { 1860, 102 }, { 1923, 106 }, { 1986, 111 }, { 2050, 115 },
+};
+#endif
+volatile unsigned g_pico_big_rail_code;   /* the code the big core's clock needs now; 0 = no wish */
+
 static unsigned pico_big_get_mhz(void)
 {
-	unsigned c1 = rd32(0x1000C214u), pcw = c1 & 0x3FFFFFu, posdiv = (c1 >> 24) & 7u;
+	unsigned c1 = rd32(BIG_PLL_CON1), pcw = c1 & 0x3FFFFFu, posdiv = (c1 >> 24) & 7u;
 	unsigned long long f = 26000000ull * pcw; f >>= 14; f >>= posdiv;
 	return (unsigned)(f / 1000000ull);
 }
 static void pico_big_set_mhz(unsigned mhz)
 {
-	volatile unsigned *con1 = (volatile unsigned *)0x1000C214u;
-	unsigned c = *con1, posdiv = (c >> 24) & 7u;
+	volatile unsigned *con1 = (volatile unsigned *)BIG_PLL_CON1;
+	unsigned c = *con1, posdiv = (c >> 24) & 7u, want = posdiv;
 	unsigned long long pcw;
 	if (mhz < 400u) mhz = 400u;
-	if (mhz > 2600u) mhz = 2600u;
-	pcw = ((unsigned long long)mhz * 1000000ull) << 14; pcw <<= posdiv; pcw /= 26000000ull;
+	if (mhz > BIG_MHZ_MAX) mhz = BIG_MHZ_MAX;
+#ifdef BIG_POSDIV_FOR
+	want = BIG_POSDIV_FOR(mhz);
+	if (want > posdiv) {            /* a larger divider first: the clock only ever steps down on the way */
+		c = (c & ~0x87000000u) | (want << 24);
+		*con1 = c; udelay(20);
+		posdiv = want;
+	}
+#endif
+	pcw = ((unsigned long long)mhz * 1000000ull) << 14; pcw <<= want; pcw /= 26000000ull;
 	if (pcw > 0x3FFFFFu) pcw = 0x3FFFFFu;
 	c = (c & ~0x003FFFFFu & ~0x80000000u) | (unsigned)pcw;
-	*con1 = c; udelay(2); *con1 = c | 0x80000000u; udelay(20);   /* PCW then PCW_CHG relock */
+	*con1 = c; udelay(2); *con1 = c | 0x80000000u; udelay(20);   /* PCW, then the latch bit: relock */
+	if (want < posdiv) {            /* a smaller divider last: the PLL already runs the new rate */
+		c = (c & ~0x87000000u) | (want << 24);
+		*con1 = c; udelay(20);
+	}
 }
-/* The big cluster's supply is the MT6359 buck VPROC1 (the little cluster and the bus are on VPROC2):
- * target code in ELR0 0x172e, the code the buck is at in DBG0 0x1726, V = 0.4 V + code * 6.25 mV.
- * Its memory supply VSRAM_PROC1 follows by itself (the PMIC's tracking, on at boot), read back in
- * 0x1e8e bits 14..8, V = 0.5 V + code * 6.25 mV. The table is the console's stock one (its kernel's
- * big cluster levels): nothing here goes above the stock top level or below the boot level. */
-#define BIG_VPROC_SET  0x172eu
-#define BIG_VPROC_NOW  0x1726u
-#define BIG_VSRAM_NOW  0x1e8eu
-#define BIG_CODE_BOOT  64u
-#define BIG_CODE_MAX   115u
-static const struct { unsigned short mhz; unsigned char code; } k_big_opp[] = {
-	{ 1169, 64 }, { 1308, 71 }, { 1419, 76 }, { 1530, 82 }, { 1670, 89 }, { 1733, 93 },
-	{ 1796, 98 }, { 1860, 102 }, { 1923, 106 }, { 1986, 111 }, { 2050, 115 },
-};
 static unsigned pico_big_get_code(void)
 {
 	unsigned v = 0;
@@ -100,8 +148,12 @@ static unsigned pico_big_get_code(void)
 static void pico_big_set_code(unsigned code)
 {
 	unsigned cur = 0, now = pico_big_get_code();
-	if (code < BIG_CODE_BOOT) code = BIG_CODE_BOOT;
+	if (code < BIG_CODE_FLOOR) code = BIG_CODE_FLOOR;
 	if (code > BIG_CODE_MAX) code = BIG_CODE_MAX;
+	g_pico_big_rail_code = code;
+#ifdef BIG_PEER_NOW
+	{ unsigned peer = 0; pwrap_read(BIG_PEER_NOW, &peer); peer &= 0x7Fu; if (code < peer) code = peer; }
+#endif
 	pwrap_read(BIG_VPROC_SET, &cur);
 	pwrap_write(BIG_VPROC_SET, (cur & ~0x7Fu) | code);
 	/* the buck slews about 10 mV per microsecond up, slower down; the memory supply follows it */
@@ -120,26 +172,15 @@ static unsigned pico_big_code_for(unsigned mhz)
 static void pico_big_set_opp(unsigned mhz)
 {
 	unsigned code, now = pico_big_get_code();
-	if (mhz > 2050u) mhz = 2050u;
+	if (mhz > BIG_MHZ_MAX) mhz = BIG_MHZ_MAX;
 	code = pico_big_code_for(mhz);
+	if (code < BIG_CODE_FLOOR) code = BIG_CODE_FLOOR;
 	if (code >= now) { pico_big_set_code(code); pico_big_set_mhz(mhz); }
 	else { pico_big_set_mhz(mhz); pico_big_set_code(code); }
 }
-#else
-/* The Block's big cluster (MT6768) has its own PLL and PMIC: its clock and rail are left as the
- * boot set them until its table is in. */
-static unsigned pico_big_get_mhz(void) { return 0u; }
-static void pico_big_set_mhz(unsigned mhz) { (void)mhz; }
-static unsigned pico_big_get_code(void) { return 0u; }
-static void pico_big_set_code(unsigned code) { (void)code; }
-static void pico_big_set_opp(unsigned mhz) { (void)mhz; }
-static const struct { unsigned short mhz; unsigned char code; } k_big_opp[1] = { { 0, 0 } };
-#define BIG_VSRAM_NOW 0u
-#define PICO_BIG_NO_TABLE 1
-#endif
 volatile int g_pico_smp_gba_req;      /* opt in: the next GBA game runs its CPU loop on a big core */
 volatile unsigned g_pico_smp_gba_core = 6u;
-volatile unsigned g_pico_smp_gba_mhz = 2050u;   /* the big core's clock while a GBA guest runs: the stock top
+volatile unsigned g_pico_smp_gba_mhz = BIG_MHZ_MAX;   /* the big core's clock while a GBA guest runs: the stock top
                                                  * level, at its stock voltage; 0 leaves it as is */
 static unsigned s_big_saved_mhz, s_big_saved_code;   /* the big cluster as the boot left it */
 extern void mtk_wdt_restart(void);
@@ -298,6 +339,20 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		if (ayaneo_set_cpu_mhz && m) ayaneo_set_cpu_mhz(m);
 		snprintf(sl, sizeof sl, "A55 PLL con1 %08x", rd32(0x1000C204u));
 		fastboot_info(sl);
+	} else if (!strncmp(arg, "pmicw", 5)) {
+		/* bring up: one CPU buck's target code by its register (MT6358 0x13a6 / 0x1426, MT6359
+		 * 0x172e / 0x17b2), within the stock range only. To find which buck feeds which cluster. */
+		unsigned a, v, cur = 0; arg += 5; a = hexarg(&arg); v = hexarg(&arg);
+		if ((a != 0x13a6u && a != 0x1426u && a != 0x172eu && a != 0x17b2u) || v < 0x1cu || v > BIG_CODE_MAX) {
+			fastboot_fail("pmicw: a CPU buck's code register and a stock code only");
+			return;
+		}
+		pwrap_read(a, &cur);
+		pwrap_write(a, (cur & ~0x7Fu) | v);
+		udelay(500);
+		pwrap_read(a, &cur);
+		snprintf(sl, sizeof sl, "pmic %04x <- code %u, reads %04x", a, v, cur);
+		fastboot_info(sl);
 	} else if (!strncmp(arg, "pmic", 4)) {
 		unsigned a, v = 0; arg += 4; a = hexarg(&arg);
 		pwrap_read(a, &v);
@@ -310,7 +365,7 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		code = pico_big_get_code();
 		pwrap_read(BIG_VSRAM_NOW, &sr); sr = (sr >> 8) & 0x7Fu;
 		snprintf(sl, sizeof sl, "big rail code %u (%u mV), memory rail code %u (%u mV)", code,
-			 400u + (code * 625u) / 100u, sr, 500u + (sr * 625u) / 100u);
+			 BIG_VBASE_MV + (code * 625u) / 100u, sr, 500u + (sr * 625u) / 100u);
 		fastboot_info(sl);
 	} else if (!strncmp(arg, "bigc", 4)) {
 		/* the big cluster's clock alone, no voltage change (bring up) */
@@ -325,7 +380,7 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		if (*arg == ':' || *arg == ',') { m = hexarg(&arg); pico_big_set_opp(m); }
 		code = pico_big_get_code();
 		snprintf(sl, sizeof sl, "big clock ~%u MHz at code %u (%u mV)", pico_big_get_mhz(), code,
-			 400u + (code * 625u) / 100u);
+			 BIG_VBASE_MV + (code * 625u) / 100u);
 		fastboot_info(sl);
 	} else if (!strncmp(arg, "noio", 4)) {
 		/* load testing: GBA games from reset, nothing of theirs read from or written to the card */
@@ -339,7 +394,7 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 	} else if (!strncmp(arg, "mhz", 3)) {
 		/* the clock a GBA guest's big core runs at (hex MHz); takes effect when the core is next set up */
 		unsigned m; arg += 3;
-		if (*arg == ':' || *arg == ',') { m = hexarg(&arg); if (m >= 1000u && m <= 2050u) g_pico_smp_gba_mhz = m; }
+		if (*arg == ':' || *arg == ',') { m = hexarg(&arg); if (m >= 1000u && m <= BIG_MHZ_MAX) g_pico_smp_gba_mhz = m; }
 		snprintf(sl, sizeof sl, "guest clock %u MHz", g_pico_smp_gba_mhz);
 		fastboot_info(sl);
 	} else if (!strncmp(arg, "clk", 3)) {
@@ -597,6 +652,7 @@ void pico_smp_before_reset(void)
 	if (s_big_saved_mhz) {          /* the big cluster's clock and rail back as the boot left them */
 		pico_big_set_mhz(s_big_saved_mhz);
 		pico_big_set_code(s_big_saved_code);
+		g_pico_big_rail_code = 0u;
 		s_big_saved_mhz = 0u;
 	}
 }
@@ -659,22 +715,18 @@ int pico_smp_guest_start(unsigned n, unsigned entry, unsigned stack_top)
 	return (int)smc4(PSCI_CPU_ON, n << 8, land + 0x800u, 0);
 }
 
-/* The big core's clock levels for the menus (the stock table from 1530 MHz up; none on a console
+/* The big core's clock levels for the menus (the upper part of the stock table; none on a console
  * without a table), and the guest's clock: kept for the next time the core is set up, and applied
  * at once when it already is. Call it only while no frame runs on the guest (the frontend's own
  * thread between frames does). */
 int pico_smp_big_levels(void)
 {
-#ifdef PICO_BIG_NO_TABLE
-	return 0;
-#else
-	return (int)(sizeof k_big_opp / sizeof k_big_opp[0]) - 3;
-#endif
+	return (int)(sizeof k_big_opp / sizeof k_big_opp[0]) - BIG_MENU_FIRST;
 }
 unsigned pico_smp_big_level_mhz(int i)
 {
 	if (i < 0 || i >= pico_smp_big_levels()) return 0u;
-	return k_big_opp[i + 3].mhz;
+	return k_big_opp[i + BIG_MENU_FIRST].mhz;
 }
 void pico_smp_big_clock(unsigned mhz)
 {

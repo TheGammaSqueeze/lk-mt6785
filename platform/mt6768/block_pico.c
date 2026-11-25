@@ -385,7 +385,13 @@ static unsigned int vproc_move(unsigned int from, unsigned int code)
 			g_dbg_cpu_vfail++;
 			break;
 		}
-		pwrap_write(PMIC_VPROC11_ELR0, (e11 & 0xff80u) | next);
+		{	/* VPROC11 is the big cluster's buck: when one of its cores runs (opt in,
+			 * platform/common/pico/pico_smp.c) it is never taken below what that core's
+			 * clock needs */
+			extern volatile unsigned g_pico_big_rail_code;
+			unsigned int big = g_pico_big_rail_code;
+			pwrap_write(PMIC_VPROC11_ELR0, (e11 & 0xff80u) | (big > next ? big : next));
+		}
 		pwrap_write(PMIC_VPROC12_ELR0, (e12 & 0xff80u) | next);
 		for (t = 0; t < 100u; t++) {		/* the buck slews in tens of microseconds */
 			udelay(10);
