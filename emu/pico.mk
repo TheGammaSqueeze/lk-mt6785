@@ -56,6 +56,7 @@ OBJS += emu/gba/pico_coreopt.o
 $(BUILDDIR)/emu/gba/pico_coreopt.o:     CFLAGS += -Os
 # a core's emulation on a big CPU core (each system's Big Core option)
 OBJS += emu/gba/pico_bigrun.o
+OBJS += emu/gba/pico_scale.o
 # cheat codes for every core: the release's packs and the player's own .cht, the Cheats page
 OBJS += emu/gba/pico_cheats.o
 $(BUILDDIR)/emu/gba/pico_cheats.o:      CFLAGS += -Os

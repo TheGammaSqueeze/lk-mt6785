@@ -18,6 +18,7 @@
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
 #include "../gba/pico_bigrun.h"
+#include "../gba/pico_scale.h"
 #include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
 #include "../gba/pico_input.h"    /* the player's button map, the hotkeys */
 #include "../gba/pico_coreopt.h"
@@ -460,7 +461,7 @@ static void snes_run(const struct snes_core_exports *c, struct snes_frame *fr)
 
 enum { SM_BRIGHT, SM_VOLUME, SM_FILTER, SM_ASPECT, SM_OVERSCAN, SM_AUDIO, SM_HIRES,
        SM_CPU, SM_RUNAHEAD, SM_REWIND, SM_TURBO, SM_BENCH, SM_SHOWFPS, SM_EMU, SM_CORE, SM_BATTERY, SM_PANEL, SM_STROBE, SM_RESUME,
-       SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_FFCAP, SM_BIGCORE, SM_BIGMHZ, SM_COUNT };
+       SM_SLOT, SM_SAVE, SM_LOAD, SM_RESET, SM_CLOSE, SM_FFCAP, SM_BIGCORE, SM_BIGMHZ, SM_SCALE0, SM_SCALE1, SM_SCALE2, SM_SCALE3, SM_COUNT };
 #define SNES_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
 static const char *snes_turbo_name(int t)
@@ -509,6 +510,7 @@ static const char *sm_label(int i) { switch (i) {
 	case SM_ASPECT: return "Aspect Ratio"; case SM_OVERSCAN: return "Overscan";
 	case SM_AUDIO:  return "Audio Filter";  case SM_HIRES:    return "Hi-Res Blend";
 	case SM_CPU:    return "CPU Clock"; case SM_RUNAHEAD: return "Run-Ahead";
+	case SM_SCALE0: case SM_SCALE1: case SM_SCALE2: case SM_SCALE3: return pico_scale_row_label(i - SM_SCALE0);
 	case SM_BIGCORE: return pico_bigrun_row_label(PICO_BIG_ROW_ON); case SM_BIGMHZ: return pico_bigrun_row_label(PICO_BIG_ROW_CLOCK);
 	case SM_REWIND: return "Rewind";
 	case SM_FFCAP:  return "Fast Forward Speed";
@@ -527,7 +529,11 @@ static const char *sm_value(int i, char *buf) { char *p = buf;
 	case SM_VOLUME: p = smputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = smput(p, "%"); break;
 	case SM_FILTER: p = smput(p, snes_filter_name(ayaneo_get_lcd_filter())); break;
 	case SM_ASPECT: case SM_OVERSCAN: case SM_AUDIO: case SM_HIRES: {
-		int oi = i - SM_ASPECT; p = smput(p, s_opt_def[oi].ch[s_opt_idx[oi]].label); break; }
+		int oi = i - SM_ASPECT;
+		const char *x = i == SM_ASPECT ? pico_scale_aspect_name(PICO_SCALE_SNES) : 0;
+		p = smput(p, x ? x : s_opt_def[oi].ch[s_opt_idx[oi]].label); break; }
+	case SM_SCALE0: case SM_SCALE1: case SM_SCALE2: case SM_SCALE3:
+		p = pico_scale_row_value(PICO_SCALE_SNES, i - SM_SCALE0, p); break;
 	case SM_CPU: { static unsigned mhz, tick;   /* cache: PLL read-back low bits jitter */
 		if (!mhz || tick-- == 0) { mhz = ayaneo_get_cpu_mhz(); tick = 40; }
 		p = smputu(p, mhz); p = smput(p, " MHz"); break; }
@@ -620,10 +626,23 @@ static int sm_change(int i, int dir, int act)
 	case SM_BRIGHT: if (dir) { ayaneo_brightness_step(dir); snes_settings_touch(); } break;
 	case SM_VOLUME: if (dir) { ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); snes_settings_touch(); } break;
 	case SM_FILTER: if (dir) { ayaneo_set_lcd_filter((ayaneo_get_lcd_filter() + dir + 6) % 6); snes_apply_clock(); snes_settings_touch(); } break;
+	case SM_SCALE0: case SM_SCALE1: case SM_SCALE2: case SM_SCALE3:
+		if (pico_scale_row_change(PICO_SCALE_SNES, i - SM_SCALE0, dir)) {
+			if (i == SM_SCALE1) snes_apply_clock();   /* a filter on the screen's pixels costs more */
+			snes_settings_touch();
+		}
+		break;
 	case SM_ASPECT: case SM_OVERSCAN: case SM_AUDIO: case SM_HIRES:
 		if (dir && s_menu_c->set_option) {
 			int oi = i - SM_ASPECT, n = s_opt_def[oi].n, k;
 			unsigned packed = 0;
+			if (oi == OI_ASPECT) {
+				/* the shared ratios follow the core's own (its 4:3, and Pixel, which is 8:7) */
+				k = pico_scale_aspect_step(PICO_SCALE_SNES, dir, s_opt_idx[oi], n,
+							   (1u << PICO_RATIO_4_3) | (1u << PICO_RATIO_8_7));
+				if (k < 0) { snes_settings_touch(); break; }
+				s_opt_idx[oi] = k;
+			} else
 			s_opt_idx[oi] = (s_opt_idx[oi] + dir + n) % n;
 			s_menu_c->set_option(s_opt_def[oi].key, s_opt_def[oi].ch[s_opt_idx[oi]].value);
 			if (oi == OI_ASPECT) {
@@ -713,7 +732,14 @@ static const struct igm_row k_snes_igm_rows[] = {
 	{ IGM_PLAY, IGM_TOP, IGM_LINK }, { IGM_SYSTEM, IGM_TOP, IGM_LINK },
 	{ SM_RESET, IGM_TOP, IGM_ACTION }, { SM_CLOSE, IGM_TOP, IGM_ACTION },
 	{ SM_BRIGHT, IGM_DISPLAY, IGM_VALUE }, { SM_FILTER, IGM_DISPLAY, IGM_VALUE },
-	{ SM_ASPECT, IGM_DISPLAY, IGM_VALUE }, { SM_OVERSCAN, IGM_DISPLAY, IGM_VALUE },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ SM_SCALE1, IGM_DISPLAY, IGM_VALUE },
+#endif
+	{ SM_ASPECT, IGM_DISPLAY, IGM_VALUE },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ SM_SCALE0, IGM_DISPLAY, IGM_VALUE }, { SM_SCALE2, IGM_DISPLAY, IGM_VALUE }, { SM_SCALE3, IGM_DISPLAY, IGM_VALUE },
+#endif
+	{ SM_OVERSCAN, IGM_DISPLAY, IGM_VALUE },
 	{ SM_HIRES, IGM_DISPLAY, IGM_VALUE }, { SM_STROBE, IGM_DISPLAY, IGM_VALUE },
 	{ SM_SHOWFPS, IGM_DISPLAY, IGM_VALUE },
 	{ SM_VOLUME, IGM_SOUND, IGM_VALUE }, { SM_AUDIO, IGM_SOUND, IGM_VALUE },

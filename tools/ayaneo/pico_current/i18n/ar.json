@@ -433,5 +433,17 @@
  "The other console cancelled.": "ألغى الجهاز الآخر.",
  "The other console did not answer.": "لم يستجب الجهاز الآخر.",
  "The session could not start.": "تعذر بدء الجلسة.",
- "The other console left.": "غادر الجهاز الآخر."
+ "The other console left.": "غادر الجهاز الآخر.",
+ "Big Core": "النواة الكبيرة",
+ "Big Core Clock": "تردد النواة الكبيرة",
+ "Integer Scale": "تكبير صحيح",
+ "Filter Alignment": "محاذاة المرشح",
+ "Custom Width": "عرض مخصص",
+ "Custom Height": "ارتفاع مخصص",
+ "Not available": "غير متاح",
+ "Overscale": "تكبير زائد",
+ "Game Pixels": "بكسلات اللعبة",
+ "Screen Pixels": "بكسلات الشاشة",
+ "Custom": "مخصص",
+ "Needs the multi-core firmware patch": "يتطلب رقعة البرنامج الثابت متعددة الأنوية"
 }

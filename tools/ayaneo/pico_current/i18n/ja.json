@@ -419,5 +419,17 @@
  "The other console cancelled.": "相手の本体がキャンセルしました。",
  "The other console did not answer.": "相手の本体から反応がありませんでした。",
  "The session could not start.": "通信を始められませんでした。",
- "The other console left.": "相手の本体が通信を終了しました。"
+ "The other console left.": "相手の本体が通信を終了しました。",
+ "Big Core": "ビッグコア",
+ "Big Core Clock": "ビッグコアクロック",
+ "Integer Scale": "インテジャースケール",
+ "Filter Alignment": "フィルター適用先",
+ "Custom Width": "カスタム (ヨコ)",
+ "Custom Height": "カスタム (タテ)",
+ "Not available": "使用不可",
+ "Overscale": "オーバースケール",
+ "Game Pixels": "ゲームのピクセル",
+ "Screen Pixels": "画面のピクセル",
+ "Custom": "カスタム",
+ "Needs the multi-core firmware patch": "マルチコア用ファームウェアパッチが必要です"
 }

@@ -637,3 +637,120 @@ void ayaneo_lcd_prescale_row_neon8(const uint16_t *src, unsigned sw, uint32_t *d
 	}
 }
 
+
+/* The LCD filter on the screen's own pixels (Filter Alignment: Screen Pixels). The game's picture
+ * (sw x sh, RGB565) is drawn dw x dh, at least its own size, each screen pixel taking the game
+ * pixels it covers by their share of it (one or two along each axis), and the filter's factors
+ * repeat every few whole columns and rows of the screen whatever the scale is, so its lines stay
+ * even. The caller hands a plan for the columns, made once per size: for screen column x, idx[x]
+ * is the first game pixel it takes, and wa[x] / wb[x] the weights of that pixel and of the next
+ * one as pixels (one byte per channel, the filter's column factor already in them; they add up
+ * to 255 at most). rowf[j][c] are the row factors of row j of a period of pr rows for channel c
+ * (0 red, 1 green, 2 blue; 255 = unchanged). One game row at a time is widened into rowA or rowB
+ * (dw pixels each), then every screen row is one of them or a mix of both. Nothing is read back
+ * from dst (the game buffers are write combined). */
+static void sf_widen(const uint16_t *frame_row, unsigned sw, uint32_t *out, unsigned dw,
+		     const uint16_t *idx, const uint32_t *wa, const uint32_t *wb, const uint16_t *cc)
+{
+	/* the game's row as 32 bit pixels, one spare at the end for the last column's neighbour */
+	static uint32_t c32[1024 + 16];
+	static uint32_t ga[1024 + 16], gb[1024 + 16];
+	static uint16_t ccrow[1024 + 16];
+	const uint16_t *src = frame_row;
+	unsigned x;
+	if (sw > 1024u) sw = 1024u;
+	if (cc) {
+		for (x = 0; x < sw; x++) { unsigned v = frame_row[x]; ccrow[x] = cc[(((v >> 12) & 0xFu) << 8) | (((v >> 7) & 0xFu) << 4) | ((v >> 1) & 0xFu)]; }
+		src = ccrow;
+	}
+	for (x = 0; x + 8u <= sw; x += 8u) {
+		uint16x8_t v = vld1q_u16(src + x);
+		uint8x8x4_t o;
+		o.val[0] = vshl_n_u8(vmovn_u16(v), 3);                 /* blue */
+		o.val[1] = vshl_n_u8(vmovn_u16(vshrq_n_u16(v, 5)), 2); /* green */
+		o.val[2] = vshl_n_u8(vmovn_u16(vshrq_n_u16(v, 11)), 3);/* red */
+		o.val[3] = vdup_n_u8(0xFF);
+		vst4_u8((uint8_t *)(c32 + x), o);
+	}
+	for (; x < sw; x++) { unsigned v = src[x]; c32[x] = 0xFF000000u | (((v >> 11) & 0x1fu) << 19) | (((v >> 5) & 0x3fu) << 10) | ((v & 0x1fu) << 3); }
+	c32[sw] = c32[sw - 1u];
+	for (x = 0; x < dw; x++) { unsigned i = idx[x]; ga[x] = c32[i]; gb[x] = c32[i + 1u]; }
+	{
+		const uint16x8_t rnd = vdupq_n_u16(255);
+		const uint8x16_t opaque = vreinterpretq_u8_u32(vdupq_n_u32(0xFF000000u));
+		const uint8_t *a = (const uint8_t *)ga, *b = (const uint8_t *)gb, *fa = (const uint8_t *)wa, *fb = (const uint8_t *)wb;
+		uint8_t *o = (uint8_t *)out;
+		for (x = 0; x < dw; x += 4u) {   /* the arrays have room for the last group's spare pixels */
+			uint8x16_t va = vld1q_u8(a + x * 4u), vb = vld1q_u8(b + x * 4u), wa8 = vld1q_u8(fa + x * 4u), wb8 = vld1q_u8(fb + x * 4u);
+			uint16x8_t lo = vmlal_u8(vmull_u8(vget_low_u8(va), vget_low_u8(wa8)), vget_low_u8(vb), vget_low_u8(wb8));
+			uint16x8_t hi = vmlal_u8(vmull_u8(vget_high_u8(va), vget_high_u8(wa8)), vget_high_u8(vb), vget_high_u8(wb8));
+			vst1q_u8(o + x * 4u, vorrq_u8(vcombine_u8(vshrn_n_u16(vaddq_u16(lo, rnd), 8), vshrn_n_u16(vaddq_u16(hi, rnd), 8)), opaque));
+		}
+	}
+}
+void ayaneo_screen_filter_neon(const uint16_t *pix, unsigned sw, unsigned sh, unsigned spitch,
+			       uint32_t *dst, unsigned dpitch, unsigned dw, unsigned dh,
+			       const uint16_t *idx, const uint32_t *wa, const uint32_t *wb, unsigned pr,
+			       const unsigned char (*rowf)[3], const uint16_t *cc,
+			       uint32_t *rowA, uint32_t *rowB)
+{
+	const unsigned invh = (256u * 65536u) / (sh ? sh : 1u);
+	const uint8x16_t opaque = vreinterpretq_u8_u32(vdupq_n_u32(0xFF000000u));
+	uint32_t *ra = rowA, *rb = rowB;   /* ra holds game row ia, rb game row ia + 1 once asked for */
+	unsigned y, ia = 0, rem = 0, j = 0;
+	int have_b = 0;
+	if (!sw || !sh || dw < sw || dh < sh) return;
+	sf_widen(pix, sw, ra, dw, idx, wa, wb, cc);
+	for (y = 0; y < dh; y++) {
+		uint32_t *o = dst + y * dpitch;
+		const unsigned char *f = rowf[j];
+		unsigned w = rem + sh > dh ? ((rem + sh - dh) * invh) >> 16 : 0u;   /* the next game row's share, of 256 */
+		unsigned x = 0;
+		if (ia + 1u >= sh) w = 0;
+		if (w && !have_b) { sf_widen(pix + (ia + 1u) * spitch, sw, rb, dw, idx, wa, wb, cc); have_b = 1; }
+		if (!w && f[0] == 255u && f[1] == 255u && f[2] == 255u) {
+			const uint8_t *a = (const uint8_t *)ra;
+			uint8_t *ob = (uint8_t *)o;
+			for (; x + 16u <= dw; x += 16u) {
+				vst1q_u8(ob + x * 4u, vld1q_u8(a + x * 4u));
+				vst1q_u8(ob + x * 4u + 16u, vld1q_u8(a + x * 4u + 16u));
+				vst1q_u8(ob + x * 4u + 32u, vld1q_u8(a + x * 4u + 32u));
+				vst1q_u8(ob + x * 4u + 48u, vld1q_u8(a + x * 4u + 48u));
+			}
+			for (; x < dw; x++) o[x] = ra[x];
+		} else {
+			/* per byte lane (blue, green, red, alpha): out = (a * wa + b * wb) >> 8 */
+			uint32_t wa32 = ((((256u - w) * f[2]) >> 8)) | ((((256u - w) * f[1]) >> 8) << 8) | ((((256u - w) * f[0]) >> 8) << 16);
+			uint32_t wb32 = (((w * f[2]) >> 8)) | (((w * f[1]) >> 8) << 8) | (((w * f[0]) >> 8) << 16);
+			const uint8x8_t va8 = vreinterpret_u8_u32(vdup_n_u32(wa32)), vb8 = vreinterpret_u8_u32(vdup_n_u32(wb32));
+			const uint8_t *a = (const uint8_t *)ra, *b = (const uint8_t *)(w ? rb : ra);
+			uint8_t *ob = (uint8_t *)o;
+			if (!w) for (; x + 4u <= dw; x += 4u) {   /* one game row: the row factor only */
+				uint8x16_t va = vld1q_u8(a + x * 4u);
+				vst1q_u8(ob + x * 4u, vorrq_u8(vcombine_u8(vshrn_n_u16(vmull_u8(vget_low_u8(va), va8), 8),
+									   vshrn_n_u16(vmull_u8(vget_high_u8(va), va8), 8)), opaque));
+			}
+			for (; x + 4u <= dw; x += 4u) {
+				uint8x16_t va = vld1q_u8(a + x * 4u), vb = vld1q_u8(b + x * 4u);
+				uint16x8_t lo = vmlal_u8(vmull_u8(vget_low_u8(va), va8), vget_low_u8(vb), vb8);
+				uint16x8_t hi = vmlal_u8(vmull_u8(vget_high_u8(va), va8), vget_high_u8(vb), vb8);
+				vst1q_u8(ob + x * 4u, vorrq_u8(vcombine_u8(vshrn_n_u16(lo, 8), vshrn_n_u16(hi, 8)), opaque));
+			}
+			for (; x < dw; x++) {
+				uint32_t pa = ra[x], pb = w ? rb[x] : pa, r = 0xFF000000u;
+				unsigned s;
+				for (s = 0; s < 24u; s += 8u)
+					r |= (((((pa >> s) & 0xFFu) * ((wa32 >> s) & 0xFFu)) + (((pb >> s) & 0xFFu) * ((wb32 >> s) & 0xFFu))) >> 8) << s;
+				o[x] = r;
+			}
+		}
+		if (++j == pr) j = 0;
+		rem += sh;
+		if (rem >= dh) {   /* on to the next game row: the one mixed in, if it was, is ready */
+			rem -= dh; ia++;
+			if (ia >= sh) break;
+			if (have_b) { uint32_t *t = ra; ra = rb; rb = t; have_b = 0; }
+			else sf_widen(pix + ia * spitch, sw, ra, dw, idx, wa, wb, cc);
+		}
+	}
+}

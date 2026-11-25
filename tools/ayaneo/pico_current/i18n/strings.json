@@ -2107,6 +2107,66 @@
    "en": "The other console left.",
    "kind": "about",
    "note": "Netplay page note: the session ended because the other console left or went out of reach; this game carries on alone"
+  },
+  {
+   "en": "Big Core",
+   "kind": "label",
+   "note": "in-game menu setting: run the game on one of the console's big processor cores"
+  },
+  {
+   "en": "Big Core Clock",
+   "kind": "label",
+   "note": "in-game menu setting: the big processor core's speed in MHz"
+  },
+  {
+   "en": "Integer Scale",
+   "kind": "label",
+   "note": "in-game menu setting: scale the picture by whole numbers only"
+  },
+  {
+   "en": "Filter Alignment",
+   "kind": "label",
+   "note": "in-game menu setting: whether the LCD filter's lines follow the game's pixels or the screen's"
+  },
+  {
+   "en": "Custom Width",
+   "kind": "label",
+   "note": "in-game menu setting: first number of a custom aspect ratio"
+  },
+  {
+   "en": "Custom Height",
+   "kind": "label",
+   "note": "in-game menu setting: second number of a custom aspect ratio"
+  },
+  {
+   "en": "Not available",
+   "kind": "value",
+   "note": "in-game menu value: the setting cannot be used on this console"
+  },
+  {
+   "en": "Overscale",
+   "kind": "value",
+   "note": "in-game menu value: the next whole scale up, edges cut off"
+  },
+  {
+   "en": "Game Pixels",
+   "kind": "value",
+   "note": "in-game menu value: the filter follows the game's pixels"
+  },
+  {
+   "en": "Screen Pixels",
+   "kind": "value",
+   "note": "in-game menu value: the filter follows the screen's pixels"
+  },
+  {
+   "en": "Custom",
+   "kind": "value",
+   "note": "in-game menu value: a custom aspect ratio"
+  },
+  {
+   "en": "Needs the multi-core firmware patch",
+   "kind": "status",
+   "note": "short note shown after an action in the in-game menu"
   }
  ]
 }

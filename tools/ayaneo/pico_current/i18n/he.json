@@ -427,5 +427,17 @@
  "The other console cancelled.": "הקונסולה השנייה ביטלה.",
  "The other console did not answer.": "הקונסולה השנייה לא ענתה.",
  "The session could not start.": "לא ניתן היה להתחיל את ההפעלה.",
- "The other console left.": "הקונסולה השנייה עזבה."
+ "The other console left.": "הקונסולה השנייה עזבה.",
+ "Big Core": "ליבה גדולה",
+ "Big Core Clock": "תדר ליבה גדולה",
+ "Integer Scale": "קנה מידה שלם",
+ "Filter Alignment": "יישור המסנן",
+ "Custom Width": "רוחב מותאם",
+ "Custom Height": "גובה מותאם",
+ "Not available": "לא זמין",
+ "Overscale": "הגדלת יתר",
+ "Game Pixels": "פיקסלי המשחק",
+ "Screen Pixels": "פיקסלי המסך",
+ "Custom": "מותאם אישית",
+ "Needs the multi-core firmware patch": "נדרש טלאי קושחה מרובה ליבות"
 }

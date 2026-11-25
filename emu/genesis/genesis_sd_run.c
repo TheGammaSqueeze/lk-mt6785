@@ -14,6 +14,7 @@
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
 #include "../gba/pico_bigrun.h"
+#include "../gba/pico_scale.h"
 #include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
 #include "../gba/pico_input.h"    /* the player's button map, the hotkeys */
 #include "../gba/pico_coreopt.h"
@@ -323,7 +324,7 @@ static void gen_run(const struct genesis_core_exports *c, struct genesis_frame *
 	pico_bigrun_test_frame(t0, fr->audio, fr->frames * 4u);
 }
 
-enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_REWIND, GM_CPU, GM_REFRESH, GM_STROBE, GM_SHOWFPS, GM_CORE, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_FFCAP, GM_BIGCORE, GM_BIGMHZ, GM_COUNT };
+enum { GM_BRIGHT, GM_VOLUME, GM_ASPECT, GM_FILTER, GM_REGION, GM_RUNAHEAD, GM_REWIND, GM_CPU, GM_REFRESH, GM_STROBE, GM_SHOWFPS, GM_CORE, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_EXIT, GM_FFCAP, GM_BIGCORE, GM_BIGMHZ, GM_SCALE0, GM_SCALE1, GM_SCALE2, GM_SCALE3, GM_COUNT };
 /* Overdrive is On/Off: On applies the tuned halo-free profile (ayaneo_set_overdrive_level). The exact
  * kup/kdn/thr/cap are still pokeable live via `oem od:` for tuning. */
 #define OD_MENU_MAX 1
@@ -338,8 +339,9 @@ static int gen_aspect_step(int a, int dir)
 	int i, n = (int)sizeof gen_aspect_order;
 	for (i = 0; i < n; i++) if (gen_aspect_order[i] == a) break;
 	if (i >= n) i = 0;
-	i = (i + dir + n) % n;
-	return gen_aspect_order[i];
+	/* the shared ratios follow the system's own (which has 4:3 and 16:9 already) */
+	i = pico_scale_aspect_step(PICO_SCALE_GENESIS, dir, i, n, (1u << PICO_RATIO_4_3) | (1u << PICO_RATIO_16_9));
+	return i < 0 ? a : gen_aspect_order[i];
 }
 static const char *gen_filter_name(int f) { return f == 5 ? "LCD3x" : f == 4 ? "LCD1x" : f == 3 ? "Grid+" : f == 2 ? "Grid" : f == 1 ? "Scanlines" : "Off"; }
 static const char *gen_ra_name(int pf) { return pf == 3 ? "Max" : pf == 2 ? "Responsive" : pf == 1 ? "Balanced" : "Off"; }
@@ -388,6 +390,7 @@ static const char *gm_label(int i) { switch (i) {
 	case GM_SHOWFPS: return "Show FPS"; case GM_BATTERY: return "Battery";
 	case GM_CORE: return "Core Settings";
 	case GM_SLOT: return "Save Slot"; case GM_SAVE: return "Save State"; case GM_LOAD: return "Load State";
+	case GM_SCALE0: case GM_SCALE1: case GM_SCALE2: case GM_SCALE3: return pico_scale_row_label(i - GM_SCALE0);
 	case GM_BIGCORE: return pico_bigrun_row_label(PICO_BIG_ROW_ON); case GM_BIGMHZ: return pico_bigrun_row_label(PICO_BIG_ROW_CLOCK);
 	case GM_RESET: return "Reset Game"; case GM_EXIT: return "Exit Game"; } return ""; }
 
@@ -395,7 +398,9 @@ static const char *gm_value(int i, char *buf) { char *p = buf;
 	switch (i) {
 	case GM_BRIGHT: p = mputu(p, (unsigned)ayaneo_brightness_pct()); p = mput(p, "%"); break;
 	case GM_VOLUME: p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
-	case GM_ASPECT: p = mput(p, gen_aspect_name(g_genesis_aspect)); break;
+	case GM_ASPECT: { const char *x = pico_scale_aspect_name(PICO_SCALE_GENESIS); p = mput(p, x ? x : gen_aspect_name(g_genesis_aspect)); break; }
+	case GM_SCALE0: case GM_SCALE1: case GM_SCALE2: case GM_SCALE3:
+		p = pico_scale_row_value(PICO_SCALE_GENESIS, i - GM_SCALE0, p); break;
 	case GM_FILTER: p = mput(p, gen_filter_name(g_genesis_filter)); break;
 	case GM_REGION: p = mput(p, gen_region_name(s_gen_region)); break;
 	case GM_REFRESH: { unsigned mhz = ayaneo_dsi_core_refresh_milli();   /* read-only: XX.X Hz per frame */
@@ -473,6 +478,12 @@ static int gm_change(int i, int dir, int act)
 		ayaneo_set_preempt_frames(pf); genesis_apply_clock(); s_cpu_idx = -1;
 		genesis_settings_touch(); } break;   /* persist run-ahead (shared preempt-frames blob) */
 	case GM_CPU:    if (dir) { genesis_cpu_step(dir); genesis_settings_touch(); } break;   /* persisted per core */
+	case GM_SCALE0: case GM_SCALE1: case GM_SCALE2: case GM_SCALE3:
+		if (pico_scale_row_change(PICO_SCALE_GENESIS, i - GM_SCALE0, dir)) {
+			if (i == GM_SCALE1) genesis_apply_clock();   /* a filter on the screen's pixels costs more */
+			genesis_settings_touch();
+		}
+		break;
 	case GM_BIGCORE: case GM_BIGMHZ: { const char *note = 0;
 		if (pico_bigrun_row_change(PICO_BIG_GENESIS, i == GM_BIGCORE ? PICO_BIG_ROW_ON : PICO_BIG_ROW_CLOCK, dir, act, &note))
 			genesis_settings_touch();
@@ -517,7 +528,14 @@ static const struct igm_row k_gen_igm_rows[] = {
 	{ IGM_PLAY, IGM_TOP, IGM_LINK }, { IGM_SYSTEM, IGM_TOP, IGM_LINK },
 	{ GM_RESET, IGM_TOP, IGM_ACTION }, { GM_EXIT, IGM_TOP, IGM_ACTION },
 	{ GM_BRIGHT, IGM_DISPLAY, IGM_VALUE }, { GM_ASPECT, IGM_DISPLAY, IGM_VALUE },
-	{ GM_FILTER, IGM_DISPLAY, IGM_VALUE }, { GM_STROBE, IGM_DISPLAY, IGM_VALUE },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ GM_SCALE0, IGM_DISPLAY, IGM_VALUE }, { GM_SCALE2, IGM_DISPLAY, IGM_VALUE }, { GM_SCALE3, IGM_DISPLAY, IGM_VALUE },
+#endif
+	{ GM_FILTER, IGM_DISPLAY, IGM_VALUE },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ GM_SCALE1, IGM_DISPLAY, IGM_VALUE },
+#endif
+	{ GM_STROBE, IGM_DISPLAY, IGM_VALUE },
 	{ GM_SHOWFPS, IGM_DISPLAY, IGM_VALUE },
 	{ GM_VOLUME, IGM_SOUND, IGM_VALUE },
 	{ GM_CPU, IGM_PLAY, IGM_VALUE }, { GM_RUNAHEAD, IGM_PLAY, IGM_VALUE }, { GM_REWIND, IGM_PLAY, IGM_VALUE },
@@ -739,6 +757,7 @@ static void genesis_session_body(fat_vol *vol, const gba_rom_entry *rom)
 	 * last picks instead of defaults. Run-ahead uses the shared preempt-frames; volume/brightness the
 	 * shared blob. Region is pushed to the core here (before the launch frames run). */
 	g_genesis_aspect = ayaneo_get_gen_aspect();
+	{ extern volatile int g_genesis_scale_sys; g_genesis_scale_sys = 3; }   /* whose scaling options the display path reads */
 	g_genesis_filter = ayaneo_get_gen_filter();
 	s_gen_region     = ayaneo_get_gen_region();
 	s_save_slot      = ayaneo_get_gen_slot();

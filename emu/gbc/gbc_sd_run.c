@@ -20,6 +20,7 @@
 #include "../gba/sd_fat.h"
 #include "../gba/pico_igm.h"
 #include "../gba/pico_bigrun.h"
+#include "../gba/pico_scale.h"
 #include "../gba/pico_cheats.h"   /* the game's cheats, the Cheats page */
 #include "../gba/pico_input.h"    /* the player's button map, the hotkeys */
 #include "../gba/pico_link_ui.h"  /* the in-game menu's Netplay page */
@@ -447,7 +448,7 @@ static long gbc_run(const struct gbc_core_exports *c, unsigned short *video, int
 }
 
 enum { GM_BRIGHT, GM_VOLUME, GM_FILTER, GM_ASPECT, GM_PALETTE, GM_COLORCC, GM_CCMODE, GM_DARK,
-       GM_PREEMPT, GM_REWIND, GM_CPU, GM_BFI, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_FFCAP, GM_BIGCORE, GM_BIGMHZ, GM_COUNT };
+       GM_PREEMPT, GM_REWIND, GM_CPU, GM_BFI, GM_SHOWFPS, GM_BATTERY, GM_RESUME, GM_SLOT, GM_SAVE, GM_LOAD, GM_RESET, GM_CLOSE, GM_FFCAP, GM_BIGCORE, GM_BIGMHZ, GM_SCALE0, GM_SCALE1, GM_SCALE2, GM_SCALE3, GM_COUNT };
 
 /* Display aspect (0=Pixel integer, 1=Fit native-aspect fill, 2=Stretch full panel). Read by
  * ayaneo_gb_show_frame (mt_disp_drv.c); session-scoped, defaults to Pixel = current behaviour. */
@@ -493,6 +494,7 @@ static const char *gm_label(int i)
 	case GM_REWIND:  return "Rewind";
 	case GM_FFCAP:   return "Fast Forward Speed";
 	case GM_CPU:     return "CPU Clock";
+	case GM_SCALE0: case GM_SCALE1: case GM_SCALE2: case GM_SCALE3: return pico_scale_row_label(i - GM_SCALE0);
 	case GM_BIGCORE: return pico_bigrun_row_label(PICO_BIG_ROW_ON);
 	case GM_BIGMHZ:  return pico_bigrun_row_label(PICO_BIG_ROW_CLOCK);
 	case GM_BFI:     return "BFI";
@@ -515,7 +517,10 @@ static const char *gm_value(int i, char *buf)
 	case GM_BRIGHT:  p = mputu(p, (unsigned)ayaneo_brightness_pct()); p = mput(p, "%"); break;
 	case GM_VOLUME:  p = mputu(p, (unsigned)ayaneo_gbc_audio_get_volume()); p = mput(p, "%"); break;
 	case GM_FILTER:  p = mput(p, filt_name(ayaneo_get_lcd_filter_core(2))); break;
-	case GM_ASPECT:  p = mput(p, g_gbc_aspect == 2 ? "Stretch" : g_gbc_aspect == 1 ? "Fit" : "Pixel Perfect"); break;
+	case GM_ASPECT:  { const char *x = pico_scale_aspect_name(PICO_SCALE_GBC);
+			   p = mput(p, x ? x : g_gbc_aspect == 2 ? "Stretch" : g_gbc_aspect == 1 ? "Fit" : "Pixel Perfect"); break; }
+	case GM_SCALE0: case GM_SCALE1: case GM_SCALE2: case GM_SCALE3:
+		p = pico_scale_row_value(PICO_SCALE_GBC, i - GM_SCALE0, p); break;
 	case GM_PALETTE: if (s_menu_is_dmg && s_menu_c) {
 				 int sel = s_menu_pal ? *s_menu_pal : 0;
 				 if (sel == 0) {   /* Auto: name the detected per-game palette, else plain */
@@ -562,7 +567,15 @@ static int gm_change(int i, int dir, int act)
 	case GM_BRIGHT:  if (dir) ayaneo_brightness_step(dir); else changed = 0; break;
 	case GM_VOLUME:  if (dir) ayaneo_gbc_audio_set_volume(ayaneo_gbc_audio_get_volume() + dir * 5); else changed = 0; break;
 	case GM_FILTER:  if (dir) { ayaneo_set_lcd_filter_core(2, (ayaneo_get_lcd_filter_core(2) + dir + 6) % 6); gbc_apply_clock(); } else changed = 0; break;
-	case GM_ASPECT:  if (dir) g_gbc_aspect = (g_gbc_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
+	case GM_ASPECT:  if (dir) {   /* persist; Fit is the Game Boy's own 10:9 */
+				 int k = pico_scale_aspect_step(PICO_SCALE_GBC, dir, g_gbc_aspect, 3, 1u << PICO_RATIO_10_9);
+				 if (k >= 0) g_gbc_aspect = k;
+			 } else changed = 0;
+			 break;
+	case GM_SCALE0: case GM_SCALE1: case GM_SCALE2: case GM_SCALE3:
+		changed = pico_scale_row_change(PICO_SCALE_GBC, i - GM_SCALE0, dir);
+		if (changed && i == GM_SCALE1) gbc_apply_clock();
+		break;
 	case GM_PALETTE: if (s_menu_is_dmg && s_menu_pal) {
 				 if (act == 1) {   /* A = open the full palette list picker */
 					 s_pal_pick_saved = *s_menu_pal;
@@ -647,7 +660,14 @@ static const struct igm_row k_gbc_igm_rows[] = {
 	{ IGM_PLAY, IGM_TOP, IGM_LINK }, { IGM_SYSTEM, IGM_TOP, IGM_LINK },
 	{ GM_RESET, IGM_TOP, IGM_ACTION }, { GM_CLOSE, IGM_TOP, IGM_ACTION },
 	{ GM_BRIGHT, IGM_DISPLAY, IGM_VALUE }, { GM_FILTER, IGM_DISPLAY, IGM_VALUE },
-	{ GM_ASPECT, IGM_DISPLAY, IGM_VALUE }, { GM_PALETTE, IGM_DISPLAY, IGM_VALUE },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ GM_SCALE1, IGM_DISPLAY, IGM_VALUE },
+#endif
+	{ GM_ASPECT, IGM_DISPLAY, IGM_VALUE },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ GM_SCALE0, IGM_DISPLAY, IGM_VALUE }, { GM_SCALE2, IGM_DISPLAY, IGM_VALUE }, { GM_SCALE3, IGM_DISPLAY, IGM_VALUE },
+#endif
+	{ GM_PALETTE, IGM_DISPLAY, IGM_VALUE },
 	{ GM_COLORCC, IGM_DISPLAY, IGM_VALUE }, { GM_CCMODE, IGM_DISPLAY, IGM_VALUE },
 	{ GM_DARK, IGM_DISPLAY, IGM_VALUE }, { GM_BFI, IGM_DISPLAY, IGM_VALUE },
 	{ GM_SHOWFPS, IGM_DISPLAY, IGM_VALUE },

@@ -419,5 +419,17 @@
  "The other console cancelled.": "另一台主机已取消。",
  "The other console did not answer.": "另一台主机没有回应。",
  "The session could not start.": "无法开始联机。",
- "The other console left.": "另一台主机已退出。"
+ "The other console left.": "另一台主机已退出。",
+ "Big Core": "大核",
+ "Big Core Clock": "大核频率",
+ "Integer Scale": "像素完美比率",
+ "Filter Alignment": "滤镜对准",
+ "Custom Width": "自定宽度",
+ "Custom Height": "自定高度",
+ "Not available": "不可用",
+ "Overscale": "加大裁剪",
+ "Game Pixels": "游戏像素",
+ "Screen Pixels": "屏幕像素",
+ "Custom": "自定",
+ "Needs the multi-core firmware patch": "需要支持大核的系统软件"
 }

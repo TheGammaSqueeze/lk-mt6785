@@ -864,6 +864,7 @@ static void gba_disable_align_faults(void)
  * core instead of on the CPU thread, as the guest's loop: it hands each frame over at its vblank
  * (gba_yield_to_main) and the frontend asks for the next. */
 #include "pico_bigrun.h"
+#include "pico_scale.h"
 #include "../../platform/common/pico/pico_smp.h"
 static volatile int s_smp_on;         /* this game's CPU loop is on the big core */
 static volatile int s_smp_abort;      /* the guest died in this game: the game closes without a resume state */
@@ -1789,7 +1790,7 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 #endif
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_RESUME, MI_BOOTROW, MI_SKIPINTRO,
-	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_REWIND, MI_BENCH, MI_SHOWFPS, MI_LATLED, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_FFCAP, MI_BIGCORE, MI_BIGMHZ, MI_COUNT
+	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_REWIND, MI_BENCH, MI_SHOWFPS, MI_LATLED, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_FFCAP, MI_BIGCORE, MI_BIGMHZ, MI_SCALE0, MI_SCALE1, MI_SCALE2, MI_SCALE3, MI_COUNT
 };
 #define GBA_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -1843,7 +1844,10 @@ static const char *menu_value(int item, char *buf)
 	case MI_SKIPBOOT: p = mi_puts(p, ayaneo_get_skip_boot() ? "On" : "Off"); break;
 #endif
 	case MI_SKIPINTRO: p = mi_puts(p, ayaneo_get_skip_gba_intro() ? "On" : "Off"); break;
-	case MI_ASPECT:    p = mi_puts(p, g_gba_aspect == 2 ? "Stretch" : g_gba_aspect == 1 ? "Fit" : "Pixel Perfect"); break;
+	case MI_ASPECT:    { const char *x = pico_scale_aspect_name(PICO_SCALE_GBA);
+			     p = mi_puts(p, x ? x : g_gba_aspect == 2 ? "Stretch" : g_gba_aspect == 1 ? "Fit" : "Pixel Perfect"); break; }
+	case MI_SCALE0: case MI_SCALE1: case MI_SCALE2: case MI_SCALE3:
+		p = pico_scale_row_value(PICO_SCALE_GBA, item - MI_SCALE0, p); break;
 	case MI_SLOT:      p = mi_putu(p, (unsigned)s_gba_slot); break;
 	case MI_LOADSTATE:
 	case MI_SAVESTATE:
@@ -1927,6 +1931,7 @@ static const char *menu_label(int item)
 	case MI_SAVESTATE: return "Save State";
 	case MI_BATTERY:   return "Battery";
 	case MI_CPU:       return "CPU Clock";
+	case MI_SCALE0: case MI_SCALE1: case MI_SCALE2: case MI_SCALE3: return pico_scale_row_label(item - MI_SCALE0);
 	case MI_BIGCORE:   return "Big Core";
 	case MI_BIGMHZ:    return "Big Core Clock";
 	case MI_PANEL:     return "Panel Refresh";
@@ -2009,7 +2014,15 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 			mi_puts(status, "gpSP has no core settings");
 		}
 		break;
-	case MI_ASPECT:   if (dir) g_gba_aspect = (g_gba_aspect + dir + 3) % 3; else changed = 0; break;   /* persist */
+	case MI_ASPECT:   if (dir) {   /* persist; Fit is the GBA's own 3:2 */
+				  int k = pico_scale_aspect_step(PICO_SCALE_GBA, dir, g_gba_aspect, 3, 1u << PICO_RATIO_3_2);
+				  if (k >= 0) g_gba_aspect = k;
+			  } else changed = 0;
+			  break;
+	case MI_SCALE0: case MI_SCALE1: case MI_SCALE2: case MI_SCALE3:
+		changed = pico_scale_row_change(PICO_SCALE_GBA, item - MI_SCALE0, dir);
+		if (changed && item == MI_SCALE1) preempt_apply_cpu(ayaneo_get_preempt_frames());   /* a filter on the screen's pixels costs more */
+		break;
 	case MI_SLOT:     if (dir) s_gba_slot = (s_gba_slot + dir + GBA_SLOT_COUNT) % GBA_SLOT_COUNT; changed = 0; break;
 	case MI_LOADSTATE: if (act && s_gba_np) { mi_puts(status, "Not during netplay"); }
 			   else if (act && ra_hardcore_now()) { mi_puts(status, "Load state is off in hardcore"); } else if (act) { int ok = manual_state_read(state); if (ok) { gba_rewind_arm(); if (!STATES_ON_CARD()) { extern void pico_ra_state_loaded(void) __attribute__((weak)); if (pico_ra_state_loaded) pico_ra_state_loaded(); } } mi_puts(status, ok ? "State loaded" : "No save state"); } changed = 0; break;
@@ -2128,7 +2141,14 @@ static const struct igm_row k_gba_igm_rows[] = {
 	{ IGM_PLAY, IGM_TOP, IGM_LINK }, { IGM_SYSTEM, IGM_TOP, IGM_LINK },
 	{ MI_RESET, IGM_TOP, IGM_ACTION }, { MI_CLOSE, IGM_TOP, IGM_ACTION },
 	{ MI_BRIGHT, IGM_DISPLAY, IGM_VALUE }, { MI_FILTER, IGM_DISPLAY, IGM_VALUE },
-	{ MI_ASPECT, IGM_DISPLAY, IGM_VALUE }, { MI_COLORCORRECT, IGM_DISPLAY, IGM_VALUE },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ MI_SCALE1, IGM_DISPLAY, IGM_VALUE },
+#endif
+	{ MI_ASPECT, IGM_DISPLAY, IGM_VALUE },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ MI_SCALE0, IGM_DISPLAY, IGM_VALUE }, { MI_SCALE2, IGM_DISPLAY, IGM_VALUE }, { MI_SCALE3, IGM_DISPLAY, IGM_VALUE },
+#endif
+	{ MI_COLORCORRECT, IGM_DISPLAY, IGM_VALUE },
 	{ MI_STROBE, IGM_DISPLAY, IGM_VALUE }, { MI_SHOWFPS, IGM_DISPLAY, IGM_VALUE },
 	{ MI_VOLUME, IGM_SOUND, IGM_VALUE },
 	{ MI_CPU, IGM_PLAY, IGM_VALUE }, { MI_PREEMPT, IGM_PLAY, IGM_VALUE }, { MI_REWIND, IGM_PLAY, IGM_VALUE },

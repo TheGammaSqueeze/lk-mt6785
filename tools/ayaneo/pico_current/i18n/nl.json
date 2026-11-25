@@ -425,5 +425,17 @@
  "The other console cancelled.": "De andere console heeft geannuleerd.",
  "The other console did not answer.": "De andere console reageerde niet.",
  "The session could not start.": "De sessie kon niet starten.",
- "The other console left.": "De andere console is vertrokken."
+ "The other console left.": "De andere console is vertrokken.",
+ "Big Core": "Grote core",
+ "Big Core Clock": "Klok grote core",
+ "Integer Scale": "Gehele schaal",
+ "Filter Alignment": "Filteruitlijning",
+ "Custom Width": "Aangepaste breedte",
+ "Custom Height": "Aangepaste hoogte",
+ "Not available": "Niet beschikbaar",
+ "Overscale": "Overschalen",
+ "Game Pixels": "Gamepixels",
+ "Screen Pixels": "Schermpixels",
+ "Custom": "Aangepast",
+ "Needs the multi-core firmware patch": "Vereist de multi-core firmwarepatch"
 }

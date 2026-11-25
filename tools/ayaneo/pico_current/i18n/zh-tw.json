@@ -419,5 +419,17 @@
  "The other console cancelled.": "另一台主機已取消。",
  "The other console did not answer.": "另一台主機沒有回應。",
  "The session could not start.": "無法開始連線。",
- "The other console left.": "另一台主機已離開。"
+ "The other console left.": "另一台主機已離開。",
+ "Big Core": "大核心",
+ "Big Core Clock": "大核心時脈",
+ "Integer Scale": "整數比率",
+ "Filter Alignment": "濾鏡對準",
+ "Custom Width": "自定寬度",
+ "Custom Height": "自定高度",
+ "Not available": "無法使用",
+ "Overscale": "加大裁切",
+ "Game Pixels": "遊戲像素",
+ "Screen Pixels": "畫面像素",
+ "Custom": "自定",
+ "Needs the multi-core firmware patch": "需要支援大核心的系統軟體"
 }

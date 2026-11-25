@@ -1874,6 +1874,41 @@ static void cmd_shot(const char *arg, void *data, unsigned sz)
 #define SHOT_STAGE_PA  0x55E00000u   /* 2 MB free on the Konkr (the active tiles moved to 0x54470000) */
 #define SHOT_STAGE_MAX 0x1F0000u
 static unsigned s_stage_len;
+/* oem view: the game picture's place as last computed (the part of the frame shown, the size it is
+ * shown at, the system) and what the present took. oem view:SYS,RATIO,WHOLE,ONSCREEN,CW,CH,FILTER sets
+ * a system's scaling options for this run only (nothing is written to the card unless a menu saves
+ * the settings afterwards): SYS 0 GBA, 1 GB, 2 SNES, 3 Genesis, 4 NES; RATIO 0 the system's own,
+ * 1.. the shared ratios; WHOLE 0 off, 1 on, 2 overscale; FILTER 0 the setting, 1 off, 2.. the filters. */
+static void cmd_view(const char *arg, void *data, unsigned sz)
+{
+	extern volatile int g_dbg_view[8], g_dbg_filt_ovr;
+	extern volatile unsigned g_dbg_show_parts[6], g_rsz_show_us;
+	extern int ayaneo_scale_ratio(int sys), ayaneo_scale_whole(int sys), ayaneo_scale_onscreen(int sys);
+	extern void ayaneo_scale_custom(int sys, unsigned *w, unsigned *h);
+	extern void ayaneo_scale_set_ratio(int sys, int v), ayaneo_scale_set_whole(int sys, int v), ayaneo_scale_set_onscreen(int sys, int v);
+	extern void ayaneo_scale_set_custom(int sys, unsigned w, unsigned h);
+	char b[64];
+	unsigned w, h;
+	int sys;
+	(void)data; (void)sz;
+	while (*arg == ' ' || *arg == ':') arg++;
+	if (*arg) {
+		unsigned sy = fb_dec(&arg), ra = fb_dec(&arg), wh = fb_dec(&arg), on = fb_dec(&arg), cw = fb_dec(&arg), ch = fb_dec(&arg), fo = fb_dec(&arg);
+		ayaneo_scale_set_ratio((int)sy, (int)ra); ayaneo_scale_set_whole((int)sy, (int)wh); ayaneo_scale_set_onscreen((int)sy, (int)on);
+		if (cw && ch) ayaneo_scale_set_custom((int)sy, cw, ch);
+		g_dbg_filt_ovr = (int)fo - 1;
+	}
+	sys = g_dbg_view[7];
+	ayaneo_scale_custom(sys, &w, &h);
+	snprintf(b, sizeof b, "view sys %d crop %d,%d %dx%d size %dx%d", sys, g_dbg_view[0], g_dbg_view[1], g_dbg_view[2], g_dbg_view[3], g_dbg_view[4], g_dbg_view[5]);
+	fastboot_info(b);
+	snprintf(b, sizeof b, "opts ratio %d whole %d onscreen %d custom %u:%u", ayaneo_scale_ratio(sys), ayaneo_scale_whole(sys), ayaneo_scale_onscreen(sys), w, h);
+	fastboot_info(b);
+	snprintf(b, sizeof b, "present %u us (draw %u)", g_rsz_show_us, g_dbg_show_parts[2]);
+	fastboot_info(b);
+	fastboot_okay("");
+}
+
 static void cmd_shotstage(const char *arg, void *data, unsigned sz)
 {
 	extern int ayaneo_shot_source(unsigned int *pa, unsigned int *w, unsigned int *h, unsigned int *pitch_px);
@@ -3661,6 +3696,7 @@ void gba_menu_fastboot_register(void)
 	fastboot_register("oem mmuq:", cmd_mmuq, 1, 0);
 	fastboot_register("oem dr:", cmd_dr, 1, 0);
 #endif
+	fastboot_register("oem view", cmd_view, 1, 0);
 	fastboot_register("oem shotstage", cmd_shotstage, 1, 0);   /* pack the frame for `upload` */
 	fastboot_register("upload", cmd_upload, 1, 0);              /* fastboot get_staged <file> */
 	fastboot_register("oem upstat", cmd_upstat, 1, 0);          /* dump the displayed frame (game buffer or fb), /step */

@@ -419,5 +419,17 @@
  "The other console cancelled.": "상대 기기가 취소했습니다.",
  "The other console did not answer.": "상대 기기의 반응이 없습니다.",
  "The session could not start.": "연결을 시작할 수 없습니다.",
- "The other console left.": "상대 기기가 연결을 종료했습니다."
+ "The other console left.": "상대 기기가 연결을 종료했습니다.",
+ "Big Core": "빅 코어",
+ "Big Core Clock": "빅 코어 클럭",
+ "Integer Scale": "정수 배율",
+ "Filter Alignment": "필터 정렬",
+ "Custom Width": "사용자 가로",
+ "Custom Height": "사용자 세로",
+ "Not available": "사용 불가",
+ "Overscale": "초과 확대",
+ "Game Pixels": "게임 픽셀",
+ "Screen Pixels": "화면 픽셀",
+ "Custom": "사용자 지정",
+ "Needs the multi-core firmware patch": "다중 코어 시스템 패치가 필요합니다"
 }

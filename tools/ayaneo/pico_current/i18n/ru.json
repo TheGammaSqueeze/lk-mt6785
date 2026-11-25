@@ -427,5 +427,17 @@
  "The other console cancelled.": "Другая консоль отменила.",
  "The other console did not answer.": "Другая консоль не ответила.",
  "The session could not start.": "Не удалось начать сеанс.",
- "The other console left.": "Другая консоль вышла."
+ "The other console left.": "Другая консоль вышла.",
+ "Big Core": "Большое ядро",
+ "Big Core Clock": "Частота большого ядра",
+ "Integer Scale": "Целый масштаб",
+ "Filter Alignment": "Привязка фильтра",
+ "Custom Width": "Своя ширина",
+ "Custom Height": "Своя высота",
+ "Not available": "Недоступно",
+ "Overscale": "Сверхмасштаб",
+ "Game Pixels": "Пиксели игры",
+ "Screen Pixels": "Пиксели экрана",
+ "Custom": "Свой",
+ "Needs the multi-core firmware patch": "Нужен патч прошивки для многоядерности"
 }

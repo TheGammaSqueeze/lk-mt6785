@@ -419,5 +419,17 @@
  "The other console cancelled.": "Diğer konsol iptal etti.",
  "The other console did not answer.": "Diğer konsol yanıt vermedi.",
  "The session could not start.": "Oturum başlatılamadı.",
- "The other console left.": "Diğer konsol ayrıldı."
+ "The other console left.": "Diğer konsol ayrıldı.",
+ "Big Core": "Büyük çekirdek",
+ "Big Core Clock": "Büyük çekirdek hızı",
+ "Integer Scale": "Tam sayı ölçek",
+ "Filter Alignment": "Filtre hizalama",
+ "Custom Width": "Özel genişlik",
+ "Custom Height": "Özel yükseklik",
+ "Not available": "Kullanılamıyor",
+ "Overscale": "Aşırı ölçek",
+ "Game Pixels": "Oyun pikselleri",
+ "Screen Pixels": "Ekran pikselleri",
+ "Custom": "Özel",
+ "Needs the multi-core firmware patch": "Çok çekirdekli firmware yaması gerekir"
 }

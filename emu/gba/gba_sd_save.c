@@ -223,7 +223,7 @@ extern void ayaneo_settings_deserialize(const unsigned char *b, int len);
 
 int gba_sd_settings_load(fat_vol *v)
 {
-	unsigned char b[256];   /* the block is 196 bytes; a card from before Big Core has 192 */
+	unsigned char b[256];   /* the block is 216 bytes; a card from an older build has 192 or 196 */
 	fat_file f;
 	uint32_t n;
 	if (fat_open(v, "/gammaos/settings.bin", &f) != 0 && fat_open(v, "/gba/settings.bin", &f) != 0)

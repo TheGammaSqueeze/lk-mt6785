@@ -425,5 +425,17 @@
  "The other console cancelled.": "کنسول دیگر لغو کرد.",
  "The other console did not answer.": "کنسول دیگر پاسخ نداد.",
  "The session could not start.": "جلسه شروع نشد.",
- "The other console left.": "کنسول دیگر خارج شد."
+ "The other console left.": "کنسول دیگر خارج شد.",
+ "Big Core": "هسته بزرگ",
+ "Big Core Clock": "فرکانس هسته بزرگ",
+ "Integer Scale": "مقیاس صحیح",
+ "Filter Alignment": "تراز فیلتر",
+ "Custom Width": "عرض سفارشی",
+ "Custom Height": "ارتفاع سفارشی",
+ "Not available": "در دسترس نیست",
+ "Overscale": "مقیاس بیشتر",
+ "Game Pixels": "پیکسل های بازی",
+ "Screen Pixels": "پیکسل های صفحه",
+ "Custom": "سفارشی",
+ "Needs the multi-core firmware patch": "به وصله فریمور چند هسته ای نیاز دارد"
 }

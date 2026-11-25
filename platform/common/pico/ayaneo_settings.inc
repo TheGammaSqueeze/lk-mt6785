@@ -214,9 +214,50 @@ void ayaneo_set_bigcore(int sys, int on)
 }
 unsigned ayaneo_get_bigcore_mhz(void)     { return (unsigned)s_bigcore_mhz10 * 10u; }
 void ayaneo_set_bigcore_mhz(unsigned mhz) { s_bigcore_mhz10 = (unsigned char)(mhz / 10u > 255u ? 255u : mhz / 10u); }
-/* the settings block's length: 192 bytes up to the fast forward cap, then Big Core's two and two
- * spare. A card written before has 192; a build from before reads the first 192 of a longer one. */
-#define AYANEO_SET_LEN 196
+/* Picture scaling per system (emu/gba/pico_scale.h; the systems in Big Core's order): an aspect
+ * ratio beyond the system's own choices (0 = its own Aspect Ratio choice stands), whole number
+ * scaling (0 off, 1 on, 2 the next whole scale up with the edges cut), the LCD filter's lines laid
+ * on the screen's pixels instead of the game's, and the custom ratio's two numbers. */
+static struct { unsigned char ratio, whole, onscreen, cw, ch; } s_scale[5];
+static int scale_sys_ok(int sys) { return sys >= 0 && sys < 5; }
+int  ayaneo_scale_ratio(int sys)        { return scale_sys_ok(sys) ? s_scale[sys].ratio : 0; }
+int  ayaneo_scale_whole(int sys)        { return scale_sys_ok(sys) ? s_scale[sys].whole : 0; }
+int  ayaneo_scale_onscreen(int sys)     { return scale_sys_ok(sys) ? s_scale[sys].onscreen : 0; }
+void ayaneo_scale_custom(int sys, unsigned *w, unsigned *h)
+{
+	unsigned cw = scale_sys_ok(sys) ? s_scale[sys].cw : 0, ch = scale_sys_ok(sys) ? s_scale[sys].ch : 0;
+	*w = cw ? cw : 4u; *h = ch ? ch : 3u;   /* never set: 4:3 */
+}
+void ayaneo_scale_set_ratio(int sys, int v)    { if (scale_sys_ok(sys)) s_scale[sys].ratio = (unsigned char)(v < 0 || v > 9 ? 0 : v); }
+void ayaneo_scale_set_whole(int sys, int v)    { if (scale_sys_ok(sys)) s_scale[sys].whole = (unsigned char)(v < 0 || v > 2 ? 0 : v); }
+void ayaneo_scale_set_onscreen(int sys, int v) { if (scale_sys_ok(sys)) s_scale[sys].onscreen = v ? 1 : 0; }
+void ayaneo_scale_set_custom(int sys, unsigned w, unsigned h)
+{
+	if (!scale_sys_ok(sys)) return;
+	s_scale[sys].cw = (unsigned char)(w < 1u ? 1u : w > 99u ? 99u : w);
+	s_scale[sys].ch = (unsigned char)(h < 1u ? 1u : h > 99u ? 99u : h);
+}
+/* the shared ratios by their number (emu/gba/pico_scale.h); Custom's two numbers are the system's */
+static const struct { const char *name; unsigned char w, h; } s_scale_ratio[] = {
+	{ "", 0, 0 }, { "4:3", 4, 3 }, { "3:2", 3, 2 }, { "16:9", 16, 9 }, { "16:10", 16, 10 }, { "5:4", 5, 4 },
+	{ "8:7", 8, 7 }, { "10:9", 10, 9 }, { "1:1", 1, 1 }, { "Custom", 0, 0 },
+};
+#define SCALE_RATIO_N ((int)(sizeof s_scale_ratio / sizeof s_scale_ratio[0]))
+const char *ayaneo_scale_ratio_name(int r) { return r > 0 && r < SCALE_RATIO_N ? s_scale_ratio[r].name : ""; }
+/* the system's shared ratio as width * 1000 / height, 0 while its own choice stands */
+unsigned ayaneo_scale_ratio_x1000(int sys)
+{
+	int r = ayaneo_scale_ratio(sys);
+	unsigned w, h;
+	if (r <= 0 || r >= SCALE_RATIO_N) return 0;
+	if (s_scale_ratio[r].w) { w = s_scale_ratio[r].w; h = s_scale_ratio[r].h; }
+	else ayaneo_scale_custom(sys, &w, &h);
+	return w * 1000u / h;
+}
+/* the settings block's length: 192 bytes up to the fast forward cap, Big Core's two and two spare,
+ * then four per system for the picture scaling. A card written before is shorter and keeps the
+ * defaults for what it lacks; a build from before reads the part of a longer one it knows. */
+#define AYANEO_SET_LEN 216
 static void resume_fields_write(unsigned char *b)
 {
 	unsigned i;
@@ -238,6 +279,12 @@ static void resume_fields_write(unsigned char *b)
 	b[191] = (unsigned char)(0x80u | (unsigned)s_ff_cap);   /* 0 Unlimited, 2..10 */
 	b[192] = (unsigned char)(0x80u | (s_bigcore_mask & 0x1Fu));   /* bit 7: written */
 	b[193] = s_bigcore_mhz10;
+	for (i = 0; i < 5u; i++) {   /* bit 7 of the first byte: written */
+		b[196 + i * 4] = (unsigned char)(0x80u | (s_scale[i].ratio & 15u));
+		b[197 + i * 4] = (unsigned char)((s_scale[i].whole & 3u) | (s_scale[i].onscreen ? 4u : 0u));
+		b[198 + i * 4] = s_scale[i].cw;
+		b[199 + i * 4] = s_scale[i].ch;
+	}
 #if defined(KONKR_BLOCK)
 	b[187] = BLOCK_DEFAULTS_MARK;                  /* the Block's defaults are in (block_defaults_read) */
 #endif
@@ -270,6 +317,17 @@ static void resume_fields_read(const unsigned char *b, int len)
 		if (len >= 192 && (b[191] & 0x80u)) ayaneo_set_ff_cap(b[191] & 0x7f);
 	}
 	if (len >= 194 && (b[192] & 0x80u)) { s_bigcore_mask = b[192] & 0x1Fu; s_bigcore_mhz10 = b[193]; }
+	if (len >= 216) {
+		int k;
+		for (k = 0; k < 5; k++) {
+			const unsigned char *q = b + 196 + k * 4;
+			if (!(q[0] & 0x80u)) continue;
+			ayaneo_scale_set_ratio(k, q[0] & 15);
+			ayaneo_scale_set_whole(k, q[1] & 3);
+			ayaneo_scale_set_onscreen(k, (q[1] >> 2) & 1);
+			s_scale[k].cw = q[2] > 99u ? 0 : q[2]; s_scale[k].ch = q[3] > 99u ? 0 : q[3];
+		}
+	}
 #if defined(KONKR_BLOCK)
 	block_defaults_read(b, len);
 #endif
@@ -414,7 +472,7 @@ static unsigned cpu_step_up(unsigned mhz, int steps)
 static int core_filter_heavy(int core)
 {
 	int f = core == 4 ? s_nes_filter : core == 3 ? s_gen_filter : s_lcd_filter[core == 2 ? 0 : core == 0 ? 1 : 2];
-	return f >= 4;   /* 4 LCD1x, 5 LCD3x */
+	return f >= 4 || (f && s_scale[core].onscreen);   /* 4 LCD1x, 5 LCD3x; any filter laid on the screen's pixels */
 }
 unsigned ayaneo_cpu_manual_get(int core) { return (core < 0 || core > 4 || !s_cpu_manual[core]) ? 0u : s_cpu_grid[(s_cpu_manual[core] - 1) & 7]; }
 void ayaneo_cpu_manual_set(int core, unsigned mhz)

@@ -427,5 +427,17 @@
  "The other console cancelled.": "Druga konsola anulowała.",
  "The other console did not answer.": "Druga konsola nie odpowiedziała.",
  "The session could not start.": "Nie udało się rozpocząć sesji.",
- "The other console left.": "Druga konsola wyszła."
+ "The other console left.": "Druga konsola wyszła.",
+ "Big Core": "Duży rdzeń",
+ "Big Core Clock": "Taktowanie dużego rdzenia",
+ "Integer Scale": "Skala całkowita",
+ "Filter Alignment": "Wyrównanie filtra",
+ "Custom Width": "Własna szerokość",
+ "Custom Height": "Własna wysokość",
+ "Not available": "Niedostępne",
+ "Overscale": "Nadskalowanie",
+ "Game Pixels": "Piksele gry",
+ "Screen Pixels": "Piksele ekranu",
+ "Custom": "Własne",
+ "Needs the multi-core firmware patch": "Wymaga łatki firmware dla wielu rdzeni"
 }
