@@ -111,7 +111,18 @@ The replacement is `bl patch_site -> wrapper`, encoded
 
 ## After patching: using the cores
 
-The LK still boots single-core. The multi-core runtime
-(`platform/common/pico/pico_smp*`) is present but idle by default. See
-`platform/common/pico/pico_smp.h` for the opt-in API and the `oem smp` commands
-for manual bring-up and the on-device coherency self-test.
+The LK still boots on one core and powers no other core by itself. With the patched
+firmware, the in-game menu of a GBA game offers two rows on its Gameplay page:
+
+- **Big Core** (off by default): the game's CPU runs on one of the big cores from the
+  next game start. On unpatched firmware the row reads "Not available".
+- **Big Core Clock** (Konkr Pocket Advance): the big core's clock, one of the console's
+  stock levels up to 2050 MHz, each with its stock voltage.
+
+The big core stays powered between games once it was used and is put back as the boot
+left it at a reset or power off. A game that stalls or faults there is closed back to
+the menu instead of hanging the console.
+
+The runtime is `platform/common/pico/pico_smp*`; `pico_smp.h` has the API and the
+`oem smp` commands cover manual bring-up, the on-device coherency self-test and the
+load-test helpers.

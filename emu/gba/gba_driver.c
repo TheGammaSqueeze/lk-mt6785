@@ -622,6 +622,8 @@ static int manual_state_write(unsigned char *scratch)
 }
 static int manual_state_read(unsigned char *scratch)
 {
+	extern volatile int g_gba_test_noio;
+	if (g_gba_test_noio) return 0;    /* load testing: from reset only */
 #ifdef AYANEO_GBA_SD
 	if (sd_mode_on()) return sd_manual_read(scratch);
 #endif
@@ -1852,7 +1854,7 @@ unsigned menu_keys(void)	/* exported for gba_menu.c (carousel) */
 #endif
 enum {
 	MI_BRIGHT, MI_VOLUME, MI_FILTER, MI_ASPECT, MI_COLORCORRECT, MI_LOADBOOT, MI_RESUME, MI_BOOTROW, MI_SKIPINTRO,
-	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_REWIND, MI_BENCH, MI_SHOWFPS, MI_LATLED, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_FFCAP, MI_COUNT
+	MI_SLOT, MI_LOADSTATE, MI_SAVESTATE, MI_BATTERY, MI_CPU, MI_PANEL, MI_STROBE, MI_PREEMPT, MI_REWIND, MI_BENCH, MI_SHOWFPS, MI_LATLED, MI_CORE, MI_CORESET, MI_RESET, MI_CLOSE, MI_FFCAP, MI_BIGCORE, MI_BIGMHZ, MI_COUNT
 };
 #define GBA_OD_MENU_MAX 1   /* overdrive is On/Off (On = tuned halo-free profile; live-poke via `oem od:`) */
 
@@ -1918,6 +1920,16 @@ static const char *menu_value(int item, char *buf)
 		p = mi_puts(p, tr_igm(upmu_is_chr_det() ? "Charging" : "Battery"));
 		if (ayaneo_gauge_time_str(ts, sizeof ts)) { p = mi_puts(p, "  "); p = mi_puts(p, ts); }
 		break; }
+	case MI_BIGCORE:
+		/* the game's CPU on one of the big cores (needs the firmware patch, tools/konkr/firmware) */
+		if (!pico_smp_available()) { p = mi_puts(p, tr_igm("Not available")); break; }
+		p = mi_puts(p, g_pico_smp_gba_req ? "On" : "Off");
+		if ((g_pico_smp_gba_req != 0) != (s_smp_on != 0)) { p = mi_puts(p, " "); p = mi_puts(p, tr_igm("(next game)")); }
+		break;
+	case MI_BIGMHZ:
+		if (!pico_smp_available() || !pico_smp_big_levels()) { p = mi_puts(p, tr_igm("Not available")); break; }
+		p = mi_putu(p, g_pico_smp_gba_mhz); p = mi_puts(p, " MHz");
+		break;
 	case MI_CPU: {
 		static unsigned mhz, tick;
 		if (s_cpu_dirty || !mhz || tick-- <= 0) { mhz = ayaneo_get_cpu_mhz(); tick = 40; s_cpu_dirty = 0; }
@@ -1983,6 +1995,8 @@ static const char *menu_label(int item)
 	case MI_SAVESTATE: return "Save State";
 	case MI_BATTERY:   return "Battery";
 	case MI_CPU:       return "CPU Clock";
+	case MI_BIGCORE:   return "Big Core";
+	case MI_BIGMHZ:    return "Big Core Clock";
 	case MI_PANEL:     return "Panel Refresh";
 	case MI_STROBE:    return "BFI";
 	case MI_PREEMPT:   return "Run-Ahead";
@@ -2037,6 +2051,24 @@ static int menu_change(int item, int dir, int act, unsigned char *state, char *s
 #endif
 	case MI_SKIPINTRO: if (dir || act) ayaneo_set_skip_gba_intro(!ayaneo_get_skip_gba_intro()); else changed = 0; break;
 	case MI_CPU:      if (dir) cpu_step(dir); changed = 0; break;
+	case MI_BIGCORE:
+		if (!(dir || act)) { changed = 0; break; }
+		if (!pico_smp_available()) { mi_puts(status, "Needs the multi-core firmware patch"); changed = 0; break; }
+		g_pico_smp_gba_req = !g_pico_smp_gba_req;
+		core_opt_store("bigcore", g_pico_smp_gba_req);
+		mi_puts(status, "Takes effect at the next game start");
+		break;
+	case MI_BIGMHZ: {
+		int i, n = pico_smp_big_levels();
+		if (!dir || !n || !pico_smp_available()) { changed = 0; break; }
+		for (i = 0; i < n; i++) if (pico_smp_big_level_mhz(i) >= g_pico_smp_gba_mhz) break;
+		i += dir > 0 ? 1 : -1;
+		if (i < 0) i = 0;
+		if (i >= n) i = n - 1;
+		pico_smp_big_clock(pico_smp_big_level_mhz(i));   /* the guest is parked while the menu is up */
+		core_opt_store("bigmhz", (int)g_pico_smp_gba_mhz);
+		break;
+	}
 	case MI_BENCH:    if (dir || act) s_benchmark = !s_benchmark; changed = 0; break;
 	case MI_SHOWFPS:  { extern int ayaneo_get_show_fps(void); extern void ayaneo_set_show_fps(int v);
 			    if (dir || act) ayaneo_set_show_fps(!ayaneo_get_show_fps()); else changed = 0; } break;
@@ -2181,6 +2213,9 @@ static const struct igm_row k_gba_igm_rows[] = {
 	{ MI_CPU, IGM_PLAY, IGM_VALUE }, { MI_PREEMPT, IGM_PLAY, IGM_VALUE }, { MI_REWIND, IGM_PLAY, IGM_VALUE },
 	{ MI_FFCAP, IGM_PLAY, IGM_VALUE },
 	{ MI_BENCH, IGM_PLAY, IGM_VALUE }, { MI_CORE, IGM_PLAY, IGM_VALUE }, { IGM_CORE, IGM_PLAY, IGM_LINK },
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+	{ MI_BIGCORE, IGM_PLAY, IGM_VALUE }, { MI_BIGMHZ, IGM_PLAY, IGM_VALUE },
+#endif
 	{ MI_LATLED, IGM_PLAY, IGM_VALUE }, { MI_PANEL, IGM_PLAY, IGM_INFO },
 	{ MI_RESUME, IGM_SYSTEM, IGM_VALUE }, { MI_LOADBOOT, IGM_SYSTEM, IGM_VALUE },
 	{ MI_BOOTROW, IGM_SYSTEM, IGM_VALUE }, { MI_SKIPINTRO, IGM_SYSTEM, IGM_VALUE },
@@ -2540,6 +2575,9 @@ static void corecfg_load(void)
 	}
 	s_corecfg_dirty = 0;
 	if (core_opt_lookup("core", &v)) s_core_pref = v ? 1 : 0;
+	/* the big core option and its clock; the option only where the firmware can power the core */
+	if (core_opt_lookup("bigcore", &v)) g_pico_smp_gba_req = (v && pico_smp_available()) ? 1 : 0;
+	if (core_opt_lookup("bigmhz", &v) && v > 0) pico_smp_big_clock((unsigned)v);
 }
 static void corecfg_save(void)
 {
@@ -2822,10 +2860,15 @@ static const char *gba_sd_current_uname(void)
 	return s_roms[s_sel_rom].uname[0] ? s_roms[s_sel_rom].uname : s_roms[s_sel_rom].name;
 }
 
+/* Load testing (oem smp:noio,1): games start from reset with an empty battery save and nothing of
+ * theirs is written back, so a test run leaves the player's saves and states as they were. Off at
+ * power on. */
+volatile int g_gba_test_noio;
+
 static int sd_state_write(unsigned char *scratch)
 {
 	unsigned sz = gba_core_state_size();
-	if (!sz) return 0;
+	if (!sz || g_gba_test_noio) return 0;
 	gba_core_state_save(scratch);   /* raw gpSP state (no boot_b header needed) */
 	if (gba_sd_write_named(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, "sus", scratch, sz) != 0) return 0;
 	pico_shot_save(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, "sus", 0);
@@ -2835,7 +2878,9 @@ static int sd_state_write(unsigned char *scratch)
 static int sd_state_read(unsigned char *scratch, const char *ext)
 {
 	unsigned sz = gba_core_state_size();
-	uint32_t n = gba_sd_read_named(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, ext, scratch, GBA_STATE_MAX);
+	uint32_t n;
+	if (g_gba_test_noio) return 0;
+	n = gba_sd_read_named(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, ext, scratch, GBA_STATE_MAX);
 	if (!sz || n != sz) return 0;   /* absent or size mismatch (version guard) */
 	gba_core_state_load(scratch);
 	return 1;
@@ -2851,7 +2896,7 @@ static const char *gba_slot_ext(void)
 static int sd_manual_write(unsigned char *scratch)
 {
 	unsigned sz = gba_core_state_size();
-	if (!sz) return 0;
+	if (!sz || g_gba_test_noio) return 0;
 	gba_core_state_save(scratch);
 	if (gba_sd_write_state(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, sz) != 0) return 0;
 	pico_shot_save(&s_sd_vol, g_gba_state_dir, s_roms[s_sel_rom].name, gba_slot_ext(), 0);
@@ -2864,7 +2909,7 @@ static int sd_manual_write(unsigned char *scratch)
 static int sd_manual_write_bg(unsigned char *scratch, char *status)
 {
 	unsigned sz = gba_core_state_size();
-	if (!sz) return 0;
+	if (!sz || g_gba_test_noio) return 0;
 	gba_core_state_save(scratch);
 	if (gba_sd_write_state_bg(&s_sd_vol, s_roms[s_sel_rom].name, s_gba_slot, scratch, sz,
 				  status, 48, "State saved", "Save failed") != 0) return 0;
@@ -2905,7 +2950,9 @@ static void gba_corebench(int n)
 	unsigned char *bench = (unsigned char *)0x54900000u, *cur = (unsigned char *)0x54A00000u;
 	g_dbg_corebench[3] = 0;
 	if (!sz || sz > (1024u * 1024u) || n < 61) { g_dbg_corebench[5] = 0; return; }
-	int from_reset = gba_sd_load_state(&s_sd_vol, s_roms[s_sel_rom].name, g_dbg_corebench_slot, bench,
+	/* load testing reads no state: always the game from reset */
+	int from_reset = g_gba_test_noio ||
+			 gba_sd_load_state(&s_sd_vol, s_roms[s_sel_rom].name, g_dbg_corebench_slot, bench,
 					   1024u * 1024u) != sz;
 	gba_core_state_save(cur);
 	if (from_reset) {
@@ -2971,11 +3018,13 @@ unsigned gba_dbg_game_file(const char *ext, unsigned char *dst, unsigned cap, ch
 
 static void sd_sav_write(void)
 {
+	if (g_gba_test_noio) return;
 	gba_sd_write_sav(&s_sd_vol, s_roms[s_sel_rom].name,
 			 gba_core_backup_ptr(), gba_core_backup_size());
 }
 static void sd_sav_write_bg(void)
 {
+	if (g_gba_test_noio) return;
 	gba_sd_write_sav_bg(&s_sd_vol, s_roms[s_sel_rom].name,
 			    gba_core_backup_ptr(), gba_core_backup_size());
 }
@@ -3198,7 +3247,14 @@ static unsigned gba_sd_build_logo_cart(unsigned char *rp)
  * themselves 64% colour over white, come out as bright as on the white screen. White becomes black,
  * black ink white, a fade from white a fade from black. Written to its own buffer: the core's
  * screen stays the core's. */
+#if defined(KONKR_KPA) || defined(KONKR_BLOCK)
+/* On the Konkr consoles the buffer sits at the start of the free megabyte after the LK (the big
+ * core's stack and buffers use its upper part, pico_smp.h): the LK's heap is what its image
+ * leaves free, and every kilobyte of buffer here comes off it. */
+#define s_intro_black_px ((unsigned short *)PICO_FREE_MB_BASE)
+#else
 static unsigned short s_intro_black_px[240 * 160];
+#endif
 static const unsigned short *intro_on_black(const unsigned short *src)
 {
 	unsigned i;
@@ -3890,8 +3946,9 @@ static int emu_thread(void *arg)
 					return 0;
 				}
 				s_game_live = 1;
-				gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
-						(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
+				if (!g_gba_test_noio)
+					gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
+							(unsigned char *)gba_core_backup_ptr(), gba_core_backup_size());
 				{	char ext[4];   /* the state picked in the Suspend Point List, or the suspend point */
 					if (!PRESSED(GPIO_B) && gba_launch_state(ext))
 						state_read_open(scratch, ext);
@@ -4358,6 +4415,7 @@ static int emu_thread(void *arg)
 					if (gba_core_start(rsz, s_have_bios ? s_sd_bios : 0) != 0)
 						return 0;
 					s_game_live = 1;
+					if (!g_gba_test_noio)
 					gba_sd_load_sav(&s_sd_vol, s_roms[s_sel_rom].name,
 							(unsigned char *)gba_core_backup_ptr(),
 							gba_core_backup_size());

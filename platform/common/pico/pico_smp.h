@@ -60,6 +60,11 @@ int pico_smp_guest_start(unsigned n, unsigned entry, unsigned stack_top);
 int pico_smp_guest_held(void);
 int pico_smp_guest_restart(unsigned entry, unsigned stack_top);
 int pico_smp_core_on(unsigned n);
+/* The big core's clock for the menus: the levels offered (0 when the console has no table yet), and
+ * the setter (one of those levels; its stock voltage goes with it). */
+int pico_smp_big_levels(void);
+unsigned pico_smp_big_level_mhz(int i);
+void pico_smp_big_clock(unsigned mhz);
 
 /* Called by the reset and power off paths: stops the workers if any core was started. */
 void pico_smp_before_reset(void);
@@ -72,6 +77,11 @@ void pico_smp_before_reset(void);
 #else
 #define PICO_SMP_SRAM 0x0011D7C0u
 #endif
+/* The free megabyte of DRAM after the LK's own nine (0x4CD00000, the same on both Konkr consoles):
+ *   +0x00000  76.8 KB  the GBA intro's recoloured frame (gba_driver.c)
+ *   ...                the guest's stack, growing down from +0xC0000
+ *   +0xC0000           the shared block, the guest's tables, the workers' buffers (pico_smp.c) */
+#define PICO_FREE_MB_BASE 0x4CD00000u
 /* The guest's own stack: the free DRAM below the shared buffers (0x4CD00000..0x4CDC0000, 768 KB),
  * growing down from them. Never the parked CPU thread's stack: that holds the thread's saved
  * context, and the next game that wakes the thread would crash on it. */

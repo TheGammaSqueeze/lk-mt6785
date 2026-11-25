@@ -55,6 +55,7 @@ extern signed int pwrap_write(unsigned int adr, unsigned int wdata);
 extern void udelay(unsigned long usec);
 static unsigned rd32(unsigned a);
 
+#if !defined(KONKR_BLOCK)
 /* The A76 (big) cluster PLL is ARMPLL_BIG CON1 at APMIXED 0x1000C214 (the A55 cluster that
  * ayaneo_set_cpu_mhz drives is 0x1000C204). Same MTK PLL formula; keeps POSDIV; pulses PCW_CHG.
  * Clock only; pico_big_set_opp below moves the rail with it. */
@@ -124,6 +125,18 @@ static void pico_big_set_opp(unsigned mhz)
 	if (code >= now) { pico_big_set_code(code); pico_big_set_mhz(mhz); }
 	else { pico_big_set_mhz(mhz); pico_big_set_code(code); }
 }
+#else
+/* The Block's big cluster (MT6768) has its own PLL and PMIC: its clock and rail are left as the
+ * boot set them until its table is in. */
+static unsigned pico_big_get_mhz(void) { return 0u; }
+static void pico_big_set_mhz(unsigned mhz) { (void)mhz; }
+static unsigned pico_big_get_code(void) { return 0u; }
+static void pico_big_set_code(unsigned code) { (void)code; }
+static void pico_big_set_opp(unsigned mhz) { (void)mhz; }
+static const struct { unsigned short mhz; unsigned char code; } k_big_opp[1] = { { 0, 0 } };
+#define BIG_VSRAM_NOW 0u
+#define PICO_BIG_NO_TABLE 1
+#endif
 volatile int g_pico_smp_gba_req;      /* opt in: the next GBA game runs its CPU loop on a big core */
 volatile unsigned g_pico_smp_gba_core = 6u;
 volatile unsigned g_pico_smp_gba_mhz = 2050u;   /* the big core's clock while a GBA guest runs: the stock top
@@ -313,6 +326,15 @@ static void cmd_smp(const char *arg, void *data, unsigned sz)
 		code = pico_big_get_code();
 		snprintf(sl, sizeof sl, "big clock ~%u MHz at code %u (%u mV)", pico_big_get_mhz(), code,
 			 400u + (code * 625u) / 100u);
+		fastboot_info(sl);
+	} else if (!strncmp(arg, "noio", 4)) {
+		/* load testing: GBA games from reset, nothing of theirs read from or written to the card */
+		extern volatile int g_gba_test_noio __attribute__((weak));
+		arg += 4;
+		if (&g_gba_test_noio) {
+			if (*arg == ':' || *arg == ',') g_gba_test_noio = hexarg(&arg) ? 1 : 0;
+			snprintf(sl, sizeof sl, "GBA test mode (no saves, no states): %s", g_gba_test_noio ? "on" : "off");
+		} else snprintf(sl, sizeof sl, "no GBA core in this build");
 		fastboot_info(sl);
 	} else if (!strncmp(arg, "mhz", 3)) {
 		/* the clock a GBA guest's big core runs at (hex MHz); takes effect when the core is next set up */
@@ -635,6 +657,32 @@ int pico_smp_guest_start(unsigned n, unsigned entry, unsigned stack_top)
 	}
 	guest_prepare(entry, stack_top);
 	return (int)smc4(PSCI_CPU_ON, n << 8, land + 0x800u, 0);
+}
+
+/* The big core's clock levels for the menus (the stock table from 1530 MHz up; none on a console
+ * without a table), and the guest's clock: kept for the next time the core is set up, and applied
+ * at once when it already is. Call it only while no frame runs on the guest (the frontend's own
+ * thread between frames does). */
+int pico_smp_big_levels(void)
+{
+#ifdef PICO_BIG_NO_TABLE
+	return 0;
+#else
+	return (int)(sizeof k_big_opp / sizeof k_big_opp[0]) - 3;
+#endif
+}
+unsigned pico_smp_big_level_mhz(int i)
+{
+	if (i < 0 || i >= pico_smp_big_levels()) return 0u;
+	return k_big_opp[i + 3].mhz;
+}
+void pico_smp_big_clock(unsigned mhz)
+{
+	int i, n = pico_smp_big_levels();
+	for (i = 0; i < n; i++) if (pico_smp_big_level_mhz(i) == mhz) break;
+	if (i == n) return;
+	g_pico_smp_gba_mhz = mhz;
+	if (s_big_saved_mhz) pico_big_set_opp(mhz);
 }
 
 /* True when core n is powered (the power controller's status). */
