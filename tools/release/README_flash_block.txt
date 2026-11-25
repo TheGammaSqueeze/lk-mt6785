@@ -25,7 +25,8 @@ console had. A tee the console cannot start leaves it dark until SP Flash Tool o
 a working one, so do not interrupt a flash and keep this package.
 
 Tested on a console, with all four partitions and each checked afterwards: SP Flash Tool v5.1924
-with this package's scatter, and fastboot with this package's files. Not yet tested on a console:
+with this package's scatter, fastboot with this package's files, and GammaOS Pico Tool 1.2.0. Not
+yet tested on a console:
 mtkclient, which writes the same four partitions with the same files. Android starting from the GammaOS Pico LK has been tested on a
 console whose bootloader was unlocked afterwards; the LK hands Android the console's real lock
 state, so a locked console is expected to start it the same way.
